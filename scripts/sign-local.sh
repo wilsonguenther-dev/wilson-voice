@@ -52,6 +52,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DESKTOP="$ROOT/desktop"
 SRC="$DESKTOP/src-tauri"
 ENT="$SRC/Entitlements.plist"
+# yap24-OS4 — every bundled sidecar is signed on its own with its OWN
+# entitlements (never the app's microphone grant), before the bundle itself.
+SIDECAR_ENT_DIR="$SRC/entitlements"
+SIDECARS=(yap-polish yap-diarize)
+# The hardened runtime is ON for every signature this script makes. Without
+# it cs.* entitlements are inert and an entitlement audit passes vacuously;
+# notarization requires it anyway (docs/RELEASE.md, Entitlement audit).
+RUNTIME_FLAGS=(--options runtime --timestamp)
 CONF="$SRC/tauri.conf.json"
 
 die() { echo "FATAL: $*" >&2; exit 1; }
@@ -150,7 +158,18 @@ verify_bundle() {
   if [[ "$flat" == *"<key>com.apple.security.app-sandbox</key><true/>"* ]]; then
     die "app-sandbox is TRUE in the signed bundle — that breaks the hotkey tap and paste."
   fi
-  echo "verify: OK — ${PROFILE} profile, ${IDENTITY_CLASS}, not adhoc, sandbox off"
+  # yap24-OS4: the hardened runtime must actually be ON — the flag, read back.
+  grep -q 'flags=0x10000(runtime)' <<<"$info" || die "signature does not carry flags=0x10000(runtime) — the hardened runtime is off, so notarization fails and every cs.* entitlement is inert."
+  local s bin sinfo
+  for s in "${SIDECARS[@]}"; do
+    bin="$app/Contents/MacOS/$s"
+    [[ -f "$bin" ]] || die "sidecar $s missing from $app/Contents/MacOS (bundle.externalBin declares it)."
+    sinfo="$(codesign -dv --verbose=4 "$bin" 2>&1)"
+    grep -q 'Signature=adhoc' <<<"$sinfo" && die "sidecar $s is AD-HOC signed."
+    grep -q 'flags=0x10000(runtime)' <<<"$sinfo" || die "sidecar $s does not carry flags=0x10000(runtime)."
+    echo "sidecar $s: runtime on, $(grep -c '^Authority=' <<<"$sinfo") authorities"
+  done
+  echo "verify: OK — ${PROFILE} profile, ${IDENTITY_CLASS}, not adhoc, sandbox off, hardened runtime on"
 }
 
 MODE="sign"
@@ -186,10 +205,18 @@ if [[ "$MODE" == "sign" ]]; then
   [[ -f "$ENT" ]] || die "entitlements not found at $ENT"
 
   echo "${PROFILE} profile — signing $(basename "$APP") with: ${IDENTITY_CLASS}"
-  # Resource-fork / quarantine detritus makes `codesign --deep` flake with
+  # Resource-fork / quarantine detritus makes codesign fail with
   # "resource fork, Finder information, or similar detritus not allowed".
   xattr -cr "$APP"
-  codesign --force --deep --entitlements "$ENT" --sign "$IDENTITY" "$APP"
+  # Inside-out, never deep signing (yap24-OS4): deep signing stamps the APP's
+  # entitlements onto every nested binary, so each sidecar would inherit the
+  # microphone grant. Each sidecar gets its own file, then the bundle seals them.
+  for s in "${SIDECARS[@]}"; do
+    [[ -f "$APP/Contents/MacOS/$s" ]] || die "sidecar $s missing from $APP/Contents/MacOS"
+    [[ -f "$SIDECAR_ENT_DIR/$s.plist" ]] || die "no entitlements file for sidecar $s at $SIDECAR_ENT_DIR/$s.plist"
+    codesign --force "${RUNTIME_FLAGS[@]}" --entitlements "$SIDECAR_ENT_DIR/$s.plist" --sign "$IDENTITY" "$APP/Contents/MacOS/$s"
+  done
+  codesign --force "${RUNTIME_FLAGS[@]}" --entitlements "$ENT" --sign "$IDENTITY" "$APP"
   verify_bundle "$APP"
   exit 0
 fi

@@ -6,16 +6,24 @@
 	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!-- Hardened runtime helpers for Tauri + cpal. NOTE: the two dylib-injection
-	     entitlements (library-validation off + dyld env vars) are deliberately
-	     NOT granted — they would let DYLD_INSERT_LIBRARIES load an attacker dylib
-	     into this non-sandboxed, Accessibility-trusted, keystroke-synthesizing
-	     process (a TCC-inheritance escalation). MLX/JIT runs in the separate
-	     Python child (its own signature); setting env vars for that child via
-	     Command.env() does not need the dyld entitlement. -->
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
+	<!-- The APP binary only (scripts/sign-local.sh signs inside-out, no deep
+	     signing; the yap-polish / yap-diarize sidecars carry their own files
+	     under entitlements/). The hardened runtime is ON for every signed build
+	     (codesign options runtime, flags=0x10000(runtime)).
+
+	     yap24-OS4: cs.allow-jit and cs.allow-unsigned-executable-memory are NOT
+	     granted. scripts/qa/entitlement-diet.sh signs one variant per removed
+	     entitlement under the real identity with the runtime on and runs the
+	     signed binary's in-process Metal decode (transcribe-file); every
+	     variant passes without them (docs/RELEASE.md, Entitlement audit).
+	     ggml-Metal compiles its shaders through MTLDevice / MTLCompilerService,
+	     and WKWebView JITs in the separate WebContent XPC process, so neither
+	     needs writable-executable pages in this process.
+
+	     The two dylib-injection entitlements (library-validation off + dyld env
+	     vars) are deliberately NOT granted either: they would let
+	     DYLD_INSERT_LIBRARIES load an attacker dylib into this non-sandboxed,
+	     Accessibility-trusted, keystroke-synthesizing process (a TCC-inheritance
+	     escalation). -->
 </dict>
 </plist>

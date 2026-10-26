@@ -164,3 +164,82 @@ fn parser_reads_the_value_not_just_the_key() {
         "commented-out keys must not parse as granted"
     );
 }
+
+/// yap24-OS4 — the hardened-runtime diet. Both were measured unnecessary under a
+/// runtime-ON signature (`scripts/qa/entitlement-diet.sh`, docs/RELEASE.md
+/// "Entitlement audit"): the signed binary's in-process ggml-Metal decode passes
+/// without them. Each weakens the hardened runtime for the whole process, so a
+/// re-add needs a failing signed-runtime run, not a hunch.
+#[test]
+fn jit_entitlements_are_absent_from_the_app() {
+    let ents = entitlements();
+    for removed in [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+    ] {
+        assert!(
+            !ents.contains_key(removed),
+            "{removed} is back in Entitlements.plist. yap24-OS4 measured it unnecessary under the \
+             hardened runtime (scripts/qa/entitlement-diet.sh); re-adding it needs a signed-runtime \
+             run that fails without it, recorded in docs/RELEASE.md."
+        );
+    }
+}
+
+/// yap24-OS4 — each sidecar carries its OWN entitlements and is signed on its
+/// own (no deep signing), so neither inherits the app's microphone grant nor any
+/// runtime-weakening key.
+#[test]
+fn sidecars_have_their_own_minimal_entitlements() {
+    for sidecar in ["yap-polish", "yap-diarize"] {
+        let path = src_tauri()
+            .join("entitlements")
+            .join(format!("{sidecar}.plist"));
+        let xml = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        assert!(
+            xml.contains("<dict>"),
+            "{} is not a plist dict",
+            path.display()
+        );
+        let granted: Vec<String> = parse_boolean_entitlements(&xml)
+            .into_iter()
+            .filter(|(_, v)| *v)
+            .map(|(k, _)| k)
+            .collect();
+        assert!(
+            granted.is_empty(),
+            "{sidecar} grants {granted:?}; its entitlements must stay empty unless a signed-runtime \
+             run proves a key necessary (docs/RELEASE.md, Entitlement audit)"
+        );
+    }
+}
+
+/// yap24-OS4 — the local signing path turns the hardened runtime ON and signs
+/// inside-out. Without `--options runtime` every cs.* entitlement is inert and
+/// an entitlement audit passes vacuously; `--deep` stamps the app's
+/// entitlements onto the sidecars.
+#[test]
+fn sign_local_uses_the_hardened_runtime_and_never_deep_signs() {
+    let path = src_tauri().join("../../scripts/sign-local.sh");
+    let script = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let codesign_calls: Vec<&str> = script
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("codesign --force"))
+        .collect();
+    assert!(
+        codesign_calls.len() >= 2,
+        "expected a sidecar codesign call and a bundle codesign call, found {codesign_calls:?}"
+    );
+    for call in &codesign_calls {
+        assert!(
+            call.contains("--options runtime") || call.contains("RUNTIME_FLAGS"),
+            "codesign call without the hardened runtime: {call}"
+        );
+        assert!(!call.contains("--deep"), "deep signing is back: {call}");
+    }
+    assert!(script.contains("RUNTIME_FLAGS=(--options runtime --timestamp)"));
+    assert!(script.contains("flags=0x10000(runtime)"));
+}

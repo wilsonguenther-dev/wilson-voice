@@ -75,7 +75,9 @@ scripts/sign-local.sh --identity
 it is actually in the keychain, so a typo fails loudly instead of producing an
 unsigned app). After signing it verifies with `codesign -dv --verbose=4` and
 `codesign -d --entitlements :-`, and fails if the result reports `Signature=adhoc`,
-carries no `Authority=` chain, or shows `com.apple.security.app-sandbox` as true.
+carries no `Authority=` chain, shows `com.apple.security.app-sandbox` as true, or
+is missing `flags=0x10000(runtime)` on the app or either sidecar (see
+[Entitlement audit](#entitlement-audit)).
 `scripts/rebuild_app.sh` calls it rather than repeating the incantation.
 
 **Never enable the App Sandbox.** It silently kills the CGEvent tap, the
@@ -85,6 +87,97 @@ the build if `com.apple.security.app-sandbox` is missing or true, if the
 microphone entitlement is dropped, or if either dylib-injection entitlement
 (`cs.disable-library-validation`, `cs.allow-dyld-environment-variables`) is
 granted.
+
+## Entitlement audit
+
+*yap24-OS4, measured 2026-10-26 on Apple M4 Pro, macOS 26.6.2, Developer ID Application identity.*
+
+Every signature `scripts/sign-local.sh` makes carries the **hardened runtime**
+(`codesign --options runtime --timestamp`), and its verify step fails unless
+`codesign -dv` reads back `flags=0x10000(runtime)` on the app AND on each
+sidecar. That matters for more than notarization: `com.apple.security.cs.*`
+entitlements are inert when the runtime is off, so an audit run on a
+runtime-off signature passes every removal vacuously — which is exactly what
+the first draft of this item would have measured.
+
+Signing is **inside-out, never deep**. Deep signing stamps the APP's
+entitlements (including the microphone grant) onto every nested binary. Each
+sidecar is signed first with its own file, then the bundle seals them:
+
+| binary | entitlements file | grants |
+|---|---|---|
+| `wilson-voice` (the app) | `desktop/src-tauri/Entitlements.plist` | `device.audio-input`, `app-sandbox` = false |
+| `yap-polish` (llama.cpp + Metal) | `desktop/src-tauri/entitlements/yap-polish.plist` | nothing |
+| `yap-diarize` (sherpa-onnx, CPU) | `desktop/src-tauri/entitlements/yap-diarize.plist` | nothing |
+
+`app-sandbox` stays present and false (Wilson's rule: utility apps are never
+sandboxed). The dylib-injection pair (`cs.disable-library-validation`,
+`cs.allow-dyld-environment-variables`) stays absent (YV23).
+
+### The experiment — `scripts/qa/entitlement-diet.sh`
+
+```bash
+YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  bash scripts/qa/entitlement-diet.sh
+```
+
+It builds the release binaries (`--features custom-protocol`), then signs one
+copy of the app binary per variant with the real identity and the runtime on.
+Before a variant's run counts, three things are read back from the signature
+and the process: `flags=0x10000(runtime)` (or the script exits 3), the granted
+`cs.*` keys match the variant, and a `DYLD_PRINT_LIBRARIES=1` probe prints
+**no** dyld lines (the runtime strips `DYLD_*`). A **control** copy signed with
+the same identity but WITHOUT the runtime must print dyld lines — proof the
+probe can tell runtime-on from runtime-off, i.e. that this experiment can fail.
+Then the signed binary does its real work: `--transcribe-file` on the committed
+fixture (`tests/fixtures/quick-brown-fox-16k.wav`) — the in-process
+transcribe-cpp decode on ggml-Metal — against a scratch `YAP_DATA_DIR` with the
+cached Parakeet Q8_0 model linked in and selected (an empty scratch root never
+reaches Metal; it starts a model download instead). A pass needs exit 0, the
+fixture's words on stdout and `parakeet: using metal backend` on stderr. The
+sidecars are signed with their own files and must complete their protocol
+handshake (`yap-polish` loads its GGUF with every layer offloaded to Metal and
+creates a context before it says ready).
+
+### Result
+
+```
+control (same identity, runtime OFF): flags=0x0(none) · DYLD_PRINT_LIBRARIES lines=712 (expected > 0)
+
+| variant | cs.* granted | CodeDirectory flags | DYLD probe | run | engine | output | verdict |
+|---|---|---|---|---|---|---|---|
+| full | allow-jit allow-unsigned-executable-memory  | flags=0x10000(runtime) | dyld=0 | exit=0 | metal=yes | "The quick brown fox jumps over the lazy dog." | PASS |
+| -cs.allow-jit | allow-unsigned-executable-memory  | flags=0x10000(runtime) | dyld=0 | exit=0 | metal=yes | "The quick brown fox jumps over the lazy dog." | PASS |
+| -cs.allow-unsigned-executable-memory | allow-jit  | flags=0x10000(runtime) | dyld=0 | exit=0 | metal=yes | "The quick brown fox jumps over the lazy dog." | PASS |
+| shipped | none | flags=0x10000(runtime) | dyld=0 | exit=0 | metal=yes | "The quick brown fox jumps over the lazy dog." | PASS |
+| yap-polish (own plist) | none | flags=0x10000(runtime) | - | exit=0 | handshake=yes | {"type":"ready","version":"0.9.2","model_loaded":true} | PASS |
+| yap-diarize (own plist) | none | flags=0x10000(runtime) | - | exit=0 | handshake=yes | {"type":"ready","version":"0.1.0"} | PASS |
+note: --transcribe-meeting is not wired on this tree (NT2) — not run
+entitlement-diet: PASS — every variant signed with flags=0x10000(runtime) ran its real work
+```
+
+| entitlement | removal passes? | decision |
+|---|---|---|
+| `cs.allow-jit` | yes — signed-runtime Metal decode passes without it | **removed** |
+| `cs.allow-unsigned-executable-memory` | yes — signed-runtime Metal decode passes without it | **removed** |
+| `device.audio-input` | not a candidate (the runtime denies the capture device without it) | kept |
+| `app-sandbox` = false | not a candidate (rule) | kept |
+
+Why it holds: ggml-Metal and llama.cpp compile their shaders through
+`MTLDevice` / `MTLCompilerService` (the 7 s `ggml_metal_library_init` on a
+cold run), not into writable-executable pages of this process, and WKWebView's
+JavaScript JIT runs in the separate `com.apple.WebKit.WebContent` XPC process
+under WebKit's own signature.
+
+**Not covered by this run** — re-run the script after any of these lands:
+the GUI path was not launched from a runtime-signed copy (a `--smoke` launch
+opens the window and tray on the operator's display), so the WKWebView claim
+rests on the WebKit process model, not on a measurement; `--transcribe-meeting`
+(NT2) is not wired yet; and the notarized `tauri build` bundle itself is the
+final smoke item's job (`scripts/sign-local.sh --tauri-build` now fails its
+verify if Tauri's signature lacks the runtime on the app or a sidecar).
+If a future engine genuinely needs one of these entitlements, add it back with
+a failing signed-runtime run in this section — never on a hunch.
 
 ## Signing keys
 
