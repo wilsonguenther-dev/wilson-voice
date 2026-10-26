@@ -48,7 +48,7 @@
 //! actions; this module decides what the action *is*.
 //!
 //! **What this module deliberately does NOT do.** It does not open a journal,
-//! take a power assertion, register `NSWorkspaceWillSleepNotification`, stop a
+//! take a power assertion, register for sleep/wake notifications (`power.rs` does, Y1-B), stop a
 //! recording, or start the meeting that carries on past the cap. Those call
 //! sites live in the capture session and its UI. A policy with no caller is a
 //! policy that is not in effect, which is why [`ROWS`] never marks such a row
@@ -236,10 +236,11 @@ pub enum Coverage {
     /// site that would put it in effect does not exist in the shipping tree*.
     ///
     /// This variant exists because the alternative was a lie. Row 16's
-    /// sleep/wake state machine is fully tested — and nothing registers
-    /// `NSWorkspaceWillSleepNotification`, so closing a lid mid-meeting still
-    /// does whatever it did before. Publishing that row as [`Coverage::Test`]
-    /// tells a reader the app finalizes on sleep. It does not. Rows `5b` and
+    /// sleep/wake state machine was fully tested for months while nothing
+    /// registered the will-sleep notification, so a lid close mid-meeting did
+    /// whatever it did before; publishing that row as [`Coverage::Test`] would
+    /// have told a reader the app finalized on sleep when it did not (Y1-B
+    /// registered the observer in `power.rs` and promoted the row). Rows `5b` and
     /// `17b` are the same shape with smaller blast radii: [`quality_note`]
     /// computes the sentence a meeting owes the user when the disk cost it
     /// audio, [`continuation_title`] names the meeting that carries on past the
@@ -299,7 +300,7 @@ pub struct MatrixRow {
 pub const REQUIRED_TEST_PREFIX: &str = "matrix_";
 
 /// The sixteen failures of the plan's §6 matrix that 22-A, 22-B and yap23 own,
-/// as nineteen cells (rows 5, 12 and 17 each have two halves with different
+/// as twenty cells (rows 5, 12, 16 and 17 each have two halves with different
 /// truth values — see the module docs).
 ///
 /// **Rows 7, 8 and 13 joined this table with YV132**, and what earned them the
@@ -394,17 +395,35 @@ pub const ROWS: &[MatrixRow] = &[
     MatrixRow {
         id: "16",
         failure: "Sleep or lid close mid-meeting",
-        behavior: "Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen",
-        // NOT `Test`. The state machine below is complete and tested; the
-        // observer that would feed it is in no branch — `power.rs` mentions
-        // `NSWorkspaceWillSleepNotification` in a comment and registers
-        // nothing. Until someone writes that call site, a lid close mid-meeting
-        // still does whatever it did before, and this row must not read as
-        // though it does not.
+        behavior: "Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down",
+        // `Test` since Y1-B, for the FINALIZE half only — the resume offer is
+        // row `16b` (fix-239 split them, the way 5b and 17b are split). Until then this row was `PolicyOnly`: the state
+        // machine below was complete and tested and nothing fed it, because
+        // `power.rs` named the notification in a comment and registered
+        // nothing. Y1-B registered the one observer in `power.rs`
+        // (`SleepWakeObserver`, on the NSWorkspace notification centre) and
+        // `lib.rs` subscribes the meeting controller to it through
+        // `SleepPolicy::drive`. The row's test registers that same observer,
+        // posts the two notifications, and asserts this row and the code agree.
+        coverage: Coverage::Test {
+            test: "matrix_row16_sleep_wake.rs",
+            subject: "SleepWakeObserver",
+            subject_module: "power.rs",
+        },
+    },
+    MatrixRow {
+        id: "16b",
+        failure: "…and on wake nothing offers to resume",
+        behavior: "On wake OFFER resume as a new segment rather than pretending the gap did not happen",
+        // NOT `Test`, for the same reason as `5b` and `17b`: `SleepPolicy`
+        // decides the offer and the test drives that decision, but there is no
+        // resume prompt. On wake the app only logs the offer; `resume_accepted`
+        // and `resume_declined` have zero callers. The finalize half above is
+        // wired, which is why the failure is two cells.
         coverage: Coverage::PolicyOnly {
             test: "matrix_row16_sleep_wake.rs",
             wiring_pr: None,
-            absent_call_site: "NSWorkspaceWillSleepNotification",
+            absent_call_site: "resume_accepted",
         },
     },
     MatrixRow {
@@ -951,6 +970,25 @@ impl SleepPolicy {
     /// True while a resume prompt is outstanding.
     pub fn awaiting_resume(&self) -> bool {
         self.state == SleepState::AwaitingResume
+    }
+
+    /// Y1-B — the entry point the sleep/wake observer's meeting consumer
+    /// calls. `recording_now` is the meeting controller's truth at the moment
+    /// the notification arrives; the policy syncs to it first (a meeting the
+    /// user started or stopped since the last event) and then decides.
+    ///
+    /// Syncing here rather than hooking every start/stop path is deliberate:
+    /// the controller already owns "is a meeting recording", and a second copy
+    /// of that bit updated from four call sites is the drift this table exists
+    /// to prevent. A meeting started while a resume offer was outstanding
+    /// supersedes the offer.
+    pub fn drive(&mut self, recording_now: bool, event: SleepEvent) -> SleepAction {
+        if recording_now && self.state != SleepState::Recording {
+            self.meeting_started();
+        } else if !recording_now && self.state == SleepState::Recording {
+            self.meeting_stopped();
+        }
+        self.observe(event)
     }
 }
 
@@ -1506,10 +1544,10 @@ mod tests {
         }
         assert_eq!(
             ROWS.len(),
-            19,
+            20,
             "22-A owns eight matrix failures, 22-B's YV105 wires five more and \
-             YV132 wires yap23's three (7, 8, 13), published as nineteen cells \
-             — three of them (5, 12 and 17) have a wired half and an unwired \
+             YV132 wires yap23's three (7, 8, 13), published as twenty cells \
+             — four of them (5, 12, 16 and 17) have a wired half and an unwired \
              half, and one cell each way is the only way to state both \
              truthfully"
         );
@@ -1556,20 +1594,17 @@ mod tests {
         let unowned = Coverage::PolicyOnly {
             test: "matrix_row16_sleep_wake.rs",
             wiring_pr: None,
-            absent_call_site: "NSWorkspaceWillSleepNotification",
+            absent_call_site: "example_call_site",
         }
         .cell();
         assert!(unowned.contains("NOT WIRED"), "{unowned}");
         assert!(unowned.contains("nothing calls"), "{unowned}");
-        assert!(
-            unowned.contains("NSWorkspaceWillSleepNotification"),
-            "{unowned}"
-        );
+        assert!(unowned.contains("example_call_site"), "{unowned}");
 
         let owned = Coverage::PolicyOnly {
             test: "matrix_row16_sleep_wake.rs",
             wiring_pr: Some("#999 (example)"),
-            absent_call_site: "NSWorkspaceWillSleepNotification",
+            absent_call_site: "example_call_site",
         }
         .cell();
         assert!(owned.contains("Policy only"), "{owned}");
@@ -1594,8 +1629,8 @@ mod tests {
             .collect();
         assert_eq!(
             unwired,
-            vec!["5b", "16", "17b", "3", "14", "7", "8", "13"],
-            "22-A's three unwired policies, the four YV105 rows whose mechanism \
+            vec!["5b", "16b", "17b", "3", "14", "7", "8", "13"],
+            "22-A's three unwired policies (row 16's finalize half left with Y1-B; its resume offer stays as 16b), the four YV105 rows whose mechanism \
              has merged and whose producer has not, and YV132's three yap23 \
              rows — whose mechanism (the sidecar pool, the model catalog) has \
              merged and which nothing in the app can reach, because no meeting \
@@ -1643,7 +1678,10 @@ mod tests {
         // Row 3 stays: a meeting whose MIC is denied still cannot start on the
         // tap alone, because `MeetingSession::start` holds one `CaptureStream`
         // and a `hold()` that fails is the end of the meeting.
-        assert_eq!(unowned, vec!["5b", "16", "17b", "3", "7", "8", "13"]);
+        // Row 16 LEFT this set with Y1-B: `power::SleepWakeObserver` registers
+        // the notifications and the meeting controller is subscribed to it.
+        // Its resume offer stayed, as 16b (fix-239).
+        assert_eq!(unowned, vec!["5b", "16b", "17b", "3", "7", "8", "13"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1676,7 +1714,7 @@ mod tests {
     }
 
     /// The rows the shipping app actually performs, spelled out, because this
-    /// is the number every reader of the table is really asking for. Ten cells
+    /// is the number every reader of the table is really asking for. Eleven cells
     /// are `Test`, one is a manual repro, and the remaining eight are decisions
     /// nothing in the app can reach.
     ///
@@ -1699,7 +1737,9 @@ mod tests {
             .collect();
         assert_eq!(
             wired,
-            vec!["4", "5", "6", "17", "3a", "3b", "1", "2", "12", "12b"]
+            // Row 16 joined with Y1-B: `power::SleepWakeObserver` registers
+            // will-sleep/did-wake and the meeting controller is subscribed.
+            vec!["4", "5", "6", "16", "17", "3a", "3b", "1", "2", "12", "12b"]
         );
 
         let manual: Vec<&str> = ROWS
@@ -1757,19 +1797,34 @@ mod tests {
         assert!(cell.contains("quality_note"), "{cell}");
     }
 
-    /// Row 16 has no owning PR, and that is a fact about the phase rather than
-    /// an oversight in the table. Stating it in a test means the day someone
-    /// picks the work up, they update the row instead of leaving a stale `None`.
+    /// Row 16 was `PolicyOnly` with no owner until Y1-B registered the
+    /// observer. It is now a `Test` row anchored to the shipping observer in
+    /// `power.rs`; `tests/matrix_row16_sleep_wake.rs` holds the other end.
     #[test]
-    fn row_16_admits_that_nobody_owns_its_wiring() {
+    fn row_16_is_wired_to_the_power_rs_observer() {
         let row = ROWS.iter().find(|r| r.id == "16").expect("row 16");
         assert_eq!(
             row.coverage,
+            Coverage::Test {
+                test: "matrix_row16_sleep_wake.rs",
+                subject: "SleepWakeObserver",
+                subject_module: "power.rs",
+            }
+        );
+        // fix-239: the resume offer has no UI, so it is its own unwired cell.
+        let offer = ROWS.iter().find(|r| r.id == "16b").expect("row 16b");
+        assert_eq!(
+            offer.coverage,
             Coverage::PolicyOnly {
                 test: "matrix_row16_sleep_wake.rs",
                 wiring_pr: None,
-                absent_call_site: "NSWorkspaceWillSleepNotification",
+                absent_call_site: "resume_accepted",
             }
+        );
+        assert!(offer.behavior.contains("OFFER resume"));
+        assert!(
+            !row.behavior.contains("OFFER"),
+            "row 16 no longer claims the offer"
         );
     }
 

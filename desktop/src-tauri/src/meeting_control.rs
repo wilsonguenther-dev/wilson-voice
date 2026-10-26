@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::meeting_energy::{self, BatteryReading, MeetingDiagnostics, ThermalState};
+use crate::meeting_matrix::{SleepAction, SleepEvent, SleepPolicy, PAUSED_BY_SLEEP};
 use crate::meetings::{self, MeetingKind, MeetingState};
 use crate::syscapture;
 
@@ -395,6 +396,21 @@ impl TickerStop {
             Err(_) => false,
         }
     }
+}
+
+/// Y1-B — what [`MeetingController::on_sleep_wake`] did with one sleep/wake
+/// event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SleepStep {
+    /// No meeting to act on, or a duplicate / irrelevant event.
+    Nothing,
+    /// The running meeting was stopped with the `paused_by_sleep` reason.
+    Finalized,
+    /// A finalize was due and `stop` refused; the error is passed up, never
+    /// swallowed into a fabricated success.
+    StopFailed(String),
+    /// Woke after a sleep-paused meeting. The offer has no UI yet (row `16b`).
+    ResumeOffered,
 }
 
 /// The one owner of "is a meeting running". Held in `AppState`.
@@ -772,6 +788,35 @@ impl MeetingController {
             if let Err(e) = self.stop(reason) {
                 log::warn!("stopping the live meeting on shutdown failed: {e}");
             }
+        }
+    }
+
+    /// Y1-B — the meeting consumer of the sleep/wake observer, as ONE method
+    /// the row 16 test drives against a real controller.
+    ///
+    /// `lib.rs` subscribes a closure that calls this and does nothing else to
+    /// the meeting, so the finalize half of matrix row 16 is test-driven here
+    /// rather than living in a Tauri closure only a source grep could reach.
+    /// The policy syncs to this controller's truth first
+    /// ([`SleepPolicy::drive`]); a finalize action then stops the meeting with
+    /// the [`PAUSED_BY_SLEEP`] reason, which lands in the diagnostics blob.
+    ///
+    /// The resume OFFER half of the row is not here: it has no UI, so a wake
+    /// after a sleep-paused meeting only reports [`SleepStep::ResumeOffered`]
+    /// for the caller to log (matrix row `16b`, `PolicyOnly`).
+    pub fn on_sleep_wake(&self, policy: &mut SleepPolicy, event: SleepEvent) -> SleepStep {
+        match policy.drive(self.is_recording(), event) {
+            SleepAction::FinalizeAndPause | SleepAction::FinalizeMissedSleepAndOfferResume => {
+                if !self.is_recording() {
+                    return SleepStep::Nothing;
+                }
+                match self.stop(PAUSED_BY_SLEEP) {
+                    Ok(_) => SleepStep::Finalized,
+                    Err(e) => SleepStep::StopFailed(e),
+                }
+            }
+            SleepAction::OfferResumeAsNewSegment => SleepStep::ResumeOffered,
+            SleepAction::Ignore => SleepStep::Nothing,
         }
     }
 

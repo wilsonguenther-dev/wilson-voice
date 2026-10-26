@@ -302,8 +302,10 @@ fn test_rows_drive_the_shipping_code_they_name() {
 /// The `PolicyOnly` tripwire, run in the direction the `Test` one cannot: the
 /// named call site must still be ABSENT from the shipping tree.
 ///
-/// Rows `5b` (`quality_note`), 16 (`NSWorkspaceWillSleepNotification`) and
-/// `17b` (`continuation_title`). None of those symbols is called by anything on
+/// Rows `5b` (`quality_note`), `16b` (`resume_accepted`) and `17b`
+/// (`continuation_title`) — row 16
+/// (`NSWorkspaceWillSleepNotification`) was promoted to `Test` by Y1-B when
+/// `power.rs` registered it. None of the remaining symbols is called by anything on
 /// `main`, so the only way this goes red is somebody writing the call site,
 /// which is precisely the event that must force the row to be promoted.
 ///
@@ -345,7 +347,7 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
     }
     assert_eq!(
         checked, 7,
-        "rows 5b, 16, 17b, 3, 7, 8 and 13 are the policies NOBODY owns; if that set changed, the \
+        "rows 5b, 16b, 17b, 3, 7, 8 and 13 are the policies NOBODY owns; if that set changed, the \
          change is a claim about what the app now does and belongs in the table's tests too. \
          (Row 14 is policy-only as well, but it names an open PR as the owner of its wiring and \
          asserts its own call site's absence in its own test — this tripwire is for the rows with \
@@ -356,7 +358,10 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
          surface — never to relax the assertion. Rows 7, 8 and 13 JOINED it with YV132: their \
          mechanisms merged (YV121's sidecar pool, YV123's model catalog) and nothing in the app \
          calls either, so each is a decision with no caller — the state this variant exists to \
-         publish."
+         publish. Row 16 LEFT it with Y1-B the same way rows 1 and 2 did: `power.rs` registered \
+         the sleep/wake observer, the row was promoted to `Test`, and its test now drives \
+         `SleepWakeObserver`. Its resume offer has no UI, so fix-239 split it out as 16b, \
+         which is unowned and joins the set."
     );
 }
 
@@ -417,14 +422,17 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
 /// given an exemption for them, and all three had to satisfy every one of those
 /// rules to be published at all (which is why all three are `PolicyOnly`: their
 /// mechanisms merged with YV121/YV123, and nothing in the app calls either).
+///
+/// fix-239 split row 16 the same way: `16` (finalize on sleep) is wired by
+/// Y1-B, `16b` (the resume offer) has no UI and is `PolicyOnly`.
 #[test]
 fn the_matrix_still_covers_every_failure_22a_22b_and_yap23_own() {
     let ids: Vec<&str> = ROWS.iter().map(|r| r.id).collect();
     assert_eq!(
         ids,
         vec![
-            "4", "5", "5b", "6", "15", "16", "17", "17b", "3a", "3b", "1", "2", "3", "12", "12b",
-            "14", "7", "8", "13"
+            "4", "5", "5b", "6", "15", "16", "16b", "17", "17b", "3a", "3b", "1", "2", "3", "12",
+            "12b", "14", "7", "8", "13"
         ]
     );
 }
