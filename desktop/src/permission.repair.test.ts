@@ -47,7 +47,10 @@ const OK: RepairOutcome = {
   ok: true,
   stderr: "",
   manualSteps: "",
-  paneUrl: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  // The real value is a Rust compile-time constant (permissions.rs
+  // open_privacy_pane_urls) carried over the wire; the frontend never holds
+  // the deep-link URL, not even in a fixture (PERM-B acceptance).
+  paneUrl: "<rust-owned pane url>",
   needsRelaunch: false,
 };
 
