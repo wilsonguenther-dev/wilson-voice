@@ -141,13 +141,36 @@ signs anything they are expected to accept.
 
 4. `.github/workflows/release.yml` builds the sidecar, compiles release, bundles
    `dmg` + `updater`, signs + notarizes when the Apple secrets are present, and
-   creates a **draft** GitHub Release with every asset plus `latest.json`.
-5. Verify the draft before publishing (see *Verify* below), then publish it.
+   creates a **draft** GitHub Release with every asset plus `latest.json`. Its
+   last step is the CI share of the release smoke,
+   `scripts/qa/release-smoke.sh --signature-only --app <built Yap.app> --dmg <built .dmg>`:
+   a red run means the draft is NOT publishable. A CI runner holds no TCC grants
+   and no installed Yap, so the `dr_change` and launch steps cannot run there —
+   **the tag path is unsmoked until step 5 has run.**
+5. **Release smoke on the draft's own DMG (mandatory — a draft that has not
+   passed it is not publishable).** On the release host (every grant held for
+   the release identity, any running Yap quit), download the DMG asset from the
+   draft and run the full smoke against exactly that file:
+
+   ```bash
+   gh release download v0.7.1 --repo wilsonguenther-dev/wilson-voice \
+     --pattern '*.dmg' --dir "$SMOKE_DIR"
+   DMG="$(ls "$SMOKE_DIR"/*.dmg)"
+   MNT="$(mktemp -d)" && hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
+   ditto "$MNT/Yap.app" "$SMOKE_DIR/Yap.app" && hdiutil detach "$MNT"
+   bash scripts/qa/release-smoke.sh --app "$SMOKE_DIR/Yap.app" --dmg "$DMG" \
+     --compare /Applications/Yap.app
+   ```
+
+   Exit 0 (`release-smoke: OK`) or the draft stays a draft. A deliberate
+   requirement change follows [RELEASING.md](RELEASING.md) (both overrides, the
+   `release_note=` line in the notes).
+6. Verify the draft before publishing (see *Verify* below), then publish it.
    Publishing is what makes
    `https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json`
    resolve — the `latest` alias only ever points at a *published, non-prerelease*
    release, so a release left as a draft leaves every client on 404.
-6. Stage the same release on the site host, the **primary** updater endpoint
+7. Stage the same release on the site host, the **primary** updater endpoint
    (UPD-A), in the same sitting as publishing it:
 
    ```bash
@@ -163,15 +186,18 @@ signs anything they are expected to accept.
 
 ## Manual release (local, when CI can't sign)
 
-Used when notarizing from the Mac that holds the Developer ID cert.
+Used when notarizing from the Mac that holds the Developer ID cert. Build
+through `npm run desktop:build` — never a bare `npx tauri build` — because that
+entry point (`scripts/sign-local.sh --tauri-build`) ends in the mandatory
+release smoke and exits with its status ([RELEASING.md](RELEASING.md)).
+`desktop:build` builds the sidecars itself, and `sign-local.sh` resolves the
+Developer ID identity from the keychain.
 
 ```bash
 cd desktop
 export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/wilson-voice-v2.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.tauri/wilson-voice-v2.key.password)"
-export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
-npm run sidecar
-npx tauri build --bundles dmg updater
+npm run desktop:build -- --bundles dmg updater   # exit != 0 = not a release; stop here
 ```
 
 Artifacts land in `src-tauri/target/release/bundle/` (`macos/Yap.app`,
@@ -191,6 +217,22 @@ spctl -a -vvv -t install "src-tauri/target/release/bundle/dmg/Yap_0.7.1_aarch64.
 `APPLE_PASSWORD` is an **app-specific password**, not the Apple ID password, and
 `notarytool` will not read one out of iCloud Keychain in a non-interactive shell —
 pass it explicitly or store it with `xcrun notarytool store-credentials`.
+
+Stapling rewrites the DMG, so run the full release smoke again on the exact
+file you are about to upload (mandatory — `gh release create` below never runs
+on a DMG that has not passed it):
+
+```bash
+bash ../scripts/qa/release-smoke.sh --app "src-tauri/target/release/bundle/macos/Yap.app" \
+  --dmg "src-tauri/target/release/bundle/dmg/Yap_0.7.1_aarch64.dmg" \
+  --compare /Applications/Yap.app
+```
+
+**No other DMG path is a release path.** A DMG made any other way — e.g.
+`npx tauri build --bundles app` + `hdiutil create` + `codesign` + `notarytool`,
+which is how 0.9.0 and 0.9.2 were built — MUST pass
+`release-smoke.sh --app <that .app> --dmg <that DMG> --compare /Applications/Yap.app`
+before it is uploaded; a DMG that has not passed it is not a release.
 
 Then upload and write the manifest by hand:
 

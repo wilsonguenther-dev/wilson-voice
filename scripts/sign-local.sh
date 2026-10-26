@@ -174,6 +174,26 @@ if [[ "$MODE" == "identity" ]]; then
   exit 0
 fi
 
+# Default mode: sign (or re-sign) an existing bundle, verify it, stop. It is
+# handled BEFORE the build mode so the release smoke below is the last thing
+# this script runs — nothing in this file signs anything after it.
+if [[ "$MODE" == "sign" ]]; then
+  APP="${1:-}"
+  if [[ -z "$APP" ]]; then
+    APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
+  fi
+  [[ -n "$APP" && -d "$APP" ]] || die "no .app bundle to sign (pass one explicitly: scripts/sign-local.sh '/path/to/Yap.app')"
+  [[ -f "$ENT" ]] || die "entitlements not found at $ENT"
+
+  echo "${PROFILE} profile — signing $(basename "$APP") with: ${IDENTITY_CLASS}"
+  # Resource-fork / quarantine detritus makes `codesign --deep` flake with
+  # "resource fork, Finder information, or similar detritus not allowed".
+  xattr -cr "$APP"
+  codesign --force --deep --entitlements "$ENT" --sign "$IDENTITY" "$APP"
+  verify_bundle "$APP"
+  exit 0
+fi
+
 if [[ "$MODE" == "build" ]]; then
   # The release smoke is the LAST step: after tauri build has signed (and, with
   # the Apple secrets present, notarized + stapled) the bundle, and after
@@ -202,17 +222,3 @@ if [[ "$MODE" == "build" ]]; then
   # Bare exit propagation: exec hands release-smoke.sh's status straight back.
   exec bash "$ROOT/scripts/qa/release-smoke.sh" "${SMOKE_ARGS[@]}"
 fi
-
-APP="${1:-}"
-if [[ -z "$APP" ]]; then
-  APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
-fi
-[[ -n "$APP" && -d "$APP" ]] || die "no .app bundle to sign (pass one explicitly: scripts/sign-local.sh '/path/to/Yap.app')"
-[[ -f "$ENT" ]] || die "entitlements not found at $ENT"
-
-echo "${PROFILE} profile — signing $(basename "$APP") with: ${IDENTITY_CLASS}"
-# Resource-fork / quarantine detritus makes `codesign --deep` flake with
-# "resource fork, Finder information, or similar detritus not allowed".
-xattr -cr "$APP"
-codesign --force --deep --entitlements "$ENT" --sign "$IDENTITY" "$APP"
-verify_bundle "$APP"

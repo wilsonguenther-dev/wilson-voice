@@ -119,3 +119,20 @@ jobs:
           releaseDraft: true
           args: --bundles dmg updater
           includeUpdaterJson: true
+
+      # yap-p0-release-smoke — the tag path's share of the mandatory release smoke.
+      # A runner holds no TCC grants and no installed Yap, so step=dr_change and the
+      # launch cannot run here; step=signature can (codesign --verify --deep --strict
+      # on the .app and on the .app inside the DMG, Developer ID + pinned team). A red
+      # run means the draft is NOT publishable, and a green one still leaves the draft
+      # UNSMOKED until the full smoke has run on its downloaded DMG on the release host
+      # (docs/RELEASE.md, Tagged release step 5).
+      - name: "Release smoke: signature only (tag path is unsmoked until RELEASE.md step 5)"
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/desktop/target
+        run: |
+          set -euo pipefail
+          APP="$(bash ../scripts/sign-local.sh --which-app)"
+          DMGS=("$(dirname "$(dirname "$APP")")"/dmg/*.dmg)
+          [ -f "${DMGS[0]}" ] || { echo "no .dmg next to $APP" >&2; exit 1; }
+          bash ../scripts/qa/release-smoke.sh --signature-only --app "$APP" --dmg "${DMGS[0]}"

@@ -1,6 +1,12 @@
 # Releasing Yap — the mandatory release smoke
 
-Every DMG build runs the release smoke, and a build that fails it is not a release. `npm run desktop:build` is `scripts/sign-local.sh --tauri-build`, and its LAST step — after `tauri build` has signed (and, with the Apple secrets present, notarized and stapled) and after `verify_bundle` has read the signature back — is:
+No DMG is published until it has passed the release smoke, and a DMG that fails it is not a release. Where the smoke runs, per release path in [RELEASE.md](RELEASE.md):
+
+- `npm run desktop:build` (and the **Manual release**, which builds through it with `-- --bundles dmg updater`): automatically, as the last step of the build — below. The Manual release runs it again on the stapled DMG before `gh release create`.
+- **Tagged release** (`.github/workflows/release.yml`): CI runs only `--signature-only` after `tauri-action` (a runner has no TCC grants and no installed Yap), so a tag build is **unsmoked** until the full smoke has run on the draft's own downloaded DMG on the release host (RELEASE.md, Tagged release step 5). The draft is not publishable before that.
+- Any other way of making a DMG (e.g. `--bundles app` + `hdiutil create`, as 0.9.0 and 0.9.2 were): the full smoke by hand on that exact DMG before upload.
+
+`npm run desktop:build` is `scripts/sign-local.sh --tauri-build`, and its LAST step — after `tauri build` has signed (and, with the Apple secrets present, notarized and stapled) and after `verify_bundle` has read the signature back — is:
 
 ```
 bash scripts/qa/release-smoke.sh --app <built Yap.app> --dmg <built .dmg> [--compare <installed or last-release Yap.app>]

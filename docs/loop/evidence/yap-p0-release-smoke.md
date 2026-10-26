@@ -81,3 +81,12 @@ step=quit ok
 release-smoke: FAIL step=probe
 exit=1
 ```
+
+## 5. Fix round 2 — acceptance deviations (for the harness owner)
+
+The item acceptance block was re-run line by line on the fix-round-2 tree (raw rc lines are in the PR body). One line fails, on purpose:
+
+- `bash scripts/qa/release-smoke.sh --parse scripts/qa/fixtures/release-smoke-matrix/absent-grants-copy-card.log` exits **1**, and the spec expects 0. This comes from the round-0 Independent B2 fail-closed fix. A host with no grants plus a Copy card cannot be told apart from the 0.9.0 class, so the parser refuses it. The spec rows "Denied/NotDetermined AND ledger=none -> ok" and "absent-grants-copy-card.log (exit 0)" are fail-open. The proposed amendment is `! bash scripts/qa/release-smoke.sh --parse scripts/qa/fixtures/release-smoke-matrix/absent-grants-copy-card.log`.
+- `awk '/codesign/ {c=NR} /release-smoke.sh/ {r=NR} ...' scripts/sign-local.sh` used to exit 1, because the rebase onto main put the default sign mode's `codesign --force` after the build mode's `exec release-smoke.sh`. The fix was not a comment line. The default sign mode now runs, and exits, before the build mode, so the `exec` of the smoke is the last statement in the file. It exits 0 now.
+
+The release paths in docs/RELEASE.md (Tagged, Manual, and "any other DMG") now go through the smoke as well. CI runs `--signature-only` after tauri-action, and a tag draft is unsmoked and unpublishable until the full smoke has run on its downloaded DMG.
