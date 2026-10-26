@@ -20,6 +20,10 @@
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+// yap24-UI1 — the integer pixel grid (shared with the pill): the room is drawn at
+// the largest WHOLE number of device px per art px that fits the stage, centred
+// on a whole device px, with the leftover margin painted in the scene colour.
+import { backingScale, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
 
 interface AppStatus {
   recording: boolean;
@@ -80,10 +84,10 @@ export default function YappyHouse({
     if (!dctx) return;
     dctx.imageSmoothingEnabled = false;
 
-    // Low-res world; upscaled with nearest-neighbour for crisp pixels.
+    // Low-res world; upscaled with nearest-neighbour by an INTEGER cell (see
+    // `regrid` below) so every art pixel is a whole block of device pixels.
     const W = 192,
-      H = 128,
-      S = 5;
+      H = 128;
     const os = document.createElement("canvas");
     os.width = W;
     os.height = H;
@@ -155,6 +159,11 @@ export default function YappyHouse({
       floorGrain: "#96592f",
       floorGrainDk: "#7c4a28",
     };
+
+    // The leftover margin around the integer-scaled room is the room's own
+    // shadowed wall, never a stretch of the art.
+    const SCENE_MARGIN = C.wallDk;
+    let grid: PixelGrid = pixelGrid({ w: W, h: H }, { w: W, h: H }, 1);
 
     // ---- helpers -----------------------------------------------------------
     const px = (x: number, y: number, w: number, h: number, col: string) => {
@@ -830,8 +839,12 @@ export default function YappyHouse({
       );
       drawLampShade(sky);
       lighting(sky, lamp, tGlobal, state.activity === "work" ? energy : 0);
-      // blit upscaled (nearest-neighbour)
-      dctx!.drawImage(os, 0, 0, W * S, H * S);
+      // blit upscaled (nearest-neighbour) on the integer grid. A display with a
+      // different backing scale re-grids here: no resize event fires for that.
+      if (backingScale(devicePixelRatio) !== grid.dpr) regrid();
+      dctx!.fillStyle = SCENE_MARGIN;
+      dctx!.fillRect(0, 0, grid.backingW, grid.backingH);
+      dctx!.drawImage(os, 0, 0, W, H, grid.offsetX, grid.offsetY, grid.drawW, grid.drawH);
     }
 
     function frame(ms: number) {
@@ -858,6 +871,23 @@ export default function YappyHouse({
       raf = requestAnimationFrame(frame);
     }
 
+    // yap24-UI1 — size the backing store to the stage's device box and pick the
+    // cell. Resizing a canvas resets its context state, so smoothing is turned
+    // back off every time. Reduced motion has no loop, so it repaints here.
+    function regrid() {
+      const r = stage!.getBoundingClientRect();
+      grid = pixelGrid({ w: r.width, h: r.height }, { w: W, h: H }, devicePixelRatio);
+      if (stage!.width !== grid.backingW) stage!.width = grid.backingW;
+      if (stage!.height !== grid.backingH) stage!.height = grid.backingH;
+      dctx!.imageSmoothingEnabled = false;
+    }
+    regrid();
+    const ro = new ResizeObserver(() => {
+      regrid();
+      if (reduce) render(phaseFromClock());
+    });
+    ro.observe(stage);
+
     if (reduce) {
       // one calm frame: Yappy asleep in the nest, sky from the real clock
       state.x = 26;
@@ -869,6 +899,7 @@ export default function YappyHouse({
 
     return () => {
       dead = true;
+      ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       unsubs.forEach((u) => u());
     };
@@ -884,8 +915,8 @@ export default function YappyHouse({
         <canvas
           ref={canvasRef}
           className="yh-stage"
-          width={960}
-          height={640}
+          width={192}
+          height={128}
           role="img"
           aria-label="A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
         />
