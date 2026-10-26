@@ -49,7 +49,7 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16 | Sleep or lid close mid-meeting | IOKit holds the sleep (IORegisterForSystemPower) while the journal finalizes; the row ends `partial` with "Stopped when the Mac went to sleep." and only then is the sleep acknowledged (IOAllowPowerChange) | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
 | 16b | …and on wake nothing offers to resume | On wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `resume_accepted`**, so the app does not do this yet |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
@@ -70,7 +70,7 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16 | Sleep or lid close mid-meeting | IOKit holds the sleep (IORegisterForSystemPower) while the journal finalizes; the row ends `partial` with "Stopped when the Mac went to sleep." and only then is the sleep acknowledged (IOAllowPowerChange) | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
 | 16b | …and on wake nothing offers to resume | On wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `resume_accepted`**, so the app does not do this yet |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
@@ -200,11 +200,18 @@ nothing. Y1-B registered the one observer in `power.rs` (`SleepWakeObserver`, a
 block observer for will-sleep and did-wake on the NSWorkspace notification
 centre) and fans each event out through `SleepWakeHub` to three consumers:
 dictation (a take in flight is parked), meetings (`SleepPolicy::drive`, which
-stops the meeting with the `paused_by_sleep` reason on will-sleep) and PERM-E's
+files the meeting `partial` — "Stopped when the Mac went to sleep." — on
+will-sleep) and PERM-E's
 permission re-read on wake. The observer is removed in `RunEvent::Exit`. The
 finalize half is now a `Test` row: `MeetingController::on_sleep_wake` is the whole
 meeting-side action, and the row's test drives it against a real controller and
-reads `paused_by_sleep` back from the meeting's diagnostics. The resume prompt has
+reads the sleep stop reason back from the meeting's diagnostics. yap24-NT10 added
+the IOKit half: `IORegisterForSystemPower` in `power.rs` publishes the same
+will-sleep to the same hub on `kIOMessageSystemWillSleep` and acknowledges with
+`IOAllowPowerChange` only after every consumer returned, so the sleep is HELD
+until the journal is finalized (`tests/meeting_survives_sleep.rs`). There is no
+sleep-specific meeting state: the row is `partial`, and the pipeline transcribes
+it on like any other `partial` row. The resume prompt has
 no UI, so the offer is row `16b`, **Policy only, NOT WIRED**: on wake it is only
 logged, `resume_accepted` has no caller, and the next meeting the user starts
 supersedes it.

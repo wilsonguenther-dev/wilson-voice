@@ -50,7 +50,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::meeting_energy::{self, BatteryReading, MeetingDiagnostics, ThermalState};
-use crate::meeting_matrix::{SleepAction, SleepEvent, SleepPolicy, PAUSED_BY_SLEEP};
+use crate::meeting_matrix::{
+    SleepAction, SleepEvent, SleepPolicy, SLEEP_STOP_NOTE, SLEEP_STOP_REASON,
+};
 use crate::meetings::{self, MeetingKind, MeetingState};
 use crate::syscapture;
 
@@ -404,7 +406,8 @@ impl TickerStop {
 pub enum SleepStep {
     /// No meeting to act on, or a duplicate / irrelevant event.
     Nothing,
-    /// The running meeting was stopped with the `paused_by_sleep` reason.
+    /// The running meeting was finalized because the Mac is going to sleep:
+    /// the row ends `partial` with [`SLEEP_STOP_NOTE`] (yap24-NT10).
     Finalized,
     /// A finalize was due and `stop` refused; the error is passed up, never
     /// swallowed into a fabricated success.
@@ -643,6 +646,15 @@ impl MeetingController {
     /// "the user pressed stop" and "the watchdog stopped it" are distinguishable
     /// a week later.
     pub fn stop(&self, reason: &str) -> Result<StoppedMeeting, String> {
+        self.stop_inner(reason, None)
+    }
+
+    /// The one stop path. `cut_short` is the sentence for a meeting something
+    /// OTHER than the user ended (yap24-NT10: the Mac went to sleep): the row
+    /// is filed `partial` whatever the engine says about the audio, because the
+    /// recording did not run to the user's stop, and the sentence leads the
+    /// row's note. `None` is the ordinary stop.
+    fn stop_inner(&self, reason: &str, cut_short: Option<&str>) -> Result<StoppedMeeting, String> {
         let mut guard = self
             .active
             .lock()
@@ -705,6 +717,21 @@ impl MeetingController {
                     MeetingState::Partial,
                 )
             }
+        };
+
+        // yap24-NT10 — a meeting the OS stopped is `partial`, never
+        // `transcribing → complete`: a whole-looking WAV of half a meeting is the
+        // exact case `CaptureOutcome::partial` exists for. The engine's own note
+        // (if any) is kept after the sentence, never dropped.
+        let (state, note) = match cut_short {
+            Some(why) => (
+                MeetingState::Partial,
+                Some(match note {
+                    Some(n) => format!("{why} {n}"),
+                    None => why.to_string(),
+                }),
+            ),
+            None => (state, note),
         };
 
         if let Ok(mut d) = active.diagnostics.lock() {
@@ -798,8 +825,12 @@ impl MeetingController {
     /// the meeting, so the finalize half of matrix row 16 is test-driven here
     /// rather than living in a Tauri closure only a source grep could reach.
     /// The policy syncs to this controller's truth first
-    /// ([`SleepPolicy::drive`]); a finalize action then stops the meeting with
-    /// the [`PAUSED_BY_SLEEP`] reason, which lands in the diagnostics blob.
+    /// ([`SleepPolicy::drive`]); a finalize action then stops the meeting
+    /// through the ordinary stop path — capture finalized, journal closed, row
+    /// written, pipeline enqueued — with the [`SLEEP_STOP_REASON`] reason in the
+    /// diagnostics blob and the row filed `partial` with [`SLEEP_STOP_NOTE`]
+    /// (yap24-NT10). A wake never resumes the old row: starting again is a new
+    /// meeting.
     ///
     /// The resume OFFER half of the row is not here: it has no UI, so a wake
     /// after a sleep-paused meeting only reports [`SleepStep::ResumeOffered`]
@@ -810,7 +841,7 @@ impl MeetingController {
                 if !self.is_recording() {
                     return SleepStep::Nothing;
                 }
-                match self.stop(PAUSED_BY_SLEEP) {
+                match self.stop_inner(SLEEP_STOP_REASON, Some(SLEEP_STOP_NOTE)) {
                     Ok(_) => SleepStep::Finalized,
                     Err(e) => SleepStep::StopFailed(e),
                 }

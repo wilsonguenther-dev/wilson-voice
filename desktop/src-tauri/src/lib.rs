@@ -7276,9 +7276,10 @@ pub fn run() {
                 });
 
                 // Meetings (matrix row 16): the controller's truth drives
-                // `SleepPolicy`; will-sleep finalizes the journal and stops the
-                // meeting with the `paused_by_sleep` reason before the machine
-                // goes down.
+                // `SleepPolicy`; will-sleep finalizes the journal and files the
+                // meeting `partial` ("Stopped when the Mac went to sleep.")
+                // before the machine goes down — `power.rs` holds the sleep
+                // through IOKit until this consumer has returned (yap24-NT10).
                 let meet_app = app.handle().clone();
                 let meet_state = state.clone();
                 let policy = std::sync::Mutex::new(meeting_matrix::SleepPolicy::new());
@@ -7301,7 +7302,7 @@ pub fn run() {
                     let mut policy = policy.lock().unwrap_or_else(|p| p.into_inner());
                     match controller.on_sleep_wake(&mut policy, event) {
                         meeting_control::SleepStep::Finalized => {
-                            log::info!("meeting finalized on {event:?} (paused_by_sleep)");
+                            log::info!("meeting finalized on {event:?} (partial: stopped by sleep)");
                             settle_pill();
                         }
                         meeting_control::SleepStep::StopFailed(e) => {

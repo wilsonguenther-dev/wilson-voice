@@ -395,7 +395,7 @@ pub const ROWS: &[MatrixRow] = &[
     MatrixRow {
         id: "16",
         failure: "Sleep or lid close mid-meeting",
-        behavior: "Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down",
+        behavior: "IOKit holds the sleep (IORegisterForSystemPower) while the journal finalizes; the row ends `partial` with \"Stopped when the Mac went to sleep.\" and only then is the sleep acknowledged (IOAllowPowerChange)",
         // `Test` since Y1-B, for the FINALIZE half only — the resume offer is
         // row `16b` (fix-239 split them, the way 5b and 17b are split). Until then this row was `PolicyOnly`: the state
         // machine below was complete and tested and nothing fed it, because
@@ -834,16 +834,29 @@ pub fn quality_note(dropped_samples: u64, sample_rate: u32) -> Option<String> {
 
 // ── Row 16 · sleep and wake ─────────────────────────────────────────────────
 
-/// The value written to the meeting row when sleep interrupted it. A marker,
-/// not a state: the meeting is still `partial`/`complete` by its own lifecycle,
-/// and this says *why* there is a seam in it.
-pub const PAUSED_BY_SLEEP: &str = "paused_by_sleep";
+/// The stop reason a sleep writes to the meeting's diagnostics blob, so "the
+/// user pressed stop" and "the Mac went to sleep" stay distinguishable a week
+/// later.
+///
+/// yap24-NT10 (panel 2026-10-26): this is a REASON, never a state. There is no
+/// sleep-specific meeting state — a meeting the Mac stopped ends `partial`, like
+/// every other capture that did not run to the user's own stop, and the
+/// existing pipeline transcribes it on like any other `partial` row.
+pub const SLEEP_STOP_REASON: &str = "system sleep";
+
+/// The one plain sentence a sleep-stopped meeting row carries in its note
+/// column — the same column the meeting list already renders for a `partial`
+/// row, and the one the transcription pipeline preserves through to the end.
+pub const SLEEP_STOP_NOTE: &str = "Stopped when the Mac went to sleep.";
 
 /// The two notifications that matter, in the order macOS delivers them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepEvent {
-    /// `NSWorkspaceWillSleepNotification`. Delivered *before* the machine goes
-    /// down, with a short and unspecified budget to act in.
+    /// `NSWorkspaceWillSleepNotification`, or IOKit's
+    /// `kIOMessageSystemWillSleep` (yap24-NT10). The IOKit one is the one that
+    /// HOLDS the sleep: the system waits (up to 30 s) for `IOAllowPowerChange`,
+    /// which `power.rs` sends only after every consumer has run. Both may arrive
+    /// for one sleep; every consumer is idempotent on a second `WillSleep`.
     WillSleep,
     /// `NSWorkspaceDidWakeNotification`.
     DidWake,
@@ -856,7 +869,8 @@ pub enum SleepAction {
     /// Duplicates are not hypothetical: dark wakes and repeated notifications
     /// are normal, and a second prompt stacked on the first is a bug.
     Ignore,
-    /// Finalize the journal now and mark the meeting [`PAUSED_BY_SLEEP`].
+    /// Finalize the journal now; the row ends `partial` with
+    /// [`SLEEP_STOP_NOTE`] and the [`SLEEP_STOP_REASON`] stop reason.
     FinalizeAndPause,
     /// We woke while still believing we were recording — the will-sleep
     /// notification never arrived (or arrived too late to act on). Finalize what
@@ -873,7 +887,7 @@ pub enum SleepAction {
 enum SleepState {
     Idle,
     Recording,
-    PausedBySleep,
+    StoppedBySleep,
     AwaitingResume,
 }
 
@@ -913,18 +927,18 @@ impl SleepPolicy {
     pub fn observe(&mut self, event: SleepEvent) -> SleepAction {
         match (self.state, event) {
             (SleepState::Recording, SleepEvent::WillSleep) => {
-                self.state = SleepState::PausedBySleep;
+                self.state = SleepState::StoppedBySleep;
                 SleepAction::FinalizeAndPause
             }
             (SleepState::Recording, SleepEvent::DidWake) => {
                 self.state = SleepState::AwaitingResume;
                 SleepAction::FinalizeMissedSleepAndOfferResume
             }
-            (SleepState::PausedBySleep, SleepEvent::DidWake) => {
+            (SleepState::StoppedBySleep, SleepEvent::DidWake) => {
                 self.state = SleepState::AwaitingResume;
                 SleepAction::OfferResumeAsNewSegment
             }
-            // Idle: nothing recording. PausedBySleep + WillSleep: already
+            // Idle: nothing recording. StoppedBySleep + WillSleep: already
             // finalized, a second notification changes nothing. AwaitingResume:
             // the prompt is already up; sleeping and waking again must not stack
             // a second one.
@@ -954,11 +968,11 @@ impl SleepPolicy {
     }
 
     /// True while the meeting is stopped *because* of sleep — the condition the
-    /// [`PAUSED_BY_SLEEP`] marker records.
-    pub fn paused_by_sleep(&self) -> bool {
+    /// [`SLEEP_STOP_REASON`] stop reason records.
+    pub fn stopped_by_sleep(&self) -> bool {
         matches!(
             self.state,
-            SleepState::PausedBySleep | SleepState::AwaitingResume
+            SleepState::StoppedBySleep | SleepState::AwaitingResume
         )
     }
 
