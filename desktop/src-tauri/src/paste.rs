@@ -322,13 +322,24 @@ impl AxCaretSnapshot {
         let range = matches!((before.range, self.range), (Some(a), Some(b)) if a != b);
         chars || range
     }
+
+    /// At least one caret attribute is readable both here and in `before`, so
+    /// "did not move" is an actual reading rather than a missing one.
+    pub fn comparable_with(&self, before: &AxCaretSnapshot) -> bool {
+        (before.chars.is_some() && self.chars.is_some())
+            || (before.range.is_some() && self.range.is_some())
+    }
 }
 
 /// An AX set macOS accepted whose `AXValue` never read back changed: the
 /// `~400 ms` re-read decides. Either caret attribute moved → the text landed
-/// ([`AxInsert::Inserted`], zero ⌘V). Neither moved → nothing landed, so it is
-/// a refusal ([`AxInsert::Refused`], reason prefixed [`AX_UNVERIFIED_UNCHANGED`])
-/// and the paste bridge runs exactly once — never a Copy card.
+/// ([`AxInsert::Inserted`], zero ⌘V). Neither moved AND the last re-read had a
+/// caret attribute readable on both sides → proven unchanged, so it is a
+/// refusal ([`AxInsert::Refused`], reason prefixed [`AX_UNVERIFIED_UNCHANGED`])
+/// and the paste bridge runs exactly once. Anything else — no re-read, or a
+/// caret unreadable before or at the end — proves nothing about a set macOS
+/// accepted, so it stays [`AxInsert::Unverified`]: the Copy card, zero ⌘V
+/// (a ⌘V on top of a set that may have landed inserts the take twice).
 pub fn settle_unverified(
     why: &str,
     before: &AxCaretSnapshot,
@@ -336,10 +347,15 @@ pub fn settle_unverified(
 ) -> AxInsert {
     if rereads.iter().any(|s| s.moved_from(before)) {
         AxInsert::Inserted
-    } else {
+    } else if rereads.last().is_some_and(|s| s.comparable_with(before)) {
         AxInsert::Refused(format!(
             "{AX_UNVERIFIED_UNCHANGED}: {why}; neither AXNumberOfCharacters nor \
              AXSelectedTextRange moved within {AX_REREAD_WINDOW_MS}ms"
+        ))
+    } else {
+        AxInsert::Unverified(format!(
+            "{why}; AXNumberOfCharacters/AXSelectedTextRange unreadable, so the \
+             re-read cannot prove nothing landed"
         ))
     }
 }

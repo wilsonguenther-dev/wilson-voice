@@ -585,15 +585,6 @@ fn ax_unverified_unchanged_becomes_refused_bridge_once() {
         matches!(&settled, AxInsert::Refused(why) if why.starts_with(paste::AX_UNVERIFIED_UNCHANGED)),
         "{settled:?}"
     );
-    // Unreadable caret attributes prove no movement either.
-    assert!(matches!(
-        paste::settle_unverified(
-            "x",
-            &AxCaretSnapshot::default(),
-            &[AxCaretSnapshot::default()]
-        ),
-        AxInsert::Refused(_)
-    ));
     let mut f = Fake::new();
     f.ax_result = settled;
     let (out, trace) = paste::insert_traced(
@@ -616,6 +607,93 @@ fn ax_unverified_unchanged_becomes_refused_bridge_once() {
     assert!(out.pasted);
     assert_eq!(trace.path, InsertPath::PasteBridge);
     assert_eq!(trace.fallback, InsertFallback::AxUnverifiedUnchanged);
+}
+
+/// PR #251 fix round 1 (independent BLOCKING 1): an unverified AX set whose
+/// caret attributes are UNREADABLE cannot be called "unchanged" — an
+/// unreadable attribute proves nothing, and macOS accepted the set, so the
+/// text may already be there. It must stay Unverified: the Copy card, ZERO ⌘V
+/// (a ⌘V on top of a set that may have landed inserts the take twice). Covers
+/// chars=None/range=None on both sides, a caret readable before but unreadable
+/// in every re-read, unreadable before but readable after, no re-read at all,
+/// and attributes readable on only one side each.
+#[test]
+fn ax_unverified_unreadable_caret_is_card_zero_cmd_v() {
+    let none = AxCaretSnapshot::default();
+    let readable = AxCaretSnapshot {
+        chars: Some(12),
+        range: Some((12, 0)),
+    };
+    let chars_only = AxCaretSnapshot {
+        chars: Some(12),
+        range: None,
+    };
+    let range_only = AxCaretSnapshot {
+        chars: None,
+        range: Some((12, 0)),
+    };
+    let cases: [(&str, AxCaretSnapshot, Vec<AxCaretSnapshot>); 5] = [
+        ("chars=None range=None both sides", none, vec![none; 8]),
+        (
+            "readable before, unreadable re-reads",
+            readable,
+            vec![none; 8],
+        ),
+        (
+            "unreadable before, readable re-reads",
+            none,
+            vec![readable; 8],
+        ),
+        ("no re-read at all", readable, vec![]),
+        (
+            "chars only before, range only after",
+            chars_only,
+            vec![range_only; 8],
+        ),
+    ];
+    for (label, before, rereads) in cases {
+        let settled = paste::settle_unverified("value never read back changed", &before, &rereads);
+        assert!(
+            matches!(&settled, AxInsert::Unverified(_)),
+            "{label}: unreadable caret must stay Unverified, got {settled:?}"
+        );
+        let mut f = Fake::new();
+        f.ax_result = settled;
+        let (out, trace) = paste::insert_traced(
+            &mut f,
+            InsertPath::Ax,
+            TAKE,
+            true,
+            PasteTarget::Dictated(Some("TextEdit")),
+        );
+        println!(
+            "{label}: {} ax_calls={} posts={} cards={} pasted={}",
+            paste::insert_log_line(&trace),
+            f.ax_calls,
+            f.posts,
+            f.cards.len(),
+            out.pasted
+        );
+        assert_eq!(f.ax_calls, 1, "{label}");
+        assert_eq!(
+            f.posts, 0,
+            "{label}: no ⌘V on top of a set that may have landed"
+        );
+        assert_eq!(
+            f.cards.len(),
+            1,
+            "{label}: the Copy card, not a silent drop"
+        );
+        assert_eq!(f.cards[0].reason, CopyCardReason::AxUnverified, "{label}");
+        assert!(!out.pasted, "{label}");
+        assert_eq!(trace.fallback, InsertFallback::AxUnverified, "{label}");
+    }
+    // A caret readable on BOTH sides that did not move is still the proven
+    // "unchanged" refusal (bridge once) — the fix narrows, it does not remove.
+    assert!(matches!(
+        paste::settle_unverified("x", &chars_only, &[none, chars_only]),
+        AxInsert::Refused(_)
+    ));
 }
 
 /// The same unverified set, but the caret DID move in the re-read: the text
