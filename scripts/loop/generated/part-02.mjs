@@ -88,13 +88,20 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 50 items (yap-lic-01-jws-verifier..SEC-B), 2 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 48 items (yap-lic-01-jws-verifier..Y3-G). The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "yap-lic-01-jws-verifier", detail: "Offline verifier for drivia[.]consulting license tokens: compact JWS, alg EdDSA + typ JWT pinned, kid looked up in EMBEDDED keys only (never a fetched key set), prd yap, ent.dictation, plan lifetime, exp + 30-day grace, rollback ratchet reused" },
     { title: "yap-lic-02-activation-client", detail: "Activate / refresh / deactivate against https://drivia[.]consulting/api/v1/licensing with X-Drivia-App; token + device_id in the Keychain (security-framework) with device_id mirrored in license.json; refresh at most every 24 h; 403 revoked/expired/deactivated + 401 reactivate_required/device_mismatch delete the token; never downgrade on network/5xx/429/400/413; NO key-list fetch; the Forge format deleted" },
     { title: "yap-lic-04-ui-states-and-buy", detail: "One license panel plus the existing tray state: key prefix, \"Manage Macs\" link to the portal, grace copy with the 60-day date, seat-limit lists devices; Buy opens https://drivia[.]consulting/yap (PAYMENT_LINK_URL -> PURCHASE_URL); no legacy state" },
     { title: "yap-lic-05-site-privacy-copy", detail: "Site, privacy and terms tell the truth for the launch: buying takes one email-code sign-in, activation needs the network once and re-checks, 60 days offline, Buy -> drivia[.]consulting/yap, updater -> yapvoice.app first; ships WITH the yap-lic-02/04 build" },
+    { title: "yap-hx-done-check-by-main", detail: "SECURITY: an item whose work is already on main is retired from MAIN'S content or its merged PR, never by whether origin/<branch> still exists; a merged item's deleted branch is never recreated" },
+    { title: "yap-hx-lanes1-skip-laneB-warm", detail: "SECURITY: a build pass run with lanes:1 never creates, installs or warms lane B — recon sets up lane A only and leaves any existing lane B untouched" },
+    { title: "yap-hx-reviewers-reuse-target", detail: "SECURITY: reviewer and fixer seats build only into their chain's target-r1/target-r2 (never a cargo target in the scratchpad), and every warm/gate/test command runs with CARGO_INCREMENTAL=0" },
+    { title: "yap-hx-dependency-marker-scan", detail: "SECURITY: the dependency hold reads DEPENDENCY-NOT-ON-MAIN only from the LAST stdout line of an executed preflight command (a per-command field in the runner schema), never from the mixed output tail or command text" },
+    { title: "yap-hx-test-build-repo-resolve", detail: "scripts/test-build.sh works from any checkout: --repo <path>, else the $PWD checkout, else its own path, and a clear named error (exit 2) when none is a wilson-voice checkout" },
+    { title: "yap-hx-flaky-timing-under-load", detail: "long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green); every gate runs it alone with --nocapture and counts budget=measured only from a positive BUDGET-MEASURED line, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured" },
+    { title: "yap-hx-fmt-clippy-debt", detail: "SECURITY: one rustfmt sweep makes cargo fmt --check clean on main and rustfmt becomes a BLOCKING CI step and harness gate; clippy -D warnings stays green on app + sidecars (Y0-A #234 owns the clippy gate)" },
     { title: "yap-qa-harness", detail: "Real permission + hotkey QA tools: scripts/qa/perm-probe.sh (signature, duplicates, LaunchServices, a labelled helper probe) and scripts/qa/hotkey-walk.sh (a real fn take on the installed Yap)" },
     { title: "yap-perm-truth", detail: "The permission banner tells the truth about THIS binary: re-checked on activation and every 5 s while shown, names the failing condition and the bundle path, names a duplicate Yap, and explains a stale grant" },
     { title: "yap-hotkey-stop", detail: "A take the hotkey started, the hotkey stops: fn key-up from any app, verified tap re-arm within 100 ms, a HID-state second mechanism, a 90 s still-recording prompt, and pill + menu bar stop" },
@@ -132,15 +139,6 @@ export const meta = {
     { title: "DB-B", detail: "A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch" },
     { title: "Y3-F", detail: "A declared maximum session length with a warning before it, instead of an undeclared cliff" },
     { title: "Y3-G", detail: "A measured latency and energy budget for long takes, published as a test that fails on regression" },
-    { title: "LIC-A", detail: "Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned" },
-    { title: "Y2-A", detail: "The float window subscribes to license status — the wiring that does not exist" },
-    { title: "Y2-B", detail: "A quiet trial numeral on the pill in both pill styles, in the 30px side dock too" },
-    { title: "Y2-C", detail: "A refused hotkey press produces a pill state that explains itself, instead of a throttled notification" },
-    { title: "Y2-F", detail: "A paying customer whose key stops verifying is never shown a price" },
-    { title: "Y2-D", detail: "One click from the pill to purchase, reusing the existing Payment Link — no new money surface" },
-    { title: "Y2-E", detail: "The menu-bar item says the same thing as the pill and the settings card, from one source" },
-    { title: "DB-A", detail: "Usage metering and a \"limit reached\" surface — the numbers are Wilson's call" },
-    { title: "SEC-B", detail: "The trial state machine gets the adversarial tests its own doc comment promises" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -219,7 +217,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"yap-lic-01-jws-verifier":0,"yap-lic-02-activation-client":0,"yap-lic-04-ui-states-and-buy":0,"yap-lic-05-site-privacy-copy":0,"yap-qa-harness":1,"yap-perm-truth":1,"yap-hotkey-stop":1,"yap-format-structure":1,"yap-meetings-fix":1,"yap-uiux-2026-10-16-W0":1,"yap-uiux-2026-10-16-HOME":1,"yap-uiux-2026-10-16-DICT":1,"yap-uiux-2026-10-16-INSIGHTS":1,"yap-uiux-2026-10-16-MEETINGS":1,"yap-uiux-2026-10-16-SCRATCH":1,"yap-uiux-2026-10-16-SETTINGS":1,"yap-uiux-2026-10-16-ONBOARD":1,"yap-uiux-2026-10-16-Z":1,"yap-notetaker-onboard":1,"yap-notetaker-detect":1,"yap-notetaker-notes":1,"yap-structure-followups":1,"yap-recovery-followups":1,"yap-land-gate-pass-required":1,"yap-tests-hermetic-power":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0}
+const LANE_BY_ID = {"yap-lic-01-jws-verifier":0,"yap-lic-02-activation-client":0,"yap-lic-04-ui-states-and-buy":0,"yap-lic-05-site-privacy-copy":0,"yap-hx-done-check-by-main":1,"yap-hx-lanes1-skip-laneB-warm":1,"yap-hx-reviewers-reuse-target":1,"yap-hx-dependency-marker-scan":1,"yap-hx-test-build-repo-resolve":1,"yap-hx-flaky-timing-under-load":1,"yap-hx-fmt-clippy-debt":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -2150,6 +2148,417 @@ ITEMS.push({
     test "$(grep -c 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json)" = 1
     test "$(curl -s -o /dev/null -w '%{http_code}' https://yapvoice.app/updates/latest.json)" = 200
     (cd desktop && npm run loop:validate)
+  `,
+})
+
+// ── 07d-yap-harness-defects-2026-10-19.mjs ────────────────────────────────
+// yap-harness-defects-2026-10-19 — seven harness defects the Yap build/review passes hit on 2026-10-19
+// (Projects/Loop-Logs/yap-launch-plan-2026-10-16.md 00:40Z-13:20Z, STATUS-yap.md rows PERM-A/PERM-D,
+// 2026-09-12-yap-part01.md lines 218, 236, 240-244). Filed by seat yap-harness-items. Sorted after 07c
+// (licensing) so this lane runs after the P0, walk and licensing lanes.
+//
+// CLASS: every item that edits scripts/loop/ or scripts/cicd-loop-all.mjs or .github/workflows/ is
+// SECURITY (template SECURITY_PATHS): two Opus seats must PASS its head. SHARED PREAMBLE + STANDARD GATE:
+// 00-y0-harness-and-gates.mjs. NO GUESSING: the root-cause probe goes into the PR body under
+// "Root cause, proven" AND into docs/loop/evidence/<item id>.md, first line exactly
+// "ROOT-CAUSE-PROBE <item id>".
+//
+// HARNESS TESTS: every new harness test lives in scripts/loop/harness-defects.test.mjs (node --test,
+// HERMETIC: no gh, no git remote, no cargo, no network) and uses EXACTLY the test names the
+// acceptances grep for. template.mjs is a Workflow script, not an importable module: test its pure
+// helpers by exporting them from a small sibling module that build.mjs stamps into the template the
+// way it already stamps review-gate.mjs constants, or by evaluating the generated part with stubbed
+// agent()/log() exactly like build.mjs's dry run (5q). Either way the test must exercise the code the
+// generated parts actually run, not a copy.
+// Dependency holds below assemble the marker at run time ("DEPENDENCY-NOT-ON-$(printf MAIN)").
+
+ITEMS.push({
+  id: 'yap-hx-done-check-by-main', prompt: 'yap-hx-done-check-by-main', branch: 'loop/yap-hx-done-check-decides-from-main', gated: null,
+  title: 'SECURITY: an item whose work is already on main is retired from MAIN\'S content or its merged PR, never by whether origin/<branch> still exists; a merged item\'s deleted branch is never recreated',
+  preflight: `
+    grep -q 'merged item with a deleted branch is already-done' scripts/loop/harness-defects.test.mjs && grep -q 'doneByMain' scripts/loop/template.mjs
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (harness; edits scripts/loop/).
+    Evidence (2026-10-19, build pass lanes:1): PERM-A (merged #157) and PERM-D (merged #164) were
+    re-litigated. Their PREFLIGHTS went red on main for stale reasons — PERM-A's names a test target
+    that was renamed (05-y1-audio-permission.mjs:50 "--test mic_auth"; the file is
+    tests/mic_auth_status.rs), PERM-D's greps symbols that never shipped (05-y1-audio-permission.mjs:420
+    'silent_take|all_zero_samples'; shipped names are is_silent_capture / TakeOutcome::SilentCapture).
+    The builder then correctly found the work on main and opened no PR (part01 log :240, :243). But
+    template.mjs runBuild STEP 2 (:1140 branchTo, :1141 runCommands('acceptance', ...)) runs the
+    acceptance on "git checkout <item.branch> && git reset --hard origin/<item.branch>"; the merged
+    PR's branch was deleted on merge, so the checkout failed, the acceptance "failed", and the ONE FIX
+    ROUND (:1157-1190) "fixed" it by recreating origin/loop/perm-a-real-tcc-authorization-status and
+    origin/loop/perm-d-first-run-preflight-before-any-take at main (part01 log :241, :244; STATUS rows
+    "REPLAY ... branch recreated at main"). The saysAlreadyDone belt-and-braces (:1129-1133) only logs.
+    Branch existence decided the outcome; main's content and the merged PR did not.
+    DO 1 — export a pure doneByMain({ mergedPr, builderPr, builderSaysAlreadyDone, mainAcceptance })
+    and use it in runBuild between STEP 1 and STEP 2: when the builder returned no PR (or said
+    already-done), or "gh pr list --head <branch> --state merged" names a PR, run the item's
+    acceptance on DETACHED origin/main (same runner seat, where = "git checkout --detach origin/main");
+    allZero there -> status 'already-done' with evidence "merged PR #N, acceptance on main <sha>",
+    no fix round, no branch, no push. Acceptance red on main with a merged PR -> status
+    'regressed-on-main' (its own status, a human reads it), still no branch recreation.
+    DO 2 — the fix-round prompt (and the PR-resume block at :1041-1060) forbid pushing a branch whose
+    PR is merged: check "gh pr list --head <branch> --state merged" first and return
+    {fixed:false, mergedPr:N} instead.
+    DO 3 — build.mjs validate rule: refuse any item preflight or acceptance that names an origin/loop/
+    ref (branch existence is never a done signal). 55-y11's 'origin/feat/yv1*' absence checks are
+    retirement checks on human branches and stay.
+    DO 4 — fix the two stale preflights: PERM-A "--test mic_auth" -> "--test mic_auth_status"; PERM-D
+    grep -> 'is_silent_capture' in desktop/src-tauri/src/lib.rs. Do not touch their specs.
+    Tests (scripts/loop/harness-defects.test.mjs): "merged item with a deleted branch is already-done"
+    (no origin branch, mergedPr 157, acceptance on main allZero -> 'already-done', and the captured
+    prompts contain no "git push" for that branch); "merged item red on main is regressed-on-main";
+    "loop:validate refuses origin/loop/ in an item preflight or acceptance" (inject into a temp copy).
+  `,
+  acceptance: `
+    mkdir -p desktop/target
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-done.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-done.txt
+    grep -Eq '^ *ok [0-9]+ - merged item with a deleted branch is already-done$' desktop/target/qa-hx-done.txt
+    grep -Eq '^ *ok [0-9]+ - merged item red on main is regressed-on-main$' desktop/target/qa-hx-done.txt
+    grep -Eq '^ *ok [0-9]+ - loop:validate refuses origin/loop/ in an item preflight or acceptance$' desktop/target/qa-hx-done.txt
+    ! git grep -nE 'origin/loop/' -- scripts/loop/items ':(exclude)scripts/loop/items/07d-yap-harness-defects-2026-10-19.mjs'
+    grep -q -- '--test mic_auth_status' scripts/loop/items/05-y1-audio-permission.mjs
+    ! grep -qE 'custom-protocol --test mic_auth$' scripts/loop/items/05-y1-audio-permission.mjs
+    ! grep -q 'all_zero_samples' scripts/loop/items/05-y1-audio-permission.mjs
+    test -s docs/loop/evidence/yap-hx-done-check-by-main.md
+    head -1 docs/loop/evidence/yap-hx-done-check-by-main.md | grep -qx 'ROOT-CAUSE-PROBE yap-hx-done-check-by-main'
+    (cd desktop && npm run loop:build && npm run loop:validate)
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-lanes1-skip-laneB-warm', prompt: 'yap-hx-lanes1-skip-laneB-warm', branch: 'loop/yap-hx-lanes1-recon-skips-lane-b', gated: null,
+  title: 'SECURITY: a build pass run with lanes:1 never creates, installs or warms lane B — recon sets up lane A only and leaves any existing lane B untouched',
+  preflight: `
+    grep -q 'lanes 1 recon never creates or warms lane B' scripts/loop/harness-defects.test.mjs
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (harness).
+    Root cause: template.mjs BUILD_LANES (:825-826) is honoured only by the item split (:1987-1990)
+    and a log line (:1994). BUILD_RECON (:1784-1830) is a constant that ALWAYS creates both worktrees
+    (:1794-1795 "git worktree add <WORKDIR_B> -b yap/recon-b"), npm-ci's both lanes, and warms both
+    cargo targets ("the same for lane B with <WORKDIR_B> and <CARGO_TARGET_B>"). Under lanes:1 lane B
+    is idle by design, yet recon paid a cold cargo build into target-b (~10-12 GB) every pass
+    (launch-plan 2026-10-19T05:57Z: "lane B idle under lanes:1, yet recon re-warmed it"; 04:28Z and
+    05:57Z the operator deleted target-b by hand to recover disk).
+    DO — make the recon prompt a function of BUILD_LANES. lanes:1: create/reuse/install/warm lane A
+    only; do not create lane B, do not run npm ci or cargo in it, do not delete it if it exists (an
+    earlier lanes:2 part may own it), and say "lane B skipped (lanes:1)" in the recon return. The
+    recon/STATUS row says the same. lanes:2 behaviour is byte-for-byte unchanged. Check every other
+    prompt that names WORKDIR_B / CARGO_TARGET_B for the build pass (WORKTREE_CONTRACT 'other' lane,
+    drain) and make lanes:1 leave lane B alone there too.
+    Tests: "lanes 1 recon never creates or warms lane B" (generate/evaluate the build part with
+    args {mode:'build', lanes:1}, capture the recon prompt: it contains no "worktree add" for
+    WORKDIR_B and no CARGO_TARGET_B) and "lanes 2 recon still warms both lanes".
+  `,
+  acceptance: `
+    mkdir -p desktop/target
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-lanes1.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-lanes1.txt
+    grep -Eq '^ *ok [0-9]+ - lanes 1 recon never creates or warms lane B$' desktop/target/qa-hx-lanes1.txt
+    grep -Eq '^ *ok [0-9]+ - lanes 2 recon still warms both lanes$' desktop/target/qa-hx-lanes1.txt
+    test -s docs/loop/evidence/yap-hx-lanes1-skip-laneB-warm.md
+    head -1 docs/loop/evidence/yap-hx-lanes1-skip-laneB-warm.md | grep -qx 'ROOT-CAUSE-PROBE yap-hx-lanes1-skip-laneB-warm'
+    (cd desktop && npm run loop:build && npm run loop:validate)
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-reviewers-reuse-target', prompt: 'yap-hx-reviewers-reuse-target', branch: 'loop/yap-hx-reviewer-target-dir-and-no-incremental', gated: null,
+  title: 'SECURITY: reviewer and fixer seats build only into their chain\'s target-r1/target-r2 (never a cargo target in the scratchpad), and every warm/gate/test command runs with CARGO_INCREMENTAL=0',
+  preflight: `
+    grep -q 'reviewer and fixer prompts pin CARGO_TARGET_DIR to their chain target' scripts/loop/harness-defects.test.mjs && grep -q 'export CARGO_INCREMENTAL=0' scripts/loop/template.mjs
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (harness).
+    Root cause 1 (target dir): reviewOnePr (template.mjs :1334) computes target = REVIEW_TARGETS[chain]
+    (:1337) but neither primaryPrompt (:1356) nor lensPrompt (:1405) interpolates it: both say "read-only
+    greps only" in the chain dir, so a reviewer that wants to build or test the PR head makes its own
+    tree and runs cargo with the DEFAULT target — inside that tree. 2026-10-19T05:02Z review-opus2 built
+    a 12 GB target in scratchpad/pr229o2; 01:45Z and 03:34Z 4-8 GB targets (target-pr227, target-opus2)
+    were found the same way. Only the land/fix prompts and REVIEW_RECON (:1879-1901) name target-rN.
+    Root cause 2 (incremental): no harness command sets CARGO_INCREMENTAL. GATE_CMDS (:462-473), the
+    WORKTREE_CONTRACT export (:313), runCommands WHERE (:919) and both recons' warm steps run debug
+    cargo test/clippy with incremental ON, so every one-shot gate regrew 5-10 GB of
+    target-*/debug/incremental per half hour (launch-plan 06:23Z, 06:47Z, 11:34Z). The operator's
+    stopgap is ~/code/wilson-voice-loop/.cargo/config.toml [build] incremental=false (11:34Z) — machine
+    state outside the repo that a fresh host does not have.
+    DO 1 — both reviewer prompts and every fix-round prompt get a REVIEWER BUILD CONTRACT block: "if you
+    build or test the PR head, do it in a detached worktree of LOCAL_REPO with
+    export CARGO_TARGET_DIR=<this chain's target-rN> (the build-pass fixer: its lane's target); never
+    run cargo with a target dir under the scratchpad, /tmp or the tree you made; remove your worktree
+    (git worktree remove) before returning". The fixer's WORKTREE_CONTRACT already pins its target —
+    keep it.
+    DO 2 — "export CARGO_INCREMENTAL=0" next to EVERY "export CARGO_TARGET_DIR=" in template.mjs
+    (GATE_CMDS, WORKTREE_CONTRACT, runCommands, BUILD_RECON, REVIEW_RECON, main-verify, the dev-launch
+    lines). Keep the .cargo/config.toml stopgap; note in a comment that the env var makes it redundant.
+    Tests: "reviewer and fixer prompts pin CARGO_TARGET_DIR to their chain target" (evaluate the review
+    part with stubbed agent(), capture every reviewer/fix prompt per chain: each contains
+    "export CARGO_TARGET_DIR=<REVIEW_TARGETS[chain]>" and the word scratchpad in a never-build line)
+    and "every prompt that exports CARGO_TARGET_DIR also exports CARGO_INCREMENTAL=0" (build and review
+    parts, every captured prompt).
+  `,
+  acceptance: `
+    mkdir -p desktop/target
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-target.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-target.txt
+    grep -Eq '^ *ok [0-9]+ - reviewer and fixer prompts pin CARGO_TARGET_DIR to their chain target$' desktop/target/qa-hx-target.txt
+    grep -Eq '^ *ok [0-9]+ - every prompt that exports CARGO_TARGET_DIR also exports CARGO_INCREMENTAL=0$' desktop/target/qa-hx-target.txt
+    grep -q 'export CARGO_INCREMENTAL=0' scripts/loop/template.mjs
+    test -s docs/loop/evidence/yap-hx-reviewers-reuse-target.md
+    head -1 docs/loop/evidence/yap-hx-reviewers-reuse-target.md | grep -qx 'ROOT-CAUSE-PROBE yap-hx-reviewers-reuse-target'
+    (cd desktop && npm run loop:build && npm run loop:validate)
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-dependency-marker-scan', prompt: 'yap-hx-dependency-marker-scan', branch: 'loop/yap-hx-dependency-marker-last-stdout-line', gated: null,
+  title: 'SECURITY: the dependency hold reads DEPENDENCY-NOT-ON-MAIN only from the LAST stdout line of an executed preflight command (a per-command field in the runner schema), never from the mixed output tail or command text',
+  preflight: `
+    ( M=0; grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): loop-dependency-marker-stdout-only (07b) has not landed — run the review pass to land it, then the build pass again"; exit 0; fi; grep -q 'lastLine' scripts/loop/template.mjs && grep -q 'dependency marker counts only as the last stdout line' scripts/loop/harness-defects.test.mjs && grep -q 'silent exit-0 preflight is already-done' scripts/loop/harness-defects.test.mjs )
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (harness). REMAINING GAP ONLY — read what is already filed.
+    Already covered by #230 (merged ca50beb): (a) build.mjs:301-312 refuses an item preflight that
+    contains the LITERAL marker (item files assemble it at run time); (b) item
+    loop-dependency-marker-stdout-only (07b, not yet built) replaces template.mjs:986
+    "/DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))" with dependencyMarkerPrinted(pre) matching
+    /^DEPENDENCY-NOT-ON-MAIN:/m in "the executed commands' captured stdout". This item depends on (b)
+    and is held until it lands.
+    The gap: RUN_SCHEMA (template.mjs :857-878) has NO per-command stdout. exits[] is {command, exit};
+    output is ONE seat-written string, "the raw tail of each command's output, pasted, at most ~80
+    lines total" (runCommands :935-937). So "captured stdout" in (b) can only mean that mixed tail, in
+    which a marker line can come from a command that merely PRINTS file content (a grep -n or cat of an
+    item file / generated part that documents the marker), from the seat's own echo of a header
+    comment, or from a non-final line of a command whose real check then ran and failed. The /m flag
+    accepts any line. The 2026-10-19 mis-mark of yap-p0-perm-repair (launch-plan 03:27Z; reviewer
+    note "unproven D7 runner-cwd premise", part01 :206) is exactly that class.
+    DO — RUN_SCHEMA exits[] items gain lastLine, a REQUIRED string field: the final non-empty line
+    that command wrote to stdout, verbatim, or the EMPTY STRING "" when it wrote no non-empty line.
+    "" is a VALID value and means SILENT, never missing: a passing grep -q, test, or && chain prints
+    nothing and exits 0, and runCommands (template.mjs) already rules "a command that prints nothing
+    and exits 0 PASSED" (the runner prompt says how: run each command as
+    "<cmd> > <tmp> 2>&1; echo exit=$?; tail -n 1 <tmp>" — bare exit, no pipe on the command itself).
+    dependencyMarkerPrinted(pre) becomes: true only when SOME exits[i] has exit 0 AND its lastLine
+    starts with "DEPENDENCY-NOT-ON-MAIN:"; output, command, notes and every other field are never
+    consulted. FAIL CLOSED ON MISSING EVIDENCE (fix round 1, independent reviewer BLOCKING 1): every
+    hold preflight echoes the marker and then exits 0, so runPassed(pre) is TRUE for a held item and
+    the normal verdict for it is already-done (template.mjs:989-992). Therefore, whenever
+    runPassed(pre) is true and ANY exits[i] with exit 0 has a lastLine field that is ABSENT, is not a
+    string, or contains a newline (ambiguous), the item is INCONCLUSIVE: return status
+    'held: preflight inconclusive (no lastLine)', log "runner returned no usable lastLine — held,
+    never already-done", dispatch no builder, and let the next pass re-run the preflight. A missing
+    or mangled lastLine can NEVER yield already-done, whether or not the marker text appears
+    anywhere else in the payload. An EMPTY-STRING lastLine is NOT inconclusive (fix round 2, both
+    reviewers BLOCKING: holding on "" made already-done unreachable for every preflight whose passing
+    command is silent — 10 of the 12 grep-only preflights that pass on main e60ea75, 118 of 154
+    preflights at e2eccff, and this item's own preflight once it lands — so they would be held on
+    every pass and never retired). already-done requires runPassed(pre) AND every exit-0 command
+    carrying a string lastLine with no newline ("" included) AND none of them starting with the
+    marker. build.mjs: refuse an item preflight
+    whose marker echo is not immediately followed by "exit 0" inside the same subshell (the shape
+    every hold uses), so the marker is always that command's last line.
+    Tests (harness-defects.test.mjs): "dependency marker counts only as the last stdout line"
+    (lastLine marker + exit 0 -> true); "marker on a non-final stdout line is ignored" (marker only in
+    output tail, lastLine something else -> false); "marker in command text or notes is ignored";
+    "loop:validate refuses a marker echo not followed by exit 0";
+    "absent lastLine field with the marker in output is held, never already-done" (all exit 0,
+    marker in output, the lastLine KEY absent -> status starts with 'held:', not 'already-done');
+    "absent lastLine field without the marker is held, never already-done" (all exit 0, no marker
+    anywhere, one exits[i] with NO lastLine key -> 'held:'); "non-string lastLine is held" (lastLine
+    null or 0 -> 'held:'); "multi-line lastLine is ambiguous and held";
+    "silent exit-0 preflight is already-done" (every exits[i] exit 0 with lastLine "", no marker
+    anywhere -> status 'already-done', NOT 'held:' — the liveness case; it must fail on a build that
+    treats "" as inconclusive).
+  `,
+  acceptance: `
+    mkdir -p desktop/target
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-marker.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - dependency marker counts only as the last stdout line$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - marker on a non-final stdout line is ignored$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - marker in command text or notes is ignored$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - loop:validate refuses a marker echo not followed by exit 0$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - absent lastLine field with the marker in output is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - absent lastLine field without the marker is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - non-string lastLine is held$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - multi-line lastLine is ambiguous and held$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - silent exit-0 preflight is already-done$' desktop/target/qa-hx-marker.txt
+    grep -q 'preflight inconclusive (no lastLine)' scripts/loop/template.mjs
+    grep -q 'lastLine' scripts/loop/template.mjs
+    ! grep -q 'DEPENDENCY-NOT-ON-MAIN/.test(asText' scripts/loop/template.mjs
+    test -s docs/loop/evidence/yap-hx-dependency-marker-scan.md
+    head -1 docs/loop/evidence/yap-hx-dependency-marker-scan.md | grep -qx 'ROOT-CAUSE-PROBE yap-hx-dependency-marker-scan'
+    (cd desktop && npm run loop:build && npm run loop:validate)
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-test-build-repo-resolve', prompt: 'yap-hx-test-build-repo-resolve', branch: 'loop/yap-hx-test-build-resolves-repo', gated: null,
+  title: 'scripts/test-build.sh works from any checkout: --repo <path>, else the $PWD checkout, else its own path, and a clear named error (exit 2) when none is a wilson-voice checkout',
+  preflight: `
+    ( M=0; test -f scripts/test-build.sh || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR #238 (Yap test channel, scripts/test-build.sh) has not landed — run the review pass to land it, then the build pass again"; exit 0; fi; grep -q -- '--repo' scripts/test-build.sh && grep -q -- '--print-repo' scripts/test-build.sh && grep -q 'not a wilson-voice checkout' scripts/test-build.sh )
+  `,
+  spec: `
+    Panel: not required — FIX (test tooling; depends on #238).
+    Root cause: #238's scripts/test-build.sh:20 is ROOT="$(cd "$(dirname "$0")/.." && pwd)" — the repo
+    is wherever the SCRIPT file sits. 2026-10-19T12:46Z the operator ran a copy of the script taken
+    from origin/feat/yap-test-channel (local main predated #238) from outside a checkout and it died
+    with "not a git repository" (launch-plan 12:46Z attempt 1); it only worked after a dedicated
+    worktree was made (tc-run).
+    DO — resolution order: (1) --repo <path>; (2) the git toplevel of $PWD when it is a wilson-voice
+    checkout (has desktop/src-tauri/tauri.conf.json and scripts/test-build.sh's sibling files);
+    (3) the script's own ../ when that is one; else print
+    "test-build: not a wilson-voice checkout: pass --repo <path> or run from inside one" to stderr and
+    exit 2. Print the resolved repo and which rule chose it as the first output line. New flag
+    --print-repo: resolve, print the absolute repo path alone on stdout, exit 0, build nothing.
+    --help documents both. Extend scripts/test-build.test.sh with the three cases.
+  `,
+  acceptance: `
+    ( R=$(git rev-parse --show-toplevel) && T=$(mktemp -d) && cp scripts/test-build.sh "$T/" && cd "$T" && test "$(bash ./test-build.sh --repo "$R" --print-repo)" = "$R" )
+    ( R=$(git rev-parse --show-toplevel) && T=$(mktemp -d) && cp scripts/test-build.sh "$T/" && cd "$R" && test "$(bash "$T/test-build.sh" --print-repo)" = "$R" )
+    ( T=$(mktemp -d) && cp scripts/test-build.sh "$T/" && cd "$T" && bash ./test-build.sh --print-repo > "$T/out.txt" 2>&1; rc=$?; test "$rc" -eq 2 && grep -q 'not a wilson-voice checkout' "$T/out.txt" )
+    bash scripts/test-build.test.sh
+    shellcheck scripts/test-build.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-flaky-timing-under-load', prompt: 'yap-hx-flaky-timing-under-load', branch: 'loop/yap-hx-long-take-budget-load-aware', gated: null,
+  title: 'long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green); every gate runs it alone with --nocapture and counts budget=measured only from a positive BUDGET-MEASURED line, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured',
+  preflight: `
+    grep -q 'fn load_gate' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'BUDGET-MEASURED ratio=' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'BUDGET-MEASURED' scripts/loop/template.mjs && grep -q -- '--test-threads=1 --nocapture' scripts/loop/template.mjs
+  `,
+  spec: `
+    Panel: not required — FIX (test flake).
+    Root cause: desktop/src-tauri/tests/long_take_budget.rs:381 chunk_decode_wall_per_audio_second
+    asserts ratio <= CHUNK_DECODE_WALL_PER_AUDIO_SECOND_RATIO_CEILING (:97, 1.60) at :453 — a wall-clock
+    ratio of chunked vs one-shot decode. Under host load the chunked leg is starved: 2026-10-19 recon
+    baseline cargotest=101 at load avg 55 with lane B building (part01 :218), main-verify run 2 ratio
+    3.68x at load avg 19 (part01 :236, launch-plan 11:43Z); the same test passes alone. main-verify
+    needed three cargo test runs to go green.
+    DO — pure fn load_gate(load1: f64, cores: usize) -> Option<String> in the test file: Some(reason)
+    when load1 > cores as f64 (one runnable task per core), else None. Read load1 with
+    libc::getloadavg (libc is already a dependency) and cores with
+    std::thread::available_parallelism. NO environment override of the load (fix round 1,
+    independent reviewer BLOCKING 2: an env var that turns the gate off fails open); the unit tests
+    call the pure fn with literal values instead.
+    FAIL CLOSED — A SKIP IS NEVER GREEN (fix round 1, BLOCKING 2: this host has 12 cores and loop
+    loads of 19-55, so a skip-as-pass would leave the 1.60 budget unmeasured in every gate). The gate
+    runs FIRST in the test, before the model-present check. On Some it re-reads the load up to 3
+    times, 20 s apart (not holding HEAVY), and measures as soon as load1 <= cores. If the host is
+    still loaded it prints exactly one line
+    "LOAD-AWARE NOT-MEASURED: 1-min load <load1 .2> > <cores> cores — chunk_decode ratio not measured"
+    and returns. That line is NOT a pass: the harness treats it as not-measured.
+    POSITIVE EVIDENCE ONLY (fix round 2, both reviewers BLOCKING: libtest CAPTURES and DISCARDS the
+    println!/eprintln! output of a PASSING test unless --nocapture or --show-output is given — probe
+    with cargo 1.94.0: a passing test that prints the line, run as plain 'cargo test > f 2>&1', left
+    0 matching lines and only '... ok' in f; with '-- --nocapture' the line was there. So grepping the
+    ordinary gate run for a NEGATIVE marker reads "measured" every time, and the skip() path for
+    absent ASR weights does too). On the one path that actually timed both decode arms, the test
+    prints exactly one line, after computing ratio and BEFORE the ceiling assert:
+    "BUDGET-MEASURED ratio=<ratio .3> ceiling=<ceiling .2> load1=<load1 .2> cores=<cores>",
+    preceded by a bare println!() — under '--test-threads=1 --nocapture' libtest writes
+    "test <name> ... " with NO newline, so the test's first printed line shares that line (probe,
+    cargo 1.94.0: "test chunk_decode_wall_per_audio_second ... BUDGET-MEASURED ratio=1.234 ...").
+    The LOAD-AWARE NOT-MEASURED path and the skip() path (ASR weights absent) never print it.
+    HARNESS (scripts/loop/template.mjs): add an exported pure fn budgetMeasured(text, exit) -> true
+    ONLY when exit === 0 AND text has a line matching
+    /^(test [^ ]+ [.][.][.] )?BUDGET-MEASURED ratio=[0-9]+[.][0-9]+ /m (bare, or after libtest's
+    test-name prefix);
+    every other input -> false: no such line, a LOAD-AWARE NOT-MEASURED line, a
+    "long_take_budget SKIPPED" line, empty text, or a nonzero exit. The ABSENCE of a negative marker
+    NEVER means measured. Every gate block that runs "cargo test --features custom-protocol" (the
+    build gate near :474, the review/fix gates, and MAIN VERIFY near :2212) keeps that run as it is
+    and THEN runs the budget test ON ITS OWN, serially and UNCAPTURED, redirected to a file, exit
+    read bare:
+    "cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture > <file> 2>&1 ; echo budgettest=$?"
+    It runs at most 3 times in all, again only while budgetMeasured(file, budgettest) is false AND
+    the file has no BUDGET-MEASURED line (a measured ratio over the ceiling exits nonzero: that is a
+    real red, never retried into green). Report "budget=measured" or "budget=not-measured" beside
+    cargotest=, decided by budgetMeasured on the dedicated run's file and exit alone.
+    budget=not-measured is NOT green: a land seat does not merge on it (status review-pending,
+    reason "budget not measured"), and main-verify lists it as a not-measured row, never inside
+    "all exit 0". Below the gate the 1.60 ceiling is unchanged — do not widen it. Rust unit tests
+    load_gate_skips_above_core_count / load_gate_runs_at_or_below_core_count; node tests (in
+    scripts/loop/harness-defects.test.mjs) "a LOAD-AWARE NOT-MEASURED cargo test is never green";
+    "captured cargo test output with no BUDGET-MEASURED line is not measured" (input
+    the two lines "test chunk_decode_wall_per_audio_second ... ok" and "test result: ok. 1 passed", exit 0 -> false —
+    exactly what a captured passing run looks like); "a skipped budget run is not measured"
+    ("long_take_budget SKIPPED — ASR weights absent ...", exit 0 -> false); "only a BUDGET-MEASURED
+    line with exit 0 is measured" ("BUDGET-MEASURED ratio=1.234 ceiling=1.60 load1=3.10 cores=12"
+    with exit 0 -> true, with exit 101 -> false); "BUDGET-MEASURED after the libtest test-name
+    prefix is measured" ("test chunk_decode_wall_per_audio_second ... BUDGET-MEASURED ratio=1.234
+    ceiling=1.60 load1=3.10 cores=12", exit 0 -> true).
+    Note it in docs/BUDGETS.md next to the ceiling.
+  `,
+  acceptance: `
+    mkdir -p desktop/target
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget load_gate) > desktop/target/qa-hx-loadgate.txt 2>&1
+    grep -q 'load_gate_skips_above_core_count ... ok' desktop/target/qa-hx-loadgate.txt
+    grep -q 'load_gate_runs_at_or_below_core_count ... ok' desktop/target/qa-hx-loadgate.txt
+    ! grep -q 'YAP_BUDGET_LOAD_OVERRIDE' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'LOAD-AWARE NOT-MEASURED: 1-min load' desktop/src-tauri/tests/long_take_budget.rs
+    ! grep -q 'LOAD-AWARE skip' desktop/src-tauri/tests/long_take_budget.rs
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-budget.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - a LOAD-AWARE NOT-MEASURED cargo test is never green$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - captured cargo test output with no BUDGET-MEASURED line is not measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - a skipped budget run is not measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - only a BUDGET-MEASURED line with exit 0 is measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - BUDGET-MEASURED after the libtest test-name prefix is measured$' desktop/target/qa-hx-budget.txt
+    grep -q 'budget=not-measured' scripts/loop/template.mjs
+    grep -q 'BUDGET-MEASURED ratio=' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q -- 'chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture' scripts/loop/template.mjs
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture) > desktop/target/qa-hx-budget-run.txt 2>&1
+    grep -Eq '^(test [^ ]+ [.][.][.] )?(BUDGET-MEASURED ratio=[0-9]+[.][0-9]+ |LOAD-AWARE NOT-MEASURED: 1-min load|long_take_budget SKIPPED)' desktop/target/qa-hx-budget-run.txt
+    grep -q 'LOAD-AWARE' docs/BUDGETS.md
+    grep -q 'RATIO_CEILING: f64 = 1.60;' desktop/src-tauri/tests/long_take_budget.rs
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-hx-fmt-clippy-debt', prompt: 'yap-hx-fmt-clippy-debt', branch: 'loop/yap-hx-fmt-sweep-and-fmt-gate', gated: null,
+  title: 'SECURITY: one rustfmt sweep makes cargo fmt --check clean on main and rustfmt becomes a BLOCKING CI step and harness gate; clippy -D warnings stays green on app + sidecars (Y0-A #234 owns the clippy gate)',
+  preflight: `
+    ( M=0; grep -q 'clippy --all-targets --features custom-protocol -- -D warnings' .github/workflows/ci.yml || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): Y0-A (PR #234, blocking clippy + the yap-diarize main.rs:836 fix) has not landed — run the review pass to land it, then the build pass again"; exit 0; fi; (cd desktop && cargo fmt --all -- --check) && ! grep -q 'continue-on-error' .github/workflows/ci.yml )
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (.github/workflows/ and scripts/loop/template.mjs).
+    Root cause, measured on main 7e3276c: "cd desktop && cargo fmt --all -- --check" exits 1 with 43
+    "Diff in" hunks (drift from #218/#227/#229/#231 since the b4b8d06 sweep); ci.yml:92-94 runs it as
+    "rustfmt (informational)" with a no-fail suffix and ci.yml:95-97 does the same for clippy;
+    template.mjs calls fmt informational at :431, :1105, :1374, :1824, :1975, :2224, :2449.
+    "cargo clippy -- -D warnings" fails on desktop/yap-diarize/src/main.rs:836
+    "assert!(CLUSTER_COUNT_UNKNOWN < 0);" (assertions_on_constants) — PR #234 Y0-A already fixes that
+    line (const { assert!(...) }) and already makes clippy -D warnings blocking for the app AND the
+    sidecars, keeping rustfmt advisory via continue-on-error "until the next tree-wide sweep".
+    DO NOT DUPLICATE Y0-A: this item is held until #234 lands and then does ONLY the remainder:
+    DO 1 — the sweep: one mechanical commit "style(yap): cargo fmt --all sweep" (run from desktop/),
+    nothing else in it; append its full sha to .git-blame-ignore-revs with a dated comment. If Y0-B
+    (#236, which formats 7 drifted files) landed first, sweep what is left.
+    DO 2 — ci.yml: the rustfmt step loses continue-on-error and becomes "rustfmt" (a gate). No
+    continue-on-error and no no-fail suffix anywhere in ci.yml.
+    DO 3 — template.mjs: fmt is a gate. Remove every "fmt informational" carve-out (lines above),
+    the recon baseline expects fmt=0, and the reviewer contract stops listing rustfmt drift as
+    advisory-because-main-fails.
+  `,
+  acceptance: `
+    (cd desktop && cargo fmt --all -- --check)
+    ! grep -q 'continue-on-error' .github/workflows/ci.yml
+    ! grep -qF '|| true' .github/workflows/ci.yml
+    grep -qE 'run: cargo fmt --all -- --check$' .github/workflows/ci.yml
+    (cd desktop/src-tauri && cargo clippy --all-targets --features custom-protocol -- -D warnings)
+    (cd desktop && cargo clippy -p yap-polish -p yap-diarize --all-targets --release -- -D warnings)
+    test "$(grep -cE '^[0-9a-f]{40}$' .git-blame-ignore-revs)" -ge 2
+    ! grep -niE 'fmt.{0,40}informational|informational.{0,12}fmt' scripts/loop/template.mjs
+    test -s docs/loop/evidence/yap-hx-fmt-clippy-debt.md
+    head -1 docs/loop/evidence/yap-hx-fmt-clippy-debt.md | grep -qx 'ROOT-CAUSE-PROBE yap-hx-fmt-clippy-debt'
+    (cd desktop && npm run loop:build && npm run loop:validate)
   `,
 })
 
@@ -4873,773 +5282,6 @@ ITEMS.push({
     grep -q 'peak_resident_bytes_with_asr_and_polish_loaded' desktop/src-tauri/tests/long_take_budget.rs
     cd ${APP} && npm ci && cd src-tauri
     cargo test --features custom-protocol --test long_take_budget ; test $? -eq 0
-  `,
-})
-
-// ── 20-y2-trial-and-limits.mjs ────────────────────────────────────────────
-// Y2 — TRIAL + LIMITS IN THE PILL. Wilson, 2026-09-12, verbatim: "the pill does
-// not tell people when they reach their limits or when the 14-day trial ends
-// (Wispr Flow does)."
-//
-// AUDIT: the licensing BACKEND is good and the MAIN WINDOW is good. The pill —
-// the only Yap surface a user looks at while working — knows nothing.
-//
-//   src-tauri/src/license.rs         1784 lines. TRIAL_DAYS = 14 (license.rs:107),
-//                                    clock-rollback floor, two-store trial start,
-//                                    Ed25519 offline verify, revocation list.
-//   src-tauri/src/lib.rs:1111        license_allows_new_dictation — the one gate,
-//                                    emits `license_required`, throttled notify.
-//   src/license/status.ts            chipFor / statusCopy / trialWarningText /
-//                                    TRIAL_WARN_DAYS = 3, all pure + unit-tested.
-//   src/App.tsx:1194-1210            main window listens for license_status and
-//                                    license_required and raises a sheet.
-//
-//   git grep -n "license\|trial" origin/main -- desktop/src/pill \
-//        desktop/src/float-main.tsx desktop/src-tauri/src/float_pill.rs
-//     -> ZERO MATCHES. The pill window never receives the license event, has no
-//        state for it, and renders nothing.
-//
-// So a user on day 13 gets no warning where they are looking, and on day 15 the
-// hotkey stops working with a throttled system notification as the only signal.
-// status.ts:80-88 deliberately fires the trial warning ONCE at three days
-// ("a countdown that reappears every launch is how a good app becomes
-// nagware") — a good rule for a modal toast, and the wrong rule for the pill,
-// which is ambient and can carry a quiet persistent numeral the way Wispr's
-// Flow Bar does.
-//
-// USAGE LIMITS: there is no metering of any kind.
-//   git grep -n "quota\|usage_limit\|daily_limit\|words_limit\|minutes_used" \
-//        origin/main -- desktop  -> 0 functional matches.
-// Wispr's free desktop tier is 2,000 words/week and it ships a named
-// notification `WeeklyWordsLimitReached`
-// (reference_wispr_parity_research §2.8 / §5.2, both [BUNDLE]/[OFFICIAL]).
-// Yap's shipped model is $29 lifetime with a 14-day full-feature trial and NO
-// subscription (project_yap_build_state, closed decision). Whether Yap gains a
-// metered free tier at all is a pricing decision -> DB-A is gated:'panel'.
-// Y2-A..E ship the mechanism and the surfaces for the trial, which is decided.
-//
-// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: 'panel',
-  notes: `RETIRED 2026-10-19 — gated:'panel' so no builder dispatches. Superseded by yap-lic-00-kill-forge-fetch (07b) and yap-lic-01..06 (Projects/Yap/licensing-migration-plan-2026-10-19.md: the dedicated-Supabase/Edge-Function design is superseded and PR #183 is CLOSED). Its spec step 4 (repoint REVOCATION_URL / ISSUER_HOST) and the Panel line "make REVOCATION_URL an Option" are VOID: yap-lic-00 deletes both symbols and guards license.rs with license_rs_has_no_http_client; never re-add them. Do not panel-approve this id; file a yap-lic-* item instead. PRIOR NOTES: STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it) — Panel revision 2026-09-26T17:35:00Z: DO NOT LAND #183 AS-IS. It targets "a dedicated Yap Supabase project," which the product ledger (2026-09-26 panel) now overrides: issuance moves to the Drivia Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and already licensing other products) — see the Panel revisions block in the spec below. Relabel #183 needs-human until that redirect is done; a scoped notetaker-only loop pass must never merge it as written (see the LAND-scope fix in scripts/loop/template.mjs). RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key, AND every launch still sends an unauthenticated GET to a hostname resolving to an IP Wilson no longer controls, accepting whatever unsigned {kids:[]} revocation list comes back with no signature check (license.rs:1100-1124) — ship the one-line mitigation in the Panel revisions block FIRST, independent of the rest of this item.`,
-  title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
-  preflight: `
-    test -f supabase/functions/yap-license/index.ts
-    test -f docs/YAP-LICENSING.md
-    grep -q 'ISSUANCE' docs/RELEASE.md
-    test 0 -eq "$(grep -c 'sslip.io' desktop/src-tauri/src/license.rs)"
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test activation_e2e
-  `,
-  spec: `
-    RETIRED 2026-10-19 — SUPERSEDED by yap-lic-00-kill-forge-fetch and yap-lic-01..06. Do NOT build
-    this item. Step 4 below and the Panel revision "make REVOCATION_URL an Option" are VOID: after
-    yap-lic-00, license.rs has no REVOCATION_URL, ISSUER_HOST, fetch_revocations or any HTTP client,
-    and license_rs_has_no_http_client enforces it. Kept for history only.
-
-    OWNER DECISION 2026-09-13 (Wilson). The panel gated this on "automated or
-    manual?". The answer is neither of the panel's two options as written:
-    issuance is ALREADY automated, and it lives somewhere this repo does not
-    own. Wilson's call is to MOVE IT TO SUPABASE — "connect this to Supabase".
-    So this item is a MIGRATION with a proof, not a greenfield build.
-
-    HOW LICENSING WORKS TODAY — measured, not assumed:
-      * Checkout is a Stripe PAYMENT LINK, one compile-time constant:
-        license.rs:137 PAYMENT_LINK_URL, opened by \`open_purchase_page\`
-        (lib.rs:3557-3570) with no argument, so the webview never supplies a URL.
-        The link is \`active: false\` on Stripe (license.rs:131-136) — purchasing
-        is OFF until the delivery path is proven, which is this item.
-      * Fulfilment is a Fastify service on the FORGE BOX, outside this repo:
-        drivia-forge \`server/src/routes/yap.ts\` registers
-        POST /v1/yap/stripe-webhook (:93), GET /v1/yap/license (:402),
-        GET /v1/yap/revoked.json (:479), POST /v1/yap/resend (:493), wired in
-        \`server/src/index.ts:406\`. The signer is \`server/src/yap-license.ts\`
-        (\`signClaims\`), Ed25519, key at
-        /etc/forge/yap/license-signing-ed25519.pem root:root 0400
-        (yap-license.ts:43, :179). Delivery is Resend (yap-license.ts:623-690),
-        and a mail failure deliberately never turns into a non-2xx for Stripe
-        (:659-662). Issuance is idempotent on session id AND event id (:580-583).
-      * The app verifies OFFLINE against the pinned public key
-        (license.rs ISSUER_PUBLIC_KEY_SPKI_B64 / ISSUER_SKID) and only ever
-        contacts one host, for the public revocation list: license.rs:117-119,
-        \`https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json\` — a URL with
-        the box's IP ADDRESS in its hostname.
-      * So the real defects are: the fulfilment path is invisible to this repo
-        and untestable in this gate; revocation is pinned to a box IP; and
-        nothing here has ever been walked end to end.
-
-    WHAT TO BUILD — Stripe Checkout -> Supabase Edge Function issuer:
-      1. \`supabase/functions/yap-license/index.ts\` — one Deno Edge Function
-         with the four routes the Forge service has: stripe-webhook (verify the
-         Stripe signature with the webhook secret, idempotent on
-         \`event.id\` AND \`checkout.session.id\`), license (retrieve by purchase
-         email), revoked.json (the public list, cache-control max-age 300), and
-         resend. PORT the Forge logic; do not reinvent the wire format.
-      2. The WIRE FORMAT IS FROZEN:
-         \`base64url(claimsJson) "." base64url(ed25519 sig)\`, the signature over
-         the ASCII BYTES of the first segment, claims
-         \`{ v, plan, seats, email_hash, issued_at, kid, skid }\`. Every shipped
-         copy of Yap pins the public key. KEEP THE SAME SIGNING KEY: re-keying
-         invalidates nothing yet (no customer exists) but changing the FORMAT
-         silently forks the verifier. Put the claims/signature logic in
-         \`supabase/functions/_shared/claims.ts\` using Web Crypto so it runs
-         unchanged under Deno and under vitest.
-      3. THE SIGNING KEY MOVES INTO SUPABASE SECRETS
-         (\`supabase secrets set YAP_SIGNING_KEY_PEM=...\`), never into this repo,
-         never into an .env that is read by anything else. The PUBLIC half stays
-         compiled into the app exactly as it is today. Nothing changes on the
-         verification side.
-      4. \`REVOCATION_URL\` and \`ISSUER_HOST\` in license.rs repoint at the
-         Supabase function URL — a stable hostname, no IP. \`sslip.io\` must not
-         appear in license.rs afterwards. Keep the "one host, one call, no
-         telemetry" property: it is a shipped claim (PRIVACY.md, PRIV-A).
-      5. Delivery stays RESEND (the Forge implementation is correct and its
-         failure semantics are right), called from the Edge Function with
-         \`RESEND_API_KEY\` in Supabase secrets. AND the key is retrievable
-         in-app: add "I already paid — retrieve my license" to
-         \`PurchasePrompt.tsx\`, which posts the checkout email to the license
-         route and activates on success.
-      6. Define what a FAILED activation and a FAILED retrieval say. Today
-         neither path has copy. One sentence, one action, never a raw Rust
-         string, and a retrieval failure must NEVER block offline verification.
-
-    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING ledger-conflict + HIGH
-    security, GROUNDED):
-      - SHIP THIS ONE LINE NOW, independent of the rest of the item: in license.rs, make
-        REVOCATION_URL an Option set to None so no fetch happens at all until the real endpoint
-        below exists. Today every launch sends an unauthenticated GET to
-        forge.87-99-149-214.sslip.io — sslip.io maps any name to its embedded IP, so whoever
-        holds that IP today can also get a TLS cert for it — and deserializes whatever
-        {kids:[]} comes back with NO signature check (license.rs:1100-1124), which contradicts
-        both license.rs:111-113's own "the ONLY host this module ever contacts" comment and the
-        "nothing leaves the Mac" privacy claim (it sends the client IP and launch timing to a
-        third party). Correct docs/ARCHITECTURE-AUDIT-2026-09-26.md §9's "harmless no-op"
-        characterization to match.
-      - THE ISSUER MOVES TO THE DRIVIA CONSULTING APP'S SUPABASE DB #2 (the products licensing
-        backend), NOT a new "dedicated Yap Supabase project" — the product ledger (2026-09-26
-        panel, binding) is explicit that issuance moves there; the panel shapes HOW, never
-        WHETHER. DB #2 already seeds a 'yap' product (purchase_enabled=true) with
-        /api/v1/licensing/{activate,deactivate,refresh,entitlements,settings} and a Stripe
-        webhook that issues licenses — this item becomes "make Yap a CLIENT of that issuer,"
-        not "build a second issuer." Everything below in "WHAT TO BUILD" that describes a new
-        Supabase Edge Function in THIS repo is superseded: delete the
-        supabase/functions/yap-license/index.ts step; instead license.rs gains a verifier for
-        DB #2's token format (a signed JWS carrying sub, act, prd, plan, ent — Ed25519/EdDSA,
-        kid in the header, key pinned from licensing.signing_keys), kept ALONGSIDE the legacy
-        base64url-claims-plus-signature format so Wilson's existing lifetime license keeps
-        verifying. PAYMENT_LINK_URL points at the Consulting product's checkout. Activation
-        happens once, when the token is pasted or deep-linked — never on a hot path — to honor
-        "the ONLY host this module ever contacts" as far as it can still be kept true.
-      - Pricing, trial length and whether the Stripe payment link goes live are Wilson's calls
-        (ledger), unaffected by this redirect — this item does not resolve $29-lifetime vs the
-        DB #2 seeded monthly/annual plans; flag both to Wilson (see forWilson).
-      - Cross-repo follow-up (drivia-consulting, out of THIS repo's loop): a Yap-facing checkout
-        page and license-delivery email on the Consulting app so a purchase actually reaches a
-        Yap user. Record this as a handoff, not an item in this file.
-
-    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS. [SUPERSEDED BY THE PANEL
-    REVISION ABOVE — kept verbatim below for history; do not build it as written.]
-      * A DEDICATED YAP PROJECT. Explicitly NOT the Drivia project
-        (\`vlfrzdbqwsnrosmcygca\`), which is over its free-tier limits; a
-        licensing outage caused by an unrelated product's usage is the worst
-        possible coupling. The project ref, its function URL, the Stripe webhook
-        signing secret, \`RESEND_API_KEY\` and \`YAP_SIGNING_KEY_PEM\` are
-        OWNER-PROVISIONED VALUES. None of them may be committed.
-      * THE GATE STAYS OFFLINE. Build and test against \`supabase start\` (the
-        local stack) or against stubs: the webhook handler takes its Stripe
-        client and its mailer as injected dependencies so the tests drive it
-        with a fixture event and a fixture key pair and never open a socket. If
-        \`supabase\` is not installed, the vitest suite must still pass — the
-        local-stack walk is a DOCUMENTED MANUAL STEP, not a gate conjunct.
-      * Write \`docs/YAP-LICENSING.md\`: what the flow is, and a
-        RUNTIME DEPENDENCIES table (same convention Y6-E puts in
-        ARCHITECTURE.md) with one row per provisioned value — what it is, who
-        provisions it, where it lives, and what breaks if it is missing.
-        Nothing may be listed as "assumed present on the machine".
-      * \`docs/RELEASE.md\` gains an ISSUANCE heading: deploy the function,
-        set the secrets, register the Stripe webhook endpoint, re-activate the
-        payment link, and the one-command liveness check for the issuer host
-        that belongs in the RELEASE CHECKLIST and never at runtime.
-
-    THE PROOF, which is the item's real evidence: issue a staging key from the
-    local stack, activate it in a clean \`YAP_DATA_DIR\` (Y0-D), assert the
-    entitlement flips and a dictation completes.
-
-    What NOT to do:
-      - Do NOT put the signing key, or any path to a live one, in this repo.
-      - Do NOT make dictation depend on reaching the issuer. Offline verify
-        stays the mechanism; retrieval and revocation are conveniences.
-      - Do NOT point anything at the Drivia Supabase project.
-      - Do NOT change the claims wire format or the pinned public key.
-      - Do NOT delete the Forge implementation from drivia-forge as part of this
-        item. Two live issuers signing with one key is fine; one dead customer
-        path is not. Decommission is a release step, after the proof.
-  `,
-  acceptance: `
-    test -f supabase/functions/yap-license/index.ts
-    test -f supabase/functions/_shared/claims.ts
-    test -f docs/YAP-LICENSING.md
-    grep -q 'Runtime Dependencies' docs/YAP-LICENSING.md
-    grep -q 'ISSUANCE' docs/RELEASE.md
-    grep -rq 'retrieve' desktop/src/license
-    test 0 -eq "$(grep -c 'sslip.io' desktop/src-tauri/src/license.rs)"
-    test 0 -eq "$(grep -rl 'vlfrzdbqwsnrosmcygca' supabase desktop | wc -l | tr -d ' ')"
-    test 0 -eq "$(grep -rl 'BEGIN PRIVATE KEY' supabase desktop | wc -l | tr -d ' ')"
-    test -f desktop/src-tauri/tests/activation_e2e.rs
-    grep -q 'a_signed_key_flips_the_entitlement_and_dictation_resumes' desktop/src-tauri/tests/activation_e2e.rs
-    grep -q 'a_failed_activation_has_copy_and_an_action' desktop/src-tauri/tests/activation_e2e.rs
-    grep -q 'retrieval_failure_never_blocks_offline_verification' desktop/src-tauri/tests/activation_e2e.rs
-    grep -rq 'the_webhook_is_idempotent_on_event_id_and_session_id' supabase desktop/src
-    grep -rq 'the_signature_covers_the_ascii_bytes_of_the_claims_segment' supabase desktop/src
-    cd ${APP} && npm ci
-    npm test         ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-    cd src-tauri
-    cargo test --features custom-protocol --test activation_e2e ; test $? -eq 0
-    cd ../..
-    sed -i '' 's/pub const SOLD_PLAN: &str = "lifetime";/pub const SOLD_PLAN: \\&str = "lifetime_MUTANT";/' desktop/src-tauri/src/license.rs
-    ( cd ${APP}/src-tauri && cargo test --features custom-protocol --test activation_e2e ) ; test $? -ne 0
-    git checkout -- desktop/src-tauri/src/license.rs
-    git diff --exit-code -- desktop/src-tauri/src/license.rs
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-A', prompt: 'Y2', branch: 'loop/y2-a-license-status-reaches-the-pill-window', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #185) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'The float window subscribes to license status — the wiring that does not exist',
-  preflight: `
-    grep -q 'license' desktop/src-tauri/src/float_pill.rs
-    grep -q 'license_status\\|LicenseStatus' desktop/src/float-main.tsx
-    cd ${APP} && npm ci && npm test -- pill
-  `,
-  spec: `
-    Tauri events emitted with \`app.emit\` reach every window, but the float
-    window has no listener and no state, so the payload lands nowhere.
-    \`desktop/src/float-main.tsx\` is 53 lines and mounts a pill; it subscribes
-    to nothing license-shaped.
-
-    Do:
-      * In float-main.tsx, on mount: \`invoke<LicenseStatus>("license_status")\`
-        for the initial value (the same command App.tsx:1194 calls), then
-        \`listen<LicenseStatus>("license", ...)\` and
-        \`listen<LicenseStatus>("license_required", ...)\`. Hold it in one piece
-        of state and pass it to whichever pill is mounted.
-      * REUSE \`desktop/src/license/status.ts\` verbatim — \`chipFor\`,
-        \`daysLeft\`, \`trialCountdown\`, \`statusCopy\`. Do not write a second
-        copy of the trial arithmetic for the pill; that file exists precisely so
-        the card, the prompt and the changelog "cannot drift apart" (its own
-        doc comment) and the pill is now a fourth consumer.
-      * Add a pure \`pillLicense(status)\` to a new
-        \`desktop/src/pill/license.ts\` returning
-        \`{ show: boolean, tone: "trial"|"urgent"|"ended", glyph: string,
-           value: string|null, title: string }\`, with the display POLICY in one
-        pure function so Y2-B/C/D render it and never re-decide it:
-          - licensed                        -> show: false. Nothing. Ever.
-          - trial, days_left > 7            -> show: false (ambient silence)
-          - trial, 1..7 days                -> show: true, tone trial,  value "Nd"
-          - trial, last day / 0             -> show: true, tone urgent, value "1d"
-          - license_required                -> show: true, tone ended
-        Seven days, not three: the pill is ambient and cheap to glance at, and
-        the one-shot toast at TRIAL_WARN_DAYS = 3 stays exactly as it is. Say
-        both numbers in the doc comment so the difference reads as deliberate.
-      * The pill NEVER shows a price in this item. The money copy belongs to the
-        purchase surface (Y2-D), and \`PRICE_LABEL\` must not be imported by any
-        file under desktop/src/pill/.
-
-    Tests in \`desktop/src/pill/license.test.ts\`, table-driven over the full
-    fortnight (14 -> 0) plus licensed and license_required: assert the exact
-    show/tone/value for each day, and assert \`show === false\` for every
-    licensed status regardless of trial fields (a licensed user who once had a
-    trial must see nothing).
-
-    What NOT to do:
-      - Do NOT poll \`license_status\` on an interval from the pill. It is
-        event-driven; the backend already emits on every change.
-      - Do NOT re-derive days-left from \`expires_at_ms\` and a second wall-clock read in the
-        pill. The backend owns the clock, including the rollback floor
-        (license.rs:473-520). A second clock is a second answer.
-  `,
-  acceptance: `
-    test -f desktop/src/pill/license.ts
-    test -f desktop/src/pill/license.test.ts
-    grep -q 'pillLicense' desktop/src/pill/license.ts
-    grep -q 'license_status' desktop/src/float-main.tsx
-    grep -q 'license_required' desktop/src/float-main.tsx
-    grep -q 'from "../license/status"' desktop/src/pill/license.ts
-    # the pill never learns the price
-    test 0 -eq "$(git grep -c 'PRICE_LABEL' -- desktop/src/pill | wc -l)"
-    # no second clock in the pill
-    test 0 -eq "$(grep -c 'now()' desktop/src/pill/license.ts)"
-    cd ${APP} && npm ci
-    npm test -- pill/license ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build            ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-B', prompt: 'Y2', branch: 'loop/y2-b-pill-trial-countdown-in-both-styles', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #186 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. AMENDED 2026-09-26 (architecture audit): the display POLICY this item draws is superseded in part by yap24-PILL1 — the pill must show the trial from day 14, not only from day 7 (pill/license.ts:136-165 is silent above 7 days; Wilson 2026-09-26 "the pill does not indicate ... 14 days"). Build Y2-B to the current policy; PILL1 changes the policy on top of it.`,
-  title: 'A quiet trial numeral on the pill in both pill styles, in the 30px side dock too',
-  preflight: `
-    grep -q 'pillLicense' desktop/src/pill/ClassicPill.tsx
-    grep -q 'pillLicense' desktop/src/pill/YappyPill.tsx
-    cd ${APP} && npm ci && npm test -- pill
-  `,
-  spec: `
-    Render \`pillLicense(status)\` from Y2-A in both pills. \`ClassicPill.tsx\` is
-    the DEFAULT (\`lib.rs:407 pill_style: "classic"\`) so it is not optional, and
-    \`YappyPill.tsx\` is the character pill.
-
-    ClassicPill: a small trailing chip on the capsule — the numeral in
-    Departure Mono (the pixel face already bundled at
-    src/assets/fonts/DepartureMono-Regular.woff2, and the face \`chipFor\` in
-    status.ts:118 already says "the component sets it in Departure Mono"), the
-    unit in the body face. \`urgent\` shifts hue and nothing else: no pulsing, no
-    animation, no motion. A countdown that moves is a countdown that nags.
-
-    YappyPill: Yappy holds it. Same numeral, same silence — a posture change at
-    \`urgent\` (ears down, one blink slower) rather than a badge, because this
-    pill's whole job is that state reads as character
-    (feedback_companion_must_be_cute: pixel art, chunky, no angry eyebrows).
-
-    THE SIDE DOCK IS THE HARD CASE AND IT IS IN SCOPE. Per
-    reference_wispr_parity_research §4.2, Wispr's side-docked bar is a 30 px
-    strip and their fixed-width label states "crush in a 30px column", which is
-    why only the primary listening states rotate. A "3d" numeral fits a 30 px
-    column; "3 days left" does not. So: the pill shows the VALUE only, and the
-    full sentence lives in the \`title\` (tooltip) which \`pillLicense\` already
-    returns. Verify at all three dock positions — \`pill_position\` is
-    \`bottom|left|right\` (lib.rs:408 default "bottom").
-
-    prefers-reduced-motion: ClassicPill.tsx:44-47 already paints one calm static
-    frame under Reduce Motion. The trial chip must be present in that frame —
-    it is information, not decoration, and must not be hidden with the animation.
-
-    Tests: extend \`desktop/src/pill/license.test.ts\` for the geometry policy
-    (\`value\` is never longer than 3 characters for any day 0..14) and add a
-    vitest render assertion per pill that the chip is present for
-    \`days_left: 5\`, absent for \`licensed\`, and present under a mocked
-    \`matchMedia("(prefers-reduced-motion: reduce)") => matches: true\`.
-
-    PR body owes: the pill captured at bottom, left and right docks, for
-    days_left 10 (hidden), 5 (trial), 1 (urgent) and license_required.
-
-    What NOT to do:
-      - Do NOT animate, pulse, bounce or flash the countdown.
-      - Do NOT put the word "upgrade" or a price on the capsule. That is Y2-D.
-      - Do NOT let the chip widen the capsule enough to break the 30 px strip.
-  `,
-  acceptance: `
-    grep -q 'pillLicense' desktop/src/pill/ClassicPill.tsx
-    grep -q 'pillLicense' desktop/src/pill/YappyPill.tsx
-    grep -q 'reduce' desktop/src/pill/ClassicPill.tsx
-    grep -q 'value_is_never_wider_than_the_side_dock\\|valueFitsSideDock' desktop/src/pill/license.test.ts
-    cd ${APP} && npm ci
-    npm test -- pill ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-C', prompt: 'Y2', branch: 'loop/y2-c-trial-ended-pill-state-and-refused-press', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #187) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'A refused hotkey press produces a pill state that explains itself, instead of a throttled notification',
-  preflight: `
-    grep -q '"gated"' desktop/src/pill/live.ts
-    cd ${APP} && npm ci && npm test -- pill/live
-  `,
-  spec: `
-    Today, past the trial: \`license_allows_new_dictation\` (lib.rs:1111-1126)
-    emits \`license_required\`, calls \`notify()\` if \`should_announce_gate()\`
-    permits, logs, returns false. The pill does not move. The user holds the key
-    and nothing happens — which is the single worst possible reading of a
-    paid-product boundary, because it is indistinguishable from a broken app.
-
-    Add \`"gated"\` to \`LivePhase\` (live.ts:252, currently
-    \`idle|listening|thinking|done|sleepy\`, plus \`"blocked"\` from PERM-C) and
-    render it in both pills: the capsule takes the \`ended\` tone from
-    \`pillLicense\`, shows the trial-ended glyph, and a click opens the purchase
-    surface in the main window. It holds for ~2.5 s after a refused press and
-    then settles back to the persistent \`ended\` chip, so leaning on the hotkey
-    is answered every time without the state becoming permanent noise.
-
-    Precedence, asserted in tests, because these will collide in real use:
-      blocked (no mic)  >  gated (no license)  >  listening  >  thinking  >  done
-    The microphone reason wins: telling a user to buy a license when Yap cannot
-    hear them is the wrong sentence. This is the same order PERM-C enforces in
-    \`start_recording\` and the pill must not disagree with the backend.
-
-    Keep \`should_announce_gate\`'s throttle for the SYSTEM notification exactly
-    as it is. The pill state is not throttled — it is the cheap in-place signal
-    that makes the throttle safe.
-
-    Copy, from the strings that already exist so nothing drifts:
-    \`statusCopy(license_required)\` = "Dictation is paused" / "Everything you
-    have already written is still here and still exportable." The pill shows the
-    headline; the tooltip carries the body. Reuse, do not rewrite.
-
-    Tests in \`desktop/src/pill/live.test.ts\` (271 lines already):
-      * \`gated_holds_then_settles_to_the_ended_chip\`
-      * \`blocked_outranks_gated\`
-      * \`gated_never_suppresses_the_done_state_of_a_take_already_in_flight\` —
-        the trial ending must not eat the result of a take that was allowed to
-        start. license.rs's own doc (lib.rs:1100-1108) says the gate "never
-        takes back the ones already spoken"; this is that promise in the UI.
-
-    What NOT to do:
-      - Do NOT make the gated state permanent-modal or focus-stealing. The pill
-        is non-activating (\`macOSPrivateApi: true\`, NSPanel behaviour).
-      - Do NOT disable the pill's other affordances. History, search, export and
-        settings all keep working past the trial — that is the product's
-        promise (KEEP_FOREVER_LINE in status.ts) and the pill must not imply
-        otherwise.
-  `,
-  acceptance: `
-    grep -q '"gated"' desktop/src/pill/live.ts
-    grep -q 'blocked_outranks_gated' desktop/src/pill/live.test.ts
-    grep -q 'gated_never_suppresses_the_done_state' desktop/src/pill/live.test.ts
-    grep -q 'gated' desktop/src/pill/ClassicPill.tsx
-    grep -q 'gated' desktop/src/pill/YappyPill.tsx
-    grep -q 'statusCopy' desktop/src/pill/license.ts
-    cd ${APP} && npm ci
-    npm test -- pill ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-F', prompt: 'Y2', branch: 'loop/y2-f-a-stored-key-that-grants-nothing-is-not-a-lapsed-trial', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #189) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'A paying customer whose key stops verifying is never shown a price',
-  preflight: `
-    grep -rq 'storedKeyProblem' desktop/src/pill
-    cd ${APP} && npm ci && npm test -- license
-  `,
-  spec: `
-    PANEL 2026-09-12, THREE seats independently — the most-converged gap in the
-    trial lane. MEASURED at 4e8c9adf: the backend already distinguishes "a key
-    is stored and granted nothing" and only the main window renders it.
-      desktop/src/license/status.ts:47-48  license_problem_message,
-                                           has_stored_license
-      desktop/src/license/status.ts:213-217  storedKeyProblem(status)
-      desktop/src/license/status.ts:70      DEFAULT_SEATS = 3
-      desktop/src/license/status.test.ts:162  "This license was refunded or
-                                           charged back."
-      grep -rn 'storedKeyProblem|has_stored_license|license_problem_message'
-        over all item files -> no functional hit
-    Y2-A's pillLicense policy enumerates exactly three inputs — licensed, trial
-    with days, license_required — so a revoked, unreadable, clock-broken or
-    seat-capped key collapses into license_required, Y2-C paints the "ended"
-    tone, and Y2-D offers the Payment Link to someone who has already paid.
-    That is the most expensive sentence this app can say.
-
-    Do:
-      * pillLicense gains a SIXTH branch: \`has_stored_license && state !==
-        "licensed"\` -> tone \`problem\`. Its copy comes from
-        \`license_problem_message\`, never from the purchase copy, and it is
-        distinct from the lapsed-trial tone at a glance in both pill styles.
-      * Its click opens the License panel (re-activate / re-paste the key). NO
-        purchase affordance is reachable from this tone — assert that.
-      * The tray row says the same sentence, from the same source (Y2-E).
-      * Table test over the whole matrix, including a revoked key, an unreadable
-        store and a seat-capped key.
-
-    Depends on Y2-A (the wiring) and pairs with Y2-D's "never show a price to a
-    stored-key holder" rule, which this item is what makes checkable.
-  `,
-  acceptance: `
-    grep -rq 'storedKeyProblem' desktop/src/pill
-    grep -rq "problem" desktop/src/pill/license.ts
-    test -f desktop/src/pill/license.test.ts
-    grep -q 'a_revoked_key_never_shows_a_price' desktop/src/pill/license.test.ts
-    grep -q 'a_seat_capped_key_reads_as_a_problem_not_a_lapsed_trial' desktop/src/pill/license.test.ts
-    grep -q 'the_problem_tone_opens_the_license_panel' desktop/src/pill/license.test.ts
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm test         ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-D', prompt: 'Y2', branch: 'loop/y2-d-one-upgrade-path-from-the-pill', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #191 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'One click from the pill to purchase, reusing the existing Payment Link — no new money surface',
-  preflight: `
-    grep -q 'open_purchase_page\\|show_purchase' desktop/src-tauri/src/float_pill.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test purchase_from_pill
-  `,
-  spec: `
-    The purchase machinery is built and proven: \`license::PAYMENT_LINK_URL\` is a
-    compile-time constant, \`open_purchase_page\` is the only thing that can hand
-    a URL to \`open(1)\` (status.ts:56-62 documents exactly this discipline and
-    cites the Stripe objects), and \`src/license/PurchasePrompt.tsx\` is the
-    sheet. Stripe was E2E-proven including the refund and dispute legs
-    (project_yap_build_state, yap21).
-
-    All this item does is connect the pill to it:
-      * Clicking the pill in \`gated\` or \`urgent\` tone focuses the main window
-        and raises the existing PurchasePrompt. It does NOT open a browser
-        directly from the pill — the sheet is where the $29 / $19 founding copy,
-        the seats line and KEEP_FOREVER_LINE live, and skipping it would put
-        Wilson's user in Stripe with no context.
-      * Add one Rust command \`reveal_purchase_prompt\` that unminimizes + focuses
-        the main window and emits \`show_purchase\`. App.tsx listens and raises
-        the sheet. The pill's job ends at "ask the main window".
-      * The pill's own click target must not steal focus on hover or on the
-        press that starts a dictation. \`ClassicPill.tsx\` already publishes a
-        hitbox (\`watchPillHitbox\`, YV65) — the upgrade affordance shares it and
-        is only live when \`pillLicense().show\` is true, so a licensed user's
-        pill has no dead click region.
-
-    Test \`tests/purchase_from_pill.rs\`:
-      * \`reveal_purchase_prompt_never_opens_a_url\` — assert the command's body
-        contains no call into the opener; the URL path stays behind
-        \`open_purchase_page\`. This is a security property, not a style
-        preference: one function is the only thing that may be handed to open(1).
-      * \`pill_upgrade_is_inert_when_licensed\`.
-
-    What NOT to do:
-      - Do NOT add a second Payment Link, price string, or coupon code anywhere.
-        FOUNDING_CODE and PRICE_LABEL live in status.ts and PAYMENT_LINK_URL
-        lives in Rust; a third copy is a mispriced checkout waiting to happen.
-      - Do NOT open a browser from the float window.
-  `,
-  acceptance: `
-    grep -q 'fn reveal_purchase_prompt' desktop/src-tauri/src/lib.rs
-    grep -rq 'show_purchase' desktop/src
-    grep -q 'reveal_purchase_prompt' desktop/src/pill/license.ts
-    test -f desktop/src-tauri/tests/purchase_from_pill.rs
-    grep -q 'reveal_purchase_prompt_never_opens_a_url' desktop/src-tauri/tests/purchase_from_pill.rs
-    # exactly one payment link and one price label in the tree
-    test 1 -eq "$(git grep -c 'PAYMENT_LINK_URL: ' -- desktop/src-tauri/src/license.rs | cut -d: -f2)"
-    test 1 -eq "$(git grep -l 'PRICE_LABEL =' -- desktop/src | wc -l | tr -d ' ')"
-    cd ${APP} && npm ci && npm run build ; test $? -eq 0
-    cd src-tauri && cargo test --features custom-protocol --test purchase_from_pill ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y2-E', prompt: 'Y2', branch: 'loop/y2-e-menu-bar-tray-carries-the-same-truth', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #194) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'The menu-bar item says the same thing as the pill and the settings card, from one source',
-  preflight: `
-    grep -q 'pillLicense\\|license_tray_line' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test tray_license
-  `,
-  spec: `
-    Yap has a tray menu (YV26; \`sync_tray\` referenced at lib.rs:4468) and it
-    does not mention the trial. Wispr's status menu carries the state
-    (reference_wispr_parity_research §2.2, \`hub_status_menu_*\`). A user who
-    hides the pill — \`show_floating_pill\` is a setting (lib.rs:406) — currently
-    has NO ambient signal at all.
-
-    Add to the tray, from the SAME decision function so the three surfaces can
-    never disagree:
-      * A disabled header item carrying the state: "Trial — 5 days left" /
-        "Licensed" / "Trial ended — dictation paused".
-      * An "Upgrade Yap — $29 once" item, present only when
-        \`pillLicense().show\` is true, firing \`reveal_purchase_prompt\`.
-      * The tray ICON takes the urgent treatment on the last day and past the
-        trial, and only then. A permanently decorated tray icon is noise.
-
-    The decision must be shared, not duplicated: add
-    \`license::tray_line(&LicenseStatus) -> (String, bool /*urgent*/)\` in Rust
-    and assert in \`tests/tray_license.rs\` that its day boundaries match
-    \`pillLicense\`'s exactly — 7 days to appear, urgent at <= 1 — by reading the
-    thresholds from named constants that both sides import. Name them once:
-    \`license::PILL_SHOW_DAYS = 7\` and \`license::PILL_URGENT_DAYS = 1\`, exported
-    to TS through a generated constants module or asserted equal by a test that
-    parses both files. Prefer the test-parses-both-files approach; it needs no
-    build step and it fails loudly.
-
-    \`sync_tray\` is already guarded and already the only place the tray is
-    rebuilt — keep it that way. \`tests/tray_hotkey_no_collision.rs\` exists;
-    do not disturb it.
-
-    What NOT to do:
-      - Do NOT add a badge count or a number on the tray icon.
-      - Do NOT hardcode 7 and 1 in two languages. The whole point of this item
-        is one source of truth for three surfaces.
-  `,
-  acceptance: `
-    grep -q 'PILL_SHOW_DAYS' desktop/src-tauri/src/license.rs
-    grep -q 'PILL_URGENT_DAYS' desktop/src-tauri/src/license.rs
-    grep -q 'fn tray_line' desktop/src-tauri/src/license.rs
-    test -f desktop/src-tauri/tests/tray_license.rs
-    grep -q 'pill_and_tray_share_the_same_day_thresholds' desktop/src-tauri/tests/tray_license.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test tray_license            ; test $? -eq 0
-    cargo test --features custom-protocol --test tray_hotkey_no_collision ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'DB-A', prompt: 'Y2', branch: 'loop/db-a-usage-metering-and-limit-surface', gated: 'panel',
-  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
-  title: 'Usage metering and a "limit reached" surface — the numbers are Wilson\'s call',
-  preflight: `
-    grep -q 'usage_window\\|words_this_week' desktop/src-tauri/src/db.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test usage_meter
-  `,
-  spec: `
-    GATED: 'panel'. Wilson said the pill must tell people "when they reach their
-    limits". Yap has no limits today, by decision — $29 lifetime, 14-day
-    full-feature trial, "no subscription v1", and
-    reference_wispr_parity_research §3 lists "trial nag surfaces" under
-    "Explicitly not wanted". Wispr's limit is 2,000 words/week on its free
-    desktop tier with a \`WeeklyWordsLimitReached\` notification
-    (§2.8 [LOCAL], §5.2 [OFFICIAL]). Yap's own marketing line is the opposite:
-    "No account, no cloud, no subscription tier gating your words."
-
-    So the MECHANISM is buildable now and the POLICY is not. What the panel and
-    Wilson must decide before this item's numbers are written:
-      1. Does Yap gain a metered free tier after the trial at all, or does the
-         trial simply end (today's behaviour)?
-      2. If metered: the unit (words / minutes / takes), the window (day /
-         week / rolling 7d), and the number.
-      3. Does a limit throttle NEW dictation only, matching the trial's
-         boundary exactly (lib.rs:1100-1108), or degrade quality? (Degrading
-         quality is almost certainly wrong — say so and let it be rejected.)
-      4. Does the pill show consumption before the limit (a Wispr-style
-         "1,847 / 2,000 words" readout) or only on arrival?
-
-    BUILD REGARDLESS, because it is useful with or without a limit and it is
-    the honest version of Insights:
-      * \`usage\` rollup in SQLite: words and voiced-seconds per local day,
-        written on take finalize, in the SAME transaction as the transcript row
-        so the two can never disagree. Reuse the existing rollup shape —
-        \`db.rs\` already carries an insights/day-series path
-        (\`tests/meeting_stats_rollup.rs\`, \`get_insights\`, lib.rs:2420) —
-        rather than adding a parallel aggregate.
-      * \`db::usage_window(unit, window) -> UsageWindow { used, window_start }\`,
-        pure over the rollup, with the LIMIT VALUE passed in by the caller and
-        NOT stored in this function. That is the seam that lets the policy land
-        later as one constant.
-      * \`pillLicense\` (Y2-A) grows a \`limit\` branch behind a single
-        \`LIMIT_ENABLED\` constant that is FALSE in this item. Wire the state,
-        the copy and the tests; ship it dark.
-      * Copy drafted, not shipped, for Wilson's review before any send-equivalent
-        moment: the limit-reached sentence must name what still works
-        (history, search, export, settings — KEEP_FOREVER_LINE) before it names
-        what stopped.
-
-    Tests \`tests/usage_meter.rs\`: rollup is written in the transcript's
-    transaction (kill the process between and assert neither exists); a local-day
-    boundary rolls at local midnight, not UTC; a rolling 7-day window excludes
-    day 8 exactly; \`LIMIT_ENABLED == false\` means no gate is ever consulted.
-
-    What NOT to do:
-      - Do NOT pick a number. Do NOT ship \`LIMIT_ENABLED = true\`.
-      - Do NOT meter by wall-clock recording time. Voiced seconds and words are
-        the units a user recognises; a paused hotkey is not consumption.
-      - Do NOT send any usage figure anywhere. Local only, forever.
-  `,
-  acceptance: `
-    grep -q 'fn usage_window' desktop/src-tauri/src/db.rs
-    grep -q 'LIMIT_ENABLED' desktop/src-tauri/src/license.rs
-    grep -qE 'LIMIT_ENABLED: *bool *= *false' desktop/src-tauri/src/license.rs
-    grep -q 'limit' desktop/src/pill/license.ts
-    test -f desktop/src-tauri/tests/usage_meter.rs
-    grep -q 'rollup_is_written_in_the_transcript_transaction' desktop/src-tauri/tests/usage_meter.rs
-    grep -q 'local_day_boundary_is_local_not_utc' desktop/src-tauri/tests/usage_meter.rs
-    # nothing leaves the machine
-    test 0 -eq "$(git grep -cE 'reqwest|http://|https://' -- desktop/src-tauri/src/db.rs | wc -l)"
-    cd ${APP} && npm ci && npm test ; test $? -eq 0
-    cd src-tauri && cargo test --features custom-protocol --test usage_meter ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'SEC-B', prompt: 'Y2', branch: 'loop/sec-b-trial-state-machine-hardening', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #195 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'The trial state machine gets the adversarial tests its own doc comment promises',
-  preflight: `
-    test -f desktop/src-tauri/tests/trial_state_machine.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test trial_state_machine
-  `,
-  spec: `
-    \`license.rs\` documents its own threat model carefully (license.rs:43-53:
-    "A local trial clock on a machine the user controls is deterrence, not
-    security"; :473-483 the two-store earliest-wins rule and the
-    max-seen-wall-clock floor). The implementation looks right. What it lacks is
-    a test file that drives the fortnight and the attacks end to end — and Y2's
-    whole UI layer is about to depend on \`days_left\` being correct on every one
-    of those days.
-
-    Create \`desktop/src-tauri/tests/trial_state_machine.rs\` over
-    \`evaluate_trial\` / \`decide_entitlement\` with the in-memory store
-    (\`MemoryStore\`, license.rs:382 — it already exists for this purpose and
-    counts writes, so the tests need no disk and no app):
-      * \`first_run_starts_the_trial_and_reports_fourteen\`
-      * \`each_day_reports_one_fewer_and_zero_is_the_last_day\` — all 15 values.
-      * \`clock_rolled_back_cannot_rewind_the_trial\` — the wall-clock floor.
-      * \`deleting_the_license_file_does_not_restart_the_trial\` — the DB store
-        still holds the start (license.rs:361-363 names this exact attack).
-      * \`deleting_the_db_row_does_not_restart_the_trial\` — the mirror case.
-      * \`earlier_of_the_two_stores_wins\`
-      * \`a_valid_license_beats_an_expired_trial\`
-      * \`a_revoked_license_does_not_cancel_a_running_trial\` (license.rs:568-569
-        states this; assert it).
-      * \`expired_trial_stops_only_new_dictation\` — assert \`allows_new_dictation\`
-        is false while nothing else in the entitlement changes. Pair it with the
-        existing \`tests/license_gate.rs\` call-site sweep rather than repeating it.
-      * \`trial_days_left_never_goes_negative\`
-      * \`should_announce_gate_throttles\` — N presses produce one announcement.
-
-    Then close the loop to the UI: a test that for every day 14..0 the Rust
-    \`days_left\` and the TS \`daysLeft\`/\`trialCountdown\` agree. Do it by
-    generating a small JSON fixture from the Rust test
-    (\`desktop/src-tauri/tests/fixtures/trial_days.json\`) and reading it from a
-    vitest case, so the two languages are pinned to one table instead of two
-    hand-written ladders.
-
-    What NOT to do:
-      - Do NOT make the trial cryptographic. license.rs:43 already closed that:
-        deterrence, not security. Rewriting it as DRM is out of scope and a
-        product change nobody asked for.
-      - Do NOT test by sleeping. Inject the clock.
-    PANEL 2026-09-12 — the attack ladder is missing the direction that actually
-    fires in the field. \`evaluate_trial\` sets
-    \`effective_now = max(wall, monotonic, recorded_floor)\` (license.rs:490-496)
-    and writes \`floor_ms = effective_now\` back to both stores (:521). A trial
-    START in the future IS clamped (\`stored_start.unwrap_or(effective_now)
-    .min(effective_now)\`, :505); the FLOOR is not. So ONE forward clock
-    excursion — a restored Time Machine image, a bad NTP jump, a user who set
-    the date forward once — permanently poisons the floor, the trial reads
-    expired on day two, and the design deliberately removes every ordinary
-    recovery (deleting the file or the row buys nothing, by earliest-wins). This
-    loop then builds a countdown numeral, a hard \`gated\` pill state, a refused
-    press and a purchase sheet on top of that latch, so a quiet backend bug
-    becomes a surface telling a user who never had a fair trial to pay.
-      * Clamp the floor the way the start is clamped: refuse to advance the
-        recorded floor more than a few hours beyond the current wall clock, and
-        RECORD the excursion instead of absorbing it.
-      * Add \`forward_clock_excursion_does_not_expire_the_trial\` and
-        \`a_poisoned_floor_can_be_cleared_by_a_signed_grace_claim\`.
-      * Give support one non-DRM lever: the signature path already exists, so a
-        signed grace/extension claim costs nothing and turns an unrecoverable
-        lockout into an email. LIC-A uses the same claim.
-
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/trial_state_machine.rs
-    test -f desktop/src-tauri/tests/fixtures/trial_days.json
-    grep -q 'clock_rolled_back_cannot_rewind_the_trial' desktop/src-tauri/tests/trial_state_machine.rs
-    grep -q 'deleting_the_license_file_does_not_restart_the_trial' desktop/src-tauri/tests/trial_state_machine.rs
-    grep -q 'a_revoked_license_does_not_cancel_a_running_trial' desktop/src-tauri/tests/trial_state_machine.rs
-    grep -q 'trial_days' desktop/src/license/status.test.ts
-    test 0 -eq "$(grep -c 'thread::sleep' desktop/src-tauri/tests/trial_state_machine.rs)"
-    cd ${APP} && npm ci
-    npm test -- license ; test $? -eq 0
-    cd src-tauri && cargo test --features custom-protocol --test trial_state_machine ; test $? -eq 0
-    cargo test --features custom-protocol --test license_gate                        ; test $? -eq 0    grep -q 'forward_clock_excursion_does_not_expire_the_trial' desktop/src-tauri/tests/trial_state_machine.rs
-    grep -q 'a_poisoned_floor_can_be_cleared_by_a_signed_grace_claim' desktop/src-tauri/tests/trial_state_machine.rs
-
   `,
 })
 
