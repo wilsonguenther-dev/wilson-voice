@@ -1031,11 +1031,14 @@ export function useAppShell() {
     await refreshInsights();
   }
 
-  async function saveSettings(next: AppSettings) {
+  // `quiet` — a save the user did not make as a settings change (finishing or
+  // skipping onboarding) persists without the "Settings saved" toast
+  // (yap-uiux-2026-10-16-O3: the toast showed on every view after Skip).
+  async function saveSettings(next: AppSettings, { quiet = false }: { quiet?: boolean } = {}) {
     try {
       await invoke("save_settings", { settings: next });
       setSettings(next);
-      toast("Settings saved");
+      if (!quiet) toast("Settings saved");
     } catch (e) {
       toast(String(e));
     }
@@ -1097,11 +1100,14 @@ export function useAppShell() {
   // first-run flow does not re-appear on next launch. Uses saveSettings per spec.
   async function finishOnboarding(sample: string | null) {
     if (!settings) return;
-    await saveSettings({
-      ...settings,
-      onboarded: true,
-      calibrationSample: sample ?? settings.calibrationSample ?? null,
-    });
+    await saveSettings(
+      {
+        ...settings,
+        onboarded: true,
+        calibrationSample: sample ?? settings.calibrationSample ?? null,
+      },
+      { quiet: true },
+    );
   }
 
   // YV54 — the model picker's one home: Settings → Advanced. Every "get / manage

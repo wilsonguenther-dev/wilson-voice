@@ -1693,6 +1693,34 @@ button.star.on {
   display: grid;
   gap: 12px;
 }
+/* ONBOARD — name and grant button share one line, the why sits under them,
+   so both rows plus Back / Continue still fit the 720x520 floor. */
+.onboard-perm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.onboard-perms li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-height: 600px) {
+  .onboard-card {
+    padding: 20px 24px;
+  }
+  .onboard-perms li {
+    padding: 10px 12px;
+  }
+  .onboard-actions {
+    margin-top: 14px;
+  }
+}
+
 .onboard-perms li {
   display: flex;
   gap: 12px;
@@ -1799,12 +1827,41 @@ button.star.on {
   color: var(--muted);
 }
 
+.onboard-plan {
+  margin: 0 0 4px;
+  padding-left: 1.3em;
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.onboard-plan li.muted {
+  color: var(--muted);
+  list-style: none;
+  margin-left: -1.3em;
+  margin-top: 4px;
+}
+
 .onboard-card .model-ribbon {
   margin-top: 24px;
 }
 
-.main > .model-ribbon {
-  margin: 0 24px 8px;
+/* yap-uiux-2026-10-16-O2 — after onboarding the ribbon is shell chrome, at
+   the sidebar foot above Dictate, never inside a view's content. The sidebar
+   is narrow, so the line wraps under a full-width track. */
+.sidebar-foot .model-ribbon {
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.sidebar-foot .model-ribbon-track {
+  flex: 1 0 100%;
 }
 
 .model-ribbon-track {

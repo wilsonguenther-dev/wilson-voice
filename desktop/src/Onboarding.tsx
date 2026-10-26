@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   ModelRibbon,
+  fmtSize,
   PolishModelPicker,
   useModelSetup,
   usePolishModel,
@@ -414,11 +415,22 @@ export default function Onboarding({
               and Yap types for you — powered by on-device Whisper. Nothing
               leaves this machine.
             </p>
-            <p className="muted">
-              Two quick steps: grant macOS permissions, then record a short
-              calibration phrase so Yap learns your voice. Your speech model is
-              already downloading in the background — nothing to pick.
-            </p>
+            {/* yap-uiux-2026-10-16-ONBOARD — the plan as a list, one line per
+                step, so the user can see what is coming (and how big the
+                background download is) before pressing anything. */}
+            <ol className="onboard-plan">
+              <li>Grant macOS permissions — each one says why Yap needs it.</li>
+              <li>Record a short calibration phrase so Yap learns your voice.</li>
+              <li className="muted">
+                Meanwhile your speech model
+                {modelSetup.target && !modelSetup.ready
+                  ? ` (${fmtSize(modelSetup.target.sizeBytes)})`
+                  : ""}{" "}
+                {modelSetup.ready
+                  ? "is ready."
+                  : "downloads in the background — progress shows at the foot of this card."}
+              </li>
+            </ol>
             <div className="onboard-actions">
               <button className="primary" onClick={goNext}>
                 Get started
@@ -447,8 +459,10 @@ export default function Onboarding({
               <li className={micOk ? "ok" : "bad"} data-mic-status={micStatus}>
                 <StatusDot ok={micOk} />
                 <div>
+                  {/* ONBOARD — the grant button first, beside the name, and
+                      the one line of why after it, on every permission row. */}
+                  <div className="onboard-perm-head">
                   <strong>{micCopy.title}</strong>
-                  <p>{micCopy.body}</p>
                   {micAction.kind === "request" && (
                     <button onClick={requestMic}>{micAction.label}</button>
                   )}
@@ -460,16 +474,30 @@ export default function Onboarding({
                       {micAction.label}
                     </button>
                   )}
+                  </div>
+                  <p>{micCopy.body}</p>
                 </div>
               </li>
               <li className={axOk ? "ok" : "bad"}>
                 <StatusDot ok={axOk} />
                 <div>
-                  <strong>Accessibility</strong>
+                  <div className="onboard-perm-head">
+                    <strong>Accessibility</strong>
+                    <button onClick={requestAccessibility}>
+                      {axOk ? "Granted ✓" : "Prompt Accessibility"}
+                    </button>
+                  </div>
                   <p>{nameProduct("Lets Yap paste text into any app (simulated ⌘V).", perms?.productName)}</p>
-                  <button onClick={requestAccessibility}>
-                    {axOk ? "Granted ✓" : "Prompt Accessibility"}
-                  </button>
+                  {/* A prompt macOS already answered does not ask twice: say
+                      exactly where the switch is. */}
+                  {!axOk && (
+                    <p className="muted tiny">
+                      {nameProduct(
+                        "Already asked? System Settings → Privacy & Security → Accessibility → switch on Yap.",
+                        perms?.productName,
+                      )}
+                    </p>
+                  )}
                 </div>
               </li>
             </ul>
@@ -528,7 +556,7 @@ export default function Onboarding({
                   : micWaiting
                     ? calibrationBlockedReason
                     : engineWaiting
-                      ? (modelSetup.ribbon ?? "Preparing your speech engine…")
+                      ? (modelSetup.ribbon ?? "Waiting for the speech model…")
                       : sample
                         ? "● Record again"
                         : "● Start recording"}

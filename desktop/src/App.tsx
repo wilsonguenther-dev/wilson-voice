@@ -130,6 +130,11 @@ export default function App() {
         </nav>
 
         <div className="sidebar-foot">
+          {/* YV54 + yap-uiux-2026-10-16-O2 — the speech-model ribbon lives here,
+              ONCE, in the shell's own chrome: it used to sit at the top of the
+              content area, so every Nav view carried a copy stacked above its
+              own heading. It retires itself the moment the engine is ready. */}
+          <ModelRibbon setup={modelSetup} />
           <button
             className={status.recording ? "dictate-side live" : "dictate-side"}
             onClick={toggleRecord}
@@ -302,12 +307,6 @@ export default function App() {
             )}
           </div>
         )}
-
-        {/* YV54 — no usable model is no longer a "Model needed" demand that
-            routes the user into a decision screen: the download is already
-            running, so this is the same slim ribbon onboarding shows, and it
-            retires itself the moment the engine is ready. */}
-        <ModelRibbon setup={modelSetup} />
 
         {/* yap-lifecycle — once per install, after the first red-X hide. It
             claims the hint on mount, so a hide during onboarding still shows. */}
