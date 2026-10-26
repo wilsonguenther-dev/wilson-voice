@@ -9,7 +9,7 @@ import Onboarding from "./Onboarding";
 import { ModelRibbon } from "./ModelSetup";
 import { PermissionHealthRow } from "./PermissionHealthRow";
 import { PermissionRepair } from "./PermissionRepairRow";
-import { canRepair, repairFromPill } from "./permissionRepair";
+import { canRepair, nameProduct, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
@@ -174,7 +174,10 @@ export default function App() {
               {nav === "home" &&
                 "Hold fn⌃ and talk — your words land where the cursor is."}
               {nav === "permissions" &&
-                "macOS must grant these to Yap itself. Without them, dictation or paste fails."}
+                nameProduct(
+                  "macOS must grant these to Yap itself. Without them, dictation or paste fails.",
+                  perms?.productName,
+                )}
               {nav === "meetings" &&
                 "Recorded meetings, searchable and exportable. Audio is kept for 7 days; the transcript stays."}
               {nav === "insights" &&
@@ -321,7 +324,7 @@ export default function App() {
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
-            for Yap
+            for {nameProduct("Yap", perms?.productName)}
           </div>
         )}
 

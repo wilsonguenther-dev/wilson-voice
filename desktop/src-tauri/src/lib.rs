@@ -1583,7 +1583,7 @@ struct MicGateNotice {
     prompting: bool,
 }
 
-const MIC_REQUIRED_MESSAGE: &str =
+pub(crate) const MIC_REQUIRED_MESSAGE: &str =
     "Yap cannot hear you — macOS is blocking the microphone. Open Yap → Permissions to turn it \
      back on.";
 
@@ -1645,7 +1645,11 @@ fn microphone_allows_new_dictation(app: &AppHandle, _state: &AppState) -> bool {
                 },
             );
             if should_announce_mic_gate() {
-                notify(app, "Yap", MIC_REQUIRED_MESSAGE);
+                notify(
+                    app,
+                    &perm_truth::product_name(),
+                    permissions::named(MIC_REQUIRED_MESSAGE),
+                );
             }
             log::info!(
                 "mic gate: new dictation declined — microphone {} (macOS will not re-prompt)",
@@ -2125,7 +2129,7 @@ const SILENT_CAPTURE_DEVICE_MESSAGE: &str =
 /// PERM-D — the same take, when the grant is the reason. The permission screen
 /// is surfaced alongside this, so the sentence names the cause and not an
 /// errand.
-const SILENT_CAPTURE_PERMISSION_MESSAGE: &str =
+pub(crate) const SILENT_CAPTURE_PERMISSION_MESSAGE: &str =
     "That take recorded pure silence — macOS is not letting Yap hear the microphone.";
 
 /// PERM-D — what a silent take writes on its recovery row. `'static`, like
@@ -3038,9 +3042,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // nothing wrong, the input did.
                 *state2.last_error.lock() = None;
                 let message = if needs_permission {
-                    SILENT_CAPTURE_PERMISSION_MESSAGE
+                    permissions::named(SILENT_CAPTURE_PERMISSION_MESSAGE)
                 } else {
-                    SILENT_CAPTURE_DEVICE_MESSAGE
+                    SILENT_CAPTURE_DEVICE_MESSAGE.to_string()
                 };
                 // The clip is preserved under the SAME recovery-dir lifecycle a
                 // rejected take gets (YV52/YV67). Deleting it would destroy the

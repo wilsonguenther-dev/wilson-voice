@@ -63,7 +63,26 @@ export type PermissionAction =
   | { kind: "settings"; label: string; pane: "Microphone" }
   | { kind: "none" };
 
-export function permissionCopy(status: MicPermissionStatus): PermissionCopy {
+/**
+ * fix-ax-probe-refresh — permission copy names the running product ("Yap Test"
+ * on the test channel), because that is the name System Settings lists. Pure.
+ * The ONE renaming mechanism on the frontend (Rust's twin is
+ * `permissions::name_product`); `product` is `PermissionReport.productName`.
+ */
+export function nameProduct(text: string, product?: string | null): string {
+  const p = product?.trim();
+  return p && p !== "Yap" ? text.replace(/\bYap\b(?! Test)/g, p) : text;
+}
+
+export function permissionCopy(
+  status: MicPermissionStatus,
+  product?: string | null,
+): PermissionCopy {
+  const c = micCopyFor(status);
+  return { ...c, title: nameProduct(c.title, product), body: nameProduct(c.body, product) };
+}
+
+function micCopyFor(status: MicPermissionStatus): PermissionCopy {
   switch (status) {
     case "not_determined":
       return {
@@ -223,6 +242,8 @@ export interface StaleGrant {
 
 /** The truth fields of `PermissionReport`. All optional: older payloads lack them. */
 export interface PermissionTruth {
+  /** `PermissionReport.productName` — "Yap Test" on the test channel. */
+  productName?: string | null;
   /** `NSBundle.mainBundle.bundlePath` of the process that asked macOS. */
   checkedBundlePath?: string | null;
   signingAuthority?: string | null;
@@ -241,8 +262,9 @@ export function failingConditionSentence(
 }
 
 /** "Another copy of Yap at <path> may hold the permission." */
-export function duplicateBundleSentence(path: string): string {
-  return `Another copy of Yap at ${path} may hold the permission.`;
+export function duplicateBundleSentence(path: string, product?: string | null): string {
+  // Only the product word is renamed — never the path, which may itself contain "Yap.app".
+  return `Another copy of ${nameProduct("Yap", product)} at ${path} may hold the permission.`;
 }
 
 /**
@@ -255,8 +277,9 @@ export function permissionTruthNotes(truth: PermissionTruth | null | undefined):
   const path = truth.checkedBundlePath;
   return [
     ...(truth.failingConditions ?? []).map((c) => failingConditionSentence(c, path)),
+    // Stale-grant lines are named at the source in Rust (perm_truth) and carry paths.
     ...(truth.staleGrants ?? []).map((g) => g.message),
-    ...(truth.duplicateBundles ?? []).map(duplicateBundleSentence),
+    ...(truth.duplicateBundles ?? []).map((p) => duplicateBundleSentence(p, truth.productName)),
   ];
 }
 
@@ -271,8 +294,11 @@ export const SYSTEM_AUDIO_SETTINGS_PATH =
  * which OTHER apps played sound while the tap stayed silent) suggests the grant
  * is missing. It states the evidence, not a fact: Yap cannot read TCC.
  */
-export function systemAudioDeniedSentence(checkedBundlePath?: string | null): string {
-  const who = checkedBundlePath ? checkedBundlePath : "Yap";
+export function systemAudioDeniedSentence(
+  checkedBundlePath?: string | null,
+  product?: string | null,
+): string {
+  const who = checkedBundlePath ? checkedBundlePath : nameProduct("Yap", product);
   return `No system audio reached ${who} in the last 2 meetings while other apps were playing sound — check System Audio Recording in System Settings › ${SYSTEM_AUDIO_SETTINGS_PATH}, then start a new meeting.`;
 }
 
@@ -335,7 +361,7 @@ export function permissionHealth(report: ({
   // checked and the real System Settings path, like every other #211 row.
   const firstDetail =
     first.key === "audio_capture"
-      ? systemAudioDeniedSentence(report?.checkedBundlePath)
+      ? systemAudioDeniedSentence(report?.checkedBundlePath, report?.productName)
       : first.detail;
   const line =
     denied.length === 1

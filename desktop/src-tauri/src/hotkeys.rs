@@ -437,9 +437,9 @@ pub fn degraded_line(
     let fn_reason = match fn_tap {
         FnTapStatus::Delivering => None,
         FnTapStatus::ArmedNoDelivery if probe_granted => None,
-        FnTapStatus::ArmedNoDelivery => {
-            Some("macOS is not delivering key events to Yap (Input Monitoring is off)".to_string())
-        }
+        FnTapStatus::ArmedNoDelivery => Some(crate::permissions::named(
+            "macOS is not delivering key events to Yap (Input Monitoring is off)",
+        )),
         FnTapStatus::NotAttempted => Some("the fn listener has not started".to_string()),
         FnTapStatus::Blocked(r) => Some(r.clone()),
         FnTapStatus::SecureInput(holder) => Some(format!("{holder} has Secure Keyboard Entry on")),

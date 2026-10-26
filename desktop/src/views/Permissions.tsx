@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { carbonRegistered, dictateLabel, fnDelivering } from "../hotkeyStatus";
 import { awaitMicDecision } from "../micStatus";
+import { nameProduct } from "../permission";
 import { setupState, SYSTEM_AUDIO_PANE, SYSTEM_AUDIO_SETUP } from "../meetings/systemAudio";
 import StatusDot from "../StatusDot";
 import { useAppCtx } from "../appShell";
@@ -60,12 +61,12 @@ export default function Permissions() {
                 <p>
                   Bundle id <code>com.wilsonguenther.wilson-voice</code> must
                   appear as <strong>{product}</strong> in System Settings →
-                  Privacy &amp; Security. Yap runs no helper process, so that
+                  Privacy &amp; Security. {product} runs no helper process, so that
                   one row is the only thing you ever enable.
                 </p>
                 <p className="muted" data-settled-state="permissions">
                   {permsAllClear(perms)
-                    ? "Everything Yap needs is granted. Nothing to fix here."
+                    ? `Everything ${product} needs is granted. Nothing to fix here.`
                     : perms.summary}
                 </p>
                 <div className="actions">
@@ -96,7 +97,10 @@ export default function Permissions() {
                         });
                         if (status === "denied") {
                           toast(
-                            "Microphone denied — macOS will not ask again. Turn Yap on in System Settings → Privacy & Security → Microphone.",
+                            nameProduct(
+                              "Microphone denied — macOS will not ask again. Turn Yap on in System Settings → Privacy & Security → Microphone.",
+                              product,
+                            ),
                           );
                         } else if (status === "restricted") {
                           toast(
@@ -125,7 +129,7 @@ export default function Permissions() {
                   </button>
                 </div>
                 <p className="muted tiny" style={{ marginTop: 10 }}>
-                  Click <strong>Allow</strong> once for Microphone (Yap). After
+                  Click <strong>Allow</strong> once for Microphone ({product}). After
                   that, Dictate must not re-prompt. ASR runs only under Application
                   Support — never Desktop — so stop-recording must not ask for Desktop
                   folder access. After each reinstall, re-toggle Accessibility if paste
@@ -161,7 +165,7 @@ export default function Permissions() {
                     <strong>Accessibility</strong>
                     <p>
                       Required to simulate ⌘V paste (Wispr-style). You already
-                      enabled Yap.app — if status still says copy-only,
+                      enabled {product}.app — if status still says copy-only,
                       toggle it off/on after this install, then click Re-check.
                     </p>
                     <button
@@ -196,7 +200,7 @@ export default function Permissions() {
                       {fnDelivering(status)
                         ? "Delivering key events."
                         : status.hotkeyDegraded ??
-                          "No key event has reached Yap yet — press any key."}
+                          `No key event has reached ${product} yet — press any key.`}
                     </p>
                   </div>
                 </li>
@@ -223,6 +227,7 @@ export default function Permissions() {
                     sysAudio,
                     sysAudioGate.available,
                     sysAudioGate.message,
+                    product,
                   );
                   return (
                     <li

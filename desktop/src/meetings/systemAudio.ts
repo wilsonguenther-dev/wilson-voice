@@ -31,6 +31,8 @@
  * unit-tested rather than something a redesign can quietly drop.
  */
 
+import { nameProduct } from "../permission";
+
 /** Mirrors `meetings::SetupVerdict` in Rust (`#[serde(rename_all = "snake_case")]`). */
 export type SetupVerdict =
   | "not_run"
@@ -124,6 +126,16 @@ function runDate(setup: SystemAudioSetup): string {
  * there is no permission to ask for, so offering to ask for it is a lie.
  */
 export function setupState(
+  setup: SystemAudioSetup | null,
+  available: boolean,
+  requirement: string,
+  product?: string | null,
+): SetupState {
+  const s = setupStateFor(setup, available, requirement);
+  return { ...s, label: nameProduct(s.label, product) };
+}
+
+function setupStateFor(
   setup: SystemAudioSetup | null,
   available: boolean,
   requirement: string,

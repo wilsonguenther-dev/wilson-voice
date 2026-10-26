@@ -4,12 +4,13 @@ import { setupState, SYSTEM_AUDIO_PANE, SYSTEM_AUDIO_SETUP } from "../../meeting
 import type { SupportBundlePreview } from "../../support/bundle";
 import { type CrashEvent, polishSidecarLabel, formatTime } from "../../appTypes";
 import { useAppCtx } from "../../appShell";
+import { nameProduct } from "../../permission";
 
 export default function Privacy() {
   const {
     consent, crashes, engine, replayOnboarding, runSystemAudioSetup,
     saveSettings, setConsentOpen, setCrashes, setNav, setSupportOpen, setSupportPreview,
-    settings, sysAudio, sysAudioBusy, sysAudioGate, toast,
+    settings, sysAudio, sysAudioBusy, sysAudioGate, toast, perms,
   } = useAppCtx();
   if (!settings) return null;
   async function openSupportBundle() {
@@ -119,19 +120,20 @@ export default function Privacy() {
                       sysAudio,
                       sysAudioGate.available,
                       sysAudioGate.message,
+                      perms?.productName,
                     );
                     return (
                       <>
                         <h2 className="settings-section">
                           {SYSTEM_AUDIO_SETUP.title}
-                          <span className="sub">{SYSTEM_AUDIO_SETUP.sub}</span>
+                          <span className="sub">{nameProduct(SYSTEM_AUDIO_SETUP.sub, perms?.productName)}</span>
                         </h2>
                         {SYSTEM_AUDIO_SETUP.paragraphs.map((p) => (
                           <p className="tiny" key={p.slice(0, 24)}>
-                            {p}
+                            {nameProduct(p, perms?.productName)}
                           </p>
                         ))}
-                        <p className="tiny muted">{SYSTEM_AUDIO_SETUP.fine}</p>
+                        <p className="tiny muted">{nameProduct(SYSTEM_AUDIO_SETUP.fine, perms?.productName)}</p>
                         <p
                           className={
                             step.tone === "bad" ? "tiny warn" : "tiny muted"

@@ -423,6 +423,10 @@ pub struct CopyCard {
     /// Settings names — the pill says which and offers Open Settings. Empty
     /// when a grant works (the card is up for another reason).
     pub blocked_permissions: Vec<&'static str>,
+    /// yap-test-channel-product-name — the running product's name ("Yap Test"
+    /// on the test channel), so the pill's blocked line names the app System
+    /// Settings lists the grant under (`perm_truth::product_name`).
+    pub product: String,
 }
 
 /// What [`CopyCard::blocked_permissions`] names for a card `reason`.
@@ -520,6 +524,7 @@ fn copy_card_with(
         copied,
         repair_service: repair_service_for(reason),
         blocked_permissions: blocked_permissions_for(reason),
+        product: crate::perm_truth::product_name(),
     });
     let repair = repair_service_for(reason).is_some();
     PasteOutcome {
@@ -594,8 +599,9 @@ pub fn insert_traced(
             b,
             text,
             CopyCardReason::NoPermission,
-            "PostEvent and Accessibility are both off for Yap, so it cannot type into this app"
-                .into(),
+            crate::permissions::named(
+                "PostEvent and Accessibility are both off for Yap, so it cannot type into this app",
+            ),
         );
         return (out, trace);
     }
@@ -704,6 +710,7 @@ pub fn insert_traced(
                 copied,
                 repair_service: repair_service_for(CopyCardReason::NoReceipt),
                 blocked_permissions: blocked_permissions_for(CopyCardReason::NoReceipt),
+                product: crate::perm_truth::product_name(),
             });
             trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::NoReceipt;
@@ -736,7 +743,9 @@ pub fn delete_with(
         return PasteOutcome {
             copied: false,
             pasted: false,
-            message: "Accessibility is off for Yap — Repair to let me edit your selection.".into(),
+            message: crate::permissions::named(
+                "Accessibility is off for Yap — Repair to let me edit your selection.",
+            ),
         };
     }
     if let Some(started_in) = source_app {

@@ -1024,7 +1024,7 @@ pub fn start_capture_session(
     Ok(Box::new(SessionCapture {
         session: Some(session),
         pump,
-        badge: plan.badge().map(str::to_string),
+        badge: plan.badge().map(crate::permissions::named),
         db,
     }))
 }
@@ -1179,7 +1179,7 @@ impl ActiveCapture for SessionCapture {
                 _ => {}
             }
             if step.badge_meeting {
-                tap_notes.push(syscapture::LOOKS_DENIED_MESSAGE.to_string());
+                tap_notes.push(crate::permissions::named(syscapture::LOOKS_DENIED_MESSAGE));
             } else if permission != syscapture::SystemAudioPermission::Granted {
                 // review-opus B1 — the tap heard nothing and the evidence does
                 // not say why: state what was observed, never "not granted".

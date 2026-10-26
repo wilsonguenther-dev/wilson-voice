@@ -8,6 +8,8 @@
  * checks: copyCardModel.test.ts reads the Rust side to pin them.
  */
 
+import { nameProduct } from "../permission";
+
 /** paste.rs `INSERT_COPY_CARD_EVENT`. */
 export const INSERT_COPY_CARD_EVENT = "insert-copy-card";
 
@@ -43,6 +45,11 @@ export interface CopyCardPayload {
    * ("PostEvent", "Accessibility"). Empty when a grant works.
    */
   blockedPermissions?: string[];
+  /**
+   * yap-test-channel-product-name — paste.rs `product`: the running product
+   * ("Yap Test" on the test channel), the name System Settings lists.
+   */
+  product?: string | null;
 }
 
 export function isCopyCard(v: unknown): v is CopyCardPayload {
@@ -78,11 +85,13 @@ export function cardPreview(text: string, max = 140): string {
  * WHICH permission is blocked; never a silent clipboard leave-behind.
  * `null` = nothing is blocked (the card is up for another reason).
  */
-export function blockedLine(card: Pick<CopyCardPayload, "blockedPermissions">): string | null {
+export function blockedLine(
+  card: Pick<CopyCardPayload, "blockedPermissions"> & Partial<Pick<CopyCardPayload, "product">>,
+): string | null {
   const b = (card.blockedPermissions ?? []).filter((p) => typeof p === "string" && p.length > 0);
   if (b.length === 0) return null;
   const names = b.length === 1 ? b[0] : `${b.slice(0, -1).join(", ")} and ${b[b.length - 1]}`;
-  return `Yap can't type here: ${names} ${b.length === 1 ? "is" : "are"} off.`;
+  return nameProduct(`Yap can't type here: ${names} ${b.length === 1 ? "is" : "are"} off.`, card.product);
 }
 
 /**
