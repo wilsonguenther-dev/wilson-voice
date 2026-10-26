@@ -63,7 +63,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 47 })
 } else {
   phase("part-01")
-  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (429765 bytes)")
+  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (429789 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (47 item(s))")
@@ -96,7 +96,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 50 })
 } else {
   phase("part-02")
-  log("START part-02 — 50 item(s), yap-lic-01-jws-verifier..SEC-B — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (449939 bytes)")
+  log("START part-02 — 50 item(s), yap-lic-01-jws-verifier..SEC-B — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (449963 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (50 item(s))")
@@ -129,7 +129,7 @@ if (halted) {
   results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 55 })
 } else {
   phase("part-03")
-  log("START part-03 — 55 item(s), Y5-G..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (401000 bytes)")
+  log("START part-03 — 55 item(s), Y5-G..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (401024 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs" }, args)
     log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (55 item(s))")

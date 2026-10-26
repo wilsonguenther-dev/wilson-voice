@@ -106,17 +106,21 @@ export const REVIEW_AUTHORS = ['wilsonguenther-dev']
 /**
  * A SUPERSET of template.mjs's SECURITY_PATHS (the gate is the enforcement, so it may never call standard what the
  * review pass seated as security): the capability files, tauri.conf.json, the updater / signing path, the local
- * SQLite history and its migrations, the polish_protocol / sidecar IPC, any path matching the trust keywords, and
+ * SQLite history and its migrations, the polish_protocol / sidecar IPC, any path matching the trust keywords (licensing /
+ * entitlement included), and
  * the loop harness itself (scripts/loop/, this file included) and CI.
  */
 export const SECURITY_PATHS = [
   /^desktop\/src-tauri\/capabilities\//, /^desktop\/src-tauri\/tauri(?:\.[\w-]+)?\.conf\.json$/, /^desktop\/src-tauri\/src\/db/,
   /migration/i, /polish_protocol|sidecar/i,
-  /updater|sign|notariz|keychain|permission|accessibility|microphone|network|http|upload|telemetry/i,
+  /updater|sign|notariz|keychain|licens|entitle|permission|accessibility|microphone|network|http|upload|telemetry/i,
   /^scripts\/loop\//, /^scripts\/cicd-loop-all\.mjs$/, /^\.github\/workflows\//,
 ]
-/** template.mjs SECURITY_IDS ('SEC-|UPD-|PRIV-|DB-|PERM-'): an item id at the start of the PR title. */
-export const SECURITY_ID_RE = /^\s*(?:SEC-|UPD-|PRIV-|DB-|PERM-)/i
+/**
+ * template.mjs SECURITY_IDS ('SEC-|UPD-|PRIV-|DB-|PERM-|YAP-LIC-'): an item id at the start of the PR title. YAP-LIC- (the
+ * licensing client: token store, activation, entitlement) is here so its two-seat class never rests on a file name.
+ */
+export const SECURITY_ID_RE = /^\s*(?:SEC-|UPD-|PRIV-|DB-|PERM-|YAP-LIC-)/i
 const SHA_RE = /^[0-9a-f]{40}$/
 /** A BLOCK verdict, anywhere in a record (bold, spaced, fenced, in notes). */
 export const BLOCK_LINE_RE = /verdict\s*:.*\bBLOCK\b/i
