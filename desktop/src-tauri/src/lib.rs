@@ -7197,6 +7197,12 @@ pub fn run() {
                         log::info!("sleep mid-take — parking the dictation take");
                         // Same path as a PTT interrupt; it settles the pill.
                         cancel_recording(&dict_app, &dict_state);
+                        // fix-239: the take armed Escape as a GLOBAL shortcut
+                        // at start, and `cancel_recording` does not release it
+                        // (only `cancel_take` and the transcribe worker do). A
+                        // sleep-cancel spawns no worker, so without this line
+                        // the first Escape after wake — in any app — is eaten.
+                        unregister_cancel_shortcut(&dict_app);
                     }
                 });
 
@@ -7211,30 +7217,33 @@ pub fn run() {
                     let Some(controller) = meet_state.meeting() else {
                         return;
                     };
-                    let action = policy
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .drive(controller.is_recording(), event);
-                    match action {
-                        meeting_matrix::SleepAction::FinalizeAndPause
-                        | meeting_matrix::SleepAction::FinalizeMissedSleepAndOfferResume => {
-                            if controller.is_recording() {
-                                match controller.stop(meeting_matrix::PAUSED_BY_SLEEP) {
-                                    Ok(_) => log::info!("meeting finalized on {event:?} ({action:?})"),
-                                    Err(e) => log::warn!("meeting stop on {event:?}: {e}"),
-                                }
-                                if !*meet_state.recording.lock() {
-                                    float_pill::after_recording(
-                                        &meet_app,
-                                        meet_state.settings.lock().show_floating_pill,
-                                    );
-                                }
-                            }
+                    // fix-239: the whole meeting-side behaviour lives in
+                    // `MeetingController::on_sleep_wake`, which the row 16 test
+                    // drives against a real controller; this closure only logs
+                    // and settles the pill.
+                    let settle_pill = || {
+                        if !*meet_state.recording.lock() {
+                            float_pill::after_recording(
+                                &meet_app,
+                                meet_state.settings.lock().show_floating_pill,
+                            );
                         }
-                        meeting_matrix::SleepAction::OfferResumeAsNewSegment => {
+                    };
+                    let mut policy = policy.lock().unwrap_or_else(|p| p.into_inner());
+                    match controller.on_sleep_wake(&mut policy, event) {
+                        meeting_control::SleepStep::Finalized => {
+                            log::info!("meeting finalized on {event:?} (paused_by_sleep)");
+                            settle_pill();
+                        }
+                        meeting_control::SleepStep::StopFailed(e) => {
+                            log::warn!("meeting stop on {event:?}: {e}");
+                            settle_pill();
+                        }
+                        meeting_control::SleepStep::ResumeOffered => {
+                            // Row 16b: the offer has no UI yet, so it is logged.
                             log::info!("woke after a sleep-paused meeting — resume is a new segment");
                         }
-                        meeting_matrix::SleepAction::Ignore => {}
+                        meeting_control::SleepStep::Nothing => {}
                     }
                 });
 

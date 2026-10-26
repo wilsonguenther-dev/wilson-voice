@@ -26,13 +26,19 @@
 //!
 //! **What these tests do NOT prove.** They do not close a lid: macOS posting
 //! the notification on a real sleep is AppKit's contract, not something an
-//! in-process test can trigger. And the `lib.rs` closures that act on the
-//! controller (stopping the meeting, cancelling the take) need a Tauri host;
-//! the fan-out test drives the same decision functions those closures call and
-//! checks the source subscribes all three, rather than booting the app.
+//! in-process test can trigger. The meeting closure in `lib.rs` delegates the
+//! whole meeting-side action to `MeetingController::on_sleep_wake`, which
+//! `will_sleep_stops_a_real_meeting_with_paused_by_sleep` drives against a
+//! real controller (fix-239). The dictation closure needs a Tauri host
+//! (`cancel_recording`, the global Escape shortcut), so its half is checked
+//! against the source, not run.
+
+mod support;
 
 use std::sync::{Arc, Mutex};
 
+use wilson_voice_lib::meeting_control::{MeetingController, MeetingStatus, SleepStep, StatusSink};
+use wilson_voice_lib::meeting_energy::MeetingDiagnostics;
 use wilson_voice_lib::meeting_matrix::{
     Coverage, SleepAction, SleepEvent, SleepPolicy, PAUSED_BY_SLEEP, ROWS,
 };
@@ -233,7 +239,7 @@ fn one_observer_fans_out_to_dictation_meetings_and_permissions() {
             "lib.rs does not subscribe power::{consumer}"
         );
     }
-    assert!(lib.contains(".drive(controller.is_recording(), event)"));
+    assert!(lib.contains("controller.on_sleep_wake(&mut policy, event)"));
     assert!(lib.contains("permissions::on_sleep_wake(event)"));
     assert!(lib.contains("power::dictation_should_park_take(event, in_flight)"));
     assert_eq!(
@@ -510,4 +516,89 @@ fn two_lid_closes_in_one_meeting_produce_two_offers_and_no_lost_state() {
 
     p.meeting_stopped();
     assert!(!p.is_recording());
+}
+
+/// fix-239 — the finalize half of row 16, driven end to end: the REAL observer
+/// hears a posted will-sleep, the hub calls `MeetingController::on_sleep_wake`
+/// (the one call the `lib.rs` meeting closure makes), and a REAL recording
+/// meeting is stopped with the `paused_by_sleep` reason, read back from the
+/// meeting row's diagnostics blob. The wake that follows reports the offer
+/// (row 16b) and stops nothing.
+#[cfg(target_os = "macos")]
+#[test]
+fn will_sleep_stops_a_real_meeting_with_paused_by_sleep() {
+    let _guard = support::exclusive();
+    let _centre = centre_lock();
+    support::install_fake_engine();
+    support::set_fake_mode(support::FAKE_OK);
+    let dir = support::temp_dir("y1b-row16-finalize");
+    let db = Arc::new(support::open_db(&dir));
+    let sink: StatusSink = Arc::new(|_: &MeetingStatus| {});
+    let controller = Arc::new(MeetingController::new(Arc::clone(&db), sink));
+    let id = controller
+        .start(&dir, Some("Lid closes".into()))
+        .expect("start");
+    assert!(controller.is_recording());
+
+    let steps: Arc<Mutex<Vec<SleepStep>>> = Arc::default();
+    let hub = Arc::new(SleepWakeHub::new());
+    {
+        let c = Arc::clone(&controller);
+        let st = Arc::clone(&steps);
+        let policy = Mutex::new(SleepPolicy::new());
+        hub.subscribe(CONSUMER_MEETINGS, move |e| {
+            let mut policy = policy.lock().unwrap();
+            st.lock().unwrap().push(c.on_sleep_wake(&mut policy, e));
+        });
+    }
+    let observer = SleepWakeObserver::register(Arc::clone(&hub));
+
+    post(SleepEvent::WillSleep);
+    assert!(!controller.is_recording(), "will-sleep stopped the meeting");
+    post(SleepEvent::DidWake);
+    observer.unregister();
+
+    assert_eq!(
+        *steps.lock().unwrap(),
+        vec![SleepStep::Finalized, SleepStep::ResumeOffered]
+    );
+    let row = db.get_meeting(&id).unwrap().expect("meeting row");
+    let blob = row
+        .diagnostics
+        .expect("the stopped meeting carries diagnostics");
+    let d: MeetingDiagnostics = serde_json::from_str(&blob).expect("valid JSON");
+    assert_eq!(d.stop_reason.as_deref(), Some(PAUSED_BY_SLEEP));
+
+    // And `lib.rs` hands the meeting to exactly this method.
+    let lib = code_of(&src("lib.rs"));
+    assert!(lib.contains("controller.on_sleep_wake(&mut policy, event)"));
+}
+
+/// fix-239 — a take armed Escape as a system-wide shortcut when it started.
+/// `cancel_recording` does not release it (only `cancel_take` and the end of
+/// the transcribe worker do), and a sleep-cancel spawns no worker, so the
+/// dictation consumer must release it itself or the first Escape after wake is
+/// eaten in every app. Checked against the source: the closure needs a Tauri
+/// host to run.
+#[test]
+fn the_sleep_cancel_gives_escape_back() {
+    let lib = code_of(&src("lib.rs"));
+    let start = lib
+        .find("hub.subscribe(power::CONSUMER_DICTATION")
+        .expect("lib.rs subscribes the dictation consumer");
+    let end = start
+        + lib[start..]
+            .find("hub.subscribe(power::CONSUMER_MEETINGS")
+            .expect("the meetings consumer follows it");
+    let dictation = &lib[start..end];
+    let cancel = dictation
+        .find("cancel_recording(&dict_app, &dict_state);")
+        .expect("the sleep consumer cancels the take");
+    let release = dictation
+        .find("unregister_cancel_shortcut(&dict_app);")
+        .expect("the sleep consumer must release the Escape grab");
+    assert!(
+        release > cancel,
+        "Escape is released after the take is cancelled"
+    );
 }

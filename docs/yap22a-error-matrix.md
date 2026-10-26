@@ -49,7 +49,8 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16 | Sleep or lid close mid-meeting | Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16b | …and on wake nothing offers to resume | On wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `resume_accepted`**, so the app does not do this yet |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
@@ -69,7 +70,8 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16 | Sleep or lid close mid-meeting | Finalize the journal and mark `paused_by_sleep`: the meeting is stopped with that reason before the machine goes down | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
+| 16b | …and on wake nothing offers to resume | On wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `resume_accepted`**, so the app does not do this yet |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
@@ -107,15 +109,15 @@ is explained below.
 
 ## Which rows the app actually performs today
 
-**Ten of the nineteen cells are a claim that the shipped app handles the
+**Eleven of the twenty cells are a claim that the shipped app handles the
 failure.** Read this section before quoting a row as done.
 
 | Cell | What it means | Rows |
 |---|---|---|
-| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 1, 2, 4, 5, 6, 12, `12b`, 17, `3a`, `3b` |
+| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 1, 2, 4, 5, 6, 12, `12b`, 16, 17, `3a`, `3b` |
 | **Manual repro** | No in-process test can produce the failure. A human follows the script and records the result. | 15 |
 | **Policy only** (an owning PR named) | The decision ships and is tested; the thing that would *produce* the event it decides about is in an open PR. | 14 |
-| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, 16, `17b`, 7, 8, 13 |
+| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, `16b`, `17b`, 7, 8, 13 |
 
 ### Manual — row 15, and why its three green tests are not its coverage
 
@@ -200,8 +202,12 @@ centre) and fans each event out through `SleepWakeHub` to three consumers:
 dictation (a take in flight is parked), meetings (`SleepPolicy::drive`, which
 stops the meeting with the `paused_by_sleep` reason on will-sleep) and PERM-E's
 permission re-read on wake. The observer is removed in `RunEvent::Exit`. The
-row is now a `Test` row; the resume prompt itself has no UI yet, so on wake the
-offer is logged and the next meeting the user starts supersedes it.
+finalize half is now a `Test` row: `MeetingController::on_sleep_wake` is the whole
+meeting-side action, and the row's test drives it against a real controller and
+reads `paused_by_sleep` back from the meeting's diagnostics. The resume prompt has
+no UI, so the offer is row `16b`, **Policy only, NOT WIRED**: on wake it is only
+logged, `resume_accepted` has no caller, and the next meeting the user starts
+supersedes it.
 
 **Row `17b` — the meeting that carries on. Nobody owns this.** The watchdog stops
 a recording at three hours and stops there. `continuation_title` decides what the
@@ -222,7 +228,7 @@ than recording the lecture stream. The change that would wire it is a change to
 the capture session, which is YV106's.
 
 The unowned rows are tripwired in the opposite direction to a `Test` row: the
-row's named call site (`meeting_start_plan`, `quality_note`,
+row's named call site (`meeting_start_plan`, `quality_note`, `resume_accepted`,
 `continuation_title`) must stay ABSENT from `src/` as code — a comment does not
 count — so a row cannot stay `PolicyOnly` after its wiring lands. Row 16 is the
 one that fired and was promoted (Y1-B).
