@@ -6649,6 +6649,19 @@ fn user_display_name() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // TC-1 (review BLOCKING 1): before ANYTHING touches the data dir — the CLI
+    // mode, the smoke preflight, the logger — refuse to start when the bundle
+    // id compiled into the Tauri context is not the one this binary's channel
+    // names. Fails closed: a mismatched pair would read/write the wrong state
+    // root (or ship a production id with the updater off).
+    let context = tauri::generate_context!();
+    if let Err(why) =
+        channel::check_bundle_identity(channel::CURRENT, &context.config().identifier)
+    {
+        eprintln!("{why}");
+        std::process::exit(78); // EX_CONFIG
+    }
+
     // YV32 headless mode (`--transcribe-file <wav>`): transcribe with the
     // embedded engine, print the text, exit. Handled FIRST so no window, tray,
     // hotkey tap, or app logger is ever created for a one-shot CLI run.
@@ -7680,7 +7693,7 @@ pub fn run() {
             );
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| {
             // The ordered shutdown (YV69) — ASR engine first, then the audio

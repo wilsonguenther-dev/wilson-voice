@@ -72,8 +72,15 @@ test-channel commit merged in, inside a throwaway build worktree that is never
 pushed. If that merge conflicts the script refuses — rebase the head on main.
 
 Before installing, the script refuses any bundle whose id is not the test id,
-whose name is not "Yap Test", or whose binary was not compiled with the test
-data dir. Every install appends a line to
+whose name is not "Yap Test", or whose binary does not carry the test channel
+marker (`YAP-CHANNEL-MARK=test`, compiled in for one channel only).
+
+The channel and the bundle id are set by two mechanisms (the cfg and the
+`--config` overlay), so the binary checks they agree twice: at compile time
+(`YAP_CHANNEL` as rustc sees it must match the cfg build.rs emitted — a stale
+build script in a shared target dir fails the build instead of producing a test
+bundle on the production data dir), and at startup, before anything touches the
+data dir (`channel::check_bundle_identity`: a mismatched bundle id exits 78). Every install appends a line to
 `~/Obsidian/Wilson-Brain/Projects/Loop-Logs/yap-test-builds.md`.
 
 Environment overrides: `YAP_TEST_TARGET_DIR` (else `CARGO_TARGET_DIR`, else

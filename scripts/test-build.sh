@@ -164,7 +164,11 @@ GOT_ID="$(defaults read "$APP/Contents/Info" CFBundleIdentifier)"
 [[ "$GOT_ID" != "$PROD_IDENTIFIER" ]] || die "built bundle carries the PRODUCTION id — not installing"
 [[ "$(defaults read "$APP/Contents/Info" CFBundleName)" == "$PRODUCT" ]] || die "CFBundleName is not $PRODUCT"
 BIN="$APP/Contents/MacOS/$(defaults read "$APP/Contents/Info" CFBundleExecutable)"
-grep -aq "WilsonVoice-Test" "$BIN" || die "binary was not compiled with YAP_CHANNEL=test (no test data dir) — not installing"
+# The channel marker exists in a binary ONLY for the channel it was compiled
+# for (src-tauri/src/channel.rs CHANNEL_MARKER). "WilsonVoice-Test" is not a
+# usable signal: every binary carries both channels' profile strings.
+grep -aqF "YAP-CHANNEL-MARK=test" "$BIN" || die "binary was not compiled with YAP_CHANNEL=test (no test channel marker) — not installing"
+grep -aqF "YAP-CHANNEL-MARK=production" "$BIN" && die "binary carries the PRODUCTION channel marker — not installing"
 codesign --verify --deep --strict "$APP" || die "codesign verification failed"
 codesign -dvv "$APP" 2>&1 | grep -E '^(Identifier|Authority=Developer|Authority=Apple Development|Signature)' | sed -E 's/\(([A-Z0-9]{10})\)/(TEAMID)/g' || true
 

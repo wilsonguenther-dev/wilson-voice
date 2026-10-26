@@ -35,6 +35,75 @@ pub const CURRENT: Channel = Channel::Test;
 #[cfg(not(yap_channel_test))]
 pub const CURRENT: Channel = Channel::Production;
 
+/// Does a build-time `YAP_CHANNEL` value select the test channel? The one rule
+/// (`test`, surrounding ASCII whitespace ignored), usable in a `const`.
+pub const fn selects_test(name: Option<&str>) -> bool {
+    let b = match name {
+        Some(s) => s.as_bytes(),
+        None => return false,
+    };
+    let (mut start, mut end) = (0, b.len());
+    while start < end && b[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && b[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    end - start == 4
+        && b[start] == b't'
+        && b[start + 1] == b'e'
+        && b[start + 2] == b's'
+        && b[start + 3] == b't'
+}
+
+// TC-1 fix round 1 (review BLOCKING 1): the cfg comes from build.rs, and a
+// build-script binary reused from another checkout's pre-channel build.rs (a
+// shared CARGO_TARGET_DIR judges its freshness by mtime alone) never emits it —
+// while rustc itself still sees `YAP_CHANNEL=test`. That produced a binary with
+// a test bundle id on the PRODUCTION data dir. `option_env!` is tracked by
+// rustc directly, so this compile-time assertion turns that silent mismatch
+// into a build failure in either direction.
+const _: () = assert!(
+    selects_test(option_env!("YAP_CHANNEL")) == matches!(CURRENT, Channel::Test),
+    "YAP_CHANNEL and the yap_channel_test cfg disagree: build.rs did not run for \
+     this checkout (stale build script in a shared CARGO_TARGET_DIR). Run \
+     `cargo clean -p wilson-voice` and rebuild."
+);
+
+/// A channel marker compiled into the binary for ONLY its own channel, so an
+/// install guard can tell a test binary from a production one. Assembled with
+/// `concat!` so neither full marker is a single source literal: the vocab
+/// corpus (`build.rs`) embeds every literal of every channel, and a guard that
+/// greps for a literal both channels carry — the old `WilsonVoice-Test` grep —
+/// proves nothing.
+#[cfg(yap_channel_test)]
+pub const CHANNEL_MARKER: &str = concat!("YAP-CHANNEL-", "MARK=", "test");
+/// See the test-channel twin above.
+#[cfg(not(yap_channel_test))]
+pub const CHANNEL_MARKER: &str = concat!("YAP-CHANNEL-", "MARK=", "production");
+
+/// Fail-closed startup check (review BLOCKING 1): the bundle identifier compiled
+/// into this binary's Tauri context (`tauri.conf.json` plus any `--config`
+/// overlay) must be the identifier this channel's profile names. If they
+/// disagree, the data dir and updater were decided by one switch and the bundle
+/// id by another — a `.test` bundle on the production history, or a production
+/// bundle on the test root with its updater off — and the app must not start.
+pub fn check_bundle_identity(channel: Channel, bundle_id: &str) -> Result<(), String> {
+    let want = channel.profile().identifier;
+    if bundle_id == want {
+        Ok(())
+    } else {
+        Err(format!(
+            "Yap refused to start: this binary was compiled for the {} channel \
+             (bundle id {want}, data dir {}) but its bundle id is {bundle_id}. \
+             The build channel (YAP_CHANNEL) and the bundle config disagree; \
+             rebuild with matching settings (scripts/test-build.sh for Yap Test).",
+            channel.name(),
+            channel.profile().data_dir_name,
+        ))
+    }
+}
+
 /// Everything a channel decides, derived together so they can never disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -54,9 +123,10 @@ pub struct Profile {
 impl Channel {
     /// Parse the build-time `YAP_CHANNEL` value. Anything but `test` is production.
     pub fn from_name(name: Option<&str>) -> Channel {
-        match name.map(str::trim) {
-            Some("test") => Channel::Test,
-            _ => Channel::Production,
+        if selects_test(name) {
+            Channel::Test
+        } else {
+            Channel::Production
         }
     }
 
@@ -123,8 +193,9 @@ pub fn startup_line() -> String {
     let p = current();
     let chip = chip_text(CURRENT, BUILD_SHA, BUILD_BRANCH).unwrap_or_else(|| "-".into());
     format!(
-        "channel: {} · bundle id {} · product {} · updater {} · chip {}",
+        "channel: {} ({}) · bundle id {} · product {} · updater {} · chip {}",
         CURRENT.name(),
+        CHANNEL_MARKER,
         p.identifier,
         p.product_name,
         if p.updater_enabled {
@@ -206,6 +277,58 @@ mod tests {
             chip_text(Channel::Test, None, None).as_deref(),
             Some("TEST BUILD local")
         );
+    }
+
+    #[test]
+    fn bundle_identity_check_accepts_only_the_matching_pair() {
+        let prod = Channel::Production.profile().identifier;
+        let test = Channel::Test.profile().identifier;
+        assert!(check_bundle_identity(Channel::Production, prod).is_ok());
+        assert!(check_bundle_identity(Channel::Test, test).is_ok());
+        // Negative controls: both mismatched pairs the review reproduced.
+        let e = check_bundle_identity(Channel::Production, test).unwrap_err();
+        assert!(
+            e.contains("refused to start") && e.contains("WilsonVoice"),
+            "{e}"
+        );
+        let e = check_bundle_identity(Channel::Test, prod).unwrap_err();
+        assert!(e.contains("WilsonVoice-Test"), "{e}");
+        assert!(check_bundle_identity(Channel::Production, "").is_err());
+        assert!(
+            check_bundle_identity(Channel::Test, "com.wilsonguenther.wilson-voice.tes").is_err()
+        );
+    }
+
+    #[test]
+    fn the_compiled_bundle_config_matches_the_compiled_channel() {
+        // The same check `run()` makes at startup, against the identifier this
+        // test binary's own tauri config resolves to.
+        let ctx: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        check_bundle_identity(CURRENT, &ctx.config().identifier).unwrap();
+    }
+
+    #[test]
+    fn the_marker_names_only_the_compiled_channel() {
+        assert_eq!(
+            CHANNEL_MARKER,
+            format!("YAP-CHANNEL-MARK={}", CURRENT.name())
+        );
+        assert!(startup_line().contains(CHANNEL_MARKER));
+    }
+
+    #[test]
+    fn selects_test_is_the_from_name_rule() {
+        for (v, want) in [
+            (None, false),
+            (Some(""), false),
+            (Some("test"), true),
+            (Some(" test\n"), true),
+            (Some("TEST"), false),
+            (Some("tests"), false),
+            (Some("tes"), false),
+        ] {
+            assert_eq!(selects_test(v), want, "{v:?}");
+        }
     }
 
     #[test]
