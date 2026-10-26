@@ -31,39 +31,22 @@ export default function Advanced() {
     }
   }
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Advanced
-                    <span className="sub">
-                      Your speech model and how Yap starts up. Leave this as-is
-                      unless dictation feels slow or misses words.
-                    </span>
-                  </h2>
-                  <div className="panel">
+                <section className="settings-panel" data-settings-pane="advanced">
+                  <div className="panel" data-row>
                     <h3>Speech model</h3>
-                    <p className="muted">
-                      Yap transcribes inside the app itself — no helper process,
-                      nothing installed on the side, nothing off this Mac. Your
-                      model loads on your first dictation and stays warm after
-                      that, so an idle Yap costs almost nothing. Smaller models
-                      are faster and lighter; larger ones are more accurate on
-                      long or technical dictation. Yap picks the recommended one
-                      for you — swap it here if you'd rather choose.
-                    </p>
                     <ModelPicker setup={modelSetup} />
-                  </div>
-                  <div className="panel">
-                    <h3>AI polish model (optional)</h3>
-                    <p className="muted">
-                      Everything above runs with no extra download. This one is
-                      a separate, optional language model that runs on your Mac
-                      and rewrites a finished take into cleaner prose — it fixes
-                      run-ons, drops fillers and shapes an email like an email.
-                      It is off until you install it, it never leaves this Mac,
-                      and with it off Yap formats exactly as it does today. It
-                      is large, so Yap checks you have room before it starts.
+                    <p className="settings-hint">
+                      Runs inside Yap, on this Mac: smaller is faster, larger is
+                      more accurate on long or technical dictation.
                     </p>
+                  </div>
+                  <div className="panel" data-row>
+                    <h3>AI polish model (optional)</h3>
                     <PolishModelPicker polish={polishSetup} />
+                    <p className="settings-hint">
+                      An optional local model that rewrites a finished take into
+                      cleaner prose; off until you install it, never off this Mac.
+                    </p>
                     <p className="muted tiny" style={{ marginTop: 8 }}>
                       {perms?.asrDetail}
                     </p>
@@ -83,18 +66,14 @@ export default function Advanced() {
                       />
                       <span>
                         <strong>Keep the model loaded from launch</strong> —
-                        Yap normally loads your speech model on your first
-                        dictation, which keeps about 900 MB free while you are
-                        not dictating and costs a few seconds on that first
-                        take. Turn this on to load it at launch instead: every
-                        take starts instantly, and Yap holds the memory the
-                        whole time it is running
+                        every take starts instantly; Yap holds about 900 MB
+                        the whole time
                       </span>
                     </label>
                   </div>
                   {/* YV42 — launch at login. Off by default; nothing installs a
                       login item behind your back. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Startup</h3>
                     <label className="toggle">
                       <input
@@ -108,15 +87,14 @@ export default function Advanced() {
                         }
                       />
                       <span>
-                        <strong>Launch Yap at login</strong> — Yap has to be
-                        running to catch your hold-to-talk key, so start it
-                        automatically when you sign in
+                        <strong>Launch Yap at login</strong> — it has to be
+                        running to catch your hold-to-talk key
                       </span>
                     </label>
                   </div>
                   {/* YV44 — updates are opt-out and consent-based: Yap asks
                       before it ever downloads or installs anything. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Updates</h3>
                     <label className="toggle">
                       <input
@@ -130,10 +108,8 @@ export default function Advanced() {
                         }
                       />
                       <span>
-                        <strong>Check for updates</strong> — look for a newer
-                        Yap at launch and tell you about it. Nothing downloads
-                        or installs until you say so; turn this off and Yap
-                        never contacts the release page at all
+                        <strong>Check for updates</strong> — at launch; nothing
+                        downloads or installs until you say so
                       </span>
                     </label>
                     {(settings.checkUpdates ?? true) && (

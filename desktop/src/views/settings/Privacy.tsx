@@ -26,59 +26,48 @@ export default function Privacy() {
     }
   }
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Privacy &amp; Diagnostics
-                    <span className="sub">
-                      Everything stays on your Mac. Export or inspect your data
-                      here.
-                    </span>
-                  </h2>
-                  <div className="actions wrap">
-                    <button
-                      className="primary"
-                      onClick={() => saveSettings(settings)}
-                    >
-                      Save settings
-                    </button>
-                    <button
-                      onClick={async () => {
-                        try {
-                          const { path, count } = await invoke<{
-                            path: string;
-                            count: number;
-                          }>("export_history");
-                          toast(
-                            `Exported ${count.toLocaleString()} transcripts → ${path}`,
-                          );
-                        } catch (e) {
-                          toast(String(e));
-                        }
-                      }}
-                    >
-                      Export transcripts
-                    </button>
-                    <button onClick={() => invoke("open_data_dir")}>
-                      Open data folder
-                    </button>
-                    <button
-                      onClick={async () => {
-                        try {
-                          await invoke("open_logs_dir");
-                          // YV64: the export now writes crash-summary.txt into
-                          // that folder alongside yap.log.
-                          toast("Opened logs folder — crash summary included");
-                        } catch (e) {
-                          toast(String(e));
-                        }
-                      }}
-                    >
-                      Export diagnostics (logs)
-                    </button>
-                    <button onClick={() => setNav("permissions")}>
-                      Permissions
-                    </button>
-                    <button onClick={replayOnboarding}>Replay onboarding</button>
+                <section className="settings-panel" data-settings-pane="privacy">
+                  <div className="panel" data-row>
+                    <h3>Your data</h3>
+                    <div className="actions wrap">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { path, count } = await invoke<{
+                              path: string;
+                              count: number;
+                            }>("export_history");
+                            toast(
+                              `Exported ${count.toLocaleString()} transcripts → ${path}`,
+                            );
+                          } catch (e) {
+                            toast(String(e));
+                          }
+                        }}
+                      >
+                        Export transcripts
+                      </button>
+                      <button onClick={() => invoke("open_data_dir")}>
+                        Open data folder
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await invoke("open_logs_dir");
+                            // YV64: the export now writes crash-summary.txt into
+                            // that folder alongside yap.log.
+                            toast("Opened logs folder — crash summary included");
+                          } catch (e) {
+                            toast(String(e));
+                          }
+                        }}
+                      >
+                        Export diagnostics (logs)
+                      </button>
+                      </div>
+                    <p className="settings-hint">
+                      Everything stays on your Mac; export or open it from here.
+                    </p>
                   </div>
 
                   {/* ── YV96 Recording others — the one-time notice, findable ──
@@ -88,19 +77,18 @@ export default function Privacy() {
                       they cannot act on. It is NOT a reminder toggle and not a
                       home-state setting — both were explicitly cut when O1 was
                       closed (finding #13) — it is the same words, on demand. */}
-                  <h2 className="settings-section">
-                    Recording other people
-                    <span className="sub">
-                      Yap does not announce itself. Whether you may record
-                      someone is your call, and the law differs by state and
-                      country.
-                    </span>
-                  </h2>
-                  <p className="tiny">{acknowledgedLabel(consent)}</p>
-                  <div className="actions wrap">
-                    <button onClick={() => setConsentOpen("review")}>
-                      Read the recording notice
-                    </button>
+                  <div className="panel" data-row>
+                    <h3>Recording other people</h3>
+                    <div className="actions wrap">
+                      <button onClick={() => setConsentOpen("review")}>
+                        Read the recording notice
+                      </button>
+                    </div>
+                    <p className="settings-hint">
+                      Yap does not announce itself; whether you may record
+                      someone is your call, and the law differs by place.{" "}
+                      {acknowledgedLabel(consent)}
+                    </p>
                   </div>
 
                   {/* ── YV102 Set up meeting recording — the TCC pre-warm ──
@@ -123,11 +111,9 @@ export default function Privacy() {
                       perms?.productName,
                     );
                     return (
-                      <>
-                        <h2 className="settings-section">
-                          {SYSTEM_AUDIO_SETUP.title}
-                          <span className="sub">{nameProduct(SYSTEM_AUDIO_SETUP.sub, perms?.productName)}</span>
-                        </h2>
+                      <div className="panel" data-row>
+                        <h3>{SYSTEM_AUDIO_SETUP.title}</h3>
+                        <p className="tiny muted">{nameProduct(SYSTEM_AUDIO_SETUP.sub, perms?.productName)}</p>
                         {SYSTEM_AUDIO_SETUP.paragraphs.map((p) => (
                           <p className="tiny" key={p.slice(0, 24)}>
                             {nameProduct(p, perms?.productName)}
@@ -167,7 +153,7 @@ export default function Privacy() {
                             </button>
                           )}
                         </div>
-                      </>
+                      </div>
                     );
                   })()}
 
@@ -178,15 +164,15 @@ export default function Privacy() {
                       rules-formatted text instead of waiting on it, so without
                       this line a cold or crashed sidecar looks exactly like a
                       polish stage that quietly did nothing. */}
-                  <h2 className="settings-section">
-                    Engine
-                    <span className="sub">
+                  <div className="panel" data-row>
+                    <h3>Engine</h3>
+                    <p className="tiny">
+                      AI polish sidecar: {polishSidecarLabel(engine?.polishSidecar)}
+                    </p>
+                    <p className="settings-hint">
                       The models running on this Mac. Nothing here leaves it.
-                    </span>
-                  </h2>
-                  <p className="tiny">
-                    AI polish sidecar: {polishSidecarLabel(engine?.polishSidecar)}
-                  </p>
+                    </p>
+                  </div>
 
                   {/* ── YV64 Stability — the crashes Yap read back off disk ──
                       macOS writes a .ips report when a process dies, and the
@@ -194,73 +180,72 @@ export default function Privacy() {
                       startup so the app is no longer the last to know. Nothing
                       here is uploaded and no dictated text is in a row — the
                       details are the crash's structured facts only. */}
-                  <h2 className="settings-section">
-                    Stability
-                    <span className="sub">
-                      Crashes Yap noticed, read from this Mac&rsquo;s own crash
-                      reports. Stored locally, never uploaded, and they never
-                      contain anything you dictated.
-                    </span>
-                  </h2>
-                  {crashes.length === 0 ? (
-                    <p className="tiny">
-                      No crashes recorded. Yap has not died on this Mac since it
-                      started keeping track.
-                    </p>
-                  ) : (
-                    <>
-                      <ul className="crash-list">
-                        {crashes.map((c) => (
-                          <li
-                            key={c.id}
-                            className={c.acknowledged ? "crash" : "crash new"}
+                  <div className="panel" data-row>
+                    <h3>Stability</h3>
+                    {crashes.length === 0 ? (
+                      <p className="tiny">
+                        No crashes recorded. Yap has not died on this Mac since it
+                        started keeping track.
+                      </p>
+                    ) : (
+                      <>
+                        <ul className="crash-list">
+                          {crashes.map((c) => (
+                            <li
+                              key={c.id}
+                              className={c.acknowledged ? "crash" : "crash new"}
+                            >
+                              <div className="crash-meta">
+                                <span>{formatTime(c.occurredAt)}</span>
+                                <span className="crash-kind">{c.kind}</span>
+                              </div>
+                              <p className="crash-signature">{c.signature}</p>
+                              <p className="tiny">{c.sourceFile}</p>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="actions wrap">
+                          <button
+                            disabled={crashes.every((c) => c.acknowledged)}
+                            onClick={async () => {
+                              try {
+                                await invoke("acknowledge_crash_events");
+                                setCrashes(
+                                  await invoke<CrashEvent[]>("list_crash_events"),
+                                );
+                                toast("Marked as seen");
+                              } catch (e) {
+                                toast(String(e));
+                              }
+                            }}
                           >
-                            <div className="crash-meta">
-                              <span>{formatTime(c.occurredAt)}</span>
-                              <span className="crash-kind">{c.kind}</span>
-                            </div>
-                            <p className="crash-signature">{c.signature}</p>
-                            <p className="tiny">{c.sourceFile}</p>
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="actions wrap">
-                        <button
-                          disabled={crashes.every((c) => c.acknowledged)}
-                          onClick={async () => {
-                            try {
-                              await invoke("acknowledge_crash_events");
-                              setCrashes(
-                                await invoke<CrashEvent[]>("list_crash_events"),
-                              );
-                              toast("Marked as seen");
-                            } catch (e) {
-                              toast(String(e));
-                            }
-                          }}
-                        >
-                          Mark as seen
-                        </button>
-                        <button
-                          className="ghost danger"
-                          onClick={async () => {
-                            try {
-                              await invoke("clear_crash_events");
-                              setCrashes(
-                                await invoke<CrashEvent[]>("list_crash_events"),
-                              );
-                              toast("Crash history cleared");
-                            } catch (e) {
-                              toast(String(e));
-                            }
-                          }}
-                        >
-                          Clear crash history
-                        </button>
-                      </div>
-                    </>
-                  )}
+                            Mark as seen
+                          </button>
+                          <button
+                            className="ghost danger"
+                            onClick={async () => {
+                              try {
+                                await invoke("clear_crash_events");
+                                setCrashes(
+                                  await invoke<CrashEvent[]>("list_crash_events"),
+                                );
+                                toast("Crash history cleared");
+                              } catch (e) {
+                                toast(String(e));
+                              }
+                            }}
+                          >
+                            Clear crash history
+                          </button>
+                        </div>
+                      </>
+                    )}
 
+                    <p className="settings-hint">
+                      Read from this Mac&rsquo;s own crash reports; stored
+                      locally, never uploaded, never anything you dictated.
+                    </p>
+                  </div>
                   {/* ── YV98 · one button, and it is never a dead end ──
                       It builds a diagnostics zip, shows exactly what is inside
                       it, and then either opens a pre-filled message with the
@@ -269,17 +254,32 @@ export default function Privacy() {
                       whether macOS can drive your mail app, and the sheet says
                       so before you press anything. Nothing is uploaded on
                       either path — Yap still makes no outbound connection. */}
-                  <div className="actions wrap">
-                    <button className="primary" onClick={openSupportBundle}>
-                      Send crash report to Wilson
+                  <div className="panel" data-row>
+                    <h3>Support</h3>
+                    <div className="actions wrap">
+                      <button className="primary" onClick={openSupportBundle}>
+                        Send crash report to Wilson
+                      </button>
+                    </div>
+                    <p className="settings-hint">
+                      Redacted logs, crash summary, permission states and model
+                      list — never transcripts or recordings; you read it first.
+                    </p>
+                  </div>
+                  {/* yap-uiux-2026-10-16-SETTINGS — save and the two "go
+                      elsewhere" actions sit in the pinned footer. */}
+                  <div className="settings-footer">
+                    <button onClick={() => setNav("permissions")}>
+                      Permissions
+                    </button>
+                    <button onClick={replayOnboarding}>Replay onboarding</button>
+                    <button
+                      className="primary"
+                      onClick={() => saveSettings(settings)}
+                    >
+                      Save settings
                     </button>
                   </div>
-                  <p className="tiny">
-                    Packs the logs, the crash summary, your permission states and
-                    which models are downloaded. Transcripts, recordings and your
-                    database are never in it, and the logs are redacted before
-                    they are packed — you read the whole thing first.
-                  </p>
                 </section>
   );
 }

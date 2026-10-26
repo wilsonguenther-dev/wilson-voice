@@ -61,21 +61,9 @@ export default function Snippets() {
     }
   }
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Snippets
-                    <span className="sub">
-                      Say a short phrase, paste the whole thing.
-                    </span>
-                  </h2>
-                  <div className="panel">
+                <section className="settings-panel" data-settings-pane="snippets">
+                  <div className="panel" data-row>
                     <h3>New snippet</h3>
-                    <p>
-                      Say the trigger while dictating and Yap pastes the
-                      expansion instead — your email, your address, a sign-off.
-                      Matching ignores capitalisation and only fires on whole
-                      words.
-                    </p>
                     <div className="snip-add">
                       <input
                         placeholder="Trigger phrase (e.g. my email)"
@@ -98,14 +86,13 @@ export default function Snippets() {
                         Add snippet
                       </button>
                     </div>
-                  </div>
-                  <div className="panel">
-                    <h3>Where triggers fire</h3>
-                    <p>
-                      Inline replaces the phrase wherever you say it. Whole
-                      utterance is stricter — the trigger only expands when it is
-                      the entire thing you said.
+                    <p className="settings-hint">
+                      Say the trigger while dictating and Yap pastes the expansion
+                      — whole words only, any capitalisation.
                     </p>
+                  </div>
+                  <div className="panel" data-row>
+                    <h3>Where triggers fire</h3>
                     <div className="profile-row">
                       {(
                         [
@@ -138,9 +125,12 @@ export default function Snippets() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">
+                      Whole utterance only expands when the trigger is all you said.
+                    </p>
                   </div>
                   {snippets.length === 0 ? (
-                    <div className="panel">
+                    <div className="panel" data-row>
                       <p className="tiny">
                         No snippets yet. Add one above and it takes effect on
                         your next dictation.

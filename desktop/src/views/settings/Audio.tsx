@@ -6,13 +6,9 @@ export default function Audio() {
   } = useAppCtx();
   if (!settings) return null;
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Audio
-                    <span className="sub">
-                      Cleaning up your mic and quieting the room while you talk.
-                    </span>
-                  </h2>
+                <section className="settings-panel" data-settings-pane="audio">
+                  <div className="panel" data-row>
+                  <h3>While you talk</h3>
                   <label className="toggle">
                     <input
                       type="checkbox"
@@ -22,8 +18,8 @@ export default function Audio() {
                       }
                     />
                     <span>
-                      <strong>Denoise</strong> — remove steady background noise
-                      like fans, hum, and keyboard clatter before transcribing
+                      <strong>Denoise</strong> — remove fans, hum and keyboard
+                      clatter before transcribing
                     </span>
                   </label>
                   <label className="toggle">
@@ -38,11 +34,11 @@ export default function Audio() {
                       }
                     />
                     <span>
-                      <strong>Mute the Mac while dictating</strong> — silence
-                      system audio so nothing plays over you, and restore your
-                      exact volume when you stop
+                      <strong>Mute the Mac while dictating</strong> — your exact
+                      volume comes back when you stop
                     </span>
                   </label>
+                  </div>
                 </section>
   );
 }

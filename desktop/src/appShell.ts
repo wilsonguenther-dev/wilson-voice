@@ -65,7 +65,7 @@ export function useAppShell() {
     invoke<string>("user_display_name").then(setUserName).catch(() => {});
   }, []);
   // YV27 — which Settings sub-panel is showing (segmented sub-nav).
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("companion");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("dictation");
   const [status, setStatus] = useState<AppStatus>({
     recording: false,
     busy: false,
@@ -1104,14 +1104,6 @@ export function useAppShell() {
     });
   }
 
-  // YV54 — the model picker's one home: Settings → Advanced. Every "get / manage
-  // a speech model" affordance in the app lands here now that onboarding no
-  // longer asks the question.
-  function openModelSettings() {
-    setNav("settings");
-    setSettingsTab("advanced");
-  }
-
   // "Replay onboarding" — clear the gate so the flow shows again.
   async function replayOnboarding() {
     if (!settings) return;
@@ -1308,7 +1300,7 @@ export function useAppShell() {
     meetingKind, meetingKinds, meetingQuery, meetingStatus, meetings, modelIsReady,
     modelSetup, monthlySeries, monthlyView, nav, needsPerms, newExpansion,
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
-    openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
+    openMeeting, openMeetingDetail, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
     refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
