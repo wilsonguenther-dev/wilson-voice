@@ -5456,7 +5456,7 @@ fn clear_notes_ready_on_main(state: &AppState) {
 /// send `navigate` with `meetings:<id>`, and retire the tray's notes-ready
 /// line. The pill's "Notes ready — Open" and the tray line are one action.
 fn open_meeting_notes_now(app: &AppHandle, id: &str) {
-    focus_main_window(app);
+    present_main_window(app, lifecycle::ActivationSource::TrayOpen);
     let _ = app.emit("navigate", meeting_notes_nav_payload(id));
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || {
