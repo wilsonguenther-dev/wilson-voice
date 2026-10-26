@@ -18,9 +18,14 @@ export const PERMS_ALL_CLEAR_SUMMARY = "All critical permissions look good for Y
 
 /** The all-clear copy shows only when the Rust report itself says nothing nags. */
 export function permsAllClear(
-  perms: Pick<PermissionReport, "allCriticalOk" | "accessibility" | "summary">,
+  perms: Pick<PermissionReport, "allCriticalOk" | "accessibility" | "summary"> & { productName?: string },
 ): boolean {
-  return perms.allCriticalOk && perms.accessibility && perms.summary === PERMS_ALL_CLEAR_SUMMARY;
+  return (
+    perms.allCriticalOk &&
+    perms.accessibility &&
+    (perms.summary === PERMS_ALL_CLEAR_SUMMARY ||
+      perms.summary === PERMS_ALL_CLEAR_SUMMARY.replace(/Yap\.$/, `${perms.productName}.`))
+  );
 }
 
 export default function Permissions() {
@@ -35,6 +40,7 @@ export default function Permissions() {
   // loading + error + a settled state, and the settled state's good news
   // ("nothing to fix here") is carried by the rows themselves.
   const state = viewState(perms, booting, permsError);
+  const product = perms?.productName || "Yap";
   if (state === "error")
     return (
       <ErrorState
@@ -53,7 +59,7 @@ export default function Permissions() {
                 <h3>Enable for this app only</h3>
                 <p>
                   Bundle id <code>com.wilsonguenther.wilson-voice</code> must
-                  appear as <strong>Yap</strong> in System Settings →
+                  appear as <strong>{product}</strong> in System Settings →
                   Privacy &amp; Security. Yap runs no helper process, so that
                   one row is the only thing you ever enable.
                 </p>
@@ -135,7 +141,7 @@ export default function Permissions() {
                     <p>
                       In-process capture (Apple Silicon / cpal). Click{" "}
                       <strong>Request Microphone</strong> or Dictate so macOS
-                      prompts — then enable <strong>Yap</strong> in
+                      prompts — then enable <strong>{product}</strong> in
                       Privacy → Microphone.
                     </p>
                     <button
@@ -199,7 +205,7 @@ export default function Permissions() {
                   <div>
                     <strong>Mic capture</strong>
                     <p>
-                      In-process audio (cpal) so TCC lists <strong>Yap</strong>,
+                      In-process audio (cpal) so TCC lists <strong>{product}</strong>,
                       not a helper process. Click Dictate once to trigger the
                       system prompt.
                     </p>

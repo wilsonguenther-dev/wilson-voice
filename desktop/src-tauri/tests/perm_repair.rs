@@ -559,3 +559,168 @@ fn listen_event_banner_agrees_with_grant_row_for_every_input() {
         }
     }
 }
+
+// ── fix-ax-probe-refresh ──────────────────────────────────────────────────
+
+/// Wilson 2026-10-19 (Yap Test, combined 3095c4d): every Repair on the
+/// "Accessibility is off" row logged ONLY `tccutil reset PostEvent`. That row
+/// was the PostEvent row wearing the Accessibility label. Every row now resets
+/// its OWN service first, and says which services it reset.
+#[test]
+fn every_row_resets_the_service_it_names_first() {
+    for s in Service::ALL {
+        let plan = repair_plan(s, BUNDLE);
+        assert_eq!(plan[0], repair_argv(s, BUNDLE), "{s:?}: its own service first");
+        assert_eq!(perm_probe::reset_services(s)[0], format!("kTCCService{}", s.tcc_name()));
+    }
+    assert_eq!(
+        perm_probe::reset_services(Service::Accessibility),
+        vec!["kTCCServiceAccessibility", "kTCCServicePostEvent"]
+    );
+    assert_eq!(perm_probe::reset_services(Service::PostEvent), vec!["kTCCServicePostEvent"]);
+    assert_eq!(
+        perm_probe::repair_summary(Service::Accessibility, "Yap Test"),
+        "Reset kTCCServiceAccessibility and kTCCServicePostEvent for Yap Test."
+    );
+    // A PostEvent row can never again read as "Accessibility is off".
+    assert_eq!(Service::Accessibility.label(), "Accessibility");
+    assert_ne!(Service::PostEvent.label(), "Accessibility");
+    // ...though its grant still lives in the Accessibility list.
+    assert_eq!(Service::PostEvent.pane_name(), "Accessibility");
+}
+
+/// The 16:08:20Z state: kTCCServiceAccessibility allowed, CGPreflightPostEventAccess
+/// false. An element that refuses the AX insert falls back to the ⌘V bridge
+/// (paste.rs InsertPath::Ax; insertion_matrix Ax+Refused posts once), so the
+/// PostEvent denial is real and keeps its OWN row — titled "Event posting
+/// (⌘V)", never "Accessibility" — and its Repair stays offered.
+#[test]
+fn post_event_no_under_a_live_accessibility_grant_keeps_its_own_row() {
+    let report = |ax: bool, post: bool| {
+        let raw = RawProbes {
+            accessibility: ax,
+            listen_event_cg: true,
+            listen_event_hid: GrantState::Authorized,
+            post_event: post,
+            microphone: MicAuth::Authorized,
+        };
+        let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
+        permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into())
+    };
+    let post_bit = 1u8 << Service::ALL.iter().position(|s| *s == Service::PostEvent).unwrap();
+    let granted = report(true, false);
+    assert_eq!(granted.probe.accessibility.state, ProbeState::Granted);
+    assert_eq!(granted.probe.post_event.state, ProbeState::Denied, "a real denial is not hidden");
+    assert_eq!(permissions::repair_row_bits(&granted.probe), post_bit, "only the PostEvent row");
+    assert_ne!(granted.probe.post_event.label, "Accessibility");
+    // Both granted: no row at all.
+    assert_eq!(permissions::repair_row_bits(&report(true, true).probe), 0);
+    // With Accessibility off PostEvent stays repairable too.
+    let off = report(false, false);
+    assert_eq!(off.probe.post_event.state, ProbeState::Denied);
+    assert_ne!(permissions::repair_row_bits(&off.probe) & post_bit, 0);
+}
+
+/// Finding 1, reproduced: flip the live AX probe and the watcher's snapshot
+/// MUST change (that is what emits `permission_changed`, which re-reads the
+/// banner), and the shown Repair rows go to none.
+#[test]
+fn flipping_the_probe_is_a_transition_and_clears_the_banner_rows() {
+    let snap = |ax: bool| {
+        let raw = RawProbes {
+            accessibility: ax,
+            listen_event_cg: true,
+            listen_event_hid: GrantState::Authorized,
+            post_event: false,
+            microphone: MicAuth::Authorized,
+        };
+        let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
+        let r = permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into());
+        permissions::GrantSnapshot::from_report(&r)
+    };
+    let mut gate = permissions::TransitionGate::new();
+    assert_eq!(gate.observe(snap(false)), None, "baseline is silent");
+    let before = snap(false);
+    assert!(before.has_denial(), "a shown row keeps the 5 s re-read alive");
+    assert_ne!(before.repair_rows, 0);
+    let after = gate.observe(snap(true)).expect("AX flip must emit permission_changed");
+    let ax_bit = 1u8 << Service::ALL.iter().position(|s| *s == Service::Accessibility).unwrap();
+    let post_bit = 1u8 << Service::ALL.iter().position(|s| *s == Service::PostEvent).unwrap();
+    assert_eq!(after.repair_rows & ax_bit, 0, "the Accessibility row clears once it is on");
+    assert_eq!(after.repair_rows, post_bit, "the PostEvent denial keeps only its own row");
+    assert_eq!(gate.observe(snap(true)), None, "and only once");
+}
+
+#[test]
+fn phase_and_manual_copy_name_the_running_product() {
+    use wilson_voice_lib::perm_truth::product_name_from_bundle_path;
+    assert_eq!(product_name_from_bundle_path("/Applications/Yap Test.app"), "Yap Test");
+    assert_eq!(product_name_from_bundle_path("/Applications/Yap.app/"), "Yap");
+    assert_eq!(product_name_from_bundle_path("/Users/w/target/debug/wilson-voice"), "Yap");
+    assert_eq!(
+        perm_probe::phase_message_for(Service::Accessibility, RepairPhase::Waiting, "Yap Test"),
+        "Waiting for you to switch Yap Test on…"
+    );
+    let timed = perm_probe::phase_message_for(Service::ListenEvent, RepairPhase::TimedOut, "Yap Test");
+    assert!(timed.starts_with("Yap Test is still not allowed in Input Monitoring"), "{timed}");
+    let steps = perm_probe::manual_steps_for(Service::PostEvent, "/Applications/Yap Test.app", "Yap Test");
+    assert!(steps.contains("→ Accessibility, select Yap Test"), "{steps}");
+}
+
+#[test]
+fn report_lines_name_the_test_product() {
+    let raw = RawProbes {
+        accessibility: false,
+        listen_event_cg: false,
+        listen_event_hid: GrantState::Denied,
+        post_event: false,
+        microphone: MicAuth::Denied,
+    };
+    let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
+    let mut r = permissions::report_from_probe(probe, false, GrantState::Unknown, true, "ok".into());
+    permissions::name_product_in_report(&mut r, "Yap Test");
+    assert_eq!(r.product_name, "Yap Test");
+    let all: Vec<&str> = r.grants.iter().map(|g| g.detail.as_str()).collect();
+    assert!(all.iter().any(|d| d.contains("Yap Test")), "{all:?}");
+    for d in &all {
+        assert!(!d.replace("Yap Test", "").contains("Yap"), "bare Yap left in: {d}");
+    }
+}
+
+/// PR #247 review (primary BLOCKING): main's #249 already names the product at
+/// the source ("Input Monitoring is on for Yap Test — ..."); the report-wide
+/// naming pass must not turn that into "Yap Test Test". Idempotent, whole-word.
+#[test]
+fn naming_the_product_never_doubles_a_line_already_named() {
+    use permissions::name_product;
+    let named = "Input Monitoring is on for Yap Test — the fn hold reaches it.";
+    assert_eq!(name_product(named, "Yap Test"), named);
+    let stale = "Yap Test is listed in Input Monitoring, but the grant belongs to an older build. \
+                 Remove Yap Test from System Settings, then reopen Yap Test.";
+    assert_eq!(name_product(stale, "Yap Test"), stale);
+    assert_eq!(name_product("Turn Yap on.", "Yap Test"), "Turn Yap Test on.");
+    assert_eq!(name_product("Yap's entry", "Yap Test"), "Yap Test's entry");
+    assert_eq!(name_product("Yapper", "Yap Test"), "Yapper", "whole word only");
+    assert_eq!(name_product("Turn Yap on.", "Yap"), "Turn Yap on.");
+    let once = name_product("switch Yap on; Yap Test is listed", "Yap Test");
+    assert_eq!(once, "switch Yap Test on; Yap Test is listed");
+    assert_eq!(name_product(&once, "Yap Test"), once, "idempotent");
+
+    // Through the report: a grant detail already named at the source survives.
+    let raw = RawProbes {
+        accessibility: true,
+        listen_event_cg: true,
+        listen_event_hid: GrantState::Authorized,
+        post_event: true,
+        microphone: MicAuth::Authorized,
+    };
+    let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
+    let mut r = permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into());
+    r.grants[0].detail = named.to_string();
+    permissions::name_product_in_report(&mut r, "Yap Test");
+    permissions::name_product_in_report(&mut r, "Yap Test");
+    assert_eq!(r.grants[0].detail, named);
+    for g in &r.grants {
+        assert!(!g.detail.contains("Yap Test Test"), "{}", g.detail);
+    }
+}

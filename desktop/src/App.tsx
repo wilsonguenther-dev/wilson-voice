@@ -310,7 +310,7 @@ export default function App() {
         <PermissionHealthRow report={perms} />
         {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
             the same probe onboarding renders. */}
-        <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} />
+        <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
 
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>

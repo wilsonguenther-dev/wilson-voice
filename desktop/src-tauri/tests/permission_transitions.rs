@@ -26,6 +26,7 @@ fn snap(
         accessibility,
         input_monitoring,
         audio_capture,
+        repair_rows: 0,
     }
 }
 

@@ -27,9 +27,12 @@ import {
 export function PermissionRepair({
   probe,
   onChanged,
+  productName,
 }: {
   probe?: ProbeReport | null;
   onChanged?: () => void;
+  /** `PermissionReport.productName` — "Yap Test" on the test channel. */
+  productName?: string | null;
 }) {
   const [views, setViews] = useState<Partial<Record<RepairService, RepairView>>>({});
 
@@ -47,7 +50,7 @@ export function PermissionRepair({
   }, [onChanged]);
 
   async function repair(service: RepairService) {
-    apply(service, { kind: "started" });
+    apply(service, { kind: "started", product: productName });
     try {
       const outcome = await requestRepair(service);
       apply(service, { kind: "outcome", outcome });
@@ -67,7 +70,7 @@ export function PermissionRepair({
   if (rows.length === 0 && active.length === 0) return null;
 
   const all = [
-    ...rows.map((r) => ({ service: r.service, copy: serviceCopy(r) })),
+    ...rows.map((r) => ({ service: r.service, copy: serviceCopy(r, productName) })),
     ...active.map((s) => ({ service: s, copy: null })),
   ];
 
