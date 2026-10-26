@@ -218,6 +218,15 @@ fn stop_hands_the_capture_to_the_pipeline_and_the_row_completes_with_both_tracks
         percents.windows(2).all(|w| w[0] <= w[1]),
         "monotonic: {percents:?}"
     );
+    // yap24-NT7 — the stop hands the meeting over AND announces it: the very
+    // first event is "transcribing 0%" for this meeting, emitted at enqueue,
+    // so the pill never goes quiet between the stop and the first window.
+    assert_eq!(
+        ev.first()
+            .map(|e| (e.id.as_str(), e.state.as_str(), e.percent)),
+        Some((id.as_str(), "transcribing", 0)),
+        "first event is the queued announcement: {ev:?}"
+    );
     assert_eq!(ev.last().map(|e| e.state.as_str()), Some("complete"));
     assert_eq!(ev.last().map(|e| e.percent), Some(100));
 }

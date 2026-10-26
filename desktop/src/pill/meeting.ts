@@ -8,7 +8,7 @@
  *
  * ## Energy (OS-12 fix 1)
  *
- * The elapsed clock is NOT a `setInterval` in the webview and NOT a rAF frame:
+ * The elapsed clock is NOT a repeating JS timer in the webview and NOT a rAF frame:
  * the backend emits one `meeting` event per second with the label ALREADY
  * rendered (`meetings::format_offset` in Rust), and this module only stores it.
  * A three-hour meeting therefore wakes the JS thread ~10,800 times, once per
@@ -22,6 +22,13 @@
  * scene every 100 ms for the whole session, 108,000 frames over three hours,
  * which dwarfs the clock this module was written to make cheap.
  */
+
+import type { LivePhase } from "./live";
+import {
+  MEETING_PROGRESS_EVENT,
+  meetingStateLabel,
+  type MeetingProgressEvent,
+} from "../meetings/progress";
 
 /**
  * The Tauri event the backend broadcasts status on, re-exported from the ONE
@@ -121,4 +128,183 @@ export function systemAudioBadge(status: MeetingStatus | null | undefined): stri
 export function disabledReason(status: MeetingStatus): string | null {
   if (status.recording || status.captureAvailable) return null;
   return status.unavailableReason || "Meeting recording is unavailable in this build.";
+}
+
+// ─── yap24-NT7 — the pill follows the meeting AFTER stop ─────────────────────
+//
+// Until this item the badge knew `recording` and nothing after it: the moment a
+// meeting stopped the pill went quiet while the transcription pipeline (NT2)
+// did the real work. The pill now walks the same road the pipeline does —
+// recording → processing (with percent) → notes-ready | failed — and it is
+// driven by the EXISTING `meeting:progress` event (`meeting_pipeline.rs`
+// `MEETING_PROGRESS_EVENT`, typed once in `meetings/progress.ts`). No new event
+// and no polling: this module schedules nothing at all. The one deadline the
+// phase has (notes-ready holds for `MEETING_RESULT_HOLD_MS`) is armed by the
+// SHELL that owns the phase (float-main.tsx), exactly like `PHASE_HOLD_MS` is
+// for the take, and it lands here as a `dismiss` input that a stale timer
+// cannot misapply.
+
+
+/**
+ * Re-exported, never re-typed: the pill listens to the one name the pipeline
+ * emits and the Meetings view already folds.
+ */
+export { MEETING_PROGRESS_EVENT };
+export type { MeetingProgressEvent };
+
+/** How long notes-ready (and failed) holds on the pill before it lets go. */
+export const MEETING_RESULT_HOLD_MS = 10_000;
+
+/** The sentence the pill shows when the pipeline failed without saying why. */
+export const MEETING_FAILED_FALLBACK = "Yap could not transcribe this meeting.";
+
+/**
+ * The meeting's phase on the pill. `recording` is the live meeting (YV95);
+ * everything after it is new here.
+ */
+export type MeetingPillPhase =
+  | { kind: "idle" }
+  | { kind: "recording"; id: string | null }
+  | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing" }
+  | { kind: "notes-ready"; id: string }
+  | { kind: "failed"; id: string; sentence: string };
+
+export const MEETING_PILL_IDLE: MeetingPillPhase = { kind: "idle" };
+
+export type MeetingPillInput =
+  /** The YV95 `meeting` status broadcast. */
+  | { type: "status"; status: MeetingStatus }
+  /** One `meeting:progress` event from the pipeline. */
+  | { type: "progress"; event: MeetingProgressEvent }
+  /** The user clicked the result, or its hold elapsed. Scoped to one meeting. */
+  | { type: "dismiss"; id: string };
+
+const clampPercent = (n: number) =>
+  Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0;
+
+/**
+ * Fold one input into the pill's meeting phase. Pure.
+ *
+ * - A meeting that is RECORDING outranks everything after it: a new recording
+ *   replaces a result the user never clicked, and a background job's progress
+ *   (a reconcile re-queue of an older meeting) never hides the live clock.
+ * - `status { recording: false }` only ends `recording`; the 1 Hz idle
+ *   broadcast must not wipe a processing or notes-ready phase.
+ * - Percent never runs backwards for the same meeting while it transcribes.
+ * - `complete` and `partial` are notes-ready (both have a transcript; partial's
+ *   own sentence is on the meeting's page). `failed` carries the pipeline's
+ *   sentence verbatim.
+ */
+export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInput): MeetingPillPhase {
+  switch (input.type) {
+    case "status": {
+      const s = input.status;
+      if (s.recording) {
+        const id = s.id ?? null;
+        return prev.kind === "recording" && prev.id === id ? prev : { kind: "recording", id };
+      }
+      return prev.kind === "recording" ? MEETING_PILL_IDLE : prev;
+    }
+    case "progress": {
+      const e = input.event;
+      if (!e || typeof e.id !== "string" || e.id.length === 0) return prev;
+      if (prev.kind === "recording") return prev;
+      switch (e.state) {
+        case "transcribing": {
+          const pct = clampPercent(e.percent);
+          if (prev.kind === "processing" && prev.id === e.id && prev.step === "transcribing") {
+            return pct > prev.percent ? { ...prev, percent: pct } : prev;
+          }
+          return { kind: "processing", id: e.id, percent: pct, step: "transcribing" };
+        }
+        case "summarizing":
+          return { kind: "processing", id: e.id, percent: 100, step: "summarizing" };
+        case "complete":
+        case "partial":
+          return prev.kind === "notes-ready" && prev.id === e.id ? prev : { kind: "notes-ready", id: e.id };
+        case "failed": {
+          const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
+          return { kind: "failed", id: e.id, sentence };
+        }
+        default:
+          return prev;
+      }
+    }
+    case "dismiss":
+      if ((prev.kind === "notes-ready" || prev.kind === "failed") && prev.id === input.id) {
+        return MEETING_PILL_IDLE;
+      }
+      return prev;
+  }
+}
+
+/** Does this phase hold on a deadline? (The shell arms the timer.) */
+export function meetingPillHoldMs(phase: MeetingPillPhase): number | null {
+  return phase.kind === "notes-ready" || phase.kind === "failed" ? MEETING_RESULT_HOLD_MS : null;
+}
+
+/**
+ * The take phases in which no dictation is on screen. Anything else — a live
+ * take, its decode, its result, a refused press — is the shorter, more urgent
+ * thing, and it OUTRANKS the post-stop badge.
+ */
+const DICTATION_QUIET: ReadonlySet<LivePhase> = new Set<LivePhase>(["idle", "sleepy"]);
+
+/** What the badge renders for a post-stop meeting phase. */
+export interface MeetingAfterView {
+  kind: "processing" | "notes-ready" | "failed";
+  /** The meeting this is about — the click opens it. */
+  id: string;
+  /** The words in the pill. */
+  label: string;
+  /** The full sentence for the tooltip and the accessible name. */
+  title: string;
+  /** 0–100 for processing, else null. */
+  percent: number | null;
+  /** Clicking opens the meeting in the Meetings view. */
+  opens: boolean;
+}
+
+/**
+ * The post-stop view, or `null` when there is nothing to show — including
+ * whenever a dictation is on screen (`dictation` is the shell's winning take
+ * phase). The live recording badge is NOT this function's business: it is
+ * rendered from the status itself and keeps its YV95 behaviour.
+ */
+export function meetingAfterView(phase: MeetingPillPhase, dictation: LivePhase): MeetingAfterView | null {
+  if (!DICTATION_QUIET.has(dictation)) return null;
+  switch (phase.kind) {
+    case "processing": {
+      const label =
+        phase.step === "summarizing"
+          ? meetingStateLabel("summarizing", undefined, false)
+          : meetingStateLabel("transcribing", { id: phase.id, state: "transcribing", percent: phase.percent, processedThroughSeconds: 0, durationSeconds: 0 }, false);
+      return { kind: "processing", id: phase.id, label, title: `${label} — your meeting notes are on their way`, percent: phase.step === "summarizing" ? 100 : Math.min(99, phase.percent), opens: false };
+    }
+    case "notes-ready":
+      return { kind: "notes-ready", id: phase.id, label: "Notes ready — Open", title: "Meeting notes ready — open them in Yap", percent: null, opens: true };
+    case "failed":
+      return { kind: "failed", id: phase.id, label: phase.sentence, title: phase.sentence, percent: null, opens: true };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The `navigate` payload that opens ONE meeting in the Meetings view. The Rust
+ * side builds the same string (`meeting_notes_nav_payload` in lib.rs) for the
+ * tray item; `parseNavigate` in the main window reads it.
+ */
+export const MEETING_NAV_PREFIX = "meetings:";
+export function meetingNavPayload(id: string): string {
+  return `${MEETING_NAV_PREFIX}${id}`;
+}
+
+/** Split a `navigate` payload into the view and (optionally) the meeting to open. */
+export function parseNavigate(payload: string): { nav: string; meetingId: string | null } {
+  if (typeof payload === "string" && payload.startsWith(MEETING_NAV_PREFIX)) {
+    const id = payload.slice(MEETING_NAV_PREFIX.length);
+    return { nav: "meetings", meetingId: id.length > 0 ? id : null };
+  }
+  return { nav: payload, meetingId: null };
 }

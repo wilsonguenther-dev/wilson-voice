@@ -16,7 +16,8 @@ import { usePillDrag, watchPillHitbox } from "./drag";
 import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
-import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
+import MeetingBadge from "./MeetingBadge";
+import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 
 /**
  * Y5-C — Classic's art for EVERY phase, as DATA.
@@ -66,9 +67,17 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
+    /**
+     * YV95 / yap24-NT7 — the meeting, owned by the SHELL (float-main) like
+     * `gate` and `progress`: the live status, and the post-stop view already
+     * ranked below dictation. This capsule draws them; it decides neither.
+     */
+    meeting?: MeetingStatus;
+    meetingAfter?: MeetingAfterView | null;
+    onMeetingOpen?: (id: string) => void;
     /**
      * Y2-A — the license as the pill is allowed to say it, already decided by
      * `pillLicense` in float-main. Accepted here so the wiring is complete and
@@ -105,8 +114,6 @@ export default function ClassicPill(
     release: () => { softRef.current?.release(); wakeRef.current(); },
     dock: () => { softRef.current?.dock(); wakeRef.current(); },
   });
-  // YV95 — the pill is the always-visible recording indicator for a meeting.
-  const meeting = useMeetingStatus();
 
   // YV65 — publish the capsule's rect so the panel only takes the cursor over
   // the pill itself; the transparent shadow margin stays click-through.
@@ -244,7 +251,10 @@ export default function ClassicPill(
     : live ? "pill live"
       : transcribing ? "pill busy transcribing"
         : busy ? "pill busy" : done ? "pill done" : "pill";
-  const cls = meeting.recording && !blocked && !gated ? `${base} meeting` : base;
+  // yap24-NT7 — the post-stop phases (processing / notes-ready / failed) wear
+  // the same expanded capsule; `meetingAfter` is already null whenever a
+  // dictation is on screen, so the take always outranks it.
+  const cls = (meeting.recording || meetingAfter !== null) && !blocked && !gated ? `${base} meeting` : base;
   // Y5-C — the phase's art, drawn from this character's own table. Every phase
   // has a row, so this is never undefined and there is no fallback to forget.
   const art = CLASSIC_PHASE_ART[gate];
@@ -298,7 +308,7 @@ export default function ClassicPill(
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
-        <MeetingBadge status={meeting} />
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
         <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {blocked || gated ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
         </button>

@@ -528,6 +528,72 @@ body,
   fill: currentColor;
 }
 
+/* ── yap24-NT7 · AFTER STOP ───────────────────────────────────────────────────
+ * The badge follows the meeting through the pipeline: "Transcribing 42%" with a
+ * thin bar, "Notes ready — Open" (a button: it opens the meeting), or the
+ * failure's own sentence. The bar's fill is a CSS custom property set from the
+ * `meeting:progress` event — a transform on the compositor, never a timer. */
+.meeting-after {
+  font: 600 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  color: var(--pill-text);
+  max-width: 220px;
+  border: 0;
+  background: transparent;
+}
+button.meeting-after {
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 4px 6px;
+}
+button.meeting-after:hover {
+  background: hsl(var(--accent-meeting) / 0.16);
+}
+button.meeting-after:focus-visible {
+  outline: 2px solid hsl(var(--accent-meeting));
+  outline-offset: 2px;
+}
+.meeting-after-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.meeting-after-bar {
+  position: relative;
+  width: 34px;
+  height: 4px;
+  flex: none;
+  border-radius: 2px;
+  overflow: hidden;
+  background: hsl(var(--accent-meeting) / 0.22);
+}
+.meeting-after-bar > i {
+  position: absolute;
+  inset: 0;
+  background: hsl(var(--accent-meeting));
+  transform-origin: left center;
+  transform: scaleX(var(--meeting-progress, 0));
+  transition: transform 0.4s ease;
+}
+.meeting-after-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: hsl(142 70% 45%);
+  box-shadow: 0 0 8px hsl(142 70% 45% / 0.6);
+}
+.meeting-after-dot.failed {
+  background: hsl(38 92% 50%);
+  box-shadow: 0 0 8px hsl(38 92% 50% / 0.6);
+}
+@media (prefers-reduced-motion: reduce) {
+  .meeting-after-bar > i {
+    transition: none;
+  }
+}
+
 /* A meeting expands the capsule for as long as it runs — the same expansion the
  * live/busy/done states use, so there is one pill shape, not two. */
 .pill.meeting {

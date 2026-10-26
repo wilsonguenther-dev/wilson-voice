@@ -13,7 +13,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox } from "./drag";
-import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
+import MeetingBadge from "./MeetingBadge";
+import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
   advanceLive, createLiveState, framePlan, PHASE_ID, phaseVisual, progressFraction,
@@ -115,9 +116,17 @@ const DOCK_PAD = 10;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
+    /**
+     * YV95 / yap24-NT7 — the meeting, owned by the SHELL (float-main) like
+     * `gate` and `progress`: the live status, and the post-stop view already
+     * ranked below dictation. This capsule draws them; it decides neither.
+     */
+    meeting?: MeetingStatus;
+    meetingAfter?: MeetingAfterView | null;
+    onMeetingOpen?: (id: string) => void;
     /**
      * Y2-A — the license as the pill is allowed to say it, already decided by
      * `pillLicense` in float-main. Accepted here so the wiring is complete and
@@ -133,8 +142,6 @@ export default function YappyPill(
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
   // hit-box is published from the draw loop below, not from a DOM rect.
   const drag = usePillDrag();
-  // YV95 — a meeting's recording state rides above the canvas as DOM.
-  const meeting = useMeetingStatus();
   // PERM-C — set by the draw effect; called when the gate prop changes.
   const applyGateRef = useRef<(g: LivePhase) => void>(() => {});
   // Y3-C — decode progress reaches the mount-once scene the same way the gate
@@ -593,7 +600,7 @@ export default function YappyPill(
           <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
         </button>
       )}
-      <MeetingBadge status={meeting} />
+      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
     </div>
   );
 }

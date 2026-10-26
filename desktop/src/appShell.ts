@@ -9,7 +9,7 @@ import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
 import { useFormattingOptions } from "./formatting";
-import { IDLE_MEETING, MEETING_EVENT, type MeetingStatus } from "./pill/meeting";
+import { IDLE_MEETING, MEETING_EVENT, parseNavigate, type MeetingStatus } from "./pill/meeting";
 import { type MeetingConsent } from "./meetings/consent";
 import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
@@ -697,9 +697,12 @@ export function useAppShell() {
       },
     ).then((u) => (dead ? u() : unsubs.push(u)));
     // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
+    // yap24-NT7 — "meetings:<id>" (the pill's and the tray's "Notes ready —
+    // Open") lands on Meetings with THAT meeting open.
     listen<string>("navigate", (e) => {
-      const dest = e.payload as Nav;
-      setNav(dest);
+      const { nav: dest, meetingId } = parseNavigate(e.payload);
+      setNav(dest as Nav);
+      if (meetingId) void openMeetingDetail(meetingId);
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // Tray "Keyboard Shortcuts…" jumps straight to the Shortcut sub-tab.
     listen<string>("settings-tab", (e) => {
@@ -735,7 +738,7 @@ export function useAppShell() {
       dead = true;
       unsubs.forEach((u) => u());
     };
-  }, [refreshAll]);
+  }, [refreshAll, openMeetingDetail]);
 
   useEffect(() => {
     const t = setTimeout(() => {

@@ -9,7 +9,7 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,6 +17,8 @@ import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
 import CopyCard from "./pill/CopyCard";
+import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
+import { meetingAfterView } from "./pill/meeting";
 import {
   acceptProgress,
   errorSentence,
@@ -298,9 +300,27 @@ function Float() {
     // CSS hook that shows it (float.css `html[data-still-recording="true"]`).
     document.documentElement.dataset.stillRecording = stillRecording ? "true" : "false";
   }, [stillRecording]);
-  const pill = style === "yappy"
-    ? <YappyPill gate={phase} progress={progress} license={lic} />
-    : <ClassicPill gate={phase} progress={progress} license={lic} />;
+  // yap24-NT7 — the meeting lives HERE too, for the reason `gate` does: after
+  // stop it is a property of the meeting pipeline, not of whichever capsule is
+  // drawn (Y5-K owner decision: the shell owns phases, a character only owns
+  // art). Ranked ONCE against the take: a dictation on screen outranks the
+  // post-stop badge, so `meetingAfter` is null while one is.
+  const meeting = useMeetingPill();
+  const meetingAfter = meetingAfterView(meeting.phase, phase);
+  const dismissMeeting = meeting.dismiss;
+  const onMeetingOpen = useCallback(
+    (id: string) => {
+      openMeetingNotes(id).catch((e) => console.error(e));
+      dismissMeeting(id);
+    },
+    [dismissMeeting],
+  );
+  useEffect(() => {
+    // The same handle `data-phase` gives a screenshot or a browser test.
+    document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
+  }, [meetingAfter?.kind, meeting.status.recording]);
+  const pillProps = { gate: phase, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
+  const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} />;
   // Y5-C — the phase line is placed ONCE, by the SHELL, at all three docks
   // (OWNER DECISION 2026-09-13). It is character-agnostic TEXT; what is
   // per-character is the ART, and that stays inside each capsule. Placed by

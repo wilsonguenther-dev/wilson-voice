@@ -652,6 +652,13 @@ struct AppState {
     /// sure). Disabled while a meeting is recording, for the same reason the
     /// item above becomes "Stop meeting": there is nothing to pick a kind FOR.
     tray_meeting_kind: PLMutex<Option<Submenu<Wry>>>,
+    /// yap24-NT7 — "Meeting notes ready — Open". Built with the tray and held
+    /// here so it can be INSERTED when a meeting's notes land and REMOVED when
+    /// they are opened (or the next meeting starts) — muda has no hidden item.
+    tray_notes_ready: PLMutex<Option<MenuItem<Wry>>>,
+    /// yap24-NT7 — the meeting the tray's notes-ready line opens; `Some` exactly
+    /// while that line is in the menu.
+    notes_ready_meeting: PLMutex<Option<String>>,
     /// Y2-E — the DISABLED header carrying the license state ("Trial — 5 days
     /// left" / "Licensed" / "Trial ended — dictation paused"). Its text comes
     /// from [`license::tray_line`], the same decision the pill renders, so the
@@ -816,6 +823,11 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
                 // meeting's kind", which it is not.
                 if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
                     let _ = submenu.set_enabled(!recording);
+                }
+                // yap24-NT7 — a new meeting supersedes the last one's "notes
+                // ready" line, exactly as it does on the pill.
+                if recording {
+                    clear_notes_ready_on_main(&state);
                 }
             }
         });
@@ -5307,11 +5319,38 @@ static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 /// summary model is installed. "No model" is a state, not an error: the
 /// transcript stands and the Meetings view says "Add a summary model in
 /// Settings".
+///
+/// yap24-NT7 — this is also the moment a meeting's notes are READY (with or
+/// without a summary), so it ends by announcing them: the tray's "Meeting notes
+/// ready — Open" line, and a macOS notification when Yap is in the background.
 fn auto_summarize_meeting(state: &AppState, id: &str) {
+    summarize_if_model_installed(state, id);
+    if let Some(app) = MEETING_APP.get() {
+        announce_meeting_notes(app, state, id);
+    }
+}
+
+fn summarize_if_model_installed(state: &AppState, id: &str) {
     let model = state.settings.lock().polish_model.trim().to_string();
     if model.is_empty() || summarize::SidecarSession::for_installed_model(&model).is_err() {
         log::info!("summary skipped: no model (meeting {id})");
         return;
+    }
+    // yap24-NT7 — say so while the local model writes the notes, on the same
+    // event: the pill reads "Writing notes", the Meetings row already maps
+    // `summarizing` to the same words (meetings/progress.ts).
+    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(id)) {
+        let _ = app.emit(
+            meeting_pipeline::MEETING_PROGRESS_EVENT,
+            meeting_pipeline::MeetingProgressEvent {
+                id: id.to_string(),
+                state: "summarizing".to_string(),
+                percent: 100,
+                processed_through_seconds: m.processed_through_seconds,
+                duration_seconds: m.duration_seconds,
+                error: None,
+            },
+        );
     }
     match summarize_meeting_blocking(state, id.to_string()) {
         Ok(_) => log::info!("summary: meeting {id} summarized automatically"),
@@ -5328,6 +5367,134 @@ fn auto_summarize_meeting(state: &AppState, id: &str) {
                 duration_seconds: m.duration_seconds,
                 error: m.error.clone(),
             },
+        );
+    }
+}
+
+/// yap24-NT7 — the tray line that opens a finished meeting's notes.
+const MEETING_NOTES_TRAY_LABEL: &str = "Meeting notes ready — Open";
+/// yap24-NT7 — its menu id.
+const MEETING_NOTES_TRAY_ID: &str = "meeting_notes_open";
+
+/// yap24-NT7 — the `navigate` payload that opens ONE meeting in the Meetings
+/// view. The frontend builds the same string (`meetingNavPayload` in
+/// `pill/meeting.ts`) and `parseNavigate` reads it in the main window.
+fn meeting_notes_nav_payload(id: &str) -> String {
+    format!("meetings:{id}")
+}
+
+/// yap24-NT7 — the notification's body: which meeting, and where to open it.
+fn meeting_notes_notification_body(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        "Your meeting is transcribed. Open it from Yap's menu bar.".to_string()
+    } else {
+        format!("\u{201c}{title}\u{201d} is transcribed. Open it from Yap's menu bar.")
+    }
+}
+
+/// yap24-NT7 — a meeting's notes landed: put "Meeting notes ready — Open" in
+/// the menu bar (pointing at THIS meeting) and, when Yap is in the background,
+/// post a macOS notification. The pill draws its own notes-ready phase from
+/// the `meeting:progress` event; this is the half the pill cannot reach.
+fn announce_meeting_notes(app: &AppHandle, state: &AppState, id: &str) {
+    *state.notes_ready_meeting.lock() = Some(id.to_string());
+    let item = state.tray_notes_ready.lock().clone();
+    let menu = state.tray_menu.lock().clone();
+    if let (Some(item), Some(menu)) = (item, menu) {
+        let _ = app.run_on_main_thread(move || {
+            let items = menu.items().unwrap_or_default();
+            if items
+                .iter()
+                .any(|k| k.id().as_ref() == MEETING_NOTES_TRAY_ID)
+            {
+                return; // already showing; it now opens the newer meeting
+            }
+            // Directly above "Record a meeting", so the result reads first.
+            let at = items
+                .iter()
+                .position(|k| k.id().as_ref() == "meeting_toggle")
+                .unwrap_or(items.len());
+            if let Err(e) = menu.insert(&item, at) {
+                log::warn!("tray: inserting the notes-ready line failed: {e}");
+            }
+        });
+    }
+    let foreground = app
+        .get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+    if !foreground {
+        let title = state
+            .db
+            .get_meeting(id)
+            .ok()
+            .flatten()
+            .map(|m| m.title)
+            .unwrap_or_default();
+        notify(
+            app,
+            "Meeting notes ready",
+            meeting_notes_notification_body(&title),
+        );
+    }
+}
+
+/// yap24-NT7 — take the notes-ready line out of the menu. MAIN THREAD only.
+fn clear_notes_ready_on_main(state: &AppState) {
+    if state.notes_ready_meeting.lock().take().is_none() {
+        return;
+    }
+    let item = state.tray_notes_ready.lock().clone();
+    let menu = state.tray_menu.lock().clone();
+    if let (Some(item), Some(menu)) = (item, menu) {
+        let _ = menu.remove(&item);
+    }
+}
+
+/// yap24-NT7 — open one meeting in the Meetings view: show the main window,
+/// send `navigate` with `meetings:<id>`, and retire the tray's notes-ready
+/// line. The pill's "Notes ready — Open" and the tray line are one action.
+fn open_meeting_notes_now(app: &AppHandle, id: &str) {
+    focus_main_window(app);
+    let _ = app.emit("navigate", meeting_notes_nav_payload(id));
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(state) = app2.try_state::<Arc<AppState>>() {
+            clear_notes_ready_on_main(&state);
+        }
+    });
+}
+
+/// yap24-NT7 — the pill's "Notes ready — Open" (and a failed meeting's
+/// sentence, which opens the page that carries Retry).
+#[tauri::command]
+fn open_meeting_notes(app: AppHandle, id: String) {
+    open_meeting_notes_now(&app, &id);
+}
+
+#[cfg(test)]
+mod nt7_tests {
+    #[test]
+    fn the_tray_opens_the_meeting_with_the_payload_the_frontend_parses() {
+        // `meetingNavPayload` / `parseNavigate` in desktop/src/pill/meeting.ts
+        // assert the same string from the other side.
+        assert_eq!(
+            super::meeting_notes_nav_payload("abc-123"),
+            "meetings:abc-123"
+        );
+    }
+
+    #[test]
+    fn the_notification_names_the_meeting_and_where_to_open_it() {
+        let body = super::meeting_notes_notification_body("Standup");
+        assert!(body.contains("Standup"), "{body}");
+        assert!(body.contains("menu bar"), "{body}");
+        let untitled = super::meeting_notes_notification_body("  ");
+        assert!(untitled.contains("menu bar"), "{untitled}");
+        assert_eq!(
+            super::MEETING_NOTES_TRAY_LABEL,
+            "Meeting notes ready — Open"
         );
     }
 }
@@ -6965,6 +7132,8 @@ pub fn run() {
         tray_paste_raw: PLMutex::new(None),
         tray_meeting: PLMutex::new(None),
         tray_meeting_kind: PLMutex::new(None),
+        tray_notes_ready: PLMutex::new(None),
+        notes_ready_meeting: PLMutex::new(None),
         tray_license: PLMutex::new(None),
         tray_upgrade: PLMutex::new(None),
         tray_menu: PLMutex::new(None),
@@ -7263,6 +7432,7 @@ pub fn run() {
             manual_toggle,
             show_main,
             claim_hide_hint,
+            open_meeting_notes,
             list_models,
             download_model,
             list_polish_models,
@@ -7635,6 +7805,14 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            // yap24-NT7 — built now, inserted only when a meeting's notes land.
+            let notes_ready_i = MenuItem::with_id(
+                app,
+                MEETING_NOTES_TRAY_ID,
+                MEETING_NOTES_TRAY_LABEL,
+                true,
+                None::<&str>,
+            )?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let shortcuts_i =
@@ -7675,6 +7853,7 @@ pub fn run() {
             *state.tray_paste_raw.lock() = Some(paste_raw_i);
             *state.tray_meeting.lock() = Some(meeting_i);
             *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
+            *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
             *state.tray_menu.lock() = Some(menu.clone());
@@ -7734,6 +7913,13 @@ pub fn run() {
                                 "the tray item",
                                 meetings::MeetingKind::Unknown,
                             );
+                        }
+                        // yap24-NT7 — open the finished meeting's notes.
+                        MEETING_NOTES_TRAY_ID => {
+                            let id = state.notes_ready_meeting.lock().clone();
+                            if let Some(id) = id {
+                                open_meeting_notes_now(app, &id);
+                            }
                         }
                         // YV125 — the same start, with the kind the user chose.
                         id if meeting_control::kind_for_menu_id(id).is_some() => {
@@ -9335,6 +9521,8 @@ mod tests {
             tray_paste_raw: super::PLMutex::new(None),
             tray_meeting: super::PLMutex::new(None),
             tray_meeting_kind: super::PLMutex::new(None),
+            tray_notes_ready: super::PLMutex::new(None),
+            notes_ready_meeting: super::PLMutex::new(None),
             tray_license: super::PLMutex::new(None),
             tray_upgrade: super::PLMutex::new(None),
             tray_menu: super::PLMutex::new(None),
