@@ -6685,6 +6685,17 @@ pub fn run() {
         Ok(true) => smoke::arm(),
         Ok(false) => {}
     }
+    // yap-p0-release-smoke: `--release-smoke` registers the hotkeys, probes every
+    // service, makes ONE insertion into TextEdit and quits — under the same
+    // scratch-root rule as `--smoke`.
+    match smoke::release_preflight(&argv, std::env::var(DATA_DIR_ENV).ok().as_deref()) {
+        Err(refusal) => {
+            eprintln!("{}", refusal.message());
+            std::process::exit(refusal.exit_code());
+        }
+        Ok(true) => smoke::arm_release(),
+        Ok(false) => {}
+    }
 
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
@@ -7153,8 +7164,15 @@ pub fn run() {
             spawn_revocation_refresh(app.handle(), state.license.clone());
 
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
+                if smoke::release_armed() {
+                    // yap-p0-release-smoke: the run inserts into TextEdit, so
+                    // Yap must never take the foreground or key focus from it
+                    // (tauri.conf.json creates "main" visible + focused).
+                    let _ = win.hide();
+                } else {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
                 let w = win.clone();
                 win.on_window_event(move |e| match e {
                     WindowEvent::CloseRequested { api, .. } => {
@@ -7692,6 +7710,11 @@ pub fn run() {
                             &mut FnTapSource { app: &h, state: &st },
                             &mut AppHotkeySink,
                         );
+                    }
+                    // yap-p0-release-smoke: the run starts only once the
+                    // launch-time registration above has reported.
+                    if smoke::release_armed() {
+                        smoke::spawn_release_smoke(h.clone());
                     }
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
