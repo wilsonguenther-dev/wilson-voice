@@ -1144,3 +1144,116 @@ mod product_name_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod copy_table_tests {
+    //! yap24-OS3 — the permission copy table. Every string macOS shows in a TCC
+    //! prompt, and every line that tells someone which pane to open, is pinned
+    //! here so a stale engine name or a wrong pane cannot ship again.
+
+    const INFO_PLIST: &str = include_str!("../Info.plist");
+    const INFO_DEV_PLIST: &str = include_str!("../Info.dev.plist");
+
+    /// (usage key, the exact copy the first TCC prompt shows).
+    const PURPOSE_STRINGS: &[(&str, &str)] = &[
+        (
+            "NSMicrophoneUsageDescription",
+            "Yap listens only while you hold the dictation key or record a meeting, and transcribes on this Mac.",
+        ),
+        (
+            "NSAudioCaptureUsageDescription",
+            "Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac.",
+        ),
+        (
+            "NSAppleEventsUsageDescription",
+            "Yap pastes transcribed text into the app you're typing in.",
+        ),
+    ];
+
+    /// Engine and model names a purpose string must never carry: the engine is
+    /// a setting, the prompt is a first impression that outlives it.
+    const ENGINE_NAMES: &[&str] = &[
+        "Whisper",
+        "Parakeet",
+        "Moonshine",
+        "Canary",
+        "Qwen",
+        "Llama",
+    ];
+
+    fn usage_string<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
+        let (_, rest) = plist.split_once(&format!("<key>{key}</key>"))?;
+        let (_, rest) = rest.split_once("<string>")?;
+        let (value, _) = rest.split_once("</string>")?;
+        Some(value.trim())
+    }
+
+    #[test]
+    fn permissions_purpose_strings_match_the_copy_table() {
+        for (name, plist) in [
+            ("Info.plist", INFO_PLIST),
+            ("Info.dev.plist", INFO_DEV_PLIST),
+        ] {
+            for (key, want) in PURPOSE_STRINGS {
+                assert_eq!(
+                    usage_string(plist, key),
+                    Some(*want),
+                    "{name} {key} drifted from the permission copy table"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn permissions_purpose_strings_name_no_engine() {
+        for (name, plist) in [
+            ("Info.plist", INFO_PLIST),
+            ("Info.dev.plist", INFO_DEV_PLIST),
+        ] {
+            for (key, _) in PURPOSE_STRINGS {
+                let value = usage_string(plist, key).unwrap_or_default();
+                for engine in ENGINE_NAMES {
+                    assert!(
+                        !value.contains(engine),
+                        "{name} {key} names the {engine} engine: {value:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn permissions_mic_purpose_covers_dictation_and_meetings() {
+        let mic = usage_string(INFO_PLIST, "NSMicrophoneUsageDescription").unwrap_or_default();
+        assert!(
+            mic.contains("dictation key"),
+            "mic copy must name dictation: {mic:?}"
+        );
+        assert!(
+            mic.contains("meeting"),
+            "mic copy must name meetings, which also use the mic: {mic:?}"
+        );
+        assert!(
+            mic.contains("on this Mac"),
+            "mic copy must say it stays local: {mic:?}"
+        );
+    }
+
+    /// The listen-only tap is gated by Input Monitoring; its failure copy and
+    /// deep link must both send people to that pane, never to Accessibility.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn permissions_tap_failure_copy_names_input_monitoring() {
+        for line in [
+            crate::ptt_macos::TAP_CREATE_FAILED,
+            crate::ptt_macos::TAP_BLOCKED_REASON,
+        ] {
+            assert!(line.contains("Input Monitoring"), "{line:?}");
+            assert!(!line.contains("Accessibility"), "{line:?}");
+        }
+        assert_eq!(
+            super::open_privacy_pane_urls("InputMonitoring")[0],
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        );
+    }
+}
