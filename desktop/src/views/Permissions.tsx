@@ -8,6 +8,7 @@ import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { ErrorState, LoadingState } from "../ViewStates";
 import type { PermissionReport } from "../appTypes";
+import { DEV_HOST_LINE, isDevHostAttributed } from "../permissionRepair";
 
 /**
  * Y5-B fix round (#192 BLOCKING) - the exact string permissions.rs emits when
@@ -54,6 +55,21 @@ export default function Permissions() {
     );
   if (state === "loading" || !perms)
     return <LoadingState data-loading-state="permissions" noun="permissions" rows={4} onRetry={() => void refreshPerms()} />;
+  // yap-dev-perm-probe-attribution — an unbundled, ad hoc signed dev binary is
+  // attributed by TCC to the terminal that launched it, so every grant macOS
+  // reports is the terminal's. ONE line: no green rows (they would be the
+  // terminal's grants dressed as Yap's) and no Repair (it would reset an
+  // identity macOS never consulted for this process).
+  if (isDevHostAttributed(perms.probe))
+    return (
+      <div className="perms">
+        <div className="panel intro">
+          <p className="muted" data-dev-host-attributed="permissions">
+            {DEV_HOST_LINE}
+          </p>
+        </div>
+      </div>
+    );
   return (
             <div className="perms">
               <div className="panel intro">

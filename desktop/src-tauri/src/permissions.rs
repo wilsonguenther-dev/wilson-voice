@@ -280,7 +280,9 @@ pub fn report_from_probe(
     asr_ok: bool,
     asr_detail: String,
 ) -> PermissionReport {
-    let accessibility = probe.accessibility.state == crate::perm_probe::ProbeState::Granted;
+    // yap-dev-perm-probe-attribution: `usable()` — a host-attributed answer still
+    // drives what the process can DO; the UI reads the state to say whose it is.
+    let accessibility = probe.accessibility.usable();
     // The grant row reads the SAME combined ListenEvent answer the banner reads
     // (CGPreflightListenEventAccess OR IOHIDCheckAccess), not IOHID alone.
     let listen_hid = if probe.listen_event.raw == crate::perm_probe::RawAnswer::Granted {
@@ -318,6 +320,11 @@ pub fn reconcile_listen_event(
     input_monitoring: GrantState,
 ) {
     use crate::perm_probe::ProbeState;
+    // yap-dev-perm-probe-attribution: a host-attributed row stays host-attributed;
+    // turning it Granted here is exactly the green row this item removes.
+    if listen.state == ProbeState::DevHostAttributed {
+        return;
+    }
     let repairable = matches!(listen.state, ProbeState::Denied | ProbeState::StaleIdentity);
     let (state, why) = match input_monitoring {
         GrantState::Authorized if listen.state != ProbeState::Granted => (
