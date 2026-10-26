@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import HotkeyRecorder from "../../HotkeyRow";
-import type { HotkeyBindingsReport } from "../../hotkeyRecorder";
+import { recorderPrompt, type HotkeyBindingsReport } from "../../hotkeyRecorder";
 import { useAppCtx } from "../../appShell";
 import type { ChordSetting } from "../../appTypes";
 import { dictateLabel } from "../../hotkeyStatus";
@@ -101,11 +101,11 @@ export default function Shortcut() {
                         className={rebinding ? "primary" : "ghost"}
                         aria-pressed={rebinding}
                         onClick={() => {
-                          setRebindHint(rebinding ? null : "Press the new chord (Esc to cancel).");
+                          setRebindHint(rebinding ? null : recorderPrompt("chord").hint);
                           setRebinding((r) => !r);
                         }}
                       >
-                        {rebinding ? "Listening… press your chord" : "Change"}
+                        {rebinding ? recorderPrompt("chord").listening : "Change"}
                       </button>
                       {settings.dictateToggle && (
                         <button

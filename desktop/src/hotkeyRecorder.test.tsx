@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { chipTone, formatChord, recorderStep, RESERVED_CHORDS, reservedChordReason } from "./hotkeyRecorder";
+import { chipTone, formatChord, recorderPrompt, recorderStep, RESERVED_CHORDS, reservedChordReason } from "./hotkeyRecorder";
+import reservedChords from "./reservedChords.json";
+import reservedChordCases from "./reservedChordCases.json";
 import HotkeyRecorder from "./HotkeyRow";
 
 const key = (code: string, mods: Partial<{ ctrl: boolean; alt: boolean; cmd: boolean; shift: boolean }> = {}, extra: Record<string, unknown> = {}) => ({
@@ -73,7 +75,7 @@ describe("hotkey recorder", () => {
         defaultLabel="fn⌃"
         isDefault={false}
         mode="hold"
-        row={{ action: "dictate_hold", title: "Dictate (hold)", key: "fn⌃", status: { state: "paused" }, chip: "Paused by macOS — re-arming", liveKey: "⌃⌥⌘Space", fallback: true }}
+        row={{ action: "dictate_hold", title: "Dictate (hold)", key: "fn⌃", status: { state: "paused" }, chip: "Paused by macOS — re-arming", liveKey: "⌃⌥⌘Space", fallback: true, note: null }}
         onCapture={() => {}}
         onReset={() => {}}
       />,
@@ -85,5 +87,61 @@ describe("hotkey recorder", () => {
     expect(html).toContain("Record");
     expect(chipTone("works")).toBe("ok");
     expect(chipTone("stale_grant")).toBe("bad");
+  });
+
+  // yap-hotkeys-advisories-r1 #6 — the vitest twin of Rust reserved_chords_parity:
+  // the list is the shared JSON, and every shared case gets the Rust answer.
+  it("reserved_chords_parity: the shared list and case table give Rust's answers", () => {
+    expect(RESERVED_CHORDS.length).toBe(reservedChords.length);
+    RESERVED_CHORDS.forEach((r, i) => {
+      const j = reservedChords[i];
+      expect(r).toEqual([j.ctrl, j.alt, j.shift, j.cmd, j.code, j.what]);
+    });
+    expect(reservedChordCases.length).toBeGreaterThanOrEqual(20);
+    for (const c of reservedChordCases) {
+      expect(reservedChordReason(c.chord, c.allowBare), JSON.stringify(c)).toBe(c.reason);
+    }
+  });
+
+  it("refuses the six chords the #249 review named (advisory 1)", () => {
+    for (const [code, mods, what] of [
+      ["Digit3", { ctrl: true, shift: true, cmd: true }, "screenshot to the clipboard"],
+      ["Digit4", { ctrl: true, shift: true, cmd: true }, "screenshot selection to the clipboard"],
+      ["KeyH", { alt: true, cmd: true }, "Hide Others"],
+      ["KeyM", { alt: true, cmd: true }, "Minimize All"],
+      ["KeyW", { alt: true, cmd: true }, "Close All"],
+      ["KeyD", { ctrl: true, cmd: true }, "Look Up"],
+    ] as const) {
+      const s = recorderStep(key(code, mods), "chord");
+      expect(s.kind, what).toBe("hint");
+      if (s.kind === "hint") expect(s.text).toContain(what);
+    }
+  });
+
+  it("says Esc to cancel on the recorder's Cancel button — except where Esc is the answer (advisory 3)", () => {
+    expect(recorderPrompt("chord")).toEqual({ listening: "Cancel · Esc to cancel", hint: "Press the new chord. Esc to cancel." });
+    expect(recorderPrompt("hold").listening).toContain("Esc to cancel");
+    const cancelKey = recorderPrompt("chord", true);
+    expect(cancelKey.listening).not.toContain("Esc to cancel");
+    expect(cancelKey.hint).toContain("click Cancel");
+    // The rendered recorder, already listening, shows the copy on its button.
+    const html = renderToStaticMarkup(
+      <HotkeyRecorder title="Record meeting" keyLabel="⌃⌘M" defaultLabel="⌃⌘M" isDefault mode="chord"
+        initiallyListening onCapture={() => {}} onReset={() => {}} />,
+    );
+    expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Cancel · Esc to cancel<\/button>/);
+  });
+
+  it("shows why a stored chord was not used (advisory 2)", () => {
+    const note = "Your saved chord is not used: ⌘Space is macOS's Spotlight — pick another chord. Yap is using ⌃⌥⌘Space until you record another.";
+    const html = renderToStaticMarkup(
+      <HotkeyRecorder title="Dictate (toggle)" keyLabel="⌃⌥⌘Space" defaultLabel="⌃⌥⌘Space" isDefault={false} mode="chord"
+        row={{ action: "dictate_toggle", title: "Dictate (toggle)", key: "⌃⌥⌘Space", status: { state: "works" }, chip: "Works", liveKey: "⌃⌥⌘Space", fallback: false, note }}
+        onCapture={() => {}} onReset={() => {}} />,
+    );
+    expect(html).toContain("macOS&#x27;s Spotlight");
+    expect(html).toContain('role="status"');
+    expect(chipTone("needs_input_monitoring_unverified")).toBe("bad");
+    expect(chipTone("grant_check_failed")).toBe("bad");
   });
 });

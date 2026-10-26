@@ -30,7 +30,8 @@
 #
 # Environment: YAP_QA_ALLOW_KEYS=1 (REQUIRED before any key is posted —
 #   never set it while someone is typing), YAP_QA_DRIVE_RUNNING=1 (consent to post fn into a running Yap),
-#   YAP_QA_APP (default /Applications/Yap.app), YAP_QA_LOG (default Yap's log).
+#   YAP_QA_APP (default /Applications/Yap.app), YAP_QA_LOG (default Yap's log),
+#   YAP_QA_BUNDLE_ID / YAP_QA_TCC_DB (--table; the database is opened with sqlite3 -readonly).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -346,6 +347,22 @@ self_test() {
   check_steps "$FIXTURES/yap-walk-pass.log" 2026-10-16T18:08:54Z "$CHORD_STEPS" >"$out" 2>&1
   expect "fn-only fixture: no chord edge" 1 $? 'FAIL "hotkey edge Press from Carbon -> Start" never came'
 
+  # --table (advisory 7): read-only, and the bundle id is quoted / refused.
+  sql_quote "a'b" >"$out"
+  rc=1
+  [ "$(cat "$out")" = "'a''b'" ] && rc=0
+  expect "sql_quote doubles a single quote" 0 "$rc" ""
+  local tcc
+  tcc="$(mktemp -t yapqa-tcc)" || exit 1
+  sqlite3 "$tcc" "create table access (service text, client text, auth_value integer, last_modified integer);
+    insert into access values ('kTCCServiceListenEvent','com.wilsonguenther.wilson-voice',2,0);" || exit 1
+  YAP_QA_TCC_DB="$tcc" YAP_QA_LOG="$FIXTURES/yap-walk-pass.log" bash "$0" --table >"$out" 2>&1
+  expect "--table reads the fixture TCC row" 0 $? "kTCCServiceListenEvent|2|"
+  YAP_QA_TCC_DB="$tcc" YAP_QA_BUNDLE_ID="x' or '1'='1" YAP_QA_LOG="$FIXTURES/yap-walk-pass.log" \
+    bash "$0" --table >"$out" 2>&1
+  expect "--table refuses a bundle id carrying SQL" 2 $? "not a bundle id"
+  rm -f "$tcc"
+
   rm -f "$out"
   if [ "$fails" -ne 0 ]; then
     printf 'self-test: %d failure(s)\n' "$fails"
@@ -355,11 +372,22 @@ self_test() {
   exit 0
 }
 
+# yap-hotkeys-advisories-r1 #7: the bundle id goes into SQL, so it must look
+# like a bundle id AND it is quoted as an SQL string literal ('' escapes ').
+sql_quote() { # $1 -> '$1' with every ' doubled
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"
+}
+
 table() {
   bundle="${YAP_QA_BUNDLE_ID:-com.wilsonguenther.wilson-voice}"
+  tcc_db="${YAP_QA_TCC_DB:-/Library/Application Support/com.apple.TCC/TCC.db}"
+  case "$bundle" in
+    "" | *[!A-Za-z0-9.-]*) die "not a bundle id: $bundle" ;;
+  esac
   printf '== TCC grants for %s\n' "$bundle"
-  sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
-    "select service, auth_value, datetime(last_modified,'unixepoch') from access where client = '$bundle'" 2>/dev/null \
+  # -readonly: this walk never writes the TCC database.
+  sqlite3 -readonly "$tcc_db" \
+    "select service, auth_value, datetime(last_modified,'unixepoch') from access where client = $(sql_quote "$bundle")" 2>/dev/null \
     || echo "(TCC.db not readable from this terminal — needs Full Disk Access)"
   [ -f "$LOG" ] || die "no log at $LOG"
   printf '== hotkey table at the last launch (%s)\n' "$LOG"
@@ -372,7 +400,7 @@ table() {
 case "${1:-}" in
   --table) table ;;
   --self-test) self_test ;;
-  -h | --help) sed -n '2,32p' "$0"; exit 0 ;;
+  -h | --help) sed -n '2,34p' "$0"; exit 0 ;;
   --chord) walk chord ;;
   "") walk ;;
   *) die "unknown argument: $1" ;;
