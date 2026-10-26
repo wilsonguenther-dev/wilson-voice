@@ -5726,6 +5726,23 @@ fn current_binding_rows(state: &AppState) -> Vec<hotkey_table::BindingRow> {
         toggle_label: hotkeys::active_dictate().1,
         cancel_label: hotkey_table::active_cancel().1,
         meeting_label: hotkey_table::active_meeting().1,
+        refusals: [
+            (
+                hotkey_table::BindingAction::DictateToggle,
+                settings.dictate_toggle.as_ref(),
+            ),
+            (
+                hotkey_table::BindingAction::RecordMeeting,
+                settings.meeting_chord.as_ref(),
+            ),
+            (
+                hotkey_table::BindingAction::Cancel,
+                settings.cancel_chord.as_ref(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(a, c)| hotkey_table::stored_chord_refusal(a, c).map(|why| (a, why)))
+        .collect(),
     };
     hotkey_table::binding_table(&inputs)
 }
@@ -5769,16 +5786,9 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
 fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
-    if let Some(c) = settings.dictate_toggle.as_ref() {
-        match hotkeys::chord_from_setting(c) {
-            Ok(v) => return v,
-            Err(e) => log::warn!("dictate toggle rebind ignored ({e}) — using the default"),
-        }
-    }
-    (
-        shortcuts::DICTATE_TOGGLE.shortcut(),
-        shortcuts::DICTATE_TOGGLE.label.to_string(),
-    )
+    // yap-hotkeys-advisories-r1 #2: re-validated against EVERY rule, the
+    // reserved-chord list included, at launch and on every rebind.
+    hotkey_table::resolve_dictate(settings.dictate_toggle.as_ref())
 }
 
 /// The real Carbon registrar: the global-shortcut plugin (RegisterEventHotKey).

@@ -562,15 +562,19 @@ pub fn input_monitoring_row_detail(state: GrantState) -> String {
     let product = crate::perm_truth::product_name();
     let row =
         crate::hotkey_table::tcc_listen_event_row(&crate::perm_truth::running_identity().bundle_id);
-    let stale = row == Some(true) && state != GrantState::Authorized;
-    if stale || product != "Yap" {
-        return crate::hotkey_table::input_monitoring_detail_for(
-            state == GrantState::Authorized,
-            stale,
-            &product,
-        );
+    let granted = state == GrantState::Authorized;
+    let stale = row == crate::hotkey_table::TccRow::Allowed && !granted;
+    let detail = if stale || product != "Yap" {
+        crate::hotkey_table::input_monitoring_detail_for(granted, stale, &product)
+    } else {
+        input_monitoring_detail(state)
+    };
+    // yap-hotkeys-advisories-r1 #4/#5: no Full Disk Access, or a failed TCC
+    // query, cannot rule out a stale grant — say so, with the fix.
+    match crate::hotkey_table::input_monitoring_unverified_hint(granted, &row, &product) {
+        Some(hint) => format!("{detail} {hint}"),
+        None => detail,
     }
-    input_monitoring_detail(state)
 }
 
 pub fn input_monitoring_detail(state: GrantState) -> String {

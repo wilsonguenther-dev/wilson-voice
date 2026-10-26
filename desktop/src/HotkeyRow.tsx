@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { chipTone, recorderStep, type BindingRow, type RecorderStep } from "./hotkeyRecorder";
+import { chipTone, recorderPrompt, recorderStep, type BindingRow, type RecorderStep } from "./hotkeyRecorder";
 
 /**
  * focus-2026-10-19 — one hotkey action: its key, a live status chip, a
@@ -40,6 +40,7 @@ export default function HotkeyRecorder(props: {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [listening, props]);
   const row = props.row;
+  const prompt = recorderPrompt(props.mode, props.allowBare);
   return (
     <div className="hotkey-row" data-action={row?.action} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "6px 0" }}>
       <span style={{ minWidth: 130 }}>{props.title}</span>
@@ -55,11 +56,11 @@ export default function HotkeyRecorder(props: {
         className={listening ? "primary" : "ghost"}
         aria-pressed={listening}
         onClick={() => {
-          setHint(listening ? null : props.mode === "hold" ? "Press fn or fn + Control (Esc to cancel)." : "Press the new chord (Esc to cancel).");
+          setHint(listening ? null : prompt.hint);
           setListening((l) => !l);
         }}
       >
-        {listening ? "Listening… press your keys" : "Record"}
+        {listening ? prompt.listening : "Record"}
       </button>
       {!props.isDefault && (
         <button type="button" className="ghost" onClick={props.onReset}>
@@ -67,6 +68,11 @@ export default function HotkeyRecorder(props: {
         </button>
       )}
       {hint && <span className="muted">{hint}</span>}
+      {row?.note && (
+        <span className="hotkey-note" role="status" style={{ flexBasis: "100%", color: "var(--warn-ink)" }}>
+          {row.note}
+        </span>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@
  * (fn combos, which only the fn tap can express).
  */
 import type { ChordSetting } from "./appTypes";
+import reservedChords from "./reservedChords.json";
 
 const MODIFIER_CODES = new Set([
   "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight",
@@ -34,40 +35,14 @@ export function formatChord(c: ChordSetting): string {
 }
 
 /**
- * fix-249 BLOCKING 2 — macOS / system chords a rebind may never take. Mirror of
- * Rust `hotkey_table::RESERVED_CHORDS`: [ctrl, alt, shift, cmd, code, what].
+ * fix-249 BLOCKING 2 — macOS / system chords a rebind may never take:
+ * [ctrl, alt, shift, cmd, code, what]. The list lives in reservedChords.json,
+ * which Rust test `hotkey_table::reserved_chords_parity` compares to
+ * `RESERVED_CHORDS` (drift fails cargo test); both sides also run the shared
+ * case table reservedChordCases.json.
  */
-export const RESERVED_CHORDS: ReadonlyArray<readonly [boolean, boolean, boolean, boolean, string, string]> = [
-  [false, false, false, true, "KeyQ", "Quit"],
-  [false, false, false, true, "KeyW", "Close Window"],
-  [false, false, false, true, "KeyC", "Copy"],
-  [false, false, false, true, "KeyV", "Paste"],
-  [false, false, false, true, "KeyX", "Cut"],
-  [false, false, false, true, "KeyZ", "Undo"],
-  [false, false, false, true, "KeyA", "Select All"],
-  [false, false, false, true, "KeyS", "Save"],
-  [false, false, false, true, "KeyH", "Hide"],
-  [false, false, false, true, "KeyM", "Minimize"],
-  [false, false, false, true, "Tab", "the app switcher"],
-  [false, false, false, true, "Space", "Spotlight"],
-  [false, false, false, true, "Backquote", "next window"],
-  [false, false, true, true, "KeyQ", "Log Out"],
-  [false, false, true, true, "Digit3", "screenshot"],
-  [false, false, true, true, "Digit4", "screenshot selection"],
-  [false, false, true, true, "Digit5", "the screenshot toolbar"],
-  [true, false, false, true, "KeyQ", "Lock Screen"],
-  [true, false, false, true, "KeyF", "full screen"],
-  [true, false, false, true, "Space", "the emoji picker"],
-  [false, true, false, true, "Escape", "Force Quit"],
-  [false, true, false, true, "KeyD", "show / hide the Dock"],
-  [false, true, false, true, "Space", "Finder search"],
-  [true, false, false, false, "Space", "input-source switching"],
-  [true, true, false, false, "Space", "input-source switching"],
-  [true, false, false, false, "ArrowUp", "Mission Control"],
-  [true, false, false, false, "ArrowDown", "App Exposé"],
-  [true, false, false, false, "ArrowLeft", "the previous Space"],
-  [true, false, false, false, "ArrowRight", "the next Space"],
-];
+export const RESERVED_CHORDS: ReadonlyArray<readonly [boolean, boolean, boolean, boolean, string, string]> =
+  reservedChords.map((r) => [r.ctrl, r.alt, r.shift, r.cmd, r.code, r.what] as const);
 
 function bareCancelKeyOk(code: string): boolean {
   if (code === "Escape") return true;
@@ -89,6 +64,24 @@ export function reservedChordReason(c: ChordSetting, allowBare: boolean): string
   }
   if (c.cmd && !c.ctrl && !c.alt) return `${label} is an app menu shortcut in every app — add ⌃ or ⌥`;
   return null;
+}
+
+/**
+ * advisory 3 (#249) — the recorder's copy. While listening, the button that
+ * stops it says how to cancel: Esc for every recorder except the Cancel-key
+ * one, where Esc is a valid answer, so there the button itself is the way out.
+ */
+export function recorderPrompt(mode: "chord" | "hold", allowBare = false): { listening: string; hint: string } {
+  if (mode === "hold") {
+    return { listening: "Cancel · Esc to cancel", hint: "Press fn or fn + Control. Esc to cancel." };
+  }
+  if (allowBare) {
+    return {
+      listening: "Cancel · click to keep the current key",
+      hint: "Press the new cancel key — Esc or F1–F20 on its own, or a chord with ⌃, ⌥ or ⌘. Esc here sets Esc, so click Cancel to keep the current key.",
+    };
+  }
+  return { listening: "Cancel · Esc to cancel", hint: "Press the new chord. Esc to cancel." };
 }
 
 function fnHeld(e: KeyLike): boolean {
@@ -127,6 +120,8 @@ export interface BindingRow {
   chip: string;
   liveKey: string | null;
   fallback: boolean;
+  /** Why the stored chord is not the one Yap holds (launch re-validation), or null. */
+  note: string | null;
 }
 
 export interface HotkeyBindingsReport {

@@ -73,6 +73,13 @@ pub enum BindingStatus {
     /// A grant row exists but the tap still cannot install / re-arm: the grant
     /// is bound to an older signature. Remove and re-add.
     StaleGrant,
+    /// The live check says Input Monitoring is off and the TCC database could
+    /// not be read (no Full Disk Access), so "off" and "on but bound to an old
+    /// signature" cannot be told apart — the chip carries both fixes.
+    NeedsInputMonitoringUnverified,
+    /// The live check says Input Monitoring is off and the TCC database query
+    /// FAILED (not "no row"): the error is shown, never read as "off".
+    GrantCheckFailed(String),
     /// Another app holds the chord (the register call's error).
     Conflict(String),
     /// Another app has Secure Keyboard Entry on (names it).
@@ -97,6 +104,12 @@ impl BindingStatus {
             Self::Ready => "Ready".into(),
             Self::NeedsInputMonitoring => "Needs Input Monitoring".into(),
             Self::StaleGrant => "Stale grant — remove and re-add".into(),
+            Self::NeedsInputMonitoringUnverified => {
+                "Needs Input Monitoring — if it is already on, remove and re-add it".into()
+            }
+            Self::GrantCheckFailed(e) => format!(
+                "Grant check failed ({e}) — turn on Input Monitoring, or remove and re-add it"
+            ),
             Self::Conflict(e) => format!("Conflict: {e}"),
             Self::SecureInput(who) => format!("Blocked by {who} (Secure Input)"),
             Self::Paused => "Paused by macOS — re-arming".into(),
@@ -121,6 +134,24 @@ pub struct BindingRow {
     pub live_key: Option<String>,
     /// `true` when `live_key` is a fallback, not the configured key.
     pub fallback: bool,
+    /// Why the STORED chord for this action is not the one Yap holds (launch
+    /// re-validation, [`stored_chord_refusal`]); `None` when it is.
+    pub note: Option<String>,
+}
+
+/// What the system TCC database says about this bundle's ListenEvent (Input
+/// Monitoring) row. Only used to tell "off" from "on but stale".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TccRow {
+    /// An allowed row (`auth_value` 2).
+    Allowed,
+    /// A denied row, or no row at all.
+    NotAllowed,
+    /// The database cannot be opened by this process (it needs Full Disk
+    /// Access), or there is no bundle id to look up.
+    Unreadable,
+    /// The database opened but the query failed — an error, never "no row".
+    QueryError(String),
 }
 
 /// Everything the table is computed from. Built from live state by the app;
@@ -133,13 +164,15 @@ pub struct TableInputs {
     pub accessibility: bool,
     /// `IOHIDCheckAccess(ListenEvent)` says granted for this binary.
     pub input_monitoring: bool,
-    /// The TCC database holds an allowed ListenEvent row for this bundle id
-    /// (`None` when it could not be read — no Full Disk Access).
-    pub listen_event_row: Option<bool>,
+    /// The TCC database's ListenEvent row for this bundle id.
+    pub listen_event_row: TccRow,
     pub hold_label: String,
     pub toggle_label: String,
     pub cancel_label: String,
     pub meeting_label: String,
+    /// Stored chords launch re-validation refused, with the reason
+    /// ([`stored_chord_refusal`]); shown on that action's row.
+    pub refusals: Vec<(BindingAction, String)>,
 }
 
 /// The fn tap's status in table terms. PURE.
@@ -161,23 +194,34 @@ pub struct TableInputs {
 /// | blocked (install / re-arm failed, or the bounded re-arm gave up) | granted | StaleGrant |
 /// | blocked                     | none                        | NeedsInputMonitoring    |
 ///
+/// "none" splits on the TCC row: no row / denied → NeedsInputMonitoring; the
+/// database unreadable (no Full Disk Access) → NeedsInputMonitoringUnverified
+/// (carries the remove + re-add hint, since a stale grant looks the same from
+/// here); the query failed → GrantCheckFailed(error).
+///
 /// Every non-usable row falls back to the dictate chord in [`binding_table`].
 /// Stale-grant rule: a ListenEvent row the TCC database says is allowed while
 /// the live check disagrees, or a granted check while the tap still cannot
 /// install / re-arm, is a grant bound to another signature — the only fix is
 /// remove + re-add.
 pub fn fn_binding_status(i: &TableInputs) -> BindingStatus {
-    let stale_row = i.listen_event_row == Some(true) && !i.input_monitoring;
+    let stale_row = i.listen_event_row == TccRow::Allowed && !i.input_monitoring;
     match &i.fn_tap {
         FnTapStatus::Delivering => BindingStatus::Works,
         FnTapStatus::SecureInput(who) => BindingStatus::SecureInput(who.clone()),
         FnTapStatus::NotAttempted => BindingStatus::NotStarted,
         _ if stale_row => BindingStatus::StaleGrant,
         FnTapStatus::ArmedNoDelivery if i.input_monitoring => BindingStatus::Ready,
-        FnTapStatus::ArmedNoDelivery => BindingStatus::NeedsInputMonitoring,
-        FnTapStatus::Blocked(_) if !i.input_monitoring => BindingStatus::NeedsInputMonitoring,
-        FnTapStatus::Blocked(r) if r.starts_with(PAUSED_PREFIX) => BindingStatus::Paused,
-        FnTapStatus::Blocked(_) => BindingStatus::StaleGrant,
+        FnTapStatus::Blocked(r) if i.input_monitoring && r.starts_with(PAUSED_PREFIX) => {
+            BindingStatus::Paused
+        }
+        FnTapStatus::Blocked(_) if i.input_monitoring => BindingStatus::StaleGrant,
+        // The live check says off: the TCC row tells "off" from "can't tell".
+        _ => match &i.listen_event_row {
+            TccRow::QueryError(e) => BindingStatus::GrantCheckFailed(e.clone()),
+            TccRow::Unreadable => BindingStatus::NeedsInputMonitoringUnverified,
+            TccRow::Allowed | TccRow::NotAllowed => BindingStatus::NeedsInputMonitoring,
+        },
     }
 }
 
@@ -244,6 +288,11 @@ pub fn binding_table(i: &TableInputs) -> Vec<BindingRow> {
                 status,
                 live_key: live.0,
                 fallback: live.1,
+                note: i
+                    .refusals
+                    .iter()
+                    .find(|(a, _)| *a == action)
+                    .map(|(_, why)| why.clone()),
             }
         })
         .collect()
@@ -269,9 +318,14 @@ pub fn debug_dump(rows: &[BindingRow]) -> String {
             (Some(k), false) => k.clone(),
             (None, _) => "— none —".to_string(),
         };
+        let note = r
+            .note
+            .as_deref()
+            .map(|n| format!(" — {n}"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{:<18} {:<20} {:<36} {}\n",
-            r.title, r.key, r.chip, live
+            "{:<18} {:<20} {:<36} {}{}\n",
+            r.title, r.key, r.chip, live, note
         ));
     }
     out
@@ -320,8 +374,11 @@ pub fn parse_chord(label: &str) -> Result<ChordSetting, String> {
 /// macOS / system chords a rebind may never take (fix-249 BLOCKING 2): Yap
 /// registers its chords system-wide, so one stray press in the recorder would
 /// otherwise kill ⌘C / ⌘Q in every app or steal the lock-screen chord.
-/// `(ctrl, alt, shift, cmd, code, what it does)`. Mirrored in
-/// `desktop/src/hotkeyRecorder.ts` (`RESERVED_CHORDS`) — keep both in step.
+/// `(ctrl, alt, shift, cmd, code, what it does)`. The frontend reads the same
+/// list from `desktop/src/reservedChords.json` (imported by
+/// `hotkeyRecorder.ts`); test `reserved_chords_parity` fails when this table
+/// and that file drift, and both sides run the shared case table
+/// `desktop/src/reservedChordCases.json`.
 pub const RESERVED_CHORDS: &[(bool, bool, bool, bool, &str, &str)] = &[
     (false, false, false, true, "KeyQ", "Quit"),
     (false, false, false, true, "KeyW", "Close Window"),
@@ -340,12 +397,32 @@ pub const RESERVED_CHORDS: &[(bool, bool, bool, bool, &str, &str)] = &[
     (false, false, true, true, "Digit3", "screenshot"),
     (false, false, true, true, "Digit4", "screenshot selection"),
     (false, false, true, true, "Digit5", "the screenshot toolbar"),
+    (
+        true,
+        false,
+        true,
+        true,
+        "Digit3",
+        "screenshot to the clipboard",
+    ),
+    (
+        true,
+        false,
+        true,
+        true,
+        "Digit4",
+        "screenshot selection to the clipboard",
+    ),
     (true, false, false, true, "KeyQ", "Lock Screen"),
     (true, false, false, true, "KeyF", "full screen"),
     (true, false, false, true, "Space", "the emoji picker"),
+    (true, false, false, true, "KeyD", "Look Up"),
     (false, true, false, true, "Escape", "Force Quit"),
     (false, true, false, true, "KeyD", "show / hide the Dock"),
     (false, true, false, true, "Space", "Finder search"),
+    (false, true, false, true, "KeyH", "Hide Others"),
+    (false, true, false, true, "KeyM", "Minimize All"),
+    (false, true, false, true, "KeyW", "Close All"),
     (true, false, false, false, "Space", "input-source switching"),
     (true, true, false, false, "Space", "input-source switching"),
     (true, false, false, false, "ArrowUp", "Mission Control"),
@@ -610,6 +687,54 @@ pub fn resolve(action: BindingAction, setting: Option<&ChordSetting>) -> (Shortc
     }
 }
 
+/// fix-249 advisory 2 — why the STORED chord for `action` is not the one Yap
+/// holds, or `None` when it is (or nothing is stored). Stored chords are
+/// re-validated at every launch, not only at save: a chord saved before a rule
+/// existed (a newly reserved macOS chord) or edited by hand in settings.json
+/// falls back to the default, and this sentence is what its row shows.
+pub fn stored_chord_refusal(
+    action: BindingAction,
+    setting: Option<&ChordSetting>,
+) -> Option<String> {
+    let c = setting?;
+    let (why, default) = match action {
+        BindingAction::DictateToggle => (
+            crate::hotkeys::chord_from_setting(c)
+                .err()
+                .or_else(|| reserved_chord_reason(c, false))?,
+            shortcuts::DICTATE_TOGGLE.label,
+        ),
+        BindingAction::RecordMeeting => (
+            chord_for_action(action, c).err()?,
+            shortcuts::MEETING_TOGGLE.label,
+        ),
+        BindingAction::Cancel => (chord_for_action(action, c).err()?, shortcuts::CANCEL.label),
+        BindingAction::DictateHold | BindingAction::HandsFree => return None,
+    };
+    Some(format!(
+        "Your saved chord is not used: {why}. Yap is using {default} until you record another."
+    ))
+}
+
+/// The dictate chord Yap registers at launch and on every rebind: the stored
+/// chord when it passes EVERY rule (including [`RESERVED_CHORDS`]), else
+/// `shortcuts::DICTATE_TOGGLE`.
+pub fn resolve_dictate(setting: Option<&ChordSetting>) -> (Shortcut, String) {
+    if let Some(c) = setting {
+        match stored_chord_refusal(BindingAction::DictateToggle, Some(c)) {
+            Some(why) => log::warn!("dictate toggle: {why}"),
+            None => match crate::hotkeys::chord_from_setting(c) {
+                Ok(v) => return v,
+                Err(e) => log::warn!("dictate toggle rebind ignored ({e}) — using the default"),
+            },
+        }
+    }
+    (
+        shortcuts::DICTATE_TOGGLE.shortcut(),
+        shortcuts::DICTATE_TOGGLE.label.to_string(),
+    )
+}
+
 /// Swap a Carbon chord atomically: register `new` FIRST, drop `old` only after
 /// that succeeded, so a refused chord leaves the old one live. Never call this
 /// from inside the global-shortcut plugin's handler (yap-p0-chord-deadlock —
@@ -637,28 +762,78 @@ pub fn swap_chord(
 }
 
 /// The system TCC database's ListenEvent (Input Monitoring) row for
-/// `bundle_id`: `Some(true)` allowed, `Some(false)` denied/absent, `None` when
-/// the database cannot be read (it needs Full Disk Access). Read-only; never
-/// writes, never prompts. Used ONLY to tell "off" from "on but bound to an old
-/// signature" — the live check stays `IOHIDCheckAccess`.
-pub fn tcc_listen_event_row(bundle_id: &str) -> Option<bool> {
-    const TCC_DB: &str = "/Library/Application Support/com.apple.TCC/TCC.db";
+/// `bundle_id`. Read-only; never writes, never prompts. Used ONLY to tell "off"
+/// from "on but bound to an old signature" — the live check stays
+/// `IOHIDCheckAccess`. A failed query is [`TccRow::QueryError`], never "no row".
+pub fn tcc_listen_event_row(bundle_id: &str) -> TccRow {
+    tcc_listen_event_row_at(
+        std::path::Path::new("/Library/Application Support/com.apple.TCC/TCC.db"),
+        bundle_id,
+    )
+}
+
+/// [`tcc_listen_event_row`] against any database file (tests use a fixture).
+pub fn tcc_listen_event_row_at(db: &std::path::Path, bundle_id: &str) -> TccRow {
     if bundle_id.is_empty() {
+        return TccRow::Unreadable;
+    }
+    let conn = match rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(e) => return classify_tcc_error(&e),
+    };
+    match conn.query_row(
+        "select auth_value from access where service = 'kTCCServiceListenEvent' and client = ?1",
+        [bundle_id],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(2) => TccRow::Allowed,
+        Ok(_) => TccRow::NotAllowed,
+        Err(e) => classify_tcc_error(&e),
+    }
+}
+
+/// No row → [`TccRow::NotAllowed`]; cannot open / not authorised (no Full
+/// Disk Access) → [`TccRow::Unreadable`]; anything else → the error itself.
+fn classify_tcc_error(e: &rusqlite::Error) -> TccRow {
+    use rusqlite::ErrorCode as C;
+    match e {
+        rusqlite::Error::QueryReturnedNoRows => TccRow::NotAllowed,
+        rusqlite::Error::SqliteFailure(f, _)
+            if matches!(
+                f.code,
+                C::CannotOpen | C::PermissionDenied | C::AuthorizationForStatementDenied
+            ) =>
+        {
+            TccRow::Unreadable
+        }
+        other => TccRow::QueryError(other.to_string()),
+    }
+}
+
+/// The sentence the Input Monitoring row adds when the live check says off but
+/// the TCC row cannot settle "off" vs "stale": unreadable (no Full Disk
+/// Access) → the remove + re-add hint; a failed query → the error AND the hint.
+pub fn input_monitoring_unverified_hint(
+    granted: bool,
+    row: &TccRow,
+    product: &str,
+) -> Option<String> {
+    if granted {
         return None;
     }
-    let conn = rusqlite::Connection::open_with_flags(
-        TCC_DB,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let v: Option<i64> = conn
-        .query_row(
-            "select auth_value from access where service = 'kTCCServiceListenEvent' and client = ?1",
-            [bundle_id],
-            |r| r.get(0),
-        )
-        .ok();
-    Some(v == Some(2))
+    let fix = format!(
+        "If {product} is already listed in Input Monitoring, remove it (select it, click −), add it again and reopen {product} — a grant from an older build looks the same as no grant from here."
+    );
+    match row {
+        TccRow::Unreadable => Some(fix),
+        TccRow::QueryError(e) => Some(format!(
+            "{product} could not read the permission database ({e}). {fix}"
+        )),
+        TccRow::Allowed | TccRow::NotAllowed => None,
+    }
 }
 
 /// The Permissions → Input Monitoring detail for THIS bundle (`product` is
@@ -694,11 +869,12 @@ mod tests {
             meeting_carbon: CarbonStatus::Registered,
             accessibility: true,
             input_monitoring: true,
-            listen_event_row: None,
+            listen_event_row: TccRow::Unreadable,
             hold_label: "fn⌃".into(),
             toggle_label: "⌃⌥⌘Space".into(),
             cancel_label: "esc".into(),
             meeting_label: "⌃⌘M".into(),
+            refusals: vec![],
         }
     }
 
@@ -766,38 +942,104 @@ mod tests {
         let gave_up = FnTapStatus::Blocked("macOS kept the fn listener off after 330 re-arm tries".into());
         use BindingStatus as S;
         use FnTapStatus as T;
+        use TccRow as R;
+        let qerr = || R::QueryError("database disk image is malformed".into());
+        let failed = || S::GrantCheckFailed("database disk image is malformed".into());
         // (tap, input_monitoring, listen_event_row, expected, fn⌃ live?)
-        let rows: Vec<(FnTapStatus, bool, Option<bool>, BindingStatus, bool)> = vec![
-            (T::Delivering, true, Some(true), S::Works, true),
-            (T::Delivering, false, None, S::Works, true),
-            (T::SecureInput("1Password".into()), true, None, S::SecureInput("1Password".into()), false),
-            (T::NotAttempted, true, None, S::NotStarted, false),
+        let rows: Vec<(FnTapStatus, bool, TccRow, BindingStatus, bool)> = vec![
+            (T::Delivering, true, R::Allowed, S::Works, true),
+            (T::Delivering, false, R::Unreadable, S::Works, true),
+            (T::Delivering, false, qerr(), S::Works, true),
+            (
+                T::SecureInput("1Password".into()),
+                true,
+                R::Unreadable,
+                S::SecureInput("1Password".into()),
+                false,
+            ),
+            (T::NotAttempted, true, R::Unreadable, S::NotStarted, false),
             // granted, tap installed, no edge yet → Ready, fn⌃ live
-            (T::ArmedNoDelivery, true, Some(true), S::Ready, true),
-            (T::ArmedNoDelivery, true, None, S::Ready, true),
+            (T::ArmedNoDelivery, true, R::Allowed, S::Ready, true),
+            (T::ArmedNoDelivery, true, R::Unreadable, S::Ready, true),
+            (T::ArmedNoDelivery, true, qerr(), S::Ready, true),
             // no Input Monitoring row → Needs Input Monitoring, chord live
-            (T::ArmedNoDelivery, false, Some(false), S::NeedsInputMonitoring, false),
-            (T::ArmedNoDelivery, false, None, S::NeedsInputMonitoring, false),
-            (install_failed.clone(), false, Some(false), S::NeedsInputMonitoring, false),
-            (install_failed.clone(), false, None, S::NeedsInputMonitoring, false),
-            (paused.clone(), false, None, S::NeedsInputMonitoring, false),
+            (
+                T::ArmedNoDelivery,
+                false,
+                R::NotAllowed,
+                S::NeedsInputMonitoring,
+                false,
+            ),
+            (
+                install_failed.clone(),
+                false,
+                R::NotAllowed,
+                S::NeedsInputMonitoring,
+                false,
+            ),
+            (
+                paused.clone(),
+                false,
+                R::NotAllowed,
+                S::NeedsInputMonitoring,
+                false,
+            ),
+            // advisory 4: no Full Disk Access → can't tell off from stale → the hint
+            (
+                T::ArmedNoDelivery,
+                false,
+                R::Unreadable,
+                S::NeedsInputMonitoringUnverified,
+                false,
+            ),
+            (
+                install_failed.clone(),
+                false,
+                R::Unreadable,
+                S::NeedsInputMonitoringUnverified,
+                false,
+            ),
+            (
+                paused.clone(),
+                false,
+                R::Unreadable,
+                S::NeedsInputMonitoringUnverified,
+                false,
+            ),
+            // advisory 5: a failed TCC query is an error state, never "no row"
+            (T::ArmedNoDelivery, false, qerr(), failed(), false),
+            (install_failed.clone(), false, qerr(), failed(), false),
+            (paused.clone(), false, qerr(), failed(), false),
             // TCC row allowed, live check says no → stale, chord live
-            (T::ArmedNoDelivery, false, Some(true), S::StaleGrant, false),
-            (install_failed.clone(), false, Some(true), S::StaleGrant, false),
-            (paused.clone(), false, Some(true), S::StaleGrant, false),
+            (T::ArmedNoDelivery, false, R::Allowed, S::StaleGrant, false),
+            (
+                install_failed.clone(),
+                false,
+                R::Allowed,
+                S::StaleGrant,
+                false,
+            ),
+            (paused.clone(), false, R::Allowed, S::StaleGrant, false),
             // granted but the tap cannot install / the bounded re-arm gave up → stale
-            (install_failed.clone(), true, None, S::StaleGrant, false),
-            (install_failed, true, Some(true), S::StaleGrant, false),
-            (gave_up, true, None, S::StaleGrant, false),
+            (
+                install_failed.clone(),
+                true,
+                R::Unreadable,
+                S::StaleGrant,
+                false,
+            ),
+            (install_failed, true, R::Allowed, S::StaleGrant, false),
+            (gave_up, true, R::Unreadable, S::StaleGrant, false),
             // granted, macOS switched it off and the re-arm is running → Paused
-            (paused, true, None, S::Paused, false),
+            (paused.clone(), true, R::Unreadable, S::Paused, false),
+            (paused, true, qerr(), S::Paused, false),
         ];
         for (tap, im, row, want, fn_live) in rows {
             for accessibility in [true, false] {
                 let mut i = inputs(tap.clone(), CarbonStatus::Registered);
                 i.accessibility = accessibility;
                 i.input_monitoring = im;
-                i.listen_event_row = row;
+                i.listen_event_row = row.clone();
                 let ctx = format!("{tap:?} im={im} row={row:?} acc={accessibility}");
                 assert_eq!(fn_binding_status(&i), want, "{ctx}");
                 let table = binding_table(&i);
@@ -821,7 +1063,7 @@ mod tests {
         let mut yap_test = inputs(FnTapStatus::ArmedNoDelivery, CarbonStatus::Registered);
         yap_test.accessibility = true;
         yap_test.input_monitoring = false;
-        yap_test.listen_event_row = Some(false);
+        yap_test.listen_event_row = TccRow::NotAllowed;
         let rows = binding_table(&yap_test);
         assert_eq!(hold(&rows).status, BindingStatus::NeedsInputMonitoring);
         assert_eq!(hold(&rows).live_key.as_deref(), Some("⌃⌥⌘Space"));
@@ -829,7 +1071,7 @@ mod tests {
         assert_eq!(live_dictate_key(&rows).as_deref(), Some("⌃⌥⌘Space"));
 
         let mut real_yap = yap_test.clone();
-        real_yap.listen_event_row = Some(true);
+        real_yap.listen_event_row = TccRow::Allowed;
         let rows = binding_table(&real_yap);
         assert_eq!(hold(&rows).status, BindingStatus::StaleGrant);
         assert_eq!(hold(&rows).live_key.as_deref(), Some("⌃⌥⌘Space"));
@@ -1124,5 +1366,238 @@ mod tests {
         );
         assert!(r.is_err());
         assert_eq!(*reg.borrow(), vec![new]);
+    }
+
+    fn ch(code: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> ChordSetting {
+        ChordSetting {
+            code: code.into(),
+            ctrl,
+            alt,
+            shift,
+            cmd,
+        }
+    }
+
+    /// yap-hotkeys-advisories-r1 #6 — the Rust reserved list and the frontend's
+    /// `desktop/src/reservedChords.json` are the same list, in the same order,
+    /// and both sides answer the shared case table identically (the vitest
+    /// twin runs the same file). Drift on either side fails here.
+    #[test]
+    fn reserved_chords_parity() {
+        #[derive(Deserialize)]
+        struct Row {
+            ctrl: bool,
+            alt: bool,
+            shift: bool,
+            cmd: bool,
+            code: String,
+            what: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Case {
+            chord: ChordSetting,
+            allow_bare: bool,
+            reason: Option<String>,
+        }
+        let json: Vec<Row> = serde_json::from_str(include_str!("../../src/reservedChords.json"))
+            .expect("desktop/src/reservedChords.json parses");
+        let ts: Vec<(bool, bool, bool, bool, String, String)> = json
+            .into_iter()
+            .map(|r| (r.ctrl, r.alt, r.shift, r.cmd, r.code, r.what))
+            .collect();
+        let rust: Vec<(bool, bool, bool, bool, String, String)> = RESERVED_CHORDS
+            .iter()
+            .map(|&(a, b, c, d, e, f)| (a, b, c, d, e.to_string(), f.to_string()))
+            .collect();
+        assert_eq!(
+            rust, ts,
+            "RESERVED_CHORDS and desktop/src/reservedChords.json drifted"
+        );
+        for (.., code, _) in RESERVED_CHORDS {
+            assert!(Code::from_str(code).is_ok(), "{code} is not a key code");
+        }
+        let cases: Vec<Case> =
+            serde_json::from_str(include_str!("../../src/reservedChordCases.json"))
+                .expect("desktop/src/reservedChordCases.json parses");
+        assert!(cases.len() >= 20);
+        for c in &cases {
+            assert_eq!(
+                reserved_chord_reason(&c.chord, c.allow_bare),
+                c.reason,
+                "{:?} allow_bare={}",
+                c.chord,
+                c.allow_bare
+            );
+        }
+        // The frontend reads the JSON — it keeps no literal copy of the list.
+        let ts_src = include_str!("../../src/hotkeyRecorder.ts");
+        assert!(
+            ts_src.contains("./reservedChords.json"),
+            "hotkeyRecorder.ts must import reservedChords.json"
+        );
+        assert!(
+            !ts_src.contains("\"Lock Screen\""),
+            "hotkeyRecorder.ts carries a literal copy of the list"
+        );
+    }
+
+    /// advisory 1 — the six chords the #249 review named are refused.
+    #[test]
+    fn advisory_chords_are_reserved() {
+        for (c, what) in [
+            (
+                ch("Digit3", true, false, true, true),
+                "screenshot to the clipboard",
+            ),
+            (
+                ch("Digit4", true, false, true, true),
+                "screenshot selection to the clipboard",
+            ),
+            (ch("KeyH", false, true, false, true), "Hide Others"),
+            (ch("KeyM", false, true, false, true), "Minimize All"),
+            (ch("KeyW", false, true, false, true), "Close All"),
+            (ch("KeyD", true, false, false, true), "Look Up"),
+        ] {
+            for bare in [false, true] {
+                let why = reserved_chord_reason(&c, bare).unwrap_or_default();
+                assert!(why.contains(what), "{c:?}: {why}");
+            }
+            assert!(stored_chord_refusal(BindingAction::DictateToggle, Some(&c)).is_some());
+        }
+    }
+
+    /// advisory 2 — a reserved chord stored before the rule existed is
+    /// re-validated at launch: Yap registers the default, and the row says why.
+    #[test]
+    fn stored_reserved_dictate_chord_falls_back_at_launch() {
+        let spotlight = ch("Space", false, false, false, true);
+        let (chord, label) = resolve_dictate(Some(&spotlight));
+        assert_eq!(chord, shortcuts::DICTATE_TOGGLE.shortcut());
+        assert_eq!(label, shortcuts::DICTATE_TOGGLE.label);
+        let why = stored_chord_refusal(BindingAction::DictateToggle, Some(&spotlight)).unwrap();
+        assert_eq!(
+            why,
+            "Your saved chord is not used: ⌘Space is macOS's Spotlight — pick another chord. Yap is using ⌃⌥⌘Space until you record another."
+        );
+        let look_up = ch("KeyD", true, false, false, true);
+        assert_eq!(
+            resolve_dictate(Some(&look_up)).1,
+            shortcuts::DICTATE_TOGGLE.label
+        );
+        // A valid stored chord is used and carries no note.
+        let ok = ch("KeyR", true, true, false, true);
+        assert_eq!(resolve_dictate(Some(&ok)).1, "⌃⌥⌘R");
+        assert_eq!(
+            stored_chord_refusal(BindingAction::DictateToggle, Some(&ok)),
+            None
+        );
+        assert_eq!(
+            stored_chord_refusal(BindingAction::DictateToggle, None),
+            None
+        );
+        // Meeting / Cancel get the same sentence from their own rules.
+        let m = stored_chord_refusal(
+            BindingAction::RecordMeeting,
+            Some(&ch("KeyW", false, true, false, true)),
+        )
+        .unwrap();
+        assert!(
+            m.contains("Close All") && m.ends_with("Yap is using ⌃⌘M until you record another."),
+            "{m}"
+        );
+        // The row and the launch dump carry the note.
+        let mut i = inputs(FnTapStatus::Delivering, CarbonStatus::Registered);
+        i.refusals = vec![(BindingAction::DictateToggle, why.clone())];
+        let rows = binding_table(&i);
+        let toggle = rows
+            .iter()
+            .find(|r| r.action == BindingAction::DictateToggle)
+            .unwrap();
+        assert_eq!(toggle.note.as_deref(), Some(why.as_str()));
+        assert!(rows.iter().filter(|r| r.note.is_some()).count() == 1);
+        assert!(debug_dump(&rows).contains("Spotlight"));
+    }
+
+    /// advisories 4 + 5 — the chips and the Permissions sentence.
+    #[test]
+    fn unverified_and_failed_grant_checks_say_so() {
+        assert!(BindingStatus::NeedsInputMonitoringUnverified
+            .chip()
+            .contains("remove and re-add"));
+        let f = BindingStatus::GrantCheckFailed("disk I/O error".into());
+        assert!(f.chip().contains("disk I/O error") && f.chip().contains("remove and re-add"));
+        assert!(!f.usable() && !BindingStatus::NeedsInputMonitoringUnverified.usable());
+        let h = input_monitoring_unverified_hint(false, &TccRow::Unreadable, "Yap Test").unwrap();
+        assert!(h.contains("remove it") && h.contains("Yap Test"), "{h}");
+        let e = input_monitoring_unverified_hint(false, &TccRow::QueryError("x".into()), "Yap")
+            .unwrap();
+        assert!(
+            e.contains("could not read the permission database (x)") && e.contains("remove it"),
+            "{e}"
+        );
+        assert_eq!(
+            input_monitoring_unverified_hint(true, &TccRow::Unreadable, "Yap"),
+            None
+        );
+        assert_eq!(
+            input_monitoring_unverified_hint(false, &TccRow::NotAllowed, "Yap"),
+            None
+        );
+        assert_eq!(
+            input_monitoring_unverified_hint(false, &TccRow::Allowed, "Yap"),
+            None
+        );
+    }
+
+    /// advisory 5 — the TCC query, against fixture databases: a failed query is
+    /// an error, never "no row"; a missing database is "unreadable".
+    #[test]
+    fn tcc_query_errors_are_not_no_row() {
+        let dir = std::env::temp_dir().join(format!("yap-tcc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |name: &str, sql: &str| {
+            let p = dir.join(name);
+            let _ = std::fs::remove_file(&p);
+            rusqlite::Connection::open(&p)
+                .unwrap()
+                .execute_batch(sql)
+                .unwrap();
+            p
+        };
+        let schema = "create table access (service text, client text, auth_value);";
+        let good = mk(
+            "good.db",
+            &format!(
+                "{schema} insert into access values ('kTCCServiceListenEvent','com.a',2), \
+                 ('kTCCServiceListenEvent','com.b',0), ('kTCCServiceListenEvent','com.c','oops');"
+            ),
+        );
+        assert_eq!(tcc_listen_event_row_at(&good, "com.a"), TccRow::Allowed);
+        assert_eq!(tcc_listen_event_row_at(&good, "com.b"), TccRow::NotAllowed);
+        assert_eq!(
+            tcc_listen_event_row_at(&good, "com.absent"),
+            TccRow::NotAllowed
+        );
+        // A quote in the bundle id is a bound parameter, not SQL.
+        assert_eq!(
+            tcc_listen_event_row_at(&good, "x' or '1'='1"),
+            TccRow::NotAllowed
+        );
+        assert!(matches!(
+            tcc_listen_event_row_at(&good, "com.c"),
+            TccRow::QueryError(_)
+        ));
+        let no_table = mk("notable.db", "create table other (x);");
+        match tcc_listen_event_row_at(&no_table, "com.a") {
+            TccRow::QueryError(e) => assert!(e.contains("no such table"), "{e}"),
+            other => panic!("want QueryError, got {other:?}"),
+        }
+        assert_eq!(
+            tcc_listen_event_row_at(&dir.join("missing.db"), "com.a"),
+            TccRow::Unreadable
+        );
+        assert_eq!(tcc_listen_event_row_at(&good, ""), TccRow::Unreadable);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
