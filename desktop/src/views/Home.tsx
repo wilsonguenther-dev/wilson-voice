@@ -2,7 +2,7 @@ import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
 import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
-import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime } from "../appTypes";
+import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
@@ -11,7 +11,7 @@ export default function Home() {
   const {
     bootError, bootErrors, booting, retryBoot, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
-    insights, loadHistory, needsPerms, pasteText, query, queryRef, refreshInsights,
+    insights, loadHistory, pasteText, perms, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
     setNoteTitle, setQuery, setRetryId, setScratchComposing, settings, status, toast,
@@ -28,8 +28,11 @@ export default function Home() {
   const homeError =
     bootErrors?.get_history ?? bootErrors?.get_insights ?? (insights == null ? bootError : null);
   const state = viewState(history, booting || !insights, homeError);
-  // H2 — nothing dictated yet, no search typed, and a critical grant missing.
-  const permsGate = history.length === 0 && !query && !!needsPerms;
+  // H2 — nothing dictated yet, no search typed, and a dictation GRANT
+  // (Microphone / Accessibility) missing. A missing speech model is NOT a
+  // grant — ModelRibbon owns that case — so this never reads allCriticalOk.
+  const missingGrants = missingDictationGrants(perms);
+  const permsGate = history.length === 0 && !query && missingGrants.length > 0;
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
@@ -129,7 +132,7 @@ export default function Home() {
                   data-empty-state="home:history"
                   glyph={<WaveGlyph />}
                   title="Grant permissions to start dictating"
-                  body="Yap needs Microphone and Accessibility before it can hear you and type for you. Grant them, then hold fn⌃ and talk."
+                  body={`Yap needs ${missingGrants.join(" and ")} before it can hear you and type for you. Grant ${missingGrants.length > 1 ? "them" : "it"}, then hold fn⌃ and talk.`}
                   actionLabel="Grant permissions"
                   onAction={() => setNav("permissions")}
                 />

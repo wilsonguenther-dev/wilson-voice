@@ -65,14 +65,49 @@ describe("Home walk rows (yap-uiux-2026-10-16)", () => {
     expect(app(base({ insights: insights(40) }))).toContain("Welcome back, Smoke");
   });
 
+  // A PermissionReport shaped like the real one (permissions.rs), with
+  // allCriticalOk and needsPerms derived the way the backend / appShell do,
+  // so the H2 gate is tested from the source of truth, not a stubbed flag.
+  const report = (o: { mic?: string; ax?: boolean; asr?: boolean } = {}) => {
+    const mic = o.mic ?? "authorized";
+    const asrOk = o.asr ?? true;
+    const allCriticalOk = mic === "authorized" && asrOk; // permissions.rs:381
+    const perms = {
+      accessibility: o.ax ?? true, microphone: true, microphoneStatus: mic,
+      inputMonitoring: "unknown", audioCapture: "unknown", grants: [],
+      asrOk, asrDetail: "", summary: "", allCriticalOk,
+    };
+    return { perms, needsPerms: !allCriticalOk }; // appShell.ts needsPerms
+  };
+
   it("H2: ungranted permissions put Grant permissions first, before the hotkey hint", () => {
-    const html = home(base({ needsPerms: true }));
+    const html = home(base(report({ mic: "unknown", ax: false })));
     expect(html).toContain("Grant permissions");
+    expect(html).toContain("Yap needs Microphone and Accessibility");
     expect(html.indexOf("Grant permissions")).toBeLessThan(html.indexOf("double-tap hands-free"));
     expect(html).not.toContain("No dictations yet");
-    const granted = home(base({ needsPerms: false }));
+    const granted = home(base(report()));
     expect(granted).not.toContain("Grant permissions");
     expect(granted).toContain("No dictations yet");
+  });
+
+  it("H2: a missing speech model with every grant given is NOT a permissions card", () => {
+    const html = home(base(report({ asr: false })));
+    expect(html).not.toContain("Grant permissions");
+    expect(html).toContain("No dictations yet");
+  });
+
+  it("H2: Accessibility off (mic granted, model present) shows the card naming Accessibility only", () => {
+    const html = home(base(report({ ax: false })));
+    expect(html).toContain("Grant permissions");
+    expect(html).toContain("Yap needs Accessibility before");
+    expect(html).not.toContain("Yap needs Microphone");
+    expect(html).not.toContain("No dictations yet");
+  });
+
+  it("H2: perms not loaded yet (null) never claims a grant is missing", () => {
+    const html = home(base({ perms: null, needsPerms: null }));
+    expect(html).not.toContain("Grant permissions");
   });
 
   it("H4: the search placeholder speaks to the user, not about SQLite", () => {

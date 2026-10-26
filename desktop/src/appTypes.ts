@@ -339,6 +339,23 @@ export interface PermissionReport {
   probe?: ProbeReport;
 }
 
+/**
+ * yap-uiux-2026-10-16-H2 (fix round 1) — the grants dictation needs that the
+ * user has NOT given, by name. Deliberately NOT `!allCriticalOk`: the backend
+ * folds the speech model into that flag (permissions.rs `all_critical_ok =
+ * mic authorized && microphone && asr_ok`) and leaves Accessibility out, so
+ * it fired for a still-downloading model and stayed silent with Accessibility
+ * off. The model has its own surface (ModelRibbon); this reads only grants.
+ * `null` perms (not loaded yet / bridge error) is "unknown", never "missing".
+ */
+export function missingDictationGrants(perms: PermissionReport | null | undefined): string[] {
+  if (!perms) return [];
+  const missing: string[] = [];
+  if (perms.microphoneStatus !== "authorized" || !perms.microphone) missing.push("Microphone");
+  if (!perms.accessibility) missing.push("Accessibility");
+  return missing;
+}
+
 export interface TranscriptEntry {
   id: string;
   text: string;
