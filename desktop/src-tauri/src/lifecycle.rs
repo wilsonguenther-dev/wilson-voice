@@ -12,7 +12,10 @@
 //! teardown: [`quit_plan`] fixes the order (the pill is ordered out FIRST, so a
 //! slow teardown never leaves it on screen) and [`run_bounded`] gives every step
 //! a deadline inside a hard [`QUIT_BUDGET`], logging and skipping a step that
-//! misses it instead of hanging the quit.
+//! misses it instead of hanging the quit. The one exception is the meeting
+//! finalize ([`QuitStep::budget_exempt`]): its cost grows with the meeting's
+//! length, so it gets its own [`MEETING_FINALIZE_CEILING`] outside the budget
+//! instead of a share of it — a long meeting is finalized, never cut off.
 //!
 //! The stale-instance probe ([`handoff_to_running`]) runs BEFORE the Tauri
 //! builder: the plugin's own handoff is a one-way write followed by a silent
@@ -165,12 +168,26 @@ pub static HIDE_HINT: HideHintGate = HideHintGate::new();
 /// being abandoned.
 pub const QUIT_BUDGET: Duration = Duration::from_millis(3_000);
 
+/// The meeting finalize's own ceiling, OUTSIDE [`QUIT_BUDGET`].
+///
+/// `MeetingController::stop` spills every track to a wav (hound, one write per
+/// sample) and only then writes the row, so it costs time in proportion to the
+/// meeting's length: measured ~3 ms per track-minute in release (a 2-hour,
+/// two-track meeting ≈ 0.72 s for the spill alone). A share of the 3 s budget
+/// cut a long meeting off mid-finalize, which left its row `recording` with no
+/// wav and the next launch marked it Failed. This ceiling exists only so a
+/// genuinely wedged stop (a capture that never returns) cannot hang the quit
+/// forever; it is ~40x the 2-hour cost, so it is never reached by a finalize
+/// that is merely long.
+pub const MEETING_FINALIZE_CEILING: Duration = Duration::from_secs(30);
+
 /// One step of the quit teardown, in plan order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuitStep {
     /// Order the floating pill out. Main thread, first, always.
     PillOrderOut,
     /// Finalize a live meeting so an hour of audio is never left rowless.
+    /// Budget-exempt: see [`MEETING_FINALIZE_CEILING`].
     MeetingStop,
     /// Cancel the in-flight decode and free the Metal device (YV69/YV70).
     AsrDrain,
@@ -194,17 +211,20 @@ impl QuitStep {
         }
     }
 
-    /// Each step's own deadline. They sum to [`QUIT_BUDGET`] exactly, so even a
-    /// quit where EVERY step times out ends inside the budget.
+    /// Each step's own deadline. The budgeted steps' deadlines fit inside
+    /// [`QUIT_BUDGET`], so even a quit where every one of them times out ends
+    /// inside the budget. The meeting finalize is not one of them: its deadline
+    /// is [`MEETING_FINALIZE_CEILING`] and its time is not charged to the
+    /// budget ([`QuitStep::budget_exempt`]).
     pub fn deadline(self) -> Duration {
-        Duration::from_millis(match self {
-            QuitStep::PillOrderOut => 100,
-            QuitStep::MeetingStop => 700,
-            QuitStep::AsrDrain => 1_000,
-            QuitStep::AwaitTake => 700,
-            QuitStep::RestoreOutput => 200,
-            QuitStep::DbCheckpoint => 300,
-        })
+        match self {
+            QuitStep::MeetingStop => MEETING_FINALIZE_CEILING,
+            QuitStep::PillOrderOut => Duration::from_millis(100),
+            QuitStep::AsrDrain => Duration::from_millis(1_000),
+            QuitStep::AwaitTake => Duration::from_millis(700),
+            QuitStep::RestoreOutput => Duration::from_millis(200),
+            QuitStep::DbCheckpoint => Duration::from_millis(300),
+        }
     }
 
     /// Runs on the calling (main) thread rather than a worker: AppKit objects
@@ -212,6 +232,27 @@ impl QuitStep {
     /// thread.
     pub fn on_main_thread(self) -> bool {
         matches!(self, QuitStep::PillOrderOut)
+    }
+
+    /// Steps whose cost grows with user data and must never be cut off by the
+    /// quit budget: the meeting finalize. It is never skipped for a spent
+    /// budget, waits up to its own [`MEETING_FINALIZE_CEILING`], and the time
+    /// it takes is not charged to [`QUIT_BUDGET`] — the steps after it keep
+    /// their full share.
+    pub fn budget_exempt(self) -> bool {
+        matches!(self, QuitStep::MeetingStop)
+    }
+
+    /// This step, ready for [`run_bounded`], with its deadline, thread and
+    /// budget class taken from the plan — the ONE place `lib.rs`'s teardown and
+    /// the tests build a step, so they cannot disagree.
+    pub fn bounded(self, run: impl FnOnce() + Send + 'static) -> BoundedStep {
+        let step = BoundedStep::new(self.name(), self.deadline(), self.on_main_thread(), run);
+        if self.budget_exempt() {
+            step.exempt_from_budget()
+        } else {
+            step
+        }
     }
 }
 
@@ -236,6 +277,9 @@ pub struct BoundedStep {
     pub deadline: Duration,
     /// Run on the calling thread (unbounded by construction — keep it tiny).
     pub inline: bool,
+    /// Not charged to the budget and never skipped for a spent one; bounded
+    /// only by its own `deadline`. See [`QuitStep::budget_exempt`].
+    pub budget_exempt: bool,
     pub run: Box<dyn FnOnce() + Send + 'static>,
 }
 
@@ -250,8 +294,15 @@ impl BoundedStep {
             name,
             deadline,
             inline,
+            budget_exempt: false,
             run: Box::new(run),
         }
+    }
+
+    /// Mark this step budget-exempt (see [`QuitStep::budget_exempt`]).
+    pub fn exempt_from_budget(mut self) -> Self {
+        self.budget_exempt = true;
+        self
     }
 }
 
@@ -315,15 +366,20 @@ impl TeardownReport {
 
 /// Run `steps` in order, each within `min(its deadline, what is left of
 /// budget)`. A step that misses its deadline is logged, abandoned and the next
-/// one starts; once the budget is spent the remaining steps are skipped. The
-/// call returns within `budget` plus the cost of any inline step.
+/// one starts; once the budget is spent the remaining steps are skipped. A
+/// budget-exempt step is the exception: it is never skipped, waits its own
+/// full deadline, and its time is not charged to the budget. The call returns
+/// within `budget` plus the exempt steps' deadlines plus the cost of any
+/// inline step.
 pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport {
     let start = Instant::now();
+    let mut exempt_spent = Duration::ZERO;
     let mut reports = Vec::with_capacity(steps.len());
     for step in steps {
         let step_start = Instant::now();
-        let left = budget.saturating_sub(start.elapsed());
-        if left.is_zero() {
+        let charged = start.elapsed().saturating_sub(exempt_spent);
+        let left = budget.saturating_sub(charged);
+        if left.is_zero() && !step.budget_exempt {
             log::warn!("exit: {} skipped — quit budget spent", step.name);
             reports.push(StepReport {
                 name: step.name,
@@ -338,7 +394,11 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
                 Err(_) => StepOutcome::Panicked,
             }
         } else {
-            let wait = step.deadline.min(left);
+            let wait = if step.budget_exempt {
+                step.deadline
+            } else {
+                step.deadline.min(left)
+            };
             let (tx, rx) = mpsc::channel::<bool>();
             let run = step.run;
             let spawned = std::thread::Builder::new()
@@ -367,9 +427,13 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
                 },
             }
         };
+        let elapsed = step_start.elapsed();
+        if step.budget_exempt {
+            exempt_spent += elapsed;
+        }
         reports.push(StepReport {
             name: step.name,
-            elapsed: step_start.elapsed(),
+            elapsed,
             outcome,
         });
     }

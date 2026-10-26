@@ -97,9 +97,170 @@ fn quit_plan_orders_the_pill_out_first_and_checkpoints_last() {
     assert!(pos(QuitStep::PillOrderOut) < pos(QuitStep::MeetingStop));
     assert!(pos(QuitStep::MeetingStop) < pos(QuitStep::DbCheckpoint));
     assert_eq!(*plan.last().unwrap(), QuitStep::DbCheckpoint);
-    let sum: Duration = plan.iter().map(|s| s.deadline()).sum();
+    // The budgeted steps fit the budget; the meeting finalize is the one step
+    // outside it (its cost grows with the meeting — PR #241 review, round 2).
+    let sum: Duration = plan
+        .iter()
+        .filter(|s| !s.budget_exempt())
+        .map(|s| s.deadline())
+        .sum();
     assert!(sum <= lifecycle::QUIT_BUDGET, "deadlines sum to {sum:?}");
     assert!(lifecycle::QUIT_BUDGET <= Duration::from_secs(3));
+    let exempt: Vec<QuitStep> = plan.iter().copied().filter(|s| s.budget_exempt()).collect();
+    assert_eq!(exempt, vec![QuitStep::MeetingStop]);
+    assert_eq!(
+        QuitStep::MeetingStop.deadline(),
+        lifecycle::MEETING_FINALIZE_CEILING
+    );
+}
+
+/// PR #241 review BLOCKING (round 2): the tray's Quit used to finalize a live
+/// meeting with no time limit; the bounded teardown gave it a 700 ms share of
+/// the budget, and a 2-hour two-track spill costs ~720 ms in release, so a long
+/// meeting was abandoned mid-finalize (row left `recording`, no wav, marked
+/// Failed on the next launch). Built from the REAL plan through the same
+/// `QuitStep::bounded` the app's `quit_teardown` uses: a finalize that takes
+/// LONGER THAN THE WHOLE QUIT BUDGET still completes, and every step after it
+/// still runs with its full share.
+#[test]
+fn a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off() {
+    let order = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+    let finalize_cost = lifecycle::QUIT_BUDGET + Duration::from_millis(300);
+    let steps = quit_plan()
+        .into_iter()
+        .map(|s| {
+            let order = order.clone();
+            s.bounded(move || {
+                if s == QuitStep::MeetingStop {
+                    std::thread::sleep(finalize_cost); // a very long meeting's spill
+                }
+                order.lock().push(s.name());
+            })
+        })
+        .collect();
+    let t = Instant::now();
+    let report = run_bounded(steps, lifecycle::QUIT_BUDGET);
+    let took = t.elapsed();
+    for s in quit_plan() {
+        assert_eq!(
+            report.outcome_of(s.name()),
+            Some(StepOutcome::Done),
+            "{} — {}",
+            s.name(),
+            report.log_line()
+        );
+    }
+    assert_eq!(
+        *order.lock(),
+        quit_plan().iter().map(|s| s.name()).collect::<Vec<_>>(),
+        "the finalize landed before the checkpoint, in plan order"
+    );
+    assert!(took >= finalize_cost, "{took:?}");
+    assert!(
+        took < finalize_cost + Duration::from_millis(1_000),
+        "{took:?}"
+    );
+}
+
+/// The exemption is not a hang: a WEDGED exempt step is still abandoned at its
+/// own deadline, and because its time is not charged to the budget the step
+/// after it still runs.
+#[test]
+fn a_wedged_exempt_step_is_bounded_by_its_own_deadline_and_the_rest_still_run() {
+    let steps = vec![
+        BoundedStep::new("meeting_stop", Duration::from_millis(400), false, || {
+            std::thread::sleep(Duration::from_secs(10))
+        })
+        .exempt_from_budget(),
+        BoundedStep::new("db_checkpoint", Duration::from_millis(150), false, || {}),
+    ];
+    let t = Instant::now();
+    // A budget SMALLER than the exempt step's deadline: charged, it would
+    // leave nothing for the checkpoint.
+    let report = run_bounded(steps, Duration::from_millis(200));
+    let took = t.elapsed();
+    assert_eq!(
+        report.outcome_of("meeting_stop"),
+        Some(StepOutcome::TimedOut)
+    );
+    assert_eq!(report.outcome_of("db_checkpoint"), Some(StepOutcome::Done));
+    assert!(took >= Duration::from_millis(400), "{took:?}");
+    assert!(took < Duration::from_millis(1_200), "{took:?}");
+}
+
+/// The REAL finalize, not a sleep: a two-track meeting journal (mic + system,
+/// 16 kHz, the shape `MeetingController::stop` finalizes) is finalized inside
+/// the real plan's MeetingStop step under the real QUIT_BUDGET. It must finish
+/// (both wavs complete, every sample there), and its measured cost scaled
+/// linearly to a 2-hour two-track meeting must fit MEETING_FINALIZE_CEILING —
+/// in this unoptimized test build, which is slower than the release app.
+#[test]
+fn a_real_two_track_meeting_finalize_completes_inside_the_quit() {
+    use wilson_voice_lib::meeting::{MeetingJournal, MeetingState, TARGET_RATE};
+    const MINUTES: u64 = 10;
+    let dir = tmpdir("real-finalize");
+    let journal = MeetingJournal::start(&dir, 2).expect("journal opens");
+    let per_track = TARGET_RATE as u64 * 60 * MINUTES;
+    let second: Vec<f32> = (0..TARGET_RATE as usize)
+        .map(|i| ((i as f32) * 0.01).sin() * 0.5)
+        .collect();
+    for _ in 0..(per_track / TARGET_RATE as u64) {
+        for track in 0..2 {
+            while journal.append(track, &second) == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let finalize_ms = std::sync::Arc::new(parking_lot::Mutex::new(Duration::ZERO));
+    let mut journal = Some(journal);
+    let steps = quit_plan()
+        .into_iter()
+        .map(|s| {
+            let journal = if s == QuitStep::MeetingStop {
+                journal.take()
+            } else {
+                None
+            };
+            let tx = tx.clone();
+            let finalize_ms = finalize_ms.clone();
+            s.bounded(move || {
+                if let Some(j) = journal {
+                    let t = Instant::now();
+                    let out = j.finalize(MeetingState::Complete);
+                    *finalize_ms.lock() = t.elapsed();
+                    let _ = tx.send(out);
+                }
+            })
+        })
+        .collect();
+    let report = run_bounded(steps, lifecycle::QUIT_BUDGET);
+    let finalize = *finalize_ms.lock();
+    eprintln!(
+        "real finalize: {MINUTES} min x 2 tracks = {finalize:?}; {}",
+        report.log_line()
+    );
+    assert_eq!(
+        report.outcome_of("meeting_stop"),
+        Some(StepOutcome::Done),
+        "{}",
+        report.log_line()
+    );
+    let finalized = rx
+        .try_recv()
+        .expect("the finalize ran to the end")
+        .expect("finalized");
+    assert_eq!(finalized.tracks.len(), 2);
+    for wav in &finalized.tracks {
+        let len = hound::WavReader::open(wav).expect("wav opens").len() as u64;
+        assert_eq!(len, per_track, "{} is complete", wav.display());
+    }
+    let two_hours = finalize * (120 / MINUTES as u32);
+    assert!(
+        two_hours < lifecycle::MEETING_FINALIZE_CEILING,
+        "a 2-hour two-track finalize extrapolates to {two_hours:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

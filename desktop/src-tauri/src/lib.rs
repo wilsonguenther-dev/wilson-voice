@@ -1356,8 +1356,11 @@ fn exit_step_db_checkpoint(state: &AppState, steps: &mut Vec<&'static str>) {
 /// in-flight take, the output restore and the WAL checkpoint — each on a worker
 /// thread with its own deadline inside `lifecycle::QUIT_BUDGET`. A step that
 /// misses its deadline is logged and skipped; the process exits regardless.
+/// The meeting finalize is the exception: its cost grows with the meeting, so
+/// it runs to completion under its own `lifecycle::MEETING_FINALIZE_CEILING`,
+/// outside the budget (a 700 ms share cut a 2-hour meeting off mid-spill).
 fn quit_teardown(app: &AppHandle, state: &Arc<AppState>) -> lifecycle::TeardownReport {
-    use lifecycle::{BoundedStep, QuitStep};
+    use lifecycle::QuitStep;
     let steps = lifecycle::quit_plan()
         .into_iter()
         .map(|step| {
@@ -1396,12 +1399,10 @@ fn quit_teardown(app: &AppHandle, state: &Arc<AppState>) -> lifecycle::TeardownR
                     Box::new(move || exit_step_db_checkpoint(&state, &mut Vec::new()))
                 }
             };
-            BoundedStep {
-                name: step.name(),
-                deadline: step.deadline(),
-                inline: step.on_main_thread(),
-                run,
-            }
+            // Deadline, thread and budget class all come from the plan: the
+            // meeting finalize is budget-exempt (MEETING_FINALIZE_CEILING), so
+            // a long meeting is finalized, never cut off mid-spill.
+            step.bounded(run)
         })
         .collect();
     lifecycle::run_bounded(steps, lifecycle::QUIT_BUDGET)
