@@ -638,8 +638,10 @@ fn read_wav_i16(path: &std::path::Path, expect_rate: u32) -> Vec<i16> {
         let body = offset + 8;
         if id == b"data" {
             return bytes[body..(body + size).min(bytes.len())]
-                .chunks_exact(2)
-                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| i16::from_le_bytes(*c))
                 .collect();
         }
         offset = body + size + (size & 1);

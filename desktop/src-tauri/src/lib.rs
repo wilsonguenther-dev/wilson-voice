@@ -396,7 +396,7 @@ pub struct AppSettings {
     /// Auto-mute the whole Mac's system output while dictating (YV28). On record
     /// start we snapshot + mute the default output device so nothing plays over
     /// the user; on stop / cancel / error / exit we restore the EXACT prior mute
-    /// + volume. Defaults on; the restore is unconditional so the Mac is never
+    /// and volume. Defaults on; the restore is unconditional so the Mac is never
     /// left muted even if this is toggled off mid-take.
     #[serde(default = "default_true")]
     pub mute_while_dictating: bool,
@@ -921,18 +921,37 @@ pub const ENGINE_PREPARING_MESSAGE: &str = "Preparing your speech engine…";
 /// same honesty reason — while another app holds Secure Input the fn tap is
 /// blind, so telling the user to "hold fn⌃" is telling them to do something that
 /// physically cannot work.
-fn status_message(
+///
+/// The inputs are a named struct, not ten positional arguments: eight of them
+/// are `bool`s, and a swapped pair at a call site compiled silently.
+#[derive(Clone, Copy)]
+struct StatusInputs<'a> {
     recording: bool,
     hands_free: bool,
     busy: bool,
     engine_loading: bool,
-    last_error: Option<&str>,
+    last_error: Option<&'a str>,
     model_ready: bool,
     accessibility: bool,
     secure_input_blocked: bool,
-    ptt: &str,
+    ptt: &'a str,
     session_cap_warned: bool,
-) -> String {
+}
+
+/// The status line for `inputs` — see [`StatusInputs`] for the precedence.
+fn status_message(inputs: &StatusInputs<'_>) -> String {
+    let StatusInputs {
+        recording,
+        hands_free,
+        busy,
+        engine_loading,
+        last_error,
+        model_ready,
+        accessibility,
+        secure_input_blocked,
+        ptt,
+        session_cap_warned,
+    } = *inputs;
     if recording && session_cap_warned {
         // Y3-F: past 80% of `record::MAX_SESSION` the live take's own line SAYS
         // what is coming, on the status event the pill already renders. It
@@ -985,18 +1004,18 @@ fn build_status(state: &AppState) -> AppStatus {
     let still_recording = recording && ptt_macos::still_recording_prompted();
     #[cfg(not(target_os = "macos"))]
     let still_recording = false;
-    let message = status_message(
+    let message = status_message(&StatusInputs {
         recording,
         hands_free,
         busy,
         engine_loading,
-        last_error.as_deref(),
-        ready,
+        last_error: last_error.as_deref(),
+        model_ready: ready,
         accessibility,
-        secure.blocked,
-        &ptt,
-        *state.session_cap_warned.lock(),
-    );
+        secure_input_blocked: secure.blocked,
+        ptt: &ptt,
+        session_cap_warned: *state.session_cap_warned.lock(),
+    });
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::STILL_RECORDING_MESSAGE.to_string()
@@ -2175,7 +2194,10 @@ enum TakeOutcome {
     /// ⌘V was actually attempted (YV74: only an *attempted* paste that never
     /// produced a read receipt raises the "Copy again" toast action — a
     /// deliberate copy-only take already left the text on the clipboard).
-    Dictated(TranscriptEntry, paste::PasteOutcome, i64, bool),
+    ///
+    /// The row is boxed: it is ~10x every other variant, and this value is
+    /// moved through the worker's result on every take.
+    Dictated(Box<TranscriptEntry>, paste::PasteOutcome, i64, bool),
     /// A transient toast, not an error: no speech, an applied command edit, or
     /// an unrecognised command. Nothing was captured worth keeping.
     Soft(String),
@@ -2774,7 +2796,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
-                entry,
+                Box::new(entry),
                 outcome,
                 pipeline_ms,
                 want_paste,
@@ -7661,7 +7683,7 @@ pub fn run() {
 mod tests {
     use super::{
         apply_settings_migrations, load_settings, preload_engine_at_startup, salvage_settings,
-        status_message, update_is_skipped, write_settings_file, AppSettings,
+        status_message, update_is_skipped, write_settings_file, AppSettings, StatusInputs,
         CURRENT_SETTINGS_SCHEMA_VERSION, ENGINE_PREPARING_MESSAGE,
     };
 
@@ -7924,49 +7946,103 @@ mod tests {
     // Mac, where that path was the non-functional Command Line Tools shim.
     #[test]
     fn status_says_model_needed_until_a_model_is_ready() {
-        let no_model = status_message(
-            false, false, false, false, None, false, true, false, "fn⌃", false,
-        );
+        let no_model = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: false,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert!(no_model.contains("Model needed"), "{no_model}");
         assert!(!no_model.contains("Ready"), "{no_model}");
 
-        let ready = status_message(
-            false, false, false, false, None, true, true, false, "fn⌃", false,
-        );
+        let ready = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert!(ready.starts_with("Ready — hold fn⌃"), "{ready}");
 
         // Accessibility is a paste-only concern: still Ready, with a nudge.
-        let no_ax = status_message(
-            false, false, false, false, None, true, false, false, "fn⌃", false,
-        );
+        let no_ax = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: false,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert!(no_ax.starts_with("Ready —"), "{no_ax}");
         assert!(no_ax.contains("Accessibility"), "{no_ax}");
 
         // Live states and hard errors still outrank the model gate.
-        assert!(status_message(
-            true, false, false, false, None, false, true, false, "fn⌃", false
-        )
+        assert!(status_message(&StatusInputs {
+            recording: true,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: false,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        })
         .contains("Recording"));
-        assert!(
-            status_message(true, true, false, false, None, false, true, false, "fn⌃", false)
-                .contains("Hands-free")
-        );
-        assert!(status_message(
-            false, false, true, false, None, false, true, false, "fn⌃", false
-        )
+        assert!(status_message(&StatusInputs {
+            recording: true,
+            hands_free: true,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: false,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        })
+        .contains("Hands-free"));
+        assert!(status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: true,
+            engine_loading: false,
+            last_error: None,
+            model_ready: false,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        })
         .contains("Transcribing"));
-        let err = status_message(
-            false,
-            false,
-            false,
-            false,
-            Some("boom"),
-            true,
-            true,
-            false,
-            "fn⌃",
-            false,
-        );
+        let err = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: Some("boom"),
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert_eq!(err, "Error: boom");
     }
 
@@ -7974,45 +8050,81 @@ mod tests {
     // idle line must never keep advertising the key — it must name the cause.
     #[test]
     fn status_reports_secure_input_instead_of_advertising_the_dead_hotkey() {
-        let blocked = status_message(
-            false, false, false, false, None, true, true, true, "fn⌃", false,
-        );
+        let blocked = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: true,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert_eq!(blocked, crate::secure_input::BLOCKED_MESSAGE);
         assert!(!blocked.contains("Ready"), "{blocked}");
 
         // It also outranks the model gate — pointing a user at a download does
         // not fix a keyboard they cannot reach the app with.
-        let blocked_no_model = status_message(
-            false, false, false, false, None, false, true, true, "fn⌃", false,
-        );
+        let blocked_no_model = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: false,
+            accessibility: true,
+            secure_input_blocked: true,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert_eq!(blocked_no_model, crate::secure_input::BLOCKED_MESSAGE);
 
         // But a live take and a real error still win: those describe what just
         // happened, not an instruction the user cannot follow.
-        assert!(
-            status_message(true, false, false, false, None, true, true, true, "fn⌃", false)
-                .contains("Recording")
-        );
+        assert!(status_message(&StatusInputs {
+            recording: true,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: true,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        })
+        .contains("Recording"));
         assert_eq!(
-            status_message(
-                false,
-                false,
-                false,
-                false,
-                Some("boom"),
-                true,
-                true,
-                true,
-                "fn⌃",
-                false
-            ),
+            status_message(&StatusInputs {
+                recording: false,
+                hands_free: false,
+                busy: false,
+                engine_loading: false,
+                last_error: Some("boom"),
+                model_ready: true,
+                accessibility: true,
+                secure_input_blocked: true,
+                ptt: "fn⌃",
+                session_cap_warned: false,
+            }),
             "Error: boom"
         );
 
         // Cleared → straight back to the normal Ready line.
-        assert!(status_message(
-            false, false, false, false, None, true, true, false, "fn⌃", false
-        )
+        assert!(status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: false,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        })
         .starts_with("Ready — hold fn⌃"));
     }
 
@@ -8119,22 +8231,49 @@ mod tests {
     /// been decoded yet is the dead air this replaces.
     #[test]
     fn busy_says_preparing_while_the_engine_is_still_loading() {
-        let loading = status_message(
-            false, false, true, true, None, true, true, false, "fn⌃", false,
-        );
+        let loading = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: true,
+            engine_loading: true,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert_eq!(loading, ENGINE_PREPARING_MESSAGE);
 
         // Once it is resident the same busy take reads as a decode again.
-        let decoding = status_message(
-            false, false, true, false, None, true, true, false, "fn⌃", false,
-        );
+        let decoding = status_message(&StatusInputs {
+            recording: false,
+            hands_free: false,
+            busy: true,
+            engine_loading: false,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert!(decoding.contains("Transcribing"), "{decoding}");
 
         // A load that overlaps the hold is invisible: the user is talking, and
         // the recording line is still the true one.
-        let recording = status_message(
-            true, false, false, true, None, true, true, false, "fn⌃", false,
-        );
+        let recording = status_message(&StatusInputs {
+            recording: true,
+            hands_free: false,
+            busy: false,
+            engine_loading: true,
+            last_error: None,
+            model_ready: true,
+            accessibility: true,
+            secure_input_blocked: false,
+            ptt: "fn⌃",
+            session_cap_warned: false,
+        });
         assert!(recording.contains("Recording"), "{recording}");
     }
 
@@ -8179,9 +8318,11 @@ mod tests {
         assert_eq!(parsed.companion_tone, "friendly");
 
         // A finished onboarding round-trips (camelCase key on the wire).
-        let mut done = AppSettings::default();
-        done.onboarded = true;
-        done.calibration_sample = Some("the quick brown fox".into());
+        let done = AppSettings {
+            onboarded: true,
+            calibration_sample: Some("the quick brown fox".into()),
+            ..AppSettings::default()
+        };
         let json = serde_json::to_string(&done).expect("serialize");
         assert!(json.contains("\"onboarded\":true"));
         assert!(json.contains("\"calibrationSample\":\"the quick brown fox\""));
@@ -8193,8 +8334,10 @@ mod tests {
         );
 
         // YV27: a chosen companion tone round-trips on the camelCase wire key.
-        let mut toned = AppSettings::default();
-        toned.companion_tone = "rude".into();
+        let toned = AppSettings {
+            companion_tone: "rude".into(),
+            ..AppSettings::default()
+        };
         let tjson = serde_json::to_string(&toned).expect("serialize tone");
         assert!(tjson.contains("\"companionTone\":\"rude\""));
         let tback: AppSettings = serde_json::from_str(&tjson).expect("tone round-trip");
@@ -8206,8 +8349,10 @@ mod tests {
         let recommended = crate::models::recommended_model().id.clone();
         assert_eq!(AppSettings::default().native_model, recommended);
         assert_eq!(parsed.native_model, recommended);
-        let mut native = AppSettings::default();
-        native.native_model = "handy-computer/whisper-tiny-gguf".into();
+        let native = AppSettings {
+            native_model: "handy-computer/whisper-tiny-gguf".into(),
+            ..AppSettings::default()
+        };
         let njson = serde_json::to_string(&native).expect("serialize native model");
         assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
         let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
@@ -8234,8 +8379,10 @@ mod tests {
             "a pre-YV42 store must not enable autostart"
         );
 
-        let mut on = AppSettings::default();
-        on.autostart = true;
+        let on = AppSettings {
+            autostart: true,
+            ..AppSettings::default()
+        };
         let json = serde_json::to_string(&on).expect("serialize autostart");
         assert!(json.contains("\"autostart\":true"));
         let back: AppSettings = serde_json::from_str(&json).expect("autostart round-trip");
@@ -8269,8 +8416,10 @@ mod tests {
             "a pre-YV44 store must still get update notifications"
         );
 
-        let mut off = AppSettings::default();
-        off.check_updates = false;
+        let off = AppSettings {
+            check_updates: false,
+            ..AppSettings::default()
+        };
         let json = serde_json::to_string(&off).expect("serialize checkUpdates");
         assert!(json.contains("\"checkUpdates\":false"));
         let back: AppSettings = serde_json::from_str(&json).expect("checkUpdates round-trip");
@@ -8293,8 +8442,10 @@ mod tests {
         assert!(!update_is_skipped("0.7.1", Some("0.7.0")));
         assert!(!update_is_skipped("0.7.0", None));
 
-        let mut skipped = AppSettings::default();
-        skipped.skipped_update_version = Some("0.7.0".into());
+        let skipped = AppSettings {
+            skipped_update_version: Some("0.7.0".into()),
+            ..AppSettings::default()
+        };
         let json = serde_json::to_string(&skipped).expect("serialize skippedUpdateVersion");
         assert!(json.contains("\"skippedUpdateVersion\":\"0.7.0\""));
         let back: AppSettings = serde_json::from_str(&json).expect("skip round-trip");
@@ -8448,9 +8599,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut settings = AppSettings::default();
-        settings.language = "en".into();
-        settings.onboarded = true;
+        let settings = AppSettings {
+            language: "en".into(),
+            onboarded: true,
+            ..AppSettings::default()
+        };
         write_settings_file(&path, &settings).expect("atomic write");
 
         let on_disk: serde_json::Value =

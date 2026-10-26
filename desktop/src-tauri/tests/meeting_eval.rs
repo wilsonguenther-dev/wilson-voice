@@ -672,8 +672,8 @@ fn wer(reference: &[String], hypothesis: &[String]) -> WerReport {
     for i in 0..=r {
         d[i * w] = i as u32;
     }
-    for j in 0..=h {
-        d[j] = j as u32;
+    for (j, cell) in d.iter_mut().take(w).enumerate() {
+        *cell = j as u32;
     }
     for i in 1..=r {
         for j in 1..=h {
@@ -2348,11 +2348,6 @@ fn meeting_eval_device_change_fixture_is_ready_for_yv92() {
     eprintln!("{DEVICE_CHANGE}: format change at {at:.2}s, native halves present (YV92)");
 }
 
-/// YV92's aliasing arm (plan finding OS-8), run through the shipped pipeline.
-///
-/// The two decimators are compared on the ONE signal that can tell them apart:
-/// native-rate speech with broadband energy above the 8 kHz Nyquist, i.e. the
-/// far-field room noise a three-hour lecture recording is full of and a
 // ---------------------------------------------------------------------------
 // YV109 — fixture (d): the two-track ordering gate, and its negative controls
 // ---------------------------------------------------------------------------
@@ -2621,6 +2616,11 @@ fn meeting_eval_two_track_ordering_survives_the_clock_mismatch() {
     }
 }
 
+/// YV92's aliasing arm (plan finding OS-8), run through the shipped pipeline.
+///
+/// The two decimators are compared on the ONE signal that can tell them apart:
+/// native-rate speech with broadband energy above the 8 kHz Nyquist, i.e. the
+/// far-field room noise a three-hour lecture recording is full of and a
 /// five-second close-mic dictation is not. Under pure linear interpolation that
 /// band folds into 0–8 kHz with single-digit-dB rejection and the WER that comes
 /// back gets blamed on the model; under the anti-aliased decimator it is gone

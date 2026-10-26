@@ -1,0 +1,9 @@
+# Y0-A: one Rust toolchain for the loop lanes, Wilson's checkout and CI.
+# clippy runs with `-D warnings` in CI, so the clippy that gates a PR must be
+# the clippy a lane ran locally. CI's dtolnay/rust-toolchain tag in
+# .github/workflows/ci.yml must equal `channel`; bump both together, with any
+# lints the new release adds fixed in the same commit.
+[toolchain]
+channel = "1.94.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
