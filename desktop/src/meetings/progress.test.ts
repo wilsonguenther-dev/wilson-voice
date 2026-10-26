@@ -35,6 +35,12 @@ describe("meeting progress", () => {
     expect(canRetry("complete")).toBe(false);
     expect(canRetry("transcribing")).toBe(false);
   });
+  it("waiting_for_model (yap24-NT2 R3) names the wait and is not a Retry state", () => {
+    expect(meetingStateLabel("waiting_for_model", undefined, false)).toBe(
+      "Waiting for the speech model",
+    );
+    expect(canRetry("waiting_for_model")).toBe(false);
+  });
 });
 
 describe("yap-uiux-2026-10-16-M1 — transcribing rows report how far they got", () => {

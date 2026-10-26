@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -145,6 +145,11 @@ pub enum MeetingState {
     /// Some chunks landed, some did not — the honest outcome of YV93's
     /// per-chunk timeout isolation.
     Partial,
+    /// yap24-NT2 R3 — the pinned meeting model is configured but its file is
+    /// not on disk (a fresh or offline install). The audio is KEPT (retention
+    /// only purges `complete`) and the row re-enters the pipeline when a model
+    /// download completes, or at the next launch. Never a permanent `failed`.
+    WaitingForModel,
 }
 
 impl MeetingState {
@@ -156,6 +161,7 @@ impl MeetingState {
             MeetingState::Complete => "complete",
             MeetingState::Failed => "failed",
             MeetingState::Partial => "partial",
+            MeetingState::WaitingForModel => "waiting_for_model",
         }
     }
 
@@ -167,6 +173,7 @@ impl MeetingState {
             "complete" => MeetingState::Complete,
             "failed" => MeetingState::Failed,
             "partial" => MeetingState::Partial,
+            "waiting_for_model" => MeetingState::WaitingForModel,
             _ => return None,
         })
     }
@@ -849,6 +856,17 @@ pub const CLUSTER_INDEX_COLUMN: &str = "cluster_index";
 /// transaction.
 pub const MIGRATION_5_CLUSTER_INDEX: &str = r#"
 ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
+"#;
+
+/// yap24-NT2 R4 — which ASR model transcribed this meeting (catalog id).
+///
+/// Meeting ASR is pinned to the catalog's recommended model; this column is
+/// the record of that, so retention (yap24-NT1) can refuse to purge audio a
+/// non-pinned model transcribed, and a resume can refuse to splice two models'
+/// output into one transcript. NULL means "not transcribed yet" (or a row
+/// written before this migration).
+pub const MIGRATION_6_ASR_MODEL: &str = r#"
+ALTER TABLE meetings ADD COLUMN asr_model TEXT;
 "#;
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one

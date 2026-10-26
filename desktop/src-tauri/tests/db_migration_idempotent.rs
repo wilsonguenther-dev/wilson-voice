@@ -21,7 +21,8 @@ use support::{open_db, temp_dir};
 /// `tap_rebuilds`, `meeting_segments.track`). 4 = YV125's `meetings.kind`, the
 /// column the diarization branch reads. 5 = YV126's
 /// `meeting_segments.cluster_index`, which is where the branch's ANSWER lands.
-const EXPECTED_VERSION: i64 = 5;
+/// 6 = yap24-NT2's `meetings.asr_model`, the model that transcribed the row.
+const EXPECTED_VERSION: i64 = 6;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -33,6 +34,9 @@ const EXPECTED_VERSION: i64 = 5;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 6 {
+        sql.push_str("ALTER TABLE meetings DROP COLUMN asr_model;\n");
+    }
     if version < 5 {
         sql.push_str("ALTER TABLE meeting_segments DROP COLUMN cluster_index;\n");
     }
@@ -639,7 +643,7 @@ fn migration_five_adds_cluster_index_without_touching_existing_rows() {
 /// at every rung — the upgrade a user who skipped four releases performs.
 #[test]
 fn a_database_from_every_rung_climbs_to_five() {
-    for from in 1..=5i64 {
+    for from in 1..=EXPECTED_VERSION {
         let dir = temp_dir(&format!("ladder-from-{from}"));
         let path = dir.join("wilson_voice.db");
         let id = {

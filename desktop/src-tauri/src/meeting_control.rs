@@ -1332,6 +1332,9 @@ pub fn reconcile_stranded_meetings(
             MeetingState::Partial => m.segment_count == 0,
             // Nothing is recording at launch, so this row is a crash.
             MeetingState::Recording => true,
+            // yap24-NT2 R3: the model may have been downloaded while Yap was
+            // closed — the job re-checks, and waits again if it is still absent.
+            MeetingState::WaitingForModel => true,
             MeetingState::Complete | MeetingState::Failed => false,
         };
         if !stranded {

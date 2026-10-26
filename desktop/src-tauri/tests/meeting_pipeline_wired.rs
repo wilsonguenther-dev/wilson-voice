@@ -22,7 +22,8 @@ use wilson_voice_lib::meeting_control::{
     MeetingStatus, StatusSink,
 };
 use wilson_voice_lib::meeting_pipeline::{
-    self, run_meeting_job, MeetingProgressEvent, PipelineDeps, MIC_TRACK, SYSTEM_TRACK,
+    self, run_meeting_job, MeetingEngine, MeetingProgressEvent, PipelineDeps, MIC_TRACK,
+    SYSTEM_TRACK,
 };
 use wilson_voice_lib::meetings::{MeetingKind, MeetingState};
 
@@ -108,9 +109,12 @@ fn deps(
         db,
         progress_dir: dir.to_path_buf(),
         asr: Arc::new(move || {
-            Ok(Box::new(StubAsr {
-                calls: Arc::clone(&calls),
-            }) as Box<dyn ChunkAsr>)
+            Ok(MeetingEngine::new(
+                "stub-asr",
+                Box::new(StubAsr {
+                    calls: Arc::clone(&calls),
+                }),
+            ))
         }),
         demand: Arc::new(NoDemand),
         quit: Arc::new(move || match quit_after {
@@ -120,6 +124,7 @@ fn deps(
         sink: Arc::new(move |e: &MeetingProgressEvent| events.lock().unwrap().push(e.clone())),
         after_transcript: None,
         config: small_windows(),
+        start_delay: Duration::ZERO,
     }
 }
 

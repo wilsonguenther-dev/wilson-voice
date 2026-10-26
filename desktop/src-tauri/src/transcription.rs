@@ -503,6 +503,11 @@ struct Inner {
     /// dictation coming without the engine mutex having any fairness at all.
     /// Raised BEFORE the engine is taken, dropped only once it is back.
     interactive_waiting: AtomicU64,
+    /// yap24-NT2 R1 — a dictation is RECORDING right now (the mic is open, the
+    /// take has not reached the engine yet). Meeting ASR stands down for it
+    /// like it does for a decode, and — unlike a decode claim — the time it
+    /// spends standing down never counts toward `MeetingAsrConfig::max_yield`.
+    live_recording: AtomicBool,
     /// Y3-D — the STICKY user-cancel latch for the take that is decoding now.
     ///
     /// `InFlight::discard` is consumed per decode (`*slot = None`), so it can
@@ -576,6 +581,7 @@ impl TranscriptionManager {
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 interactive_waiting: AtomicU64::new(0),
+                live_recording: AtomicBool::new(false),
                 user_cancelled: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
@@ -906,6 +912,20 @@ impl TranscriptionManager {
     /// this at every chunk boundary and stands down until it clears.
     pub fn interactive_pending(&self) -> bool {
         self.inner.interactive_waiting.load(Ordering::Acquire) != 0
+    }
+
+    /// yap24-NT2 R1 — the dictation path opened (`true`) or closed (`false`)
+    /// the microphone for a take. Set by lib.rs exactly where
+    /// `AppState::recording` flips.
+    pub fn set_live_recording(&self, recording: bool) {
+        self.inner
+            .live_recording
+            .store(recording, Ordering::Release);
+    }
+
+    /// True while a dictation take is being recorded.
+    pub fn live_recording(&self) -> bool {
+        self.inner.live_recording.load(Ordering::Acquire)
     }
 
     fn claim_interactive(&self) -> InteractiveClaim {

@@ -1717,6 +1717,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // to THIS take and never leaks in from the last one.
             *state.session_cap_warned.lock() = false;
             *state.recording.lock() = true;
+            // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+            state.transcription.set_live_recording(true);
             // YV95 — the pill's hover watch must keep its fast cadence for a
             // take even when a meeting is recording underneath it.
             float_pill::set_dictating(true);
@@ -1925,6 +1927,8 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
         return;
     }
     *state.recording.lock() = false;
+    // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+    state.transcription.set_live_recording(false);
     float_pill::set_dictating(false);
     *state.hands_free.lock() = false;
     // YV49: a cancelled command press must not leave its selection armed for
@@ -2337,6 +2341,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         return;
     }
     *state.recording.lock() = false;
+    // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+    state.transcription.set_live_recording(false);
     float_pill::set_dictating(false);
     // YV28: un-mute the Mac immediately on release — restore the exact prior
     // mute + volume BEFORE the (async) transcription so audio comes right back.
@@ -6420,6 +6426,14 @@ async fn list_models(state: State<'_, Arc<AppState>>) -> Result<Vec<ModelEntry>,
 async fn download_model(app: AppHandle, id: String) -> Result<String, String> {
     let path = models::download_model(&app, &id).await?;
     log::info!("model '{id}' downloaded to {}", path.display());
+    // yap24-NT2 R3 — the model-download-complete event: every meeting that
+    // was waiting for a model goes back on the queue (it re-checks the pinned
+    // model, and waits again if this download was a different one).
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        meeting_pipeline::requeue_waiting_for_model(&state.db, &|mid| {
+            meeting_pipeline::enqueue(mid);
+        });
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -7161,24 +7175,31 @@ pub fn run() {
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
+            // yap24-NT2 R4: meeting ASR is PINNED to the catalog's recommended
+            // model (parakeet Q8_0), never "whatever the dictation setting
+            // selects" — an interim whisper-tiny selection must never become
+            // the model a meeting is permanently transcribed by. R3: the pinned
+            // model missing from disk is `waiting_for_model`, not `failed`.
             asr: Arc::new(move || {
-                let (native, language) = {
-                    let s = asr_state.settings.lock();
-                    (s.native_model.clone(), s.language.clone())
-                };
-                let (model_id, model_path) = native_model_ready(&native).ok_or_else(|| {
-                    "No speech model is downloaded yet — get one in Settings, then press Retry."
-                        .to_string()
+                let language = asr_state.settings.lock().language.clone();
+                let pinned = models::recommended_model();
+                meeting_asr::meeting_availability(Some(&pinned.id), Some(&language))
+                    .map_err(|e| meeting_pipeline::AsrUnavailable::Refused(e.message()))?;
+                let (model_id, model_path) = native_model_ready(&pinned.id).ok_or_else(|| {
+                    meeting_pipeline::AsrUnavailable::ModelMissing {
+                        model_id: pinned.id.clone(),
+                    }
                 })?;
-                meeting_asr::meeting_availability(Some(&model_id), Some(&language))
-                    .map_err(|e| e.message())?;
-                Ok(Box::new(meeting_asr::WarmEngineChunkAsr::new(
-                    asr_state.transcription.clone(),
-                    model_id,
-                    model_path,
-                    Some("en".to_string()),
-                    None,
-                )) as Box<dyn meeting_asr::ChunkAsr>)
+                Ok(meeting_pipeline::MeetingEngine::new(
+                    model_id.clone(),
+                    Box::new(meeting_asr::WarmEngineChunkAsr::new(
+                        asr_state.transcription.clone(),
+                        model_id,
+                        model_path,
+                        Some("en".to_string()),
+                        None,
+                    )),
+                ))
             }),
             demand: Arc::new(state.transcription.clone()),
             quit: Arc::new(|| false),
@@ -7191,6 +7212,9 @@ pub fn run() {
                 auto_summarize_meeting(&sum_state, id)
             })),
             config: meeting_asr::MeetingAsrConfig::default(),
+            // yap24-NT2 R2: the launch-time requeue starts after the dictation
+            // engine's first warm-up, never racing it.
+            start_delay: meeting_pipeline::QUEUE_START_DELAY,
         };
         meeting_pipeline::install(meeting_pipeline::spawn(deps));
         let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &|id| {
