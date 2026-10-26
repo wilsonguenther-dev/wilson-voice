@@ -4,6 +4,7 @@ import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
 import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
@@ -132,7 +133,7 @@ export default function Home() {
                   data-empty-state="home:history"
                   glyph={<WaveGlyph />}
                   title="Grant permissions to start dictating"
-                  body={`Yap needs ${missingGrants.join(" and ")} before it can hear you and type for you. Grant ${missingGrants.length > 1 ? "them" : "it"}, then hold fn⌃ and talk.`}
+                  body={nameProduct(`Yap needs ${missingGrants.join(" and ")} before it can hear you and type for you. Grant ${missingGrants.length > 1 ? "them" : "it"}, then hold fn⌃ and talk.`, perms?.productName)}
                   actionLabel="Grant permissions"
                   onAction={() => setNav("permissions")}
                 />

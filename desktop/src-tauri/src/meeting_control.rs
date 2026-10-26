@@ -1024,7 +1024,7 @@ pub fn start_capture_session(
     Ok(Box::new(SessionCapture {
         session: Some(session),
         pump,
-        badge: plan.badge().map(str::to_string),
+        badge: plan.badge().map(crate::permissions::named),
         db,
     }))
 }

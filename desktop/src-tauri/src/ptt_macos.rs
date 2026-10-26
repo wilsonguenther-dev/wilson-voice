@@ -866,7 +866,9 @@ fn run_tap(state: Arc<TapState>) {
             log::error!("FN PTT: {e}");
             // yap-p0-hotkeys-no-permission: attempted, nothing delivered. The
             // next permission-watch edge retries (RUNNING is cleared below).
-            set_fn_tap_status(FnTapStatus::Blocked(TAP_BLOCKED_REASON.into()));
+            set_fn_tap_status(FnTapStatus::Blocked(crate::permissions::named(
+                TAP_BLOCKED_REASON,
+            )));
             RUNNING.store(false, Ordering::SeqCst);
             TAP_USER_INFO.store(std::ptr::null_mut(), Ordering::SeqCst);
             let _ = Arc::from_raw(user_info as *const TapState);
@@ -1379,7 +1381,9 @@ unsafe fn recreate_tap(user_info: *mut std::ffi::c_void) -> bool {
         }
         Err(e) => {
             log::error!("FN PTT: tap recreate FAILED: {e}");
-            set_fn_tap_status(FnTapStatus::Blocked(TAP_BLOCKED_REASON.into()));
+            set_fn_tap_status(FnTapStatus::Blocked(crate::permissions::named(
+                TAP_BLOCKED_REASON,
+            )));
             false
         }
     }

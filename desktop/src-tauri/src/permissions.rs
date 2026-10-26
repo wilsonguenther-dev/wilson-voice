@@ -226,6 +226,15 @@ pub fn name_product_in_report(report: &mut PermissionReport, product: &str) {
     }
 }
 
+/// [`name_product`] for THIS process: the one way a permission sentence built
+/// outside [`report`] (a notification, a record error, a paste card, the fn
+/// tap's blocked reason) names the running product. Same source of truth as
+/// `PermissionReport.product_name` (`perm_truth::product_name`). A no-op in
+/// the shipped "Yap" build.
+pub fn named(text: &str) -> String {
+    name_product(text, &crate::perm_truth::product_name())
+}
+
 /// Replace every whole-word "Yap" in `text` with `product`, idempotently: an
 /// occurrence that already reads as `product` (main's #249 names Input
 /// Monitoring and stale-grant lines at the source, "Yap Test") is left as-is,
@@ -963,7 +972,7 @@ pub fn paste_failure_detail(accessibility_trusted: bool, fallback: &str) -> Stri
     if accessibility_trusted {
         fallback.to_string()
     } else {
-        ACCESSIBILITY_OFF_DETAIL.to_string()
+        named(ACCESSIBILITY_OFF_DETAIL)
     }
 }
 
@@ -1043,4 +1052,67 @@ pub fn request_accessibility_prompt() -> bool {
 
 pub fn is_accessibility_trusted() -> bool {
     crate::perm_probe::accessibility_trusted()
+}
+
+#[cfg(test)]
+mod product_name_tests {
+    //! yap-test-channel-product-name — every permission sentence built OUTSIDE
+    //! `report()` goes through `named()` (= `name_product` with this process's
+    //! product). These are those sentences: in a "Yap Test" build each must name
+    //! "Yap Test" and leave no bare "Yap" that points at the wrong TCC row.
+    use super::name_product;
+
+    fn bare_yap_left(s: &str) -> bool {
+        let without = s.replace("Yap Test", "");
+        let b = without.as_bytes();
+        without.match_indices("Yap").any(|(i, _)| {
+            let before = i.checked_sub(1).map(|j| b[j]);
+            let after = b.get(i + 3).copied();
+            let word = |c: Option<u8>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_');
+            !word(before) && !word(after)
+        })
+    }
+
+    #[test]
+    fn permission_sentences_outside_the_report_name_the_test_product() {
+        let sentences: &[(&str, &str)] = &[
+            ("lib MIC_REQUIRED_MESSAGE", crate::MIC_REQUIRED_MESSAGE),
+            ("lib SILENT_CAPTURE_PERMISSION_MESSAGE", crate::SILENT_CAPTURE_PERMISSION_MESSAGE),
+            ("record NO_MIC_ERR", crate::record::NO_MIC_ERR),
+            ("record NO_SAMPLES_ERR", crate::record::NO_SAMPLES_ERR),
+            ("record NO_AUDIO_ERR", crate::record::NO_AUDIO_ERR),
+            ("ptt_macos TAP_BLOCKED_REASON", crate::ptt_macos::TAP_BLOCKED_REASON),
+            ("permissions ACCESSIBILITY_OFF_DETAIL", super::ACCESSIBILITY_OFF_DETAIL),
+            ("record too-short", "Audio too short (120 ms) — hold longer, or allow Microphone for Yap."),
+            ("record timeout", "Microphone open timed out after 3000ms — check Yap's Microphone permission under System Settings → Privacy."),
+            ("record config", "Mic config failed (x). Enable Microphone for Yap (not Python) in System Settings."),
+            ("record start", "mic start failed (x). Allow Microphone for Yap."),
+            ("paste copy card", "PostEvent and Accessibility are both off for Yap, so it cannot type into this app"),
+            ("paste edit selection", "Accessibility is off for Yap — Repair to let me edit your selection."),
+            ("hotkeys armed-no-delivery", "macOS is not delivering key events to Yap (Input Monitoring is off)"),
+            ("meeting badge looks-denied", crate::syscapture::LOOKS_DENIED_MESSAGE),
+            ("meeting badge setup-failed", crate::syscapture::SETUP_FAILED_MESSAGE),
+        ];
+        for (name, raw) in sentences {
+            assert!(
+                bare_yap_left(raw),
+                "{name}: fixture must start with a bare Yap: {raw:?}"
+            );
+            let named = name_product(raw, "Yap Test");
+            assert!(
+                named.contains("Yap Test"),
+                "{name}: {named:?} does not name Yap Test"
+            );
+            assert!(
+                !bare_yap_left(&named),
+                "{name}: {named:?} still names a bare Yap"
+            );
+            // Shipped build: untouched.
+            assert_eq!(
+                name_product(raw, "Yap"),
+                *raw,
+                "{name}: changed in the Yap build"
+            );
+        }
+    }
 }

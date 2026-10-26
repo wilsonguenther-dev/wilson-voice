@@ -556,10 +556,10 @@ pub fn finish_recording(
     if samples.len() < MIN_CLIP_SAMPLES {
         // Sub-second tap: no wav was ever written for it (the recovery write is
         // spawned below, after the take is known good), so nothing to clean up.
-        return Err(format!(
+        return Err(crate::permissions::named(&format!(
             "Audio too short ({} ms) — hold longer, or allow Microphone for Yap.",
             samples.len() * 1000 / TARGET_RATE as usize
-        ));
+        )));
     }
     // WPM denominator = real voiced time. Fall back to the raw clip length only
     // when VAD can't find speech (near-silent capture) so WPM never divides by ~0.
@@ -1575,9 +1575,10 @@ const WATCHDOG_TICK: Duration = Duration::from_secs(60);
 /// How long `end` waits for the consumer to finish the take's tail (YV91).
 const CONSUMER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
-const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
-const NO_SAMPLES_ERR: &str = "No samples captured. Enable Microphone for Yap in System Settings.";
-const NO_AUDIO_ERR: &str = "No audio captured — click Allow once for Microphone (Yap) in the system dialog, then enable it under System Settings → Privacy → Microphone.";
+pub(crate) const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
+pub(crate) const NO_SAMPLES_ERR: &str =
+    "No samples captured. Enable Microphone for Yap in System Settings.";
+pub(crate) const NO_AUDIO_ERR: &str = "No audio captured — click Allow once for Microphone (Yap) in the system dialog, then enable it under System Settings → Privacy → Microphone.";
 
 /// One take as it comes off the capture worker. Since YV37 the frames are
 /// already downmixed, high-passed and resampled to 16 kHz *during* capture, so
@@ -1684,10 +1685,10 @@ fn await_reply<T>(
     match rx.recv_timeout(timeout) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(e),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(crate::permissions::named(&format!(
             "Microphone {what} timed out after {}ms — check Yap's Microphone permission under System Settings → Privacy.",
             timeout.as_millis()
-        )),
+        ))),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err(format!("Microphone {what} failed — capture worker stopped."))
         }
@@ -2039,7 +2040,7 @@ pub fn hold_stream_for_meeting() -> Result<InputFormat, String> {
     dispatch(CaptureCmd::Hold { reply: reply_tx })?;
     reply_rx
         .recv_timeout(ARM_TIMEOUT)
-        .map_err(|_| NO_MIC_ERR.to_string())?
+        .map_err(|_| crate::permissions::named(NO_MIC_ERR))?
 }
 
 /// Release the meeting's hold. The stream stays open until the ordinary idle
@@ -2138,7 +2139,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     // it HERE, on the take it actually truncated — and still
                     // hand back every sample that was captured.
                     Some(stream) => Ok(mark_device_failure(stream.end(), stream.has_failed())),
-                    None => Err(NO_SAMPLES_ERR.to_string()),
+                    None => Err(crate::permissions::named(NO_SAMPLES_ERR)),
                 };
                 let _ = reply.send(captured);
             }
@@ -2500,7 +2501,7 @@ fn default_input_device() -> Result<(cpal::Device, String), String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
-        .ok_or_else(|| NO_MIC_ERR.to_string())?;
+        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))?;
     let name = device
         .description()
         .map(|d| d.name().to_string())
@@ -2535,7 +2536,9 @@ fn open_stream_into(
         device,
         |device| {
             device.default_input_config().map_err(|e| {
-                format!("Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings.")
+                crate::permissions::named(&format!(
+                    "Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings."
+                ))
             })
         },
     )?;
@@ -2586,7 +2589,9 @@ fn open_stream_into(
     };
     if let Err(e) = stream.play() {
         cache.invalidate();
-        return Err(format!("mic start failed ({e}). Allow Microphone for Yap."));
+        return Err(crate::permissions::named(&format!(
+            "mic start failed ({e}). Allow Microphone for Yap."
+        )));
     }
 
     log::info!(
@@ -3345,7 +3350,7 @@ fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, Str
         None => samples,
     };
     if streamed.is_empty() {
-        return Err(NO_AUDIO_ERR.into());
+        return Err(crate::permissions::named(NO_AUDIO_ERR));
     }
     let leveled = if streamed.iter().any(|s| !s.is_finite()) {
         // The streamed chain produced garbage. Pre-Y3 this rebuilt the clip
@@ -3378,7 +3383,7 @@ fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, Str
         faded
     };
     if out.is_empty() {
-        return Err(NO_AUDIO_ERR.into());
+        return Err(crate::permissions::named(NO_AUDIO_ERR));
     }
     Ok(out)
 }
@@ -3950,10 +3955,10 @@ mod tests {
     #[test]
     fn arm_signal_surfaces_worker_errors_verbatim() {
         let (tx, rx) = mpsc::sync_channel::<Result<u8, String>>(1);
-        tx.send(Err(NO_MIC_ERR.to_string())).unwrap();
+        tx.send(Err(crate::permissions::named(NO_MIC_ERR))).unwrap();
         assert_eq!(
             await_reply(&rx, Duration::from_secs(3), "arm"),
-            Err(NO_MIC_ERR.to_string()),
+            Err(crate::permissions::named(NO_MIC_ERR)),
             "a mic/permission failure must reach the user unchanged"
         );
     }

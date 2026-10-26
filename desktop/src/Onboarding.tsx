@@ -15,6 +15,7 @@ import type { ProbeReport } from "./permissionRepair";
 import {
   deriveMicStatus,
   micIsUsable,
+  nameProduct,
   permissionAction,
   permissionCopy,
   type MicPermissionStatus,
@@ -357,7 +358,7 @@ export default function Onboarding({
     asked: micAsked,
   });
   const micOk = micIsUsable(micStatus);
-  const micCopy = permissionCopy(micStatus);
+  const micCopy = permissionCopy(micStatus, perms?.productName);
   const micAction = permissionAction(micStatus);
   const axOk = !!perms?.accessibility;
   const modelReady = modelSetup.ready;
@@ -433,7 +434,7 @@ export default function Onboarding({
           <div className="onboard-step">
             <h1>Grant permissions</h1>
             <p className="onboard-lede">
-              macOS must allow <strong>Yap</strong> itself to use these. Status
+              macOS must allow <strong>{nameProduct("Yap", perms?.productName)}</strong> itself to use these. Status
               updates live as you enable each one.
             </p>
             <ul className="onboard-perms">
@@ -465,7 +466,7 @@ export default function Onboarding({
                 <StatusDot ok={axOk} />
                 <div>
                   <strong>Accessibility</strong>
-                  <p>Lets Yap paste text into any app (simulated ⌘V).</p>
+                  <p>{nameProduct("Lets Yap paste text into any app (simulated ⌘V).", perms?.productName)}</p>
                   <button onClick={requestAccessibility}>
                     {axOk ? "Granted ✓" : "Prompt Accessibility"}
                   </button>

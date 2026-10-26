@@ -594,8 +594,9 @@ pub fn insert_traced(
             b,
             text,
             CopyCardReason::NoPermission,
-            "PostEvent and Accessibility are both off for Yap, so it cannot type into this app"
-                .into(),
+            crate::permissions::named(
+                "PostEvent and Accessibility are both off for Yap, so it cannot type into this app",
+            ),
         );
         return (out, trace);
     }
@@ -736,7 +737,9 @@ pub fn delete_with(
         return PasteOutcome {
             copied: false,
             pasted: false,
-            message: "Accessibility is off for Yap — Repair to let me edit your selection.".into(),
+            message: crate::permissions::named(
+                "Accessibility is off for Yap — Repair to let me edit your selection.",
+            ),
         };
     }
     if let Some(started_in) = source_app {

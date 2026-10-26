@@ -10,6 +10,7 @@
 // are pure; the only side effects are the two invokes at the bottom.
 
 import { invoke } from "@tauri-apps/api/core";
+import { nameProduct } from "./permission";
 
 /** `perm_probe::ProbeState`, verbatim off the wire. */
 export type ProbeState = "granted" | "denied" | "not_determined" | "stale_identity" | "unknown";
@@ -38,14 +39,9 @@ export interface ProbeReport {
   signatureChanged: boolean;
 }
 
-/**
- * fix-ax-probe-refresh — permission copy names the running product ("Yap Test"
- * on the test channel), because that is the name System Settings lists. Pure.
- */
-export function nameProduct(text: string, product?: string | null): string {
-  const p = product?.trim();
-  return p && p !== "Yap" ? text.replace(/\bYap\b(?! Test)/g, p) : text;
-}
+// fix-ax-probe-refresh — the one renaming function lives in the pure
+// `permission` module; re-exported so existing importers keep working.
+export { nameProduct } from "./permission";
 
 /** What one Repair click did (`perm_probe::RepairOutcome`). */
 export interface RepairOutcome {
