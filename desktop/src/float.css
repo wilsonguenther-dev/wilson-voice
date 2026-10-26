@@ -857,6 +857,13 @@ html[data-dock="right"] .phase-strip {
   overflow: hidden;
   user-select: text;
 }
+/* yap-insert-bridge-2026-10-26 DO 5: which permission blocks insertion. */
+.copy-card-blocked {
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffb4a8;
+}
 .copy-card-hint {
   margin: 3px 0 5px;
   font-size: 11px;
