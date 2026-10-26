@@ -17,7 +17,7 @@
     "loop:validate": "node ../scripts/loop/build.mjs --validate-only",
     "smoke:windowed": "bash ../scripts/smoke-windowed.sh",
     "test-build": "bash ../scripts/test-build.sh",
-    "test-build:test": "bash ../scripts/test-build.test.sh"
+    "test-build:test": "bash ../scripts/test-build.test.sh && bash ../scripts/sign-local.test.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

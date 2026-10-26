@@ -28,14 +28,46 @@
 #   scripts/sign-local.sh --tauri-build ...  resolve the identity, hand it to
 #                                            `tauri build` as APPLE_SIGNING_IDENTITY,
 #                                            then verify what came out
+#   scripts/sign-local.sh --which-app        print the bundle the default/--tauri-build
+#                                            modes would sign/verify, sign nothing
+#
+# BUNDLE SELECTION IS BY EXACT NAME. The release bundle is "<productName>.app"
+# from tauri.conf.json, and its CFBundleIdentifier must be the production
+# identifier. Never "the first *.app in the directory": scripts/test-build.sh
+# builds "Yap Test.app" into the same CARGO_TARGET_DIR, and "Yap Test.app"
+# sorts before "Yap.app", so a glob + head -1 verified the TEST bundle and
+# never looked at the one that goes into the DMG (PR #238 review, BLOCKING 1).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DESKTOP="$ROOT/desktop"
 SRC="$DESKTOP/src-tauri"
 ENT="$SRC/Entitlements.plist"
+CONF="$SRC/tauri.conf.json"
 
 die() { echo "FATAL: $*" >&2; exit 1; }
+
+# The first top-level "productName"/"identifier" in tauri.conf.json (both are
+# top-level keys there and appear exactly once).
+conf_value() { sed -n "s/^  \"$1\": *\"\([^\"]*\)\".*/\1/p" "$CONF" | head -1; }
+PRODUCT_NAME="$(conf_value productName)"
+PROD_IDENTIFIER="$(conf_value identifier)"
+[[ -n "$PRODUCT_NAME" && -n "$PROD_IDENTIFIER" ]] || die "could not read productName/identifier from $CONF"
+
+# release_app <target dir>... — the first "<dir>/release/bundle/macos/<productName>.app"
+# that exists, checked to carry the production bundle id. Prints nothing if none.
+release_app() {
+  local dir app id
+  for dir in "$@"; do
+    [[ -n "$dir" ]] || continue
+    app="$dir/release/bundle/macos/$PRODUCT_NAME.app"
+    [[ -d "$app" ]] || continue
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || true)"
+    [[ "$id" == "$PROD_IDENTIFIER" ]] || die "$app carries bundle id '${id:-<none>}', expected $PROD_IDENTIFIER — refusing to sign/verify it as the release bundle"
+    printf '%s\n' "$app"
+    return 0
+  done
+}
 
 # Mask the 10-character Apple team id so no log this repo produces carries it.
 redact() {
@@ -116,7 +148,15 @@ MODE="sign"
 case "${1:-}" in
   --identity)    MODE="identity"; shift ;;
   --tauri-build) MODE="build";    shift ;;
+  --which-app)   MODE="which";    shift ;;
 esac
+
+if [[ "$MODE" == "which" ]]; then
+  APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
+  [[ -n "$APP" ]] || die "no $PRODUCT_NAME.app under ${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos"
+  printf '%s\n' "$APP"
+  exit 0
+fi
 
 resolve_identity
 
@@ -130,17 +170,17 @@ if [[ "$MODE" == "build" ]]; then
   echo "${PROFILE} profile — tauri build will sign with: ${IDENTITY_CLASS}"
   cd "$DESKTOP"
   npx tauri build "$@"
-  APP="$(ls -d "$SRC/target/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || APP="$(ls -d "${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || die "tauri build produced no .app to verify."
+  # CARGO_TARGET_DIR first: that is where the workspace build writes, and a
+  # stale bundle under src-tauri/target must not stand in for the fresh one.
+  APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
+  [[ -n "$APP" ]] || die "tauri build produced no $PRODUCT_NAME.app to verify."
   verify_bundle "$APP"
   exit 0
 fi
 
 APP="${1:-}"
 if [[ -z "$APP" ]]; then
-  APP="$(ls -d "${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || APP="$(ls -d "$SRC/target/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
+  APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
 fi
 [[ -n "$APP" && -d "$APP" ]] || die "no .app bundle to sign (pass one explicitly: scripts/sign-local.sh '/path/to/Yap.app')"
 [[ -f "$ENT" ]] || die "entitlements not found at $ENT"

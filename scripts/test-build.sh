@@ -154,8 +154,20 @@ overlay_json > "$OVERLAY"
 ( cd "$D" && { [[ -d node_modules && node_modules/.package-lock.json -nt package-lock.json ]] || npm ci --no-audit --no-fund --prefer-offline; } )
 unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 export APPLE_SIGNING_IDENTITY="$IDENTITY" YAP_CHANNEL=test YAP_BUILD_SHA="$SHA" YAP_BUILD_BRANCH="$LABEL"
-( cd "$D" && npx tauri build --bundles app --config "$OVERLAY" )
 APP="$CARGO_TARGET_DIR/release/bundle/macos/$PRODUCT.app"
+# CARGO_TARGET_DIR is usually SHARED with release builds (loop lanes, an
+# exported dev cache). "Yap Test.app" must never outlive this script there:
+# scripts/sign-local.sh verifies the release bundle in that same directory, and
+# a stray test bundle next to Yap.app is one glob away from being verified (or
+# re-signed) in its place. Removed on every exit — success, die, or ^C — once
+# it has been copied to $APP_DEST (PR #238 review, BLOCKING 1).
+drop_test_bundle() {
+  [[ "$(basename "$APP")" == "$PRODUCT.app" && "$APP" == */release/bundle/macos/* ]] && rm -rf "$APP"
+  return 0
+}
+trap drop_test_bundle EXIT
+drop_test_bundle   # a leftover from an older run of this script
+( cd "$D" && npx tauri build --bundles app --config "$OVERLAY" )
 [[ -d "$APP" ]] || die "tauri build produced no $APP"
 
 # ---- 6. prove it is the TEST app before it goes anywhere near /Applications -
