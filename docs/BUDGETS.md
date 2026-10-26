@@ -275,6 +275,12 @@ Row change (2026-10-19, yap-ptt-capture-tail D4): record.rs `300:1 -> 300:2` is 
 the contract that a take stops capturing within 300 ms of its stop edge. It is a test budget, never
 slept on or polled with.
 
+Row change (2026-10-19, yap-lifecycle): lib.rs gains `600:1` and `900:1`. They are
+`EXIT_TAKE_TIMEOUT` and `EXIT_DRAIN_TIMEOUT`, which were 3 s each and are now cut to fit inside
+the quit's step deadlines (`lifecycle::QuitStep::deadline`, summing to `QUIT_BUDGET` = 3 s). Each
+is a one-shot bound on a wait that only happens at quit, not a polling interval; the 10 ms
+`EXIT_WAIT_POLL` that the take wait loops on was already in the row.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a

@@ -36,6 +36,16 @@ pub fn handle_args() -> Option<i32> {
         return Some(print_capabilities());
     }
     let timed = argv.iter().any(|a| a == TIMED_FLAG);
+    // yap-lifecycle DO 6 — `--soak <runs>` with `--transcribe-file`: one
+    // process, `runs` full load → transcribe → unload cycles (the lifecycle the
+    // app repeats for days: lazy load at a take, idle unload later).
+    let soak = match soak_runs(&argv) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("{e}");
+            return Some(2);
+        }
+    };
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         let wav = if arg == TRANSCRIBE_FILE_FLAG {
@@ -51,6 +61,9 @@ pub fn handle_args() -> Option<i32> {
         } else {
             continue;
         };
+        if let Some(runs) = soak {
+            return Some(soak_transcribe(Path::new(&wav), runs));
+        }
         return Some(transcribe_file(Path::new(&wav), timed));
     }
     None
@@ -91,6 +104,71 @@ fn transcribe_file(wav: &Path, timed: bool) -> i32 {
         }
         Err(e) => {
             eprintln!("transcribe failed: {e}");
+            1
+        }
+    }
+}
+
+const SOAK_FLAG: &str = "--soak";
+
+/// Parse `--soak <runs>` / `--soak=<runs>`. `Ok(None)` when absent.
+fn soak_runs(argv: &[String]) -> Result<Option<u32>, String> {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        let v = if a == SOAK_FLAG {
+            it.next().cloned()
+        } else if let Some(v) = a.strip_prefix(&format!("{SOAK_FLAG}=")) {
+            Some(v.to_string())
+        } else {
+            continue;
+        };
+        return match v.as_deref().map(str::parse::<u32>) {
+            Some(Ok(n)) if n > 0 => Ok(Some(n)),
+            _ => Err(format!("{SOAK_FLAG} requires a positive run count")),
+        };
+    }
+    Ok(None)
+}
+
+/// The headless soak: `runs` load → transcribe → unload cycles of the SAME
+/// `TranscriptionManager` the app holds. After each cycle it prints
+/// `soak iter=<n>` on stdout and then blocks for one line on stdin, so the
+/// soak script can sample this pid's RSS with `ps` at a quiet point (EOF on
+/// stdin means "don't wait"). Exit 0 only when every cycle produced text.
+fn soak_transcribe(wav: &Path, runs: u32) -> i32 {
+    use std::io::{BufRead, Write};
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+    let run = || -> Result<(), String> {
+        if !wav.is_file() {
+            return Err(format!("no such wav file: {}", wav.display()));
+        }
+        let samples = record::read_wav_16k_mono(wav)?;
+        let (model_id, model_path) = ensure_model()?;
+        let manager = TranscriptionManager::new();
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        for i in 1..=runs {
+            manager.load(&model_id, &model_path)?;
+            let text = manager.transcribe(samples.clone(), None, None)?;
+            if text.trim().is_empty() {
+                return Err(format!("iteration {i}: empty transcript"));
+            }
+            manager.unload();
+            println!("soak iter={i} chars={}", text.trim().len());
+            let _ = std::io::stdout().flush();
+            line.clear();
+            let _ = stdin.lock().read_line(&mut line);
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => {
+            println!("soak done runs={runs}");
+            0
+        }
+        Err(e) => {
+            eprintln!("soak failed: {e}");
             1
         }
     }

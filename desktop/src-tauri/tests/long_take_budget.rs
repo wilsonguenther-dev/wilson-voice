@@ -915,6 +915,11 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             (150, 2),
             (400, 1),
             (500, 1),
+            // yap-lifecycle — EXIT_DRAIN_TIMEOUT (900 ms) and EXIT_TAKE_TIMEOUT
+            // (600 ms): one-shot quit deadlines, cut from 3 s each so the whole
+            // quit fits lifecycle::QUIT_BUDGET. Not polling timers (docs/BUDGETS.md).
+            (600, 1),
+            (900, 1),
         ]),
     );
     all
