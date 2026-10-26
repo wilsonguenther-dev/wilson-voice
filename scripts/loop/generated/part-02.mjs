@@ -100,7 +100,7 @@ export const meta = {
     { title: "yap-hx-reviewers-reuse-target", detail: "SECURITY: reviewer and fixer seats build only into their chain's target-r1/target-r2 (never a cargo target in the scratchpad), and every warm/gate/test command runs with CARGO_INCREMENTAL=0" },
     { title: "yap-hx-dependency-marker-scan", detail: "SECURITY: the dependency hold reads DEPENDENCY-NOT-ON-MAIN only from the LAST stdout line of an executed preflight command (a per-command field in the runner schema), never from the mixed output tail or command text" },
     { title: "yap-hx-test-build-repo-resolve", detail: "scripts/test-build.sh works from any checkout: --repo <path>, else the $PWD checkout, else its own path, and a clear named error (exit 2) when none is a wilson-voice checkout" },
-    { title: "yap-hx-flaky-timing-under-load", detail: "long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green) and the harness re-runs it serially, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured" },
+    { title: "yap-hx-flaky-timing-under-load", detail: "long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green); every gate runs it alone with --nocapture and counts budget=measured only from a positive BUDGET-MEASURED line, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured" },
     { title: "yap-hx-fmt-clippy-debt", detail: "SECURITY: one rustfmt sweep makes cargo fmt --check clean on main and rustfmt becomes a BLOCKING CI step and harness gate; clippy -D warnings stays green on app + sidecars (Y0-A #234 owns the clippy gate)" },
     { title: "yap-qa-harness", detail: "Real permission + hotkey QA tools: scripts/qa/perm-probe.sh (signature, duplicates, LaunchServices, a labelled helper probe) and scripts/qa/hotkey-walk.sh (a real fn take on the installed Yap)" },
     { title: "yap-perm-truth", detail: "The permission banner tells the truth about THIS binary: re-checked on activation and every 5 s while shown, names the failing condition and the bundle path, names a duplicate Yap, and explains a stale grant" },
@@ -2319,7 +2319,7 @@ ITEMS.push({
   id: 'yap-hx-dependency-marker-scan', prompt: 'yap-hx-dependency-marker-scan', branch: 'loop/yap-hx-dependency-marker-last-stdout-line', gated: null,
   title: 'SECURITY: the dependency hold reads DEPENDENCY-NOT-ON-MAIN only from the LAST stdout line of an executed preflight command (a per-command field in the runner schema), never from the mixed output tail or command text',
   preflight: `
-    ( M=0; grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): loop-dependency-marker-stdout-only (07b) has not landed — run the review pass to land it, then the build pass again"; exit 0; fi; grep -q 'lastLine' scripts/loop/template.mjs && grep -q 'dependency marker counts only as the last stdout line' scripts/loop/harness-defects.test.mjs )
+    ( M=0; grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): loop-dependency-marker-stdout-only (07b) has not landed — run the review pass to land it, then the build pass again"; exit 0; fi; grep -q 'lastLine' scripts/loop/template.mjs && grep -q 'dependency marker counts only as the last stdout line' scripts/loop/harness-defects.test.mjs && grep -q 'silent exit-0 preflight is already-done' scripts/loop/harness-defects.test.mjs )
   `,
   spec: `
     Panel: not required — FIX, class SECURITY (harness). REMAINING GAP ONLY — read what is already filed.
@@ -2337,31 +2337,43 @@ ITEMS.push({
     comment, or from a non-final line of a command whose real check then ran and failed. The /m flag
     accepts any line. The 2026-10-19 mis-mark of yap-p0-perm-repair (launch-plan 03:27Z; reviewer
     note "unproven D7 runner-cwd premise", part01 :206) is exactly that class.
-    DO — RUN_SCHEMA exits[] items gain lastLine: the final non-empty line that command wrote to
-    stdout, verbatim (the runner prompt says how: run each command as
+    DO — RUN_SCHEMA exits[] items gain lastLine, a REQUIRED string field: the final non-empty line
+    that command wrote to stdout, verbatim, or the EMPTY STRING "" when it wrote no non-empty line.
+    "" is a VALID value and means SILENT, never missing: a passing grep -q, test, or && chain prints
+    nothing and exits 0, and runCommands (template.mjs) already rules "a command that prints nothing
+    and exits 0 PASSED" (the runner prompt says how: run each command as
     "<cmd> > <tmp> 2>&1; echo exit=$?; tail -n 1 <tmp>" — bare exit, no pipe on the command itself).
     dependencyMarkerPrinted(pre) becomes: true only when SOME exits[i] has exit 0 AND its lastLine
     starts with "DEPENDENCY-NOT-ON-MAIN:"; output, command, notes and every other field are never
     consulted. FAIL CLOSED ON MISSING EVIDENCE (fix round 1, independent reviewer BLOCKING 1): every
     hold preflight echoes the marker and then exits 0, so runPassed(pre) is TRUE for a held item and
     the normal verdict for it is already-done (template.mjs:989-992). Therefore, whenever
-    runPassed(pre) is true and ANY exits[i] with exit 0 has a lastLine that is missing, not a string,
-    empty, or contains a newline (ambiguous), the item is INCONCLUSIVE: return status
+    runPassed(pre) is true and ANY exits[i] with exit 0 has a lastLine field that is ABSENT, is not a
+    string, or contains a newline (ambiguous), the item is INCONCLUSIVE: return status
     'held: preflight inconclusive (no lastLine)', log "runner returned no usable lastLine — held,
     never already-done", dispatch no builder, and let the next pass re-run the preflight. A missing
     or mangled lastLine can NEVER yield already-done, whether or not the marker text appears
-    anywhere else in the payload. already-done requires runPassed(pre) AND a usable lastLine on
-    every exit-0 command AND none of them starting with the marker. build.mjs: refuse an item preflight
+    anywhere else in the payload. An EMPTY-STRING lastLine is NOT inconclusive (fix round 2, both
+    reviewers BLOCKING: holding on "" made already-done unreachable for every preflight whose passing
+    command is silent — 10 of the 12 grep-only preflights that pass on main e60ea75, 118 of 154
+    preflights at e2eccff, and this item's own preflight once it lands — so they would be held on
+    every pass and never retired). already-done requires runPassed(pre) AND every exit-0 command
+    carrying a string lastLine with no newline ("" included) AND none of them starting with the
+    marker. build.mjs: refuse an item preflight
     whose marker echo is not immediately followed by "exit 0" inside the same subshell (the shape
     every hold uses), so the marker is always that command's last line.
     Tests (harness-defects.test.mjs): "dependency marker counts only as the last stdout line"
     (lastLine marker + exit 0 -> true); "marker on a non-final stdout line is ignored" (marker only in
     output tail, lastLine something else -> false); "marker in command text or notes is ignored";
     "loop:validate refuses a marker echo not followed by exit 0";
-    "missing lastLine with the marker in output is held, never already-done" (all exit 0, marker in
-    output, no lastLine -> status starts with 'held:', not 'already-done');
-    "missing lastLine without the marker is held, never already-done" (all exit 0, no marker
-    anywhere, one exits[i] without lastLine -> 'held:'); "multi-line lastLine is ambiguous and held".
+    "absent lastLine field with the marker in output is held, never already-done" (all exit 0,
+    marker in output, the lastLine KEY absent -> status starts with 'held:', not 'already-done');
+    "absent lastLine field without the marker is held, never already-done" (all exit 0, no marker
+    anywhere, one exits[i] with NO lastLine key -> 'held:'); "non-string lastLine is held" (lastLine
+    null or 0 -> 'held:'); "multi-line lastLine is ambiguous and held";
+    "silent exit-0 preflight is already-done" (every exits[i] exit 0 with lastLine "", no marker
+    anywhere -> status 'already-done', NOT 'held:' — the liveness case; it must fail on a build that
+    treats "" as inconclusive).
   `,
   acceptance: `
     mkdir -p desktop/target
@@ -2371,9 +2383,11 @@ ITEMS.push({
     grep -Eq '^ *ok [0-9]+ - marker on a non-final stdout line is ignored$' desktop/target/qa-hx-marker.txt
     grep -Eq '^ *ok [0-9]+ - marker in command text or notes is ignored$' desktop/target/qa-hx-marker.txt
     grep -Eq '^ *ok [0-9]+ - loop:validate refuses a marker echo not followed by exit 0$' desktop/target/qa-hx-marker.txt
-    grep -Eq '^ *ok [0-9]+ - missing lastLine with the marker in output is held, never already-done$' desktop/target/qa-hx-marker.txt
-    grep -Eq '^ *ok [0-9]+ - missing lastLine without the marker is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - absent lastLine field with the marker in output is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - absent lastLine field without the marker is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - non-string lastLine is held$' desktop/target/qa-hx-marker.txt
     grep -Eq '^ *ok [0-9]+ - multi-line lastLine is ambiguous and held$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - silent exit-0 preflight is already-done$' desktop/target/qa-hx-marker.txt
     grep -q 'preflight inconclusive (no lastLine)' scripts/loop/template.mjs
     grep -q 'lastLine' scripts/loop/template.mjs
     ! grep -q 'DEPENDENCY-NOT-ON-MAIN/.test(asText' scripts/loop/template.mjs
@@ -2415,9 +2429,9 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap-hx-flaky-timing-under-load', prompt: 'yap-hx-flaky-timing-under-load', branch: 'loop/yap-hx-long-take-budget-load-aware', gated: null,
-  title: 'long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green) and the harness re-runs it serially, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured',
+  title: 'long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green); every gate runs it alone with --nocapture and counts budget=measured only from a positive BUDGET-MEASURED line, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured',
   preflight: `
-    grep -q 'fn load_gate' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'LOAD-AWARE NOT-MEASURED' scripts/loop/template.mjs
+    grep -q 'fn load_gate' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'BUDGET-MEASURED ratio=' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'BUDGET-MEASURED' scripts/loop/template.mjs && grep -q -- '--test-threads=1 --nocapture' scripts/loop/template.mjs
   `,
   spec: `
     Panel: not required — FIX (test flake).
@@ -2440,18 +2454,46 @@ ITEMS.push({
     still loaded it prints exactly one line
     "LOAD-AWARE NOT-MEASURED: 1-min load <load1 .2> > <cores> cores — chunk_decode ratio not measured"
     and returns. That line is NOT a pass: the harness treats it as not-measured.
-    HARNESS (scripts/loop/template.mjs): add an exported pure fn budgetMeasured(text) -> false when
-    the text contains "LOAD-AWARE NOT-MEASURED", else true. Every gate block that runs
-    "cargo test --features custom-protocol" (the build gate near :474, the review/fix gates, and
-    MAIN VERIFY near :2212) redirects that run to a file and adds: if the file contains
-    "LOAD-AWARE NOT-MEASURED", re-run ONLY that test serially,
-    "cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture",
-    at most 2 more times; report "budget=measured" or "budget=not-measured" beside cargotest=.
+    POSITIVE EVIDENCE ONLY (fix round 2, both reviewers BLOCKING: libtest CAPTURES and DISCARDS the
+    println!/eprintln! output of a PASSING test unless --nocapture or --show-output is given — probe
+    with cargo 1.94.0: a passing test that prints the line, run as plain 'cargo test > f 2>&1', left
+    0 matching lines and only '... ok' in f; with '-- --nocapture' the line was there. So grepping the
+    ordinary gate run for a NEGATIVE marker reads "measured" every time, and the skip() path for
+    absent ASR weights does too). On the one path that actually timed both decode arms, the test
+    prints exactly one line, after computing ratio and BEFORE the ceiling assert:
+    "BUDGET-MEASURED ratio=<ratio .3> ceiling=<ceiling .2> load1=<load1 .2> cores=<cores>",
+    preceded by a bare println!() — under '--test-threads=1 --nocapture' libtest writes
+    "test <name> ... " with NO newline, so the test's first printed line shares that line (probe,
+    cargo 1.94.0: "test chunk_decode_wall_per_audio_second ... BUDGET-MEASURED ratio=1.234 ...").
+    The LOAD-AWARE NOT-MEASURED path and the skip() path (ASR weights absent) never print it.
+    HARNESS (scripts/loop/template.mjs): add an exported pure fn budgetMeasured(text, exit) -> true
+    ONLY when exit === 0 AND text has a line matching
+    /^(test [^ ]+ [.][.][.] )?BUDGET-MEASURED ratio=[0-9]+[.][0-9]+ /m (bare, or after libtest's
+    test-name prefix);
+    every other input -> false: no such line, a LOAD-AWARE NOT-MEASURED line, a
+    "long_take_budget SKIPPED" line, empty text, or a nonzero exit. The ABSENCE of a negative marker
+    NEVER means measured. Every gate block that runs "cargo test --features custom-protocol" (the
+    build gate near :474, the review/fix gates, and MAIN VERIFY near :2212) keeps that run as it is
+    and THEN runs the budget test ON ITS OWN, serially and UNCAPTURED, redirected to a file, exit
+    read bare:
+    "cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture > <file> 2>&1 ; echo budgettest=$?"
+    It runs at most 3 times in all, again only while budgetMeasured(file, budgettest) is false AND
+    the file has no BUDGET-MEASURED line (a measured ratio over the ceiling exits nonzero: that is a
+    real red, never retried into green). Report "budget=measured" or "budget=not-measured" beside
+    cargotest=, decided by budgetMeasured on the dedicated run's file and exit alone.
     budget=not-measured is NOT green: a land seat does not merge on it (status review-pending,
     reason "budget not measured"), and main-verify lists it as a not-measured row, never inside
     "all exit 0". Below the gate the 1.60 ceiling is unchanged — do not widen it. Rust unit tests
-    load_gate_skips_above_core_count / load_gate_runs_at_or_below_core_count; node test (in
-    scripts/loop/harness-defects.test.mjs) "a LOAD-AWARE NOT-MEASURED cargo test is never green".
+    load_gate_skips_above_core_count / load_gate_runs_at_or_below_core_count; node tests (in
+    scripts/loop/harness-defects.test.mjs) "a LOAD-AWARE NOT-MEASURED cargo test is never green";
+    "captured cargo test output with no BUDGET-MEASURED line is not measured" (input
+    the two lines "test chunk_decode_wall_per_audio_second ... ok" and "test result: ok. 1 passed", exit 0 -> false —
+    exactly what a captured passing run looks like); "a skipped budget run is not measured"
+    ("long_take_budget SKIPPED — ASR weights absent ...", exit 0 -> false); "only a BUDGET-MEASURED
+    line with exit 0 is measured" ("BUDGET-MEASURED ratio=1.234 ceiling=1.60 load1=3.10 cores=12"
+    with exit 0 -> true, with exit 101 -> false); "BUDGET-MEASURED after the libtest test-name
+    prefix is measured" ("test chunk_decode_wall_per_audio_second ... BUDGET-MEASURED ratio=1.234
+    ceiling=1.60 load1=3.10 cores=12", exit 0 -> true).
     Note it in docs/BUDGETS.md next to the ceiling.
   `,
   acceptance: `
@@ -2465,7 +2507,15 @@ ITEMS.push({
     node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-budget.txt 2>&1
     grep -q '^# fail 0$' desktop/target/qa-hx-budget.txt
     grep -Eq '^ *ok [0-9]+ - a LOAD-AWARE NOT-MEASURED cargo test is never green$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - captured cargo test output with no BUDGET-MEASURED line is not measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - a skipped budget run is not measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - only a BUDGET-MEASURED line with exit 0 is measured$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - BUDGET-MEASURED after the libtest test-name prefix is measured$' desktop/target/qa-hx-budget.txt
     grep -q 'budget=not-measured' scripts/loop/template.mjs
+    grep -q 'BUDGET-MEASURED ratio=' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q -- 'chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture' scripts/loop/template.mjs
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture) > desktop/target/qa-hx-budget-run.txt 2>&1
+    grep -Eq '^(test [^ ]+ [.][.][.] )?(BUDGET-MEASURED ratio=[0-9]+[.][0-9]+ |LOAD-AWARE NOT-MEASURED: 1-min load|long_take_budget SKIPPED)' desktop/target/qa-hx-budget-run.txt
     grep -q 'LOAD-AWARE' docs/BUDGETS.md
     grep -q 'RATIO_CEILING: f64 = 1.60;' desktop/src-tauri/tests/long_take_budget.rs
   `,
