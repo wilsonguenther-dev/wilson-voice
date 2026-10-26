@@ -76,6 +76,28 @@ describe("Dictionary layout: controls first, contained list, pinned footer", () 
     expect(html).toMatch(/data-dict-list="true" style="[^"]*overflow-y:auto/);
     expect(html).toContain("2 words · 1 starred");
   });
+  it("prose comes last: the one plain line sits in the pinned footer, after the list, for both personas", () => {
+    for (const html of [render(<Dictionary />, base()), render(<Dictionary />, base({ dictionary: words }))]) {
+      const list = html.indexOf("data-dict-list");
+      const foot = html.indexOf("data-dict-footer");
+      expect(list).toBeGreaterThan(-1);
+      expect(foot).toBeGreaterThan(list);
+      expect(html.indexOf(DICT_HELP)).toBeGreaterThan(foot);
+    }
+  });
+  it("suggestions scroll inside the one list region instead of eating fixed height above it", () => {
+    const cand = [{ id: "c1", term: "Yappy", wrong: "happy", useCount: 3 }];
+    const html = render(<Dictionary />, base({ dictionary: words, candidates: cand }));
+    const list = html.indexOf("data-dict-list");
+    const noticed = html.indexOf("Yap noticed");
+    expect(noticed).toBeGreaterThan(list);
+    expect(html.indexOf("data-dict-footer")).toBeGreaterThan(noticed);
+    expect(html).not.toMatch(/class="cand-list" style=/);
+  });
+  it("the add row stays one line at every width (overrides the narrow-width stack)", () => {
+    const html = render(<Dictionary />, base());
+    expect(html).toMatch(/class="dict-add" style="grid-template-columns:minmax\(0, 1fr\) minmax\(0, 1fr\) auto"/);
+  });
   it("filterDictionary matches the word or its spelling, case-insensitively", () => {
     expect(filterDictionary(words, "").length).toBe(2);
     expect(filterDictionary(words, "KUBER").map((d) => d.id)).toEqual(["d1"]);

@@ -8,11 +8,13 @@ import { ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 /*
  * yap-uiux-2026-10-16-DICT — walk rows D1 + D2.
  *
- * Layout, top to bottom: the controls (add a word, then search), the
- * suggestions Yap noticed, the word list in its OWN scroll region, and a
- * footer pinned under it. The view fills the content pane and never grows the
- * page: a long dictionary scrolls inside the list, the add form and the footer
- * stay put. Prose comes last and is one plain line; how stars work lives on the
+ * Layout, top to bottom: the controls (add a word, then search), ONE scroll
+ * region holding the suggestions Yap noticed and the word list, and a footer
+ * pinned under it. The view fills the content pane and never grows the page: a
+ * long dictionary or a long suggestion list scrolls inside the region, the add
+ * form and the footer stay put, at 720x520 as well as 980x700 (the add row
+ * keeps its one-line grid at every width, so the controls stay short). Prose
+ * comes last and is one plain line in the footer; how stars work lives on the
  * star's tooltip, not above the form (D1). The empty dictionary has no second
  * add button: the form above it is the only way to add a word (D2).
  */
@@ -39,7 +41,16 @@ export function dictionarySummary(list: DictEntry[], shown: number, query: strin
 }
 
 const fill: CSSProperties = { display: "flex", flexDirection: "column", gap: 12, height: "100%", minHeight: 0 };
-const listRegion: CSSProperties = { flex: "1 1 auto", minHeight: 96, overflowY: "auto", overscrollBehavior: "contain" };
+const listRegion: CSSProperties = {
+  flex: "1 1 auto", minHeight: 72, overflowY: "auto", overscrollBehavior: "contain",
+  display: "flex", flexDirection: "column", gap: 12,
+};
+/* The shared empty card is sized for a whole pane (56px padding); here it sits in
+   the list region under the form, so it drops the 260px floor and the padding to read whole at 720x520. */
+const emptyCard: CSSProperties = { flexShrink: 0, margin: 0, padding: "16px 24px", gap: 6, minHeight: 0 };
+/* Overrides App.css's narrow-width rule that stacks .dict-add into three rows:
+   stacked, the controls alone filled the 720x520 pane and pushed the footer off it. */
+const addRow: CSSProperties = { gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto" };
 const footer: CSSProperties = {
   flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
   borderTop: "1px solid var(--border)", paddingTop: 10,
@@ -66,6 +77,8 @@ export default function Dictionary() {
       });
       setNewTerm("");
       setNewPreferred("");
+      // A word added under an active search would vanish behind the filter.
+      setDictQuery("");
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term added");
     } catch (e) {
@@ -76,6 +89,8 @@ export default function Dictionary() {
     try {
       await invoke("delete_dictionary_term", { id });
       setDictionary((d) => d.filter((x) => x.id !== id));
+      // The search box unmounts with the last word; it must not come back pre-filled.
+      if (dictionary.length <= 1) setDictQuery("");
     } catch (e) {
       toast(String(e));
     }
@@ -162,7 +177,7 @@ export default function Dictionary() {
     <div className="dict" style={fill}>
       <div className="panel intro" style={{ flexShrink: 0 }}>
         <h3>Your words</h3>
-        <div className="dict-add">
+        <div className="dict-add" style={addRow}>
           <input
             placeholder="Word (e.g. Drivia)"
             aria-label="Word"
@@ -192,128 +207,129 @@ export default function Dictionary() {
             style={search}
           />
         )}
-        <p className="tiny muted" style={{ margin: "10px 0 0" }}>{DICT_HELP}</p>
       </div>
 
-      {candidates.length > 0 && (
-        <div className="panel dict-suggest" style={{ flexShrink: 0 }}>
-          <h3>
-            Yap noticed:{" "}
-            {candidates
-              .slice(0, 3)
-              .map((c) => c.term)
-              .join(", ")}
-          </h3>
-          <p className="tiny">Words you fixed by hand. Add them and Yap stops getting them wrong.</p>
-          <ul className="cand-list" style={{ maxHeight: 180, overflowY: "auto" }}>
-            {candidates.map((c) => (
-              <li key={c.id}>
-                <div>
-                  <strong>{c.term}</strong>
-                  {c.wrong && <span className="muted"> ← heard “{c.wrong}”</span>}
-                  <div className="tiny">fixed {c.useCount}×</div>
-                </div>
-                <div className="cand-actions">
-                  <button className="primary" onClick={() => acceptCandidate(c)}>
-                    Add
-                  </button>
-                  <button className="ghost" onClick={() => dismissCandidate(c)}>
-                    Dismiss
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {dictionary.length === 0 && candidates.length === 0 && (
-        <div className="view-state view-empty" data-empty-state="dictionary">
-          <div className="view-state-glyph">
-            <WordGlyph />
+      <div className="dict-scroll" data-dict-list style={listRegion}>
+        {candidates.length > 0 && (
+          <div className="panel dict-suggest" style={{ flexShrink: 0 }}>
+            <h3>
+              Yap noticed:{" "}
+              {candidates
+                .slice(0, 3)
+                .map((c) => c.term)
+                .join(", ")}
+            </h3>
+            <p className="tiny">Words you fixed by hand. Add them and Yap stops getting them wrong.</p>
+            <ul className="cand-list">
+              {candidates.map((c) => (
+                <li key={c.id}>
+                  <div>
+                    <strong>{c.term}</strong>
+                    {c.wrong && <span className="muted"> ← heard “{c.wrong}”</span>}
+                    <div className="tiny">fixed {c.useCount}×</div>
+                  </div>
+                  <div className="cand-actions">
+                    <button className="primary" onClick={() => acceptCandidate(c)}>
+                      Add
+                    </button>
+                    <button className="ghost" onClick={() => dismissCandidate(c)}>
+                      Dismiss
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
-          <h3>No words yet</h3>
-          <p>Names, jargon and spellings Yap keeps getting wrong. Type one above and press Add.</p>
-        </div>
-      )}
+        )}
 
-      {dictionary.length > 0 && (
-        <>
-          <div className="dict-scroll" data-dict-list style={listRegion}>
-            {shown.length === 0 ? (
-              <p className="muted" data-empty-state="dictionary-search">
-                No words match “{dictQuery.trim()}”.
-              </p>
-            ) : (
-              <ul className="dict-list">
-                {shown.map((d) => (
-                  <li key={d.id}>
-                    {editingTermId === d.id ? (
-                      <div className="dict-edit">
-                        <input
-                          value={editTerm}
-                          onChange={(e) => setEditTerm(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && saveEditTerm()}
-                          aria-label="Word"
-                          autoFocus
-                        />
-                        <input
-                          value={editPreferred}
-                          placeholder="Spell it as (optional)"
-                          onChange={(e) => setEditPreferred(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && saveEditTerm()}
-                          aria-label="Spell it as"
-                        />
-                        <button className="primary" onClick={saveEditTerm}>
-                          Save
+        {dictionary.length === 0 && candidates.length === 0 && (
+          <div className="view-state view-empty" data-empty-state="dictionary" style={emptyCard}>
+            <div className="view-state-glyph" style={{ height: 36 }}>
+              <WordGlyph />
+            </div>
+            <h3>No words yet</h3>
+            <p>Names, jargon and spellings Yap keeps getting wrong. Type one above and press Add.</p>
+          </div>
+        )}
+
+        {dictionary.length > 0 &&
+          (shown.length === 0 ? (
+            <p className="muted" data-empty-state="dictionary-search">
+              No words match “{dictQuery.trim()}”.
+            </p>
+          ) : (
+            <ul className="dict-list">
+              {shown.map((d) => (
+                <li key={d.id}>
+                  {editingTermId === d.id ? (
+                    <div className="dict-edit">
+                      <input
+                        value={editTerm}
+                        onChange={(e) => setEditTerm(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && saveEditTerm()}
+                        aria-label="Word"
+                        autoFocus
+                      />
+                      <input
+                        value={editPreferred}
+                        placeholder="Spell it as (optional)"
+                        onChange={(e) => setEditPreferred(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && saveEditTerm()}
+                        aria-label="Spell it as"
+                      />
+                      <button className="primary" onClick={saveEditTerm}>
+                        Save
+                      </button>
+                      <button className="ghost" onClick={() => setEditingTermId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <strong>{d.term}</strong>
+                        {d.preferred && <span className="muted"> → {d.preferred}</span>}
+                        <div className="tiny">
+                          used {d.hits}×{d.starred ? " · starred" : ""}
+                        </div>
+                      </div>
+                      <div className="dict-actions">
+                        <button
+                          className={d.starred ? "star on" : "star"}
+                          onClick={() => toggleStar(d)}
+                          aria-pressed={!!d.starred}
+                          aria-label={d.starred ? `Unstar ${d.term}` : `Star ${d.term}`}
+                          title={d.starred ? STAR_ON_TIP : STAR_OFF_TIP}
+                        >
+                          {d.starred ? "★" : "☆"}
                         </button>
-                        <button className="ghost" onClick={() => setEditingTermId(null)}>
-                          Cancel
+                        <button className="ghost" onClick={() => startEditTerm(d)}>
+                          Edit
+                        </button>
+                        <button className="ghost danger" onClick={() => removeTerm(d.id)}>
+                          Remove
                         </button>
                       </div>
-                    ) : (
-                      <>
-                        <div>
-                          <strong>{d.term}</strong>
-                          {d.preferred && <span className="muted"> → {d.preferred}</span>}
-                          <div className="tiny">
-                            used {d.hits}×{d.starred ? " · starred" : ""}
-                          </div>
-                        </div>
-                        <div className="dict-actions">
-                          <button
-                            className={d.starred ? "star on" : "star"}
-                            onClick={() => toggleStar(d)}
-                            aria-pressed={!!d.starred}
-                            aria-label={d.starred ? `Unstar ${d.term}` : `Star ${d.term}`}
-                            title={d.starred ? STAR_ON_TIP : STAR_OFF_TIP}
-                          >
-                            {d.starred ? "★" : "☆"}
-                          </button>
-                          <button className="ghost" onClick={() => startEditTerm(d)}>
-                            Edit
-                          </button>
-                          <button className="ghost danger" onClick={() => removeTerm(d.id)}>
-                            Remove
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div className="dict-footer" data-dict-footer style={footer}>
-            <span className="tiny muted">{dictionarySummary(dictionary, shown.length, dictQuery)}</span>
-            {dictQuery.trim() && (
-              <button className="ghost" onClick={() => setDictQuery("")}>
-                Clear search
-              </button>
-            )}
-          </div>
-        </>
-      )}
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ))}
+      </div>
+
+      <div className="dict-footer" data-dict-footer style={footer}>
+        <span className="tiny muted">
+          {dictionary.length > 0 ? dictionarySummary(dictionary, shown.length, dictQuery) : DICT_HELP}
+        </span>
+        {dictQuery.trim() && dictionary.length > 0 ? (
+          <button className="ghost" onClick={() => setDictQuery("")}>
+            Clear search
+          </button>
+        ) : (
+          dictionary.length > 0 && <span className="tiny muted">{DICT_HELP}</span>
+        )}
+      </div>
     </div>
   );
 }
