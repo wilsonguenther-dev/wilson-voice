@@ -20,6 +20,12 @@
 #   Authority=Developer ID Application: ... and TeamIdentifier=VHYV8C2JNU.
 # step=dr_change: scripts/qa/perm-probe.sh --app OLD --compare APP. dr_change=yes FAILS unless
 #   both --allow-dr-change and --release-note are given; the note prints as release_note=<line>.
+#   No OLD (no --compare and no installed app) is NOT a pass: the requirement change cannot be
+#   ruled out, so it FAILS under the same rule (--allow-dr-change + --release-note to ship).
+# step=probe FAILS unless every service is Granted, and step=insert FAILS unless the text
+#   really landed (path=Ax|PasteBridge, ok=true, and — on a launch — the TextEdit document reads
+#   it). A Copy card is not an insertion. The release host must hold every grant for the
+#   release identity; a host with none cannot tell the 0.9.0 class from "never granted".
 #
 # Prints step=<name> ok|fail per step. Exit 0 all ok; 1 any FAIL (named); 2 usage, or another
 # Yap with the same bundle id is running (never signalled).
@@ -29,6 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SCRIPT_DIR/fixtures"
 MATRIX="$FIXTURES/release-smoke-matrix"
 PERM_PROBE="$SCRIPT_DIR/perm-probe.sh"
+INSTALLED_APP="${YAP_SMOKE_INSTALLED_APP:-/Applications/Yap.app}"
 TEAM_ID="VHYV8C2JNU"
 SMOKE_TEXT="yap release smoke ok"
 SERVICES="accessibility listenevent postevent microphone"
@@ -123,11 +130,17 @@ step_dr_change() { # $1 new app, $2 old app (may be empty), $3 allow (0|1), $4 n
   local new="$1" old="$2" allow="$3" note="$4" out dr
   if forced dr_change; then step_fail dr_change forced; return; fi
   if [ -z "$old" ]; then
-    [ -d /Applications/Yap.app ] && old=/Applications/Yap.app
+    [ -d "$INSTALLED_APP" ] && old="$INSTALLED_APP"
   fi
   if [ -z "$old" ]; then
-    printf 'dr_change=skipped (no installed or last-release app to compare against)\n'
-    step_ok dr_change 'nothing to compare'
+    # Fails CLOSED: with nothing to compare, a requirement change cannot be ruled out.
+    printf 'dr_change=unknown (no installed or last-release app to compare against)\n'
+    if [ "$allow" = 1 ] && [ -n "$note" ]; then
+      printf 'release_note=%s\n' "$note"
+      step_ok dr_change 'nothing to compare; allowed with a release note'
+    else
+      step_fail dr_change 'nothing to compare: pass --compare <last-release Yap.app>, or --allow-dr-change and --release-note'
+    fi
     return
   fi
   if ! out="$(bash "$PERM_PROBE" --app "$old" --compare "$new" 2>&1)"; then
@@ -177,12 +190,13 @@ parse_log() { # $1 log, $2 doc text (or the literal __unchecked__)
       accessibility | postevent)
         { [ "$state" = Granted ] || [ "$ledger" = granted ]; } && absent_insert=0 ;;
     esac
+    # Fails CLOSED: only Granted passes. Denied/NotDetermined with no ledger used to pass,
+    # which let a host with no grants (or no ledger files) pass the 0.9.0 class (PR #242 B2).
     case "$state:$ledger" in
       Granted:*) ;;
       StaleIdentity:*) probe_bad="${probe_bad}$s:StaleIdentity(ledger=$ledger) " ;;
       Denied:granted) probe_bad="${probe_bad}$s:Denied-but-ledger-granted " ;;
-      Denied:none | NotDetermined:none) ;;
-      *) probe_bad="${probe_bad}$s:$state(ledger=$ledger) " ;;
+      *) probe_bad="${probe_bad}$s:$state(ledger=$ledger)-not-Granted " ;;
     esac
   done
   if [ "$dead_all" = 1 ] && [ "$any_ledger" = 1 ]; then
@@ -207,10 +221,11 @@ parse_log() { # $1 log, $2 doc text (or the literal __unchecked__)
   if forced insert; then step_fail insert forced
   elif [ -z "$line" ]; then step_fail insert 'no step=insert line'
   elif [ "$path" = CopyCard ]; then
+    # Fails CLOSED: a Copy card puts text on the clipboard; nothing was inserted.
     if [ "$ax_granted" = 1 ] || [ "$post_granted" = 1 ]; then
       step_fail insert 'path=CopyCard while Accessibility or PostEvent is Granted: a regression, not a fallback'
-    elif [ "$absent_insert" = 1 ] && [ "$ok" = true ]; then
-      step_ok insert 'CopyCard: both insert grants genuinely absent'
+    elif [ "$absent_insert" = 1 ]; then
+      step_fail insert "path=CopyCard ok=$ok: both insert grants absent, so nothing was inserted into TextEdit"
     else
       step_fail insert "path=CopyCard ok=$ok with an insert grant the ledger saw working"
     fi
@@ -247,7 +262,9 @@ run_app() { # $1 app
   log="$tmp/logs/yap.log"
   osa 'tell application "TextEdit" to make new document' >/dev/null
   osa 'tell application "TextEdit" to activate' >/dev/null
-  open -n -a "$app" --env "YAP_DATA_DIR=$tmp" --args --release-smoke
+  # -g: LaunchServices must not bring Yap forward over the TextEdit document (PR #242 B1);
+  # the app also hides its main window and re-activates TextEdit before the insert.
+  open -g -n -a "$app" --env "YAP_DATA_DIR=$tmp" --args --release-smoke
   while [ "$waited" -lt "$LAUNCH_WAIT_S" ] && ! grep -q 'release-smoke step=' "$log" 2>/dev/null; do
     sleep 1; waited=$((waited + 1))
   done
@@ -265,13 +282,15 @@ run_app() { # $1 app
 # ── --self-test ─────────────────────────────────────────────────────────────
 self_test() {
   local fails=0 f want rc out
+  # Never let the host's installed Yap decide a self-test row.
+  export YAP_SMOKE_INSTALLED_APP=/nonexistent/Yap.app
   expect() { # $1 want rc, $2 label, rest: argv
     local w="$1" label="$2"; shift 2
     out="$(bash "$0" "$@" 2>&1)"; rc=$?
     if [ "$rc" -eq "$w" ]; then printf 'ok   %s (exit %d)\n' "$label" "$rc"
     else printf 'FAIL %s (exit %d, want %d)\n%s\n' "$label" "$rc" "$w" "$out"; fails=$((fails + 1)); fi
   }
-  for f in granted-all-ax:0 absent-grants-copy-card:0 all-dead-ledger-granted:1 \
+  for f in granted-all-ax:0 absent-grants-copy-card:1 all-denied-no-ledger-copy-card:1 all-dead-ledger-granted:1 \
            stale-ledger-granted-probe-denied:1 granted-but-copy-card:1 carbon-failed:1 no-quit:1; do
     want="${f##*:}"; f="${f%%:*}"
     if [ ! -f "$MATRIX/$f.log" ]; then printf 'FAIL matrix fixture %s.log missing\n' "$f"; fails=$((fails + 1)); continue; fi
@@ -293,6 +312,8 @@ self_test() {
   expect 1 'signature: Apple-signed Calculator is not Developer ID' --signature-only --app /System/Applications/Calculator.app
   expect 0 'dr_change=no on the same app' --dr-only --app /System/Applications/Calculator.app --compare /System/Applications/Calculator.app
   expect 1 'dr_change=yes refused' --dr-only --app /System/Applications/Calculator.app --compare /System/Applications/TextEdit.app
+  expect 1 'dr_change: nothing to compare fails closed' --dr-only --app /System/Applications/Calculator.app
+  expect 0 'dr_change: nothing to compare allowed with a note' --dr-only --app /System/Applications/Calculator.app --allow-dr-change --release-note 'self-test'
   expect 1 'dr_change=yes allowed but no note' --dr-only --app /System/Applications/Calculator.app --compare /System/Applications/TextEdit.app --allow-dr-change
   expect 0 'dr_change=yes allowed with a note' --dr-only --app /System/Applications/Calculator.app --compare /System/Applications/TextEdit.app --allow-dr-change --release-note 'self-test'
   # every force-fail path

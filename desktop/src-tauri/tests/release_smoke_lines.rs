@@ -70,7 +70,21 @@ fn rows() -> Vec<Row> {
             ],
             fn_tap: FnTapStatus::Blocked("CGEventTapCreate returned null".into()),
             insert: (InsertPath::CopyCard, true),
-            ..ok_row("absent-grants-copy-card", 0)
+            // PR #242 review B2: nothing granted and nothing inserted must FAIL.
+            ..ok_row("absent-grants-copy-card", 1)
+        },
+        Row {
+            // The independent reviewer's exact probe: all four Denied, no ledger
+            // anywhere (a host with no ledger files), Copy card "ok". Fails closed.
+            probes: [
+                (Service::Accessibility, Denied, false),
+                (Service::ListenEvent, Denied, false),
+                (Service::PostEvent, Denied, false),
+                (Service::Microphone, Denied, false),
+            ],
+            fn_tap: FnTapStatus::Blocked("CGEventTapCreate returned null".into()),
+            insert: (InsertPath::CopyCard, true),
+            ..ok_row("all-denied-no-ledger-copy-card", 1)
         },
         Row {
             probes: all(Denied),

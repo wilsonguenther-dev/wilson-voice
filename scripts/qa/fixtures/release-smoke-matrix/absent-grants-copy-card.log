@@ -1,4 +1,4 @@
-# golden: release-smoke matrix row absent-grants-copy-card (expect exit 0) — written by
+# golden: release-smoke matrix row absent-grants-copy-card (expect exit 1) — written by
 # desktop/src-tauri/tests/release_smoke_lines.rs from the smoke.rs formatters. Do not hand-edit.
 [2026-10-19T00:00:00Z INFO  wilson_voice_lib::smoke] release-smoke step=probe service=accessibility state=NotDetermined ledger=none
 [2026-10-19T00:00:00Z INFO  wilson_voice_lib::smoke] release-smoke step=probe service=listenevent state=NotDetermined ledger=none

@@ -7164,8 +7164,15 @@ pub fn run() {
             spawn_revocation_refresh(app.handle(), state.license.clone());
 
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
+                if smoke::release_armed() {
+                    // yap-p0-release-smoke: the run inserts into TextEdit, so
+                    // Yap must never take the foreground or key focus from it
+                    // (tauri.conf.json creates "main" visible + focused).
+                    let _ = win.hide();
+                } else {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
                 let w = win.clone();
                 win.on_window_event(move |e| match e {
                     WindowEvent::CloseRequested { api, .. } => {

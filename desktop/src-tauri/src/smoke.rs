@@ -275,6 +275,10 @@ pub fn not_textedit_line(frontmost: Option<&str>) -> String {
 /// The OS seam for the insert step, so a test can prove the inserter is never
 /// reached unless TextEdit is frontmost.
 pub trait InsertHost {
+    /// Bring [`RELEASE_SMOKE_TARGET`] to the front (and wait briefly for it).
+    /// Yap's own launch can take the foreground, so the frontmost check that
+    /// follows must not be the first thing that looks.
+    fn bring_target_forward(&mut self);
     fn frontmost_bundle_id(&self) -> Option<String>;
     /// The path the live probe would pick right now.
     fn insert_path(&self) -> crate::paste::InsertPath;
@@ -286,6 +290,7 @@ pub trait InsertHost {
 /// The insert step: frontmost FIRST, then at most one insertion. Returns the
 /// line to log.
 pub fn run_insert_step(host: &mut dyn InsertHost) -> String {
+    host.bring_target_forward();
     let path = host.insert_path();
     let front = host.frontmost_bundle_id();
     if front.as_deref() != Some(RELEASE_SMOKE_TARGET) {
@@ -306,6 +311,20 @@ struct LiveInsertHost {
 }
 
 impl InsertHost for LiveInsertHost {
+    fn bring_target_forward(&mut self) {
+        // LaunchServices activation (`open -b`), never an Apple Event: no
+        // Automation prompt, and it only activates — the document the script
+        // made stays the key window.
+        let _ = std::process::Command::new("/usr/bin/open")
+            .args(["-b", RELEASE_SMOKE_TARGET])
+            .status();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while crate::focus::frontmost_bundle_id().as_deref() != Some(RELEASE_SMOKE_TARGET)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
     fn frontmost_bundle_id(&self) -> Option<String> {
         crate::focus::frontmost_bundle_id()
     }
@@ -446,9 +465,16 @@ mod tests {
 
     struct FakeHost {
         front: Option<&'static str>,
+        /// What `bring_target_forward` makes frontmost (None: activation does nothing).
+        activates_to: Option<&'static str>,
         inserts: usize,
     }
     impl InsertHost for FakeHost {
+        fn bring_target_forward(&mut self) {
+            if let Some(a) = self.activates_to {
+                self.front = Some(a);
+            }
+        }
         fn frontmost_bundle_id(&self) -> Option<String> {
             self.front.map(str::to_string)
         }
@@ -470,15 +496,23 @@ mod tests {
             Some("com.apple.Terminal"),
             Some("com.apple.TextEditX"),
         ] {
-            let mut h = FakeHost { front, inserts: 0 };
+            let mut h = FakeHost {
+                front,
+                activates_to: None,
+                inserts: 0,
+            };
             assert_eq!(
                 run_insert_step(&mut h),
                 "release-smoke step=insert path=Ax ok=false"
             );
             assert_eq!(h.inserts, 0, "inserted with frontmost={front:?}");
         }
+        // PR #242 review BLOCKING 1: a real launch leaves Yap itself frontmost
+        // (main window visible + focused). The step must bring TextEdit
+        // forward BEFORE it reads frontmost, or every release run fails.
         let mut h = FakeHost {
-            front: Some(RELEASE_SMOKE_TARGET),
+            front: Some("com.wilsonguenther.wilson-voice"),
+            activates_to: Some(RELEASE_SMOKE_TARGET),
             inserts: 0,
         };
         assert_eq!(
