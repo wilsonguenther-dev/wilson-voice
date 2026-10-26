@@ -72,3 +72,22 @@ describe("yap-insert-bridge-2026-10-26 — the card names the blocked permission
     expect(isCopyCard(noReceipt)).toBe(true);
   });
 });
+
+describe("yap-test-channel-product-name — the blocked line names the running product", () => {
+  it("names Yap Test on the test channel and Yap otherwise", () => {
+    const both = { blockedPermissions: ["PostEvent", "Accessibility"] };
+    expect(blockedLine({ ...both, product: "Yap Test" })).toBe(
+      "Yap Test can't type here: PostEvent and Accessibility are off.",
+    );
+    expect(blockedLine({ ...both, product: "Yap" })).toBe("Yap can't type here: PostEvent and Accessibility are off.");
+    expect(blockedLine({ ...both, product: null })).toBe("Yap can't type here: PostEvent and Accessibility are off.");
+  });
+
+  it("pins the Rust field and fills it at every card the pill is shown", () => {
+    expect(pasteRs).toContain("pub product: String,");
+    const shown = pasteRs.match(/show_copy_card\(CopyCard \{/g) ?? [];
+    const named = pasteRs.match(/product: crate::perm_truth::product_name\(\),/g) ?? [];
+    expect(shown.length).toBeGreaterThan(0);
+    expect(named.length).toBe(shown.length);
+  });
+});

@@ -1115,4 +1115,28 @@ mod product_name_tests {
             );
         }
     }
+
+    /// Fix round 2 — a wiring guard, not a fixture: every non-comment line of
+    /// meeting_control.rs that hands LOOKS_DENIED_MESSAGE to the meeting row
+    /// (tap_notes -> meetings.error -> Meetings.tsx) wraps it in `named()`.
+    /// The badge_meeting branch once pushed it bare.
+    #[test]
+    fn meeting_denial_note_is_named_at_every_call_site() {
+        let src = include_str!("meeting_control.rs");
+        let sites: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && l.contains("LOOKS_DENIED_MESSAGE"))
+            .collect();
+        assert!(
+            !sites.is_empty(),
+            "meeting_control.rs no longer uses LOOKS_DENIED_MESSAGE"
+        );
+        for l in sites {
+            assert!(
+                l.contains("permissions::named("),
+                "bare LOOKS_DENIED_MESSAGE: {l}"
+            );
+        }
+    }
 }
