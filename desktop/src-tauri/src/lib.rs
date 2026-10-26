@@ -9,6 +9,7 @@
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
 // eval harness).
 pub mod asr_engine;
+pub mod channel;
 mod cli;
 mod command_mode;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
@@ -6515,6 +6516,13 @@ async fn check_for_update(
         let s = state.settings.lock();
         (s.check_updates, s.skipped_update_version.clone())
     };
+    if !channel::current().updater_enabled {
+        log::info!(
+            "update check skipped: updater DISABLED in the {} channel",
+            channel::CURRENT.name()
+        );
+        return Ok(None);
+    }
     if !enabled {
         log::debug!("update check off (checkUpdates=false) — not contacting the endpoint");
         return Ok(None);
@@ -6564,6 +6572,12 @@ async fn check_for_update(
 /// app out from under a dictation.
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<String, String> {
+    if !channel::current().updater_enabled {
+        return Err(format!(
+            "updates are disabled in the {} channel — rebuild with scripts/test-build.sh",
+            channel::CURRENT.name()
+        ));
+    }
     app.updater().map_err(|e| e.to_string())?;
     // UPD-A: the same every-endpoint, newest-wins check the prompt came from,
     // so the tarball downloaded is the one named by the manifest that won.
@@ -6635,6 +6649,19 @@ fn user_display_name() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // TC-1 (review BLOCKING 1): before ANYTHING touches the data dir — the CLI
+    // mode, the smoke preflight, the logger — refuse to start when the bundle
+    // id compiled into the Tauri context is not the one this binary's channel
+    // names. Fails closed: a mismatched pair would read/write the wrong state
+    // root (or ship a production id with the updater off).
+    let context = tauri::generate_context!();
+    if let Err(why) =
+        channel::check_bundle_identity(channel::CURRENT, &context.config().identifier)
+    {
+        eprintln!("{why}");
+        std::process::exit(78); // EX_CONFIG
+    }
+
     // YV32 headless mode (`--transcribe-file <wav>`): transcribe with the
     // embedded engine, print the text, exit. Handled FIRST so no window, tray,
     // hotkey tap, or app logger is ever created for a one-shot CLI run.
@@ -6662,6 +6689,8 @@ pub fn run() {
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
     logging::init(&data_dir());
+    // TC-1: name the channel first, so a log proves which app wrote it.
+    log::info!("{}", channel::startup_line());
 
     // YV20/M3: sweep any stale voice WAVs left by a prior crash / hard-kill (the
     // happy path deletes its own clip, but a SIGKILL mid-transcribe can't). No
@@ -7664,7 +7693,7 @@ pub fn run() {
             );
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| {
             // The ordered shutdown (YV69) — ASR engine first, then the audio

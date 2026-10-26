@@ -10,6 +10,7 @@
  * stretched or letterboxed, it just anchors to that side.
  */
 import React, { useEffect, useState } from "react";
+import { TEST_CHIP } from "./buildChannel";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -331,5 +332,10 @@ function Float() {
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Float />
+    {TEST_CHIP && (
+      <div className="float-test-chip" role="note" title="Local test build — not a release">
+        {TEST_CHIP}
+      </div>
+    )}
   </React.StrictMode>,
 );

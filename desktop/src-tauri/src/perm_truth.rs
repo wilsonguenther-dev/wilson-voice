@@ -292,7 +292,8 @@ pub fn default_scan_roots() -> Vec<PathBuf> {
 // ── The running process ────────────────────────────────────────────────────
 
 /// The bundle id Yap ships under. NEVER renamed (TCC + data dir are keyed to it).
-pub const BUNDLE_ID: &str = "com.wilsonguenther.wilson-voice";
+/// TC-1: follows the build channel (`.test` suffix on "Yap Test").
+pub const BUNDLE_ID: &str = crate::channel::current().identifier;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningIdentity {
