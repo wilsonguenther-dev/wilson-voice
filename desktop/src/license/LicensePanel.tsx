@@ -19,8 +19,8 @@ import {
  *
  * One screen that answers the three questions a person actually has: what am I
  * on right now, how do I pay, and where do I put the key I already bought. It
- * is deliberately presentational — every effect (invoke, toast, revocation
- * refresh) belongs to `App.tsx`, which is what lets the dev harness in
+ * is deliberately presentational — every effect (invoke, toast, license
+ * event) belongs to `App.tsx`, which is what lets the dev harness in
  * `desktop/dev/license-preview.tsx` render all three states without a backend.
  */
 export default function LicensePanel({

@@ -148,12 +148,15 @@ pub const GRACE_PLAN: &str = "grace";
 /// trial: this restores a fortnight, it does not sell one).
 pub const GRACE_DEFAULT_DAYS: i64 = TRIAL_DAYS;
 
-/// The ONLY host this module ever contacts, and only for the public revocation
-/// list. No telemetry, no activation call, no license check-in — a Yap that
-/// never sees the internet again works exactly the same.
-pub const ISSUER_HOST: &str = "forge.87-99-149-214.sslip.io";
-/// Public revocation list (`{version, updatedAt, kids[]}`, `max-age=300`).
-pub const REVOCATION_URL: &str = "https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json";
+// yap-lic-00: this module contacts NO host. The launch-time GET of a public
+// kid list from the decommissioned issuer box is deleted, not repointed: a dead
+// wildcard-DNS name that anybody could later answer for was an unsigned input
+// the gate trusted. No telemetry, no activation call, no license check-in — a
+// Yap that never sees the internet again works exactly the same. A cached
+// `revoked_kids` list written by an older build is still READ and still
+// honoured. The successor client (yap-lic-01..06, the consulting app's
+// /api/v1/licensing) arrives through `LicenseTransport` below, never through
+// an HTTP crate imported here — `license_rs_has_no_http_client` pins that.
 
 /// Where "Buy Yap" goes — the **one** place this URL is written down in the
 /// app (YP3). The frontend never holds it: the Buy button invokes
@@ -1352,31 +1355,15 @@ impl LicenseManager {
         write_license_file(&self.path, &file);
     }
 
-    /// Fold a freshly fetched revocation list into the cache.
+    /// Seed the cached kid list, exactly as an older build left it on disk.
+    /// Test-only since yap-lic-00 deleted the fetch that used to call it; the
+    /// yap-lic-0x licensing client is its named future production consumer.
+    #[cfg(test)]
     pub fn apply_revocations(&self, kids: Vec<String>, checked_at_ms: i64) {
         let mut file = self.file.lock();
         file.revoked_kids = kids;
         file.revoked_checked_at_ms = Some(checked_at_ms);
         write_license_file(&self.path, &file);
-    }
-
-    /// THE decision point for the one network call this module makes: a fetch
-    /// that failed for ANY reason — offline, DNS, TLS, 500, garbage JSON —
-    /// leaves every byte of local state exactly as it was. Nothing is cleared,
-    /// nothing expires, no "could not verify" state exists to brick anyone.
-    /// Returns true when a list was actually applied.
-    pub fn apply_fetch_result(&self, result: Result<Vec<String>, String>) -> bool {
-        match result {
-            Ok(kids) => {
-                let now = (self.now)();
-                self.apply_revocations(kids, now);
-                true
-            }
-            Err(e) => {
-                log::info!("license: revocation refresh skipped ({e}) — keeping the cached list");
-                false
-            }
-        }
     }
 
     pub fn revoked_kids(&self) -> Vec<String> {
@@ -1449,33 +1436,44 @@ fn write_license_file(path: &Path, file: &LicenseFile) {
     }
 }
 
-// ─── Revocation fetch (the only network call in this module) ─────────
+// ─── Launch-time init (no network) ───────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct RevocationDocument {
-    #[serde(default)]
-    kids: Vec<String>,
+/// The only door through which the licensing path may ever reach a network.
+///
+/// yap-lic-00 removed the one implementation that went anywhere. Production
+/// passes [`NoNetwork`], which refuses every request; the launch-time init
+/// takes the transport as an argument purely so a recording fake can prove it
+/// is never used (`launch_license_init_makes_no_network_call`). The yap-lic-0x
+/// client implements this trait in its own module; `license.rs` itself never
+/// holds an HTTP client.
+pub trait LicenseTransport: Send + Sync {
+    fn get(&self, url: &str) -> Result<Vec<u8>, String>;
 }
 
-/// Best-effort fetch of the public revocation list.
-///
-/// Every failure mode — offline, DNS down, 500, malformed JSON, TLS error —
-/// returns `Err` and the caller does NOTHING with it beyond a log line. A Yap
-/// that cannot reach the issuer keeps exactly the entitlement it had. That is a
-/// deliberate trade: a refunded customer keeping the app while offline is a far
-/// cheaper failure than a paying customer on a plane losing theirs.
-pub async fn fetch_revocations(url: &str) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("http_{}", resp.status().as_u16()));
+/// The production transport: there is no licensing endpoint, so there is
+/// nothing to call.
+pub struct NoNetwork;
+
+impl LicenseTransport for NoNetwork {
+    fn get(&self, _url: &str) -> Result<Vec<u8>, String> {
+        Err("licensing makes no network call".into())
     }
-    let body = resp.text().await.map_err(|e| e.to_string())?;
-    let doc: RevocationDocument = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    Ok(doc.kids)
+}
+
+/// Bring licensing up at launch: read `license.json` (including any cached
+/// `revoked_kids` an older build wrote) and the corroborating trial rows, and
+/// derive entitlement locally from the stored Ed25519 signature.
+///
+/// Makes NO request on `transport` — local verification (claims, trial, grace)
+/// is the whole of it. The parameter exists so the zero-request property is a
+/// tested contract, not a comment.
+pub fn launch_init(
+    dir: &Path,
+    store: Arc<dyn LicenseStore>,
+    transport: &dyn LicenseTransport,
+) -> LicenseManager {
+    let _no_requests_at_launch = transport;
+    LicenseManager::new(dir, store)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────
@@ -1865,44 +1863,74 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn license_revocation_url_is_https_on_the_issuer_host_only() {
-        assert!(REVOCATION_URL.starts_with("https://"));
-        let host = REVOCATION_URL
-            .trim_start_matches("https://")
-            .split('/')
-            .next()
-            .unwrap();
-        assert_eq!(host, ISSUER_HOST);
-        assert!(REVOCATION_URL.ends_with("/v1/yap/revoked.json"));
+    /// A transport that records every request instead of making it.
+    #[derive(Default)]
+    struct RecordingTransport {
+        requests: Mutex<Vec<String>>,
     }
 
-    #[test]
-    fn license_offline_revocation_failure_changes_nothing() {
-        let (dir, store) = temp_env("offline");
-        let key = sign_with(&test_key(), valid_claims());
-        let mgr = test_manager(dir.path(), store, 1_000_000);
-        mgr.activate(&key).unwrap();
-        // A list that HAS been fetched before, so we can prove it survives.
-        mgr.apply_revocations(vec!["someone-else".into()], 900);
-        let before = mgr.status();
-        let before_file = mgr.file_snapshot();
-
-        // This is the production decision point, not a stand-in for it.
-        for failure in ["dns error", "http_503", "expected value at line 1"] {
-            assert!(!mgr.apply_fetch_result(Err(failure.into())));
+    impl LicenseTransport for RecordingTransport {
+        fn get(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.requests.lock().push(url.to_string());
+            Err("recording fake".into())
         }
+    }
 
-        let after = mgr.status();
-        let after_file = mgr.file_snapshot();
-        assert_eq!(before.entitlement, after.entitlement);
-        assert_eq!(before.revoked_count, after.revoked_count);
-        assert_eq!(before_file.revoked_kids, after_file.revoked_kids);
-        assert_eq!(
-            before_file.revoked_checked_at_ms,
-            after_file.revoked_checked_at_ms
+    /// yap-lic-00: launch-time licence init + a status read + a cached
+    /// `revoked_kids` load make ZERO requests, and a kid list an older build
+    /// cached is still read and still honoured.
+    #[test]
+    fn launch_license_init_makes_no_network_call() {
+        let (dir, store) = temp_env("launch-no-net");
+        // An install that already has a cached list on disk (older build).
+        {
+            let seeded = test_manager(dir.path(), store.clone(), 1_000_000);
+            seeded.apply_revocations(vec!["revoked-before-0001".into()], 900);
+        }
+        let transport = RecordingTransport::default();
+        let mgr = launch_init(dir.path(), store, &transport);
+        let status = mgr.status();
+        let cached = mgr.revoked_kids();
+        assert_eq!(cached, vec!["revoked-before-0001".to_string()]);
+        assert_eq!(status.revoked_count, 1);
+        assert_eq!(status.revocation_checked_at_ms, Some(900));
+        assert!(
+            transport.requests.lock().is_empty(),
+            "launch-time licence init made a request: {:?}",
+            transport.requests.lock()
         );
-        assert!(after.allows_new_dictation());
+    }
+
+    /// yap-lic-00: `license.rs` holds no HTTP client and names no host. The one
+    /// URL allowed is `PAYMENT_LINK_URL` (handed to open(1), never fetched).
+    /// Needles are assembled with `concat!` so this test does not match itself.
+    #[test]
+    fn license_rs_has_no_http_client() {
+        const SRC: &str = include_str!("license.rs");
+        let origin_end = PAYMENT_LINK_URL
+            .match_indices('/')
+            .nth(2)
+            .map(|(i, _)| i + 1)
+            .expect("payment link has an origin");
+        let scrubbed = SRC
+            .replace(PAYMENT_LINK_URL, "")
+            .replace(&PAYMENT_LINK_URL[..origin_end], "");
+        let needles = [
+            concat!("sslip", ".io"),
+            concat!("req", "west"),
+            concat!("u", "req"),
+            concat!("http", "://"),
+            concat!("https", "://"),
+        ];
+        for needle in needles {
+            let hits: Vec<String> = scrubbed
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains(needle))
+                .map(|(i, l)| format!("license.rs:{}: {}", i + 1, l.trim()))
+                .collect();
+            assert!(hits.is_empty(), "{needle:?} in license.rs: {hits:#?}");
+        }
     }
 
     // ── (4) trial arithmetic ──

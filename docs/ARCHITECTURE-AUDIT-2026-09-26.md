@@ -124,7 +124,7 @@ be "found on the machine"):
 | `yap-polish`, `yap-diarize` | Bundled `externalBin` | OK | `tauri.conf.json` |
 | onnxruntime for `yap-diarize` | Prebuilt tarball fetched by `sherpa-onnx-sys` **at build time** | Build-machine dependency, not runtime | HARNESS.md "The gate" |
 | License issuer (purchase → key) | Stripe Payment Link → Forge Fastify → Ed25519 signer → Resend | **Fails: Forge box decommissioned** — no issuer exists | memory `project_yap_loop_state_20260912`; LIC-A |
-| Revocation list | GET `https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json` | **Fails** (RAN: HTTP 000); designed as a no-op on failure, so licensed users are unaffected | `license.rs:117`; LIVE log "revocation refresh skipped" |
+| Revocation list | **Deleted by yap-lic-00 (2026-10-26).** Was a GET to the decommissioned Forge box's wildcard-DNS hostname on every launch and every activation | Licensing now makes no network call; a cached kid list is still read locally. (This row originally called the failure "a no-op" — the request itself was live every launch, see §9.) | yap-lic-00; `license.rs` `launch_license_init_makes_no_network_call` |
 | Stripe Payment Link | `buy.stripe.com/…` | Link answers 200; whether it is `active` is UNVERIFIED (memory says `active:false`) | `license.rs:137` |
 | Updater feed | GitHub `releases/latest/download/latest.json` | Works **only while the repo is public** (RAN: 200, 0.8.0) | `tauri.conf.json:67`; UPD-A |
 | macOS ≥ 12.0 | `minimumSystemVersion` | OK; system audio needs 14.4 (gated) | `tauri.conf.json`; `os_version_gate.rs` |
@@ -456,7 +456,7 @@ memory `project_wilson_voice` / `project_yap_build_state`, and the code.
 
 | Check | Result | Evidence |
 |---|---|---|
-| Data stays local | Yes: no analytics SDK; the only network calls are model downloads (pinned, sha256-verified), the updater feed, and the revocation GET (no identifiers sent). Audio never leaves the Mac. | `lib.rs:3784`; `models.rs:7-8`; `license.rs:117` |
+| Data stays local | Yes: no analytics SDK; the only network calls are model downloads (pinned, sha256-verified) and the updater feed. Audio never leaves the Mac. **Corrected 2026-10-26 (yap-lic-00):** this row first listed a "harmless no-op" revocation GET. That was wrong — it was a live, unauthenticated GET to the decommissioned Forge host on every launch and every activation, sending client IP and launch timing and accepting an unsigned kid list. It is deleted; the licensing path makes no network call. | `lib.rs:3784`; `models.rs:7-8`; yap-lic-00 |
 | Model downloads verified by hash | Yes — ASR per-file sha256, polish and diarize pinned revisions + sha256, Silero sha256 (`vad.rs:496,508,549`); archive extraction capped (yap23 supply-chain tests) | `models.rs:93,189,300,369` |
 | Update signature verification | Yes — Tauri updater minisign, mandatory, "cannot be disabled" (https://v2.tauri.app/plugin/updater/); pubkey pinned in `tauri.conf.json` | `tauri.conf.json` plugins.updater |
 | Secrets in the repo | **RAN** `gitleaks detect` over 315 commits: 1 finding, a **false positive** — the updater minisign **public** key quoted in `scripts/cicd-loop.mjs:189` (commit `4a96cc3`). No private key, token or password. | gitleaks 2026-09-26 |
@@ -580,7 +580,7 @@ treat any passage below that this section contradicts as SUPERSEDED.
   (`Y4-D` only). See `docs/loop/items/05-y1-audio-permission.mjs`'s corrected `notes` and the new
   `yap24-NT10` item, which ships a meetings-scoped subset of this fix inside pass 1.
 - **§9 revocation "harmless no-op."** Every launch sends an unauthenticated GET to
-  `forge.87-99-149-214.sslip.io` (a decommissioned box's IP, via a wildcard DNS host Wilson does
+  the decommissioned Forge box's wildcard-DNS hostname (since removed from the repo by yap-lic-00; a host Wilson does
   not control the certificate authority trust for) and accepts whatever unsigned `{kids:[]}`
   comes back with no signature check (`license.rs:1100-1124`). This is not harmless: it sends
   client IP and launch timing to a third party, contradicting both `license.rs:111-113`'s "the

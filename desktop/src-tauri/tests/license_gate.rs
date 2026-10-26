@@ -41,7 +41,6 @@ const ALLOWED_CALLERS: &[&str] = &[
     "license_status",
     "activate_license",
     "deactivate_license",
-    "spawn_revocation_refresh",
     // The typed error's own constructor — it names the code, it does not decide
     // anything.
     "license_required",

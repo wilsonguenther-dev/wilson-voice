@@ -544,7 +544,7 @@ project `vlfrzdbqwsnrosmcygca`, which is over its free-tier limits — a licensi
 unrelated product's usage is the worst possible coupling) → the key signed **server-side** with the
 signing key moved into Supabase secrets, the public half still compiled into the app for offline
 validation → delivered by **Resend** *and* retrievable in-app by purchase email → the **revocation
-list served from Supabase**, so `sslip.io` disappears from `license.rs` and the box can move. The
+list served from Supabase**, so the decommissioned Forge hostname disappears from `license.rs` and the box can move (yap-lic-00 removed the fetch outright, ahead of that). The
 claims wire format is **frozen** (`base64url(claims).base64url(sig)`, signature over the ASCII bytes
 of the first segment) because every shipped copy of Yap pins the verifier.
 
