@@ -119,11 +119,15 @@
   flex-wrap: nowrap;
   gap: 6px;
   opacity: 0;
+  /* Hidden actions must not swallow a click meant for the date/duration
+     column underneath; they take pointer events only once revealed. */
+  pointer-events: none;
   transition: opacity 0.15s ease;
 }
 .meeting-row:hover .actions,
 .meeting-row:focus-within .actions {
   opacity: 1;
+  pointer-events: auto;
 }
 @media (prefers-reduced-motion: reduce) {
   .meeting-row .actions { transition: none; }

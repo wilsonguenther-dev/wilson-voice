@@ -64,9 +64,19 @@ describe("yap-uiux-2026-10-16-M1 — transcribing rows report how far they got",
 
 describe("yap-uiux-2026-10-16-M2 — a compact row shows the notes' first line", () => {
   it("takes the first non-empty line and strips list/heading marks", () => {
-    expect(summaryFirstLine("\n## Decisions\n- ship it")).toBe("Decisions");
+    expect(summaryFirstLine("\n## Decisions\n- ship it")).toBe("Decisions: ship it");
     expect(summaryFirstLine("- agreed on a date\n- next step")).toBe("agreed on a date");
     expect(summaryFirstLine("Plain sentence.")).toBe("Plain sentence.");
+  });
+  it("a notes body with no narrative names its section, never just the heading", () => {
+    // render_summary() opens with "### Action items" when the model wrote no narrative.
+    expect(summaryFirstLine("### Action items\n\n- send the pricing doc (Jeisil, 00:04:12)\n"))
+      .toBe("Action items: send the pricing doc (Jeisil, 00:04:12)");
+    expect(summaryFirstLine("### Open questions\n")).toBe("Open questions");
+  });
+  it("drops inline markdown emphasis so no stray ** or backticks reach the row", () => {
+    expect(summaryFirstLine("**Pricing** was agreed, see `v2`.")).toBe("Pricing was agreed, see v2.");
+    expect(summaryFirstLine("- __Ship__ on Friday")).toBe("Ship on Friday");
   });
   it("is null with no notes", () => {
     expect(summaryFirstLine(null)).toBeNull();

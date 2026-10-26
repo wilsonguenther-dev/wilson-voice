@@ -108,16 +108,35 @@ export function transcribedLabel(p: TranscribeProgress): string {
   return `Transcribed ${Math.floor(p.processedSeconds / 60)} of ${Math.max(1, Math.round(p.durationSeconds / 60))} min`;
 }
 
+/** Inline markdown a one-line row cannot render: bold/italic marks and code ticks. */
+function stripInline(text: string): string {
+  return text
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/`([^`]*)`/g, "$1")
+    .trim();
+}
+
 /**
  * yap-uiux-2026-10-16-M2 — the one line of a meeting's notes a compact row has
- * room for: the first non-empty line, markdown bullet/heading marks stripped.
- * `null` when there are no notes.
+ * room for. The first narrative line wins. `render_summary` (summarize.rs)
+ * opens with "### Action items" when the model wrote no narrative, so a
+ * heading is never the whole answer on its own: it names the section its first
+ * item belongs to ("Action items: send the pricing doc (00:04:12)"). A
+ * heading with no item under it is returned bare. Bullet/heading marks and
+ * inline emphasis are stripped. `null` when there are no notes.
  */
 export function summaryFirstLine(summary: string | null | undefined): string | null {
   if (!summary) return null;
+  let heading: string | null = null;
   for (const raw of summary.split(/\r?\n/)) {
-    const line = raw.replace(/^\s*(?:[#>*-]+|\d+[.)])\s*/, "").trim();
-    if (line) return line;
+    if (/^\s*#+\s/.test(raw) || /^\s*#+\s*$/.test(raw)) {
+      const text = stripInline(raw.replace(/^\s*#+\s*/, ""));
+      if (text && heading === null) heading = text;
+      continue;
+    }
+    const line = stripInline(raw.replace(/^\s*(?:(?:[>*-]|\d+[.)])\s+)+/, ""));
+    if (!line) continue;
+    return heading ? `${heading}: ${line}` : line;
   }
-  return null;
+  return heading;
 }
