@@ -1209,7 +1209,23 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
  */
 export const STILL_RECORDING_LINE = "Still recording — tap fn to stop";
 
-/** The phase-strip line, with the still-recording prompt winning while live. */
-export function stripLine(line: string, stillRecording: boolean): string {
-  return stillRecording ? STILL_RECORDING_LINE : line;
+/**
+ * yap-qa-hotkey-walk-binding DO 3 — fn pressed WITHOUT the binding's ⌃ (the
+ * default fn⌃). Mirrors `ptt_macos::FN_WITHOUT_MODIFIER_HINT`; live.test.ts
+ * holds them equal and inside the strip's one line. The backend throttles it to
+ * once per 30 s and emits it as `FN_HINT_EVENT`.
+ */
+export const FN_HINT_LINE = "Hold fn⌃ — fn alone does nothing";
+/** The Tauri event carrying FN_HINT_LINE (lib.rs `FN_HINT_EVENT`). */
+export const FN_HINT_EVENT = "ptt_hint";
+/** How long the strip shows the hint before the phase line comes back. */
+export const FN_HINT_SHOW_MS = 3_500;
+
+/**
+ * The phase-strip line: the still-recording prompt wins while live, then a
+ * pending fn hint, then the phase's own line.
+ */
+export function stripLine(line: string, stillRecording: boolean, hint: string | null = null): string {
+  if (stillRecording) return STILL_RECORDING_LINE;
+  return hint ?? line;
 }

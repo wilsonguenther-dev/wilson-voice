@@ -317,5 +317,7 @@ fn the_pill_and_the_backend_say_the_same_still_recording_line() {
         "/../src/float-main.tsx"
     ))
     .expect("read float-main.tsx");
-    assert!(float.contains("stripLine(line, stillRecording)"));
+    // yap-qa-hotkey-walk-binding added the fn hint as a third, lower-ranked
+    // argument; still-recording still wins inside `stripLine`.
+    assert!(float.contains("stripLine(line, stillRecording, fnHint)"));
 }

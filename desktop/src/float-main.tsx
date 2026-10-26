@@ -27,6 +27,8 @@ import {
   reduceGatePhase,
   reduceTakePhase,
   stripLine,
+  FN_HINT_EVENT,
+  FN_HINT_SHOW_MS,
   toChatTone,
   winningPhase,
   CANCELLED_SETTLE_MS,
@@ -118,6 +120,24 @@ function Float() {
   const [lastError, setLastError] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
+  // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
+  // says so (throttled) and the strip shows it for FN_HINT_SHOW_MS.
+  const [fnHint, setFnHint] = useState<string | null>(null);
+  useEffect(() => {
+    let dead = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsub: (() => void) | undefined;
+    listen<string>(FN_HINT_EVENT, (e) => {
+      setFnHint(e.payload);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setFnHint(null), FN_HINT_SHOW_MS);
+    }).then((u) => (dead ? u() : (unsub = u)));
+    return () => {
+      dead = true;
+      if (timer) clearTimeout(timer);
+      unsub?.();
+    };
+  }, []);
   const [tone, setTone] = useState<string>("friendly");
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
@@ -339,6 +359,9 @@ function Float() {
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
   const pillProps = { gate: phase, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
+  useEffect(() => {
+    document.documentElement.dataset.fnHint = fnHint ? "true" : "false";
+  }, [fnHint]);
   const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} />;
   // Y5-C — the phase line is placed ONCE, by the SHELL, at all three docks
   // (OWNER DECISION 2026-09-13). It is character-agnostic TEXT; what is
@@ -362,7 +385,7 @@ function Float() {
         aria-live="polite"
         aria-label={phaseVisual(phase).label}
       >
-        {stripLine(line, stillRecording)}
+        {stripLine(line, stillRecording, fnHint)}
       </div>
     </>
   );

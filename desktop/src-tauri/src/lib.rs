@@ -6061,6 +6061,42 @@ fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
 }
 }
 
+/// yap-qa-hotkey-walk-binding DO 3 — the Tauri event that puts
+/// `ptt_macos::FN_WITHOUT_MODIFIER_HINT` on the pill's strip (float-main.tsx
+/// listens for `FN_HINT_EVENT` in desktop/src/pill/live.ts).
+#[cfg(target_os = "macos")]
+const FN_HINT_EVENT: &str = "ptt_hint";
+/// How long the pill stays up for the hint when it was hidden before it.
+#[cfg(target_os = "macos")]
+const FN_HINT_VISIBLE_MS: u64 = 4_000;
+
+/// fn went down without the binding's ⌃ (already throttled by ptt_macos): show
+/// the pill with the hint, then give the pill back to `show_floating_pill` —
+/// unless a take or meeting started in the meantime. Main thread.
+#[cfg(target_os = "macos")]
+fn show_fn_hint(app: &AppHandle, st: &Arc<AppState>) {
+    let was_shown = float_pill::is_shown();
+    if let Err(e) = float_pill::show_float(app) {
+        log::warn!("fn hint: float show: {e}");
+    }
+    if let Err(e) = app.emit_to("float", FN_HINT_EVENT, ptt_macos::FN_WITHOUT_MODIFIER_HINT) {
+        log::warn!("emit {FN_HINT_EVENT}: {e}");
+    }
+    log::info!("fn hint on pill: {}", ptt_macos::FN_WITHOUT_MODIFIER_HINT);
+    if was_shown {
+        return;
+    }
+    let h = app.clone();
+    let st = st.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(FN_HINT_VISIBLE_MS));
+        let show = st.settings.lock().show_floating_pill;
+        let in_flight = *st.recording.lock() || *st.busy.lock();
+        let keep = show || in_flight || float_pill::dictating() || float_pill::meeting_recording();
+        float_pill::after_recording(&h, keep);
+    });
+}
+
 /// Start (or retry) the fn⌃ hybrid tap. Safe to call again: `ptt_macos::start`
 /// only rebinds while a tap is running, and re-spawns after a failed install.
 #[cfg(target_os = "macos")]
@@ -6109,6 +6145,9 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                         *st.hands_free.lock() = false;
                         emit_status(&h, &st);
                         log::info!("hands-free OFF");
+                    }
+                    ptt_macos::PttEvent::FnWithoutModifierHint => {
+                        show_fn_hint(&h, &st);
                     }
                 }) {
                     log::error!("PTT main-thread hop failed: {e}");
