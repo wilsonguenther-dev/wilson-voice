@@ -48,7 +48,7 @@ export function meetingStateLabel(
     case "partial":
       return "Partly transcribed";
     case "waiting_for_model":
-      return "Waiting for the speech model";
+      return "Waiting for a speech model";
     case "failed":
       return "Failed";
     default:

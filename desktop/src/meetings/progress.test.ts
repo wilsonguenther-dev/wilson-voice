@@ -37,7 +37,7 @@ describe("meeting progress", () => {
   });
   it("waiting_for_model (yap24-NT2 R3) names the wait and is not a Retry state", () => {
     expect(meetingStateLabel("waiting_for_model", undefined, false)).toBe(
-      "Waiting for the speech model",
+      "Waiting for a speech model",
     );
     expect(canRetry("waiting_for_model")).toBe(false);
   });

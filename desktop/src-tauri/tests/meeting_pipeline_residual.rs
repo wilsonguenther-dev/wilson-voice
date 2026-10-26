@@ -583,3 +583,203 @@ fn lib_rs_pins_the_model_spawns_the_pipeline_and_flips_live_recording() {
     assert!(lib.contains("requeue_waiting_for_model"));
     assert_eq!(lib.matches("set_live_recording(").count(), 3);
 }
+
+// ── Fix round 1 (review of 0b3b14b) ─────────────────────────────────────────
+
+/// B3: an install whose user picked another model, and never downloaded the
+/// pinned one, keeps getting its meetings transcribed by the model it has.
+/// Only when NO usable model is on disk does the row wait.
+#[test]
+fn a_user_without_the_pinned_model_is_transcribed_by_their_own_model() {
+    use wilson_voice_lib::meeting_pipeline::resolve_meeting_model;
+    use wilson_voice_lib::models;
+    let pinned = models::recommended_model().id.clone();
+    let other = models::catalog()
+        .models
+        .iter()
+        .find(|m| m.id != pinned && m.languages.iter().any(|l| l.starts_with("en")))
+        .expect("the catalog has a second English model")
+        .id
+        .clone();
+    let only = |id: String| {
+        move |asked: &str| (asked == id).then(|| (id.clone(), PathBuf::from("/m.gguf")))
+    };
+
+    // Pinned missing, the user's own model on disk -> the user's own model.
+    let got = resolve_meeting_model(&pinned, &other, "en", &only(other.clone()));
+    assert_eq!(got.map(|(id, _)| id), Ok(other.clone()));
+    // Pinned on disk -> pinned, whatever the user selected.
+    let got = resolve_meeting_model(&pinned, &other, "en", &only(pinned.clone()));
+    assert_eq!(got.map(|(id, _)| id), Ok(pinned.clone()));
+    // Nothing on disk -> waiting, naming the pinned model.
+    let got = resolve_meeting_model(&pinned, &other, "en", &|_: &str| None);
+    assert_eq!(
+        got,
+        Err(AsrUnavailable::ModelMissing {
+            model_id: pinned.clone()
+        })
+    );
+    // A non-English spoken language is a refusal, never a wait.
+    let got = resolve_meeting_model(&pinned, &other, "es", &only(other.clone()));
+    assert!(matches!(got, Err(AsrUnavailable::Refused(_))), "{got:?}");
+    // The waiting sentence never claims a download is running.
+    assert!(!WAITING_FOR_MODEL_MESSAGE.contains("to download"));
+    assert!(WAITING_FOR_MODEL_MESSAGE.contains("Settings"));
+}
+
+/// The decoder an older build used: every word reads STALE.
+struct StaleAsr;
+
+impl ChunkAsr for StaleAsr {
+    fn transcribe_timed(&self, samples: &[f32]) -> Result<TimedTranscript, String> {
+        let mut t = words_for(samples, 0);
+        for w in &mut t.words {
+            w.text = "STALE".into();
+        }
+        t.text = t
+            .words
+            .iter()
+            .map(|w| w.text.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(t)
+    }
+}
+
+/// B4: a row partly transcribed BEFORE migration 6 — ledgers and segments on
+/// disk, `asr_model` NULL — is re-decoded, never spliced onto (or resumed
+/// past by) the new model's output.
+#[test]
+fn a_pre_migration_row_with_ledgers_and_no_model_is_re_decoded() {
+    let dir = temp_dir("nt2-r4-null");
+    let db = Arc::new(open_db(&dir));
+    let (id, _) = stopped_meeting(&db, &dir, "mid-transcription at update");
+    // The older build's pass: ledgers + segments, all STALE.
+    let old: Factory = Arc::new(|| Ok(MeetingEngine::new("old-model", Box::new(StaleAsr))));
+    guarded_job(&deps(Arc::clone(&db), &dir, old), &id).unwrap();
+    assert!(JsonProgressStore::new(&dir)
+        .path_for(&meeting_pipeline::ledger_key(
+            &id,
+            meeting_pipeline::MIC_TRACK
+        ))
+        .exists());
+    // ...as a pre-migration-6 row looks after the upgrade: no model recorded,
+    // still in flight.
+    {
+        let conn = rusqlite::Connection::open(dir.join("wilson_voice.db")).unwrap();
+        conn.execute(
+            "UPDATE meetings SET asr_model = NULL, state = 'transcribing' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    }
+    assert_eq!(db.meeting_asr_model(&id).unwrap(), None);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = deps(
+        Arc::clone(&db),
+        &dir,
+        stub_factory(Arc::clone(&calls), "parakeet"),
+    );
+    assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::Complete);
+    let segments = db.list_meeting_segments(&id).unwrap();
+    assert!(!segments.is_empty());
+    assert!(
+        segments.iter().all(|s| !s.text.contains("STALE")),
+        "a pre-migration model's text was spliced onto this model's output"
+    );
+    assert!(calls.load(Ordering::SeqCst) > 0, "nothing was re-decoded");
+    assert_eq!(
+        db.meeting_asr_model(&id).unwrap().as_deref(),
+        Some("parakeet")
+    );
+}
+
+fn waiting_then_present_factory(present: Arc<AtomicBool>, calls: Arc<AtomicUsize>) -> Factory {
+    Arc::new(move || {
+        if !present.load(Ordering::SeqCst) {
+            return Err(AsrUnavailable::ModelMissing {
+                model_id: "pinned-parakeet".into(),
+            });
+        }
+        Ok(MeetingEngine::new(
+            "pinned-parakeet",
+            Box::new(StubAsr {
+                calls: Arc::clone(&calls),
+                panic_on_first: false,
+            }),
+        ))
+    })
+}
+
+/// B5: a partial capture that waits for a model ends `partial` with its own
+/// note — by the download requeue AND by the launch reconcile — never
+/// `complete`, and never with the waiting sentence as its note.
+#[test]
+fn a_partial_capture_that_waited_for_a_model_still_ends_partial() {
+    const NOTE: &str = "The recording stopped early — only part of the meeting was captured.";
+    for via_reconcile in [false, true] {
+        let dir = temp_dir(if via_reconcile {
+            "nt2-r3-partial-reconcile"
+        } else {
+            "nt2-r3-partial-requeue"
+        });
+        let db = Arc::new(open_db(&dir));
+        let (id, _) = stopped_meeting(&db, &dir, "short capture");
+        db.set_meeting_state(&id, MeetingState::Partial, Some(NOTE))
+            .unwrap();
+        let present = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let d = deps(
+            Arc::clone(&db),
+            &dir,
+            waiting_then_present_factory(Arc::clone(&present), Arc::clone(&calls)),
+        );
+        assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::WaitingForModel);
+        assert_eq!(state_of(&db, &id).0, "waiting_for_model");
+
+        present.store(true, Ordering::SeqCst);
+        let mut queued = Vec::new();
+        {
+            let seen = Mutex::new(&mut queued);
+            if via_reconcile {
+                reconcile_stranded_meetings(&db, &|m| seen.lock().unwrap().push(m.to_string()));
+            } else {
+                requeue_waiting_for_model(&db, &|m| seen.lock().unwrap().push(m.to_string()));
+            }
+        }
+        assert_eq!(queued, vec![id.clone()]);
+        assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::Partial);
+        let (s, err) = state_of(&db, &id);
+        assert_eq!(s, "partial", "via_reconcile={via_reconcile}");
+        assert_eq!(err.as_deref(), Some(NOTE), "via_reconcile={via_reconcile}");
+        assert!(
+            !meeting_pipeline::capture_carry_path(&dir, &id).exists(),
+            "the carry is gone once the row holds the final state"
+        );
+    }
+}
+
+/// B5, the other half: a non-partial capture that waited ends `complete`
+/// WITHOUT the waiting sentence left behind as its note (launch reconcile
+/// leaves that sentence in the error column).
+#[test]
+fn a_whole_capture_that_waited_ends_complete_without_the_waiting_sentence() {
+    let dir = temp_dir("nt2-r3-whole-reconcile");
+    let db = Arc::new(open_db(&dir));
+    let (id, _) = stopped_meeting(&db, &dir, "whole capture");
+    let present = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = deps(
+        Arc::clone(&db),
+        &dir,
+        waiting_then_present_factory(Arc::clone(&present), Arc::clone(&calls)),
+    );
+    assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::WaitingForModel);
+    present.store(true, Ordering::SeqCst);
+    reconcile_stranded_meetings(&db, &|_| {});
+    assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::Complete);
+    let (s, err) = state_of(&db, &id);
+    assert_eq!(s, "complete");
+    assert_eq!(err, None);
+}

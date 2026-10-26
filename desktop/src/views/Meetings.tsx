@@ -457,7 +457,9 @@ export default function Meetings() {
                     {openMeeting.meeting.state === "recording" ||
                     openMeeting.meeting.state === "transcribing"
                       ? "Yap is still working through the audio. This page does not refresh itself."
-                      : "Nothing was transcribed from this recording. The audio is still on disk for 7 days."}
+                      : openMeeting.meeting.state === "waiting_for_model"
+                        ? "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically. The audio is kept until then."
+                        : "Nothing was transcribed from this recording. The audio is still on disk for 7 days."}
                   </p>
                   <div className="actions">
                     <button

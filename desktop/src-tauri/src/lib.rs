@@ -7175,21 +7175,26 @@ pub fn run() {
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
-            // yap24-NT2 R4: meeting ASR is PINNED to the catalog's recommended
-            // model (parakeet Q8_0), never "whatever the dictation setting
-            // selects" — an interim whisper-tiny selection must never become
-            // the model a meeting is permanently transcribed by. R3: the pinned
-            // model missing from disk is `waiting_for_model`, not `failed`.
+            // yap24-NT2 R4: meeting ASR PREFERS the catalog's recommended model
+            // (parakeet Q8_0) when it is on disk. Fix round 1: when it is not,
+            // the user's own selected model is used if it is downloaded and
+            // passes the meeting gate (what this factory did before the pin),
+            // so an install that picked another model keeps transcribing its
+            // meetings. R3: only when NO usable model is on disk is the row
+            // `waiting_for_model`, not `failed`. The row records which model it
+            // got (`asr_model`).
             asr: Arc::new(move || {
-                let language = asr_state.settings.lock().language.clone();
+                let (selected, language) = {
+                    let s = asr_state.settings.lock();
+                    (s.native_model.clone(), s.language.clone())
+                };
                 let pinned = models::recommended_model();
-                meeting_asr::meeting_availability(Some(&pinned.id), Some(&language))
-                    .map_err(|e| meeting_pipeline::AsrUnavailable::Refused(e.message()))?;
-                let (model_id, model_path) = native_model_ready(&pinned.id).ok_or_else(|| {
-                    meeting_pipeline::AsrUnavailable::ModelMissing {
-                        model_id: pinned.id.clone(),
-                    }
-                })?;
+                let (model_id, model_path) = meeting_pipeline::resolve_meeting_model(
+                    &pinned.id,
+                    &selected,
+                    &language,
+                    &native_model_ready,
+                )?;
                 Ok(meeting_pipeline::MeetingEngine::new(
                     model_id.clone(),
                     Box::new(meeting_asr::WarmEngineChunkAsr::new(
