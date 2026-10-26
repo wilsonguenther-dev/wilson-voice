@@ -544,3 +544,226 @@ fn rss_growth_verdict_matches_the_soak_rule() {
     ));
     assert!(!lifecycle::rss_growth_exceeds(&[1000, 2000], 3, 10.0));
 }
+
+/// A real holder process: binds `sock`, accepts and reads every handoff, never
+/// acks. On SIGTERM it unlinks `sock` and exits, exactly what the
+/// single-instance plugin's `socket_cleanup` does on `RunEvent::Exit` — unless
+/// `ignore_term`, which models a holder too wedged to act on SIGTERM.
+/// Kills a holder a failed assertion left behind, so a red test never leaks a
+/// listener. Only while it has not been reaped, so a recycled pid is never hit.
+struct HolderGuard(u32, std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for HolderGuard {
+    fn drop(&mut self) {
+        if !self.1.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(self.0.to_string())
+                .status();
+        }
+    }
+}
+
+fn spawn_holder(
+    sock: &std::path::Path,
+    ignore_term: bool,
+) -> (
+    u32,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    HolderGuard,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let script = r#"
+import os, signal, socket, sys
+p = sys.argv[1]
+def term(*_):
+    try:
+        os.unlink(p)
+    except FileNotFoundError:
+        pass
+    os._exit(0)
+signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[2] == "ignore" else term)
+s = socket.socket(socket.AF_UNIX)
+s.bind(p)
+s.listen(8)
+while True:
+    c, _ = s.accept()
+    c.recv(65536)
+"#;
+    let mut child = std::process::Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(script)
+        .arg(sock)
+        .arg(if ignore_term { "ignore" } else { "cleanup" })
+        .spawn()
+        .expect("python3 holder");
+    let pid = child.id();
+    // Reap it the moment it dies: an unreaped child is a zombie, which
+    // kill(pid, 0) still reports as alive. Yap's real holder is never our child.
+    let exited = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = exited.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        flag.store(true, Ordering::SeqCst);
+    });
+    let start = Instant::now();
+    while !sock.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "holder never bound"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let guard = HolderGuard(pid, exited.clone());
+    (pid, exited, guard)
+}
+
+fn wait_flag(f: &std::sync::atomic::AtomicBool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if f.load(std::sync::atomic::Ordering::SeqCst) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// PR #248 review: replacing a stale holder must not leave two Yaps running,
+/// and the old one must not be able to unlink the replacement's socket on its
+/// way out. The holder is a REAL process here; it is stopped BEFORE its socket
+/// is unlinked, so by the time the replacement binds, nothing is left to
+/// delete it, and the next launch still finds a running instance.
+#[test]
+fn a_stale_holder_is_stopped_before_its_socket_is_replaced() {
+    use wilson_voice_lib::lifecycle::{handoff_action, replace_dead_holder, HandoffAction};
+    let d = tmpdir("replace");
+    let sock = d.join("si.sock");
+    let ack = d.join("si.ack");
+    std::fs::write(&ack, "4242 1\n").unwrap();
+    let (holder, exited, _guard) = spawn_holder(&sock, false);
+    let sent = lifecycle::now_nanos();
+    let v = handoff_to_running(
+        &sock,
+        &ack,
+        "/",
+        &["yap".into()],
+        Duration::from_millis(200),
+    );
+    let holder_pid = match v {
+        HandoffVerdict::Stale { holder_pid, .. } => holder_pid,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(holder_pid, Some(holder), "LOCAL_PEERPID names the listener");
+    assert_eq!(handoff_action(&v), HandoffAction::ReplaceDeadHolder);
+    // An ack from before the handoff does not count as a late answer.
+    assert!(!lifecycle::await_late_ack(
+        &ack,
+        sent,
+        Duration::from_millis(100)
+    ));
+
+    let (pid, how) = replace_dead_holder(
+        &sock,
+        holder_pid,
+        std::process::id(),
+        Duration::from_secs(2),
+    )
+    .expect("replaced");
+    assert_eq!((pid, how), (holder, "SIGTERM"));
+    assert!(
+        wait_flag(&exited),
+        "the old holder is gone, not running beside us"
+    );
+    assert!(!lifecycle::pid_alive(holder));
+    assert!(!sock.exists());
+
+    // The replacement binds (as its single-instance plugin would). Nothing is
+    // left that can unlink it, so the next launch finds a running instance.
+    let _replacement = UnixListener::bind(&sock).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(sock.exists(), "replacement's socket survives");
+    assert!(
+        std::os::unix::net::UnixStream::connect(&sock).is_ok(),
+        "the next launch reaches the replacement instead of starting a third Yap"
+    );
+    let line = lifecycle::replaced_message(&sock, 2003, pid, how);
+    assert!(
+        line.contains(&format!("pid {holder}")) && line.contains("SIGTERM"),
+        "{line}"
+    );
+    assert_eq!(
+        handoff_action(&HandoffVerdict::Handed { ack_ms: 1 }),
+        HandoffAction::Exit
+    );
+}
+
+/// A holder too wedged to act on SIGTERM is SIGKILLed; it never survives.
+#[test]
+fn a_stale_holder_that_ignores_sigterm_is_killed() {
+    let d = tmpdir("replace-kill");
+    let sock = d.join("si.sock");
+    let (holder, exited, _guard) = spawn_holder(&sock, true);
+    let (pid, how) = lifecycle::replace_dead_holder(
+        &sock,
+        Some(holder),
+        std::process::id(),
+        Duration::from_millis(300),
+    )
+    .expect("replaced");
+    assert_eq!((pid, how), (holder, "SIGKILL"));
+    assert!(wait_flag(&exited));
+    assert!(!sock.exists());
+}
+
+/// Fail closed: a holder that cannot be identified, or that is this very
+/// process, is never "replaced" — its socket stays and the launch refuses.
+#[test]
+fn an_unidentified_holder_is_refused_not_replaced() {
+    let d = tmpdir("replace-refuse");
+    let sock = d.join("si.sock");
+    let ack = d.join("si.ack");
+    let _in_process = UnixListener::bind(&sock).unwrap(); // our own pid holds it
+    let v = handoff_to_running(
+        &sock,
+        &ack,
+        "/",
+        &["yap".into()],
+        Duration::from_millis(100),
+    );
+    let holder_pid = match v {
+        HandoffVerdict::Stale { holder_pid, .. } => holder_pid,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(holder_pid, Some(std::process::id()));
+    let own = std::process::id();
+    assert!(
+        lifecycle::replace_dead_holder(&sock, holder_pid, own, Duration::from_millis(50)).is_err()
+    );
+    assert!(lifecycle::replace_dead_holder(&sock, None, own, Duration::from_millis(50)).is_err());
+    assert!(lifecycle::terminate_holder(1, own, Duration::from_millis(50)).is_err());
+    assert!(
+        sock.exists(),
+        "a refused replacement leaves the socket alone"
+    );
+}
+
+/// A busy-but-alive holder that acks within the grace is spared.
+#[test]
+fn a_late_ack_spares_a_busy_holder() {
+    let d = tmpdir("late-ack");
+    let ack = d.join("si.ack");
+    std::fs::write(&ack, "4242 1\n").unwrap();
+    let since = lifecycle::now_nanos();
+    let a = ack.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        lifecycle::write_handoff_ack(&a);
+    });
+    assert!(lifecycle::await_late_ack(
+        &ack,
+        since,
+        Duration::from_secs(2)
+    ));
+}

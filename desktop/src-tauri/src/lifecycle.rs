@@ -488,7 +488,12 @@ pub enum HandoffVerdict {
     /// The running Yap took the handoff and acknowledged it.
     Handed { ack_ms: u128 },
     /// The running Yap accepted the connection but never acknowledged.
-    Stale { waited_ms: u128 },
+    /// `holder_pid` is the listener's pid from `LOCAL_PEERPID` on the very
+    /// connection that was handed off; `None` when it could not be read.
+    Stale {
+        waited_ms: u128,
+        holder_pid: Option<u32>,
+    },
     /// Something else went wrong talking to the socket; launch normally and let
     /// the plugin decide (it does the same on errors it does not recognize).
     Unknown(String),
@@ -522,6 +527,7 @@ pub fn handoff_to_running(
         Ok(s) => s,
         Err(e) => return classify_connect(&e),
     };
+    let holder_pid = peer_pid(&stream);
     let mut payload = Vec::new();
     payload.extend_from_slice(cwd.as_bytes());
     payload.extend_from_slice(b"\0\0");
@@ -541,10 +547,165 @@ pub fn handoff_to_running(
         if start.elapsed() >= timeout {
             return HandoffVerdict::Stale {
                 waited_ms: start.elapsed().as_millis(),
+                holder_pid,
             };
         }
         std::thread::sleep(HANDOFF_ACK_POLL);
     }
+}
+
+/// What a launch does with a [`HandoffVerdict`]. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffAction {
+    /// Become the instance.
+    Launch,
+    /// The running Yap took it; this process exits 0.
+    Exit,
+    /// The holder accepted the connection but never answered within
+    /// [`HANDOFF_ACK_TIMEOUT`]: it is dead to the user. Replace it — unlink its
+    /// socket so this launch's single-instance plugin binds a fresh one — and
+    /// launch, instead of refusing and leaving the user with no Yap at all.
+    ReplaceDeadHolder,
+}
+
+pub fn handoff_action(verdict: &HandoffVerdict) -> HandoffAction {
+    match verdict {
+        HandoffVerdict::NoRunningInstance | HandoffVerdict::Unknown(_) => HandoffAction::Launch,
+        HandoffVerdict::Handed { .. } => HandoffAction::Exit,
+        HandoffVerdict::Stale { .. } => HandoffAction::ReplaceDeadHolder,
+    }
+}
+
+/// How long a holder that missed [`HANDOFF_ACK_TIMEOUT`] still gets to ack
+/// before it is treated as dead. A busy-but-alive main thread answers here and
+/// the launch exits 0 instead of terminating it.
+pub const LATE_ACK_GRACE: Duration = Duration::from_millis(3_000);
+
+/// How long a stale holder gets to die after each signal (SIGTERM, then SIGKILL).
+pub const HOLDER_TERM_GRACE: Duration = Duration::from_millis(2_000);
+
+/// Nanoseconds since the epoch, in the same unit [`write_handoff_ack`] stamps.
+pub fn now_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+fn ack_nanos(ack: &Path) -> Option<u128> {
+    ack_stamp(ack)?.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Wait up to `grace` for an ack stamped at or after `since` (a [`now_nanos`]
+/// taken before the handoff was sent). `true` = the holder is alive after all.
+pub fn await_late_ack(ack: &Path, since: u128, grace: Duration) -> bool {
+    let start = Instant::now();
+    loop {
+        if ack_nanos(ack).is_some_and(|n| n >= since) {
+            return true;
+        }
+        if start.elapsed() >= grace {
+            return false;
+        }
+        std::thread::sleep(HANDOFF_ACK_POLL);
+    }
+}
+
+/// The pid of the process listening on the other end of a connected Unix
+/// socket (`LOCAL_PEERPID`). `None` when it cannot be read, which makes a
+/// stale holder un-replaceable: the launch refuses instead of guessing.
+#[cfg(target_os = "macos")]
+pub fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: a live fd and an out-pointer sized for pid_t, as LOCAL_PEERPID requires.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut libc::pid_t as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0 && pid > 0).then_some(pid as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
+}
+
+/// `true` while `pid` names a process (EPERM still means it exists).
+pub fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks for existence and permission.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Stop a stale holder: SIGTERM, wait up to `grace`, then SIGKILL and wait
+/// again. Returns which signal ended it. Never signals pid <= 1 or this
+/// process. `Err` when it is still alive or cannot be signalled.
+pub fn terminate_holder(pid: u32, own_pid: u32, grace: Duration) -> Result<&'static str, String> {
+    if pid <= 1 || pid == own_pid {
+        return Err(format!("refusing to signal pid {pid}"));
+    }
+    if !pid_alive(pid) {
+        return Ok("already gone");
+    }
+    for (sig, name) in [(libc::SIGTERM, "SIGTERM"), (libc::SIGKILL, "SIGKILL")] {
+        // SAFETY: plain kill(2) on a pid checked above.
+        if unsafe { libc::kill(pid as libc::pid_t, sig) } != 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(name);
+            }
+            return Err(format!("{name} to pid {pid}: {e}"));
+        }
+        let start = Instant::now();
+        while start.elapsed() < grace {
+            if !pid_alive(pid) {
+                return Ok(name);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    Err(format!("pid {pid} is still alive after SIGKILL"))
+}
+
+/// Replace a holder that never acked: terminate the process FIRST, then unlink
+/// its socket. The order is the point. The old process must not outlive the
+/// replacement — two Yaps would share the tray, hotkeys and database — and the
+/// single-instance plugin unlinks its socket path on `RunEvent::Exit`, so a
+/// holder that quit after the replacement had bound would delete the
+/// replacement's socket and every later launch would start yet another Yap.
+/// Returns `(pid, signal that ended it)`.
+pub fn replace_dead_holder(
+    socket: &Path,
+    holder_pid: Option<u32>,
+    own_pid: u32,
+    grace: Duration,
+) -> Result<(u32, &'static str), String> {
+    let pid = holder_pid
+        .ok_or_else(|| "the holder's pid is unknown, so it cannot be stopped".to_string())?;
+    let how = terminate_holder(pid, own_pid, grace)?;
+    match std::fs::remove_file(socket) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("unlink {}: {e}", socket.display())),
+    }
+    Ok((pid, how))
+}
+
+/// The log line for a replaced holder.
+pub fn replaced_message(socket: &Path, waited_ms: u128, pid: u32, how: &str) -> String {
+    format!(
+        "the holder of {} (pid {pid}) did not answer within {waited_ms} ms plus the grace — stopped it ({how}), unlinked its socket; this launch becomes the instance",
+        socket.display()
+    )
 }
 
 /// The words a stale handoff says, instead of the old silent exit.

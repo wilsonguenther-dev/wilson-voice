@@ -6835,9 +6835,12 @@ pub fn run() {
     // plugin's handoff is a one-way write followed by a silent exit(0), so a
     // running Yap whose main thread is wedged swallowed every relaunch. Hand
     // off here first and wait (bounded) for the running app's ack.
+    let handoff_sock = lifecycle::handoff_socket(instance_identifier());
+    let handoff_ack = lifecycle::handoff_ack_file(instance_identifier());
+    let handoff_sent = lifecycle::now_nanos();
     match lifecycle::handoff_to_running(
-        &lifecycle::handoff_socket(instance_identifier()),
-        &lifecycle::handoff_ack_file(instance_identifier()),
+        &handoff_sock,
+        &handoff_ack,
         &std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -6846,15 +6849,46 @@ pub fn run() {
     ) {
         lifecycle::HandoffVerdict::NoRunningInstance => {}
         lifecycle::HandoffVerdict::Handed { ack_ms } => {
-            log::info!("second launch: running Yap presented its window (ack {ack_ms}ms) — exiting");
+            log::info!(
+                "second launch: running Yap presented its window (ack {ack_ms}ms) — exiting"
+            );
             std::process::exit(0);
         }
-        lifecycle::HandoffVerdict::Stale { waited_ms } => {
-            let msg = lifecycle::stale_message(waited_ms);
-            log::warn!("second launch: stale instance — {msg}");
-            eprintln!("{msg}");
-            notify_stale_instance(&msg);
-            std::process::exit(1);
+        lifecycle::HandoffVerdict::Stale {
+            waited_ms,
+            holder_pid,
+        } => {
+            // fix-ax-probe-refresh: a holder that does not answer is replaced,
+            // not obeyed — but only once it is GONE. A merely busy holder gets
+            // LATE_ACK_GRACE more to answer; past that it is terminated
+            // (SIGTERM, then SIGKILL) and only then is its socket unlinked, so
+            // two Yaps never run side by side and the old one can never unlink
+            // the socket this launch's plugin is about to bind. If the holder
+            // cannot be identified or stopped, refuse exactly as before.
+            if lifecycle::await_late_ack(&handoff_ack, handoff_sent, lifecycle::LATE_ACK_GRACE) {
+                log::info!(
+                    "second launch: running Yap answered late (no ack in {waited_ms}ms, then acked within the grace) — exiting"
+                );
+                std::process::exit(0);
+            }
+            match lifecycle::replace_dead_holder(
+                &handoff_sock,
+                holder_pid,
+                std::process::id(),
+                lifecycle::HOLDER_TERM_GRACE,
+            ) {
+                Ok((pid, how)) => log::warn!(
+                    "second launch: stale instance — {}",
+                    lifecycle::replaced_message(&handoff_sock, waited_ms, pid, how)
+                ),
+                Err(e) => {
+                    let msg = lifecycle::stale_message(waited_ms);
+                    log::warn!("second launch: stale instance, could not replace it ({e}) — {msg}");
+                    eprintln!("{msg}");
+                    notify_stale_instance(&msg);
+                    std::process::exit(1);
+                }
+            }
         }
         lifecycle::HandoffVerdict::Unknown(e) => {
             log::warn!("second launch: handoff probe inconclusive ({e}) — launching normally");
