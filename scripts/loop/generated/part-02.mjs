@@ -922,8 +922,8 @@ const RUN_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { command: { type: 'string' }, exit: { type: 'number' } },
-        required: ['command', 'exit'],
+        properties: { command: { type: 'string' }, exit: { type: 'number' }, stdout: { type: 'string' } },
+        required: ['command', 'exit', 'stdout'],
       },
     },
     allZero: { type: 'boolean' },
@@ -951,6 +951,28 @@ const runText = (r) => {
     return [exits, String(r.output || '')].filter(Boolean).join('\n\n').slice(0, 6000)
   }
   return asText(r).slice(0, 6000)
+}
+/**
+ * DEPENDENCY HOLD MARKER (walk D7, 2026-10-26). True ONLY when an EXECUTED command's captured stdout
+ * (exits[i].stdout — the raw text the command printed) carries a LINE that starts
+ * "DEPENDENCY-NOT-ON-MAIN:". Never the echoed command string (exits[i].command), never the seat's
+ * own prose (output / firstFailure), never anywhere else in the runner's JSON. On main 3569ce4 the
+ * old test (the marker regex against asText(pre), the WHOLE result) skipped yap-p0-perm-repair as
+ * "dependency not on main" because the marker text sat in exits[0].command (a then-literal echo) and
+ * in output ("No DEPENDENCY-NOT-ON-MAIN message printed") — run wf_9ac3986e, 2026-10-19T02:54Z.
+ * Pure: no I/O, no globals; review-gate.test.mjs lifts it out of this file and runs it.
+ */
+const dependencyMarkerPrinted = (pre) => {
+  let r = pre
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r)
+    } catch {
+      return false
+    }
+  }
+  if (!r || typeof r !== 'object' || !Array.isArray(r.exits)) return false
+  return r.exits.some((e) => !!e && typeof e.stdout === 'string' && /^DEPENDENCY-NOT-ON-MAIN:/m.test(e.stdout))
 }
 
 /**
@@ -989,7 +1011,9 @@ false green exactly that way. There is no 'timeout' binary on macOS. A command t
 reassuring text and exits non-zero FAILED; a command that prints nothing and exits 0 PASSED.
 
 RETURN the schema exactly: {kind: "${kind}", itemId: "${item.id}", dir: "${dir}", headSha: "<sha>",
-exits: [{command, exit}, ...] — ONE ENTRY PER COMMAND, IN ORDER, allZero: <true only if every exit
+exits: [{command, exit, stdout}, ...] — ONE ENTRY PER COMMAND, IN ORDER, where stdout is the raw text
+THAT command printed, pasted verbatim (its last ~40 lines; "" if it printed nothing) and NEVER your
+own words — the loop reads stdout and nothing else for the dependency marker, allZero: <true only if every exit
 is 0>, firstFailure: "<the first command that did not exit 0, or empty>", output: "<the raw tail of
 each command's output, pasted, at most ~80 lines total>"}
 allZero IS THE FIELD THE LOOP BRANCHES ON. Getting it wrong is the worst thing you can do here.
@@ -1039,8 +1063,9 @@ async function runBuild(item, lane) {
   // top of a missing dependency only produces a conflicting PR. Such an item is SKIPPED with its own
   // status, never recorded as already-done; the next build pass (after a review pass lands the
   // dependency) builds it. Item files assemble the marker at run time, e.g. "DEPENDENCY-NOT-ON-$(printf
-  // MAIN)", so a seat echoing the command text cannot trip this.
-  if (runPassed(pre) && /DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))) {
+  // MAIN)", so a seat echoing the command text cannot trip this. The hold reads ONLY the executed
+  // commands' captured stdout, as a line starting "DEPENDENCY-NOT-ON-MAIN:" — see dependencyMarkerPrinted.
+  if (runPassed(pre) && dependencyMarkerPrinted(pre)) {
     log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
     return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
   }

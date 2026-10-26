@@ -64,7 +64,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 47 })
 } else {
   phase("part-01")
-  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (429789 bytes)")
+  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (431310 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (47 item(s))")
@@ -97,7 +97,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 48 })
 } else {
   phase("part-02")
-  log("START part-02 — 48 item(s), yap-lic-01-jws-verifier..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (436904 bytes)")
+  log("START part-02 — 48 item(s), yap-lic-01-jws-verifier..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (438425 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (48 item(s))")
@@ -130,7 +130,7 @@ if (halted) {
   results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 61 })
 } else {
   phase("part-03")
-  log("START part-03 — 61 item(s), LIC-A..yap24-PKG2 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (446225 bytes)")
+  log("START part-03 — 61 item(s), LIC-A..yap24-PKG2 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (447746 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs" }, args)
     log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (61 item(s))")
@@ -163,7 +163,7 @@ if (halted) {
   results.push({ part: "part-04", status: 'skipped: review mode runs part-01 only', items: 3 })
 } else {
   phase("part-04")
-  log("START part-04 — 3 item(s), yap24-X1..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs (169923 bytes)")
+  log("START part-04 — 3 item(s), yap24-X1..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs (171444 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs" }, args)
     log("END part-04 — " + (result && result.halted ? 'halted' : 'finished') + " (3 item(s))")
