@@ -316,6 +316,28 @@ test('klass: the harness, capabilities, a security id and a >1-page file list ar
   assert.equal(DEFAULT_REPO, 'wilsonguenther-dev/wilson-voice')
 })
 
+test('klass: the Yap licensing client (yap-lic-*) is security by its file set alone and by its item id alone', () => {
+  // PR #232 BLOCKING (2026-10-26): the yap-lic-02 build PR (title `${item.id}: ${item.title}`, label loop-build) was
+  // classed standard, so the activation client could land on ONE PASS. Its exact file set, with no fixture named *sign*:
+  const lic02 = [
+    'desktop/src-tauri/src/license_client.rs', 'desktop/src-tauri/src/license.rs', 'desktop/src-tauri/src/lib.rs',
+    'desktop/src-tauri/Cargo.toml', 'desktop/Cargo.lock', 'desktop/src-tauri/tests/license_gate.rs',
+    'desktop/src-tauri/tests/tray_license.rs', 'desktop/src/license/status.ts',
+  ]
+  assert.equal(securityClassOf({ files: lic02, labels: ['loop-build'], title: 'yap-lic-02: activation client' }).security, true)
+  for (const f of lic02.filter((x) => /licens/i.test(x))) assert.equal(securityClassOf({ files: [f] }).security, true, f)
+  assert.equal(securityClassOf({ files: ['desktop/src/entitlement/gate.ts'] }).security, true)
+  // the id alone, on a file set that matches nothing else
+  for (const t of ['yap-lic-01: verify', 'YAP-LIC-05: copy', '  yap-lic-00: init']) {
+    assert.equal(securityClassOf({ files: ['desktop/src/App.tsx'], title: t }).security, true, t)
+  }
+  assert.equal(securityClassOf({ files: ['desktop/src/App.tsx'], title: 'yap24-X3: pill' }).security, false)
+  // template.mjs prose must name the same id prefix and keywords the gate enforces
+  const tpl = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  assert.match(tpl, /const SECURITY_IDS = '[^']*YAP-LIC-/)
+  assert.match(tpl, /\|licens\|entitle\|/)
+})
+
 test('usage errors -> 64', () => {
   assert.equal(cli({ argv: ['gate'], gh: () => '', env: {} }).code, EXIT_USAGE)
   assert.equal(cli({ argv: ['merge', '--pr', '1'], gh: () => '', env: {} }).code, EXIT_USAGE)
