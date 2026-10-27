@@ -226,6 +226,29 @@
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ══════════════════════════════════════════════════════════════════
+     THE BAR — Y5-I. Orientation-NEUTRAL sizing for the docked pill.
+     The column (a side dock) is the base and a row is the override, so the
+     bar is never sized as "width" and "height": it is a LENGTH along its own
+     axis and a THICKNESS across it. The shell (pill/dock.ts) writes the
+     per-phase values off pill/dock-geometry.json onto its `.bar` root; the
+     values here are the resting bar, which is what paints before it does.
+     Never rotate the capsule with a transform — that is the approach Wispr
+     abandoned (their "30x6-always-horizontal collapse bug").
+     ══════════════════════════════════════════════════════════════════ */
+  --flow-bar-length: 40px; /* along the bar's main axis */
+  --flow-bar-thickness: 8px; /* across it; never more than the strip */
+  --flow-bar-strip: 30px; /* the side-dock column: STRIP_PX in pill/dock.ts */
+  --flow-bar-inset: 10px; /* gap to the screen edge on a side dock
+                             (SIDE_DOCK_INSET_PX in pill/live.ts) */
+  --flow-bar-gap: 8px; /* between the control and the waveform */
+  /* The waveform's axis IS a token: 1 = bars grow along X (the column base,
+     2 px bars), 0 = bars grow along Y (a row). float.css flips it with the bar. */
+  --flow-wave-on-x: 1;
+  --flow-wave-bar: 2px; /* a bar's thickness on its static axis */
+  --flow-wave-gap: 1px;
+  --flow-wave-reach: 16px; /* how far a bar travels at full level */
+
+  /* ══════════════════════════════════════════════════════════════════
      LEGACY ALIASES — the short names 2,900 lines of App.css already call.
      They now RESOLVE to the role tokens above rather than carrying values of
      their own, which is what makes this a no-op refactor: one definition per

@@ -208,7 +208,10 @@ describe("pixelGrid — the pure fit", () => {
     expect(dockCentreX("left", 300, 72)).toBe(DOCK_PAD + 36);
     expect(dockCentreX("right", 300, 72)).toBe(300 - DOCK_PAD - 36);
     expect(dockCentreX(undefined, 300, 72)).toBe(150);
-    expect(readSibling("../float.css")).toMatch(/data-dock="left"\] \.stage \{\s*justify-content: flex-start;\s*padding-left: 10px;/);
+    // Y5-I — a side dock is the .stage BASE now (vertical is the base, the
+    // bottom dock is the override), inset by the --flow-bar-inset token.
+    expect(readSibling("../float.css")).toMatch(/\n\.stage \{[^}]*justify-content: flex-start;\s*padding: 0 var\(--flow-bar-inset\);/);
+    expect(readSibling("../tokens.css")).toMatch(new RegExp(`--flow-bar-inset: ${DOCK_PAD}px;`));
   });
 
   it("concrete pill numbers: the resting face is 2x at DPR 1 and 5x at DPR 2, never 2.69x / 5.38x", () => {

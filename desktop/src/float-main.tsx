@@ -38,6 +38,7 @@ import {
   type TranscribeProgress,
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
+import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import { forcedPill, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import "./tokens.css";
@@ -92,14 +93,14 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
 
-const DOCKS = ["bottom", "left", "right"];
-const dockOf = (s?: Settings) => {
-  const p = s?.pillPosition || "bottom";
-  return DOCKS.includes(p) ? p : "bottom";
-};
+const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
   const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
+  // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
+  // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
+  // the capsule inside keeps its identity, so it never remounts.
+  const [dock, setDock] = useState<BarDock>(barDock(FORCED?.dock));
   // PERM-C — the permission phase lives HERE, above both pill styles, because it
   // is a property of the app and not of whichever capsule happens to be drawn.
   // Both pills receive it; neither invents it.
@@ -274,7 +275,9 @@ function Float() {
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
       setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
-      document.documentElement.dataset.dock = FORCED?.dock ?? dockOf(s);
+      const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
+      document.documentElement.dataset.dock = d;
+      setDock(d);
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
@@ -340,6 +343,14 @@ function Float() {
   }, [meetingAfter?.kind, meeting.status.recording]);
   const pillProps = { gate: phase, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
   const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} />;
+  // Y5-I — the BOX is the shell's, decided ONCE here for every character: the
+  // table row for this phase at this dock (pill/dock-geometry.json), carried as
+  // two orientation-neutral tokens plus the override attributes float.css reads.
+  // A meeting takes the bar only while no take is on screen.
+  const bar = barRootProps(
+    shellBarPhase(phase, meeting.status.recording || meetingAfter !== null),
+    dock,
+  );
   // Y5-C — the phase line is placed ONCE, by the SHELL, at all three docks
   // (OWNER DECISION 2026-09-13). It is character-agnostic TEXT; what is
   // per-character is the ART, and that stays inside each capsule. Placed by
@@ -352,7 +363,9 @@ function Float() {
     ?? phaseCopy(phase, chatTone);
   return (
     <>
-      {pill}
+      <div className="bar" {...bar}>
+        {pill}
+      </div>
       <CopyCard />
       <div
         className="phase-strip"

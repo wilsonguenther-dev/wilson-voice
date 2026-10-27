@@ -1055,7 +1055,7 @@ export const stripTextWidthPx = (text: string): number => text.length * STRIP_CH
 export const fitsSideDockStrip = (text: string): boolean =>
   stripTextWidthPx(text) <= SIDE_DOCK_TEXT_PX;
 
-/** Every dock the shell has to place the phase line at (float-main's `DOCKS`). */
+/** Every dock the shell has to place the phase line at (`BAR_DOCKS` in pill/dock.ts, Y5-I). */
 export const DOCK_SIDES = ["bottom", "left", "right"] as const;
 export type DockSide = (typeof DOCK_SIDES)[number];
 
