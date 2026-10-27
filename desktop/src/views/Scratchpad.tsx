@@ -210,7 +210,7 @@ export default function Scratchpad() {
           </button>
           {/* DB-D — the same notes in their own panel, over any app (⌃⌘J). */}
           <button
-            onClick={() => void invoke("open_scratchpad").catch((e) => toast(String(e)))}
+            onClick={() => void invoke("open_scratchpad").catch((e) => toastError(e))}
             title="Open the Scratchpad over whatever app you are in"
           >
             Open as window

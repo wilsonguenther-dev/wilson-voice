@@ -61,6 +61,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },
   "polishOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "scratchpad/notesModel.ts": { lines: 100, branches: 96, functions: 100, statements: 96 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
   "toast.ts": { lines: 84, branches: 82, functions: 69, statements: 81 },
