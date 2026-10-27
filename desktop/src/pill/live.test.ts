@@ -923,3 +923,84 @@ describe("yap-qa-hotkey-walk-binding — fn alone under fn⌃ says why", () => {
     expect(shell).toContain("stripLine(line, stillRecording, fnHint)");
   });
 });
+
+// ── Y5-J — an accessible name per phase, one live region per pill ─────────
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  ALL_LIVE_PHASES as Y5J_PHASES, phaseAccessibleName, phaseAnnouncement, progressLabel as y5jProgressLabel,
+  phaseVisual as y5jVisual, PHASE_ID as Y5J_ID,
+} from "./live";
+import PhaseAnnouncer from "./PhaseAnnouncer";
+
+describe("Y5-J — accessible names and the one live region", () => {
+  const progress = { chunk: 2, of: 5, wordsSoFar: 40 };
+
+  it("every_phase_has_an_accessible_name", () => {
+    for (const phase of Y5J_PHASES) {
+      const name = phaseAccessibleName(phase);
+      // A real sentence, not the empty string, not the machine id.
+      expect(name.trim().length, phase).toBeGreaterThan(2);
+      expect(name, phase).not.toBe(Y5J_ID[phase]);
+      // The name IS the phase table's label: one source, so a phase added to
+      // the union without a phaseVisual row is a compile error, not a pill
+      // that VoiceOver calls "Start dictation" mid-take.
+      expect(name, phase).toBe(y5jVisual(phase).label);
+      expect(y5jVisual(phase).placeholder, phase).toBe(false);
+      // The live region says the same fact.
+      expect(phaseAnnouncement(phase), phase).toBe(name);
+    }
+    // The states the hand-written ClassicPill label used to collapse into
+    // "Start dictation" / "Transcribing" each say what they are now.
+    const said = (p: (typeof Y5J_PHASES)[number]) => phaseAccessibleName(p);
+    expect(said("polishing")).not.toBe(said("idle"));
+    expect(said("pasting")).not.toBe(said("idle"));
+    expect(said("error")).not.toBe(said("idle"));
+    expect(said("empty")).not.toBe(said("idle"));
+    expect(said("cancelled")).not.toBe(said("idle"));
+    expect(said("model-loading")).not.toBe(said("idle"));
+  });
+
+  it("measured progress refines a busy phase's name, never a refusal's", () => {
+    for (const phase of Y5J_PHASES) {
+      const withProgress = phaseAccessibleName(phase, progress);
+      if (y5jVisual(phase).tone === "busy") expect(withProgress, phase).toBe(y5jProgressLabel(progress));
+      else expect(withProgress, phase).toBe(y5jVisual(phase).label);
+    }
+  });
+
+  it("the announcement is a function of the phase alone — a frame cannot change it", () => {
+    // By signature: no level, no progress, no clock.
+    expect(phaseAnnouncement.length).toBe(1);
+    for (const phase of Y5J_PHASES) {
+      const markup = renderToStaticMarkup(createElement(PhaseAnnouncer, { phase }));
+      expect(markup.match(/aria-live=/g)?.length, phase).toBe(1);
+      expect(markup, phase).toContain('aria-live="polite"');
+      expect(markup, phase).toContain('aria-atomic="true"');
+      expect(markup, phase).toContain(`>${phaseAnnouncement(phase)}<`);
+      // Re-rendering the same phase is byte-identical: nothing to announce.
+      expect(renderToStaticMarkup(createElement(PhaseAnnouncer, { phase }))).toBe(markup);
+    }
+  });
+
+  it("both pill roots carry the announcer and name the capsule from the table", () => {
+    // Code only: the doc comments are allowed to NAME the attribute.
+    const code = (file: string) =>
+      readSibling(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*\/\/.*$/gm, "");
+    for (const file of ["./ClassicPill.tsx", "./YappyPill.tsx"]) {
+      const src = code(file);
+      expect(src, file).toContain("<PhaseAnnouncer phase={gate} />");
+      expect(src, file).toContain("aria-label={phaseAccessibleName(gate, progress)}");
+      // `role="status"` is an IMPLICIT polite live region: a second one here
+      // would read every chunk tick on top of the announcer.
+      expect(src, file).not.toMatch(/role="status"/);
+      expect(src, file).not.toMatch(/aria-live/);
+    }
+    // The shell's visible phase strip is copy, not a second region.
+    expect(code("../float-main.tsx")).not.toMatch(/aria-live|role="status"/);
+    // And the frame-by-frame amplitude is never inside a live region: the
+    // only polite regions in the pill are the announcer and the meeting card.
+    expect(code("./PhaseAnnouncer.tsx").match(/aria-live="polite"/g)?.length).toBe(1);
+    expect(code("./MeetingBadge.tsx").match(/aria-live="polite"/g)?.length).toBe(1);
+  });
+});

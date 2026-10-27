@@ -31,3 +31,37 @@ fails on empty text, clipped text and overflow. A PILL item runs
 never commits them. Phases come from `matrixPhases()` in `forced.ts`, so a new
 phase is photographed with no edit to the script. `forced.ts` is the DEV-ONLY
 `?phase=&pill=&dock=` handle; a release build compiles it out.
+
+## Accessibility floor (Y5-J)
+
+**Names.** Every phase's accessible name is `phaseAccessibleName(phase, progress)` in
+`live.ts` — the phase table's own `phaseVisual(phase).label`, refined to the measured
+chunk count while a busy phase has one. Both pills use it (`ClassicPill`'s capsule
+`aria-label`, `YappyPill`'s `.kami-stage` group label); neither spells a label by hand.
+Guarded by `every_phase_has_an_accessible_name` in `live.test.ts`.
+
+**One live region.** `PhaseAnnouncer.tsx` is the first child of each pill root:
+visually hidden, `aria-live="polite"`, `aria-atomic`, text = `phaseAnnouncement(phase)`
+— a function of the phase alone, so a waveform frame, a mic level or a chunk tick
+cannot re-announce. The shell's `.phase-strip` is plain copy (it used to be a second
+region), Yappy's progress is a `progressbar` (it used to be an implicit-polite
+`status`), and nothing that moves per frame is inside a live region.
+
+**Focus.** `src/a11y/focus.css` is the one `:focus-visible` rule for both windows;
+float.css points `--focus-ring` at `--focus-ring-pill`.
+
+**The panel is non-activating** (`float_pill.rs` builds it `.focused(false)` as a
+non-activating NSPanel), so the keyboard never lands in the pill. Every affordance the
+pill offers is therefore ALSO reachable without it:
+
+| Pill affordance | Reachable from |
+| --- | --- |
+| Capsule click — start / stop a take | **Binding:** the dictation hotkey (fn or the chord set in Settings). **Tray:** "Start Dictation" / "Stop Dictation". |
+| Blocked / waiting capsule — open Permissions | **Main window:** sidebar → Permissions, and Home's "Setup incomplete" banner (a `<button>` since Y5-J). **Tray:** "Open Yap". |
+| Gated capsule — open Settings → License | **Tray:** the upgrade item (`license::UPGRADE_TRAY_LABEL`). **Main window:** Settings → License. |
+| Meeting badge — stop recording (`.rec-stop`) | **Tray:** the meeting toggle ("Record a meeting" / its stop label). |
+| Meeting card — "Notes ready — Open" | **Tray:** the notes-ready item (`MEETING_NOTES_TRAY_LABEL`). **Main window:** Meetings. |
+| Copy card — Copy | **Binding / tray:** "Paste Last Transcript" (⌃⌘V). **Main window:** Home → history. |
+| Copy card — Dismiss | No equivalent needed: dismissing loses nothing, the take stays in history. |
+
+A new pill affordance adds a row here, or it is mouse-only.

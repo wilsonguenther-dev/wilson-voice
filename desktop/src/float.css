@@ -12,6 +12,23 @@
      the rest of the colour roles. --level stays here: it is per-frame runtime
      state written by JS, not a design token. */
   --level: 0; /* audio level 0..1, set from JS each frame */
+  /* Y5-J — the pill is always dark, whatever the OS theme: the global ring
+     (src/a11y/focus.css) reads --focus-ring, so point it at the pill's own. */
+  --focus-ring: var(--focus-ring-pill);
+}
+
+/* Y5-J — visually hidden, still read: the pill's one live region
+   (pill/PhaseAnnouncer.tsx) is text for a screen reader, not for the eye. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 * {
@@ -603,10 +620,7 @@ body,
 .rec-stop:hover {
   background: hsl(var(--accent-meeting) / 0.38);
 }
-.rec-stop:focus-visible {
-  outline: 2px solid hsl(var(--accent-meeting));
-  outline-offset: 2px;
-}
+/* Y5-J — focus ring: drawn once, globally, by src/a11y/focus.css. */
 .rec-stop svg {
   width: 11px;
   height: 11px;
@@ -634,10 +648,7 @@ button.meeting-after {
 button.meeting-after:hover {
   background: hsl(var(--accent-meeting) / 0.16);
 }
-button.meeting-after:focus-visible {
-  outline: 2px solid hsl(var(--accent-meeting));
-  outline-offset: 2px;
-}
+/* Y5-J — focus ring: drawn once, globally, by src/a11y/focus.css. */
 .meeting-after-label {
   white-space: nowrap;
   overflow: hidden;
@@ -1105,10 +1116,7 @@ html[data-dock="right"] .phase-strip {
   font-size: 14px;
   padding: 2px 4px;
 }
-.copy-card-actions button:focus-visible {
-  outline: 2px solid var(--overlay-focus-ring);
-  outline-offset: 1px;
-}
+/* Y5-J — focus ring: drawn once, globally, by src/a11y/focus.css. */
 
 /* Y8-D — the coaching nudge: Wispr's `growthNudgeActive` bar state, Yappy's
    voice. Geometry per the teardown §4.2: fit-content x 32, one row. It sits

@@ -511,6 +511,33 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
   }
 }
 
+/**
+ * Y5-J — the capsule's ACCESSIBLE NAME for a phase: what VoiceOver says when it
+ * lands on the pill. Every phase has one (see `every_phase_has_an_accessible_name`):
+ * it is the phase's own `phaseVisual` label, so a phase added to the union
+ * cannot reach either pill without a name. The one refinement is real progress
+ * — a busy phase with a measured chunk count says "Transcribing, 2 of 5" rather
+ * than a bare verb, because that count is the information the pill exists to
+ * carry. Both pills call this; neither spells a label of its own.
+ */
+export function phaseAccessibleName(phase: LivePhase, progress: TranscribeProgress | null = null): string {
+  const visual = phaseVisual(phase);
+  return progress !== null && visual.tone === "busy" ? progressLabel(progress) : visual.label;
+}
+
+/**
+ * Y5-J — what the pill's ONE live region says on a state change. A function of
+ * the PHASE ALONE, by signature: it cannot see the mic level, the chunk count
+ * or the frame clock, so a re-render that does not change the phase produces
+ * the identical string and a polite live region stays silent. That is the whole
+ * "announced once, not on every frame" guarantee, made a type rather than a
+ * promise. Progress is deliberately NOT announced — "2 of 5, 3 of 5, 4 of 5"
+ * read aloud over someone's next sentence is noise; it lives in the name.
+ */
+export function phaseAnnouncement(phase: LivePhase): string {
+  return phaseVisual(phase).label;
+}
+
 /** The events that can move the pill in or out of a permission phase. */
 export type GateEvent =
   /** The backend refused a press: `mic_permission_required`. */
