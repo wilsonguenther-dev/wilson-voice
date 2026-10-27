@@ -46,7 +46,7 @@ use wilson_voice_lib::meeting_matrix::{
     SleepEvent, SleepPolicy, SLEEP_STOP_NOTE, SLEEP_STOP_REASON,
 };
 use wilson_voice_lib::meeting_pipeline::{
-    self, MeetingProgressEvent, PipelineDeps, MIC_TRACK, SYSTEM_TRACK,
+    self, MeetingEngine, MeetingProgressEvent, PipelineDeps, MIC_TRACK, SYSTEM_TRACK,
 };
 use wilson_voice_lib::meetings::{MeetingKind, MeetingState};
 use wilson_voice_lib::power::{
@@ -109,7 +109,7 @@ fn deps(db: Arc<Database>, dir: &Path) -> PipelineDeps {
     PipelineDeps {
         db,
         progress_dir: dir.to_path_buf(),
-        asr: Arc::new(|| Ok(Box::new(StubAsr) as Box<dyn ChunkAsr>)),
+        asr: Arc::new(|| Ok(MeetingEngine::new("stub-asr", Box::new(StubAsr)))),
         demand: Arc::new(NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|_: &MeetingProgressEvent| {}),
@@ -125,6 +125,7 @@ fn deps(db: Arc<Database>, dir: &Path) -> PipelineDeps {
             yield_poll: Duration::from_millis(1),
             ..MeetingAsrConfig::default()
         },
+        start_delay: Duration::ZERO,
     }
 }
 
