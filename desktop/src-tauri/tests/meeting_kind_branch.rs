@@ -304,3 +304,43 @@ fn the_branch_is_not_vacuous() {
         meetings::speaker_label(MIC_TRACK, DiarizationTarget::ClusterTrackA),
     );
 }
+
+/// yap24-NT1 (R4, folded in from the retired NT3) — an in-person meeting
+/// plans a mic-only meeting with NO badge and NO error, whatever the system
+/// audio setup row says. On this head that plan is spelled
+/// `TrackBPlan::RoomOnly` (one track, `badge() == None`); the badge-carrying
+/// `TrackBPlan::MicOnly { badge }` is reserved for a virtual meeting that
+/// could not attach, and must never be what an in-person meeting gets.
+#[test]
+fn an_in_person_meeting_plans_mic_only_with_no_badge_and_no_error() {
+    use wilson_voice_lib::meetings::{SetupVerdict, SystemAudioSetup};
+    use wilson_voice_lib::os_version_gate::SystemAudioGate;
+    use wilson_voice_lib::syscapture::{track_b_plan_for_kind, TrackBPlan};
+
+    let mut rows = vec![SystemAudioSetup::from_row(None)];
+    for v in [
+        SetupVerdict::Granted,
+        SetupVerdict::Ran,
+        SetupVerdict::Failed,
+        SetupVerdict::LooksDenied,
+        SetupVerdict::NotRun,
+        SetupVerdict::Unavailable,
+    ] {
+        rows.push(SystemAudioSetup::from_row(Some(SystemAudioSetup::encode(
+            v,
+            "2026-10-26T00:00:00+00:00",
+        ))));
+    }
+    for setup in &rows {
+        let plan = track_b_plan_for_kind(SystemAudioGate::Available, setup, MeetingKind::InPerson);
+        assert_eq!(plan, TrackBPlan::RoomOnly, "{:?}", setup.verdict);
+        assert_eq!(plan.tracks(), 1, "mic only");
+        assert!(!plan.attaches());
+        assert_eq!(plan.badge(), None, "no badge, no error");
+        assert!(!matches!(plan, TrackBPlan::MicOnly { .. }));
+        // The virtual counterpart is NOT vacuously the same plan.
+        let virtual_plan =
+            track_b_plan_for_kind(SystemAudioGate::Available, setup, MeetingKind::Virtual);
+        assert_ne!(virtual_plan, TrackBPlan::RoomOnly);
+    }
+}

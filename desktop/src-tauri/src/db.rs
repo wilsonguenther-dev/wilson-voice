@@ -245,6 +245,24 @@ pub struct AppCount {
     pub sessions: i64,
 }
 
+/// yap24-NT1 — one meeting whose audio a retention purge just released: the
+/// row id (its ledger and anchor sidecars are keyed by it) and the WAVs to
+/// unlink. The row already says `audio_kept = 0` when this is returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgedMeetingAudio {
+    pub meeting_id: String,
+    pub wavs: Vec<PathBuf>,
+}
+
+impl PurgedMeetingAudio {
+    fn new(meeting_id: String, mic: Option<String>, sys: Option<String>) -> Self {
+        Self {
+            meeting_id,
+            wavs: mic.into_iter().chain(sys).map(PathBuf::from).collect(),
+        }
+    }
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -710,6 +728,20 @@ impl Database {
     /// restarts. The schema is created the same way as the on-disk path.
     pub fn open_in_memory() -> Result<Self, String> {
         Self::open_inner(std::path::Path::new(":memory:")).map_err(OpenErr::into_string)
+    }
+
+    /// yap24-NT1 fix round 2 — `false` for the [`Database::open_in_memory`]
+    /// fallback (no file behind the connection), `true` for an on-disk DB.
+    /// Anything written to a non-persistent DB is gone at exit, so work that
+    /// CONSUMES on-disk state to produce rows (the launch crash recovery) must
+    /// not run against it.
+    pub fn is_persistent(&self) -> bool {
+        let conn = self.conn.lock();
+        let path = match &conn {
+            Ok(c) => c.path().map(|p| p.to_string()),
+            Err(poisoned) => poisoned.get_ref().path().map(|p| p.to_string()),
+        };
+        matches!(path.as_deref(), Some(p) if !p.is_empty() && p != ":memory:")
     }
 
     fn open_inner(path: &std::path::Path) -> Result<Self, OpenErr> {
@@ -2489,8 +2521,12 @@ impl Database {
             .filter_map(|w| w.parent().map(Path::to_path_buf))
             .collect();
         for dir in dirs {
-            wavs.extend(crate::meeting_pipeline::ledger_paths(&dir, id));
+            // yap24-NT1 (R3) — every sidecar keyed by this meeting: the
+            // per-track ASR ledgers AND the kept host-time anchors.
+            wavs.extend(crate::meeting_pipeline::meeting_sidecar_paths(&dir, id));
         }
+        wavs.sort();
+        wavs.dedup();
         for wav in &wavs {
             match std::fs::remove_file(wav) {
                 Ok(()) => log::info!("meeting delete: removed {}", wav.display()),
@@ -2513,16 +2549,30 @@ impl Database {
     /// transcribing, partial or failed keeps the only copy of what was said
     /// until it has been turned into words.
     pub fn purge_meeting_audio(&self, cutoff: DateTime<Utc>) -> Result<Vec<PathBuf>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Ok(self
+            .purge_transcribed_meeting_audio(cutoff)?
+            .into_iter()
+            .flat_map(|p| p.wavs)
+            .collect())
+    }
+
+    /// [`Self::purge_meeting_audio`], per meeting — the 7-day class. The ids
+    /// are what lets the caller remove each meeting's ledger and anchor
+    /// sidecars, which are keyed by the ROW id and not by the WAV's name.
+    pub fn purge_transcribed_meeting_audio(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<PurgedMeetingAudio>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let cutoff = cutoff.to_rfc3339();
-        let mut paths = Vec::new();
-        {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let purged = {
             // YV106: both tracks age out together — the retention promise is
             // about the meeting's AUDIO, and a system track left behind after
             // the mic track expired would be the promise quietly broken.
-            let mut stmt = conn
+            let mut stmt = tx
                 .prepare(
-                    "SELECT mic_wav_path, sys_wav_path FROM meetings
+                    "SELECT id, mic_wav_path, sys_wav_path FROM meetings
                      WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
                        AND started_at < ?1
                        AND state = 'complete'
@@ -2532,27 +2582,106 @@ impl Database {
             let rows = stmt
                 .query_map(params![cutoff], |r| {
                     Ok((
-                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, String>(0)?,
                         r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?;
+            let mut purged = Vec::new();
             for r in rows {
-                let (mic, sys) = r.map_err(|e| e.to_string())?;
-                paths.extend(mic.map(PathBuf::from));
-                paths.extend(sys.map(PathBuf::from));
+                let (id, mic, sys) = r.map_err(|e| e.to_string())?;
+                purged.push(PurgedMeetingAudio::new(id, mic, sys));
             }
+            purged
+        };
+        for p in &purged {
+            Self::clear_meeting_audio(&tx, &p.meeting_id)?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(purged)
+    }
+
+    /// yap24-NT1 (R2) — the OTHER class: every meeting with audio that is not
+    /// (complete AND at least one segment) — failed, partial, transcribing,
+    /// summarizing, or complete with zero segments. A row in `recording` is
+    /// live and never touched.
+    ///
+    /// Oldest first, each one loses its audio when it started before `cutoff`
+    /// ([`meetings::FAILED_AUDIO_RETENTION_DAYS`]) OR while the class still
+    /// holds more than `ceiling_bytes` ([`meetings::FAILED_AUDIO_CEILING_BYTES`])
+    /// on disk. Sizes are what is on disk now; a WAV that is already gone
+    /// counts as zero. The 7-day class is neither counted nor purged here.
+    pub fn purge_untranscribed_meeting_audio(
+        &self,
+        cutoff: DateTime<Utc>,
+        ceiling_bytes: u64,
+    ) -> Result<Vec<PurgedMeetingAudio>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let cutoff = cutoff.to_rfc3339();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let candidates = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, mic_wav_path, sys_wav_path, started_at < ?1 FROM meetings
+                     WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
+                       AND state <> 'recording'
+                       AND NOT (state = 'complete'
+                                AND EXISTS (SELECT 1 FROM meeting_segments s
+                                            WHERE s.meeting_id = meetings.id))
+                     ORDER BY started_at ASC, id ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![cutoff], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, bool>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for r in rows {
+                let (id, mic, sys, expired) = r.map_err(|e| e.to_string())?;
+                out.push((PurgedMeetingAudio::new(id, mic, sys), expired));
+            }
+            out
+        };
+        let bytes_of = |p: &PurgedMeetingAudio| -> u64 {
+            p.wavs
+                .iter()
+                .filter_map(|w| std::fs::metadata(w).ok())
+                .map(|m| m.len())
+                .sum()
+        };
+        let mut held: u64 = candidates.iter().map(|(p, _)| bytes_of(p)).sum();
+        let mut purged = Vec::new();
+        for (p, expired) in candidates {
+            if !expired && held <= ceiling_bytes {
+                // Oldest first, so nothing after this one is expired either,
+                // and the class is already under the ceiling.
+                break;
+            }
+            held = held.saturating_sub(bytes_of(&p));
+            Self::clear_meeting_audio(&tx, &p.meeting_id)?;
+            purged.push(p);
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(purged)
+    }
+
+    /// The row half of a purge: no paths, `audio_kept = 0` so the UI says
+    /// "audio expired" instead of offering a play button that fails.
+    fn clear_meeting_audio(conn: &Connection, id: &str) -> Result<(), String> {
         conn.execute(
             "UPDATE meetings SET mic_wav_path = NULL, sys_wav_path = NULL, audio_kept = 0
-             WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
-               AND started_at < ?1
-               AND state = 'complete'
-               AND EXISTS (SELECT 1 FROM meeting_segments s WHERE s.meeting_id = meetings.id)",
-            params![cutoff],
+             WHERE id = ?1",
+            params![id],
         )
-        .map_err(|e| e.to_string())?;
-        Ok(paths)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// The Insights strip (finding #29). One pass over two small tables.

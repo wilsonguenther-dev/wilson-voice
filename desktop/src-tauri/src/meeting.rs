@@ -187,6 +187,30 @@ const MEETING_MARKER_EXT: &str = "meeting.in_progress.json";
 const MEETING_SPILL_EXT: &str = "spill.pcm";
 /// The index-record sidecar (JSON lines), one line per ~second of capture.
 const MEETING_INDEX_EXT: &str = "index.jsonl";
+/// yap24-NT1 (R1) — the sidecar that ties a journal to the meeting ROW it is
+/// recording. The journal's id is minted before the row exists (a capture that
+/// cannot open must not leave a row behind), so the two ids differ; without
+/// this file a crash leaves the startup scan holding playable audio and no way
+/// to say which row it belongs to. Written once, synchronously, right after the
+/// row is created — a separate file rather than a key in the marker, because
+/// the marker is written by the journal's own writer thread and a second writer
+/// racing it would lose one of the two writes.
+const MEETING_ROW_EXT: &str = "meeting.row";
+/// yap24-NT1 fix round 1 — `<journal id>.meeting.lock`, held under an
+/// exclusive `flock` by the live journal for its whole life (from before its
+/// marker exists until its own finalize is done). The kernel drops the lock
+/// when the process dies, so at launch a LOCKED journal is live in another Yap
+/// process and an UNLOCKED one is a crash. See [`recover_orphaned_meetings`].
+const MEETING_LOCK_EXT: &str = "meeting.lock";
+/// yap24-NT1 fix round 2 (review BLOCKING: delete-on-absence) —
+/// `<journal id>.meeting.deleted`, the TOMBSTONE. Written by
+/// [`remove_journals_bound_to`] for a journal it cannot remove because the
+/// journal is live, and holding the row id the user deleted. It is the ONLY
+/// thing that lets the launch scan delete recovered audio: a row that is merely
+/// absent from the DB this launch opened (an in-memory fallback, a DB recreated
+/// after corruption) is not a meeting the user deleted, and its audio — by then
+/// the only copy — is kept. See [`FinalizedMeeting::deleted`].
+const MEETING_DELETED_EXT: &str = "meeting.deleted";
 
 /// Bytes of free disk a meeting of `duration` requires before it may start.
 /// Finding #39: a manually-started meeting has no duration estimate, so the
@@ -1253,6 +1277,10 @@ pub struct MeetingJournal {
     /// TEST SEAM — see [`MeetingJournal::pause_handle`].
     writer_pause: Arc<AtomicBool>,
     keep: bool,
+    /// The held `<id>.meeting.lock` — see [`MEETING_LOCK_EXT`]. `None` only if
+    /// the lock could not be taken, which leaves recording intact and only
+    /// this journal unprotected from a second process's launch scan.
+    lock: Option<std::fs::File>,
 }
 
 impl MeetingJournal {
@@ -1288,6 +1316,10 @@ impl MeetingJournal {
                 }
             })
             .collect();
+        // Taken HERE, synchronously, before the writer thread can create the
+        // marker: there is never a moment when the marker is on disk and the
+        // journal is live but unlocked.
+        let lock = take_journal_lock(&journal_lock_path(dir, &id));
         let (tx, rx) = mpsc::sync_channel::<JournalMsg>(depth.max(1));
         let writer_pause = Arc::new(AtomicBool::new(false));
         let pending_index: Vec<PendingIndex> = (0..tracks)
@@ -1321,6 +1353,7 @@ impl MeetingJournal {
             dropped: AtomicU64::new(0),
             writer_pause,
             keep: false,
+            lock,
         })
     }
 
@@ -1331,6 +1364,16 @@ impl MeetingJournal {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// yap24-NT1 (R1) — record which meeting row this journal is recording, so
+    /// a crash mid-meeting is recovered INTO that row at the next launch. See
+    /// [`FinalizedMeeting::row_id`].
+    pub fn bind_row(&self, row_id: &str) -> std::io::Result<()> {
+        let path = self
+            .marker
+            .with_file_name(format!("{}.{MEETING_ROW_EXT}", self.id));
+        std::fs::write(path, row_id)
     }
 
     /// TEST SEAM. A handle that parks this journal's writer thread, so the
@@ -1423,10 +1466,15 @@ impl MeetingJournal {
             let _ = tx.send(JournalMsg::State(state));
         }
         self.hang_up();
+        // Still holding the lock: a launch scan in another process cannot
+        // finalize this marker out from under us mid-finalize.
         let marker = self.marker.clone();
         self.keep = true; // the finalizer removes the marker itself
         match finalize_meeting_marker(&marker) {
-            Ok(finalized) => finalized,
+            Ok(finalized) => {
+                let _ = std::fs::remove_file(journal_lock_path_for_marker(&marker, &self.id));
+                finalized
+            }
             Err(e) => {
                 log::warn!("YV91 meeting finalize failed ({e}) — left for the next launch");
                 None
@@ -1462,6 +1510,9 @@ impl Drop for MeetingJournal {
             return;
         }
         let _ = std::fs::remove_file(&self.marker);
+        if self.lock.is_some() {
+            let _ = std::fs::remove_file(journal_lock_path_for_marker(&self.marker, &self.id));
+        }
         for index in &self.indexes {
             let _ = std::fs::remove_file(index);
         }
@@ -1649,6 +1700,18 @@ pub struct FinalizedMeeting {
     /// measurement is that it exists BEFORE anyone has to decide whether drift
     /// is a problem on this machine.
     pub track_rates: Vec<TrackRate>,
+    /// yap24-NT1 (R1) — the meeting row this journal was bound to
+    /// ([`MeetingJournal::bind_row`]), or `None` for a journal that was never
+    /// bound (one left by an older build, or a crash in the instant between the
+    /// capture opening and the row being written). The startup scan files the
+    /// recovered audio under this row; with `None` it has to make a new one.
+    pub row_id: Option<String>,
+    /// yap24-NT1 fix round 2 — `true` only when a tombstone
+    /// ([`MEETING_DELETED_EXT`]) naming THIS journal's bound row was on disk:
+    /// the user deleted the meeting while it was still recording. This, and
+    /// never a row's absence from the DB, is what licenses deleting the
+    /// recovered audio.
+    pub deleted: bool,
 }
 
 impl FinalizedMeeting {
@@ -1659,27 +1722,203 @@ impl FinalizedMeeting {
     }
 }
 
-fn is_meeting_marker(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(MEETING_MARKER_EXT) && lower.len() > MEETING_MARKER_EXT.len() + 1
+/// The meeting id a marker file name carries (`<id>.meeting.in_progress.json`,
+/// suffix matched ASCII-case-insensitively), or `None` when the name is not a
+/// marker. It slices only at a checked char boundary and requires the `.`
+/// separator, so a multi-byte character right before the suffix is "not a
+/// marker" instead of a panic in `run()` at every launch (needs-human sweep,
+/// review-opus2 BLOCKING on 8b14cc7).
+fn meeting_marker_id(name: &str) -> Option<&str> {
+    let suffix_len = MEETING_MARKER_EXT.len() + 1;
+    if name.len() <= suffix_len {
+        return None;
+    }
+    let cut = name.len() - suffix_len;
+    if !name.is_char_boundary(cut) {
+        return None;
+    }
+    let (id, tail) = name.split_at(cut);
+    (tail.as_bytes()[0] == b'.' && tail[1..].eq_ignore_ascii_case(MEETING_MARKER_EXT)).then_some(id)
+}
+
+fn journal_lock_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.{MEETING_LOCK_EXT}"))
+}
+
+fn journal_lock_path_for_marker(marker: &Path, id: &str) -> PathBuf {
+    marker.with_file_name(format!("{id}.{MEETING_LOCK_EXT}"))
+}
+
+/// Open (creating if needed) and exclusively lock a journal's lock file.
+/// `None` when the file cannot be opened or someone else holds it — every
+/// failure is logged and degrades to the pre-lock behaviour, never to a lost
+/// recording.
+fn take_journal_lock(path: &Path) -> Option<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::warn!("YV91 meeting journal lock off (dir): {e}");
+            return None;
+        }
+    }
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            log::warn!("YV91 meeting journal lock off (open): {e}");
+            return None;
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(e) => {
+            log::warn!("YV91 meeting journal lock off (flock): {e}");
+            None
+        }
+    }
+}
+
+/// yap24-NT1 fix round 2 (review BLOCKING 2) — "delete this meeting" also
+/// removes every crash journal BOUND to that row: its spill, index, marker,
+/// row binding, lock and any finalized wavs (`<journal id>.*`). A journal
+/// outlives its row when the finalize at stop failed; without this the deleted
+/// meeting's audio sat on disk under the journal's id until the next launch.
+///
+/// A journal whose lock is HELD is live (this process or another) and is left
+/// alone, but it gets a TOMBSTONE (`<journal id>.meeting.deleted`, holding
+/// `row_id`): if that recording later crashes, the adopt step at the next
+/// launch deletes its recovered audio because the tombstone says the user
+/// deleted it — never merely because the row is missing from the DB.
+/// Returns the journal ids removed (tombstoned live journals are not listed).
+pub fn remove_journals_bound_to(dir: &Path, row_id: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let suffix = format!(".{MEETING_ROW_EXT}");
+    let bound: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let journal = name.strip_suffix(&suffix)?.to_string();
+            let bound_to = std::fs::read_to_string(e.path()).ok()?;
+            (!journal.is_empty() && bound_to.trim() == row_id).then_some(journal)
+        })
+        .collect();
+    let mut removed = Vec::new();
+    for journal in bound {
+        let lock_path = journal_lock_path(dir, &journal);
+        let lock = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                log::warn!("meeting delete: journal {journal} not checked ({e}) — left");
+                continue;
+            }
+        };
+        if let Err(e) = lock.try_lock() {
+            let tombstone = dir.join(format!("{journal}.{MEETING_DELETED_EXT}"));
+            match std::fs::write(&tombstone, row_id) {
+                Ok(()) => log::info!(
+                    "meeting delete: journal {journal} is live or unlockable ({e}) — left, \
+                     tombstoned"
+                ),
+                Err(w) => log::warn!(
+                    "meeting delete: journal {journal} is live or unlockable ({e}) — left; \
+                     tombstone not written ({w}), so a crash would recover it as audio"
+                ),
+            }
+            continue;
+        }
+        let prefix = format!("{journal}.");
+        let lock_name = format!("{journal}.{MEETING_LOCK_EXT}");
+        if let Ok(files) = std::fs::read_dir(dir) {
+            for f in files.filter_map(|f| f.ok()) {
+                let name = f.file_name().to_string_lossy().to_string();
+                if !name.starts_with(&prefix) || name == lock_name {
+                    continue;
+                }
+                match std::fs::remove_file(f.path()) {
+                    Ok(()) => log::info!("meeting delete: removed {name}"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => log::warn!("meeting delete: {name} not removed: {e}"),
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&lock_path);
+        drop(lock);
+        removed.push(journal);
+    }
+    removed
 }
 
 /// Startup scan (matrix row #6): finalize every orphaned meeting journal into
-/// playable wavs. An orphan is any marker still on disk — a normal stop
-/// finalizes and removes its own.
+/// playable wavs. An orphan is a marker still on disk whose journal lock
+/// nobody holds — a normal stop finalizes and removes its own, and a LIVE
+/// journal (this scan running in a second Yap process: `open -n`, a dev build
+/// on the same data root) holds its lock, so it is skipped and left whole.
 pub fn recover_orphaned_meetings(dir: &Path) -> Vec<FinalizedMeeting> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut recovered = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
-        if !is_meeting_marker(&entry.file_name().to_string_lossy()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(id) = meeting_marker_id(&name) else {
             continue;
-        }
+        };
         let marker = entry.path();
+        let lock_path = journal_lock_path_for_marker(&marker, id);
+        // Held for the whole finalize, so two scans can never race either.
+        let lock = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                log::warn!(
+                    "YV91 orphaned meeting {} not checked ({e}) — left for the next launch",
+                    marker.display()
+                );
+                continue;
+            }
+        };
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                log::info!(
+                    "YV91 meeting journal {} is live in another process — left alone",
+                    marker.display()
+                );
+                continue;
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                log::warn!(
+                    "YV91 orphaned meeting {} not locked ({e}) — left for the next launch",
+                    marker.display()
+                );
+                continue;
+            }
+        }
         match finalize_meeting_marker(&marker) {
-            Ok(Some(meeting)) => recovered.push(meeting),
-            Ok(None) => {}
+            Ok(Some(meeting)) => {
+                let _ = std::fs::remove_file(&lock_path);
+                recovered.push(meeting);
+            }
+            Ok(None) => {
+                let _ = std::fs::remove_file(&lock_path);
+            }
             Err(e) => log::warn!(
                 "YV91 orphaned meeting {} not recovered ({e}) — left for the next launch",
                 marker.display()
@@ -1914,6 +2153,20 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
     for path in &index_paths {
         let _ = std::fs::remove_file(path);
     }
+    let row_path = marker.with_file_name(format!("{id}.{MEETING_ROW_EXT}"));
+    let row_id = std::fs::read_to_string(&row_path)
+        .ok()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+    let _ = std::fs::remove_file(&row_path);
+    // The tombstone counts only when it names the row this journal is bound
+    // to; an unbound journal is never "deleted" (there is no row to delete).
+    let tombstone_path = marker.with_file_name(format!("{id}.{MEETING_DELETED_EXT}"));
+    let deleted = match (&row_id, std::fs::read_to_string(&tombstone_path).ok()) {
+        (Some(row), Some(dead)) => dead.trim() == row.as_str(),
+        _ => false,
+    };
+    let _ = std::fs::remove_file(&tombstone_path);
     let _ = std::fs::remove_file(marker);
     if wavs.is_empty() {
         return Ok(None);
@@ -1926,6 +2179,8 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         state,
         spliced_silence_samples,
         track_rates,
+        row_id,
+        deleted,
     }))
 }
 
@@ -2304,6 +2559,16 @@ impl MeetingCapture {
     /// How many tracks this meeting is recording.
     pub fn tracks(&self) -> usize {
         self.inner.lock().tracks.len()
+    }
+
+    /// yap24-NT1 (R1) — bind this meeting's journal to its DB row. A capture
+    /// running without a journal (journal off) has nothing to recover, so
+    /// there is nothing to bind and that is not an error.
+    pub fn bind_row(&self, row_id: &str) -> std::io::Result<()> {
+        match self.inner.lock().journal.as_ref() {
+            Some(journal) => journal.bind_row(row_id),
+            None => Ok(()),
+        }
     }
 
     /// 16 kHz samples this meeting has captured. Also the meeting's clock, and
@@ -4111,7 +4376,7 @@ mod tests {
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
-                    .any(|e| is_meeting_marker(&e.file_name().to_string_lossy()))
+                    .any(|e| meeting_marker_id(&e.file_name().to_string_lossy()).is_some())
             })
             .unwrap_or(false)
     }
@@ -4133,6 +4398,65 @@ mod tests {
         assert!(recovered[0].tracks[0].exists());
         assert!(!marker_exists(&dir), "recovery clears the marker");
         // Second scan finds nothing — recovery is not repeatable.
+        assert!(recover_orphaned_meetings(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// yap24-NT1 fix round 1 (review BLOCKING 1) — the launch scan runs in a
+    /// SECOND Yap process too (`open -n`, a dev build on the same data root),
+    /// and a live journal looks exactly like a crashed one on disk. The scan
+    /// must leave a journal some process still holds alone: its spill, index,
+    /// marker and row binding stay put, and the live journal's own stop still
+    /// finalizes the WHOLE meeting into its row.
+    #[test]
+    fn the_launch_scan_never_finalizes_a_journal_that_is_still_live() {
+        let dir = tmpdir("live-journal");
+        let journal = MeetingJournal::start(&dir, 1).expect("journal");
+        journal.bind_row("ROW-LIVE").expect("bind");
+        let tone: Vec<f32> = (0..TARGET_RATE as usize * 2).map(|_| 0.25).collect();
+        assert_eq!(journal.append(0, &tone), tone.len());
+        thread::sleep(Duration::from_millis(400));
+        let listing = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listing(&dir);
+        assert!(marker_exists(&dir), "a live journal has its marker on disk");
+
+        let recovered = recover_orphaned_meetings(&dir);
+        assert!(
+            recovered.is_empty(),
+            "a live journal is not an orphan: {recovered:?}"
+        );
+        assert_eq!(
+            listing(&dir),
+            before,
+            "the scan touched a live journal's files"
+        );
+
+        let finalized = journal
+            .finalize(MeetingState::Complete)
+            .expect("the live journal still finalizes its own meeting");
+        assert_eq!(finalized.row_id.as_deref(), Some("ROW-LIVE"));
+        assert!(
+            (finalized.seconds - 2.0).abs() < 0.05,
+            "{}",
+            finalized.seconds
+        );
+        assert!(finalized.tracks[0].exists());
+        // A clean stop leaves only the wav: no marker, no lock, nothing for
+        // the next launch to pick up.
+        assert!(!marker_exists(&dir));
+        assert!(
+            listing(&dir).iter().all(|n| n.ends_with(".wav")),
+            "{:?}",
+            listing(&dir)
+        );
         assert!(recover_orphaned_meetings(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4723,6 +5047,28 @@ mod tests {
                 .unwrap_or(true),
             "nor a marker, a spill or an index on disk"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod marker_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_multibyte_character_before_the_marker_suffix_never_panics() {
+        // review-opus2 BLOCKING on 8b14cc7: the old slice landed inside 'é'.
+        assert_eq!(meeting_marker_id("xémeeting.in_progress.json"), None);
+        assert_eq!(meeting_marker_id("日meeting.in_progress.json"), None);
+        assert_eq!(meeting_marker_id("abcmeeting.in_progress.json"), None, "no separator");
+        assert_eq!(meeting_marker_id(".meeting.in_progress.json"), None, "empty id");
+        assert_eq!(meeting_marker_id("m-1.meeting.in_progress.json"), Some("m-1"));
+        assert_eq!(meeting_marker_id("é.MEETING.IN_PROGRESS.JSON"), Some("é"));
+        let dir = std::env::temp_dir().join(format!("yap-nt1-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("xémeeting.in_progress.json"), b"{}").unwrap();
+        assert!(recover_orphaned_meetings(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
