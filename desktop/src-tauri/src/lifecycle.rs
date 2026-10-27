@@ -567,3 +567,85 @@ pub fn rss_growth_exceeds(samples_kb: &[u64], warmup: usize, max_growth_pct: f64
     let last = *samples_kb.last().unwrap() as f64;
     base > 0.0 && (last - base) / base * 100.0 > max_growth_pct
 }
+
+// ─── Y6-D · one process per data directory ───────────────────────────────
+//
+// The handoff above and the single-instance plugin both key on a SOCKET. When
+// the probe is inconclusive (`HandoffVerdict::Unknown`) the launch carried on,
+// and `run()` opened `history.db` BEFORE the Tauri builder ran the plugin that
+// would have exited it — so for a moment two processes held the same SQLite
+// WAL. The data directory is what actually must not be shared, so the data
+// directory is what gets locked: an advisory `flock` on a file inside it,
+// taken before the database is opened and held for the life of the process
+// (the kernel drops it on any exit, including a crash or SIGKILL, so a stale
+// lock is impossible).
+
+/// The lock file's name inside the data directory.
+pub const INSTANCE_LOCK_FILE: &str = "yap.instance.lock";
+
+/// Where the instance lock lives for a given data directory.
+pub fn instance_lock_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(INSTANCE_LOCK_FILE)
+}
+
+/// What trying to take the instance lock found.
+#[derive(Debug)]
+pub enum InstanceLock {
+    /// This process owns the data directory. Keep the file open (see
+    /// [`hold_instance_lock`]) — closing it releases the lock.
+    Acquired(std::fs::File),
+    /// Another live process holds it: this launch must not open the database.
+    HeldByAnother,
+    /// The lock could not be attempted (read-only volume, permissions). Launch
+    /// as before and say so in the log; refusing to start would be worse.
+    Unavailable(String),
+}
+
+/// Take the data directory's instance lock without blocking.
+pub fn acquire_instance_lock(path: &Path) -> InstanceLock {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => return InstanceLock::Unavailable(e.to_string()),
+    };
+    match file.try_lock() {
+        Ok(()) => InstanceLock::Acquired(file),
+        Err(std::fs::TryLockError::WouldBlock) => InstanceLock::HeldByAnother,
+        Err(std::fs::TryLockError::Error(e)) => InstanceLock::Unavailable(e.to_string()),
+    }
+}
+
+/// What the launch does with the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchDecision {
+    /// Open the database and build the app.
+    Proceed,
+    /// Another Yap owns this data directory: exit before opening the database.
+    ExitAlreadyRunning,
+}
+
+/// Pure: the second-instance guard's decision.
+pub fn launch_decision(lock: &InstanceLock) -> LaunchDecision {
+    match lock {
+        InstanceLock::HeldByAnother => LaunchDecision::ExitAlreadyRunning,
+        InstanceLock::Acquired(_) | InstanceLock::Unavailable(_) => LaunchDecision::Proceed,
+    }
+}
+
+static HELD_INSTANCE_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// Keep the lock for the life of the process.
+pub fn hold_instance_lock(file: std::fs::File) {
+    let _ = HELD_INSTANCE_LOCK.set(file);
+}
+
+/// What a second launch prints when the data directory is already in use.
+pub const ALREADY_RUNNING_MESSAGE: &str =
+    "Yap is already running with this data folder — use the menu-bar icon to open it.";

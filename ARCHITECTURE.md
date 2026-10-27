@@ -26,7 +26,7 @@ proprietary “Wilson foundation models.” Modes = scale/speed profiles.
 | AWS always-on GPU | **No** for every short dictate | Network loses to warm local for 2–8s holds |
 | Primary hotkey | **fn / Globe hold** (CGEvent tap) | Carbon cannot bind bare FN; Accessibility required |
 | Secondary hotkey | Optional ⌘⇧V Carbon + optional fn⌃ | Settings toggles |
-| HUD | Parked bottom-center pill; show on record | Continuous cursor chase OFF; full `tauri-nspanel` next |
+| HUD | Parked pill (bottom / left / right dock) on a screen that exists; hidden until onboarded | Already an `NSPanel` via `tauri-nspanel` — see FULLSCREEN below |
 | WPM | `speech_seconds` from audio duration only | Never use model `asr_seconds` as speaking time |
 | Latency metric | Release → clipboard ms (`pipeline_ms`) | North star p50 &lt; 800ms on Fast |
 
@@ -106,3 +106,31 @@ fall back to the real dictation history, because it exits non-zero instead.
 - GraphQL for local SQLite
 - Replacing Kokori (TTS ≠ STT)
 - Re-litigating Desktop path / TCC identity rules
+
+## Lifecycle (Y6-D)
+
+What the app does on the events the meeting matrix covers only for meetings.
+Each decision is a pure function the running app calls, pinned by
+`desktop/src-tauri/tests/lifecycle_e2e.rs`; the physical events themselves are
+rows in `docs/RELEASE.md` → LIFECYCLE MANUAL CHECKLIST, because a `cargo test`
+process has no window-server session.
+
+| Event | Decision | Where |
+|---|---|---|
+| Cold launch, no settings file | Pill stays hidden until onboarding is saved (`launch_pill_visible`) | `float_pill.rs`, `lib.rs` setup |
+| Sleep mid-take | The dictation consumer of `power::SleepWakeHub` parks the take via `cancel_recording` (clip kept in History) | `power.rs`, `lib.rs` |
+| Display unplugged | Pill parks on a monitor from `available_monitors()` *now*, clamped inside it (`pill_origin_on_visible_screen`) | `float_pill.rs` |
+| Output device swap mid-take | Restore writes to the device that was MUTED (`OutputAudioState.device`, `restore_target`), never to the new default | `sysaudio.rs` |
+| Second launch | Socket handoff, then an `flock` on `<data dir>/yap.instance.lock` taken BEFORE `history.db` opens; held → exit 0 | `lifecycle.rs`, `lib.rs::run` |
+
+**FULLSCREEN — named limitation (Y6-D).** ROADMAP.md says a normal `NSWindow`
+cannot float above fullscreen apps and names `tauri-nspanel` as the fix. That
+premise is stale for the pill: `float_pill.rs` already converts the float
+window with `to_panel::<DictatePill>()` (nonactivating, `PanelLevel::Status`,
+`canJoinAllSpaces | stationary | fullScreenAuxiliary | ignoresCycle`). Whether
+that panel actually appears over a fullscreen app has NOT been measured — the
+Y6-D build ran headless and did not drive a fullscreen Space. Status:
+**unmeasured**. The answer is the manual row "Pill floats over a FULLSCREEN
+app" in `docs/RELEASE.md`; until that row carries a date, a machine and a
+result, nothing may claim fullscreen works.
+
