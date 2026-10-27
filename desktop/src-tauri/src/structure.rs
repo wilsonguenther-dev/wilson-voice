@@ -456,8 +456,10 @@ const NARRATIVE_SUBJECTS: &[&str] = &[
 ];
 /// A determiner or possessive right after a bare "then" opens a noun phrase
 /// that is the subject of a story ("Then my wife called", "Then the meeting
-/// ran long"), not a step — unless the list itself is told that way ("First,
-/// the venue. Then the invites.").
+/// ran long"), not a step — but only after a complete list none of whose
+/// items is a noun phrase. A list still forming takes it as a step ("First,
+/// call the bank. Then the dentist."), and so does a list that already has
+/// one ("First, the venue. Then the invites. Then the menu. Then the band.").
 const NARRATIVE_DETERMINERS: &[&str] = &["my", "the", "our", "his", "her", "their", "a", "an"];
 /// Words after a bare "finally"/"lastly" that make it mean "at last" ("Finally
 /// home after a long day", "Finally done", "Finally there") — a state, not a
@@ -497,7 +499,10 @@ fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]
             !set_off
                 && (subject_is_narration(next, &first_item, complete)
                     || (NARRATIVE_DETERMINERS.contains(&next)
-                        && (complete || !NARRATIVE_DETERMINERS.contains(&first_item.as_str()))))
+                        && complete
+                        && !items
+                            .iter()
+                            .any(|i| NARRATIVE_DETERMINERS.contains(&first_word(i).as_str()))))
         }
         "finally" | "lastly" => {
             let at_last = AT_LAST_WORDS.contains(&next)
@@ -1328,6 +1333,50 @@ mod tests {
         for name in ["iPhone", "eBay", "macOS"] {
             assert!(out.contains(name), "{name} recased:\n{out}");
         }
+    }
+
+    /// PR #273 review (BLOCKING): a determiner after a bare "Then" is
+    /// narration only once a complete list has had no determiner-led item.
+    /// Noun-phrase lists ("Then the dentist.") keep forming and keep running
+    /// past three items.
+    #[test]
+    fn structure_then_determiner_noun_phrase_lists_still_form() {
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, call the bank. Then the dentist. Finally, the vet.",
+                "1. Call the bank.\n2. The dentist.\n3. The vet.",
+            ),
+            (
+                "First, check the logs. Then the database. Then the cache.",
+                "1. Check the logs.\n2. The database.\n3. The cache.",
+            ),
+            (
+                "First, buy milk. Then a loaf of bread. Then eggs.",
+                "1. Buy milk.\n2. A loaf of bread.\n3. Eggs.",
+            ),
+            (
+                "First, the venue. Then the invites. Then the menu. Then the band.",
+                "1. The venue.\n2. The invites.\n3. The menu.\n4. The band.",
+            ),
+            (
+                "First, check the logs. Then the database. Then the cache. Then the queue.",
+                "1. Check the logs.\n2. The database.\n3. The cache.\n4. The queue.",
+            ),
+            // Guard: narration after a complete imperative list keeps "Then".
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then the meeting ran long.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen the meeting ran long.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
     }
 
     #[test]
