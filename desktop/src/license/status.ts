@@ -56,6 +56,13 @@ export type LicenseStatus = Entitlement & {
    * launch day). Read by `pillLicense`; never re-derived in the webview.
    */
   purchase_open: boolean;
+  /**
+   * yap-founding-coupon-follows-launch — `license::founding_valid` as the
+   * backend computed it: checkout is open AND it is inside the 30 days after
+   * `FOUNDING_OPENED_AT` (the launch). The ONLY thing that may put
+   * `FOUNDING_CODE` / `FOUNDING_PRICE_LABEL` on screen; never recomputed here.
+   */
+  founding_open: boolean;
 };
 
 // ─── Pricing ─────────────────────────────────────────────────────────
@@ -69,7 +76,10 @@ export type LicenseStatus = Entitlement & {
 
 /** Full price, one time, forever. */
 export const PRICE_LABEL = "$29";
-/** Launch promo: coupon z8UZkIH2 applied by promotion code at checkout. */
+/**
+ * Launch promo: coupon z8UZkIH2 applied by promotion code at checkout. Shown
+ * ONLY while the backend reports `founding_open` (30 days from the launch).
+ */
 export const FOUNDING_CODE = "FOUNDING19";
 export const FOUNDING_PRICE_LABEL = "$19";
 /** How many Macs one key activates (claims `seats`, default 3). */

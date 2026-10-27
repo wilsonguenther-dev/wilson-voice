@@ -137,10 +137,15 @@ export default function LicensePanel({
               up to three Macs. Checkout opens at Stripe in your browser; the key comes
               straight back by email.
             </p>
-            <p className="license-promo">
-              Founding price <strong className="license-price">{FOUNDING_PRICE_LABEL}</strong>{" "}
-              — enter <code>{FOUNDING_CODE}</code> in the promo box at checkout.
-            </p>
+            {/* Founding copy only while the backend says the window is open
+                (`founding_open`, Rust `founding_valid`): never a promo nobody
+                can redeem. */}
+            {status.founding_open === true && (
+              <p className="license-promo">
+                Founding price <strong className="license-price">{FOUNDING_PRICE_LABEL}</strong>{" "}
+                — enter <code>{FOUNDING_CODE}</code> in the promo box at checkout.
+              </p>
+            )}
           </div>
           <button type="button" className="primary license-buy-btn" onClick={buy}>
             Buy Yap — {PRICE_LABEL} once

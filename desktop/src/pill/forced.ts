@@ -90,6 +90,7 @@ export function sceneLicense(raw: string | null | undefined): LicenseStatus | nu
     revocation_checked_at_ms: null,
     revoked_count: 0,
     purchase_open: false,
+    founding_open: false,
   };
   return days < 0
     ? { state: "license_required", reason: "trial_expired", ...shared }

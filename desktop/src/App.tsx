@@ -438,6 +438,7 @@ export default function App() {
           keep. It sits OUTSIDE `.main` so it covers the sidebar too. */}
       {buyPrompt && (
         <PurchasePrompt
+          foundingOpen={ctx.license?.founding_open === true}
           onBuy={buyYap}
           onEnterKey={openLicenseTab}
           onDismiss={() => setBuyPrompt(false)}

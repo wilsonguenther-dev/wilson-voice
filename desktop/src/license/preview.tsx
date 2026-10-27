@@ -37,6 +37,7 @@ const base = {
   revocation_checked_at_ms: EXPIRES,
   revoked_count: 0,
   purchase_open: false,
+  founding_open: false,
 } as const;
 
 const MOCKS: Record<string, LicenseStatus> = {
@@ -224,7 +225,7 @@ function Preview() {
       </section>
 
       {scene === "prompt" && (
-        <PurchasePrompt onBuy={noop} onEnterKey={() => setScene("trial")} onDismiss={noop} />
+        <PurchasePrompt foundingOpen={false} onBuy={noop} onEnterKey={() => setScene("trial")} onDismiss={noop} />
       )}
 
       {/* Harness controls, deliberately unstyled by the app's own classes so

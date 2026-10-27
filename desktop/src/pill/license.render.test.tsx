@@ -39,6 +39,7 @@ function trial(days: number, purchase_open = false): LicenseStatus {
     revocation_checked_at_ms: null,
     revoked_count: 0,
     purchase_open,
+    founding_open: false,
   } as LicenseStatus;
 }
 
