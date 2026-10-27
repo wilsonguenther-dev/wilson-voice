@@ -692,6 +692,8 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             7 => MIGRATION_7_USER_CONTEXT,
             // Y9-A — the transform library's per-invocation status log.
             8 => crate::transforms::MIGRATION_8_TRANSFORM_RUNS,
+            // yap24-NT11 — echo-suppressed mic spans are kept, flagged.
+            9 => meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2670,7 +2672,7 @@ impl Database {
             .prepare(
                 "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
                         track, cluster_index
-                 FROM meeting_segments WHERE meeting_id = ?1
+                 FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = 0
                  ORDER BY start_seconds ASC, track ASC, created_at ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -2753,6 +2755,31 @@ impl Database {
         Ok(wavs)
     }
 
+    /// yap24-NT11 — flag one mic segment as speaker echo: it stays in the table
+    /// (reviewable, re-derivable) and leaves the render, export and notes
+    /// input, which all read [`Db::list_meeting_segments`].
+    pub fn mark_segment_suppressed_as_echo(&self, meeting_id: &str, segment_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meeting_segments SET suppressed_as_echo = 1 WHERE meeting_id = ?1 AND id = ?2",
+                params![meeting_id, segment_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n == 1)
+    }
+
+    /// yap24-NT11 — how many lines the Transcript hides as speaker echo.
+    pub fn count_suppressed_echo_segments(&self, meeting_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = 1",
+            params![meeting_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
     /// "Delete this meeting" as the user means it: rows, search index, and the
     /// audio on disk. A privacy feature that half-deletes is worse than none.
     pub fn delete_meeting_with_audio(&self, id: &str) -> Result<(), String> {
@@ -2768,6 +2795,14 @@ impl Database {
             // per-track ASR ledgers AND the kept host-time anchors.
             wavs.extend(crate::meeting_pipeline::meeting_sidecar_paths(&dir, id));
         }
+        // yap24-NT11 — files derived from each WAV (the AEC output, the kept
+        // per-track anchors) go with it; never kept alone.
+        let derived: Vec<PathBuf> = wavs
+            .iter()
+            .flat_map(|w| crate::meeting_aec::derived_paths_for_wav(w))
+            .filter(|p| p.exists())
+            .collect();
+        wavs.extend(derived);
         wavs.sort();
         wavs.dedup();
         for wav in &wavs {

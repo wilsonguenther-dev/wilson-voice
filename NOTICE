@@ -12,3 +12,12 @@ LICENSE file. That includes the licensing, trial and payment code
 you under TERMS.md instead, and it may not be copied, redistributed or
 sublicensed. If you cloned this repository, the LICENSE file does not grant you
 rights over anything newer than commit 8c8740f.
+
+Third-party components
+----------------------
+
+aec3 0.4.0 (https://crates.io/crates/aec3) -- a pure-Rust port of the WebRTC
+AEC3 acoustic echo canceller, used offline to remove a call's far side from the
+meeting microphone track (desktop/src-tauri/src/meeting_aec.rs). Licensed
+MIT OR BSD-3-Clause; Yap uses it under the MIT license. It ships a PATENT file
+carrying the WebRTC project's patent grant.

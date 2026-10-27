@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -882,6 +882,15 @@ ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
 /// non-pinned model transcribed, and a resume can refuse to splice two models'
 /// output into one transcript. NULL means "not transcribed yet" (or a row
 /// written before this migration).
+/// yap24-NT11 — a mic span the echo-residue rule suppressed is KEPT as its own
+/// row with this flag set, so the decision is reviewable ("N lines hidden as
+/// speaker echo - Show") and reversible by a re-transcribe, but it never reaches
+/// the rendered transcript, export or notes input (every reader goes through
+/// `list_meeting_segments`, which filters it).
+pub const MIGRATION_9_SUPPRESSED_AS_ECHO: &str = r#"
+ALTER TABLE meeting_segments ADD COLUMN suppressed_as_echo INTEGER NOT NULL DEFAULT 0;
+"#;
+
 pub const MIGRATION_6_ASR_MODEL: &str = r#"
 ALTER TABLE meetings ADD COLUMN asr_model TEXT;
 "#;
@@ -1000,6 +1009,23 @@ pub fn speaker_label(track: i64, target: DiarizationTarget) -> &'static str {
         DiarizationTarget::MicIsMe => MIC_SPEAKER_LABEL,
         DiarizationTarget::ClusterTrackA => UNCLUSTERED_SPEAKER_LABEL,
     }
+}
+
+/// yap24-NT11 (step 4a) — the label for ONE span, given whether the system
+/// track had audio under it. Where the tap is all-zero or missing (a tap hole,
+/// a reopen gap) the mic span may hold the far side that never reached the
+/// tap, so it is not credited to the user: it gets the label an unclustered
+/// mic span gets ("Speaker"), and never "Me". Everywhere else this is exactly
+/// [`speaker_label`].
+pub fn speaker_label_for_span(
+    track: i64,
+    target: DiarizationTarget,
+    system_audio_present: bool,
+) -> &'static str {
+    if track == MIC_TRACK && !system_audio_present {
+        return speaker_label(MIC_TRACK, DiarizationTarget::ClusterTrackA);
+    }
+    speaker_label(track, target)
 }
 
 /// Does this meeting have a second track worth labelling?

@@ -410,3 +410,31 @@ in practice means until the ASR engine's 15-minute idle unload, and runs anyway 
 `NOTES_MAX_DEFERRAL` (30 min) so a machine that never idles still gets notes. Every wait is logged
 (`summary deferred`, `summary defer_end`, `summary defer_cap`). The 8 GB machine itself was not
 measured; the figures above are per-process RSS from the 24 GB dev machine.
+
+## AEC pre-pass (real call) (yap24-NT11)
+
+Measured 2026-10-27 by `scripts/eval/aec-real-call.sh` (release `wilson-voice --aec-prepass`)
+on the stored 16 kHz mono WAVs of real virtual call c6187806 (31:04, built-in speakers),
+copied into a mktemp dir from the private corpus. NS and AGC off, reference read 20 ms ahead.
+
+| metric | value |
+|---|---|
+| coupling lag (GCC-PHAT, median of confident 1 s windows) | 7.06 ms |
+| call-playing windows / local-only windows | 1106 / 355 |
+| attenuation on call-playing windows p25 / p50 / p90 | 30.0 / 34.3 / 41.6 dB |
+| loss on local-only windows p50 / p90 | 0.15 / 0.37 dB |
+| wall time for 1864 s of audio (M4 Pro) | 9.9 s |
+| peak RSS of the whole process (`/usr/bin/time -l`) | 18.6 MB |
+
+Gates (e): local-only p90 loss <= 1.0 dB, call p50 >= 15 dB. Both pass.
+
+## AEC pre-pass (synthetic) (yap24-NT11)
+
+`tests/meeting_cross_track_bleed.rs`, debug build:
+
+| fixture | call p50 | local p90 loss | lag | wall |
+|---|---|---|---|---|
+| synthetic 40 s, 3-tap room, 3 ms | 68.8 dB (p25 23.6) | 0.01 dB | 3.0 ms | 10.1 s (debug) |
+| NT0 call-bleed-2voice (275 s) | 33.5 dB (p90 35.3) | 0.49 dB | 60.0 ms | 67.3 s (debug) |
+| headphones control | coupling None, nothing derived | - | - | - |
+

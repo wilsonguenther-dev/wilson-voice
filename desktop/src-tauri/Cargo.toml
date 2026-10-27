@@ -47,6 +47,14 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 core-foundation = "0.10"
 cpal = "0.18.1"
 hound = "3.5.1"
+# yap24-NT11 — acoustic echo cancellation of the mic track against the system
+# track, offline, after capture (src/meeting_aec.rs). Pure Rust (a WebRTC AEC3
+# port), MIT OR BSD-3-Clause; its rustfft / num-complex / crossbeam deps were
+# already in Cargo.lock, so this adds exactly one crate. Exact pin, like
+# llama-cpp-2: tests/supply_chain.rs asserts it and the closure it brings.
+aec3 = "=0.4.0"
+# GCC-PHAT coupling check in meeting_aec.rs. Already in Cargo.lock through aec3.
+rustfft = "6.4.1"
 # RNNoise (pure-Rust, BSD-3, no shipped model asset) — steady-noise suppression
 # over the captured clip before the 16 kHz downsample (YV12). default-features
 # off drops its optional hdf5/ndarray/train tooling; we only need DenoiseState.

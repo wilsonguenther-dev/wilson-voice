@@ -854,6 +854,14 @@ fn unlink_purged_meeting_audio(
         for dir in dirs {
             files.extend(meeting_sidecar_paths(&dir, &purged.meeting_id));
         }
+        // yap24-NT11 — the AEC output and the kept anchors of every WAV.
+        files.extend(
+            purged
+                .wavs
+                .iter()
+                .flat_map(|w| crate::meeting_aec::derived_paths_for_wav(w))
+                .filter(|p| p.exists()),
+        );
         files.sort();
         files.dedup();
         for file in files {
@@ -1117,6 +1125,20 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             Some(AUDIO_REMOVED_MESSAGE.into()),
         );
         return Ok(MeetingState::Failed);
+    }
+
+    // yap24-NT11 — on a virtual call whose mic hears the speakers, track 0 is
+    // decoded from the AEC3 pre-pass output instead of the raw mic. Headphones
+    // (no coupling), in-person meetings and any pre-pass failure read raw.
+    let sys_path = tracks
+        .iter()
+        .find(|(t, _)| *t == SYSTEM_TRACK)
+        .map(|(_, p)| p.clone());
+    let is_virtual = meeting.kind() == crate::meetings::MeetingKind::Virtual;
+    for (track, path) in tracks.iter_mut() {
+        if *track == MIC_TRACK {
+            *path = crate::meeting_aec::mic_source_for(id, is_virtual, path, sys_path.as_deref());
+        }
     }
 
     let mut sources: Vec<(i64, WavWindows)> = Vec::new();

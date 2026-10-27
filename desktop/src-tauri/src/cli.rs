@@ -39,6 +39,29 @@ const CLEANUP_FLAG: &str = "--cleanup";
 /// and print what it says it can do, `max_timestamp_kind` and `max_audio_ms`
 /// above all. No decode, no audio.
 const CAPABILITIES_FLAG: &str = "--asr-capabilities";
+/// yap24-NT11 — headless AEC3 pre-pass over two WAVs on disk.
+const AEC_PREPASS_FLAG: &str = "--aec-prepass";
+
+fn run_aec_prepass(args: &[String]) -> i32 {
+    let [mic, sys, out] = args else {
+        eprintln!("usage: {AEC_PREPASS_FLAG} <mic.wav> <sys.wav> <out.wav>");
+        return 2;
+    };
+    let (mic, sys, out) = (Path::new(mic), Path::new(sys), Path::new(out));
+    let lag = crate::meeting_aec::aec_coupling(mic, sys);
+    match crate::meeting_aec::aec_prepass(mic, sys, out) {
+        Ok(report) => {
+            let body = serde_json::json!({ "coupling_lag_ms": lag, "report": report });
+            println!("{body}");
+            0
+        }
+        Err(e) => {
+            eprintln!("aec pre-pass failed: {e}");
+            1
+        }
+    }
+}
+
 /// Download progress is reported to stderr at most once per this many bytes —
 /// stdout stays clean so it holds ONLY the transcript.
 const PROGRESS_STEP: u64 = 8 * 1024 * 1024;
@@ -52,6 +75,13 @@ pub fn handle_args() -> Option<i32> {
         a == TRANSCRIBE_MEETING_FLAG || a.starts_with(&format!("{TRANSCRIBE_MEETING_FLAG}="))
     }) {
         return Some(transcribe_meeting_cmd(&argv));
+    }
+    // yap24-NT11 — `--aec-prepass <mic.wav> <sys.wav> <out.wav>`: the meeting
+    // AEC3 pre-pass on audio on disk, for scripts/eval/aec-real-call.sh. Prints
+    // ONE JSON object of numbers (coupling lag, attenuation, wall time) on
+    // stdout; never transcript text.
+    if argv.first().map(String::as_str) == Some(AEC_PREPASS_FLAG) {
+        return Some(run_aec_prepass(&argv[1..]));
     }
     if argv.iter().any(|a| a == CAPABILITIES_FLAG) {
         return Some(print_capabilities());
