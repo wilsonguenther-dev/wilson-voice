@@ -7288,13 +7288,25 @@ fn retry_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Stri
     // #250 fix round 4 (independent B1): Retry deletes every segment, and a
     // queued or running notes job would summarize the half-rebuilt transcript.
     // Refuse while one is active (the card hides Retry then too); fails closed.
+    let started = std::time::Instant::now();
+    log::info!("meetings retry_start id={id}");
     if SUMMARY_JOBS.get().is_some_and(|j| j.is_busy(&id)) {
+        log::warn!("meetings retry_failed id={id} reason=notes_busy");
         return Err(NOTES_BUSY_RETRY_REFUSAL.to_string());
     }
-    meeting_pipeline::reset_for_retry(&state.db, &meetings_dir(), &id)?;
+    // yap24-NT6: refuses (before deleting a segment) when the audio is gone.
+    if let Err(e) = meeting_pipeline::reset_for_retry(&state.db, &meetings_dir(), &id) {
+        log::warn!("meetings retry_failed id={id} reason=reset");
+        return Err(e);
+    }
     if !meeting_pipeline::enqueue(&id) {
+        log::error!("meetings retry_failed id={id} reason=worker_not_running");
         return Err("the meeting transcription worker is not running — restart Yap".to_string());
     }
+    log::info!(
+        "meetings retry_enqueued id={id} reset_ms={}",
+        started.elapsed().as_millis()
+    );
     Ok(())
 }
 

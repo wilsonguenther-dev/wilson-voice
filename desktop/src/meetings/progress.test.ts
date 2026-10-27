@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  canRetry, canRetryTranscript, canCancelNotes, canRetryNotes, foldProgress, meetingStateLabel, notesStatusEvent,
+  canRetry, canRetryTranscript, canCancelNotes, canRetryNotes, foldProgress, meetingActions, meetingStateLabel, notesStatusEvent,
   reloadsMeetings, retryNotesLabel, OFFLINE_REASON, summaryFirstLine, summaryTitle, transcribedLabel, transcribePercent,
   transcribeProgress, type MeetingProgressEvent,
 } from "./progress";
@@ -49,32 +49,86 @@ describe("meeting progress", () => {
     expect(summaryTitle("## Pricing review\n\n### Summary\n\nWe met.")).toBe("Pricing review");
     expect(summaryTitle("plain")).toBeNull();
   });
-  it("failed and partial rows offer Retry", () => {
-    expect(canRetry("failed")).toBe(true);
-    expect(canRetry("partial")).toBe(true);
-    expect(canRetry("complete")).toBe(false);
-    expect(canRetry("transcribing")).toBe(false);
+  // yap24-NT6 (panel 2026-10-26): Retry needs audio_kept = 1 AND a WAV path.
+  it("canRetry(state, audioKept, wavPath): failed/partial with their audio only", () => {
+    const wav = "/meetings/m1/mic.wav";
+    const table: [string, boolean, string | null | undefined, boolean][] = [
+      ["failed", true, wav, true],
+      ["partial", true, wav, true],
+      ["failed", false, wav, false],
+      ["partial", false, wav, false],
+      ["failed", true, null, false],
+      ["partial", true, undefined, false],
+      ["failed", true, "  ", false],
+      ["failed", false, null, false],
+      ["complete", true, wav, false],
+      ["transcribing", true, wav, false],
+      ["recording", true, wav, false],
+      ["summarizing", true, wav, false],
+    ];
+    for (const [state, kept, path, want] of table) {
+      expect(canRetry(state, kept, path), `${state}/${kept}/${path}`).toBe(want);
+    }
+  });
+  it("a failed meeting whose audio is gone offers Export and Delete only", () => {
+    const row = { state: "failed", audioKept: false, micWavPath: null };
+    expect(meetingActions(row, undefined, false)).toEqual(["export", "delete"]);
+    // Kept flag set but the path already purged: still no Retry.
+    expect(meetingActions({ ...row, audioKept: true }, undefined, false)).toEqual(["export", "delete"]);
+  });
+  it("a failed meeting with its audio offers Retry, then Export and Delete", () => {
+    const row = { state: "failed", audioKept: true, micWavPath: "/m/mic.wav" };
+    expect(meetingActions(row, undefined, false)).toEqual(["retry", "export", "delete"]);
+  });
+  it("a partial meeting with expired audio keeps its notes button but loses Retry", () => {
+    const row = { state: "partial", audioKept: false, micWavPath: null };
+    expect(meetingActions(row, undefined, false)).toEqual(["notes", "export", "delete"]);
+    expect(meetingActions({ ...row, audioKept: true, micWavPath: "/m/mic.wav" }, undefined, false)).toEqual([
+      "retry", "notes", "export", "delete",
+    ]);
+  });
+  it("one action list per state", () => {
+    const wav = { audioKept: true, micWavPath: "/m/mic.wav" };
+    const busy: MeetingProgressEvent = { id: "m1", state: "summarizing", percent: 0, processedThroughSeconds: 0, durationSeconds: 0 };
+    expect(meetingActions({ state: "recording", ...wav }, undefined, false)).toEqual(["export", "delete"]);
+    expect(meetingActions({ state: "transcribing", ...wav }, undefined, false)).toEqual(["export", "delete"]);
+    expect(meetingActions({ state: "waiting_for_model", ...wav }, undefined, false)).toEqual(["export", "delete"]);
+    expect(meetingActions({ state: "complete", ...wav }, undefined, true)).toEqual(["export", "delete"]);
+    expect(meetingActions({ state: "complete", ...wav }, undefined, false)).toEqual(["notes", "export", "delete"]);
+    expect(meetingActions({ state: "complete", ...wav }, busy, false)).toEqual(["cancel-notes", "export", "delete"]);
+    expect(meetingActions({ state: "partial", ...wav }, busy, false)).toEqual(["cancel-notes", "export", "delete"]);
+  });
+  it("no state renders an empty headline", () => {
+    const states = ["recording", "transcribing", "summarizing", "complete", "partial", "waiting_for_model", "failed", "", "  ", "something_new"];
+    for (const s of states) {
+      for (const hasSummary of [true, false]) {
+        expect(meetingStateLabel(s, undefined, hasSummary).trim(), JSON.stringify(s)).not.toBe("");
+      }
+    }
+    expect(meetingStateLabel("", undefined, false)).toBe("Unknown state");
   });
   it("waiting_for_model (yap24-NT2 R3) names the wait and is not a Retry state", () => {
     expect(meetingStateLabel("waiting_for_model", undefined, false)).toBe(
       "Waiting for a speech model",
     );
-    expect(canRetry("waiting_for_model")).toBe(false);
+    expect(canRetry("waiting_for_model", true, "/m/mic.wav")).toBe(false);
   });
   // #250 fix round 4 (independent B1): the transcript Retry deletes the segments a
   // notes job is about to read, so it is hidden for EVERY active notes phase —
   // not only "summarizing" (preparing_notes is the 1.1 GB first-run download).
   it("a partial meeting hides the transcript Retry while any notes job is active", () => {
     const p = (state: string): MeetingProgressEvent => ({ id: "m1", state, percent: 0, processedThroughSeconds: 0, durationSeconds: 60 });
+    const row = (state: string) => ({ state, audioKept: true, micWavPath: "/m/mic.wav" });
     for (const s of ["notes_queued", "preparing_notes", "summarizing"]) {
-      expect(canRetryTranscript("partial", p(s))).toBe(false);
-      expect(canRetryTranscript("failed", p(s))).toBe(false);
+      expect(canRetryTranscript(row("partial"), p(s))).toBe(false);
+      expect(canRetryTranscript(row("failed"), p(s))).toBe(false);
     }
     for (const s of ["notes_ready", "notes_failed", "notes_cancelled"]) {
-      expect(canRetryTranscript("partial", p(s))).toBe(true);
+      expect(canRetryTranscript(row("partial"), p(s))).toBe(true);
     }
-    expect(canRetryTranscript("partial", undefined)).toBe(true);
-    expect(canRetryTranscript("complete", undefined)).toBe(false);
+    expect(canRetryTranscript(row("partial"), undefined)).toBe(true);
+    expect(canRetryTranscript(row("complete"), undefined)).toBe(false);
+    expect(canRetryTranscript({ state: "partial", audioKept: false, micWavPath: null }, undefined)).toBe(false);
   });
   // #250 round 3 (B1) — every failure path is a visible state with Retry.
   it("failed notes say why, in plain words, and offer Retry", () => {
