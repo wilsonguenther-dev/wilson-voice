@@ -157,3 +157,24 @@ test('runBuild checks the inconclusive hold AFTER the dependency hold and BEFORE
   assert.ok(dep > 0 && inc > dep && done > inc, `order dep=${dep} inc=${inc} done=${done}`)
   assert.ok(TPL.includes("status: 'skipped: dependency hold inconclusive'"))
 })
+
+// Fix round 2 (review BLOCKING): the item must RETIRE once it lands. runBuild retires an item only when its
+// EXECUTED preflight passes, so this runs the item's real preflight (lifted from its item file) against this
+// tree, from the repo root, exactly as the runner seat does. Before round 2 the preflight grepped
+// review-gate.test.mjs, which never names the helper, so it exited 1 on the merged tree and every build pass
+// re-dispatched a builder to an already-landed item.
+test('loop-dependency-marker-stdout-only preflight passes on this tree (the item retires after it merges)', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const ROOT = path.resolve(HERE, '..', '..')
+  const src = fs.readFileSync(path.join(HERE, 'items', '07b-yap-walk-defects-2026-10-19.mjs'), 'utf8')
+  const m = src.match(/id: 'loop-dependency-marker-stdout-only'[\s\S]*?preflight: `([\s\S]*?)`/)
+  assert.ok(m, 'the item and its preflight are found in 07b')
+  const preflight = m[1].trim()
+  assert.ok(preflight.length > 0)
+  const r = spawnSync('sh', ['-c', preflight], { cwd: ROOT, encoding: 'utf8' })
+  assert.equal(r.status, 0, `preflight exited ${r.status}: ${preflight}\n${r.stdout}${r.stderr}`)
+  // Every file the preflight greps must exist (a grep on a missing file is exit 2, not a retirement).
+  for (const f of preflight.match(/scripts\/loop\/[\w./-]+\.mjs/g) || []) {
+    assert.ok(fs.existsSync(path.join(ROOT, f)), `${f} exists`)
+  }
+})

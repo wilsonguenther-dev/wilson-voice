@@ -64,7 +64,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 47 })
 } else {
   phase("part-01")
-  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (434260 bytes)")
+  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (434266 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (47 item(s))")
