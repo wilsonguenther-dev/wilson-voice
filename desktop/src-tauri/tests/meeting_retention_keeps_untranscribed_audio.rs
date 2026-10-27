@@ -212,3 +212,96 @@ fn a_journal_with_no_row_binding_gets_a_row_rather_than_being_lost() {
     assert!(m.mic_wav_path.is_some());
     assert_eq!(m.state, "partial");
 }
+
+// ── yap24-NT1 review BLOCKING 2 — a deleted meeting never comes back ────────
+
+use wilson_voice_lib::meeting::remove_journals_bound_to;
+
+fn files_in(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.ends_with(".db") && !n.contains(".db-"))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_journal_whose_row_was_deleted_is_not_resurrected_and_its_audio_goes() {
+    let dir = temp_dir("nt1-deleted-row");
+    let db = open_db(&dir);
+    let row = db.create_meeting("deleted by the user", "manual").unwrap();
+    // The finalize at stop failed: the journal outlives the row. Then the
+    // user deletes the row (DB half only, so the journal is still whole).
+    crash(&dir, 1, &[0], Some(&row.id), 1);
+    db.delete_meeting_with_audio(&row.id).unwrap();
+    assert!(db.get_meeting(&row.id).unwrap().is_none());
+
+    let recovered = recover_orphaned_meetings(&dir);
+    assert_eq!(
+        recovered.len(),
+        1,
+        "the journal itself is still recoverable"
+    );
+    let wavs = recovered[0].tracks.clone();
+    assert!(wavs.iter().all(|w| w.exists()));
+    let adopted = adopt_recovered_meetings(&db, recovered);
+    assert!(
+        adopted.is_empty(),
+        "a deleted meeting is never re-filed: {adopted:?}"
+    );
+    assert!(
+        db.list_meetings(100, None).unwrap().is_empty(),
+        "no 'Recovered' row is made for a meeting the user deleted"
+    );
+    assert!(
+        wavs.iter().all(|w| !w.exists()),
+        "the deleted meeting's recovered audio is deleted, not kept"
+    );
+}
+
+#[test]
+fn deleting_a_meeting_removes_the_crash_journal_bound_to_it_and_nothing_else() {
+    let dir = temp_dir("nt1-delete-journal");
+    let db = open_db(&dir);
+    let gone = db.create_meeting("delete me", "manual").unwrap();
+    let kept = db.create_meeting("keep me", "manual").unwrap();
+    crash(&dir, 1, &[0], Some(&gone.id), 1);
+    crash(&dir, 1, &[0], Some(&kept.id), 1);
+    // A LIVE journal bound to the same row: its lock is held, so it is left.
+    let live = MeetingJournal::start(&dir, 1).expect("live journal opens");
+    live.bind_row(&gone.id).unwrap();
+    let live_id = live.id().to_string();
+
+    // What the delete_meeting command does: the row and its audio, then every
+    // crash journal bound to it.
+    db.delete_meeting_with_audio(&gone.id).unwrap();
+    let removed = remove_journals_bound_to(&dir, &gone.id);
+    assert_eq!(
+        removed.len(),
+        1,
+        "only the crashed journal, not the live one: {removed:?}"
+    );
+    let left = files_in(&dir);
+    assert!(
+        left.iter()
+            .all(|n| !n.starts_with(&format!("{}.", removed[0]))),
+        "every file of the deleted meeting's journal is gone: {left:?}"
+    );
+    assert!(
+        left.iter().any(|n| n.starts_with(&format!("{live_id}."))),
+        "a live journal is never removed out from under its writer: {left:?}"
+    );
+    drop(live);
+
+    // Next launch: only the other meeting is recovered; the deleted one never
+    // comes back.
+    let adopted = adopt_recovered_meetings(&db, recover_orphaned_meetings(&dir));
+    assert_eq!(adopted.len(), 1, "{adopted:?}");
+    assert_eq!(adopted[0].0, kept.id);
+    let rows = db.list_meetings(100, None).unwrap();
+    assert_eq!(rows.len(), 1, "no Recovered row for the deleted meeting");
+    assert_eq!(rows[0].id, kept.id);
+}

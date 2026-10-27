@@ -1726,10 +1726,6 @@ fn meeting_marker_id(name: &str) -> Option<&str> {
     (tail.as_bytes()[0] == b'.' && tail[1..].eq_ignore_ascii_case(MEETING_MARKER_EXT)).then_some(id)
 }
 
-fn is_meeting_marker(name: &str) -> bool {
-    meeting_marker_id(name).is_some()
-}
-
 fn journal_lock_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.{MEETING_LOCK_EXT}"))
 }
@@ -1769,6 +1765,71 @@ fn take_journal_lock(path: &Path) -> Option<std::fs::File> {
             None
         }
     }
+}
+
+/// yap24-NT1 fix round 2 (review BLOCKING 2) — "delete this meeting" also
+/// removes every crash journal BOUND to that row: its spill, index, marker,
+/// row binding, lock and any finalized wavs (`<journal id>.*`). A journal
+/// outlives its row when the finalize at stop failed; without this the deleted
+/// meeting's audio sat on disk under the journal's id until the next launch.
+///
+/// A journal whose lock is HELD is live (this process or another) and is left
+/// alone — the adopt step at the next launch sees its row gone and deletes the
+/// recovered audio instead of resurrecting it. Returns the journal ids removed.
+pub fn remove_journals_bound_to(dir: &Path, row_id: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let suffix = format!(".{MEETING_ROW_EXT}");
+    let bound: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let journal = name.strip_suffix(&suffix)?.to_string();
+            let bound_to = std::fs::read_to_string(e.path()).ok()?;
+            (!journal.is_empty() && bound_to.trim() == row_id).then_some(journal)
+        })
+        .collect();
+    let mut removed = Vec::new();
+    for journal in bound {
+        let lock_path = journal_lock_path(dir, &journal);
+        let lock = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                log::warn!("meeting delete: journal {journal} not checked ({e}) — left");
+                continue;
+            }
+        };
+        if let Err(e) = lock.try_lock() {
+            log::info!("meeting delete: journal {journal} is live or unlockable ({e}) — left");
+            continue;
+        }
+        let prefix = format!("{journal}.");
+        let lock_name = format!("{journal}.{MEETING_LOCK_EXT}");
+        if let Ok(files) = std::fs::read_dir(dir) {
+            for f in files.filter_map(|f| f.ok()) {
+                let name = f.file_name().to_string_lossy().to_string();
+                if !name.starts_with(&prefix) || name == lock_name {
+                    continue;
+                }
+                match std::fs::remove_file(f.path()) {
+                    Ok(()) => log::info!("meeting delete: removed {name}"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => log::warn!("meeting delete: {name} not removed: {e}"),
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&lock_path);
+        drop(lock);
+        removed.push(journal);
+    }
+    removed
 }
 
 /// Startup scan (matrix row #6): finalize every orphaned meeting journal into
@@ -4278,7 +4339,7 @@ mod tests {
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
-                    .any(|e| is_meeting_marker(&e.file_name().to_string_lossy()))
+                    .any(|e| meeting_marker_id(&e.file_name().to_string_lossy()).is_some())
             })
             .unwrap_or(false)
     }

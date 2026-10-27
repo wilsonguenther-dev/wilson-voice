@@ -1356,10 +1356,44 @@ pub fn adopt_recovered_meetings(
         let sys = finalized
             .wav_for_track(crate::meeting::SYSTEM_TRACK)
             .cloned();
-        let bound = finalized
-            .row_id
-            .as_deref()
-            .and_then(|id| db.get_meeting(id).ok().flatten());
+        // yap24-NT1 fix round 2 (review BLOCKING 2) — three cases, never one.
+        // A BOUND journal whose row is GONE is a meeting the user deleted: its
+        // recovered audio is deleted too, never filed under a new row and
+        // transcribed. A DB read ERROR adopts nothing and deletes nothing (the
+        // wavs stay on disk): fail closed, never a duplicate. Only a journal
+        // that was NEVER bound gets a new "Recovered" row.
+        let bound = match finalized.row_id.as_deref() {
+            Some(id) => match db.get_meeting(id) {
+                Ok(Some(row)) => Some(row),
+                Ok(None) => {
+                    for wav in &finalized.tracks {
+                        match std::fs::remove_file(wav) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => log::warn!(
+                                "recover: deleted meeting {id}: {} not removed: {e}",
+                                wav.display()
+                            ),
+                        }
+                    }
+                    log::info!(
+                        "recover: journal {} belongs to meeting {id}, which was deleted — \
+                         its audio is deleted, not recovered",
+                        finalized.id
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "recover: journal {} → meeting {id} unreadable ({e}) — not adopted, \
+                         its wavs stay on disk",
+                        finalized.id
+                    );
+                    continue;
+                }
+            },
+            None => None,
+        };
         let row_id = match bound {
             Some(row) => row.id,
             None => match db.create_meeting(

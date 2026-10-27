@@ -6737,7 +6737,11 @@ fn summarize_meeting_blocking(
 /// painting while the pages are scrubbed.
 #[tauri::command]
 fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    state.db.delete_meeting_with_audio(&id)
+    state.db.delete_meeting_with_audio(&id)?;
+    // yap24-NT1 (review BLOCKING 2) — and every crash journal bound to it, so
+    // the deleted meeting's audio does not outlive the row under the journal's id.
+    meeting::remove_journals_bound_to(&meetings_dir(), &id);
+    Ok(())
 }
 
 /// Export one meeting as Markdown into Application Support, alongside the
