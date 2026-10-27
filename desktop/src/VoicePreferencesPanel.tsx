@@ -15,7 +15,7 @@ import {
 } from "./voicePreferences";
 
 export default function VoicePreferencesPanel() {
-  const { toast } = useAppCtx();
+  const { toast, toastError } = useAppCtx();
   const [spoken, setSpoken] = useState("");
   const [busy, setBusy] = useState(false);
   const [proposal, setProposal] = useState<VoicePreference | null>(null);
@@ -26,7 +26,7 @@ export default function VoicePreferencesPanel() {
     try {
       setRows(await invoke<VoicePreference[]>("list_voice_preferences"));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   useEffect(() => {
@@ -56,7 +56,7 @@ export default function VoicePreferencesPanel() {
       toast("Rule applied — it takes effect from your next dictation");
       await refresh();
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function retract(id: string) {
@@ -65,7 +65,7 @@ export default function VoicePreferencesPanel() {
       if (proposal?.id === id) setProposal(null);
       await refresh();
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 
