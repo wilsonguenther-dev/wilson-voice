@@ -7,7 +7,7 @@
  * never said anything at all.
  */
 import { describe, expect, it } from "vitest";
-import { STILL_RECORDING_LINE, stripLine, stripTextWidthPx } from "./live";
+import { FN_HINT_EVENT, FN_HINT_LINE, STILL_RECORDING_LINE, stripLine, stripTextWidthPx } from "./live";
 // The shell's CSS and TSX are read as TEXT from disk: Vitest blanks every
 // `.css` import (even `?raw`) unless `test.css` opts it in, and this test only
 // needs to assert that the rule exists. No @types/node in this project.
@@ -893,5 +893,33 @@ describe("yap-hotkey-stop — still recording", () => {
     expect(css).toMatch(/html\[data-still-recording="true"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
     const shell = readSibling("../float-main.tsx");
     expect(shell).toContain('dataset.stillRecording = stillRecording ? "true" : "false"');
+  });
+});
+
+describe("yap-qa-hotkey-walk-binding — fn alone under fn⌃ says why", () => {
+  it("the hint line mirrors ptt_macos::FN_WITHOUT_MODIFIER_HINT and fits the strip", () => {
+    const rust = readSibling("../../src-tauri/src/ptt_macos.rs");
+    expect(rust).toContain(`pub const FN_WITHOUT_MODIFIER_HINT: &str = "${FN_HINT_LINE}";`);
+    expect(FN_HINT_LINE.startsWith("Hold fn⌃")).toBe(true);
+    expect(
+      fitsSideDockStrip(FN_HINT_LINE),
+      `${FN_HINT_LINE} is ${stripTextWidthPx(FN_HINT_LINE)} px`,
+    ).toBe(true);
+  });
+
+  it("the event name matches lib.rs and the strip shows the hint below still-recording", () => {
+    const lib = readSibling("../../src-tauri/src/lib.rs");
+    expect(lib).toContain(`const FN_HINT_EVENT: &str = "${FN_HINT_EVENT}";`);
+    expect(stripLine("Ready", false, FN_HINT_LINE)).toBe(FN_HINT_LINE);
+    expect(stripLine("Ready", true, FN_HINT_LINE)).toBe(STILL_RECORDING_LINE);
+    expect(stripLine("Ready", false, null)).toBe("Ready");
+  });
+
+  it("float.css shows the strip while the hint is up, and the shell sets the hook", () => {
+    const css = readSibling("../float.css");
+    expect(css).toMatch(/html\[data-fn-hint="true"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
+    const shell = readSibling("../float-main.tsx");
+    expect(shell).toContain("listen<string>(FN_HINT_EVENT");
+    expect(shell).toContain("stripLine(line, stillRecording, fnHint)");
   });
 });

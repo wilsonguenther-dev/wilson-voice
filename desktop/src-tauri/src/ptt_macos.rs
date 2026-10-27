@@ -100,6 +100,142 @@ impl CommandBinding {
     }
 }
 
+// ── yap-qa-hotkey-walk-binding DO 3: fn ALONE says why it did nothing ─────────
+//
+// The default binding is fn⌃ and the UI says "Hold fn⌃". A user who holds fn by
+// itself got nothing and no reason. Now a bare fn press — down and up, or held
+// past `FN_HINT_HOLD_MS` — under a binding that needs ⌃ emits ONE
+// `PttEvent::FnWithoutModifierHint`, throttled to once per `FN_HINT_THROTTLE_MS`,
+// and the pill shows `FN_WITHOUT_MODIFIER_HINT`.
+
+/// The pill line for fn pressed without the binding's ⌃. Mirrors
+/// `FN_HINT_LINE` in desktop/src/pill/live.ts (live.test.ts holds them equal and
+/// inside the side-dock strip's one line).
+pub const FN_WITHOUT_MODIFIER_HINT: &str = "Hold fn⌃ — fn alone does nothing";
+/// A bare fn held longer than this (ms) earns the hint before it is released.
+pub const FN_HINT_HOLD_MS: u64 = 400;
+/// At most one hint per this many ms.
+pub const FN_HINT_THROTTLE_MS: u64 = 30_000;
+
+/// PURE: is a "fn alone does nothing" hint due right now?
+///
+/// * `binding` — only a binding that NEEDS ⌃ (`FnControl`) can be missing it;
+///   `Fn` and `FnOrFnControl` start a take on bare fn, so they never hint.
+/// * `fn_down` — fn is still held (`true`) or this is its release (`false`).
+/// * `ctrl_down` — ⌃ was down at any point in this fn press.
+/// * `held_ms` — how long fn has been (or was) down.
+/// * `last_hint_ms` / `now_ms` — the monotonic clock of the last hint (None:
+///   never) and now, for the 30 s throttle.
+pub fn fn_hint_due(
+    binding: PttBinding,
+    fn_down: bool,
+    ctrl_down: bool,
+    held_ms: u64,
+    last_hint_ms: Option<u64>,
+    now_ms: u64,
+) -> bool {
+    if binding != PttBinding::FnControl || ctrl_down {
+        return false;
+    }
+    if fn_down && held_ms <= FN_HINT_HOLD_MS {
+        return false;
+    }
+    match last_hint_ms {
+        Some(last) => now_ms.saturating_sub(last) >= FN_HINT_THROTTLE_MS,
+        None => true,
+    }
+}
+
+/// One fn press, as the hint sees it. Pure: no FFI, time in ms.
+#[derive(Debug, Default)]
+struct FnHintTracker {
+    /// When the current fn press went down, if one is in progress.
+    press_at: Option<u64>,
+    /// ⌃ was seen at some point during this press.
+    ctrl_seen: bool,
+    /// Another key or modifier joined this press (fn+arrow, fn+F-key, fn⌘…):
+    /// that is a different shortcut, not a missed push-to-talk.
+    dirty: bool,
+    /// Bumped per press so a stale hold check never speaks for a later press.
+    gen: u64,
+    last_hint: Option<u64>,
+}
+
+impl FnHintTracker {
+    /// A flags edge. Returns `(hint_now, arm_hold_check_gen)`.
+    fn on_flags(
+        &mut self,
+        binding: PttBinding,
+        fn_down: bool,
+        ctrl: bool,
+        other_mod: bool,
+        now: u64,
+    ) -> (bool, Option<u64>) {
+        match (self.press_at, fn_down) {
+            (None, true) => {
+                self.press_at = Some(now);
+                self.ctrl_seen = ctrl;
+                self.dirty = other_mod;
+                self.gen += 1;
+                let arm = binding == PttBinding::FnControl && !ctrl && !other_mod;
+                (false, arm.then_some(self.gen))
+            }
+            (Some(_), true) => {
+                self.ctrl_seen |= ctrl;
+                self.dirty |= other_mod;
+                (false, None)
+            }
+            (Some(at), false) => {
+                self.press_at = None;
+                let due = !self.dirty
+                    && fn_hint_due(
+                        binding,
+                        false,
+                        self.ctrl_seen || ctrl,
+                        now.saturating_sub(at),
+                        self.last_hint,
+                        now,
+                    );
+                if due {
+                    self.last_hint = Some(now);
+                }
+                (due, None)
+            }
+            (None, false) => (false, None),
+        }
+    }
+
+    /// A non-modifier key went down: whatever this fn press is, it is not PTT.
+    fn on_key_down(&mut self) {
+        if self.press_at.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// The `FN_HINT_HOLD_MS` check for press `gen`, fn still held.
+    fn on_hold_check(&mut self, gen: u64, binding: PttBinding, ctrl: bool, now: u64) -> bool {
+        let Some(at) = self.press_at else {
+            return false;
+        };
+        if gen != self.gen || self.dirty {
+            return false;
+        }
+        self.ctrl_seen |= ctrl;
+        let due = fn_hint_due(
+            binding,
+            true,
+            self.ctrl_seen,
+            now.saturating_sub(at),
+            self.last_hint,
+            now,
+        );
+        if due {
+            self.last_hint = Some(now);
+        }
+        due
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttEvent {
     /// Start recording (hold armed or hands-free latch on).
@@ -116,6 +252,10 @@ pub enum PttEvent {
     /// a hold with no key-up for `STILL_RECORDING_AFTER_SECS`, or any take
     /// during which macOS switched the tap off.
     StillRecording,
+    /// yap-qa-hotkey-walk-binding: fn went down (and up, or past
+    /// `FN_HINT_HOLD_MS`) without the binding's ⌃ — the pill shows
+    /// `FN_WITHOUT_MODIFIER_HINT`. Throttled to one per `FN_HINT_THROTTLE_MS`.
+    FnWithoutModifierHint,
 }
 
 type Callback = Arc<dyn Fn(PttEvent) + Send + Sync + 'static>;
@@ -498,6 +638,8 @@ struct TapState {
     /// Which extra modifier makes a press a command-mode press (YV49).
     command_binding: Mutex<CommandBinding>,
     machine: Mutex<PttMachine>,
+    /// The bare-fn hint's own view of the current fn press.
+    fn_hint: Mutex<FnHintTracker>,
     callback: Callback,
 }
 
@@ -597,6 +739,7 @@ pub fn start(binding: PttBinding, command_binding: CommandBinding, callback: Cal
         binding: Mutex::new(binding),
         command_binding: Mutex::new(command_binding),
         machine: Mutex::new(PttMachine::new()),
+        fn_hint: Mutex::new(FnHintTracker::default()),
         callback,
     });
     *GLOBAL_STATE.lock() = Some(state.clone());
@@ -799,6 +942,32 @@ fn spawn_hold_timer(gen: u64) {
     });
 }
 
+/// The bare-fn hint, once: log it and hand it to the app (the pill shows it).
+fn emit_fn_hint(state: &Arc<TapState>) {
+    log::info!("PTT → fn without ⌃ — hint: {FN_WITHOUT_MODIFIER_HINT}");
+    (state.callback)(PttEvent::FnWithoutModifierHint);
+}
+
+/// `FN_HINT_HOLD_MS` after a bare fn went down: still held, still bare → hint.
+fn spawn_fn_hint_check(gen: u64) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(FN_HINT_HOLD_MS + 1));
+        let Some(st) = GLOBAL_STATE.lock().clone() else {
+            return;
+        };
+        let (_, hctl, _, _) =
+            decode_flags(unsafe { ffi::CGEventSourceFlagsState(POLL_SOURCE_STATE) });
+        let binding = *st.binding.lock();
+        let due = st
+            .fn_hint
+            .lock()
+            .on_hold_check(gen, binding, hctl, now_ms());
+        if due {
+            emit_fn_hint(&st);
+        }
+    });
+}
+
 /// Start the live-take poll if it is not already running.
 fn ensure_poll() {
     if POLLING.swap(true, Ordering::SeqCst) {
@@ -934,7 +1103,22 @@ unsafe extern "C" fn tap_callback(
             .lock()
             .edge(want, cmd, now_ms(), EdgeSource::Tap);
         dispatch(&state, step);
+        let binding = *state.binding.lock();
+        let (hint, arm) =
+            state
+                .fn_hint
+                .lock()
+                .on_flags(binding, fn_down, control, command || option, now_ms());
+        if let Some(gen) = arm {
+            spawn_fn_hint_check(gen);
+        }
+        if hint {
+            emit_fn_hint(&state);
+        }
     } else if event_type == KCG_EVENT_KEY_DOWN {
+        if !is_modifier_keycode(keycode) {
+            state.fn_hint.lock().on_key_down();
+        }
         let step = state.machine.lock().key_down(is_modifier_keycode(keycode));
         if !step.events.is_empty() {
             log::info!("PTT interrupted by keycode {keycode}");
@@ -1431,6 +1615,117 @@ unsafe fn on_tap_disabled(kind: TapDisable, user_info: *mut std::ffi::c_void) {
         },
         edges
     );
+}
+
+#[cfg(test)]
+mod fn_hint_tests {
+    use super::{
+        fn_hint_due, FnHintTracker, PttBinding, FN_HINT_HOLD_MS, FN_HINT_THROTTLE_MS,
+        FN_WITHOUT_MODIFIER_HINT,
+    };
+
+    /// `fn_hint_due` under the default fn⌃ binding.
+    fn due(fn_down: bool, ctrl: bool, held: u64, last: Option<u64>, now: u64) -> bool {
+        fn_hint_due(PttBinding::FnControl, fn_down, ctrl, held, last, now)
+    }
+
+    #[test]
+    fn fn_hint_due_bare_fn_tap_under_fn_control_hints() {
+        assert!(due(false, false, 120, None, 10_000));
+    }
+
+    #[test]
+    fn fn_hint_due_with_ctrl_never_hints() {
+        assert!(!due(false, true, 120, None, 10_000));
+        assert!(!due(true, true, 900, None, 10_000));
+    }
+
+    #[test]
+    fn fn_hint_due_bindings_that_fire_on_bare_fn_never_hint() {
+        for b in [PttBinding::Fn, PttBinding::FnOrFnControl] {
+            assert!(!fn_hint_due(b, false, false, 120, None, 10_000));
+            assert!(!fn_hint_due(b, true, false, 900, None, 10_000));
+        }
+    }
+
+    #[test]
+    fn fn_hint_due_while_held_only_past_400_ms() {
+        assert!(!due(true, false, 200, None, 10_000));
+        assert!(!due(true, false, FN_HINT_HOLD_MS, None, 10_000));
+        assert!(due(true, false, FN_HINT_HOLD_MS + 1, None, 10_000));
+    }
+
+    #[test]
+    fn fn_hint_due_throttled_to_once_per_30_s() {
+        let last = Some(10_000);
+        assert!(!due(false, false, 120, last, 10_000 + 5_000));
+        let edge = 10_000 + FN_HINT_THROTTLE_MS;
+        assert!(!due(false, false, 120, last, edge - 1));
+        assert!(due(false, false, 120, last, edge));
+    }
+
+    #[test]
+    fn fn_hint_due_tracker_tap_hints_once_then_throttles() {
+        let mut t = FnHintTracker::default();
+        let b = PttBinding::FnControl;
+        let (h, arm) = t.on_flags(b, true, false, false, 1_000);
+        assert!(!h);
+        assert_eq!(arm, Some(1));
+        assert_eq!(t.on_flags(b, false, false, false, 1_090), (true, None));
+        // A second bare tap 5 s later is throttled.
+        t.on_flags(b, true, false, false, 6_000);
+        assert_eq!(t.on_flags(b, false, false, false, 6_080), (false, None));
+        // 30 s after the first hint it speaks again.
+        t.on_flags(b, true, false, false, 32_000);
+        assert_eq!(t.on_flags(b, false, false, false, 32_080), (true, None));
+    }
+
+    #[test]
+    fn fn_hint_due_tracker_fn_then_ctrl_is_the_real_chord_no_hint() {
+        let mut t = FnHintTracker::default();
+        let b = PttBinding::FnControl;
+        t.on_flags(b, true, false, false, 1_000);
+        t.on_flags(b, true, true, false, 1_050); // ⌃ joins: the user is doing fn⌃
+        assert!(!t.on_hold_check(1, b, true, 1_401));
+        assert_eq!(t.on_flags(b, false, false, false, 2_000), (false, None));
+    }
+
+    #[test]
+    fn fn_hint_due_tracker_fn_arrow_is_another_shortcut_no_hint() {
+        let mut t = FnHintTracker::default();
+        let b = PttBinding::FnControl;
+        t.on_flags(b, true, false, false, 1_000);
+        t.on_key_down(); // fn+← (Home)
+        assert!(!t.on_hold_check(1, b, false, 1_401));
+        assert_eq!(t.on_flags(b, false, false, false, 1_600), (false, None));
+    }
+
+    #[test]
+    fn fn_hint_due_tracker_long_hold_hints_once_not_again_at_release() {
+        let mut t = FnHintTracker::default();
+        let b = PttBinding::FnControl;
+        let (_, arm) = t.on_flags(b, true, false, false, 1_000);
+        assert!(t.on_hold_check(arm.unwrap(), b, false, 1_401));
+        // Release of the same press: throttled, no second hint.
+        assert_eq!(t.on_flags(b, false, false, false, 2_500), (false, None));
+        // A stale check for an earlier press never fires.
+        t.on_flags(b, true, false, false, 40_000);
+        assert!(!t.on_hold_check(arm.unwrap(), b, false, 40_401));
+    }
+
+    #[test]
+    fn fn_hint_due_tracker_bare_fn_binding_never_arms() {
+        let mut t = FnHintTracker::default();
+        let b = PttBinding::Fn;
+        assert_eq!(t.on_flags(b, true, false, false, 1_000), (false, None));
+        assert_eq!(t.on_flags(b, false, false, false, 1_100), (false, None));
+    }
+
+    #[test]
+    fn fn_hint_due_message_names_the_chord() {
+        assert!(FN_WITHOUT_MODIFIER_HINT.starts_with("Hold fn⌃"));
+        assert!(FN_WITHOUT_MODIFIER_HINT.chars().count() <= 34);
+    }
 }
 
 #[cfg(test)]

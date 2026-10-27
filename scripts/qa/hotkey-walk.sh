@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # scripts/qa/hotkey-walk.sh — a REAL fn take on the INSTALLED Yap (yap-qa-harness).
 #
-# Posts synthetic fn (Globe) edges — CGEvent flagsChanged with maskSecondaryFn,
-# from scripts/qa/fn-post.swift built ad hoc into desktop/target/qa — and
-# asserts Yap's own log answers, in order and within 5 s of the previous step:
+# Presses the CONFIGURED push-to-talk chord — pttBinding from Yap's own
+# settings.json (fn -> fn; fn_control, the default -> ⌃ down then fn down,
+# released in reverse; both -> fn) — as synthetic CGEvent flagsChanged edges
+# from scripts/qa/fn-post.swift (built ad hoc into desktop/target/qa), and
+# asserts Yap's own log answers, in order and within 5 s of the previous step.
+# An unknown pttBinding is refused by name (exit 2) and nothing is posted.
+# "the chord" below is that binding's keys:
 #
-#   pass 1 (hold):        fn down, hold 1.5 s, fn up
+#   pass 1 (hold):        chord down, hold 1.5 s, chord up
 #       "PTT hold armed" -> "recording started" -> "PTT hold release"
 #       -> "transcript ok" | "no-speech gate" (the take ended)
-#   pass 2 (hands-free):  double-tap fn, wait 3 s, tap fn once
+#   pass 2 (hands-free):  double-tap the chord, wait 3 s, tap it once
 #       "hands-free ON" -> "recording started" -> "tap ends hands-free"
 #       -> "transcript ok" | "no-speech gate" (the take ended)
 #
@@ -19,6 +23,10 @@
 # It never launches, quits or signals Yap. Yap must already be running.
 #
 #   hotkey-walk.sh               walk the installed app (needs YAP_QA_DRIVE_RUNNING=1)
+#   hotkey-walk.sh --dev-build[=BIN]  walk an UNBUNDLED dev binary, matched by its
+#                                target path (default: $CARGO_TARGET_DIR or
+#                                desktop/target, + /debug/wilson-voice)
+#   hotkey-walk.sh --settings P  read pttBinding from P instead of Yap's settings.json
 #   hotkey-walk --chord          (hotkey-walk.sh --chord) walk the Carbon dictate chord
 #   hotkey-walk.sh --table       PASSIVE: this bundle's TCC grants + the hotkey
 #                                table Yap logged at launch; posts NO events
@@ -32,6 +40,9 @@
 #   never set it while someone is typing), YAP_QA_DRIVE_RUNNING=1 (consent to post fn into a running Yap),
 #   YAP_QA_APP (default /Applications/Yap.app), YAP_QA_LOG (default Yap's log),
 #   YAP_QA_BUNDLE_ID / YAP_QA_TCC_DB (--table; the database is opened with sqlite3 -readonly).
+#   YAP_DATA_DIR (the app's own data-dir override; settings.json is read there).
+#   YAP_QA_FAKE_PIDS / YAP_QA_FAKE_POST_ACCESS / YAP_QA_NO_POST are --self-test
+#   fakes only; a live walk of a dev binary uses --dev-build, never fake pids.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +51,16 @@ QA_BIN_DIR="$REPO_ROOT/desktop/target/qa"
 FIXTURES="$SCRIPT_DIR/fixtures"
 APP="${YAP_QA_APP:-/Applications/Yap.app}"
 LOG="${YAP_QA_LOG:-$HOME/Library/Application Support/WilsonVoice/logs/yap.log}"
+# The same data dir the app resolves (app_paths.rs: $YAP_DATA_DIR, else
+# <Application Support>/WilsonVoice); --settings overrides it.
+DATA_ROOT="${YAP_DATA_DIR:-$HOME/Library/Application Support/WilsonVoice}"
+SETTINGS="$DATA_ROOT/settings.json"
+DEV_BIN=""
+# Filled by resolve_binding: the fn-post ops that press / release the chord.
+BINDING=""
+CHORD=""
+PRESS=()
+RELEASE=()
 STEP_LIMIT_S=5
 END_WAIT_S=15
 
@@ -62,6 +83,36 @@ transcript ok|no-speech gate'
 die() {
   printf 'hotkey-walk: %s\n' "$1" >&2
   exit 2
+}
+
+# Read pttBinding from $1 (a settings.json) and set BINDING, CHORD, PRESS and
+# RELEASE. Prints "binding=<value> chord=<keys>". A missing file or a missing
+# key is the app's own default (fn_control, lib.rs default_ptt_binding); an
+# unreadable file or an unknown value is refused by name — exit 2, nothing posted.
+resolve_binding() { # $1 settings path
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    printf 'hotkey-walk: no settings at %s — Yap runs on its default binding
+' "$file"
+    BINDING="fn_control"
+  elif ! plutil -convert json -o /dev/null -- "$file" >/dev/null 2>&1; then
+    die "settings at $file are not readable JSON — refusing to guess the binding; posting nothing"
+  elif ! BINDING="$(plutil -extract pttBinding raw -o - -- "$file" 2>/dev/null)"; then
+    BINDING="fn_control"
+  fi
+  case "$BINDING" in
+    fn | globe | both | fn_or_fn_control)
+      CHORD="fn"; PRESS=(down); RELEASE=(up) ;;
+    fn_control)
+      CHORD="ctrl+fn"; PRESS=(ctrl-down down); RELEASE=(up ctrl-up) ;;
+    *)
+      printf 'binding=%s chord=none
+' "$BINDING"
+      die "unknown binding \"$BINDING\" in $file — expected fn, fn_control or both; posting nothing"
+      ;;
+  esac
+  printf 'binding=%s chord=%s
+' "$BINDING" "$CHORD"
 }
 
 # Build a QA Swift helper into desktop/target/qa (gitignored), signed AD HOC.
@@ -136,12 +187,18 @@ caller_name() {
   fi
 }
 
-# Pids of the installed Yap's executable — read only, never signalled.
+# Pids of the installed Yap's executable (or, with --dev-build, of the dev
+# binary at its target path) — read only, never signalled.
 # YAP_QA_FAKE_PIDS (self-test only) stands in for pgrep.
 yap_pids() {
   local exe out
   if [ -n "${YAP_QA_FAKE_PIDS+set}" ]; then
     printf '%s\n' "$YAP_QA_FAKE_PIDS"
+    return 0
+  fi
+  if [ -n "$DEV_BIN" ]; then
+    out="$(pgrep -f "^${DEV_BIN}( |\$)" 2>/dev/null)" || return 0
+    printf '%s\n' "${out//$'\n'/,}"
     return 0
   fi
   exe="$(plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" || return 0
@@ -190,12 +247,21 @@ settle_and_check() { # $1 offset, $2 start iso, $3 steps, $4 segment file
 }
 
 walk() { # $1 = "" (fn passes) | chord
-  local mode="${1:-}" pids fnpost="" rc seg offset start
-  [ -f "$APP/Contents/Info.plist" ] || die "no app bundle at $APP"
+  local mode="${1:-}" pids fnpost="" rc seg offset start target
+  if [ -n "${YAP_QA_FAKE_PIDS+set}" ] && [ "${YAP_QA_SELF_TEST:-}" != "1" ]; then
+    die "YAP_QA_FAKE_PIDS is a --self-test fake — walk a dev binary with --dev-build instead"
+  fi
+  if [ -n "$DEV_BIN" ]; then
+    [ -x "$DEV_BIN" ] || die "no dev binary at $DEV_BIN — build it (npm run desktop:dev) or pass --dev-build=<path>"
+    target="$DEV_BIN"
+  else
+    [ -f "$APP/Contents/Info.plist" ] || die "no app bundle at $APP"
+    target="$APP"
+  fi
 
   pids="$(yap_pids)"
   if [ -z "$pids" ]; then
-    printf 'Yap is not running (%s); this walk never launches it — open Yap, then rerun\n' "$APP"
+    printf 'Yap is not running (%s); this walk never launches it — open Yap, then rerun\n' "$target"
     exit 5
   fi
   # focus-2026-10-19: posting keys needs a SECOND, explicit consent —
@@ -203,6 +269,13 @@ walk() { # $1 = "" (fn passes) | chord
   if [ "${YAP_QA_DRIVE_RUNNING:-}" != "1" ] || [ "${YAP_QA_ALLOW_KEYS:-}" != "1" ]; then
     printf 'Yap is running (pid %s); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 when you are not dictating\n' "$pids"
     exit 4
+  fi
+
+  # The chord comes from the binding the app is actually running with. Resolved
+  # BEFORE anything is built or posted: an unknown binding posts nothing.
+  if [ "$mode" != "chord" ]; then
+    resolve_binding "$SETTINGS"
+    printf 'press=%s release=%s\n' "${PRESS[*]}" "${RELEASE[*]}"
   fi
 
   if [ -z "${YAP_QA_FAKE_POST_ACCESS:-}" ]; then
@@ -239,12 +312,12 @@ walk() { # $1 = "" (fn passes) | chord
     exit 0
   fi
 
-  printf -- '-- pass 1: hold fn 1.5 s\n'
+  printf -- '-- pass 1: hold %s 1.5 s\n' "$CHORD"
   offset="$(log_size)"
   start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  "$fnpost" down || { rm -f "$seg"; die "fn-post down failed"; }
+  "$fnpost" "${PRESS[@]}" || { rm -f "$seg"; die "fn-post press failed"; }
   sleep 1.5
-  "$fnpost" up || { rm -f "$seg"; die "fn-post up failed"; }
+  "$fnpost" "${RELEASE[@]}" || { rm -f "$seg"; die "fn-post release failed"; }
   settle_and_check "$offset" "$start" "$HOLD_STEPS" "$seg"
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -253,12 +326,13 @@ walk() { # $1 = "" (fn passes) | chord
   fi
 
   sleep 1
-  printf -- '-- pass 2: double-tap fn (hands-free), wait 3 s, tap fn\n'
+  printf -- '-- pass 2: double-tap %s (hands-free), wait 3 s, tap %s\n' "$CHORD" "$CHORD"
   offset="$(log_size)"
   start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  "$fnpost" down sleep:70 up sleep:150 down sleep:70 up || { rm -f "$seg"; die "fn-post double-tap failed"; }
+  "$fnpost" "${PRESS[@]}" sleep:70 "${RELEASE[@]}" sleep:150 "${PRESS[@]}" sleep:70 "${RELEASE[@]}" \
+    || { rm -f "$seg"; die "fn-post double-tap failed"; }
   sleep 3
-  "$fnpost" down sleep:70 up || { rm -f "$seg"; die "fn-post tap failed"; }
+  "$fnpost" "${PRESS[@]}" sleep:70 "${RELEASE[@]}" || { rm -f "$seg"; die "fn-post tap failed"; }
   settle_and_check "$offset" "$start" "$HANDSFREE_STEPS" "$seg"
   rc=$?
   rm -f "$seg"
@@ -268,8 +342,13 @@ walk() { # $1 = "" (fn passes) | chord
 }
 
 self_test() {
-  local out rc fails=0
+  local out rc fails=0 f
   out="$(mktemp -t yapqa)" || exit 1
+  # Marks every child below as a self-test run: the only place fake pids are allowed.
+  export YAP_QA_SELF_TEST=1
+  # Never read the real settings.json: a case without --settings sees "no
+  # settings file" (the app default), whatever this machine's binding is.
+  export YAP_DATA_DIR="/nonexistent/yap-qa-self-test"
 
   expect() { # $1 label, $2 want rc, $3 got rc, $4 required text ("" = none)
     if [ "$3" -eq "$2" ] && { [ -z "$4" ] || grep -qF -- "$4" "$out"; }; then
@@ -328,6 +407,51 @@ self_test() {
   YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
     YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
   expect "--chord: all gates open -> reaches the post step (stopped, nothing posted)" 99 $? "stopping before any event is posted"
+
+  # yap-qa-hotkey-walk-binding: the chord comes from pttBinding. All gates open,
+  # stopped at the post step (99) — the binding line is what WOULD be pressed.
+  for f in fn_control fn; do
+    YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+      YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --settings "$FIXTURES/settings-$f.json" >"$out" 2>&1
+    expect "settings pttBinding=$f -> its chord, stopped before posting" 99 $? "binding=$f chord="
+    grep '^binding=' "$out"
+  done
+  grep -qx 'press=ctrl-down down release=up ctrl-up' <(YAP_QA_APP=/System/Applications/Calculator.app \
+    YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 \
+    bash "$0" --settings "$FIXTURES/settings-fn_control.json" 2>&1)
+  rc=$?
+  : >"$out"
+  expect "fn_control presses ⌃ then fn, releases fn then ⌃" 0 "$rc" ""
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --settings "$FIXTURES/settings-unknown.json" >"$out" 2>&1
+  expect "unknown binding -> refused by name, nothing posted" 2 $? 'unknown binding "hyper_globe"'
+  grep -e '^binding=' -e 'unknown binding' "$out"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --settings "$FIXTURES/settings-no-binding.json" >"$out" 2>&1
+  expect "no pttBinding key -> the app default fn_control" 99 $? "binding=fn_control chord=ctrl+fn"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --settings "$FIXTURES/settings-corrupt.json" >"$out" 2>&1
+  expect "unreadable settings -> refused, nothing posted" 2 $? "not readable JSON"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --settings /nonexistent/settings.json >"$out" 2>&1
+  expect "no settings file -> the app default fn_control" 99 $? "binding=fn_control chord=ctrl+fn"
+
+  # --dev-build: matched by target path, no bundle needed.
+  YAP_QA_APP=/nonexistent/Yap.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --dev-build=/bin/ls \
+    --settings "$FIXTURES/settings-fn_control.json" >"$out" 2>&1
+  expect "--dev-build: no bundle needed, reaches the post step" 99 $? "stopping before any event is posted"
+  YAP_QA_APP=/System/Applications/Calculator.app bash "$0" --dev-build=/nonexistent/wilson-voice >"$out" 2>&1
+  expect "--dev-build: missing binary -> usage error" 2 $? "no dev binary at /nonexistent/wilson-voice"
+  YAP_QA_FAKE_PIDS="" YAP_QA_NO_POST=1 bash "$0" --dev-build=/bin/ls >"$out" 2>&1
+  expect "--dev-build: dev binary not running -> refuses" 5 $? "Yap is not running (/bin/ls)"
+  env -u YAP_QA_SELF_TEST YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 \
+    YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
+  expect "YAP_QA_FAKE_PIDS outside --self-test -> refused" 2 $? "YAP_QA_FAKE_PIDS is a --self-test fake"
 
   # The log parser, against fixtures.
   check_steps "$FIXTURES/yap-walk-pass.log" 2026-10-16T18:08:54Z "$HOLD_STEPS" >"$out" 2>&1
@@ -397,11 +521,25 @@ table() {
   exit 0
 }
 
-case "${1:-}" in
+MODE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --table | --self-test | --chord) MODE="$1" ;;
+    -h | --help) sed -n '2,45p' "$0"; exit 0 ;;
+    --settings)
+      [ "$#" -ge 2 ] || die "--settings needs a path"
+      SETTINGS="$2"; shift ;;
+    --settings=*) SETTINGS="${1#--settings=}" ;;
+    --dev-build) DEV_BIN="${CARGO_TARGET_DIR:-$REPO_ROOT/desktop/target}/debug/wilson-voice" ;;
+    --dev-build=*) DEV_BIN="${1#--dev-build=}" ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+case "$MODE" in
   --table) table ;;
   --self-test) self_test ;;
-  -h | --help) sed -n '2,34p' "$0"; exit 0 ;;
   --chord) walk chord ;;
-  "") walk ;;
-  *) die "unknown argument: $1" ;;
+  *) walk ;;
 esac

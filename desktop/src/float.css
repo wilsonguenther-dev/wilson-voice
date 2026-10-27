@@ -848,6 +848,8 @@ html[data-phase="error"] .phase-strip { opacity: 1; }
    keeps silent. Without this rule the prompt is written into an invisible
    element. float-main sets `<html data-still-recording>` beside `data-phase`. */
 html[data-still-recording="true"] .phase-strip { opacity: 1; }
+/* yap-qa-hotkey-walk-binding — fn alone under fn⌃: the hint shows in any phase. */
+html[data-fn-hint="true"] .phase-strip { opacity: 1; }
 /* A failure reads as one. Everything else stays the quiet working voice. */
 html[data-phase="error"] .phase-strip { color: rgba(252, 165, 165, 0.92); }
 html[data-phase="empty"] .phase-strip { color: rgba(255, 255, 255, 0.58); }
