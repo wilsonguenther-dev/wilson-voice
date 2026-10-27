@@ -989,3 +989,54 @@ html[data-dock="right"] .phase-strip {
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* yap-notetaker-detect — "Record this meeting?". Same top band as the Copy
+   card, above the capsule (the mascot stays as drawn); the wrap is the
+   window's hitbox while it is up (MeetingOfferCard.tsx). */
+.meeting-offer-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.meeting-offer {
+  box-sizing: border-box;
+  padding: 7px 9px 7px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: #f4f4f6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.meeting-offer p { margin: 0; }
+.meeting-offer-headline { font-weight: 600; }
+.meeting-offer-title {
+  margin-top: 1px;
+  font-size: 11px;
+  color: rgba(244, 244, 246, 0.86);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meeting-offer-consent {
+  margin-top: 2px;
+  font-size: 11px;
+  color: rgba(244, 244, 246, 0.72);
+}
+.meeting-offer-error { margin-top: 2px; font-size: 11px; color: #ffb4a8; }
+.meeting-offer-actions { display: flex; gap: 6px; margin-top: 5px; }
+.meeting-offer-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: #f4f4f6;
+  background: rgba(255, 255, 255, 0.12);
+}
+.meeting-offer-actions .meeting-offer-record { background: #e5484d; color: #fff; }
+.meeting-offer-actions button:focus-visible { outline: 2px solid #9db6ff; outline-offset: 1px; }

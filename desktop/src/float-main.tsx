@@ -19,6 +19,7 @@ import YappyPill from "./pill/YappyPill";
 import CopyCard from "./pill/CopyCard";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
+import MeetingOfferCard from "./pill/MeetingOfferCard";
 import {
   acceptProgress,
   errorSentence,
@@ -354,6 +355,8 @@ function Float() {
     <>
       {pill}
       <CopyCard />
+      {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
+      <MeetingOfferCard />
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}

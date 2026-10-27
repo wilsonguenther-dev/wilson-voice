@@ -6,6 +6,7 @@ import Audio from "./settings/Audio";
 import Shortcut from "./settings/Shortcut";
 import Advanced from "./settings/Advanced";
 import Privacy from "./settings/Privacy";
+import Meetings from "./settings/Meetings";
 import License from "./settings/License";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
@@ -83,6 +84,9 @@ export default function Settings() {
                   asking first-run users that question, this panel IS the picker
                   for the people who want to answer it. */}
               {settingsTab === "advanced" && <Advanced />}
+
+              {/* ── Meetings — offer to record a detected meeting (never auto-records) ── */}
+              {settingsTab === "meetings" && <Meetings />}
 
               {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
               {settingsTab === "privacy" && <Privacy />}

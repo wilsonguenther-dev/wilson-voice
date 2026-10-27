@@ -26,6 +26,7 @@ export type SettingsTab =
   | "audio"
   | "shortcut"
   | "advanced"
+  | "meetings"
   | "privacy"
   | "license";
 
@@ -39,6 +40,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "audio", label: "Audio" },
   { id: "companion", label: "Companion" },
   { id: "advanced", label: "Advanced" },
+  // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
+  { id: "meetings", label: "Meetings" },
   { id: "privacy", label: "Privacy" },
   // YP3 — last, because it is the tab you visit twice: once to see what is
   // left of the trial, once to paste the key.

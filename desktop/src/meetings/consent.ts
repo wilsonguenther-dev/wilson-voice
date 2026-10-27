@@ -61,6 +61,15 @@ export interface RecordingSignal {
   recording: boolean;
 }
 
+/**
+ * yap-notetaker-detect — the ONE consent line the pill's "Record this
+ * meeting?" offer carries. `CONSENT_NOTICE` below is three paragraphs (too
+ * long for a pill) and its "Nothing is uploaded" claim is conditional once a
+ * Leaves-this-Mac label is Yes (yap-call-1, yap-byom-0), so the pill says only
+ * the part that is always true and always the user's job.
+ */
+export const CONSENT_PILL_LINE = "Let them know you're recording.";
+
 export const CONSENT_NOTICE = {
   eyebrow: "One time only",
   title: "Recording other people is your call",

@@ -97,6 +97,8 @@ pub mod meetings;
 // `tests/meeting_diagnostics_row.rs` assert it against a synthetic capture
 // engine instead of a stopwatch.
 pub mod meeting_control;
+/// yap-notetaker-detect — notice a meeting, offer to record it (never auto-records).
+pub mod meeting_detect;
 pub mod meeting_energy;
 // PERM-A — public so `tests/mic_auth_status.rs` can assert the
 // AVAuthorizationStatus discriminants and the call-site sweep without a
@@ -860,6 +862,7 @@ fn toggle_meeting(
     let was_recording = controller.is_recording();
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
+        meeting_detect::clear(app, None);
         if state.settings.lock().show_floating_pill {
             float_pill::show_for_recording(app);
         }
@@ -5706,21 +5709,113 @@ fn start_meeting(
     title: Option<String>,
     kind: Option<String>,
 ) -> Result<meeting_control::MeetingStatus, String> {
-    let controller = state.meeting().ok_or("Yap is still starting up")?;
-    if controller.is_recording() {
-        return Ok(controller.status());
-    }
     let st = state.inner().clone();
     let kind = kind
         .as_deref()
         .map(meetings::MeetingKind::parse)
         .unwrap_or(meetings::MeetingKind::Unknown);
+    begin_meeting(&app, &st, title, kind)
+}
+
+/// The start behind `start_meeting` and the pill's Record answer
+/// (`meeting_offer_respond`). Idempotent while a meeting is already running.
+fn begin_meeting(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    title: Option<String>,
+    kind: meetings::MeetingKind,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let controller = st.meeting().ok_or("Yap is still starting up")?;
+    if controller.is_recording() {
+        return Ok(controller.status());
+    }
     controller.start_with_kind(&meetings_dir(), title, kind)?;
     let status = controller.status();
+    // A recording started: whatever offer the pill was holding is answered.
+    meeting_detect::clear(app, None);
     if st.settings.lock().show_floating_pill {
-        float_pill::show_for_recording(&app);
+        float_pill::show_for_recording(app);
     }
     Ok(status)
+}
+
+/// yap-notetaker-detect — the offer the pill should show, for a pill webview
+/// that mounted after `meeting_offer` was emitted.
+#[tauri::command]
+fn pending_meeting_offer() -> Option<meeting_detect::MeetingOffer> {
+    meeting_detect::pending()
+}
+
+/// yap-notetaker-detect — the pill's [Record] / [Not now]. Record starts a
+/// VIRTUAL meeting titled after the calendar event (when known); Not now
+/// snoozes that event / app session. Both answers snooze the key, so the same
+/// occurrence is never offered twice. This is the ONLY path from an offer to
+/// a recording.
+#[tauri::command]
+fn meeting_offer_respond(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+    choice: String,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    let choice = meeting_detect::OfferChoice::parse(&choice)
+        .ok_or_else(|| format!("unknown offer choice: {choice}"))?;
+    let offer = meeting_detect::respond(&key);
+    meeting_detect::emit_clear(&app);
+    let st = state.inner().clone();
+    match choice {
+        meeting_detect::OfferChoice::Record => {
+            let title = offer.and_then(|o| o.title);
+            begin_meeting(&app, &st, title, meetings::MeetingKind::Virtual).map(Some)
+        }
+        meeting_detect::OfferChoice::Snooze => {
+            // The offer held the pill up; it goes back to following the
+            // setting unless a take or a meeting is in flight.
+            let in_flight = *st.recording.lock()
+                || *st.busy.lock()
+                || float_pill::dictating()
+                || float_pill::meeting_recording();
+            float_pill::after_recording(
+                &app,
+                float_pill::pill_visible_after_card(
+                    st.settings.lock().show_floating_pill,
+                    in_flight,
+                ),
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Settings › Meetings — both toggles and where calendar access stands.
+#[tauri::command]
+fn meeting_detect_settings(state: State<'_, Arc<AppState>>) -> meeting_detect::DetectSettingsView {
+    meeting_detect::settings_view(&state.db)
+}
+
+/// Settings › Meetings. "Use my calendar" can be turned OFF here, and back ON
+/// only once calendar access is already granted — this command never asks
+/// for it (the setup card's Connect calendar is the one place that does).
+#[tauri::command]
+fn set_meeting_detect_settings(
+    state: State<'_, Arc<AppState>>,
+    offer_detected: Option<bool>,
+    use_calendar: Option<bool>,
+) -> Result<meeting_detect::DetectSettingsView, String> {
+    if let Some(on) = offer_detected {
+        meeting_detect::save_offer_detected(&state.db, on)?;
+    }
+    if let Some(on) = use_calendar {
+        if on && !meeting_detect::calendar_full_access() {
+            return Err(
+                "Connect your calendar from the Meetings setup card first. Yap never asks for calendar access from Settings."
+                    .into(),
+            );
+        }
+        meeting_detect::save_use_calendar(&state.db, on)?;
+    }
+    meeting_detect::wake();
+    Ok(meeting_detect::settings_view(&state.db))
 }
 
 /// Stop the running meeting. Idempotent: stopping a meeting that already stopped
@@ -7385,6 +7480,11 @@ pub fn run() {
             pill_set_hitbox,
             pending_copy_card,
             dismiss_copy_card,
+            // yap-notetaker-detect — the pill's offer + Settings › Meetings.
+            pending_meeting_offer,
+            meeting_offer_respond,
+            meeting_detect_settings,
+            set_meeting_detect_settings,
             pill_drag_start,
             pill_drag_move,
             pill_drag_end,
@@ -8023,6 +8123,13 @@ pub fn run() {
             // appears for a dictation when the always-on setting is off, and the
             // watch is inert while the panel is hidden.
             float_pill::start_hover_watch(app.handle().clone());
+            // yap-notetaker-detect — event-driven + one 30 s timer; reads the
+            // calendar only when "Use my calendar" is on AND access is granted.
+            meeting_detect::start_watch(
+                app.handle().clone(),
+                state.db.clone(),
+                float_pill::meeting_recording,
+            );
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
