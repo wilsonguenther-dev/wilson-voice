@@ -39,6 +39,7 @@ const SETTINGS_TABS = [
   "Advanced",
   "Meetings",
   "Privacy",
+  "Diagnostics",
   "License",
 ];
 

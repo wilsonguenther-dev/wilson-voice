@@ -4,6 +4,10 @@
 //! Optional legacy ⌘⇧V via Carbon global-shortcut.
 //! HUD: floating float.html pill, parked bottom-center (no cursor chase).
 
+// yap-telemetry-diagnostics — FIRST, and #[macro_use], so diag_error! /
+// diag_warn! / diag_info! are in scope in every module declared below.
+#[macro_use]
+mod diagnostics;
 // YV93 — public because the timed decode (`transcribe_timed`) and the shipped
 // model's `Capabilities()` are what the meeting chunker is built on, and both
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
@@ -6355,6 +6359,102 @@ fn open_data_dir() -> Result<(), String> {
     Ok(())
 }
 
+/// yap-telemetry-diagnostics — a status word for any serde enum / grant state.
+fn diag_label<T: Serialize + std::fmt::Debug>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(serde_json::Value::Object(m)) => m
+            .get("state")
+            .and_then(|s| s.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{v:?}")),
+        _ => format!("{v:?}"),
+    }
+}
+
+/// The health line's inputs, read live from the same sources the Permissions
+/// view, the model picker, the hotkey row and the meeting controller read.
+fn diagnostics_health(state: &AppState) -> diagnostics::Health {
+    let native = state.settings.lock().native_model.clone();
+    let report = permissions::report(false, native_model_ready(&native).is_some());
+    let mut perms = std::collections::BTreeMap::new();
+    for row in &report.grants {
+        perms.insert(row.key.to_string(), diag_label(&row.status));
+    }
+    perms.insert(
+        "post_event".to_string(),
+        if report.probe.post_event.usable() { "authorized" } else { "denied" }.to_string(),
+    );
+    let hk = hotkeys::status();
+    let mut meeting = diagnostics::meeting_health();
+    if state.meeting().map(|m| m.is_recording()).unwrap_or(false) {
+        meeting.state = "recording".into();
+    }
+    diagnostics::Health {
+        permissions: perms,
+        model: diagnostics::ModelHealth {
+            selected: native,
+            loaded: state.transcription.is_loaded(),
+            loaded_model: state.transcription.loaded_model(),
+        },
+        hotkey: diagnostics::HotkeyHealth {
+            registered: hk.carbon == hotkeys::CarbonStatus::Registered,
+            chord: hotkeys::active_dictate().1,
+            fn_tap: diag_label(&hk.fn_tap),
+        },
+        meeting,
+        insert: diagnostics::insert_health(),
+    }
+}
+
+/// yap-telemetry-diagnostics — the Diagnostics panel's read: the newest events,
+/// every counter/duration, and the health line's inputs.
+#[tauri::command]
+async fn diagnostics_snapshot(
+    state: State<'_, Arc<AppState>>,
+) -> Result<diagnostics::DiagSnapshot, String> {
+    Ok(diagnostics::snapshot(diagnostics_health(&state)))
+}
+
+/// yap-telemetry-diagnostics — write the REDACTED snapshot to ~/Downloads as
+/// `yap-diagnostics-<UTC>.json` + `.txt`, reveal it in Finder, return both
+/// paths. Local files only: nothing is sent anywhere.
+#[tauri::command]
+async fn export_diagnostics(
+    state: State<'_, Arc<AppState>>,
+) -> Result<diagnostics::ExportPaths, String> {
+    let started = std::time::Instant::now();
+    let home = home_dir();
+    let snap = diagnostics::snapshot(diagnostics_health(&state));
+    let username = support::username_from_home(&home);
+    match diagnostics::write_export(&home.join("Downloads"), &snap, &username, chrono::Utc::now()) {
+        Ok((json, txt)) => {
+            let name = |p: &std::path::Path| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            };
+            diag_info!(
+                "diagnostics",
+                "diagnostics: export written {json} + {txt} ({events} events)",
+                json = name(&json),
+                txt = name(&txt),
+                events = snap.events.len(),
+            );
+            diagnostics::record_duration("diagnostics", "export", started.elapsed().as_millis() as u64);
+            support::reveal_in_finder(&txt);
+            Ok(diagnostics::ExportPaths {
+                json: json.display().to_string(),
+                txt: txt.display().to_string(),
+            })
+        }
+        Err(e) => {
+            diag_error!("diagnostics", "diagnostics: export failed: {err}", err = e);
+            Err(e)
+        }
+    }
+}
+
 /// Export diagnostics (YV7): reveal the rotating logs folder (`data_dir/logs/`)
 /// so users can attach yap.log to a support/bug report. Reuses the open pattern.
 ///
@@ -9590,6 +9690,9 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-telemetry-diagnostics — Settings → Diagnostics.
+            diagnostics_snapshot,
+            export_diagnostics,
             hotkey_bindings,
             cancel_meeting_summary,
             retry_meeting_summary,

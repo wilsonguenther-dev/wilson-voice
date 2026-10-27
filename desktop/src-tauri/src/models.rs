@@ -1189,6 +1189,7 @@ where
     let partial = partial_path(dest);
     let client = reqwest::Client::new();
     let mut last_err = "no download URLs configured".to_string();
+    let download_started = std::time::Instant::now();
 
     for attempt in 0..MAX_ATTEMPTS {
         if cancel() {
@@ -1206,18 +1207,26 @@ where
                 Ok(()) => match finalize_download(&partial, dest, expected_sha256) {
                     Ok(()) => {
                         mark_verified(dest);
+                        // yap-telemetry-diagnostics — download time + bytes.
+                        crate::diagnostics::record_duration(
+                            "models",
+                            "download",
+                            download_started.elapsed().as_millis() as u64,
+                        );
+                        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(size_bytes);
+                        crate::diagnostics::record_amount("models", "download_bytes", bytes);
                         return Ok(dest.to_path_buf());
                     }
                     // Verification failure (finalize deleted the partial) counts as a
                     // failed attempt — fall back to the remaining URLs/attempts.
                     Err(e) => {
-                        log::warn!("model download verification failed ({url}): {e}");
+                        diag_warn!("models", "model download verification failed ({url}): {err}", url = url, err = e);
                         last_err = e;
                     }
                 },
                 Err(e) if e == DOWNLOAD_CANCELLED => return Err(e),
                 Err(e) => {
-                    log::warn!("model download attempt failed ({url}): {e}");
+                    diag_warn!("models", "model download attempt failed ({url}): {err}", url = url, err = e);
                     last_err = e;
                 }
             }
@@ -1353,7 +1362,7 @@ fn cached_silero_vad_model(path: &Path) -> Option<PathBuf> {
     match verify_sha256(path, SILERO_MODEL_SHA256) {
         Ok(()) => Some(path.to_path_buf()),
         Err(e) => {
-            log::warn!("YV45 cached silero model rejected, re-fetching: {e}");
+            diag_warn!("models", "YV45 cached silero model rejected, re-fetching: {err}", err = e);
             let _ = std::fs::remove_file(path);
             None
         }
@@ -1393,7 +1402,7 @@ pub fn ensure_silero_vad_model(data_dir: &Path) -> Option<PathBuf> {
         Ok(s) if s.success() => {
             if let Err(e) = verify_sha256(&tmp, SILERO_MODEL_SHA256) {
                 let _ = std::fs::remove_file(&tmp);
-                log::warn!("YV36 silero model rejected: {e}");
+                diag_warn!("models", "YV36 silero model rejected: {err}", err = e);
                 return None;
             }
             if std::fs::rename(&tmp, &path).is_ok() {
@@ -1406,7 +1415,7 @@ pub fn ensure_silero_vad_model(data_dir: &Path) -> Option<PathBuf> {
         }
         other => {
             let _ = std::fs::remove_file(&tmp);
-            log::warn!("YV36 silero model download skipped/failed: {other:?}");
+            diag_warn!("models", "YV36 silero model download skipped/failed: {outcome}", outcome = format!("{other:?}"));
             None
         }
     }

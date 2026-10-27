@@ -539,7 +539,7 @@ pub fn observe(
     ) {
         if let Ok(json) = serde_json::to_vec_pretty(&*ledger) {
             if let Err(e) = std::fs::write(ledger_path(), json) {
-                log::warn!("perm-truth: could not persist {LEDGER_FILE}: {e}");
+                diag_warn!("perm_truth", "perm-truth: could not persist {file}: {err}", file = LEDGER_FILE, err = e);
             }
         }
     }

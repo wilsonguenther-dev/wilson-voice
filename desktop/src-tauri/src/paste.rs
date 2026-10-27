@@ -684,7 +684,25 @@ pub fn insert_serialized(
     target: PasteTarget<'_>,
 ) -> (PasteOutcome, InsertTrace) {
     let _turn = INSERT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    insert_traced(b, path, text, want_paste, target)
+    let started = std::time::Instant::now();
+    let (outcome, trace) = insert_traced(b, path, text, want_paste, target);
+    // yap-telemetry-diagnostics — insert latency + the insert bridge's last
+    // path/outcome for the health line. Never the text.
+    crate::diagnostics::record_duration("paste", "insert", started.elapsed().as_millis() as u64);
+    let result = if outcome.pasted {
+        "pasted"
+    } else if outcome.copied {
+        "copied"
+    } else {
+        "failed"
+    };
+    crate::diagnostics::set_state(
+        "insert.path",
+        format!("{:?}/{}", trace.path, trace.fallback.as_str()),
+    );
+    crate::diagnostics::set_state("insert.outcome", result);
+    crate::diagnostics::bump("paste", result);
+    (outcome, trace)
 }
 
 /// [`insert_traced`] without the trace (the matrix's original entry point).
@@ -881,7 +899,7 @@ pub fn insert_traced(
                     log::info!("AX insert refused ({why}) — falling back to the paste bridge");
                 }
                 AxInsert::Unverified(why) => {
-                    log::warn!("AX insert unverified ({why}) — no ⌘V (double-insert risk), showing the Copy card");
+                    diag_warn!("paste", "AX insert unverified ({why}) — no ⌘V (double-insert risk), showing the Copy card", why = why);
                     trace.path = InsertPath::CopyCard;
                     trace.fallback = InsertFallback::AxUnverified;
                     return (
@@ -905,9 +923,11 @@ pub fn insert_traced(
             reason,
             clipboard_taken,
         }) => {
-            log::error!(
-                "paste not confirmed: {reason} (window={}ms) — showing the Copy card",
-                paste_tx::RECEIPT_WINDOW.as_millis()
+            diag_error!(
+                "paste",
+                "paste not confirmed: {reason} (window={window_ms}ms) — showing the Copy card",
+                reason = reason,
+                window_ms = paste_tx::RECEIPT_WINDOW.as_millis(),
             );
             // Never lose text: the promise died with the transaction, so the
             // transcript goes back as plain text — unless the user copied
@@ -940,7 +960,7 @@ pub fn insert_traced(
             )
         }
         Err(e) => {
-            log::error!("paste failed: {e} — showing the Copy card");
+            diag_error!("paste", "paste failed: {err} — showing the Copy card", err = e);
             trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::PasteFailed;
             (
@@ -985,7 +1005,7 @@ pub fn delete_with(
             message: "Deleted in frontmost app".into(),
         },
         Err(e) => {
-            log::error!("delete failed: {e}");
+            diag_error!("paste", "delete failed: {err}", err = e);
             PasteOutcome {
                 copied: false,
                 pasted: false,
@@ -1062,7 +1082,7 @@ impl InsertBackend for LiveInsert<'_> {
     fn show_copy_card(&mut self, card: CopyCard) {
         crate::float_pill::hold_copy_card(self.app, card.clone());
         if let Err(e) = self.app.emit(INSERT_COPY_CARD_EVENT, card) {
-            log::warn!("emit {INSERT_COPY_CARD_EVENT}: {e}");
+            diag_warn!("paste", "emit {event}: {err}", event = INSERT_COPY_CARD_EVENT, err = e);
         }
     }
     fn no_receipt_detail(&mut self, reason: &str) -> String {
@@ -1128,7 +1148,7 @@ fn insert_take(
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
     // happens to be frontmost on the developer's machine.
     if want_paste && !crate::smoke::paste_allowed() {
-        log::warn!("{}", crate::smoke::PASTE_REFUSAL);
+        diag_warn!("paste", crate::smoke::PASTE_REFUSAL);
         return copy_only(app, text, crate::smoke::PASTE_REFUSAL);
     }
     // Copy-only takes (auto-paste off, a stale take) still go through the
@@ -1162,7 +1182,7 @@ fn insert_take(
 pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutcome {
     // Y0-D: same rule as the paste path — a smoke run posts no Delete chord.
     if !crate::smoke::paste_allowed() {
-        log::warn!("{}", crate::smoke::DELETE_REFUSAL);
+        diag_warn!("paste", crate::smoke::DELETE_REFUSAL);
         return PasteOutcome {
             copied: false,
             pasted: false,

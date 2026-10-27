@@ -37,6 +37,7 @@ const isModule = (f: string) => /\.ts$/.test(f) && !isTest(f) && !f.endsWith(".d
  */
 const ADAPTERS: Record<string, string> = {
   "appShell.ts": "the main window's bridge: every invoke() and listen() the views use",
+  "diagnostics.ts": "Settings → Diagnostics reads diagnostics_snapshot and calls export_diagnostics over invoke()",
   "formatting.ts": "useFormattingOptions loads and saves the formatting settings over invoke()",
   "meetings/consentWatch.ts": "subscribes to the backend's meeting-consent event",
   "meetings/notetakerSetup.ts": "drives the notetaker setup commands",

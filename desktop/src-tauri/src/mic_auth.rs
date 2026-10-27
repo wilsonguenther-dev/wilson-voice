@@ -76,9 +76,11 @@ impl MicAuth {
             2 => MicAuth::Denied,
             3 => MicAuth::Authorized,
             other => {
-                log::error!(
-                    "mic auth: AVAuthorizationStatus returned unknown value {other}; \
-                     treating as Restricted (never as authorized)"
+                diag_error!(
+                    "mic_auth",
+                    "mic auth: AVAuthorizationStatus returned unknown value {value}; \
+                     treating as Restricted (never as authorized)",
+                    value = other,
                 );
                 MicAuth::Restricted
             }
@@ -115,7 +117,8 @@ mod sys {
 
     pub fn authorization_status() -> MicAuth {
         let Some(cls) = capture_device_class() else {
-            log::error!(
+            diag_error!(
+                "mic_auth",
                 "mic auth: +[AVCaptureDevice class] not found — AVFoundation did not load. \
                  Reporting Restricted; the device probe is NOT consulted."
             );
@@ -164,7 +167,8 @@ mod sys {
         }
         if !usage_description_present() {
             if !WARNED_NO_USAGE_STRING.swap(true, Ordering::Relaxed) {
-                log::warn!(
+                diag_warn!(
+                    "mic_auth",
                     "mic auth: NSMicrophoneUsageDescription is not in the main bundle's \
                      Info.plist (running un-bundled, e.g. `tauri dev` or `cargo test`). \
                      Skipping requestAccessForMediaType: — calling it without the key makes \

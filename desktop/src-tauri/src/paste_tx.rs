@@ -442,7 +442,8 @@ mod mac {
             // the dead promise with the transcript as plain text so the user
             // can still ⌘V it themselves.
             let _ = app.clipboard().write_text(p.transcript.clone());
-            log::warn!(
+            diag_warn!(
+                "paste_tx",
                 "reliable-paste: no clipboard read within timeout — left the transcript on the clipboard"
             );
         }
@@ -553,7 +554,7 @@ mod mac {
             if let Ok(mut st) = state.lock() {
                 st.injection_failed = true;
             }
-            log::error!("reliable-paste: ⌘V injection failed: {e}");
+            diag_error!("paste_tx", "reliable-paste: ⌘V injection failed: {err}", err = e);
         }
 
         let pending = Arc::new(Mutex::new(Pending {
