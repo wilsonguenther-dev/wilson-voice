@@ -1110,6 +1110,59 @@ html[data-dock="right"] .phase-strip {
   outline-offset: 1px;
 }
 
+/* Y8-D — the coaching nudge: Wispr's `growthNudgeActive` bar state, Yappy's
+   voice. Geometry per the teardown §4.2: fit-content x 32, one row. It sits
+   where the phase strip sits (the strip is silent at rest, the only phases a
+   nudge appears in), so bottom/left/right are the same three rules. Unlike the
+   strip it TAKES the cursor: one click anywhere on it dismisses it, and
+   NudgeRow makes it the window's hitbox while it is up. */
+.nudge-row {
+  position: fixed;
+  z-index: 18;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: calc(100% - 16px);
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border-radius: 16px;
+  background: rgba(22, 22, 26, 0.94);
+  color: #f4f4f6;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  left: 50%;
+  bottom: calc(50% + 14px);
+  transform: translateX(-50%);
+}
+.nudge-text { overflow: hidden; text-overflow: ellipsis; }
+.nudge-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(244, 244, 246, 0.7);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.nudge-close:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.nudge-close:focus-visible { outline: 2px solid #9db6ff; outline-offset: 1px; }
+/* Side docks: the same row, flush to the edge the window is parked against. */
+html[data-dock="left"] .nudge-row { left: 10px; right: auto; transform: none; }
+html[data-dock="right"] .nudge-row { left: auto; right: 10px; transform: none; }
+/* The nudge and the fn hint share the strip's slot; the nudge yields. */
+html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
+
 /* TC-1 — test-channel chip; production never renders it. */
 .float-test-chip {
   position: fixed;

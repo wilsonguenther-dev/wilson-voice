@@ -120,6 +120,9 @@ pub mod mic_auth;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
+/// Y8-D — coaching nudges: the per-take focus/app-family signal and the
+/// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
+pub mod nudge;
 // YV101 — the macOS 14.4 runtime gate for the system-audio process tap (plan
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
@@ -3004,15 +3007,24 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     "stale dictation (cancelled during transcription) — copy only, no paste"
                 );
             }
+            // Y8-D — read ONCE: the same answer decides the paste and tells
+            // the nudge engine whether this take had anywhere to land.
+            let text_field_focused = focus::should_auto_paste();
             let want_paste = paste::should_paste(
                 settings.auto_paste,
                 generation,
                 current_generation,
-                focus::should_auto_paste(),
+                text_field_focused,
             );
             let t_paste = std::time::Instant::now();
             let outcome =
                 paste::insert_dictated_take(&app2, &text, want_paste, source_bundle_id.as_deref());
+            // Y8-D — the coaching engine's per-take fact. No text, no app name:
+            // a focus bit, a coarse app family, and whether the text landed.
+            let _ = app2.emit(
+                nudge::TAKE_CONTEXT_EVENT,
+                nudge::TakeContext::new(text_field_focused, source_app.as_deref(), outcome.pasted),
+            );
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
@@ -3947,6 +3959,21 @@ fn dismiss_copy_card(app: AppHandle, state: State<'_, Arc<AppState>>) {
     // A take recording or still processing keeps its pill, whatever the setting.
     let in_flight = *state.recording.lock() || *state.busy.lock();
     float_pill::release_copy_card(&app, show, in_flight);
+}
+
+/// Y8-D — the pill's coaching ledger: when this install first read it, every
+/// nudge condition that has ever fired, and the two counts the engine's caps
+/// need. The first call creates the row, which starts the install clock.
+#[tauri::command]
+fn nudge_ledger(state: State<'_, Arc<AppState>>) -> nudge::NudgeLedger {
+    nudge::read_ledger(&state.db, chrono::Utc::now().timestamp_millis())
+}
+
+/// Y8-D — a nudge fired: record its condition so it never fires again, on any
+/// launch. `Ok(false)` = it was already recorded (or not a valid slug).
+#[tauri::command]
+fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Result<bool, String> {
+    nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
 }
 
 #[tauri::command]
@@ -8846,6 +8873,9 @@ pub fn run() {
             // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
             cancel_transcription,
             user_display_name,
+            // Y8-D — the pill's coaching nudges read and write their ledger.
+            nudge_ledger,
+            nudge_mark_shown,
             get_settings,
             formatting_options,
             save_settings,

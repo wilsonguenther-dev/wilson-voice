@@ -18,6 +18,7 @@ import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
 import CopyCard from "./pill/CopyCard";
+import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
@@ -473,6 +474,9 @@ function Float() {
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
+      {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
+          is only evaluated at rest, and a forced matrix phase never shows one. */}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
