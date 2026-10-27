@@ -20,7 +20,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 
 import { AppContext, type AppCtx } from "../../appShell";
-import Scratchpad, { noteToOpen } from "../Scratchpad";
+import Scratchpad, { deleteScratchNote, noteToOpen } from "../Scratchpad";
 
 type State = Record<string, unknown>;
 
@@ -92,5 +92,67 @@ describe("S1 — noteToOpen: the editor opens the most recent note", () => {
     expect(noteToOpen(notes, "a", true)).toBeNull();
     expect(noteToOpen(notes, null, true)).toBeNull();
     expect(noteToOpen([], null, false)).toBeNull();
+  });
+});
+
+/*
+ * Fix round 1 (#267 BLOCKING) — deleting the open note must never re-open it.
+ *
+ * The view re-renders after every awaited IPC call, and its effect calls
+ * noteToOpen on whatever state that render sees. So the probe below snapshots
+ * the context at EVERY point React could render (after each invoke resolves,
+ * before the next one does) and asks noteToOpen what the effect would open.
+ * The deleted id must never come back, and the editor state must never be
+ * "nothing open" while the deleted note is still listed.
+ */
+describe("S1 — deleting the open note never re-opens it", () => {
+  type Ctx = State & { scratch: ReturnType<typeof note>[] };
+  async function deleteWithProbe(start: Ctx, id: string, after: ReturnType<typeof note>[]) {
+    const ctx = makeCtx(start) as unknown as Ctx & Parameters<typeof deleteScratchNote>[1];
+    const seen: (string | null)[] = [];
+    const renderPoint = () => {
+      const st = start as Ctx;
+      seen.push(noteToOpen(st.scratch, st.activeNoteId as string | null, st.scratchComposing as boolean)?.id ?? null);
+    };
+    const call = (async (cmd: string) => {
+      renderPoint(); // what a render between the previous await and this one would open
+      await Promise.resolve();
+      if (cmd === "list_scratch") return after;
+      return null;
+    }) as unknown as Parameters<typeof deleteScratchNote>[2];
+    await deleteScratchNote(id, ctx, call);
+    renderPoint();
+    return seen;
+  }
+
+  it("two notes: the editor moves to the remaining newest note, never back to the deleted one", async () => {
+    const older = note("n-old", "Older note", "2026-10-15T09:00:00Z");
+    const newest = note("n-new", "Newest note", "2026-10-16T12:00:00Z");
+    const st = base({ scratch: [newest, older], activeNoteId: "n-new", noteTitle: "Newest note", noteBody: "b-n-new", scratchComposing: true }) as Ctx;
+    const seen = await deleteWithProbe(st, "n-new", [older]);
+    expect(seen).not.toContain("n-new");
+    expect(seen[seen.length - 1]).toBe("n-old");
+    expect(st.scratch.map((n) => n.id)).toEqual(["n-old"]);
+  });
+
+  it("last note: the view lands on the empty state, not on the deleted note", async () => {
+    const only = note("n-only", "Only note", "2026-10-16T12:00:00Z");
+    const st = base({ scratch: [only], activeNoteId: "n-only", noteTitle: "Only note", noteBody: "b-n-only", scratchComposing: true }) as Ctx;
+    const seen = await deleteWithProbe(st, "n-only", []);
+    expect(seen).not.toContain("n-only");
+    expect(st.activeNoteId).toBeNull();
+    const html = render(<Scratchpad />, st);
+    expect(html).toContain('data-empty-state="scratchpad"');
+    expect(html).not.toContain(">Delete</button>");
+  });
+
+  it("deleting a note that is not open leaves the open note alone", async () => {
+    const a = note("a", "A", "2026-10-15T09:00:00Z");
+    const b = note("b", "B", "2026-10-16T12:00:00Z");
+    const st = base({ scratch: [b, a], activeNoteId: "b", noteTitle: "B", noteBody: "b-b", scratchComposing: true }) as Ctx;
+    const seen = await deleteWithProbe(st, "a", [b]);
+    expect(seen.every((v) => v === null)).toBe(true);
+    expect(st.activeNoteId).toBe("b");
+    expect(st.noteTitle).toBe("B");
   });
 });

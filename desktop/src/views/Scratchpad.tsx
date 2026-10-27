@@ -1,7 +1,7 @@
 import { useEffect, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { type ScratchNote, formatTime } from "../appTypes";
-import { useAppCtx } from "../appShell";
+import { type AppCtx, useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { EmptyState, ErrorState, LoadingState, PageGlyph } from "../ViewStates";
 
@@ -22,6 +22,47 @@ export function noteToOpen(
   let latest = scratch[0];
   for (const n of scratch) if (Date.parse(n.updatedAt) > Date.parse(latest.updatedAt)) latest = n;
   return latest;
+}
+
+type DeleteCtx = Pick<
+  AppCtx,
+  "activeNoteId" | "scratch" | "setActiveNoteId" | "setNoteBody" | "setNoteTitle" | "setScratch" | "setScratchComposing" | "toast"
+>;
+
+/**
+ * Delete a note, then commit the new list AND the editor reset in ONE
+ * synchronous block, so React renders them together (automatic batching).
+ *
+ * #267 fix round 1 (BLOCKING): resetting the editor BEFORE awaiting
+ * list_scratch let React render "nothing open" over the OLD list, so the
+ * auto-open effect (noteToOpen) re-opened the note just deleted, and Save then
+ * upserted it back into SQLite. Nothing here may run between those two
+ * awaits. If the reload fails the delete still happened, so the deleted row is
+ * dropped from the list locally and the editor is still released.
+ */
+export async function deleteScratchNote(id: string, ctx: DeleteCtx, call: typeof invoke = invoke): Promise<void> {
+  try {
+    await call("delete_scratch", { id });
+  } catch (e) {
+    ctx.toast(String(e));
+    return;
+  }
+  let next: ScratchNote[];
+  try {
+    next = await call<ScratchNote[]>("list_scratch");
+  } catch (e) {
+    next = ctx.scratch.filter((n) => n.id !== id);
+    ctx.toast(String(e));
+  }
+  if (ctx.activeNoteId === id) {
+    // S1 — hands the editor to the most-recent-note rule (or to the empty
+    // state when this was the last note).
+    ctx.setScratchComposing(false);
+    ctx.setActiveNoteId(null);
+    ctx.setNoteTitle("");
+    ctx.setNoteBody("");
+  }
+  ctx.setScratch(next);
 }
 
 /* yap-uiux-2026-10-16-SCRATCH — the editor surface is CONTAINED: the view fills
@@ -70,22 +111,10 @@ export default function Scratchpad() {
     setNoteTitle("New note");
     setNoteBody("");
   }
-  async function deleteNote(id: string) {
-    try {
-      await invoke("delete_scratch", { id });
-      if (activeNoteId === id) {
-        // S1 — deleting the open note hands the editor back to the
-        // most-recent-note rule below (or to the empty state when this was the
-        // last note), instead of stranding a blank "New note" over a list.
-        setScratchComposing(false);
-        setActiveNoteId(null);
-        setNoteTitle("");
-        setNoteBody("");
-      }
-      setScratch(await invoke("list_scratch"));
-    } catch (e) {
-      toast(String(e));
-    }
+  function deleteNote(id: string) {
+    return deleteScratchNote(id, {
+      activeNoteId, scratch, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, toast,
+    });
   }
   // Y5-B — Scratchpad's SHAPE is provisional: DB-D gives it a real second
   // window and versions, which will change what "empty" and "loading" mean
