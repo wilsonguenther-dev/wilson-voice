@@ -1,5 +1,7 @@
 /// <reference types="vitest/config" />
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { defineConfig, mergeConfig } from "vitest/config";
 import viteConfig from "./vite.config";
@@ -109,8 +111,73 @@ function rawSourceIsolation(): Plugin {
 /** `src/`-relative module path -> the root-relative path coverage reports. */
 export const coveragePath = (mod: string): string => `src/${mod}`;
 
-export default defineConfig(async (env) =>
-  mergeConfig(await viteConfig(env), {
+const ROOT = dirname(fileURLToPath(import.meta.url));
+
+/** Every test file under `src/`, root-relative with forward slashes (`src/x.test.ts`). */
+export function listTestFiles(root: string = ROOT): string[] {
+  return readdirSync(`${root}/src`, { recursive: true, encoding: "utf8" })
+    .map((p) => `src/${p.split("\\").join("/")}`)
+    .filter((p) => /\.test\.tsx?$/.test(p) && !p.includes("/node_modules/"))
+    .sort();
+}
+
+/**
+ * The test files a filtered run (`npm test -- viewState`) selects, mirroring
+ * vitest 3's `filterFiles`: a filter selects a file when it is a
+ * case-insensitive substring of the file's root-relative path. `./x` and an
+ * absolute path are made root-relative first, as vitest does.
+ */
+export function selectTests(testFiles: readonly string[], filters: readonly string[], root: string = ROOT): string[] {
+  if (filters.length === 0) return [...testFiles];
+  const needles = filters.map((f) => (isAbsolute(f) ? relative(root, f) : f.replace(/^\.\//, "")).toLowerCase());
+  return testFiles.filter((t) => needles.some((n) => t.toLowerCase().includes(n)));
+}
+
+/** purity.test.ts's sibling rule: `src/x.test.ts(x)` or an aspect file `src/x.<aspect>.test.ts(x)` owns `x.ts`. */
+export function isSiblingTest(mod: string, testFile: string): boolean {
+  const base = `src/${mod.replace(/\.tsx?$/, "")}.`;
+  return testFile.startsWith(base) && /^(?:[\w-]+\.)?test\.tsx?$/.test(testFile.slice(base.length));
+}
+
+/**
+ * The PURE_MODULES whose floors a run enforces.
+ *
+ * The full suite (no filters — what CI and the gate run) enforces every
+ * floor, exactly as before. A FILTERED run enforces the floor of each module
+ * whose own sibling test it selected, and no other: a module whose test did
+ * not run reports 0% by construction, so enforcing its floor made every
+ * filtered run exit 1 whatever the code did (`npm test -- viewState` failed on
+ * `pill/nudge.ts`). The floor of a module that DID get its test is still a
+ * hard floor.
+ */
+export function enforcedModules(filters: readonly string[], testFiles: readonly string[], root: string = ROOT): string[] {
+  if (filters.length === 0) return Object.keys(PURE_MODULES);
+  const selected = selectTests(testFiles, filters, root);
+  return Object.keys(PURE_MODULES).filter((m) => selected.some((t) => isSiblingTest(m, t)));
+}
+
+/**
+ * The file filters on THIS process's vitest command line, parsed by vitest's
+ * own CLI parser so value-taking flags (`--reporter verbose`) are never read
+ * as filters. Any process that is not the vitest CLI (a test worker importing
+ * this config, `vite build`) has none. `vitest related <files>` reports none
+ * either, so it keeps every floor.
+ */
+export async function cliFilters(argv: readonly string[] = process.argv): Promise<string[]> {
+  if (!/(?:^|[\\/])vitest(?:\.mjs)?$/.test(argv[1] ?? "")) return [];
+  const { parseCLI } = await import("vitest/node");
+  return parseCLI(["vitest", ...argv.slice(2)]).filter;
+}
+
+export default defineConfig(async (env) => {
+  const filters = await cliFilters();
+  const enforced = enforcedModules(filters, filters.length ? listTestFiles() : []);
+  if (filters.length) {
+    process.stderr.write(
+      `vitest.config coverage_scope filtered=1 filters=${filters.join(",")} floors_enforced=${enforced.length} floors_total=${Object.keys(PURE_MODULES).length}\n`,
+    );
+  }
+  return mergeConfig(await viteConfig(env), {
     plugins: [rawSourceIsolation()],
     test: {
       // Y5-D — vitest stubs every CSS module to the empty string by default,
@@ -127,10 +194,8 @@ export default defineConfig(async (env) =>
         // (at 0%) instead of quietly vanishing from the denominator.
         include: Object.keys(PURE_MODULES).map(coveragePath),
         reporter: ["text"],
-        thresholds: Object.fromEntries(
-          Object.entries(PURE_MODULES).map(([mod, floor]) => [coveragePath(mod), floor]),
-        ),
+        thresholds: Object.fromEntries(enforced.map((mod) => [coveragePath(mod), PURE_MODULES[mod]])),
       },
     },
-  }),
-);
+  });
+});

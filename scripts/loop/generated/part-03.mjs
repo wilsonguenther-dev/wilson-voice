@@ -3609,7 +3609,7 @@ ITEMS.push({
   notes: `STATUS 2026-09-26: BUILT, PR #192 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'The "looks broken" fix: all seven views get a real empty state, a real loading state and a real error state',
   preflight: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
+    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include='*.tsx' | wc -l)"
     cd ${APP} && npm ci && npm test -- states
   `,
   spec: `
@@ -3681,9 +3681,9 @@ ITEMS.push({
 
   `,
   acceptance: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-loading-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-error-state' desktop/src --include=*.tsx | wc -l)"
+    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include='*.tsx' | wc -l)"
+    test 7 -le "$(grep -ro 'data-loading-state' desktop/src --include='*.tsx' | wc -l)"
+    test 7 -le "$(grep -ro 'data-error-state' desktop/src --include='*.tsx' | wc -l)"
     test -f desktop/src/viewState.ts
     test -f desktop/src/viewState.test.ts
     grep -q 'insights' desktop/src/viewState.test.ts
@@ -4020,7 +4020,7 @@ ITEMS.push({
   notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer',
   preflight: `
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
+    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include='*.css' | wc -l)"
     cd ${APP} && npm ci && npm test -- a11y
   `,
   spec: `
@@ -4063,8 +4063,8 @@ ITEMS.push({
     grep -q 'every_token_pair_meets_its_contrast_floor' desktop/src/a11y/contrast.test.ts
     grep -q 'every_phase_has_an_accessible_name' desktop/src/pill/live.test.ts
     grep -rq 'aria-live' desktop/src/pill
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
-    test 0 -eq "$(grep -rn 'className="banner warn"' desktop/src --include=*.tsx | wc -l)"
+    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include='*.css' | wc -l)"
+    test 0 -eq "$(grep -rn 'className="banner warn"' desktop/src --include='*.tsx' | wc -l)"
     cd ${APP} && npm ci
     npx tsc --noEmit ; test $? -eq 0
     npm test         ; test $? -eq 0

@@ -97,7 +97,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 45 })
 } else {
   phase("part-02")
-  log("START part-02 — 45 item(s), yap-qa-hotkey-walk-binding..Y4-H — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (436810 bytes)")
+  log("START part-02 — 45 item(s), yap-qa-hotkey-walk-binding..Y4-H — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (436814 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (45 item(s))")
@@ -130,7 +130,7 @@ if (halted) {
   results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 53 })
 } else {
   phase("part-03")
-  log("START part-03 — 53 item(s), Y3-A..Y9-E — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (448966 bytes)")
+  log("START part-03 — 53 item(s), Y3-A..Y9-E — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (448980 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs" }, args)
     log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (53 item(s))")

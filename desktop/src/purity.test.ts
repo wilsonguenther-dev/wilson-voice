@@ -233,3 +233,53 @@ describe("coverage is scoped to the pure modules", () => {
     }
   });
 });
+
+describe("a filtered run enforces the floors of the modules whose own tests ran", () => {
+  async function scope(): Promise<any> {
+    const spec = "../vitest.config.ts";
+    return import(/* @vite-ignore */ spec);
+  }
+
+  it("listTestFiles sees exactly the test files Vite's glob sees", async () => {
+    const { listTestFiles } = await scope();
+    // import.meta.glob never lists its own importer, so this file is added back.
+    const viaVite = [...FILES.filter(isTest), "purity.test.ts"].sort().map((f) => `src/${f}`);
+    expect(listTestFiles()).toEqual(viaVite);
+  });
+
+  it("the full suite (no filters, what CI and the gate run) enforces every floor", async () => {
+    const { enforcedModules, listTestFiles, PURE_MODULES } = await scope();
+    expect(enforcedModules([], listTestFiles())).toEqual(Object.keys(PURE_MODULES));
+  });
+
+  it("`npm test -- viewState` enforces viewState.ts's floor and no module whose test did not run", async () => {
+    const { enforcedModules, listTestFiles } = await scope();
+    const files = listTestFiles();
+    expect(enforcedModules(["viewState"], files)).toEqual(["viewState.ts"]);
+    expect(enforcedModules(["VIEWSTATE"], files), "vitest's filter is case-insensitive").toEqual(["viewState.ts"]);
+    expect(enforcedModules(["./src/viewState.test.ts"], files)).toEqual(["viewState.ts"]);
+  });
+
+  it("an aspect test owns its module, and a directory filter owns exactly that directory's modules", async () => {
+    const { enforcedModules, listTestFiles, PURE_MODULES } = await scope();
+    const files = listTestFiles();
+    expect(enforcedModules(["permission.productName"], files)).toEqual(["permission.ts"]);
+    const pill = Object.keys(PURE_MODULES).filter((m) => m.startsWith("pill/"));
+    expect(enforcedModules(["src/pill/"], files)).toEqual(pill);
+  });
+
+  it("a filter that selects only render tests (the pre-flight's `states`) enforces no floor", async () => {
+    const { enforcedModules, listTestFiles } = await scope();
+    expect(enforcedModules(["states"], listTestFiles())).toEqual([]);
+  });
+
+  it("filters come from the vitest CLI only, parsed so a flag's value is never a filter", async () => {
+    const { cliFilters } = await scope();
+    const cli = ["/usr/local/bin/node", "/repo/desktop/node_modules/vitest/vitest.mjs"];
+    expect(await cliFilters([...cli, "run", "--coverage", "viewState"])).toEqual(["viewState"]);
+    expect(await cliFilters([...cli, "run", "--coverage", "--reporter", "verbose", "pill/"])).toEqual(["pill/"]);
+    expect(await cliFilters([...cli, "run", "--coverage"])).toEqual([]);
+    expect(await cliFilters([...cli, "related", "src/viewState.ts"]), "related keeps every floor").toEqual([]);
+    expect(await cliFilters(["/usr/local/bin/node", "/repo/desktop/node_modules/vitest/dist/workers/forks.js", "viewState"])).toEqual([]);
+  });
+});
