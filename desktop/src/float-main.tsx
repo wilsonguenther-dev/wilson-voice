@@ -26,7 +26,6 @@ import {
   acceptProgress,
   errorSentence,
   phaseCopy,
-  phaseVisual,
   reduceGatePhase,
   reduceTakePhase,
   stripLine,
@@ -51,6 +50,9 @@ import { forcedPill, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import "./tokens.css";
 import "./float.css";
+// Y5-J — the one global focus ring (see main.tsx for why nothing may zero
+// `outline`).
+import "./a11y/focus.css";
 
 interface Settings {
   pillStyle?: string;
@@ -481,9 +483,9 @@ function Float() {
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
         data-tone={chatTone}
-        role="status"
-        aria-live="polite"
-        aria-label={phaseVisual(phase).label}
+        // Y5-J — plain visible copy, NOT a live region: the pill root's
+        // PhaseAnnouncer is the one place a phase change is announced, and a
+        // second region here read every change twice.
       >
         {stripLine(line, stillRecording, fnHint)}
       </div>

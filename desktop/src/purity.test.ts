@@ -51,7 +51,7 @@ const ADAPTERS: Record<string, string> = {
  * must be registered here or carry a test — a pill piece nobody looked at is
  * how the pill stops being drivable.
  */
-const PILL_COMPONENTS = ["ClassicPill.tsx", "CopyCard.tsx", "MeetingBadge.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "YappyPill.tsx"];
+const PILL_COMPONENTS = ["ClassicPill.tsx", "CopyCard.tsx", "MeetingBadge.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "YappyPill.tsx"];
 /** Docs and data under src/pill/ (dock-geometry.json is the Y5-I table dock.ts reads and dock.test.ts pins). */
 const PILL_DOCS = ["README.md", "dock-geometry.json"];
 

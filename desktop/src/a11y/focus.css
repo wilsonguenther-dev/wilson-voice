@@ -1,0 +1,33 @@
+/*
+ * Y5-J — THE keyboard focus ring. Declared once, here, and imported by both
+ * HTML entries (main.tsx -> index.html, float-main.tsx -> float.html). Vite
+ * hoists CSS the two entries share into a common sheet loaded BEFORE each
+ * entry's own, so this rule can never rely on source order: an element rule
+ * that zeroed `outline` (App.css had six) would win at equal specificity.
+ * They were removed, and src/a11y/semantics.test.ts fails if one returns.
+ *
+ * :focus-visible, not :focus — a ring appears for the keyboard (and for text
+ * fields, which always show where the caret is), never on a mouse click.
+ * The colour is a token (--focus-ring) held to 3:1 against every surface it
+ * can sit on by src/a11y/contrast.test.ts; float.css re-points it at the
+ * pill's own always-dark value.
+ *
+ * Do not add a per-component :focus-visible rule. src/a11y/semantics.test.ts
+ * fails if one appears outside this file.
+ */
+button:focus-visible,
+a[href]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[contenteditable="true"]:focus-visible,
+[role="button"]:focus-visible,
+[role="switch"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="menuitem"]:focus-visible,
+[role="option"]:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}

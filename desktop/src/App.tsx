@@ -15,6 +15,7 @@ import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
 import type { Toast } from "./toast";
 import HideHint from "./HideHint";
+import Banner from "./Banner";
 import Home from "./views/Home";
 import Permissions from "./views/Permissions";
 import Meetings from "./views/Meetings";
@@ -349,10 +350,10 @@ export default function App() {
         <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
 
         {status.modelReady && needsPerms && nav === "home" && (
-          <div className="banner warn" onClick={() => setNav("permissions")}>
+          <Banner tone="warn" onActivate={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
             for {nameProduct("Yap", perms?.productName)}
-          </div>
+          </Banner>
         )}
 
         {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner

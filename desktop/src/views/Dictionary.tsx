@@ -57,7 +57,7 @@ const footer: CSSProperties = {
 };
 const search: CSSProperties = {
   width: "100%", marginTop: 10, background: "var(--bg-card)", border: "1px solid var(--border)",
-  borderRadius: 10, color: "var(--text)", padding: "0.6rem 0.75rem", outline: "none", boxSizing: "border-box",
+  borderRadius: 10, color: "var(--text)", padding: "0.6rem 0.75rem", boxSizing: "border-box",
 };
 
 export default function Dictionary() {

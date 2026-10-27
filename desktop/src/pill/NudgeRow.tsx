@@ -134,8 +134,8 @@ export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: Chat
       data-nudge={active.id}
       role="note"
       aria-label={`Tip: ${active.copy[tone]}`}
-      onClick={dismiss}
     >
+      {/* Y5-J: the action is the × button; a clickable <div> has no keyboard path. */}
       <span className="nudge-text">{active.copy[tone]}</span>
       <button type="button" className="nudge-close" aria-label="Dismiss tip" onClick={dismiss}>
         ×

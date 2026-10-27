@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
-  PHASE_ID, phaseVisual, progressFraction, progressLabel, progressNumeral,
+  PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction, progressNumeral,
   type LivePhase, type PhaseArtTable, type TranscribeProgress,
 } from "./live";
 import {
@@ -23,6 +23,7 @@ import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
+import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barDock } from "./dock";
 import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
@@ -412,6 +413,7 @@ export default function ClassicPill(
 
   return (
     <div className="stage">
+      <PhaseAnnouncer phase={gate} />
       <div ref={hotElRef} className="pill-hot" data-hover={hover}>
       <div
         ref={pillRef}
@@ -423,13 +425,10 @@ export default function ClassicPill(
         data-bar-position={slotCtx.dock}
         role="button"
         tabIndex={0}
-        aria-label={
-          blocked ? visual.label
-            : gated ? visual.label
-            : live ? "Stop dictation"
-              : progress ? progressLabel(progress)
-                : busy ? "Transcribing" : "Start dictation"
-        }
+        // Y5-J — one name per phase, from the phase table. This used to
+        // spell three labels by hand and called every other phase (polishing,
+        // pasting, error, empty, cancelled, model-loading…) "Start dictation".
+        aria-label={phaseAccessibleName(gate, progress)}
         style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
         title={blocked ? visual.label : gated ? GATED_TITLE : undefined}
         {...drag.handlers}

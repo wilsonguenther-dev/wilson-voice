@@ -14,10 +14,11 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
+import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
-  advanceLive, createLiveState, framePlan, PHASE_ID, phaseVisual, progressFraction,
+  advanceLive, createLiveState, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, toChatTone, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type PhaseArtTable,
   type TranscribeProgress,
@@ -615,7 +616,18 @@ export default function YappyPill(
   }, []);
 
   return (
-    <div ref={stageRef} className="kami-stage" data-phase={PHASE_ID[gate]} data-sprite={art.sprite} data-motion={art.motion}>
+    <div
+      ref={stageRef}
+      className="kami-stage"
+      data-phase={PHASE_ID[gate]}
+      data-sprite={art.sprite}
+      data-motion={art.motion}
+      // Y5-J — the canvas is aria-hidden pixels, so the stage itself carries
+      // the phase's name; the live region below announces its changes.
+      role="group"
+      aria-label={phaseAccessibleName(gate, progress)}
+    >
+      <PhaseAnnouncer phase={gate} />
       <div ref={bubbleRef} className="kami-bubble"></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
@@ -624,8 +636,14 @@ export default function YappyPill(
       {progress ? (
         <div
           className="kami-progress"
-          role="status"
+          // Y5-J — a progressbar, not a second live region: `status` is
+          // implicitly polite, so every chunk tick was read aloud on top of
+          // the PhaseAnnouncer. The count is a value to inspect, not news.
+          role="progressbar"
           aria-label={progressLabel(progress)}
+          aria-valuemin={0}
+          aria-valuemax={progress.of}
+          aria-valuenow={progress.chunk}
           style={{ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties}
         >
           <span className="kami-progress-track" aria-hidden><i /></span>

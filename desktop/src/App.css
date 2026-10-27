@@ -331,6 +331,17 @@ body:has(.float-pill),
   padding: 10px 14px;
   border-radius: 12px;
   font-size: 0.88rem;
+}
+/* Y5-J — an actionable banner is a real <button> (src/Banner.tsx), so it is
+   keyboard reachable and announced as one. Undo the button chrome so it still
+   reads as the same full-width strip it was as a div. */
+button.banner {
+  display: block;
+  width: calc(100% - 48px);
+  text-align: left;
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: inherit;
   cursor: pointer;
 }
 
@@ -839,7 +850,6 @@ code {
   border-radius: 10px;
   color: var(--text);
   padding: 0.6rem 0.75rem;
-  outline: none;
 }
 
 .toolbar input[type="search"] {
@@ -1173,7 +1183,6 @@ button.star.on {
   border-radius: 10px;
   color: var(--text);
   padding: 0.55rem 0.7rem;
-  outline: none;
 }
 
 .dict-suggest {
@@ -1211,7 +1220,6 @@ button.star.on {
   border-radius: 10px;
   color: var(--text);
   padding: 0.6rem 0.75rem;
-  outline: none;
   font: inherit;
 }
 
@@ -1363,10 +1371,7 @@ button.star.on {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   transform: translateY(-1px);
 }
-.profile:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
+/* Y5-J — focus ring: drawn once, globally, by src/a11y/focus.css. */
 .profile strong {
   font-size: 14px;
   font-weight: 700;
@@ -1398,7 +1403,9 @@ button.star.on {
   text-align: center;
   font-size: 11px;
   font-weight: 800;
-  color: var(--text-on-fill);
+  /* Y5-J — white on the accent measured 2.74:1 (light) and 2.06:1 (dark); the
+     ✓ is the only thing that says "selected", so it takes the accent's ink. */
+  color: var(--text-on-accent);
   background: var(--accent);
   border-radius: 50%;
 }
@@ -1534,7 +1541,6 @@ button.star.on {
   color: var(--text);
   font: inherit;
   padding: 0.6rem 0.75rem;
-  outline: none;
   resize: vertical;
 }
 
@@ -2589,7 +2595,6 @@ button.star.on {
 .meeting-title-edit:focus {
   border-color: var(--accent);
   background: var(--bg-card);
-  outline: none;
 }
 
 /* One line per segment, on a fixed timestamp gutter so a 3-hour transcript

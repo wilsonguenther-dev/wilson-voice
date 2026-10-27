@@ -81,7 +81,25 @@
                          pale ember that white text cannot sit on; dark uses a
                          deep teal ink instead. */
   --text-on-fill: #fff;
-  --text-on-accent: #fff;
+  /* Y5-J — was #fff, which measured 2.74:1 on --accent-action (#ef7d3c): every
+     button.primary label in the light theme was under the 4.5:1 body floor.
+     The fill keeps the brand hue; the INK goes to the page's own deep brown
+     (5.69:1), the same move dark already makes with its deep teal. */
+  --text-on-accent: #2c2216;
+
+  /* ══════════════════════════════════════════════════════════════════
+     FOCUS (Y5-J) — the ONE keyboard focus ring, drawn by src/a11y/focus.css.
+     Sky, because focus is information ("you are here"), not action. It
+     resolves through --accent-data-ink, so it follows the theme on its own:
+     #17638d on the cream (≥5.5:1), the vivid sky after dark. The pill floats
+     over the user's screen in its always-dark shell, so it gets its own,
+     unthemed value — float.css points --focus-ring at it. Held to 3:1 against
+     every surface it can sit on by src/a11y/contrast.test.ts.
+     ══════════════════════════════════════════════════════════════════ */
+  --focus-ring: var(--accent-data-ink);
+  --focus-ring-pill: #8fd6ff;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
 
   /* ══════════════════════════════════════════════════════════════════
      ACCENTS — orange is action, sky is information.

@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import Banner from "../Banner";
 import YappySprite from "./YappySprite";
 import {
   activationError,
@@ -120,9 +121,9 @@ export default function LicensePanel({
       {/* ── A stored key that granted nothing. Only ever shown when there is
              something the person can do about it. ── */}
       {storedProblem && (
-        <div className="banner warn" role="status">
+        <Banner tone="warn" role="status">
           <span>{storedProblem}</span>
-        </div>
+        </Banner>
       )}
 
       {/* ── Buy ── */}
