@@ -85,6 +85,9 @@ pub mod meeting_pipeline;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
+// yap-lic-01 — offline verifier for drivia.consulting license tokens (compact
+// JWS, EdDSA, EMBEDDED keys only). Wired into `license` as the v2 path.
+pub mod license_v2;
 // yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
 pub mod lifecycle;
 mod logging;
