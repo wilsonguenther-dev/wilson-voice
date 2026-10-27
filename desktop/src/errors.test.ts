@@ -105,3 +105,44 @@ describe("fix round 1", () => {
     }
   });
 });
+
+/**
+ * Y5-F fix round 2 — no rejection is interpolated into a line a person reads.
+ * `save_settings` rejects with a `{ code, message }` object, so a catch that
+ * wrote `${e}` (views/settings/Advanced.tsx) toasted "[object Object]". The
+ * sweep reads every non-test source through Vite (as pill/motion.test does)
+ * and fails on a template or String() of a caught error.
+ */
+const APP_SOURCES = import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}"], {
+  query: "?raw", import: "default", eager: true,
+}) as Record<string, string>;
+
+describe("caught errors never reach a line raw", () => {
+  it("sweeps a real set of sources, Advanced.tsx included", () => {
+    expect(Object.keys(APP_SOURCES)).toContain("./views/settings/Advanced.tsx");
+    expect(Object.keys(APP_SOURCES).length).toBeGreaterThan(20);
+  });
+
+  it("no toast or template interpolates a caught error", () => {
+    // The shape that shipped: `${e}` / `${err}` / `${error}` inside a template.
+    const RAW = /\$\{\s*(e|err|error)\s*\}|toast\(\s*String\(\s*(e|err|error)\s*\)/;
+    // Prove the pattern matches the defect it guards against.
+    expect(RAW.test("toast(`Couldn't check for updates: ${e}`);")).toBe(true);
+    expect(RAW.test("toast(String(e))")).toBe(true);
+    const hits = Object.entries(APP_SOURCES).flatMap(([file, src]) =>
+      src.split("\n").flatMap((line, i) =>
+        RAW.test(line) && !line.trim().startsWith("//") && !line.trim().startsWith("*")
+          ? [`${file}:${i + 1}: ${line.trim()}`]
+          : [],
+      ),
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it("a coded save_settings failure on the update path reads the fallback, never [object Object]", () => {
+    const a = adviceFor({ code: "command_failed", message: "io error: Permission denied (os error 13)" }, "Yap could not check for updates.");
+    expect(a.line).toBe("Yap could not check for updates.");
+    expect(a.line).not.toContain("[object Object]");
+    expect(a.action?.kind).toBe("support");
+  });
+});

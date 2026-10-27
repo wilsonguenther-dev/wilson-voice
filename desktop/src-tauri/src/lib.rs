@@ -3902,10 +3902,13 @@ fn save_settings(
     let prev = state.settings.lock().clone();
     persist_settings(&next)?;
     *state.settings.lock() = next.clone();
-    // Y5-F fix round 1: every reason a rollback carries is a sentence Yap
-    // wrote about the chord ("… could not be registered … — kept …", "finish
-    // the current take …"), so it goes out as a `refused` the toast shows.
-    let rollback = |why: String, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> CommandError {
+    // Y5-F fix round 2: a rollback carries a finished `CommandError`. A
+    // registrar failure goes through `chord_rebind_error`, which logs the raw
+    // Carbon / plugin text and sends only a fixed Yap sentence as `refused`
+    // (the chord is taken) or an uncatalogued `command_failed` (anything else,
+    // which the toast never shows verbatim). Only Yap's own constant sentences
+    // ("finish the current take …") are built as `refused` here directly.
+    let rollback = |err: CommandError, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> CommandError {
         if let Some((old_chord, old_label)) = meeting_applied {
             let new_chord = hotkey_table::active_meeting().0;
             let gs = app.global_shortcut();
@@ -3929,13 +3932,14 @@ fn save_settings(
             log::warn!("settings rollback persist failed: {e}");
         }
         *state.settings.lock() = prev.clone();
-        CommandError::refused(why)
+        err
     };
     // 1. dictate chord — new registered BEFORE the old is dropped.
     let mut dictate_applied = false;
     if dictate_changed && smoke::global_hotkeys_allowed() {
         if let Err(e) = rebind_dictate_toggle(&app, &next) {
-            return Err(rollback(e, false, None));
+            let new_label = dictate_toggle_chord(&next).1;
+            return Err(rollback(chord_rebind_error(&new_label, &e), false, None));
         }
         dictate_applied = true;
     }
@@ -3955,7 +3959,7 @@ fn save_settings(
             );
             if let Err(e) = r {
                 return Err(rollback(
-                    format!("{new_label} could not be registered ({e}) — the old chord stays"),
+                    chord_rebind_error(&new_label, &e),
                     dictate_applied,
                     None,
                 ));
@@ -3976,7 +3980,7 @@ fn save_settings(
         if *recording {
             drop(recording);
             return Err(rollback(
-                "finish the current take, then change the cancel key".into(),
+                CommandError::refused("finish the current take, then change the cancel key".into()),
                 dictate_applied,
                 meeting_applied,
             ));
@@ -6604,6 +6608,23 @@ pub const REFUSED_CODE: &str = "refused";
 /// SQLite, plugin text): uncatalogued on purpose, so the UI shows its own line.
 pub const COMMAND_FAILED_CODE: &str = "command_failed";
 
+/// Y5-F fix round 2 — what a person is told when a chord rebind's register
+/// failed. The registrar's text (Carbon OSStatus, "eventHotKeyExistsErr",
+/// the global-hotkey plugin's `to_string()`, a channel error) goes to the log
+/// only. A chord another app or macOS holds is a refusal with a fixed Yap
+/// sentence; every other failure is `command_failed`, which the frontend never
+/// shows verbatim (errors.ts adviceFor -> generic line + Send report).
+fn chord_rebind_error(new_label: &str, raw: &str) -> CommandError {
+    log::warn!("chord rebind to {new_label} failed: {raw}");
+    if carbon_probe::is_taken(raw) {
+        CommandError::refused(format!(
+            "{new_label} is already used by another app or macOS — pick another chord"
+        ))
+    } else {
+        CommandError::from(format!("{new_label} could not be registered: {raw}"))
+    }
+}
+
 impl From<String> for CommandError {
     fn from(message: String) -> Self {
         Self {
@@ -9219,6 +9240,75 @@ mod tests {
         // A non-sentence failure converts to the uncatalogued code, so the UI
         // keeps hiding raw text.
         assert_eq!(super::CommandError::from("io: denied".to_string()).code, super::COMMAND_FAILED_CODE);
+    }
+
+    /// Y5-F fix round 2 — a chord rebind's register failure never reaches the
+    /// toast as raw Carbon / plugin text. A held chord is a `refused` with a
+    /// fixed sentence; everything else is the uncatalogued `command_failed`.
+    /// The inputs are the real shapes: `probe_result` wrapped by
+    /// `hotkeys::rebind`, a non-exists OSStatus, the global-hotkey plugin's
+    /// to_string(), and a channel error from `run_on_main_thread`.
+    #[test]
+    fn chord_rebind_refusals_carry_no_raw_registrar_text() {
+        struct Fails(String);
+        impl crate::hotkeys::CarbonRegistrar for Fails {
+            fn register(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+                Err(self.0.clone())
+            }
+            fn unregister(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+                Ok(())
+            }
+            fn is_registered(&self, _: tauri_plugin_global_shortcut::Shortcut) -> bool {
+                true
+            }
+        }
+        let mut sink = crate::hotkeys::HotkeysStatus::default();
+        let taken = crate::carbon_probe::probe_result(crate::carbon_probe::EVENT_HOT_KEY_EXISTS_ERR)
+            .expect_err("exists is an error");
+        let other = crate::carbon_probe::probe_result(-50).expect_err("-50 is an error");
+        let forbidden = ["OSStatus", "eventHotKey", "RegisterEventHotKey", "(", "Unable to", "-9878", "-50"];
+        let check = |err: &super::CommandError| {
+            if err.code == super::REFUSED_CODE {
+                for f in forbidden {
+                    assert!(!err.message.contains(f), "refused message {:?} carries {f:?}", err.message);
+                }
+            } else {
+                assert_eq!(err.code, super::COMMAND_FAILED_CODE);
+            }
+        };
+        // Dictate path: the raw text arrives already wrapped by hotkeys::rebind.
+        let old = crate::shortcuts::DICTATE_TOGGLE.shortcut();
+        let new = tauri_plugin_global_shortcut::Shortcut::new(
+            Some(tauri_plugin_global_shortcut::Modifiers::CONTROL | tauri_plugin_global_shortcut::Modifiers::ALT),
+            tauri_plugin_global_shortcut::Code::KeyD,
+        );
+        let wrapped_taken = crate::hotkeys::rebind(&mut Fails(taken.clone()), old, "fn", new, "⌃⌥D", &mut sink)
+            .expect_err("register failed");
+        assert!(wrapped_taken.contains("eventHotKeyExistsErr"), "fixture is the real shape: {wrapped_taken}");
+        let e = super::chord_rebind_error("⌃⌥D", &wrapped_taken);
+        assert_eq!(e.code, super::REFUSED_CODE);
+        assert_eq!(e.message, "⌃⌥D is already used by another app or macOS — pick another chord");
+        check(&e);
+        for raw in [
+            crate::hotkeys::rebind(&mut Fails(other.clone()), old, "fn", new, "⌃⌥D", &mut sink).unwrap_err(),
+            crate::hotkeys::rebind(
+                &mut Fails("Unable to register hotkey: RegisterEventHotKey failed for KeyD".into()),
+                old, "fn", new, "⌃⌥D", &mut sink,
+            )
+            .unwrap_err(),
+            "receiving on a closed channel".to_string(),
+            // Meeting path: swap_chord hands back the plugin's text unwrapped.
+            "Unable to register hotkey: RegisterEventHotKey failed for KeyD".to_string(),
+            other.clone(),
+        ] {
+            let e = super::chord_rebind_error("⌃⌥D", &raw);
+            assert_eq!(e.code, super::COMMAND_FAILED_CODE, "{raw} must not be a refusal");
+            check(&e);
+        }
+        // The meeting path with a held chord (if the plugin ever surfaces it).
+        let e = super::chord_rebind_error("⌃⌥M", &taken);
+        assert_eq!(e.code, super::REFUSED_CODE);
+        check(&e);
     }
 
     /// UPD-A — a failed check names the endpoints it tried. Without this the
