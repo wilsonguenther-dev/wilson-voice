@@ -88,7 +88,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-03",
   description:
-    "Part 03 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 61 items (LIC-A..yap24-PKG2), 5 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 03 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 59 items (LIC-A..Y11-F), 3 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "LIC-A", detail: "Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned" },
@@ -150,8 +150,6 @@ export const meta = {
     { title: "Y11-D", detail: "Issue #153: split_partition's farthest-pair seeding does not separate speakers when an outlier is the far point" },
     { title: "Y11-E", detail: "Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist" },
     { title: "Y11-F", detail: "A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists" },
-    { title: "yap24-PKG1", detail: "One local release command: build, Developer ID sign, hdiutil DMG, notarize, staple, verify, updater artifacts — with a dry run" },
-    { title: "yap24-PKG2", detail: "A fresh Mac with no network at first launch is told exactly why dictation is waiting — or can dictate with a bundled tiny model" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -230,7 +228,7 @@ const PART = 'part-03'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0,"yap24-PKG1":1,"yap24-PKG2":1}
+const LANE_BY_ID = {"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -987,6 +985,44 @@ const dependencyMarkerPrinted = (pre) => {
   if (!r || typeof r !== 'object' || !Array.isArray(r.exits)) return false
   return r.exits.some((e) => !!e && typeof e.stdout === 'string' && /^DEPENDENCY-NOT-ON-MAIN:/m.test(e.stdout))
 }
+/**
+ * DEPENDENCY HOLD, FAIL-CLOSED (PR #266 fix round 1, independent review BLOCKING 1). A hold EXITS 0 by
+ * design, so when dependencyMarkerPrinted(pre) is false the next branch in runBuild would rule the item
+ * ALREADY-DONE — a terminal success that reflection closes on the board. That is only safe when the
+ * evidence PROVES the marker was not printed. True (= do NOT rule already-done) when the item's
+ * preflight carries a hold (it assembles "DEPENDENCY-NOT-ON-$(printf MAIN)") AND the runner's return
+ * cannot rule the marker out:
+ *   - the return is not parseable into an object with a non-empty exits array (incl. a non-JSON string);
+ *   - any exits[i].stdout is missing or not a string (a seat that omitted stdout — the pre-#266 shape);
+ *   - any stdout carries the marker anywhere but at column 0 (indent, prompt prefix, "+ " trace);
+ *   - the printed form "DEPENDENCY-NOT-ON-MAIN:" appears in any field OTHER than exits[i].command
+ *     (e.g. output's raw tail while stdout came back "").
+ * The 3569ce4 false hold stays fixed: there the marker sat in exits[0].command (excluded) and in prose
+ * as "No DEPENDENCY-NOT-ON-MAIN message printed" (no colon), so a return with stdout "" is clear.
+ * An item with no hold in its preflight is never inconclusive. Pure: no I/O, no globals;
+ * dependency-marker.test.mjs lifts it out of this file and runs it.
+ */
+const dependencyHoldInconclusive = (pre, preflight) => {
+  if (typeof preflight !== 'string' || !preflight.includes('DEPENDENCY-NOT-ON-')) return false
+  let r = pre
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r)
+    } catch {
+      return true
+    }
+  }
+  if (!r || typeof r !== 'object' || !Array.isArray(r.exits) || r.exits.length === 0) return true
+  if (r.exits.some((e) => !e || typeof e !== 'object' || typeof e.stdout !== 'string')) return true
+  if (r.exits.some((e) => e.stdout.includes('DEPENDENCY-NOT-ON-MAIN'))) return true
+  let rest
+  try {
+    rest = JSON.stringify({ ...r, exits: r.exits.map((e) => ({ ...e, command: '' })) })
+  } catch {
+    return true
+  }
+  return rest.includes('DEPENDENCY-NOT-ON-MAIN:')
+}
 
 /**
  * ONE COMMAND-RUNNER SEAT. `where` is the git state it must be in before it runs anything, so the
@@ -1081,6 +1117,12 @@ async function runBuild(item, lane) {
   if (runPassed(pre) && dependencyMarkerPrinted(pre)) {
     log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
     return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
+  }
+  // FAIL CLOSED: a passing preflight whose item carries a hold is already-done ONLY when the runner's
+  // stdout proves the marker was not printed. Anything less is a non-terminal skip, never a win.
+  if (runPassed(pre) && dependencyHoldInconclusive(pre, item.preflight)) {
+    log(`${p} (lane ${tag}): skipped: dependency hold inconclusive — the pre-flight exited 0 but its per-command stdout cannot rule out the DEPENDENCY-NOT-ON-MAIN marker (stdout missing, prefixed, or the marker only elsewhere in the return); NOT ruled already-done, no builder dispatched. The next build pass re-runs it`)
+    return { itemId: item.id, status: 'skipped: dependency hold inconclusive', lane: tag, preflight: pre }
   }
   if (runPassed(pre)) {
     log(`${p} (lane ${tag}): already-done — EXECUTED pre-flight passed on unmodified origin/main; no builder dispatched, no branch, no PR`)
@@ -6373,101 +6415,6 @@ ITEMS.push({
   `,
 })
 
-// ── 60-yap24-packaging.mjs ────────────────────────────────────────────────
-// yap24-PKG — SHIP IT WITHOUT HANDS. Written 2026-09-26 by the architecture audit
-// (docs/ARCHITECTURE-AUDIT-2026-09-26.md §1.7 and §7). Runs after the Y-series packaging items
-// (UPD-A/UPD-B in 30-y6). LIC-A (Stripe -> Supabase issuer) stays the licensing item; the audit
-// only re-verified its premise: the revocation host (license.rs:117) no longer answers.
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'yap24-PKG1', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg1-one-command-local-release', gated: 'panel',
-  title: 'One local release command: build, Developer ID sign, hdiutil DMG, notarize, staple, verify, updater artifacts — with a dry run',
-  preflight: `
-    test -x scripts/release-local.sh
-    bash scripts/release-local.sh --dry-run --check-only
-  `,
-  spec: `
-    Panel: pending (SECURITY-class: signing and notarization)
-    DEPENDS: UPD-A (#197, open), UPD-B
-
-    EVIDENCE
-      - Releases are hand-run from docs/RELEASE.md; .github/workflows/release.yml is disabled
-        (Actions is off account-wide — HARNESS.md "CI mode").
-      - memory reference_yap_dmg_notarization: bundle_dmg.sh fails headless (Finder osascript),
-        the manual hdiutil path is the reliable one; the notary keychain profile is yap-notary;
-        releases must be built from a non-iCloud clone.
-      - Tauri updater: signatures are mandatory and cannot be disabled; latest.json needs
-        version, platforms.<target>.url and .signature (https://v2.tauri.app/plugin/updater/).
-
-    DO: scripts/release-local.sh <version> [--dry-run] [--check-only]: fresh clone to a scratch
-    dir -> npm ci -> stage both sidecars -> tauri build --bundles app -> codesign Developer ID
-    with --options runtime --timestamp and Entitlements.plist -> hdiutil UDZO with /Applications
-    link -> codesign the DMG -> xcrun notarytool submit --keychain-profile yap-notary --wait ->
-    stapler staple -> spctl -a -t open -> .app.tar.gz + .sig + latest.json. --dry-run stops before
-    notarize and prints each command; --check-only validates tools, identity presence and the
-    keychain profile without building. Never prints a secret; never enables app-sandbox.
-  `,
-  acceptance: `
-    test -x scripts/release-local.sh
-    bash -n scripts/release-local.sh
-    bash scripts/release-local.sh 0.0.0-ci --dry-run --check-only
-    grep -q "keychain-profile yap-notary" scripts/release-local.sh
-    grep -q "release-local.sh" docs/RELEASE.md
-    grep -q "yap-polish" scripts/release-local.sh
-    grep -q "yap-diarize" scripts/release-local.sh
-  `,
-})
-
-// Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED): the DO text
-// above already specifies --options runtime --timestamp and signing the app before the DMG,
-// which is correct — but tauri.conf.json's signingIdentity is null, so a plain "tauri build"
-// leaves the externalBin sidecars (yap-polish, yap-diarize) UNSIGNED, and notarization then
-// rejects them (or, signed with --deep, they wrongly inherit the app's JIT entitlements). Sign
-// INSIDE-OUT: each Contents/MacOS/yap-polish-* and yap-diarize-* binary first, with
-// --options runtime --timestamp and NO entitlements, then the .app itself WITHOUT --deep. The
-// acceptance above now runs the script's own --dry-run --check-only and greps for both sidecar
-// names, so a plan that skips them fails the gate instead of only failing notarization later.
-// Reword the audit's D27 to: keep manual notarized builds (product ledger, non-negotiable);
-// PKG1 is a hand-invoked local script, never CI, never automatic.
-
-ITEMS.push({
-  id: 'yap24-PKG2', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg2-first-run-without-a-network', gated: 'panel',
-  title: 'A fresh Mac with no network at first launch is told exactly why dictation is waiting — or can dictate with a bundled tiny model',
-  preflight: `
-    grep -q "first_run_offline" desktop/src-tauri/src/models.rs
-  `,
-  spec: `
-    Panel: pending (product decision: bundle whisper-tiny in the DMG, +~40 MB, or not)
-    DEPENDS: Y6-A (onboarding ends in one pasted dictation)
-
-    EVIDENCE
-      - models.rs:134 "NOTHING SHIPS IN THE DMG": every model (ASR, polish, diarize, Silero VAD
-        at vad.rs:491) is fetched on first use from huggingface.co (HEAD 200 on 2026-09-26 for the
-        pinned parakeet, Qwen polish and yap-diarize-models revisions) or github.com, each
-        sha256-verified against catalog.json / vad.rs constants.
-      - A first launch on a plane (Wispr "cannot work on a plane" is Yap's own positioning line)
-        cannot dictate at all until a download succeeds.
-
-    DO: option A (default if the panel says yes) — bundle whisper-tiny-Q8_0 as a resource,
-    sha256-verified on first launch, used only until the recommended model finishes downloading;
-    option B — no bundle, and the onboarding model step detects offline (one HEAD with a 5 s
-    timeout) and says "Yap needs one download (N MB) before it can transcribe; connect once."
-    Either way a test covers the offline branch.
-  `,
-  acceptance: `
-    cd desktop && npm ci && cd src-tauri
-    test "$(cargo test --features custom-protocol --lib models::tests::first_run_offline_ 2>&1 | tee /dev/stderr | grep -c '0 passed')" -eq 0
-    cargo clippy --all-targets --features custom-protocol
-  `,
-})
-
-// Panel revision 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, LOW, GROUNDED): the
-// pre-flight/acceptance named no test, so cargo test --lib models passed on a branch containing
-// only the first_run_offline IDENTIFIER with zero matching tests (an unmatched cargo filter
-// exits 0 and prints "0 passed"). The acceptance above now filters on the concrete test-name
-// prefix and fails when nothing matched.
-
 
 // ── RUN ─────────────────────────────────────────────────────────────────────
 phase('Recon')
@@ -7206,6 +7153,7 @@ return {
     failedAcceptance: results.filter((r) => r && r.status === 'failed-acceptance').length,
     awaitingPanel: results.filter((r) => r && r.status === 'skipped: awaiting Senior Panel').length,
     awaitingDependency: results.filter((r) => r && r.status === 'skipped: dependency not on main').length,
+    holdInconclusive: results.filter((r) => r && r.status === 'skipped: dependency hold inconclusive').length,
     errored: errored.length,
     merged: results.filter((r) => r && r.status === 'merged').length,
     ciPending: results.filter((r) => r && r.status === 'ci-pending').length,

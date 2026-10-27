@@ -973,6 +973,44 @@ const dependencyMarkerPrinted = (pre) => {
   if (!r || typeof r !== 'object' || !Array.isArray(r.exits)) return false
   return r.exits.some((e) => !!e && typeof e.stdout === 'string' && /^DEPENDENCY-NOT-ON-MAIN:/m.test(e.stdout))
 }
+/**
+ * DEPENDENCY HOLD, FAIL-CLOSED (PR #266 fix round 1, independent review BLOCKING 1). A hold EXITS 0 by
+ * design, so when dependencyMarkerPrinted(pre) is false the next branch in runBuild would rule the item
+ * ALREADY-DONE — a terminal success that reflection closes on the board. That is only safe when the
+ * evidence PROVES the marker was not printed. True (= do NOT rule already-done) when the item's
+ * preflight carries a hold (it assembles "DEPENDENCY-NOT-ON-$(printf MAIN)") AND the runner's return
+ * cannot rule the marker out:
+ *   - the return is not parseable into an object with a non-empty exits array (incl. a non-JSON string);
+ *   - any exits[i].stdout is missing or not a string (a seat that omitted stdout — the pre-#266 shape);
+ *   - any stdout carries the marker anywhere but at column 0 (indent, prompt prefix, "+ " trace);
+ *   - the printed form "DEPENDENCY-NOT-ON-MAIN:" appears in any field OTHER than exits[i].command
+ *     (e.g. output's raw tail while stdout came back "").
+ * The 3569ce4 false hold stays fixed: there the marker sat in exits[0].command (excluded) and in prose
+ * as "No DEPENDENCY-NOT-ON-MAIN message printed" (no colon), so a return with stdout "" is clear.
+ * An item with no hold in its preflight is never inconclusive. Pure: no I/O, no globals;
+ * dependency-marker.test.mjs lifts it out of this file and runs it.
+ */
+const dependencyHoldInconclusive = (pre, preflight) => {
+  if (typeof preflight !== 'string' || !preflight.includes('DEPENDENCY-NOT-ON-')) return false
+  let r = pre
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r)
+    } catch {
+      return true
+    }
+  }
+  if (!r || typeof r !== 'object' || !Array.isArray(r.exits) || r.exits.length === 0) return true
+  if (r.exits.some((e) => !e || typeof e !== 'object' || typeof e.stdout !== 'string')) return true
+  if (r.exits.some((e) => e.stdout.includes('DEPENDENCY-NOT-ON-MAIN'))) return true
+  let rest
+  try {
+    rest = JSON.stringify({ ...r, exits: r.exits.map((e) => ({ ...e, command: '' })) })
+  } catch {
+    return true
+  }
+  return rest.includes('DEPENDENCY-NOT-ON-MAIN:')
+}
 
 /**
  * ONE COMMAND-RUNNER SEAT. `where` is the git state it must be in before it runs anything, so the
@@ -1067,6 +1105,12 @@ async function runBuild(item, lane) {
   if (runPassed(pre) && dependencyMarkerPrinted(pre)) {
     log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
     return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
+  }
+  // FAIL CLOSED: a passing preflight whose item carries a hold is already-done ONLY when the runner's
+  // stdout proves the marker was not printed. Anything less is a non-terminal skip, never a win.
+  if (runPassed(pre) && dependencyHoldInconclusive(pre, item.preflight)) {
+    log(`${p} (lane ${tag}): skipped: dependency hold inconclusive — the pre-flight exited 0 but its per-command stdout cannot rule out the DEPENDENCY-NOT-ON-MAIN marker (stdout missing, prefixed, or the marker only elsewhere in the return); NOT ruled already-done, no builder dispatched. The next build pass re-runs it`)
+    return { itemId: item.id, status: 'skipped: dependency hold inconclusive', lane: tag, preflight: pre }
   }
   if (runPassed(pre)) {
     log(`${p} (lane ${tag}): already-done — EXECUTED pre-flight passed on unmodified origin/main; no builder dispatched, no branch, no PR`)
@@ -6230,6 +6274,7 @@ return {
     failedAcceptance: results.filter((r) => r && r.status === 'failed-acceptance').length,
     awaitingPanel: results.filter((r) => r && r.status === 'skipped: awaiting Senior Panel').length,
     awaitingDependency: results.filter((r) => r && r.status === 'skipped: dependency not on main').length,
+    holdInconclusive: results.filter((r) => r && r.status === 'skipped: dependency hold inconclusive').length,
     errored: errored.length,
     merged: results.filter((r) => r && r.status === 'merged').length,
     ciPending: results.filter((r) => r && r.status === 'ci-pending').length,

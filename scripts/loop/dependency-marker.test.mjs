@@ -88,3 +88,72 @@ test('runBuild uses dependencyMarkerPrinted(pre), the whole-JSON test is gone, a
   assert.match(TPL, /properties: \{ command: \{ type: 'string' \}, exit: \{ type: 'number' \}, stdout: \{ type: 'string' \} \},\n\s*required: \['command', 'exit', 'stdout'\]/)
   assert.ok(TPL.includes('exits: [{command, exit, stdout}, ...]'), 'the runner prompt asks for per-command stdout')
 })
+
+// ── PR #266 fix round 1 (independent review BLOCKING 1): the hold must FAIL CLOSED ─────────────────────
+// A hold exits 0, so a false from dependencyMarkerPrinted used to fall straight into the already-done
+// branch — a terminal "win" for an item whose dependency is missing. dependencyHoldInconclusive turns
+// every return that cannot PROVE the marker absent into a non-terminal skip instead.
+function liftInconclusive() {
+  const m = TPL.match(/\nconst dependencyHoldInconclusive = (\(pre, preflight\) => \{[\s\S]*?\n\})\n/)
+  assert.ok(m, 'template.mjs defines `const dependencyHoldInconclusive = (pre, preflight) => { ... }`')
+  return new Function(`return ${m[1]}`)()
+}
+// The REAL hold-carrying preflight of yap-p0-perm-repair (items/07-yap-p0-broken-2026-10-17.mjs), read
+// from the item file so the test tracks what the loop actually runs.
+const ITEM07 = fs.readFileSync(path.join(HERE, 'items', '07-yap-p0-broken-2026-10-17.mjs'), 'utf8')
+const HOLD_PREFLIGHT = ITEM07.split('\n').find((l) => l.includes('DEPENDENCY-NOT-ON-$(printf MAIN): yap-p0-hotkeys-no-permission'))
+const LINE = `${MARK}: yap-p0-hotkeys-no-permission has not landed — run the review pass to land it, then the build pass again`
+
+// Mirror of runBuild's branch order on a PASSING preflight (runPassed(pre) === true for every case).
+function disposition(pre, preflight) {
+  if (lift()(pre)) return 'skipped: dependency not on main'
+  if (liftInconclusive()(pre, preflight)) return 'skipped: dependency hold inconclusive'
+  return 'already-done'
+}
+
+test('fail-closed: every case the independent reviewer probed (dependency MISSING) is never already-done', () => {
+  assert.ok(HOLD_PREFLIGHT, 'item 07 still carries the assembled hold')
+  const base = { kind: 'preflight', itemId: 'yap-p0-perm-repair', allZero: true, firstFailure: '' }
+  const cases = {
+    'A stdout omitted (pre-#266 shape), marker in output': { ...base, exits: [{ command: '( ... )', exit: 0 }], output: LINE },
+    'B stdout "" , marker in output': { ...base, exits: [{ command: '( ... )', exit: 0, stdout: '' }], output: LINE },
+    'C prompt prefix on the marker line': { ...base, exits: [{ command: '( ... )', exit: 0, stdout: `$ ${LINE}` }], output: '' },
+    'D 4-space indent': { ...base, exits: [{ command: '( ... )', exit: 0, stdout: `    ${LINE}` }], output: '' },
+    'E non-JSON string return': `allZero: true\n${LINE}`,
+  }
+  for (const [name, pre] of Object.entries(cases)) {
+    assert.notEqual(disposition(pre, HOLD_PREFLIGHT), 'already-done', name)
+    assert.equal(disposition(pre, HOLD_PREFLIGHT), 'skipped: dependency hold inconclusive', name)
+  }
+  // F verbatim stdout: the real hold
+  assert.equal(disposition({ ...base, exits: [{ command: '( ... )', exit: 0, stdout: `${LINE}\n` }], output: LINE }, HOLD_PREFLIGHT), 'skipped: dependency not on main')
+  // malformed returns of a hold-carrying item are inconclusive, never a win
+  for (const v of [null, undefined, '', 'not json', {}, { exits: 'nope' }, { exits: [] }, { exits: [null] }, { exits: [{ command: 'x', exit: 0, stdout: 7 }] }]) {
+    assert.equal(disposition(v, HOLD_PREFLIGHT), 'skipped: dependency hold inconclusive', JSON.stringify(v))
+  }
+})
+
+test('fail-closed keeps the 3569ce4 fix: dependency PRESENT, verbatim empty stdout -> already-done', () => {
+  // The same false-hold payload as REAL_3569CE4, in the new schema (stdout: "" because the command printed
+  // nothing). The marker sits in exits[0].command (excluded) and in prose WITHOUT its colon.
+  const fixed = { ...REAL_3569CE4, exits: REAL_3569CE4.exits.map((e) => ({ ...e, stdout: '' })) }
+  assert.equal(disposition(fixed, HOLD_PREFLIGHT), 'already-done')
+  assert.equal(disposition(JSON.stringify(fixed), HOLD_PREFLIGHT), 'already-done')
+})
+
+test('fail-closed never touches an item without a hold in its preflight', () => {
+  const f = liftInconclusive()
+  for (const pf of ['test -f desktop/src-tauri/src/lib.rs', '', undefined, null]) {
+    for (const v of [null, 'not json', { exits: [{ command: 'x', exit: 0 }] }, { exits: [{ command: 'x', exit: 0, stdout: `  ${LINE}` }] }]) {
+      assert.equal(f(v, pf), false, `${pf} / ${JSON.stringify(v)}`)
+    }
+  }
+})
+
+test('runBuild checks the inconclusive hold AFTER the dependency hold and BEFORE already-done', () => {
+  const dep = TPL.indexOf('if (runPassed(pre) && dependencyMarkerPrinted(pre)) {')
+  const inc = TPL.indexOf('if (runPassed(pre) && dependencyHoldInconclusive(pre, item.preflight)) {')
+  const done = TPL.indexOf("return { itemId: item.id, status: 'already-done', lane: tag, preflight: pre }")
+  assert.ok(dep > 0 && inc > dep && done > inc, `order dep=${dep} inc=${inc} done=${done}`)
+  assert.ok(TPL.includes("status: 'skipped: dependency hold inconclusive'"))
+})

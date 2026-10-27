@@ -5,8 +5,8 @@ export const meta = {
   phases: [
     { title: "part-01", detail: "Y0-A..loop-dependency-marker-stdout-only" },
     { title: "part-02", detail: "yap-lic-01-jws-verifier..Y3-G" },
-    { title: "part-03", detail: "LIC-A..yap24-PKG2" },
-    { title: "part-04", detail: "yap24-X1..yap24-X3" },
+    { title: "part-03", detail: "LIC-A..Y11-F" },
+    { title: "part-04", detail: "yap24-PKG1..yap24-X3" },
   ],
 }
 /**
@@ -64,7 +64,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 47 })
 } else {
   phase("part-01")
-  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (431310 bytes)")
+  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (434260 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (47 item(s))")
@@ -97,7 +97,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 48 })
 } else {
   phase("part-02")
-  log("START part-02 — 48 item(s), yap-lic-01-jws-verifier..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (438425 bytes)")
+  log("START part-02 — 48 item(s), yap-lic-01-jws-verifier..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (441375 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (48 item(s))")
@@ -121,20 +121,20 @@ if (halted) {
 
 if (halted) {
   log("part-03 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-03", status: 'skipped: run halted', items: 61 })
-} else if (ONLY_PREFIXES && !["LIC-A","Y2-A","Y2-B","Y2-C","Y2-F","Y2-D","Y2-E","DB-A","SEC-B","Y5-G","Y5-A","Y5-B","Y5-C","Y5-D","Y5-E","Y5-F","Y5-J","Y5-I","Y5-K","UPD-A","UPD-B","Y6-A","PRIV-A","Y6-B","Y6-C","DB-C","PRIV-B","Y6-D","Y6-E","Y7-A","Y7-B","Y7-C","Y7-D","Y7-E","Y8-A","DB-D","Y8-B","Y8-C","Y8-D","Y9-A","Y9-B","Y9-C","PERM-F","PERM-G","Y9-D","Y9-E","Y10-A","PERM-H","Y10-B","Y10-D","Y10-E","Y10-F","Y11-A","Y11-B","DB-E","Y11-C","Y11-D","Y11-E","Y11-F","yap24-PKG1","yap24-PKG2"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
+  results.push({ part: "part-03", status: 'skipped: run halted', items: 59 })
+} else if (ONLY_PREFIXES && !["LIC-A","Y2-A","Y2-B","Y2-C","Y2-F","Y2-D","Y2-E","DB-A","SEC-B","Y5-G","Y5-A","Y5-B","Y5-C","Y5-D","Y5-E","Y5-F","Y5-J","Y5-I","Y5-K","UPD-A","UPD-B","Y6-A","PRIV-A","Y6-B","Y6-C","DB-C","PRIV-B","Y6-D","Y6-E","Y7-A","Y7-B","Y7-C","Y7-D","Y7-E","Y8-A","DB-D","Y8-B","Y8-C","Y8-D","Y9-A","Y9-B","Y9-C","PERM-F","PERM-G","Y9-D","Y9-E","Y10-A","PERM-H","Y10-B","Y10-D","Y10-E","Y10-F","Y11-A","Y11-B","DB-E","Y11-C","Y11-D","Y11-E","Y11-F"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
   log("part-03 — SKIPPED: no item in this part matches args.only [" + ONLY_PREFIXES.join(', ') + ']. Recon, Drain and Reflect of this part do not run; its worktrees (if any) stay standing for the next run.')
-  results.push({ part: "part-03", status: 'skipped: no item matches args.only', items: 61 })
+  results.push({ part: "part-03", status: 'skipped: no item matches args.only', items: 59 })
 } else if (REVIEW_MODE) {
   log("part-03 — SKIPPED: mode=review runs part-01 ONLY. The review pass is PR-DRIVEN — one triage agent enumerates every open loop-build PR on the repo and two chains consume that queue — so every further part would re-triage the same PRs and dispatch duplicate reviewers at them.")
-  results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 61 })
+  results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 59 })
 } else {
   phase("part-03")
-  log("START part-03 — 61 item(s), LIC-A..yap24-PKG2 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (447746 bytes)")
+  log("START part-03 — 59 item(s), LIC-A..Y11-F — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (444397 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs" }, args)
-    log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (61 item(s))")
-    results.push({ part: "part-03", status: 'ok', items: 61, result })
+    log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (59 item(s))")
+    results.push({ part: "part-03", status: 'ok', items: 59, result })
     if (result && result.halted) {
       halted = { part: "part-03", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-03 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -143,31 +143,31 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-03", at: null, reason: message }
-      results.push({ part: "part-03", status: 'halted', items: 61, error: message })
+      results.push({ part: "part-03", status: 'halted', items: 59, error: message })
       log("HALT: part-03 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-03 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-03", status: 'errored', items: 61, error: message })
+      results.push({ part: "part-03", status: 'errored', items: 59, error: message })
     }
   }
 }
 
 if (halted) {
   log("part-04 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-04", status: 'skipped: run halted', items: 3 })
-} else if (ONLY_PREFIXES && !["yap24-X1","yap24-X2","yap24-X3"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
+  results.push({ part: "part-04", status: 'skipped: run halted', items: 5 })
+} else if (ONLY_PREFIXES && !["yap24-PKG1","yap24-PKG2","yap24-X1","yap24-X2","yap24-X3"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
   log("part-04 — SKIPPED: no item in this part matches args.only [" + ONLY_PREFIXES.join(', ') + ']. Recon, Drain and Reflect of this part do not run; its worktrees (if any) stay standing for the next run.')
-  results.push({ part: "part-04", status: 'skipped: no item matches args.only', items: 3 })
+  results.push({ part: "part-04", status: 'skipped: no item matches args.only', items: 5 })
 } else if (REVIEW_MODE) {
   log("part-04 — SKIPPED: mode=review runs part-01 ONLY. The review pass is PR-DRIVEN — one triage agent enumerates every open loop-build PR on the repo and two chains consume that queue — so every further part would re-triage the same PRs and dispatch duplicate reviewers at them.")
-  results.push({ part: "part-04", status: 'skipped: review mode runs part-01 only', items: 3 })
+  results.push({ part: "part-04", status: 'skipped: review mode runs part-01 only', items: 5 })
 } else {
   phase("part-04")
-  log("START part-04 — 3 item(s), yap24-X1..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs (171444 bytes)")
+  log("START part-04 — 5 item(s), yap24-PKG1..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs (180690 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-04.mjs" }, args)
-    log("END part-04 — " + (result && result.halted ? 'halted' : 'finished') + " (3 item(s))")
-    results.push({ part: "part-04", status: 'ok', items: 3, result })
+    log("END part-04 — " + (result && result.halted ? 'halted' : 'finished') + " (5 item(s))")
+    results.push({ part: "part-04", status: 'ok', items: 5, result })
     if (result && result.halted) {
       halted = { part: "part-04", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-04 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -176,11 +176,11 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-04", at: null, reason: message }
-      results.push({ part: "part-04", status: 'halted', items: 3, error: message })
+      results.push({ part: "part-04", status: 'halted', items: 5, error: message })
       log("HALT: part-04 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-04 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-04", status: 'errored', items: 3, error: message })
+      results.push({ part: "part-04", status: 'errored', items: 5, error: message })
     }
   }
 }
