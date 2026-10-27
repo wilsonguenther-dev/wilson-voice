@@ -3412,6 +3412,20 @@ impl Database {
         Ok(())
     }
 
+    /// Y8-C — lifetime words across every transcript, for the achievement
+    /// earcon's milestone check. 0 on any error: a sound is never worth a panic.
+    pub fn total_words(&self) -> i64 {
+        let Ok(conn) = self.conn.lock() else {
+            return 0;
+        };
+        conn.query_row(
+            "SELECT COALESCE(SUM(word_count),0) FROM transcripts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    }
+
     pub fn insights(&self) -> Result<Insights, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
