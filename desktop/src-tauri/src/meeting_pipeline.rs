@@ -51,7 +51,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -59,7 +59,7 @@ use crate::asr_engine::TimedKind;
 use crate::db::Database;
 use crate::meeting::{MIC_TRACK as MIC_TRACK_INDEX, SYSTEM_TRACK as SYSTEM_TRACK_INDEX};
 use crate::meeting_asr::{
-    ChunkAsr, ChunkOutcome, ChunkStatus, EngineDemand, JsonProgressStore, MeetingAsr,
+    ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand, JsonProgressStore, MeetingAsr,
     MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows, VoiceActivity, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
@@ -421,6 +421,86 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
     }
 }
 
+// ── yap-audit-meeting-timings: the lines that explain a slow meeting ────────
+//
+// A 31-minute meeting took 4:01 to transcribe (RTF 0.13) where a 24-minute one
+// three days earlier took 0:28 (RTF 0.019), and the log could not say why. These
+// two lines are what it says now: one DEBUG line per window (what it decoded,
+// how long the decode took, what kind of cut it ended at) and one INFO line per
+// track when the track is done. Pure formatters, so the shape is tested without
+// scraping a real log.
+
+/// The DEBUG line for one decoded window.
+pub fn chunk_timing_line(meeting_id: &str, track: i64, timing: &ChunkTiming) -> String {
+    format!(
+        "meeting chunk track={track} index={} audio_s={:.1} decode_ms={} boundary={} status={} meeting={meeting_id}",
+        timing.index,
+        timing.audio_seconds,
+        timing.decode_ms,
+        timing.boundary.as_str(),
+        timing.status.as_str(),
+    )
+}
+
+/// What one track's run cost, end to end.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TrackTiming {
+    pub track: i64,
+    /// Seconds of the meeting's timeline this run covered (resumed windows are
+    /// not in here — they were not decoded this time).
+    pub audio_seconds: f64,
+    /// Wall seconds from the start of the track's run to its end: planning,
+    /// decoding, standing down for dictations, and writing segments.
+    pub wall_seconds: f64,
+    /// Seconds spent inside the decoder, summed over the run's windows. The gap
+    /// between this and `wall_seconds` is time the meeting spent waiting.
+    pub decode_seconds: f64,
+    /// Windows decoded in this run, failed attempts included.
+    pub chunks: usize,
+    /// Windows already in the ledger, not decoded again.
+    pub resumed: usize,
+    /// Decodes a dictation cancelled mid-window.
+    pub preempted: usize,
+    /// Window boundaries that stood down for a dictation.
+    pub yields: usize,
+    pub interrupted: bool,
+}
+
+/// Wall time over audio time. `None` when there was no audio to divide by —
+/// an RTF of a run that decoded nothing is not zero, it is not a number.
+pub fn real_time_factor(wall_seconds: f64, audio_seconds: f64) -> Option<f64> {
+    if audio_seconds > 0.0 && wall_seconds.is_finite() && wall_seconds >= 0.0 {
+        Some(wall_seconds / audio_seconds)
+    } else {
+        None
+    }
+}
+
+/// The INFO line for one finished (or interrupted) track:
+/// `meeting rtf track=N audio_s=.. wall_s=.. rtf=.. chunks=.. preempted=..`,
+/// then the fields that tell a slow decoder from a meeting that waited.
+pub fn track_rtf_line(meeting_id: &str, timing: &TrackTiming) -> String {
+    let rtf = real_time_factor(timing.wall_seconds, timing.audio_seconds)
+        .map(|r| format!("{r:.3}"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let mut line = format!(
+        "meeting rtf track={} audio_s={:.1} wall_s={:.1} rtf={rtf} chunks={} preempted={} \
+         decode_s={:.1} yields={} resumed={} meeting={meeting_id}",
+        timing.track,
+        timing.audio_seconds,
+        timing.wall_seconds,
+        timing.chunks,
+        timing.preempted,
+        timing.decode_seconds,
+        timing.yields,
+        timing.resumed,
+    );
+    if timing.interrupted {
+        line.push_str(" interrupted=true");
+    }
+    line
+}
+
 /// The resume-ledger key for one track of one meeting.
 pub fn ledger_key(meeting_id: &str, track: i64) -> String {
     format!("{meeting_id}.t{track}")
@@ -708,6 +788,8 @@ struct SegmentWritingStore<'a> {
     total_audio: f64,
     duration: f64,
     deps: &'a PipelineDeps,
+    /// Decoder milliseconds summed over this run's windows on this track.
+    decode_ms: u64,
 }
 
 impl SegmentWritingStore<'_> {
@@ -749,6 +831,11 @@ impl ProgressStore for SegmentWritingStore<'_> {
         // decoded gets the engine before the next one is even planned.
         std::thread::yield_now();
         Ok(())
+    }
+
+    fn record_timing(&mut self, _key: &str, timing: &ChunkTiming) {
+        self.decode_ms = self.decode_ms.saturating_add(timing.decode_ms);
+        log::debug!("{}", chunk_timing_line(self.meeting_id, self.track, timing));
     }
 }
 
@@ -939,6 +1026,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             total_audio,
             duration: meeting.duration_seconds,
             deps,
+            decode_ms: 0,
         };
         // Anything written past what the ledger promises is a crash between
         // the segment insert and the ledger write — it is about to be decoded
@@ -947,6 +1035,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         db.delete_meeting_segments_from(id, *track, resume_at)?;
 
         let quit = || (deps.quit)() || quitting();
+        let track_started = Instant::now();
         let transcript = MeetingAsr {
             audio,
             vad: vad.as_ref().map(|v| &**v as &dyn VoiceActivity),
@@ -957,6 +1046,23 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             config: deps.config.clone(),
         }
         .run(&key)?;
+        log::info!(
+            "{}",
+            track_rtf_line(
+                id,
+                &TrackTiming {
+                    track: *track,
+                    audio_seconds: (transcript.processed_through_seconds - resume_at).max(0.0),
+                    wall_seconds: track_started.elapsed().as_secs_f64(),
+                    decode_seconds: store.decode_ms as f64 / 1000.0,
+                    chunks: transcript.chunks_decoded,
+                    resumed: transcript.chunks_resumed,
+                    preempted: transcript.preempted_decodes,
+                    yields: transcript.preempt_yields,
+                    interrupted: transcript.interrupted,
+                },
+            )
+        );
         if transcript.interrupted {
             log::info!(
                 "meeting {id}: track {track} interrupted at {:.1}s — resumes next launch",

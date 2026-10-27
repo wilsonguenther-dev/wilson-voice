@@ -367,7 +367,7 @@ export function useAppShell() {
       });
       setHistoryHasMore(page.length >= HISTORY_LIMIT);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     } finally {
       setLoadingOlder(false);
     }

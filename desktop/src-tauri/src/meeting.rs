@@ -954,6 +954,77 @@ fn one_segment() -> usize {
     1
 }
 
+/// yap-audit-meeting-timings — one input-format change a recording meeting
+/// lived through: when, on which track, and from what to what. Banked into the
+/// meeting's `diagnostics` blob under `inputRetunes` at stop, so "the mic
+/// renegotiated to HFP 30 minutes in" is on the row and not only in a log that
+/// rotates.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputRetune {
+    /// Wall seconds since the meeting started.
+    pub at_seconds: f64,
+    /// Seconds of audio the track had captured when its format changed — the
+    /// meeting's number, never the dictation take's.
+    pub captured_seconds: f64,
+    pub track: usize,
+    pub from_rate: u32,
+    pub from_channels: u16,
+    pub to_rate: u32,
+    pub to_channels: u16,
+}
+
+/// How many retunes one meeting keeps. A device flapping all meeting long is
+/// itself the finding; the first [`MAX_INPUT_RETUNES`] say so without the blob
+/// growing for three hours.
+pub const MAX_INPUT_RETUNES: usize = 64;
+
+/// What the input-format-change line counts. The device the dictation path
+/// reopens is ALSO the meeting's mic, and the audit found a retune 30 minutes
+/// into a meeting logging "0 samples captured so far" — the dictation take's
+/// fallback counter, which is empty whenever nobody is dictating.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RetuneCapture {
+    /// No meeting is recording: the dictation take's 16 kHz samples.
+    Dictation { samples: usize },
+    /// A meeting is recording: its captured seconds, plus whatever a
+    /// concurrent dictation take holds.
+    Meeting {
+        seconds: f64,
+        dictation_samples: usize,
+    },
+}
+
+/// The WARN line for an input format change under a live capture.
+pub fn input_format_change_line(
+    from_rate: u32,
+    from_channels: u16,
+    to_rate: u32,
+    to_channels: u16,
+    captured: RetuneCapture,
+) -> String {
+    let so_far = match captured {
+        RetuneCapture::Dictation { samples } => {
+            format!("dictation take: {samples} samples captured so far; raw fallback now spans two rates")
+        }
+        RetuneCapture::Meeting {
+            seconds,
+            dictation_samples: 0,
+        } => format!("meeting capture: {seconds:.1} s captured so far"),
+        RetuneCapture::Meeting {
+            seconds,
+            dictation_samples,
+        } => format!(
+            "meeting capture: {seconds:.1} s captured so far; dictation take: \
+             {dictation_samples} samples, raw fallback now spans two rates"
+        ),
+    };
+    format!(
+        "YV92 input format changed mid-capture: {from_rate}Hz/{from_channels}ch → \
+         {to_rate}Hz/{to_channels}ch ({so_far})"
+    )
+}
+
 /// Split a track's index records into the runs its clock actually ran in.
 ///
 /// A reopen ([`MeetingCapture::retune_track`] — an AirPods swap on track 0,
@@ -2182,6 +2253,9 @@ pub struct MeetingCapture {
     /// Milliseconds because an `Instant` is not atomic and the watchdog must
     /// read this without taking the consumer's lock.
     last_block_ms: AtomicU64,
+    /// Every format change this meeting lived through, oldest first, at most
+    /// [`MAX_INPUT_RETUNES`]. Its own lock, taken only after `inner`.
+    retunes: Mutex<Vec<InputRetune>>,
 }
 
 impl MeetingCapture {
@@ -2218,7 +2292,13 @@ impl MeetingCapture {
             samples_16k: AtomicU64::new(0),
             blocks: AtomicU64::new(0),
             last_block_ms: AtomicU64::new(0),
+            retunes: Mutex::new(Vec::new()),
         }
+    }
+
+    /// yap-audit-meeting-timings — the format changes recorded so far.
+    pub fn input_retunes(&self) -> Vec<InputRetune> {
+        self.retunes.lock().clone()
     }
 
     /// How many tracks this meeting is recording.
@@ -2535,6 +2615,7 @@ impl MeetingCapture {
             samples_16k,
             ..
         } = state;
+        let (from_rate, from_channels) = (*rate, *ch);
 
         out.clear();
         resampler.finish(out);
@@ -2560,6 +2641,20 @@ impl MeetingCapture {
         *ch = channels.max(1);
         *high_pass = Biquad::high_pass(native_rate, HIGH_PASS_HZ);
         *resampler = StreamResampler::new(native_rate, TARGET_RATE);
+        let retune = InputRetune {
+            at_seconds: self.started.elapsed().as_secs_f64(),
+            captured_seconds: *samples_16k as f64 / TARGET_RATE as f64,
+            track,
+            from_rate,
+            from_channels,
+            to_rate: native_rate,
+            to_channels: *ch,
+        };
+        drop(guard);
+        let mut retunes = self.retunes.lock();
+        if retunes.len() < MAX_INPUT_RETUNES {
+            retunes.push(retune);
+        }
     }
 
     /// Flush EVERY track's resampler tail, write each one a final index record
@@ -2734,10 +2829,19 @@ pub fn meeting_capture_active() -> bool {
 pub fn retune_active_capture(native_rate: u32, channels: u16) {
     if let Some(capture) = active_capture() {
         log::info!(
-            "meeting capture retuned to {native_rate}Hz/{channels}ch after an input format change"
+            "meeting capture retuned to {native_rate}Hz/{channels}ch after an input format change \
+             at {:.1} s captured",
+            capture.seconds()
         );
         capture.retune(native_rate, channels);
     }
+}
+
+/// Seconds the recording meeting has captured, or `None` when no meeting is
+/// recording — what the dictation path's format-change line reports instead
+/// of its own (empty) take counter.
+pub fn active_capture_seconds() -> Option<f64> {
+    active_capture().map(|c| c.seconds())
 }
 
 // ── The session ─────────────────────────────────────────────────────────────

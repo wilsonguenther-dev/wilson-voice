@@ -34,9 +34,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::meeting::TrackRate;
 #[cfg(doc)]
 use crate::meeting::TRUE_RATE_PPM_LIMIT;
+use crate::meeting::{InputRetune, TrackRate};
 
 /// `ProcessInfo.thermalState`, as a value that can be stored and compared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +200,11 @@ pub struct MeetingDiagnostics {
     /// different answers, and only one of them is evidence.
     #[serde(default, rename = "track_rates")]
     pub track_rates: Vec<TrackRate>,
+    /// yap-audit-meeting-timings — every input-format change the capture lived
+    /// through (time, track, old/new format). Empty for a meeting whose device
+    /// never moved, and for every blob written before this field existed.
+    #[serde(default)]
+    pub input_retunes: Vec<InputRetune>,
 }
 
 impl MeetingDiagnostics {
@@ -218,7 +223,14 @@ impl MeetingDiagnostics {
             pill_visible,
             stop_reason: None,
             track_rates: Vec::new(),
+            input_retunes: Vec::new(),
         }
+    }
+
+    /// Bank the capture's input-format changes. Replaces, like
+    /// [`Self::record_track_rates`]: it is called once, from the stop path.
+    pub fn record_input_retunes(&mut self, retunes: &[InputRetune]) {
+        self.input_retunes = retunes.to_vec();
     }
 
     /// YV107 / OS-2 — bank the finalize's per-track true-rate measurements.

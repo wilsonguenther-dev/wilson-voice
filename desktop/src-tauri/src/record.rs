@@ -3174,12 +3174,28 @@ impl StreamDsp {
         if let Some(journal) = self.journal.as_ref() {
             journal.append(&self.out[before..]);
         }
+        // yap-audit-meeting-timings: while a meeting records, the number that
+        // matters is the MEETING's — this take's counter is 0 whenever nobody
+        // is dictating, which is what made a retune 30 minutes into a meeting
+        // read "0 samples captured so far".
+        let captured = match crate::meeting::active_capture_seconds() {
+            Some(seconds) => crate::meeting::RetuneCapture::Meeting {
+                seconds,
+                dictation_samples: self.out.len(),
+            },
+            None => crate::meeting::RetuneCapture::Dictation {
+                samples: self.out.len(),
+            },
+        };
         log::warn!(
-            "YV92 input format changed mid-capture: {}Hz/{}ch → {sample_rate}Hz/{channels}ch \
-             ({} samples captured so far; raw fallback now spans two rates)",
-            self.sample_rate,
-            self.channels,
-            self.out.len()
+            "{}",
+            crate::meeting::input_format_change_line(
+                self.sample_rate,
+                self.channels,
+                sample_rate,
+                channels,
+                captured,
+            )
         );
         self.sample_rate = sample_rate;
         self.channels = channels;

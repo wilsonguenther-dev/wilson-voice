@@ -12,13 +12,13 @@ interface DetectSettingsView {
 }
 
 export default function Meetings() {
-  const { toast } = useAppCtx();
+  const { toastError } = useAppCtx();
   const [view, setView] = useState<DetectSettingsView | null>(null);
   useEffect(() => {
     let dead = false;
     invoke<DetectSettingsView>("meeting_detect_settings")
       .then((v) => { if (!dead) setView(v); })
-      .catch((e) => toast(String(e)));
+      .catch((e) => toastError(e));
     return () => { dead = true; };
     // Read once per mount; `toast` is not a reason to read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -28,7 +28,7 @@ export default function Meetings() {
     try {
       setView(await invoke<DetectSettingsView>("set_meeting_detect_settings", patch));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 

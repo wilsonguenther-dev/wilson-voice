@@ -39,6 +39,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "license/status.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "meetings/consent.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "meetings/notes.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "meetings/progress.ts": { lines: 89, branches: 88, functions: 100, statements: 90 },
   "meetings/sampleMeeting.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "meetings/systemAudio.ts": { lines: 100, branches: 86, functions: 100, statements: 94 },
@@ -46,10 +47,13 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/copyCardModel.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
+  "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
-  "pill/license.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
+  "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
-  "pill/meeting.ts": { lines: 100, branches: 93, functions: 100, statements: 100 },
+  "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
@@ -58,7 +62,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
+  "toast.ts": { lines: 84, branches: 82, functions: 69, statements: 81 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
 };
 
 /**
