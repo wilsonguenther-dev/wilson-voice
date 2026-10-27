@@ -51,7 +51,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-const APP_SETTINGS_FIELD_COUNT: usize = 36;
+const APP_SETTINGS_FIELD_COUNT: usize = 37;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -120,6 +120,12 @@ fn fully_populated() -> AppSettings {
         check_updates: false,
         skipped_update_version: Some("9.9.9".into()),
         legacy_json_migrated: true,
+        // PERM-H — a two-row mic ranking, in a deliberate order: the round-trip
+        // must keep the ORDER, because the order is the whole setting.
+        mic_ranking: vec![
+            "Studio Display Microphone".into(),
+            "MacBook Pro Microphone".into(),
+        ],
         // yap-format-structure — both non-default: the switch OFF, one override.
         structure_enabled: false,
         structure_app_overrides: BTreeMap::from([(
@@ -222,6 +228,14 @@ fn every_app_settings_field_round_trips() {
         "calibration_sample (an Option) must survive a relaunch"
     );
     assert_eq!(read_back.polish_deadline_ms, 2500);
+    assert_eq!(
+        read_back.mic_ranking,
+        vec![
+            "Studio Display Microphone".to_string(),
+            "MacBook Pro Microphone".to_string()
+        ],
+        "PERM-H: the mic ranking (and its order) must survive a relaunch"
+    );
     assert_eq!(read_back.cleanup_level, "high");
     assert_eq!(read_back.signature_mode, "auto");
     assert_eq!(read_back.snippet_scope, "utterance");

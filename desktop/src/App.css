@@ -3419,3 +3419,17 @@ button.primary.big {
 .meeting-notes-section ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .meeting-notes-section li { line-height: 1.45; }
 .meeting-notes-note { font-size: 0.85rem; }
+
+/* PERM-H — the ranked microphone list (Settings → Audio). */
+.mic-ranking {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.mic-ranking > li {
+  cursor: grab;
+}
+.mic-ranking > li[aria-current="true"] strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

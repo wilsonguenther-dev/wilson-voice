@@ -2113,6 +2113,34 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     live = None;
                     cache.invalidate();
                 }
+                // PERM-H — the highest-ranked PRESENT device wins AT TAKE
+                // START. A warm stream left open on a lower-ranked device (the
+                // favourite was plugged in since) is closed and reopened, but
+                // never out from under a meeting that shares it.
+                if let Some(stream) = live.as_ref() {
+                    if !stream.is_capturing()
+                        && !held_for_meeting
+                        && !crate::meeting::meeting_capture_active()
+                        && !crate::mic_ranking::current().is_empty()
+                    {
+                        let (devices, default) = attached_inputs();
+                        let present: Vec<String> = devices.into_iter().map(|(_, n)| n).collect();
+                        let default_name = default.as_ref().map(input_device_name);
+                        if let Some(pick) =
+                            crate::mic_ranking::current().pick(&present, default_name.as_deref())
+                        {
+                            if pick.name != stream.device_name {
+                                log::info!(
+                                    "PERM-H: take start moves from {} to ranked {}",
+                                    stream.device_name,
+                                    pick.name
+                                );
+                                live = None;
+                                cache.invalidate();
+                            }
+                        }
+                    }
+                }
                 if live.is_none() {
                     match open_stream(&mut cache) {
                         Ok(stream) => live = Some(stream),
@@ -2128,6 +2156,13 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     }
                     stream.begin(journal, spill.map(|s| *s));
                     let _ = reply.send(Ok(()));
+                    // PERM-H — AirPods / clamshell, once per selection. Off
+                    // the arm path: the HAL and IOKit reads cost milliseconds
+                    // the hotkey must not wait for.
+                    let device = stream.device_name.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("yap-mic-warn".into())
+                        .spawn(move || crate::mic_ranking::on_take_start(&device));
                 }
             }
             Ok(CaptureCmd::Disarm { reply }) => {
@@ -2288,8 +2323,9 @@ fn watchdog_poll(
             live.device_name
         );
     }
-    let observed = match default_input_device() {
-        Ok((device, name)) => device.default_input_config().ok().map(|config| {
+    let observed = match mid_take_input(&live.device_name, live.is_armed()) {
+        Ok(None) => None,
+        Ok(Some((device, name))) => device.default_input_config().ok().map(|config| {
             (
                 name,
                 InputFormat::new(config.sample_rate(), config.channels()),
@@ -2307,7 +2343,11 @@ fn watchdog_poll(
     // The watch belongs to the STREAM, not to this tick: building one here
     // would restart the segment counter every 60 s and stamp every marker of a
     // take `segment_index: 1`.
-    let action = live.observe_input(name, format, event.unwrap_or(FormatEventSource::Watchdog));
+    let action = live.observe_input(
+        name.clone(),
+        format,
+        event.unwrap_or(FormatEventSource::Watchdog),
+    );
     match action {
         FormatChangeAction::Unchanged if !failed => {}
         FormatChangeAction::Ignored(why) => {
@@ -2316,7 +2356,7 @@ fn watchdog_poll(
         FormatChangeAction::Unchanged => {
             // The format is fine but the stream is dead: reopen at the same
             // format rather than leaving a silent take running.
-            reopen_after_change(live, cache, None);
+            reopen_after_change(live, cache, None, Some(&name));
         }
         FormatChangeAction::Reconfigure { marker, ratio } => {
             log::warn!(
@@ -2334,7 +2374,7 @@ fn watchdog_poll(
                 ratio.value(),
             );
             live.mark_device_change(&marker);
-            reopen_after_change(live, cache, Some(marker.to));
+            reopen_after_change(live, cache, Some(marker.to), Some(&name));
         }
         // YV103 — the output half of the same watch. The mic path never calls
         // `watch_output`, so its watch's output half is inert and this arm is
@@ -2367,10 +2407,11 @@ fn reopen_after_change(
     live: &mut LiveStream,
     cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
     to: Option<InputFormat>,
+    want: Option<&str>,
 ) {
     reopen_with(live, to, |reuse| {
         cache.invalidate();
-        open_stream_into(cache, Some(reuse))
+        open_stream_into(cache, Some(reuse), want)
     });
 }
 
@@ -2491,22 +2532,93 @@ fn host_time_now() -> u64 {
 fn open_stream(
     cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
 ) -> Result<LiveStream, String> {
-    open_stream_into(cache, None)
+    open_stream_into(cache, None, None)
 }
 
-/// The system default input device and the name it reports, or the "no mic"
-/// error. Split out so the format watchdog can ask the same question the opener
-/// asks without duplicating cpal's default-device rules.
-fn default_input_device() -> Result<(cpal::Device, String), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))?;
-    let name = device
+/// The name cpal reports for a device (CoreAudio's `kAudioObjectPropertyName`).
+fn input_device_name(device: &cpal::Device) -> String {
+    device
         .description()
         .map(|d| d.name().to_string())
+        .unwrap_or_default()
+}
+
+/// Every attached input device with its name, and macOS's default input.
+fn attached_inputs() -> (Vec<(cpal::Device, String)>, Option<cpal::Device>) {
+    let host = cpal::default_host();
+    let devices = host
+        .input_devices()
+        .map(|it| {
+            it.map(|d| {
+                let name = input_device_name(&d);
+                (d, name)
+            })
+            .filter(|(_, name)| !name.is_empty())
+            .collect()
+        })
         .unwrap_or_default();
+    (devices, host.default_input_device())
+}
+
+/// PERM-H — the input device a capture opens, and the name it reports, or the
+/// "no mic" error.
+///
+/// `want` is a device the caller has ALREADY decided on (the watchdog's
+/// mid-take decision); when it is attached it is opened, full stop. Otherwise
+/// the user's ranking decides: the highest-ranked PRESENT device wins, then
+/// macOS's default input — so an empty ranking is exactly the old behaviour.
+fn preferred_input_device(want: Option<&str>) -> Result<(cpal::Device, String), String> {
+    let (devices, default) = attached_inputs();
+    let default_name = default.as_ref().map(input_device_name);
+    let ranking = crate::mic_ranking::current();
+    let target = match want {
+        Some(want) if devices.iter().any(|(_, n)| n == want) => Some(want.to_string()),
+        _ => {
+            let present: Vec<String> = devices.iter().map(|(_, n)| n.clone()).collect();
+            ranking
+                .pick(&present, default_name.as_deref())
+                .map(|pick| pick.name)
+        }
+    };
+    if let Some(target) = target {
+        if let Some(found) = devices.into_iter().find(|(_, n)| *n == target) {
+            return Ok(found);
+        }
+    }
+    let device = default.ok_or_else(|| crate::permissions::named(NO_MIC_ERR))?;
+    let name = input_device_name(&device);
     Ok((device, name))
+}
+
+/// PERM-H — the device a RUNNING take should be on, by the one mid-take rule
+/// ([`crate::mic_ranking::mid_take_decision`]). A switch or a park is
+/// announced to the user here; `None` means there is nothing to observe.
+fn mid_take_input(current: &str, armed: bool) -> Result<Option<(cpal::Device, String)>, String> {
+    let (devices, default) = attached_inputs();
+    let default_name = default.as_ref().map(input_device_name);
+    let present: Vec<String> = devices.iter().map(|(_, n)| n.clone()).collect();
+    let decision = crate::mic_ranking::mid_take_decision(
+        &crate::mic_ranking::current(),
+        current,
+        &present,
+        default_name.as_deref(),
+    );
+    let target = match decision {
+        crate::mic_ranking::MidTake::Stay => current.to_string(),
+        crate::mic_ranking::MidTake::SwitchTo { to, notice } => {
+            if armed {
+                crate::mic_ranking::announce(&notice);
+            }
+            to
+        }
+        crate::mic_ranking::MidTake::Park { notice } => {
+            if armed {
+                crate::mic_ranking::announce_parked_once(&notice);
+            }
+            return Err(crate::permissions::named(NO_MIC_ERR));
+        }
+    };
+    Ok(devices.into_iter().find(|(_, n)| *n == target))
 }
 
 /// The three things a reopened stream inherits from the take that was already
@@ -2526,9 +2638,10 @@ type TakeInFlight = (Arc<Mutex<StreamDsp>>, Arc<AtomicBool>);
 fn open_stream_into(
     cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
     reuse: Option<TakeInFlight>,
+    want: Option<&str>,
 ) -> Result<LiveStream, String> {
     let opened_at = Instant::now();
-    let (device, dev_name) = default_input_device()?;
+    let (device, dev_name) = preferred_input_device(want)?;
 
     let (device, supported, was_cached) = resolve_device_config(
         cache,

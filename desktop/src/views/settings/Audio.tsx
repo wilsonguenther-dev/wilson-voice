@@ -1,4 +1,5 @@
 import { useAppCtx } from "../../appShell";
+import MicrophoneRanking from "../../MicrophoneRanking";
 
 export default function Audio() {
   const {
@@ -39,6 +40,7 @@ export default function Audio() {
                     </span>
                   </label>
                   </div>
+                  <MicrophoneRanking />
                 </section>
   );
 }

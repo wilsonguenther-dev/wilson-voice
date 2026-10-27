@@ -106,6 +106,9 @@ pub mod meeting_energy;
 // AVAuthorizationStatus discriminants and the call-site sweep without a
 // microphone, a grant or a window server.
 pub mod mic_auth;
+/// PERM-H — the ranked microphone preference list, forget-device, and the
+/// AirPods / clamshell warnings. Presence only; TCC stays in `mic_auth`.
+pub mod mic_ranking;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
@@ -465,6 +468,12 @@ pub struct AppSettings {
     /// so the store is written in a stable order.
     #[serde(default)]
     pub structure_app_overrides: std::collections::BTreeMap<String, String>,
+    /// PERM-H — the user's microphone preference list, favourite first, by
+    /// device name. At take start the highest-ranked PRESENT device wins; with
+    /// none present (or an empty list) macOS's default input does. Owned by the
+    /// `mic_rank_*` commands, never by `save_settings` (see there).
+    #[serde(default)]
+    pub mic_ranking: Vec<String>,
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -554,6 +563,7 @@ impl Default for AppSettings {
             legacy_json_migrated: false,
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
+            mic_ranking: Vec::new(),
         }
     }
 }
@@ -3789,6 +3799,60 @@ fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
 /// of carrying its own copy of the answer. Every string here is built from
 /// `dictation::CleanupLevel`'s `runs_*` predicates and `polish::POLISH_SPEEDS`,
 /// so a pipeline change updates the screen on the same commit.
+/// PERM-H — the microphone list Settings renders: ranked rows (present or
+/// not, so an unplugged favourite can still be forgotten), then attached rows
+/// nobody ranked, which one the next take opens, and the lid state.
+#[tauri::command]
+fn mic_devices() -> mic_ranking::MicDevicesView {
+    mic_ranking::devices_view()
+}
+
+/// Apply one change to the ranking, persist it, and make it the live one.
+fn update_mic_ranking(
+    state: &AppState,
+    change: impl FnOnce(&mut mic_ranking::MicRanking) -> bool,
+) -> Result<bool, String> {
+    let mut next = state.settings.lock().clone();
+    let mut ranking = mic_ranking::MicRanking::from_settings(&next.mic_ranking);
+    let changed = change(&mut ranking);
+    next.mic_ranking = ranking.order().to_vec();
+    persist_settings(&next)?;
+    *state.settings.lock() = next;
+    mic_ranking::install(ranking);
+    Ok(changed)
+}
+
+/// PERM-H — the user picked `name`: it goes to the top of the list. Returns
+/// the warnings for that selection (AirPods, lid closed), each said once per
+/// selection, for the screen to show beside the row.
+#[tauri::command]
+fn mic_rank_select(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<Vec<mic_ranking::MicNotice>, String> {
+    update_mic_ranking(state.inner(), |r| {
+        r.select(&name);
+        true
+    })?;
+    Ok(mic_ranking::on_selected(&name))
+}
+
+/// PERM-H — drag to reorder: the list becomes `order`.
+#[tauri::command]
+fn mic_rank_reorder(state: State<'_, Arc<AppState>>, order: Vec<String>) -> Result<(), String> {
+    update_mic_ranking(state.inner(), |r| {
+        r.reorder(&order);
+        true
+    })
+    .map(|_| ())
+}
+
+/// PERM-H — "Forget device": the row goes, so an old headset stops winning.
+#[tauri::command]
+fn mic_rank_forget(state: State<'_, Arc<AppState>>, name: String) -> Result<bool, String> {
+    update_mic_ranking(state.inner(), |r| r.forget(&name))
+}
+
 #[tauri::command]
 fn formatting_options() -> formatting_options::FormattingOptions {
     formatting_options::formatting_options()
@@ -3807,6 +3871,10 @@ fn save_settings(
     {
         let live = state.settings.lock();
         next.legacy_json_migrated = live.legacy_json_migrated;
+        // PERM-H: the mic ranking is written by the `mic_rank_*` commands. A
+        // settings save from a screen that loaded the settings BEFORE the user
+        // reordered their mics must not put the old order back.
+        next.mic_ranking = live.mic_ranking.clone();
         // Y4-A provenance: this is the command the Auto-Cleanup picker calls,
         // and a save that MOVES the level is the only evidence that a human
         // chose it. Once true it stays true — a later save of some unrelated
@@ -7874,6 +7942,10 @@ pub fn run() {
     // quarantine a wholly corrupt file, migrate older schemas forward.
     let settings_path = data_dir().join("settings.json");
     let mut settings: AppSettings = load_settings(&settings_path);
+    // PERM-H: the capture path resolves the take-start device against this.
+    mic_ranking::install(mic_ranking::MicRanking::from_settings(
+        &settings.mic_ranking,
+    ));
 
     // YV46: the pre-SQLite `history/transcripts.json` import is a FIRST-RUN
     // step, not a per-launch one. It used to stat that path on every startup
@@ -8238,6 +8310,10 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             hotkey_bindings,
+            mic_devices,
+            mic_rank_select,
+            mic_rank_reorder,
+            mic_rank_forget,
             cancel_meeting_summary,
             retry_meeting_summary,
             list_notes_jobs,
@@ -8421,6 +8497,16 @@ pub fn run() {
                 meeting_control::SessionEngine::new(state.db.clone()),
             ));
             let _ = MEETING_APP.set(app.handle().clone());
+            // PERM-H: a mic switch mid-take, a parked take, the AirPods and the
+            // clamshell warnings all reach the user as a notification AND as a
+            // `mic-notice` event the Settings screen can show inline.
+            {
+                let notice_app = app.handle().clone();
+                mic_ranking::set_notifier(Box::new(move |notice| {
+                    notify(&notice_app, &notice.title, notice.body.clone());
+                    let _ = notice_app.emit("mic-notice", notice);
+                }));
+            }
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),
                 meeting_status_sink(app.handle().clone()),
