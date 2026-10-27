@@ -340,8 +340,16 @@ fn launch_recovery_skips_the_in_memory_fallback_and_leaves_journals_whole() {
     let mem = Database::open_in_memory().unwrap();
     assert!(!mem.is_persistent());
     assert!(disk.is_persistent());
-    let adopted = recover_crashed_meetings_at_launch(&mem, &dir);
+    let called = std::cell::Cell::new(false);
+    let adopted = recover_crashed_meetings_at_launch(&mem, || {
+        called.set(true);
+        recover_orphaned_meetings(&dir)
+    });
     assert!(adopted.is_empty(), "{adopted:?}");
+    assert!(
+        !called.get(),
+        "recovery is never even attempted on the in-memory DB"
+    );
     assert!(mem.list_meetings(100, None).unwrap().is_empty());
     assert_eq!(
         files_in(&dir),
@@ -351,7 +359,7 @@ fn launch_recovery_skips_the_in_memory_fallback_and_leaves_journals_whole() {
 
     // The next launch, with the real DB, recovers both: the bound one into
     // its own row, the unbound one into a Recovered row.
-    let adopted = recover_crashed_meetings_at_launch(&disk, &dir);
+    let adopted = recover_crashed_meetings_at_launch(&disk, || recover_orphaned_meetings(&dir));
     assert_eq!(adopted.len(), 2, "{adopted:?}");
     assert!(adopted.iter().any(|(id, _)| id == &row.id));
     let m = disk.get_meeting(&row.id).unwrap().unwrap();
@@ -400,4 +408,28 @@ fn deleting_a_meeting_removes_the_crash_journal_bound_to_it_and_nothing_else() {
     let rows = db.list_meetings(100, None).unwrap();
     assert_eq!(rows.len(), 1, "no Recovered row for the deleted meeting");
     assert_eq!(rows[0].id, kept.id);
+}
+
+/// yap24-NT1 (R1) — `meeting::recover_orphaned_meetings` has a PRODUCTION
+/// caller: the launch sequence in lib.rs calls it (outside a comment), and it
+/// runs BEFORE `reconcile_stranded_meetings`, so a recovered row reaches
+/// reconcile with its audio on it and is queued instead of failed.
+#[test]
+fn launch_calls_recover_orphaned_meetings_before_reconcile() {
+    let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+    let code: Vec<&str> = lib
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let line_of = |needle: &str| code.iter().position(|l| l.contains(needle));
+    let recover = line_of("recover_orphaned_meetings(")
+        .expect("lib.rs calls meeting::recover_orphaned_meetings at launch");
+    let adopt = line_of("recover_crashed_meetings_at_launch(")
+        .expect("lib.rs routes recovery through the persistent-DB guard");
+    let reconcile = line_of("reconcile_stranded_meetings(")
+        .expect("lib.rs reconciles stranded meetings at launch");
+    assert!(
+        adopt <= recover && recover < reconcile,
+        "launch order is guard({adopt}) → recover({recover}) → reconcile({reconcile})"
+    );
 }

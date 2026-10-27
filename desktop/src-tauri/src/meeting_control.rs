@@ -1325,26 +1325,38 @@ impl ActiveCapture for SessionCapture {
 }
 
 /// yap24-NT1 fix round 2 (review BLOCKING: in-memory fallback) — the launch
-/// step: recover every orphaned journal in `dir` and adopt it into `db`, but
-/// ONLY when `db` is persistent. Recovery CONSUMES the journal (marker and
-/// spill are gone once it is finalized), so recovering into the in-memory DB
-/// `open_db_graceful` falls back to would file the audio under rows that
-/// vanish at exit and leave the wavs nobody can find. On that fallback the
-/// journals are left whole, untouched, for the next launch that has the real
-/// DB. Returns what [`adopt_recovered_meetings`] adopted (empty when skipped).
+/// step: recover every orphaned journal and adopt it into `db`, but ONLY when
+/// `db` is persistent. Recovery CONSUMES the journal (marker and spill are gone
+/// once it is finalized), so recovering into the in-memory DB `open_db_graceful`
+/// falls back to would file the audio under rows that vanish at exit and leave
+/// the wavs nobody can find. On that fallback `recover` is never called and the
+/// journals are left whole, untouched, for the next launch that has the real DB.
+///
+/// `recover` is the recovery itself — at launch,
+/// `|| meeting::recover_orphaned_meetings(&meetings_dir())`, written out at the
+/// call site in lib.rs so the launch sequence reads recover → adopt →
+/// reconcile in one place. Returns what [`adopt_recovered_meetings`] adopted
+/// (empty when skipped).
 pub fn recover_crashed_meetings_at_launch(
     db: &Database,
-    dir: &std::path::Path,
+    recover: impl FnOnce() -> Vec<crate::meeting::FinalizedMeeting>,
 ) -> Vec<(String, String)> {
     if !db.is_persistent() {
         log::warn!(
-            "recover: the DB is in memory this launch — crash journals in {} are left \
-             for the next launch",
-            dir.display()
+            "recover skipped reason=in_memory_db — crash journals are left for the next launch"
         );
         return Vec::new();
     }
-    adopt_recovered_meetings(db, crate::meeting::recover_orphaned_meetings(dir))
+    let started = std::time::Instant::now();
+    let recovered = recover();
+    let journals = recovered.len();
+    let adopted = adopt_recovered_meetings(db, recovered);
+    log::info!(
+        "recover finish journals={journals} adopted={} ms={}",
+        adopted.len(),
+        started.elapsed().as_millis()
+    );
+    adopted
 }
 
 /// What the crash note on a recovered meeting says. One sentence, and it does
