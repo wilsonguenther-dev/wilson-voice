@@ -102,6 +102,45 @@ body,
   gap: 10px;
   padding: 0 14px 0 8px;
 }
+/* ── Y5-E: the hot area, and hover hysteresis ──
+   `.pill-hot` wraps the capsule exactly (its layout box IS the capsule's, so it
+   is what ClassicPill measures). While the hover machine says EXPANDED it paints
+   an invisible alpha margin around the capsule: `inset: -12px` is
+   HOVER.marginPx in pill/motion.ts (hitbox.test.ts reads this literal back and
+   fails if they disagree), and the same capsule-plus-margin rect is what the
+   panel's hitbox is fed, so the NSPanel takes the cursor exactly where this is
+   painted. The 0.004 alpha is the point: a fully transparent pixel on a
+   non-opaque macOS window is passed through to the app underneath, a 0.004 one
+   is not — the margin is clickable while visually absent.
+   CONDITIONAL ON PURPOSE. Painted always, it is a 12 px dead zone around an idle
+   pill; painted never, a cursor dwelling on the dock-edge boundary flips the
+   pill expand/collapse every pixel. Collapsed: no margin. Expanded: margin.
+   Rectangular, with no radius, because the hitbox the panel takes is a rect. */
+.pill-hot {
+  position: relative;
+  display: flex;
+  isolation: isolate;
+}
+.pill-hot[data-hover="expanded"]::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  z-index: -1;
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.004);
+}
+/* Hover reveals the control on an otherwise resting pill: the seed grows into
+   the same radio pill the activity states use (one pill shape, not two). Every
+   state that already owns the capsule's shape keeps it. */
+.pill-hot[data-hover="expanded"] > .pill:not(.live):not(.busy):not(.done):not(.blocked):not(.meeting) {
+  height: 44px;
+  min-width: 200px;
+  gap: 10px;
+  padding: 0 14px 0 8px;
+}
+.pill-hot[data-hover="expanded"] > .pill:not(.live):not(.busy):not(.done):not(.blocked):not(.meeting) .ctrl {
+  display: grid;
+}
 /* control button is fully OUT of layout at rest (not width:0 — that left a sliver
    + negative margin that shoved the seed off-center). It reappears when expanded. */
 .pill:not(.live):not(.busy):not(.done) .ctrl {

@@ -111,6 +111,27 @@ export const DURATION = {
   doneFlash: 1100,
   /** How long Yappy holds its `done` phase before falling back to `idle`. */
   doneHold: 1600,
+  /**
+   * Y5-E — how long the cursor must stay OUTSIDE the expanded hot area before
+   * the hover-expanded pill collapses. Collapse only: expanding on enter is
+   * immediate (a lag there makes the pill feel dead). This is a debounce on the
+   * way OUT, not the oscillation fix — the 12 px margin below is (geometry).
+   */
+  hoverCollapse: 160,
+} as const;
+
+/**
+ * Y5-E — the hover hysteresis thresholds, in the same table as the durations.
+ *
+ * `marginPx` is the invisible alpha margin the EXPANDED pill paints around its
+ * capsule (`.pill-hot[data-hover="expanded"]::before { inset: -12px }` in
+ * float.css) and publishes to the panel's hitbox. hitbox.test.ts reads the CSS
+ * literal back and fails if the two ever disagree: a margin CSS believes in and
+ * the panel does not is worse than no margin.
+ */
+export const HOVER = {
+  marginPx: 12,
+  collapseAfterMs: DURATION.hoverCollapse,
 } as const;
 
 /** Wispr's measured state-change easing, for the CSS side of a morph. */
