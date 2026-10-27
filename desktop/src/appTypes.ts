@@ -754,3 +754,13 @@ export function formatDayShort(d: string) {
     return d;
   }
 }
+
+/**
+ * PRIV-B — the one sentence that makes retained audio visible in History:
+ * "1 clip kept for 7 days" / "3 clips kept for 7 days". The window is
+ * `FAILED_TAKE_RETENTION_DAYS` in src-tauri/src/db.rs; keep the two in step.
+ */
+export const RETAINED_CLIP_DAYS = 7;
+export function retainedClipsLabel(count: number): string {
+  return `${count} ${count === 1 ? "clip" : "clips"} kept for ${RETAINED_CLIP_DAYS} days`;
+}
