@@ -17,6 +17,12 @@ use crate::hotkeys::{set_fn_tap_status, FnTapStatus};
 /// The human reason a failed `CGEventTapCreate` carries into the degraded line.
 pub const TAP_BLOCKED_REASON: &str =
     "macOS refused the key listener (Input Monitoring is off for Yap)";
+
+/// The log line a failed `CGEventTapCreate` writes. The tap is LISTEN-ONLY at
+/// the HID location, which macOS gates on Input Monitoring (ListenEvent), not
+/// Accessibility — so the line names the pane that actually unblocks it.
+pub const TAP_CREATE_FAILED: &str =
+    "CGEventTapCreate failed — Input Monitoring is off for Yap (System Settings › Privacy & Security › Input Monitoring)";
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -838,7 +844,7 @@ unsafe fn install_tap(
         user_info,
     );
     if tap.is_null() {
-        return Err("CGEventTapCreate failed — enable Accessibility");
+        return Err(TAP_CREATE_FAILED);
     }
     // Y1-A: retain and publish the port BEFORE enabling, so a disable
     // notification that arrives immediately still finds something to re-arm.
