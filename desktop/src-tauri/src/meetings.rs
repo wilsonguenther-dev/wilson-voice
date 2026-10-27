@@ -75,6 +75,20 @@ pub const TAP_REBUILDS_COLUMN: &str = crate::syscapture::TAP_REBUILDS_COLUMN;
 /// it. The transcript is kept forever — only the WAV goes (finding #28).
 pub const AUDIO_RETENTION_DAYS: i64 = 7;
 
+/// yap24-NT1 (R2) — how long a meeting that is NOT (complete with at least one
+/// transcript segment) keeps its audio: failed, partial, still transcribing,
+/// or complete with zero segments. Longer than [`AUDIO_RETENTION_DAYS`]
+/// because this audio is the only copy of words nobody has read yet, and
+/// bounded because at ~230 MB/hour of two-track audio a backlog of failed
+/// meetings otherwise grows without limit.
+pub const FAILED_AUDIO_RETENTION_DAYS: i64 = 30;
+
+/// yap24-NT1 (R2) — the most audio the untranscribed class above may hold on
+/// disk. Past it the OLDEST of those meetings lose their audio first until the
+/// class is back under it. 5 GiB is ~22 hours of two-track meeting audio. The
+/// 7-day class does not count toward it and is never purged by it.
+pub const FAILED_AUDIO_CEILING_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
 /// 22-A records one track: the mic, which is the person holding the Mac.
 /// Labelling it costs nothing today and is what makes the 22-B upgrade legible
 /// ("now it can tell you apart from the room") — finding #10.

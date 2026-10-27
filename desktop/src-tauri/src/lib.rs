@@ -3650,28 +3650,33 @@ fn purge_expired_failed_takes(db: &Database) -> usize {
     }
 }
 
-/// YV94 retention (finding #28) — meeting AUDIO older than the window is
-/// deleted; the transcript is kept forever.
-///
-/// Time-based, deliberately NOT delete-after-summarize: there is no summarize
-/// stage yet (YV97), so delete-after-summarize would mean either "the audio is
-/// never deleted" or "the transcript is the only artifact and the room can never
-/// be re-heard". Flip the default once YV97 has shipped and proven itself.
+/// YV94 retention (finding #28) — meeting AUDIO is deleted; the transcript is
+/// kept forever. yap24-NT1 — two classes, one sweep
+/// ([`meeting_pipeline::sweep_meeting_audio`]): a complete meeting with a
+/// transcript keeps its audio [`meetings::AUDIO_RETENTION_DAYS`]; every other
+/// meeting with audio keeps it [`meetings::FAILED_AUDIO_RETENTION_DAYS`], and
+/// past [`meetings::FAILED_AUDIO_CEILING_BYTES`] of it the oldest goes first.
+/// The per-track ASR ledgers and anchors go with the WAVs.
 fn purge_expired_meeting_audio(db: &Database) -> usize {
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(meetings::AUDIO_RETENTION_DAYS);
-    match db.purge_meeting_audio(cutoff) {
-        Ok(paths) => {
-            for path in &paths {
-                let _ = std::fs::remove_file(path);
-            }
-            if !paths.is_empty() {
+    match meeting_pipeline::sweep_meeting_audio(
+        db,
+        chrono::Utc::now(),
+        meetings::FAILED_AUDIO_CEILING_BYTES,
+    ) {
+        Ok(sweep) => {
+            if sweep.meetings() > 0 {
                 log::info!(
-                    "YV94 retention: purged audio for {} meeting(s) older than {} days",
-                    paths.len(),
-                    meetings::AUDIO_RETENTION_DAYS
+                    "YV94 retention: purged audio for {} transcribed meeting(s) older than {} \
+                     days and {} untranscribed meeting(s) (older than {} days or over the {} MB \
+                     ceiling)",
+                    sweep.transcribed.len(),
+                    meetings::AUDIO_RETENTION_DAYS,
+                    sweep.untranscribed.len(),
+                    meetings::FAILED_AUDIO_RETENTION_DAYS,
+                    meetings::FAILED_AUDIO_CEILING_BYTES / (1024 * 1024)
                 );
             }
-            paths.len()
+            sweep.meetings()
         }
         Err(e) => {
             log::warn!("meeting audio purge skipped: {e}");
@@ -8706,10 +8711,18 @@ pub fn run() {
             start_delay: meeting_pipeline::QUEUE_START_DELAY,
         };
         meeting_pipeline::install(meeting_pipeline::spawn(deps));
-        let reconciled =
-            meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
-                meeting_pipeline::enqueue(id);
-            });
+        // yap24-NT1 (R1) — a crash mid-meeting leaves a journal on disk and a
+        // row stuck in `recording`. Turn every orphaned journal back into
+        // playable wavs and file them under their row FIRST, so the reconcile
+        // below sees audio on the row and queues it instead of failing it.
+        let recovered = meeting::recover_orphaned_meetings(&meetings_dir());
+        let adopted = meeting_control::adopt_recovered_meetings(&state.db, recovered);
+        if !adopted.is_empty() {
+            log::info!("recover: {} crashed meeting(s) recovered", adopted.len());
+        }
+        let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
+            meeting_pipeline::enqueue(id);
+        });
         if !reconciled.is_empty() {
             log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
         }

@@ -78,6 +78,21 @@ export default function Privacy() {
                       someone is your call, and the law differs by place.{" "}
                       {acknowledgedLabel(consent)}
                     </p>
+                    {/* yap24-NT1 (R2) — the retention rule. The numbers are
+                        meetings::AUDIO_RETENTION_DAYS, FAILED_AUDIO_RETENTION_DAYS
+                        and FAILED_AUDIO_CEILING_BYTES; both windows count from
+                        started_at, and only `complete` with segments is the
+                        7-day class (a `partial` row keeps Retry, so it keeps its
+                        audio 30 days). Pinned by
+                        the_privacy_sentence_states_the_rule_the_sweep_runs. */}
+                    <p className="settings-hint">
+                      Audio from a meeting that finished and was fully
+                      transcribed is deleted 7 days after the meeting started. A
+                      meeting that was interrupted, failed, has no transcript, or
+                      is only partly or not yet transcribed keeps its audio 30
+                      days after it started, and past 5 GB of that audio the
+                      oldest is deleted first.
+                    </p>
                   </div>
 
                   {/* ── YV102 Set up meeting recording — the TCC pre-warm ──

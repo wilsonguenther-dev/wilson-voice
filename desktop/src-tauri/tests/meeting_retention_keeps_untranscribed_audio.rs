@@ -109,3 +109,106 @@ fn reconcile_fails_a_row_whose_audio_is_gone_and_requeues_one_whose_audio_is_the
         "complete rows are not touched"
     );
 }
+
+// ── yap24-NT1 (R1) — launch recovers a crashed meeting INTO ITS ROW ─────────
+
+use wilson_voice_lib::meeting::{
+    recover_orphaned_meetings, IndexRecord, MeetingJournal, TARGET_RATE,
+};
+use wilson_voice_lib::meeting_control::{adopt_recovered_meetings, RECOVERED_MEETING_NOTE};
+
+/// Record `seconds` on the given tracks of a `tracks`-track journal bound to
+/// `row`, then die without stopping — what a crash leaves on disk.
+fn crash(dir: &Path, tracks: usize, delivering: &[usize], row: Option<&str>, seconds: u64) {
+    let journal = MeetingJournal::start(dir, tracks).expect("journal opens");
+    if let Some(row) = row {
+        journal.bind_row(row).expect("row binding written");
+    }
+    for second in 0..seconds {
+        for &track in delivering {
+            let block = vec![0.25f32; TARGET_RATE as usize];
+            assert_eq!(journal.append(track, &block), block.len());
+        }
+        journal.index(IndexRecord {
+            host_ns: (second + 1) * 1_000_000_000,
+            captured_samples: (second + 1) * TARGET_RATE as u64,
+            spilled_samples: (second + 1) * TARGET_RATE as u64,
+        });
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    journal.abandon();
+}
+
+#[test]
+fn a_crashed_meeting_is_recovered_into_its_own_row_by_track_and_queued() {
+    let dir = temp_dir("nt1-recover");
+    let db = open_db(&dir);
+    // Two rows stuck where a crash leaves them.
+    let two_track = db.create_meeting("call", "manual").unwrap();
+    let sys_only = db.create_meeting("mic died", "manual").unwrap();
+    db.set_meeting_state(&two_track.id, MeetingState::Recording, None)
+        .unwrap();
+    db.set_meeting_state(&sys_only.id, MeetingState::Recording, None)
+        .unwrap();
+    crash(&dir, 2, &[0, 1], Some(&two_track.id), 2);
+    // Matrix row #3's shape: a two-track meeting whose MIC never delivered.
+    // Positional filing would put the room's audio in mic_wav_path.
+    crash(&dir, 2, &[1], Some(&sys_only.id), 2);
+
+    let adopted = adopt_recovered_meetings(&db, recover_orphaned_meetings(&dir));
+    assert_eq!(adopted.len(), 2, "{adopted:?}");
+    assert!(
+        recover_orphaned_meetings(&dir).is_empty(),
+        "a recovered journal is consumed, not recovered twice"
+    );
+    assert_eq!(
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".meeting.row"))
+            .count(),
+        0,
+        "the row binding goes with the marker"
+    );
+
+    let m = db.get_meeting(&two_track.id).unwrap().unwrap();
+    assert_eq!(m.state, "partial", "a crash is never a whole meeting");
+    assert!(m.mic_wav_path.as_deref().unwrap().ends_with(".t0.wav"));
+    assert!(m.sys_wav_path.as_deref().unwrap().ends_with(".t1.wav"));
+    assert!(Path::new(m.mic_wav_path.as_deref().unwrap()).exists());
+    assert!(m.audio_kept);
+    assert!(m.duration_seconds > 1.5, "{}", m.duration_seconds);
+    assert!(m.error.as_deref().unwrap().contains(RECOVERED_MEETING_NOTE));
+
+    let s = db.get_meeting(&sys_only.id).unwrap().unwrap();
+    assert_eq!(s.mic_wav_path, None, "the room is never filed as the user");
+    assert!(s.sys_wav_path.as_deref().unwrap().ends_with(".t1.wav"));
+    assert_eq!(s.state, "partial");
+
+    // Reconcile — the next launch step — hands both to the transcription queue
+    // instead of failing them for missing audio.
+    let queued = Mutex::new(Vec::<String>::new());
+    reconcile_stranded_meetings(&db, &dir, &|id| queued.lock().unwrap().push(id.to_string()));
+    let queued = queued.into_inner().unwrap();
+    assert!(
+        queued.contains(&two_track.id) && queued.contains(&sys_only.id),
+        "{queued:?}"
+    );
+    assert_eq!(
+        db.get_meeting(&two_track.id).unwrap().unwrap().state,
+        "partial"
+    );
+}
+
+#[test]
+fn a_journal_with_no_row_binding_gets_a_row_rather_than_being_lost() {
+    let dir = temp_dir("nt1-recover-unbound");
+    let db = open_db(&dir);
+    crash(&dir, 1, &[0], None, 1);
+    let adopted = adopt_recovered_meetings(&db, recover_orphaned_meetings(&dir));
+    assert_eq!(adopted.len(), 1);
+    let m = db.get_meeting(&adopted[0].0).unwrap().unwrap();
+    assert_eq!(m.source, "recovered");
+    assert!(m.mic_wav_path.is_some());
+    assert_eq!(m.state, "partial");
+}

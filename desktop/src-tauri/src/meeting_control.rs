@@ -134,6 +134,12 @@ pub trait ActiveCapture: Send {
         None
     }
 
+    /// yap24-NT1 (R1) — tie the capture's on-disk journal to the meeting row
+    /// that was just created for it, so a crash mid-meeting is recovered into
+    /// THAT row at the next launch ([`adopt_recovered_meetings`]). Defaulted:
+    /// a fake engine has no journal and nothing to bind.
+    fn bind_row(&self, _row_id: &str) {}
+
     fn stop(self: Box<Self>) -> Result<CaptureOutcome, String>;
 }
 
@@ -540,6 +546,9 @@ impl MeetingController {
                 return Err(e);
             }
         };
+
+        // yap24-NT1 (R1) — from here on a crash is recoverable into this row.
+        capture.bind_row(&meeting.id);
 
         let diagnostics = Arc::new(Mutex::new(MeetingDiagnostics::start(
             thermal_at_start,
@@ -1142,6 +1151,16 @@ struct SessionCapture {
 }
 
 impl ActiveCapture for SessionCapture {
+    fn bind_row(&self, row_id: &str) {
+        if let Some(session) = self.session.as_ref() {
+            if let Err(e) = session.capture().bind_row(row_id) {
+                // Not a reason to stop the meeting: the recording is fine, only
+                // its crash recovery would have to make a new row.
+                log::warn!("meeting {row_id}: journal row binding not written ({e})");
+            }
+        }
+    }
+
     fn seconds(&self) -> f64 {
         self.session
             .as_ref()
@@ -1303,6 +1322,94 @@ impl ActiveCapture for SessionCapture {
             }),
         }
     }
+}
+
+/// What the crash note on a recovered meeting says. One sentence, and it does
+/// not pretend the meeting ended on purpose.
+pub const RECOVERED_MEETING_NOTE: &str =
+    "Yap closed while this meeting was recording; the audio was recovered at the next launch";
+
+/// yap24-NT1 (R1) — file every journal [`crate::meeting::recover_orphaned_meetings`]
+/// turned back into playable audio under its meeting row. Run ONCE at launch,
+/// after the DB opens and BEFORE [`reconcile_stranded_meetings`], which is what
+/// hands each adopted row to the transcription queue (an adopted row always has
+/// audio and zero segments, so reconcile always queues it — one enqueue path,
+/// not two).
+///
+/// Tracks are filed BY TRACK through [`crate::meeting::FinalizedMeeting::wav_for_track`],
+/// never by position: a two-track meeting whose mic never delivered recovers
+/// with one wav, and `tracks[0]` would file the room as the user. The row state
+/// follows [`crate::meeting::FinalizedMeeting::state`] the way a normal stop
+/// does — a whole capture with a mic track is `transcribing`, anything else is
+/// `partial` — and a journal with no row binding (an older build's, or a crash
+/// in the instant before the row existed) gets a new row rather than being left
+/// as audio nobody can find.
+///
+/// Returns `(row id, new state)` per adopted meeting, each also logged.
+pub fn adopt_recovered_meetings(
+    db: &Database,
+    recovered: Vec<crate::meeting::FinalizedMeeting>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for finalized in recovered {
+        let mic = finalized.wav_for_track(crate::meeting::MIC_TRACK).cloned();
+        let sys = finalized
+            .wav_for_track(crate::meeting::SYSTEM_TRACK)
+            .cloned();
+        let bound = finalized
+            .row_id
+            .as_deref()
+            .and_then(|id| db.get_meeting(id).ok().flatten());
+        let row_id = match bound {
+            Some(row) => row.id,
+            None => match db.create_meeting(
+                &format!("Recovered {}", default_title(Local::now())),
+                "recovered",
+            ) {
+                Ok(row) => row.id,
+                Err(e) => {
+                    log::warn!(
+                        "recover: journal {} has audio but no row could be made ({e}) — \
+                         its wavs stay on disk",
+                        finalized.id
+                    );
+                    continue;
+                }
+            },
+        };
+        let state = if mic.is_some() && finalized.state == crate::meeting::MeetingState::Complete {
+            MeetingState::Transcribing
+        } else {
+            MeetingState::Partial
+        };
+        let mut notes = vec![RECOVERED_MEETING_NOTE.to_string()];
+        if finalized.spliced_silence_samples > 0 {
+            notes.push(format!(
+                "{} of audio never reached disk and was spliced as silence",
+                meetings::format_offset(finalized.spliced_silence_samples as f64 / 16_000.0)
+            ));
+        }
+        let written = db
+            .finish_meeting(&row_id, finalized.seconds, mic.as_deref())
+            .and_then(|_| match sys.as_deref() {
+                Some(path) => db.set_meeting_sys_wav_path(&row_id, Some(path)),
+                None => Ok(()),
+            })
+            .and_then(|_| db.set_meeting_state(&row_id, state, Some(&notes.join("; "))));
+        if let Err(e) = written {
+            log::warn!("recover: meeting {row_id} not updated ({e})");
+            continue;
+        }
+        log::info!(
+            "recover: journal {} → meeting {row_id} ({}, {} track(s), {})",
+            finalized.id,
+            meetings::format_offset(finalized.seconds),
+            finalized.tracks.len(),
+            state.as_str()
+        );
+        out.push((row_id, state.as_str().to_string()));
+    }
+    out
 }
 
 /// yap-meetings-fix (B / NT1) — run ONCE at launch, after the DB opens and

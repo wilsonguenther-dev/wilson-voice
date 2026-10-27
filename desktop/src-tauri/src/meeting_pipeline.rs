@@ -716,6 +716,130 @@ pub fn requeue_waiting_for_model(db: &Database, enqueue: &dyn Fn(&str)) -> usize
     n
 }
 
+/// yap24-NT1 (R3) — every sidecar a meeting keeps next to its audio in `dir`:
+/// the per-track ASR resume ledgers (`<id>.*.asr-progress.json`, see
+/// [`ledger_paths`]) and the kept per-track host-time anchors
+/// (`<id>.t*.index.jsonl`, plus track 0's legacy `<id>.index.jsonl`). Found by
+/// SCANNING rather than by enumerating track numbers, so a sidecar for a track
+/// this build does not know about still goes with the audio it describes.
+/// Keyed by the meeting's ROW id, which is a UUID: the `<id>.` prefix cannot
+/// match another meeting's files.
+pub fn meeting_sidecar_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
+    let prefix = format!("{meeting_id}.");
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let Some(rest) = name.strip_prefix(&prefix) else {
+                        return false;
+                    };
+                    rest.ends_with(".asr-progress.json")
+                        || rest == "asr-progress.json"
+                        || rest == "index.jsonl"
+                        || (rest.starts_with('t') && rest.ends_with(".index.jsonl"))
+                })
+                .map(|e| e.path())
+                .collect()
+        })
+        .unwrap_or_default();
+    // The ledger paths the store would write are included even when the scan
+    // could not read the directory; removing a file that is not there is a
+    // no-op for every caller.
+    out.extend(ledger_paths(dir, meeting_id));
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// yap24-NT1 — what one retention sweep released, per class.
+#[derive(Debug, Default, Clone)]
+pub struct MeetingAudioSweep {
+    /// Complete meetings with a transcript, past [`crate::meetings::AUDIO_RETENTION_DAYS`].
+    pub transcribed: Vec<crate::db::PurgedMeetingAudio>,
+    /// Everything else with audio, past
+    /// [`crate::meetings::FAILED_AUDIO_RETENTION_DAYS`] or over the ceiling.
+    pub untranscribed: Vec<crate::db::PurgedMeetingAudio>,
+    /// Every file actually unlinked: WAVs, ledgers, anchors.
+    pub removed: Vec<PathBuf>,
+}
+
+impl MeetingAudioSweep {
+    pub fn meetings(&self) -> usize {
+        self.transcribed.len() + self.untranscribed.len()
+    }
+}
+
+/// yap24-NT1 (R2, R3) — the ONE meeting-audio retention sweep the hygiene
+/// thread runs: the 7-day class first, then the 30-day / ceiling class, each
+/// class's files unlinked right after its own commit — each purged meeting's
+/// WAVs together with its ledger and anchor sidecars, so nothing outlives the
+/// audio it describes. Rows are kept; only audio goes. A failed untranscribed
+/// purge is logged and retried next sweep; it never undoes the 7-day class.
+pub fn sweep_meeting_audio(
+    db: &Database,
+    now: chrono::DateTime<chrono::Utc>,
+    ceiling_bytes: u64,
+) -> Result<MeetingAudioSweep, String> {
+    // yap24-NT1 fix round 1 — each class's files leave the disk right after
+    // ITS OWN commit. The two purges are separate transactions, so once the
+    // first has committed its rows already say "audio expired"; a failure in
+    // the second must never strand the first class's WAVs on disk forever.
+    let mut removed = Vec::new();
+    let transcribed = db.purge_transcribed_meeting_audio(
+        now - chrono::Duration::days(crate::meetings::AUDIO_RETENTION_DAYS),
+    )?;
+    unlink_purged_meeting_audio(&transcribed, &mut removed);
+    let untranscribed = match db.purge_untranscribed_meeting_audio(
+        now - chrono::Duration::days(crate::meetings::FAILED_AUDIO_RETENTION_DAYS),
+        ceiling_bytes,
+    ) {
+        Ok(purged) => purged,
+        Err(e) => {
+            // Rolled back: those rows still point at their audio, which stays
+            // on disk and is retried on the next sweep.
+            log::warn!("retention: untranscribed meeting audio purge skipped: {e}");
+            Vec::new()
+        }
+    };
+    unlink_purged_meeting_audio(&untranscribed, &mut removed);
+    Ok(MeetingAudioSweep {
+        transcribed,
+        untranscribed,
+        removed,
+    })
+}
+
+/// The disk half of a committed purge: every WAV plus the meeting's sidecars.
+fn unlink_purged_meeting_audio(
+    purged: &[crate::db::PurgedMeetingAudio],
+    removed: &mut Vec<PathBuf>,
+) {
+    for purged in purged {
+        let mut files = purged.wavs.clone();
+        let mut dirs: Vec<PathBuf> = purged
+            .wavs
+            .iter()
+            .filter_map(|w| w.parent().map(Path::to_path_buf))
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        for dir in dirs {
+            files.extend(meeting_sidecar_paths(&dir, &purged.meeting_id));
+        }
+        files.sort();
+        files.dedup();
+        for file in files {
+            match std::fs::remove_file(&file) {
+                Ok(()) => removed.push(file),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("retention: {} not removed: {e}", file.display()),
+            }
+        }
+    }
+}
+
 /// Forget every decoded window and segment of a meeting, so a Retry starts
 /// clean rather than resuming past windows that failed.
 pub fn reset_for_retry(db: &Database, dir: &Path, meeting_id: &str) -> Result<(), String> {
