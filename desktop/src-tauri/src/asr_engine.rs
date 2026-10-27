@@ -94,6 +94,11 @@ pub fn init_backends() {
 /// keeps its `Model` alive for the engine's lifetime.
 pub struct AsrEngine {
     session: Session,
+    /// Y10-A — the language the model detected on the most recent run, or
+    /// `None` when a hint was given, the model has no detection, or nothing has
+    /// run yet. Read by `languages::decode_in_set` to hold auto-detect to the
+    /// user's language set.
+    last_language: Option<String>,
     /// `general.architecture` of the loaded GGUF. Gates the Whisper run
     /// extension: the extension is kind-tagged, so a parakeet/nemotron model
     /// rejects it with `InvalidArgument` and would fail the whole take. Handy
@@ -172,6 +177,7 @@ pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
     );
     Ok(AsrEngine {
         session,
+        last_language: None,
         arch,
         cancel,
     })
@@ -205,11 +211,23 @@ pub fn transcribe(
         family,
         ..RunOptions::default()
     };
-    engine
+    engine.last_language = None;
+    let transcript = engine
         .session
         .run(samples_16k_mono, &options)
-        .map(|t| t.text)
-        .map_err(|e| format!("transcription failed: {e}"))
+        .map_err(|e| format!("transcription failed: {e}"))?;
+    engine.last_language = transcript.language.clone();
+    Ok(transcript.text)
+}
+
+/// Y10-A — the language the last run detected (see `AsrEngine::last_language`).
+pub fn last_detected_language(engine: &AsrEngine) -> Option<String> {
+    engine.last_language.clone()
+}
+
+/// Y10-A — the probed language capabilities, in the shape the picker uses.
+pub fn language_support(engine: &AsrEngine) -> crate::languages::LanguageSupport {
+    crate::languages::LanguageSupport::from_capabilities(&capabilities(engine))
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +375,12 @@ pub fn transcribe_timed(
         family,
         ..RunOptions::default()
     };
+    engine.last_language = None;
     let transcript = engine
         .session
         .run(samples_16k_mono, &options)
         .map_err(|e| format!("transcription failed: {e}"))?;
+    engine.last_language = transcript.language.clone();
     Ok(TimedTranscript {
         text: transcript.text.trim().to_string(),
         kind: TimedKind::from_native(transcript.timestamp_kind),

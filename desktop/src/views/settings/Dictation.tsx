@@ -3,6 +3,7 @@ import WritingStyle from "../../WritingStyle";
 import { useAppCtx } from "../../appShell";
 import { useState } from "react";
 import VoicePreferencesPanel from "../../VoicePreferencesPanel";
+import LanguageSettings from "../../LanguageSettings";
 import {
   STRUCTURE_CHOICES,
   type StructureChoice,
@@ -395,20 +396,8 @@ export default function Dictation() {
                     />
                     <span>Paste my words automatically when I finish talking</span>
                   </label>
-                  <label className="field">
-                    <span>Language I speak</span>
-                    <select
-                      value={settings.language}
-                      onChange={(e) =>
-                        saveSettings({ ...settings, language: e.target.value })
-                      }
-                    >
-                      <option value="en">English</option>
-                      <option value="es">Spanish</option>
-                      <option value="fr">French</option>
-                      <option value="ht">Haitian Creole</option>
-                    </select>
-                  </label>
+                  {/* Y10-A: the language SET, driven by the installed model's probe. */}
+                  <LanguageSettings />
                   <p className="settings-hint">
                     Auto-paste needs the Accessibility permission.
                   </p>

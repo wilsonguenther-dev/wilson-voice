@@ -23,6 +23,7 @@ import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
+import LanguageChip from "./LanguageChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barDock } from "./dock";
@@ -466,6 +467,9 @@ export default function ClassicPill(
             {license.value ? <span className="pill-upgrade-value">{license.value}</span> : null}
           </button>
         ) : null}
+        {/* Y10-A · the language picker slot. At rest only: mid-take the
+            language is already decided, and a blocked/gated pill has one job. */}
+        {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : slotCtx.phase === "listening" ? "idle" : slotCtx.phase })}
           <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>

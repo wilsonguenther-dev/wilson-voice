@@ -9,6 +9,9 @@
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
 // eval harness).
 pub mod asr_engine;
+/// Y10-A — the dictation language set, auto-detect held to it, and which
+/// cleanup stages are language-agnostic.
+pub mod languages;
 pub mod channel;
 mod cli;
 pub mod command_mode;
@@ -429,7 +432,17 @@ pub struct AppSettings {
     /// migrated + rewritten once.
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
+    /// The PRIMARY dictation language (ISO code): the one used whenever only
+    /// one can be. Y10-A kept the name so every existing settings file reads
+    /// exactly as before — English for a default install.
     pub language: String,
+    /// Y10-A — the languages the user speaks (ISO codes). Empty = just
+    /// `language`, which is what every settings file written before Y10-A
+    /// holds. Normalized by `languages::LanguagePrefs::from_settings`.
+    pub language_set: Vec<String>,
+    /// Y10-A — auto-detect among `language_set`, held to it. Only means
+    /// anything with two or more languages AND a model that can detect.
+    pub language_auto: bool,
     pub auto_paste: bool,
     pub hotkey_label: String,
     /// Always show HUD; also auto-shows while recording even if false.
@@ -674,11 +687,25 @@ fn default_native_model() -> String {
     models::recommended_model().id.clone()
 }
 
+impl AppSettings {
+    /// Y10-A — the normalized language prefs every dictation decode and the
+    /// picker read. Never stored: the three raw fields are.
+    pub fn language_prefs(&self) -> languages::LanguagePrefs {
+        languages::LanguagePrefs::from_settings(
+            &self.language,
+            &self.language_set,
+            self.language_auto,
+        )
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             language: "en".into(),
+            language_set: Vec::new(),
+            language_auto: true,
             auto_paste: true,
             hotkey_label: "fn⌃".into(),
             // Always-on glass island rides all Spaces
@@ -2597,7 +2624,7 @@ fn transcribe_native(
     model_id: &str,
     model_path: &Path,
     samples: Vec<f32>,
-    language: &str,
+    language_prefs: &languages::LanguagePrefs,
     bias_prompt: Option<String>,
     // Y3-C — who hears about each completed decode window. The dictation path
     // passes the pill's reporter; every headless caller passes `NoObserver`.
@@ -2613,12 +2640,10 @@ fn transcribe_native(
     // talking — so `asr_load_ms` in the latency line IS the penalty the user
     // felt, and it is 0 again on every take after it.
     let load_ms = started.elapsed().as_millis() as i64;
-    // The "Language I speak" setting used to reach Whisper as the sidecar's
-    // `--language`; it now rides the engine's own language hint (YV34) so the
-    // picker keeps working. Blank = autodetect.
-    let language = Some(language.trim())
-        .filter(|l| !l.is_empty())
-        .map(str::to_string);
+    // Y10-A: the language set. `decode_in_set` plans off the model's PROBED
+    // capabilities (a model without detection decodes the primary only and
+    // says so), hands the engine its hint, and holds an auto-detect to the
+    // set — re-decoding as the primary when the model chose outside it.
     let decode_started = std::time::Instant::now();
     // Y3-B: the whole take, windowed when it is long enough to be near the
     // per-call wall. A short take is the exact same single `transcribe` call
@@ -2627,14 +2652,24 @@ fn transcribe_native(
     // yap24-NT2 fix round 2: pinned to `model_id`, so a meeting job that swaps
     // its own pinned model into the shared slot mid-take can never have a
     // dictation window decoded on it — the window reloads the user's model.
-    let take = manager.transcribe_take_observed_on(
+    let languages::LanguageTake {
+        take,
+        language,
+        notice: language_notice,
+        redecoded,
+        ..
+    } = languages::decode_in_set(
+        manager,
         model_id,
         model_path,
         samples,
-        language,
+        language_prefs,
         bias_prompt,
         observer,
     )?;
+    if redecoded {
+        log::info!("dictation language: take re-decoded as '{language}' (held to the set)");
+    }
     let decode_ms = decode_started.elapsed().as_millis() as i64;
     if take.windowed {
         log::info!(
@@ -2657,6 +2692,8 @@ fn transcribe_native(
         chunks: take.chunks_total,
         chunks_failed: take.chunks_failed,
         degraded_reason: take.degraded_reason,
+        language,
+        language_notice,
     })
 }
 
@@ -3027,7 +3064,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &model_id,
                 &model_path,
                 rec.samples,
-                &settings.language,
+                &settings.language_prefs(),
                 bias_prompt,
                 &mut persist,
             ) {
@@ -3255,7 +3292,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 source_bundle_id.as_deref().unwrap_or_default(),
                 dictation_mode,
             );
-            let (text, formatting_trace) = dictation::run_cleanup_structured_traced(
+            let (text, formatting_trace) = dictation::run_cleanup_for_language(
                 &raw_text,
                 cleanup_level,
                 dictation_mode,
@@ -3265,6 +3302,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 polish_config.style,
                 // Y4-C: the pauses this speaker actually left.
                 &take_pauses,
+                // Y10-A: English-shaped stages are skipped for a non-English take.
+                &asr.language,
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
                 // Y4-G: the Result twin, so a refusal arrives with its REASON
                 // (`deadline` / `no_model` / `no_sidecar` / a validator tag)
@@ -4384,6 +4423,70 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
     nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
 }
 
+/// Y10-A — the language picker's view (Settings and the bar): the prefs, the
+/// languages the INSTALLED model can transcribe, whether it can detect, and the
+/// plain-words notice when it cannot do what the user picked. Probes the model
+/// (loading it if needed) off the main thread; no model downloaded is an
+/// honest `supportsDetect: null`, never a guess.
+#[tauri::command]
+async fn language_options(
+    state: State<'_, Arc<AppState>>,
+) -> Result<languages::LanguageOptions, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (prefs, native) = {
+            let s = state.settings.lock();
+            (s.language_prefs(), s.native_model.clone())
+        };
+        let support = match native_model_ready(&native) {
+            Some((model_id, model_path)) => {
+                state.transcription.load(&model_id, &model_path)?;
+                Some(
+                    state
+                        .transcription
+                        .language_support_on(&model_id, &model_path)?
+                        .unwrap_or_else(languages::LanguageSupport::unknown),
+                )
+            }
+            None => None,
+        };
+        Ok(languages::language_options(&prefs, support.as_ref()))
+    })
+    .await
+    .map_err(|e| format!("language probe failed: {e}"))?
+}
+
+/// Y10-A — the ONE writer of the three language fields, for the Settings
+/// control and the bar's picker alike. Normalizes (known codes only, primary
+/// first, at most `languages::MAX_LANGUAGE_SET`), persists, and broadcasts the
+/// same `settings` event every other settings write does.
+#[tauri::command]
+fn set_dictation_languages(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    primary: String,
+    set: Vec<String>,
+    auto: bool,
+) -> Result<AppSettings, String> {
+    let prefs = languages::LanguagePrefs::from_settings(&primary, &set, auto);
+    let next = {
+        let mut settings = state.settings.lock();
+        settings.language = prefs.primary.clone();
+        settings.language_set = prefs.set.clone();
+        settings.language_auto = prefs.auto;
+        settings.clone()
+    };
+    persist_settings(&next)?;
+    let _ = app.emit("settings", &next);
+    log::info!(
+        "dictation languages: primary={} set={:?} auto={}",
+        prefs.primary,
+        prefs.set,
+        prefs.auto
+    );
+    Ok(next)
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
@@ -5022,6 +5125,8 @@ fn finish_recovered_decode(
 /// decoded, so nothing is attributed to the engine and nothing degraded.
 fn recovered_only_output() -> transcription::AsrOutput {
     transcription::AsrOutput {
+        language: "en".into(),
+        language_notice: None,
         text: String::new(),
         backend: "recovered".to_string(),
         seconds: 0.0,
@@ -5645,6 +5750,8 @@ fn retry_failed_dictation(
     let settings = state.settings.lock().clone();
     // Y9-B: read once per retry, same as a live take reads it once per take.
     let style_profile = state.db.style_profile();
+    // Y10-A: set to the decoded take's language before the retry's cleanup.
+    let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
     // Same cleanup pipeline as a live take, minus the caret context: the retry
     // happens in Yap, so there is no cursor to join onto.
     let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
@@ -5670,13 +5777,16 @@ fn retry_failed_dictation(
             "",
             mode,
         );
-        let (text, _) = dictation::run_cleanup_structured_traced(
+        let (text, _) = dictation::run_cleanup_for_language(
             raw_text,
             dictation::CleanupLevel::from_setting(&settings.cleanup_level),
             mode,
             structure_format,
             polish_config.style,
             &[],
+            // Y10-A: the language the retry decoded in (the primary for a
+            // "keep what was transcribed", which decodes nothing).
+            &retry_language.borrow(),
             |t| {
                 state
                     .db
@@ -5750,7 +5860,7 @@ fn retry_failed_dictation(
                         &model_id,
                         &model_path,
                         remaining,
-                        &settings.language,
+                        &settings.language_prefs(),
                         bias_prompt,
                         // A retry or recovery from History has no live pill to fill:
                         // the user is looking at the history row, not at a recording
@@ -5762,6 +5872,7 @@ fn retry_failed_dictation(
             if raw_text.trim().is_empty() {
                 return Err("There is nothing left to transcribe in this take".into());
             }
+            *retry_language.borrow_mut() = asr.language.clone();
             let text = cleanup(&row, &raw_text);
             convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
         })()
@@ -9482,6 +9593,9 @@ pub fn run() {
             get_settings,
             formatting_options,
             save_settings,
+            // Y10-A — the language picker (Settings + the bar).
+            language_options,
+            set_dictation_languages,
             pill_set_hitbox,
             pending_copy_card,
             dismiss_copy_card,
@@ -12188,6 +12302,8 @@ mod tests {
             return Err(super::EMPTY_TRANSCRIPT.into());
         }
         Ok(crate::transcription::AsrOutput {
+            language: "en".into(),
+            language_notice: None,
             text: words.join(" "),
             backend: "native".into(),
             seconds: 0.1,
@@ -12530,7 +12646,7 @@ mod tests {
                         "stub",
                         &model,
                         rest,
-                        "",
+                        &crate::languages::LanguagePrefs::from_settings("", &[], true),
                         None,
                         &mut crate::transcribe_progress::NoObserver,
                     )
@@ -13017,6 +13133,8 @@ mod db_b_recovery_followups {
 
     fn clean_asr(text: &str) -> transcription::AsrOutput {
         transcription::AsrOutput {
+            language: "en".into(),
+            language_notice: None,
             text: text.to_string(),
             backend: "stub".into(),
             seconds: 0.1,

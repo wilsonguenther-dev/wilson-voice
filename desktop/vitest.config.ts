@@ -37,6 +37,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "errors.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyRecorder.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "languagePicker.ts": { lines: 96, branches: 80, functions: 93, statements: 97 },
   "license/status.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "meetings/consent.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "meetings/notes.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

@@ -1367,3 +1367,24 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   height: 2px;
   width: calc(3px + var(--level) * var(--peak, 1) * 16px);
 }
+/* Y10-A · the bar's language picker — the upgrade mark's shape, so the two
+   affordances read as one family inside the capsule. */
+.pill-lang {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.62);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.pill-lang:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
+.pill-lang.has-notice { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
