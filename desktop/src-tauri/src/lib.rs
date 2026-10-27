@@ -98,6 +98,10 @@ pub mod meetings;
 // engine instead of a stopwatch.
 pub mod meeting_control;
 pub mod meeting_energy;
+// yap-audit — the ONE definition of "this text is an echo of that text" (word
+// trigram containment). Public because the eval harness
+// (`tests/support/eval_metrics.rs`) and the notes echo-owner guard share it.
+pub mod meeting_echo;
 // PERM-A — public so `tests/mic_auth_status.rs` can assert the
 // AVAuthorizationStatus discriminants and the call-site sweep without a
 // microphone, a grant or a window server.
