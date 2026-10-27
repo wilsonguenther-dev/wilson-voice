@@ -13,6 +13,7 @@ import { canRepair, nameProduct, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
+import type { Toast } from "./toast";
 import HideHint from "./HideHint";
 import Home from "./views/Home";
 import Permissions from "./views/Permissions";
@@ -26,16 +27,47 @@ import "./App.css";
 export default function App() {
   const ctx = useAppShell();
   const {
-    bootError, buyPrompt, buyYap, closeConsentNotice, consentOpen, copyAgainId,
-    copyText, dictionary, finishOnboarding, flash,
+    bootError, buyPrompt, buyYap, closeConsentNotice, consentOpen,
+    copyText, dictionary, dismissToast, finishOnboarding, openModelSettings, openSupportSheet, toasts, toastError,
     history, installUpdateNow, installedVersion, installing, 
     licenseChip, meetings, modelSetup, nav, needsPerms, openLicenseTab,
-    perms, pillClass, refreshAll, refreshPerms, retryFailed, retryId, retrying,
-    scratch, sendSupportBundle, setBuyPrompt, setCopyAgainId, setNav, setSettingsTab,
+    perms, pillClass, refreshAll, refreshPerms, retryFailed, retrying,
+    scratch, sendSupportBundle, setBuyPrompt, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
     userName, insights, query,
   } = ctx;
+
+  // Y5-F — what each catalogue action does in the main window. The pill shows
+  // the same catalogue line without the button (float-main.tsx).
+  function runToastAction(t: Toast) {
+    const a = t.action;
+    if (!a) return;
+    switch (a.kind) {
+      case "retry":
+        if (a.arg) void retryFailed(a.arg);
+        return; // retryFailed drops this toast itself once the row is recovered
+      case "copy-again": {
+        const row = history.find((h) => h.id === a.arg);
+        if (row) copyText(row.text);
+        else toast("That transcript is in History");
+        break;
+      }
+      case "support":
+        void openSupportSheet();
+        break;
+      case "permissions":
+        setNav("permissions");
+        break;
+      case "models":
+        openModelSettings();
+        break;
+      case "license":
+        openLicenseTab();
+        break;
+    }
+    dismissToast(t.id);
+  }
 
   // yap-uiux-2026-10-16-H1 — "Welcome back" to someone who has never dictated
   // reads as a mistake. Returning means a take exists: in the store
@@ -226,37 +258,33 @@ export default function App() {
           </div>
         </header>
 
-        {flash && (
-          <div className="toast">
-            <span>{flash}</span>
-            {/* YV52 — the take that just failed still has its audio: retry runs
-                ASR again on that clip (the model may have finished downloading,
-                or the engine recovered) instead of making the user re-speak. */}
-            {retryId && (
-              <button
-                className="toast-retry"
-                disabled={retrying === retryId}
-                onClick={() => retryFailed(retryId)}
-              >
-                {retrying === retryId ? "Retrying…" : "Retry"}
-              </button>
-            )}
-            {/* YV74 — the paste was not confirmed by a read receipt, so the
-                text may not have landed anywhere. Put it back on the clipboard
-                on demand rather than making the user hunt through History. */}
-            {copyAgainId && (
-              <button
-                className="toast-copy-again"
-                onClick={() => {
-                  const row = history.find((h) => h.id === copyAgainId);
-                  if (row) copyText(row.text);
-                  else toast("That transcript is in History");
-                  setCopyAgainId(null);
-                }}
-              >
-                Copy again
-              </button>
-            )}
+        {/* Y5-F — the ONE toast surface (toast.ts): at most TOAST_CAP up, the
+            same code refreshes instead of stacking, each line stays up for a
+            time proportional to its length, and every one can be dismissed.
+            The action is the catalogue's (errors.ts) — Retry on the take that
+            just failed (YV52), Copy again on an unconfirmed paste (YV74), the
+            support sheet for anything Yap has no better advice for. */}
+        {toasts.length > 0 && (
+          <div className="toast-stack" role="status" aria-live="polite">
+            {toasts.map((t) => {
+              const busy = t.action?.kind === "retry" && retrying === t.action.arg;
+              return (
+                <div key={t.id} className={`toast toast-${t.tone}`}>
+                  <span>
+                    {t.line}
+                    {t.count > 1 && <span className="toast-count"> ×{t.count}</span>}
+                  </span>
+                  {t.action && (
+                    <button className="toast-action" disabled={busy} onClick={() => runToastAction(t)}>
+                      {busy ? "Retrying…" : t.action.label}
+                    </button>
+                  )}
+                  <button className="toast-dismiss" aria-label="Dismiss" onClick={() => dismissToast(t.id)}>
+                    ×
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -299,7 +327,7 @@ export default function App() {
                     : invoke("open_privacy_settings", {
                         pane: repairPane(status),
                       })
-                  ).catch((e) => toast(String(e)))
+                  ).catch((e) => toastError(e))
                 }
               >
                 Repair

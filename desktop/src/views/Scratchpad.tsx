@@ -26,7 +26,7 @@ export function noteToOpen(
 
 type DeleteCtx = Pick<
   AppCtx,
-  "activeNoteId" | "scratch" | "setActiveNoteId" | "setNoteBody" | "setNoteTitle" | "setScratch" | "setScratchComposing" | "toast"
+  "activeNoteId" | "scratch" | "setActiveNoteId" | "setNoteBody" | "setNoteTitle" | "setScratch" | "setScratchComposing" | "toastError"
 >;
 
 /**
@@ -44,7 +44,7 @@ export async function deleteScratchNote(id: string, ctx: DeleteCtx, call: typeof
   try {
     await call("delete_scratch", { id });
   } catch (e) {
-    ctx.toast(String(e));
+    ctx.toastError(e);
     return;
   }
   let next: ScratchNote[];
@@ -52,7 +52,7 @@ export async function deleteScratchNote(id: string, ctx: DeleteCtx, call: typeof
     next = await call<ScratchNote[]>("list_scratch");
   } catch (e) {
     next = ctx.scratch.filter((n) => n.id !== id);
-    ctx.toast(String(e));
+    ctx.toastError(e);
   }
   if (ctx.activeNoteId === id) {
     // S1 — hands the editor to the most-recent-note rule (or to the empty
@@ -81,7 +81,7 @@ const FOOTER: CSSProperties = { flexShrink: 0, paddingTop: 10, borderTop: "1px s
 export default function Scratchpad() {
   const {
     activeNoteId, bootError, bootErrors, booting, retryBoot, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
-    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, settings, toast,
+    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, settings, toast, toastError,
   } = useAppCtx();
   async function saveNote() {
     try {
@@ -94,7 +94,7 @@ export default function Scratchpad() {
       setScratch(await invoke("list_scratch"));
       toast("Scratchpad saved");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   function openNote(n: ScratchNote) {
@@ -113,7 +113,7 @@ export default function Scratchpad() {
   }
   function deleteNote(id: string) {
     return deleteScratchNote(id, {
-      activeNoteId, scratch, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, toast,
+      activeNoteId, scratch, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, toastError,
     });
   }
   // Y5-B — Scratchpad's SHAPE is provisional: DB-D gives it a real second

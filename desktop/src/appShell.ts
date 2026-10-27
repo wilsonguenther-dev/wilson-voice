@@ -10,8 +10,9 @@ import {
 } from "./meetings/progress";
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
-import { errorText, isLicenseRequired } from "./errors";
+import { adviceFor, errorAdvice, errorCode, errorText, isLicenseRequired } from "./errors";
 import { finishFailedToast } from "./recoveryToast";
+import { useToasts, type ToastAction, type ToastInput } from "./toast";
 import { useFormattingOptions } from "./formatting";
 import { IDLE_MEETING, MEETING_EVENT, parseNavigate, type MeetingStatus } from "./pill/meeting";
 import { type MeetingConsent } from "./meetings/consent";
@@ -93,17 +94,10 @@ export function useAppShell() {
   const [buyPrompt, setBuyPrompt] = useState(false);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
-  // YV52 — failed takes whose audio is still recoverable, and the one the live
-  // error toast is offering "Retry" for (cleared with the toast itself).
+  // YV52 — failed takes whose audio is still recoverable. Y5-F: the live error
+  // toast carries "Retry" for one of them as its action (`arg` = the row id).
   const [failed, setFailed] = useState<FailedDictation[]>([]);
-  const [retryId, setRetryId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
-  // YV74 — the transcript of a take whose auto-paste produced no read receipt.
-  // The backend only claims "Pasted" when the target app demonstrably read the
-  // clipboard; when it didn't, the toast carries a "Copy again" action for this
-  // row, because the transcript may no longer be on the clipboard (the user can
-  // copy something themselves while we wait, and their copy is left alone).
-  const [copyAgainId, setCopyAgainId] = useState<string | null>(null);
   // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
   // launch toast below (once per launch, never a modal).
@@ -221,7 +215,8 @@ export function useAppShell() {
   // block; `null` means "show whatever is stored".
   const [signatureDraft, setSignatureDraft] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [flash, setFlash] = useState<string | null>(null);
+  // Y5-F — the ONE toast surface (toast.ts): queue, dedupe by code, cap.
+  const { toasts, push: pushToast, dismiss: dismissToast, dismissMatching } = useToasts();
   // DO 3 — one error per boot command; `bootError` is get_settings' alone (the
   // full-screen trigger in App.tsx).
   const [bootErrors, setBootErrors] = useState<BootErrors>({});
@@ -540,7 +535,7 @@ export function useAppShell() {
     try {
       setSysAudio(await invoke<SystemAudioSetup>("run_system_audio_setup"));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     } finally {
       setSysAudioBusy(false);
     }
@@ -628,35 +623,45 @@ export function useAppShell() {
         /* ignore */
       }
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Y5-F: keyed "paste", so the `paste_failed` that may follow REPLACES this
+    // line with the catalogue's, plus its "Copy again" action.
     listen<string>("paste_outcome", (e) => {
-      setFlash(e.payload);
-      setCopyAgainId(null);
-      setTimeout(() => setFlash(null), 2800);
+      pushToast({ key: "paste", line: e.payload });
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV74 — the ⌘V went out but nothing read the clipboard, so the transcript
     // never reached the app the user was typing into. It arrives right after
     // the `paste_outcome` line that explains why, and turns that toast into an
     // action: one click puts the text back on the clipboard.
+    // YV74 — the backend only claims "Pasted" when the target app read the
+    // clipboard; when it didn't, the transcript may no longer be on it (the
+    // user's own copy is left alone), so the toast offers to put it back.
     listen<string>("paste_failed", (e) => {
-      const id = e.payload;
-      setCopyAgainId(id);
-      setTimeout(() => setCopyAgainId((c) => (c === id ? null : c)), 2800);
+      const advice = errorAdvice("paste_not_confirmed");
+      pushToast({
+        key: "paste",
+        line: advice.line,
+        tone: "error",
+        action: { kind: "copy-again", label: "Copy again", arg: e.payload },
+      });
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — a failed take must be visible IN the app, not only as a macOS
     // notification the user may have muted (or never sees while Yap is focused).
     // YV52 — the take's audio is kept when it fails, so the payload carries the
     // recoverable row: the toast turns into "… Retry", and the take shows up in
     // the History recovery section until it is retried or discarded.
-    listen<{ message: string; failed?: FailedDictation | null }>(
+    // Y5-F — the payload carries the take path's CODE (take_error.rs); the
+    // line and the action come from the catalogue, never the raw string.
+    listen<{ code?: string | null; message: string; failed?: FailedDictation | null }>(
       "transcript_error",
       (e) => {
-        setFlash(e.payload?.message || "Transcription failed");
-        setTimeout(() => setFlash(null), 4000);
+        const advice = errorAdvice(e.payload?.code ?? "take_failed");
         const row = e.payload?.failed;
+        const action: ToastAction | null = row
+          ? { kind: "retry", label: "Retry", arg: row.id }
+          : advice.action;
+        pushToast({ key: "take", line: advice.line, tone: "error", action });
         if (!row) return;
         setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
-        setRetryId(row.id);
-        setTimeout(() => setRetryId((id) => (id === row.id ? null : id)), 4000);
       },
     ).then((u) => (dead ? u() : unsubs.push(u)));
     // PERM-D — a take that captured DIGITAL SILENCE. This is NOT a transcription
@@ -673,8 +678,10 @@ export function useAppShell() {
     }>("take_failed", (e) => {
       const p = e.payload;
       if (!p || p.code !== "silent_capture") return;
-      setFlash(p.message || "That take recorded silence.");
-      setTimeout(() => setFlash(null), 5000);
+      // The backend's sentence tells a revoked grant from a muted device; the
+      // catalogue's action is the one that fixes either.
+      const advice = errorAdvice(p.code);
+      pushToast({ key: "take", line: p.message || advice.line, tone: "error", action: advice.action });
       // The grant is the reason — a toast that vanishes is the wrong surface.
       // Show the screen that can actually fix it.
       if (p.needsPermission) {
@@ -693,9 +700,8 @@ export function useAppShell() {
       "take_cancelled",
       (e) => {
         const p = e.payload;
-        setFlash(p?.message || "Cancelled");
-        setTimeout(() => setFlash(null), 2500);
         const row = p?.failed;
+        pushToast({ key: "take", line: row ? errorAdvice("cancelled").line : p?.message || "Cancelled" });
         if (!row) return;
         setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
       },
@@ -773,10 +779,7 @@ export function useAppShell() {
     if (crashToastShown.current) return;
     if (!crashes.some((c) => !c.acknowledged)) return;
     crashToastShown.current = true;
-    setFlash("Yap had a problem last session — see Diagnostics");
-    // Same fire-and-forget shape as the other background flashes: no cleanup,
-    // so a later `crashes` update cannot cancel the clear and strand the strip.
-    setTimeout(() => setFlash(null), 6000);
+    pushToast({ key: "crash", line: "Yap had a problem last session — see Diagnostics", durationMs: 6000 });
   }, [crashes]);
 
   // YP3 — the trial's ONE warning.
@@ -793,8 +796,7 @@ export function useAppShell() {
     if (!shouldWarnTrial(license, readTrialWarnedFor())) return;
     trialWarnShown.current = true;
     writeTrialWarnedFor(license.trial_expires_at_ms);
-    setFlash(trialWarningText(trialDaysLeft(license)));
-    setTimeout(() => setFlash(null), 6000);
+    pushToast({ key: "trial", line: trialWarningText(trialDaysLeft(license)), durationMs: 6000 });
   }, [license]);
 
   // YV44 — one launch-time check that ONLY looks. The backend gates it on the
@@ -816,9 +818,37 @@ export function useAppShell() {
     };
   }, []);
 
-  async function toast(msg: string) {
-    setFlash(msg);
-    setTimeout(() => setFlash(null), 2000);
+  /** An informational line (a success, a status). Never a rejection: see `toastError`. */
+  function toast(msg: string, input: Partial<ToastInput> = {}) {
+    pushToast({ ...input, line: msg });
+  }
+
+  /**
+   * Y5-F — the ONLY way a rejection reaches the toast. A coded rejection reads
+   * the catalogue (line + action); a bare `Result<_, String>` rejection is
+   * never shown raw — the person gets `fallbackLine` (what the UI was trying to
+   * do) or the generic line, and the support-bundle action either way.
+   */
+  function toastError(e: unknown, fallbackLine?: string) {
+    const advice = adviceFor(e, fallbackLine);
+    pushToast({ key: errorCode(e) ?? advice.line, line: advice.line, tone: "error", action: advice.action });
+  }
+
+  /** A failed row was retried or discarded: its "Retry" toast has nothing left to do. */
+  function dropRetry(id: string) {
+    dismissMatching((t) => t.action?.kind === "retry" && t.action.arg === id);
+  }
+
+  /** Y5-F — the generic advice's action: build the support bundle and show it. */
+  async function openSupportSheet() {
+    setSupportOpen(true);
+    setSupportPreview(null);
+    try {
+      setSupportPreview(await invoke<SupportBundlePreview>("preview_support_bundle"));
+    } catch (e) {
+      setSupportOpen(false);
+      toastError(e, "Yap could not build the report.");
+    }
   }
 
   // Every mutating command returns Result<_, String>; on Err the promise rejects.
@@ -836,7 +866,7 @@ export function useAppShell() {
       await invoke("manual_toggle");
     } catch (e) {
       if (isLicenseRequired(e)) setBuyPrompt(true);
-      else toast(errorText(e));
+      else toastError(e);
     }
   }
 
@@ -896,7 +926,7 @@ export function useAppShell() {
       setSupportPreview(null);
       toast(outcome.message);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     } finally {
       setSupportBusy(false);
     }
@@ -930,7 +960,7 @@ export function useAppShell() {
     try {
       await invoke("open_purchase_page");
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     }
   }
 
@@ -949,7 +979,7 @@ export function useAppShell() {
       await invoke("copy_entry", { text });
       toast("Copied");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 
@@ -958,7 +988,7 @@ export function useAppShell() {
       const msg = await invoke<string>("paste_entry", { text });
       toast(msg);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
     await refreshPerms();
   }
@@ -998,7 +1028,7 @@ export function useAppShell() {
         confirm: keepPartial,
       });
       setFailed((f) => f.filter((x) => x.id !== id));
-      setRetryId((cur) => (cur === id ? null : cur));
+      dropRetry(id);
       setHistory((h) =>
         [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
       );
@@ -1010,7 +1040,7 @@ export function useAppShell() {
       await refreshInsights();
     } catch (e) {
       if (keepPartial) {
-        toast(String(e));
+        toastError(e);
         // The clip may have been dropped (audio gone) — resync either way.
         await loadFailed().catch(() => {});
       } else {
@@ -1042,7 +1072,7 @@ export function useAppShell() {
       await invoke("clear_history");
       setHistory([]);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
       return;
     } finally {
       setClearing(false);
@@ -1059,7 +1089,7 @@ export function useAppShell() {
       setSettings(next);
       if (!quiet) toast("Settings saved");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 
@@ -1073,7 +1103,7 @@ export function useAppShell() {
       setUpdate(null);
       setInstalledVersion(version);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     } finally {
       setInstalling(false);
     }
@@ -1091,7 +1121,7 @@ export function useAppShell() {
       setSettings(next);
       toast(`Skipping Yap ${version} — you'll hear about the next one`);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 
@@ -1337,10 +1367,10 @@ export function useAppShell() {
     meetingProgress, retryMeeting, retryNotes, cancelNotes,
     activeNoteId, applyBinding, booting, bootError, bootErrors, retryBoot, buyPrompt, buyYap, candidates,
     captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
-    consent, consentOpen, consentRef, copyAgainId, copyText, crashToastShown,
+    consent, consentOpen, consentRef, copyText, crashToastShown,
     crashes, daily30, dailySeries, dictionary, diffId, editExpansion,
     editPreferred, editTerm, editTrigger, editingSnippetId, editingTermId, engine,
-    failed, feedbackEdits, finishOnboarding, fixDraft, fixingId, flash,
+    failed, feedbackEdits, finishOnboarding, fixDraft, fixingId, toasts, dismissToast, toastError, dropRetry, openSupportSheet,
     formatting, hasActivity, heat, heatSummary, history, insights,
     installUpdateNow, installedVersion, installing, license, licenseChip, loadFailed,
     loadHistory, loadMeetings, maxApp, maxDaily30, maxWeek, meetingBusy,
@@ -1350,16 +1380,16 @@ export function useAppShell() {
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
-    refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
+    refreshSystemAudio, replayOnboarding, retryFailed, retrying, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
-    setConsentOpen, setCopyAgainId, setCrashes, setDailySeries, setDictionary, setDiffId,
+    setConsentOpen, setCrashes, setDailySeries, setDictionary, setDiffId,
     setEditExpansion, setEditPreferred, setEditTerm, setEditTrigger, setEditingSnippetId, setEditingTermId,
-    setEngine, setFailed, setFeedbackEdits, setFixDraft, setFixingId, setFlash,
+    setEngine, setFailed, setFeedbackEdits, setFixDraft, setFixingId,
     setHistory, setInsights, setInstalledVersion, setInstalling, setLicense, setMeetingBusy,
     setMeetingKind, setMeetingKinds, setMeetingQuery, setMeetingStatus, setMeetings, setMonthlySeries,
     setNav, setNewExpansion, setNewPreferred, setNewTerm, setNewTrigger, setNoteBody,
-    setNoteTitle, setOpenMeeting, setPerms, setQuery, setRetryId, setRetrying,
+    setNoteTitle, setOpenMeeting, setPerms, setQuery, setRetrying,
     setScratch, setScratchComposing, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
     setSupportBusy, setSupportOpen, setSupportPreview, setSysAudio, setSysAudioBusy, setSysAudioGate,
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,

@@ -11,6 +11,7 @@
  */
 import React, { useCallback, useEffect, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
+import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -69,8 +70,15 @@ interface ProgressNotice { chunk?: number; of?: number; words_so_far?: number }
 interface BackendStatus {
   recording?: boolean;
   busy?: boolean;
-  engine_loading?: boolean;
-  last_error?: string | null;
+  /**
+   * Y5-F — `AppStatus` is `#[serde(rename_all = "camelCase")]`, so these three
+   * arrive as `engineLoading` / `lastError` / `lastErrorCode`. The snake_case
+   * names this interface used to read were never on the wire: the pill could
+   * not reach `error` (or `model-loading`) off the status event at all.
+   */
+  engineLoading?: boolean;
+  lastError?: string | null;
+  lastErrorCode?: string | null;
   /** yap-hotkey-stop — the live take is in its "Still recording" state. */
   stillRecording?: boolean;
 }
@@ -115,9 +123,10 @@ function Float() {
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
   // combined ONCE, below, with `winningPhase`.
   const [take, setTake] = useState<LivePhase>("idle");
-  // The sentence `error` shows. Straight off the backend's own `last_error`
-  // (lib.rs:1460 / 2497) — never a code, and never invented here.
-  const [lastError, setLastError] = useState<string | null>(null);
+  // Y5-F — the CODE behind the take's `last_error`. The `error` phase shows the
+  // catalogue's line for it (errors.ts), the same line the main window's toast
+  // shows — never the raw backend string.
+  const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
@@ -250,13 +259,13 @@ function Float() {
     const push = (u: () => void) => (dead ? u() : unsubs.push(u));
     const onStatus = (st?: BackendStatus) => {
       if (!st) return;
-      setLastError(st.last_error ?? null);
+      setLastErrorCode(st.lastError ? st.lastErrorCode ?? "take_failed" : null);
       setStillRecording(!!st.recording && !!st.stillRecording);
       const status: TakeStatus = {
         recording: !!st.recording,
         busy: !!st.busy,
-        engineLoading: !!st.engine_loading,
-        lastError: st.last_error ?? null,
+        engineLoading: !!st.engineLoading,
+        lastError: st.lastError ?? null,
       };
       setTake((prev) => reduceTakePhase(prev, { type: "status", status }));
     };
@@ -370,8 +379,8 @@ function Float() {
   // right" is three CSS rules and not three components — and not two copies.
   //
   // `error` is the one phase whose line is not a preset: it says WHAT went
-  // wrong, in one line, off the take's own `last_error`.
-  const line = (phase === "error" ? errorSentence(lastError) : null)
+  // wrong, in one line — the catalogue's line for the take's error code.
+  const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? phaseCopy(phase, chatTone);
   return (
     <>

@@ -9,7 +9,7 @@ import {
   usePolishModel,
 } from "./ModelSetup";
 import { describePolishOffer } from "./polishOffer";
-import { errorText } from "./errors";
+import { adviceFor, errorText } from "./errors";
 import { awaitMicDecision } from "./micStatus";
 import { PermissionRepair } from "./PermissionRepairRow";
 import type { ProbeReport } from "./permissionRepair";
@@ -297,7 +297,7 @@ export default function Onboarding({
       // is the same news twice. Clear any stale note instead.
       if (status === "denied" || status === "restricted") setNote(null);
     } catch (e) {
-      setNote(String(e));
+      setNote(adviceFor(e).line);
     }
     refreshPerms();
   }
@@ -324,7 +324,7 @@ export default function Onboarding({
     try {
       await invoke("request_accessibility");
     } catch (e) {
-      setNote(String(e));
+      setNote(adviceFor(e).line);
     }
     setTimeout(refreshPerms, 800);
   }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { adviceFor } from "./errors";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { errorText } from "./errors";
 
 // YV54 — silent model setup. Yap cannot transcribe without a GGUF model on
 // disk, but "which model?" is not a question a first-run user has any way to
@@ -161,7 +161,7 @@ export function useModelSetup({
       setModels(await invoke<ModelEntry[]>("list_models"));
       setCatalogError(null);
     } catch (e) {
-      setCatalogError(errorText(e));
+      setCatalogError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
     }
     setLoaded(true);
   }, []);
@@ -179,7 +179,7 @@ export function useModelSetup({
         await invoke("download_model", { id });
         await invoke("select_model", { id });
       } catch (e) {
-        setDownloadError(errorText(e));
+        setDownloadError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
       }
       setDownloading(null);
       setProgress(null);
@@ -194,7 +194,7 @@ export function useModelSetup({
         await invoke("select_model", { id });
         setDownloadError(null);
       } catch (e) {
-        setDownloadError(errorText(e));
+        setDownloadError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
       }
       await refresh();
     },
@@ -443,7 +443,7 @@ export function usePolishModel(): PolishModelSetup {
       setModels(await invoke<PolishModelEntry[]>("list_polish_models"));
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
     }
   }, []);
 
@@ -458,7 +458,7 @@ export function usePolishModel(): PolishModelSetup {
         // disk. Both failures arrive here as a plain sentence.
         await invoke("download_polish_model", { id });
       } catch (e) {
-        setError(String(e));
+        setError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
       }
       setDownloading(null);
       setProgress(null);
@@ -471,7 +471,7 @@ export function usePolishModel(): PolishModelSetup {
     try {
       await invoke("clear_polish_model");
     } catch (e) {
-      setError(String(e));
+      setError(adviceFor(e, "Yap could not finish setting up that model — check your connection and try again.").line);
     }
     await refresh();
   }, [refresh]);

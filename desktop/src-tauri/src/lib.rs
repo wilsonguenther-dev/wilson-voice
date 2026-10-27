@@ -12,6 +12,7 @@ pub mod asr_engine;
 pub mod channel;
 mod cli;
 mod command_mode;
+pub mod take_error;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
 pub mod crash;
@@ -564,6 +565,11 @@ pub struct AppStatus {
     pub recording: bool,
     pub busy: bool,
     pub last_error: Option<String>,
+    /// Y5-F — the stable code behind `last_error` (`desktop/src/errors.ts`
+    /// catalogue): the pill and the main window show the catalogue's line for
+    /// it, never a raw string.
+    #[serde(default)]
+    pub last_error_code: Option<String>,
     pub message: String,
     pub accessibility: bool,
     /// yap-p0-hotkeys-no-permission — what each keyboard surface is REALLY
@@ -635,7 +641,7 @@ struct AppState {
     /// stop / cancel / error / exit so the Mac is never left muted.
     saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
-    last_error: PLMutex<Option<String>>,
+    last_error: PLMutex<Option<take_error::LastError>>,
     /// yap-p0-hotkeys-no-permission — the ONE start/stop decision for every
     /// hotkey edge, Carbon or fn tap (see `take_hotkey_edge`).
     hotkey_arbiter: PLMutex<hotkeys::HotkeyArbiter>,
@@ -1007,7 +1013,9 @@ fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
-    let last_error = state.last_error.lock().clone();
+    let last = state.last_error.lock().clone();
+    let last_error = last.as_ref().map(|l| l.message.clone());
+    let last_error_code = last.map(|l| l.code.to_string());
     let accessibility = permissions::is_accessibility_trusted();
     let ptt = state.settings.lock().hotkey_label.clone();
     let ready = model_ready(state);
@@ -1066,6 +1074,7 @@ fn build_status(state: &AppState) -> AppStatus {
         recording,
         busy,
         last_error,
+        last_error_code,
         message,
         accessibility,
         hotkeys: hotkeys_now,
@@ -1792,10 +1801,17 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             });
         }
         Err(e) => {
+            // Y5-F: the cpal/io text goes to the log; the user gets a sentence
+            // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
-            *state.last_error.lock() = Some(e.clone());
+            let line =
+                "Yap could not open the microphone — check that an input device is connected.";
+            *state.last_error.lock() = Some(take_error::LastError::new(
+                take_error::MIC_UNAVAILABLE,
+                line,
+            ));
             emit_status(app, state);
-            notify(app, "Yap — Mic", e);
+            notify(app, "Yap — Mic", line);
         }
     }
 }
@@ -2427,7 +2443,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         let mut pending: Option<(record::ClipWav, f64, Option<String>)> = None;
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
-        let result = (|| -> Result<TakeOutcome, String> {
+        // Y5-F: `TakeError`, not `String` — every early return below carries a
+        // code by type (see take_error.rs), so the one `Err` arm can always
+        // tell the UI WHICH failure this was.
+        let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
             // downloaded or analysed on the hot path; `None` (model still
@@ -2440,8 +2459,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             };
             let ended = capture_stop
                 .join()
-                .map_err(|_| "the capture-stop thread panicked".to_string())??;
-            let rec = record::finish_recording(ended, iso_vad.as_deref())?;
+                .map_err(|_| take_error::capture_failed("the capture-stop thread panicked".into()))?
+                .map_err(take_error::capture_failed)?;
+            let rec = record::finish_recording(ended, iso_vad.as_deref())
+                .map_err(take_error::capture_failed)?;
             // YV20/M3: `rec.clip` unlinks the history wav on ANY exit of this
             // closure (success, the gates below, or the ASR/DB `?` failures) —
             // never leaked on error. YV37: that wav is written on a background
@@ -2483,7 +2504,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // `ClipWav::drop` would unlink the very audio we are trying to save —
             // which is the bug, not the fix.
             if rec.device_failed {
-                return Err(DEVICE_FAILED_MESSAGE.into());
+                return Err(take_error::TakeError::new(
+                    take_error::MIC_DISCONNECTED,
+                    DEVICE_FAILED_MESSAGE,
+                    "input device failed mid-take",
+                ));
             }
             // PERM-D — SILENT-CAPTURE gate, and it is asked BEFORE the
             // no-speech gate on purpose. An all-zero buffer passes through
@@ -2534,9 +2559,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // actionable message instead of pretending; the `transcript_error`
             // emit below is what unspins any UI waiting on this take.
             let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
-                return Err(
-                    "No speech model installed — open Settings → Models and download one.".into(),
-                );
+                return Err(take_error::TakeError::new(
+                    take_error::MODEL_MISSING,
+                    "No speech model installed — open Settings → Models and download one.",
+                    format!("native model {} not downloaded", settings.native_model),
+                ));
             };
             // YV47 — bias the decoder with the auto-learning dictionary: starred
             // terms first, then usage-ranked, capped to the prompt window. A DB
@@ -2595,7 +2622,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 Err(e) if e == transcription::CANCELLED_BY_USER => {
                     return Ok(TakeOutcome::Cancelled);
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(take_error::transcription_failed(e)),
             };
             drop(persist);
             // Y3-D checkpoint — post-decode. A decode with no cancel hook runs
@@ -2891,7 +2918,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // still has a transcript row to write.
             hygiene::log_snapshot_async(data_dir());
             // Store BOTH the polished text and the raw ASR transcript (YV10).
-            let mut entry = db.insert_transcript_for_take(
+            let inserted = db.insert_transcript_for_take(
                 text,
                 asr.backend,
                 asr.seconds,
@@ -2901,7 +2928,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 chrono::Utc::now(),
                 Some(raw_text),
                 live_take_key.as_deref(),
-            )?;
+            );
+            let mut entry = inserted.map_err(take_error::history_write_failed)?;
             // Y4-G — attribute this take's shape to the stages that made it.
             // AFTER the insert on purpose: the row is durable and the text is
             // already in the user's app, so a failure here costs the diff panel
@@ -2929,10 +2957,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 if outcome.pasted {
                     *state2.last_error.lock() = None;
                 } else if !outcome.copied {
-                    *state2.last_error.lock() = Some(outcome.message.clone());
+                    *state2.last_error.lock() = Some(take_error::LastError::new(
+                        take_error::CLIPBOARD_FAILED,
+                        outcome.message.clone(),
+                    ));
                 } else if settings.auto_paste && !outcome.pasted {
                     // Soft warning — text is still on clipboard
-                    *state2.last_error.lock() = Some(outcome.message.clone());
+                    *state2.last_error.lock() = Some(take_error::LastError::new(
+                        take_error::PASTE_NOT_CONFIRMED,
+                        outcome.message.clone(),
+                    ));
                 } else {
                     *state2.last_error.lock() = None;
                 }
@@ -3136,8 +3170,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
             }
             Err(e) => {
-                log::error!("pipeline failed: {e}");
-                *state2.last_error.lock() = Some(e.clone());
+                // Y5-F: the raw detail is for the log (and so the support
+                // bundle); every surface a person sees gets the coded line.
+                log::error!("pipeline failed [{}]: {}", e.code, e.detail);
+                *state2.last_error.lock() = Some(take_error::LastError::from(&e));
                 // YV52: a failed take is never lost. Keep the wav the pipeline
                 // already wrote and record a recoverable row, so the user can
                 // retry ASR on the same audio (the engine may since have
@@ -3145,7 +3181,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // re-speaking it. `None` = the clip could not be preserved, and
                 // the toast/History simply have nothing to retry.
                 let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
-                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, &e)
+                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, &e.message)
                 });
                 // YV32: tell the UI, not just the log. Any view waiting on a
                 // transcript (onboarding calibration, the pill) can now clear its
@@ -3154,16 +3190,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // Retry on exactly this take.
                 let _ = app2.emit(
                     TRANSCRIPT_ERROR_EVENT,
-                    serde_json::json!({ "message": e.clone(), "failed": recoverable }),
+                    take_error::error_payload(&e, recoverable),
                 );
                 // YV79 — terminal marker (see the `Soft` arm), emitted after the
                 // error payload above so a listener that clears busy on this one
                 // has the reason in hand already.
                 let _ = app2.emit(
                     TAKE_DONE_EVENT,
-                    serde_json::json!({ "ok": false, "message": &e }),
+                    serde_json::json!({ "ok": false, "message": &e.message, "code": e.code }),
                 );
-                notify(&app2, "Yap — Failed", e);
+                notify(&app2, "Yap — Failed", e.message);
             }
         }
         *state2.busy.lock() = false;

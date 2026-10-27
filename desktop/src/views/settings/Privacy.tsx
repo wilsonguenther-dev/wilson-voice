@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { acknowledgedLabel } from "../../meetings/consent";
 import { setupState, SYSTEM_AUDIO_PANE, SYSTEM_AUDIO_SETUP } from "../../meetings/systemAudio";
-import type { SupportBundlePreview } from "../../support/bundle";
 import { type CrashEvent, polishSidecarLabel, formatTime } from "../../appTypes";
 import { useAppCtx } from "../../appShell";
 import { nameProduct } from "../../permission";
@@ -9,22 +8,12 @@ import { nameProduct } from "../../permission";
 export default function Privacy() {
   const {
     consent, crashes, engine, replayOnboarding, runSystemAudioSetup,
-    saveSettings, setConsentOpen, setCrashes, setNav, setSupportOpen, setSupportPreview,
-    settings, sysAudio, sysAudioBusy, sysAudioGate, toast, perms,
+    saveSettings, setConsentOpen, setCrashes, setNav, openSupportSheet,
+    settings, sysAudio, sysAudioBusy, sysAudioGate, toast, toastError, perms,
   } = useAppCtx();
   if (!settings) return null;
-  async function openSupportBundle() {
-    setSupportOpen(true);
-    setSupportPreview(null);
-    try {
-      setSupportPreview(
-        await invoke<SupportBundlePreview>("preview_support_bundle"),
-      );
-    } catch (e) {
-      setSupportOpen(false);
-      toast(String(e));
-    }
-  }
+  // Y5-F — the same sheet the generic error advice's "Send report" opens.
+  const openSupportBundle = openSupportSheet;
   return (
                 <section className="settings-panel" data-settings-pane="privacy">
                   <div className="panel" data-row>
@@ -41,7 +30,7 @@ export default function Privacy() {
                               `Exported ${count.toLocaleString()} transcripts → ${path}`,
                             );
                           } catch (e) {
-                            toast(String(e));
+                            toastError(e);
                           }
                         }}
                       >
@@ -58,7 +47,7 @@ export default function Privacy() {
                             // that folder alongside yap.log.
                             toast("Opened logs folder — crash summary included");
                           } catch (e) {
-                            toast(String(e));
+                            toastError(e);
                           }
                         }}
                       >
@@ -146,7 +135,7 @@ export default function Privacy() {
                               onClick={() =>
                                 invoke("open_privacy_settings", {
                                   pane: SYSTEM_AUDIO_PANE,
-                                }).catch((e) => toast(String(e)))
+                                }).catch((e) => toastError(e))
                               }
                             >
                               {SYSTEM_AUDIO_SETUP.openSettings}
@@ -215,7 +204,7 @@ export default function Privacy() {
                                 );
                                 toast("Marked as seen");
                               } catch (e) {
-                                toast(String(e));
+                                toastError(e);
                               }
                             }}
                           >
@@ -231,7 +220,7 @@ export default function Privacy() {
                                 );
                                 toast("Crash history cleared");
                               } catch (e) {
-                                toast(String(e));
+                                toastError(e);
                               }
                             }}
                           >
