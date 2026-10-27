@@ -467,23 +467,8 @@ pub fn parse_panic_line(line: &str, log_file: &str) -> Option<CrashEvent> {
     let occurred_at = parse_log_time(line)?;
     let after = &line[marker + PANIC_MARKER.len()..];
     // The hook writes `<location>: <payload>`, where location is `file:line:col`
-    // or the literal "unknown". Only a location-SHAPED head is taken — the two
-    // trailing segments must be numbers — so a hook line with no location can
-    // never let the payload through as one (see the fn docs).
-    let parts: Vec<&str> = after.split(':').collect();
-    let location = if parts.len() >= 3
-        && parts[1].trim().parse::<u32>().is_ok()
-        && parts[2].trim().parse::<u32>().is_ok()
-    {
-        format!(
-            "{}:{}:{}",
-            parts[0].trim(),
-            parts[1].trim(),
-            parts[2].trim()
-        )
-    } else {
-        parts[0].to_string()
-    };
+    // or the literal "unknown". See [`panic_site`] for what of it is kept.
+    let location = panic_site(after);
     let site = clamp(&location, MAX_FIELD);
     if site.is_empty() {
         return None;
@@ -497,6 +482,43 @@ pub fn parse_panic_line(line: &str, log_file: &str) -> Option<CrashEvent> {
         details: details_text(&[("site", site), ("log", log_file.to_string())]),
         acknowledged: false,
     })
+}
+
+/// The ONE part of a panic line a row may keep: where it happened.
+///
+/// PRIV-A completeness. Two shapes used to leak through here:
+///
+/// * A head that is not location-shaped (`PANIC at <payload with no colon>`)
+///   was stored verbatim as the "site" — the payload, which can be a
+///   transcript or a license key, became a row and then a line of the crash
+///   summary that rides in the support bundle. Now a head that is not
+///   `file:<number>:<number>` is reported as `unknown`, never copied.
+/// * A location inside a dependency is an ABSOLUTE path into the user's home
+///   (`/Users/<name>/.cargo/registry/…/src/lib.rs:12:5`). An absolute path, or
+///   one that climbs with `..`, is reduced to its file name; a crate-relative
+///   one (`src/dictation.rs`) is kept, because it names nothing on this Mac.
+fn panic_site(after: &str) -> String {
+    let parts: Vec<&str> = after.split(':').collect();
+    let located = parts.len() >= 3
+        && parts[1].trim().parse::<u32>().is_ok()
+        && parts[2].trim().parse::<u32>().is_ok();
+    if !located {
+        return "unknown".to_string();
+    }
+    let file = parts[0].trim();
+    let file = if file.starts_with('/')
+        || file.starts_with('~')
+        || file.starts_with('\\')
+        || file.split(['/', '\\']).any(|c| c == "..")
+    {
+        file.rsplit(['/', '\\']).next().unwrap_or_default()
+    } else {
+        file
+    };
+    if file.is_empty() {
+        return "unknown".to_string();
+    }
+    format!("{}:{}:{}", file, parts[1].trim(), parts[2].trim())
 }
 
 /// `env_logger`'s default line opens `[2026-08-09T17:53:02Z LEVEL module]`.

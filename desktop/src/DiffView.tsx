@@ -17,7 +17,7 @@
  *    the stage was enabled and produced nothing, this panel says so and says
  *    WHY.
  *  * The thumbs are LOCAL, FOREVER. They are written to SQLite and read by
- *    nothing. No third-party crash or analytics SDK, no network call on this path. They exist so
+ *    nothing. No analytics SDK, no network call on this path. They exist so
  *    a future rules change can be scored against real dissatisfaction instead of
  *    a guess.
  */

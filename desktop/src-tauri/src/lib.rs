@@ -8764,7 +8764,7 @@ pub fn run() {
     {
         let state = state.clone();
         std::thread::spawn(move || {
-            let Some(path) = vad::ensure_model(&data_dir()) else {
+            let Some(path) = models::ensure_silero_vad_model(&data_dir()) else {
                 log::warn!("startup: no silero VAD model — energy VAD only");
                 return;
             };

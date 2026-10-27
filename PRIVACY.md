@@ -1,6 +1,6 @@
 # Yap — Privacy Policy
 
-_Last updated: August 11, 2026_
+_Last updated: October 27, 2026_
 
 Yap is a dictation app that runs **entirely on your Mac**. This policy explains, plainly, what happens to your data. The short version: **your voice and your words never leave your device, and we never see them.**
 
@@ -27,14 +27,25 @@ Your name, your address, your transcripts, and anything you dictated are not in 
 
 ## The only times Yap uses the network
 
-For transparency, here is **every** network connection Yap makes:
+For transparency, here is **every** network connection Yap makes. There are exactly two, and **neither one carries your audio or your text**:
 
-1. **First-run model download.** The first time you use Yap, it downloads the speech model to your Mac so it can run offline afterward. After that, transcription is fully offline.
-2. **Update checks.** Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings.
+1. **Model downloads.** Yap downloads the models it runs on your Mac — the speech model the first time you use it, and the voice-detection, polish and speaker models when a feature needs them — from fixed, pinned addresses, and checks every file against a fingerprint built into the app before it is used. A download asks for a file; it sends nothing you said or typed. After that, transcription is fully offline.
+2. **Update checks.** Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings. The check asks whether a newer Yap exists; it sends no audio and no text.
 
 Licensing makes **no** network call. Your license is verified **on your Mac**, against a public key compiled into the app — activating it, and every launch after, involves no server at all, and Yap never contacts us to check, renew or confirm it.
 
 Those two are the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
+
+### How you can check this
+
+These claims are not just written down — they are a test in Yap's source, named `no_outbound_on_the_dictation_path`, and it fails if any of them stops being true. What it proves, in its own words:
+
+- **No module on the dictation path references an HTTP client, a socket or a URL.** That path is everything a dictation passes through: recording, voice detection, transcription, polish, paste, snippets and the local history database.
+- **The only network call sites in the whole app are the model download and the updater check** — an explicit list, by file and function. A new one anywhere, for any reason, fails the test until this page is changed to name it.
+- **Nothing in crash capture or the support bundle can upload.** The bundle is a file written to your Desktop for you to send yourself; at most Yap opens a draft in your own mail app, and nothing leaves until you press send.
+- **The app's window can connect to nothing but the app itself**, and the polish and speaker helpers that run beside it have no network code of their own.
+
+Yap contains no analytics, telemetry or crash-reporting SDK of any kind — no Sentry, no PostHog, no Segment. Crash capture is local: a crash is read from your Mac's own crash reports into the local database, and a crash report never contains your transcript text, a file path inside your home folder, or your license key (the support-bundle redaction tests check all three).
 
 ## Data stored on your Mac, and your control over it
 
