@@ -117,12 +117,12 @@ export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: Chat
     const el = ref.current;
     if (el) {
       const r = el.getBoundingClientRect();
-      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height });
+      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "growth-nudge");
     }
     const t = setTimeout(dismiss, NUDGE_TTL_MS);
     return () => {
       clearTimeout(t);
-      holdPillHitbox(null);
+      holdPillHitbox(null, "growth-nudge");
     };
   }, [active, dismiss]);
 
