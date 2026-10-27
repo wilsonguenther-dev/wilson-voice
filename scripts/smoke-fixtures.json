@@ -93,5 +93,17 @@
     "secureInputDetail": ""
   },
   "microphone_status": "granted",
-  "user_display_name": "Smoke"
+  "user_display_name": "Smoke",
+  "license_status": {
+    "state": "trial",
+    "days_left": 14,
+    "expires_at_ms": 1793379600000,
+    "license_problem": null,
+    "license_problem_message": null,
+    "has_stored_license": false,
+    "trial_days_left": 14,
+    "trial_expires_at_ms": 1793379600000,
+    "revocation_checked_at_ms": null,
+    "revoked_count": 0
+  }
 }

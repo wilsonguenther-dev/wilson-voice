@@ -46,8 +46,11 @@ desktop/src-tauri/binaries/
 
 # Y0-E — windowed smoke captures. PNGs are evidence of one run on one machine,
 # not source; --check-only deliberately fails on a fresh checkout because there
-# is nothing captured yet.
-docs/smoke-shots/
+# is nothing captured yet. Y7-B: the directory itself is tracked (its README) so
+# the capture root exists on a clean clone; every run under it stays ignored.
+# The ONE committed reference run lives at docs/loop/smoke-reference/.
+docs/smoke-shots/*
+!docs/smoke-shots/README.md
 
 # yap-qa-harness: hotkey-walk.sh self-test fixtures are hand-checked synthetic logs, never captured user logs
 !scripts/qa/fixtures/*.log

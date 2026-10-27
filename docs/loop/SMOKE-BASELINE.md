@@ -1,5 +1,116 @@
 # The windowed smoke baseline
 
+## Y7-B re-baseline — the post-Y5 tree (run `2026-10-27T07-27-10Z`, main @ 3ab3e81 + Y7-B)
+
+Y7-B extended Y0-E's instrument to the whole surface and re-ran it. One
+invocation of `scripts/smoke-windowed.sh` now captures:
+
+- **two fixture states** — `seeded` (scripts/smoke-fixtures-daily.json: history, a
+  dictionary entry, a scratchpad note, meetings) and `empty`
+  (scripts/smoke-fixtures.json) — the empty run is the one that catches a
+  missing empty state;
+- in each, **all seven Nav views and all eight SettingsTabs** at 980x700 and
+  720x520 = 30 captures per state, 60 in all;
+- the **float pill**: 15 LivePhases x pill_position bottom/left/right x
+  classic/yappy = 90 captures at 300x140@2x, judged by pill-matrix.mjs.
+
+**Result: 150 judged captures, 0 carrying findings; exit 0.** The reference
+run (the 720x520 captures, both result files and the pill contact sheet) is
+committed at `docs/loop/smoke-reference/2026-10-27T07-27-10Z/`; every other run
+stays gitignored under `docs/smoke-shots/`.
+
+### The diff against the Y0-E baseline below, explained
+
+| Y0-E (2026-09-15) | now | why |
+|---|---|---|
+| 10 of 14 captures `silent-empty` | 0 | the Y5 lane added `data-empty-state` (ViewStates.tsx, Home, Meetings, Dictionary, Scratchpad, Insights) — the instrument did its job |
+| Settings judged as one capture | 8 tabs judged | Y7-B walks every `.settings-subnav [role=tab]`; a clicked tab that is not `aria-selected` is a finding |
+| one state | seeded + empty | the empty run is new and is the stricter one |
+| no pill | 90 pill captures | pill-matrix.mjs filed into the same run (`pill/`) |
+
+Y7-B's FIRST capture of the extended walk was RED, and the reds were real:
+
+- `seeded/scratchpad` — `silent-empty` with a note on screen: the note list
+  rendered `.note-item` buttons, which declare no row. Fixed in the VIEW
+  (`data-row="scratch-note"`), not the detector.
+- `seeded+empty/settings-license` — `silent-empty`: the license card is the one
+  record that panel shows and declared no row (`data-row="license"`). In the
+  empty state the fixture set had no `license_status`, so the panel sat on
+  "Reading this Mac's license…" — the real app always answers it, so the
+  empty set now carries the first-run trial answer.
+- the pill matrix judged a STALE bundle: `smoke-windowed.sh` killed the
+  `npm run preview` subshell, not vite, so the listener outlived the run. The
+  script now execs vite directly; the port is free after every run.
+
+### The re-baselined captures
+
+| state | view | size | rows | chars | findings |
+|---|---|---|---|---|---|
+| seeded | home | 980x700 | 40 | 6120 | - |
+| seeded | permissions | 980x700 | 6 | 676 | - |
+| seeded | meetings | 980x700 | 3 | 344 | - |
+| seeded | insights | 980x700 | 9 | 469 | - |
+| seeded | dictionary | 980x700 | 2 | 121 | - |
+| seeded | scratchpad | 980x700 | 1 | 42 | - |
+| seeded | settings | 980x700 | 6 | 1238 | - |
+| seeded | settings-dictation | 980x700 | 6 | 1238 | - |
+| seeded | settings-shortcut | 980x700 | 4 | 719 | - |
+| seeded | settings-snippets | 980x700 | 3 | 354 | - |
+| seeded | settings-audio | 980x700 | 1 | 191 | - |
+| seeded | settings-companion | 980x700 | 4 | 571 | - |
+| seeded | settings-advanced | 980x700 | 6 | 668 | - |
+| seeded | settings-privacy | 980x700 | 6 | 1611 | - |
+| seeded | settings-license | 980x700 | 1 | 792 | - |
+| seeded | home | 720x520 | 40 | 6120 | - |
+| seeded | permissions | 720x520 | 6 | 676 | - |
+| seeded | meetings | 720x520 | 3 | 344 | - |
+| seeded | insights | 720x520 | 9 | 469 | - |
+| seeded | dictionary | 720x520 | 2 | 121 | - |
+| seeded | scratchpad | 720x520 | 1 | 42 | - |
+| seeded | settings | 720x520 | 6 | 1238 | - |
+| seeded | settings-dictation | 720x520 | 6 | 1238 | - |
+| seeded | settings-shortcut | 720x520 | 4 | 719 | - |
+| seeded | settings-snippets | 720x520 | 3 | 354 | - |
+| seeded | settings-audio | 720x520 | 1 | 191 | - |
+| seeded | settings-companion | 720x520 | 4 | 571 | - |
+| seeded | settings-advanced | 720x520 | 6 | 668 | - |
+| seeded | settings-privacy | 720x520 | 6 | 1611 | - |
+| seeded | settings-license | 720x520 | 1 | 792 | - |
+| empty | home | 980x700 | 0 | 222 | - |
+| empty | permissions | 980x700 | 6 | 648 | - |
+| empty | meetings | 980x700 | 0 | 167 | - |
+| empty | insights | 980x700 | 0 | 138 | - |
+| empty | dictionary | 980x700 | 0 | 116 | - |
+| empty | scratchpad | 980x700 | 0 | 173 | - |
+| empty | settings | 980x700 | 6 | 1238 | - |
+| empty | settings-dictation | 980x700 | 6 | 1238 | - |
+| empty | settings-shortcut | 980x700 | 4 | 719 | - |
+| empty | settings-snippets | 980x700 | 3 | 361 | - |
+| empty | settings-audio | 980x700 | 1 | 191 | - |
+| empty | settings-companion | 980x700 | 4 | 571 | - |
+| empty | settings-advanced | 980x700 | 4 | 549 | - |
+| empty | settings-privacy | 980x700 | 6 | 1611 | - |
+| empty | settings-license | 980x700 | 1 | 794 | - |
+| empty | home | 720x520 | 0 | 222 | - |
+| empty | permissions | 720x520 | 6 | 648 | - |
+| empty | meetings | 720x520 | 0 | 167 | - |
+| empty | insights | 720x520 | 0 | 138 | - |
+| empty | dictionary | 720x520 | 0 | 116 | - |
+| empty | scratchpad | 720x520 | 0 | 173 | - |
+| empty | settings | 720x520 | 6 | 1238 | - |
+| empty | settings-dictation | 720x520 | 6 | 1238 | - |
+| empty | settings-shortcut | 720x520 | 4 | 719 | - |
+| empty | settings-snippets | 720x520 | 3 | 361 | - |
+| empty | settings-audio | 720x520 | 1 | 191 | - |
+| empty | settings-companion | 720x520 | 4 | 571 | - |
+| empty | settings-advanced | 720x520 | 4 | 549 | - |
+| empty | settings-privacy | 720x520 | 6 | 1611 | - |
+| empty | settings-license | 720x520 | 1 | 794 | - |
+
+---
+
+## History — the Y0-E baseline (2026-09-15)
+
 `scripts/smoke-windowed.sh` (Y0-E) is the only instrument in this plan that can
 see "looks broken". The merge gate is eight headless commands — tsc, vitest,
 vite, two cargo builds, two cargo test runs — and not one of them can tell a
