@@ -12,13 +12,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{asr_engine, models, record, transcription::TranscriptionManager};
+use crate::{asr_engine, dictation, models, record, transcription::TranscriptionManager};
 
 /// Flag that switches the binary into headless transcribe mode.
 const TRANSCRIBE_FILE_FLAG: &str = "--transcribe-file";
 /// YV93 — ask for the ALIGNMENT too, printed as one JSON object on stdout.
 /// Diagnostics still go to stderr, so stdout stays machine-readable.
 const TIMED_FLAG: &str = "--timed";
+/// Y7-A — after the transcript, run it through the cleanup pipeline at the
+/// SHIPPED default settings (`AppSettings::default()`) and print ONE JSON object
+/// `{level, mode, stages, raw, cleaned}` on stdout instead of the bare text.
+/// This is what lets `scripts/smoke-headless.sh` show the formatting the app
+/// would apply, from the built binary, with no window.
+const CLEANUP_FLAG: &str = "--cleanup";
 /// YV93 — the `Capabilities()` spike (plan finding #11): load the shipped model
 /// and print what it says it can do, `max_timestamp_kind` and `max_audio_ms`
 /// above all. No decode, no audio.
@@ -36,6 +42,11 @@ pub fn handle_args() -> Option<i32> {
         return Some(print_capabilities());
     }
     let timed = argv.iter().any(|a| a == TIMED_FLAG);
+    let cleanup = argv.iter().any(|a| a == CLEANUP_FLAG);
+    if cleanup && timed {
+        eprintln!("{CLEANUP_FLAG} and {TIMED_FLAG} are mutually exclusive");
+        return Some(2);
+    }
     // yap-lifecycle DO 6 — `--soak <runs>` with `--transcribe-file`: one
     // process, `runs` full load → transcribe → unload cycles (the lifecycle the
     // app repeats for days: lazy load at a take, idle unload later).
@@ -64,7 +75,7 @@ pub fn handle_args() -> Option<i32> {
         if let Some(runs) = soak {
             return Some(soak_transcribe(Path::new(&wav), runs));
         }
-        return Some(transcribe_file(Path::new(&wav), timed));
+        return Some(transcribe_file(Path::new(&wav), timed, cleanup));
     }
     None
 }
@@ -92,12 +103,16 @@ fn print_capabilities() -> i32 {
 
 /// Run one headless transcription, printing the text to stdout. Diagnostics go
 /// to stderr; the exit code is 0 on success, 1 on failure.
-fn transcribe_file(wav: &Path, timed: bool) -> i32 {
+fn transcribe_file(wav: &Path, timed: bool, cleanup: bool) -> i32 {
     // Warnings only, on stderr — `RUST_LOG=info` turns on the engine's own logs
     // without ever polluting the transcript on stdout.
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
     match run_transcribe(wav, timed) {
+        Ok(text) if cleanup => {
+            println!("{}", cleanup_report(&text));
+            0
+        }
         Ok(text) => {
             println!("{text}");
             0
@@ -107,6 +122,43 @@ fn transcribe_file(wav: &Path, timed: bool) -> i32 {
             1
         }
     }
+}
+
+/// Y7-A — run `raw` through the cleanup pipeline exactly as a live take with the
+/// SHIPPED default settings would (`AppSettings::default()`: level, mode,
+/// structure switch, tone dial), and return one JSON object. Headless means no
+/// user dictionary, no pauses, no paste target and no LLM stage (`High` would
+/// report it skipped), the same "do not depend on app state" rule the
+/// transcription itself follows.
+fn cleanup_report(raw: &str) -> String {
+    let settings = crate::AppSettings::default();
+    let level = dictation::CleanupLevel::from_setting(&settings.cleanup_level);
+    let mode = dictation::resolve_mode_with_context(&settings.dictation_mode, "", None);
+    let structure_format = dictation::structure_format_for_take(
+        settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+        &settings.structure_app_overrides,
+        "",
+        mode,
+    );
+    let style = crate::polish::PolishConfig::from_settings(&settings, mode).style;
+    let (cleaned, trace) = dictation::run_cleanup_structured_traced(
+        raw,
+        level,
+        mode,
+        structure_format,
+        style,
+        &[],
+        |t| t.to_string(),
+        |_| Err("headless"),
+    );
+    serde_json::json!({
+        "level": settings.cleanup_level,
+        "mode": crate::polish::mode_tag(mode),
+        "stages": trace.stages_that_ran(),
+        "raw": raw,
+        "cleaned": cleaned,
+    })
+    .to_string()
 }
 
 const SOAK_FLAG: &str = "--soak";
@@ -264,6 +316,25 @@ mod tests {
     #[test]
     fn ignores_argv_without_the_flag() {
         assert!(handle_args().is_none());
+    }
+
+    /// Y7-A — the `--cleanup` report runs at the level the app SHIPS with, and
+    /// it really runs the pipeline: the raw text is echoed verbatim and the
+    /// cleaned text differs from it (the spoken filler is dropped). Fails if the
+    /// report ever hard-codes a level or stops running the stages.
+    #[test]
+    fn cleanup_report_uses_the_shipped_default_level_and_formats() {
+        let raw = "um the quick brown fox jumps over the lazy dog";
+        let report: serde_json::Value = serde_json::from_str(&cleanup_report(raw)).unwrap();
+        assert_eq!(
+            report["level"].as_str().unwrap(),
+            crate::AppSettings::default().cleanup_level
+        );
+        assert_eq!(report["raw"].as_str().unwrap(), raw);
+        let cleaned = report["cleaned"].as_str().unwrap();
+        assert_ne!(cleaned, raw, "cleanup changed nothing: {report}");
+        assert_eq!(cleaned, "the quick brown fox jumps over the lazy dog");
+        assert!(report["stages"].as_str().unwrap().contains("backtrack"));
     }
 
     /// The fixture the E2E gate transcribes is committed, mono/16 kHz, and small.
