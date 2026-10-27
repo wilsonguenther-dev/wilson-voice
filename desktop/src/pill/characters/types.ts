@@ -37,6 +37,12 @@ export interface CharacterFrame {
   box: CharacterBox;
   dock: DockAxis;
   reducedMotion: boolean;
+  /**
+   * yap24-PILL4 — the key that ends a hands-free take, as the user bound it
+   * (`AppStatus.chord_label`). Only `listening-locked` copy reads it; absent
+   * means the default binding.
+   */
+  chordLabel?: string;
 }
 
 /** What a character owes one frame. */
@@ -59,6 +65,8 @@ export interface CharacterPaint {
  */
 export interface CharacterStageProps {
   gate?: LivePhase;
+  /** yap24-PILL4 — the bound stop key, for a hands-free take's name and announcement. */
+  chordLabel?: string;
   tone?: ChatTone;
   progress?: TranscribeProgress | null;
   meeting?: MeetingStatus;

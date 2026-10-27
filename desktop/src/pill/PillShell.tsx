@@ -13,7 +13,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
-  PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction, progressNumeral,
+  DEFAULT_STOP_KEY, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction, progressNumeral,
   type ChatTone, type LivePhase, type TranscribeProgress,
 } from "./live";
 import {
@@ -53,12 +53,18 @@ interface AppStatus {
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = resolveCharacter(), tone = "friendly" }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = resolveCharacter(), tone = "friendly" }: {
     gate?: LivePhase;
     /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: classic. */
     character?: Character;
     /** Y5-K — the companion tone, decided by the shell (float-main) and handed down in the frame. */
     tone?: ChatTone;
+    /**
+     * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
+     * decided by the SHELL. Only the accessible name and the announcement read
+     * it here; the visible stop hint and lock chip are the shell's.
+     */
+    chordLabel?: string;
     /**
      * Y8-B — the flow-bar slot context, decided by the SHELL (float-main).
      * `null` (a test mount, the dev matrix) draws the capsule with only its
@@ -287,7 +293,7 @@ export default function ClassicPill(
 
   // PERM-C — a permission refusal outranks the take states below it: the whole
   // point is that a press which cannot record NEVER paints as one that can.
-  const visual = phaseVisual(gate);
+  const visual = phaseVisual(gate, chordLabel);
   const blocked = visual.needsPermission;
   // Y2-C — the trial ended and this press was refused. A SEPARATE reason from
   // `blocked`, deliberately: the capsule looks equally stopped, but the fix is a
@@ -397,6 +403,7 @@ export default function ClassicPill(
     box: { w: bb.width, h: bb.height },
     dock: waveAxis(shellPhase, slotCtx.dock),
     reducedMotion: prefersReducedMotion(),
+    chordLabel,
   };
   // A character with nothing for a frame never blanks the pill: classic paints it.
   const paintOf = (f: CharacterFrame): CharacterPaint =>
@@ -408,7 +415,7 @@ export default function ClassicPill(
 
   return (
     <div className="stage">
-      <PhaseAnnouncer phase={gate} />
+      <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
       <div ref={hotElRef} className="pill-hot" data-hover={hover}>
       <div
         ref={pillRef}
@@ -423,7 +430,7 @@ export default function ClassicPill(
         // Y5-J — one name per phase, from the phase table. This used to
         // spell three labels by hand and called every other phase (polishing,
         // pasting, error, empty, cancelled, model-loading…) "Start dictation".
-        aria-label={phaseAccessibleName(gate, progress)}
+        aria-label={phaseAccessibleName(gate, progress, chordLabel)}
         style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
         title={blocked ? visual.label : gated ? GATED_TITLE : undefined}
         {...drag.handlers}
@@ -478,7 +485,7 @@ export default function ClassicPill(
             language is already decided, and a blocked/gated pill has one job. */}
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
-          {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : slotCtx.phase === "listening" ? "idle" : slotCtx.phase })}
+          {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
           <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>
         </button>
         {blocked ? (

@@ -7,7 +7,10 @@
  * never said anything at all.
  */
 import { describe, expect, it } from "vitest";
-import { FN_HINT_EVENT, FN_HINT_LINE, STILL_RECORDING_LINE, stripLine, stripTextWidthPx } from "./live";
+import {
+  DEFAULT_STOP_KEY, FN_HINT_EVENT, FN_HINT_LINE, LOCK_CHIP_PX, handsFreeLabel, isListening,
+  stillRecordingLine, stripLine, stripTextWidthPx,
+} from "./live";
 // The shell's CSS and TSX are read as TEXT from disk: Vitest blanks every
 // `.css` import (even `?raw`) unless `test.css` opts it in, and this test only
 // needs to assert that the rule exists. No @types/node in this project.
@@ -770,7 +773,7 @@ describe("Y5-C — the phase vocabulary", () => {
     // Everything Yap is DOING either finishes or has failed, so everything
     // else has a deadline and the table says it.
     expect([...UNBOUNDED_PHASES].sort())
-      .toEqual(["blind", "blocked", "idle", "listening", "sleepy", "waiting"]);
+      .toEqual(["blind", "blocked", "idle", "listening", "listening-locked", "sleepy", "waiting"]);
     for (const p of ALL_LIVE_PHASES) {
       const hold = phaseHoldMs(p);
       if (hold === null) continue;
@@ -844,18 +847,25 @@ describe("Y5-C — the phase vocabulary", () => {
 
 describe("yap-hotkey-stop — still recording", () => {
   it("the still-recording prompt replaces the phase line only while it is live", () => {
+    const STILL_RECORDING_LINE = stillRecordingLine();
     expect(stripLine("Listening…", true)).toBe(STILL_RECORDING_LINE);
     expect(stripLine("Listening…", false)).toBe("Listening…");
     expect(STILL_RECORDING_LINE).toContain("Still recording");
-    expect(STILL_RECORDING_LINE).toContain("fn");
+    expect(STILL_RECORDING_LINE).toContain(DEFAULT_STOP_KEY);
     expect(STILL_RECORDING_LINE).toContain("stop");
+    // yap24-PILL4: it names the BOUND key, threaded through stripLine.
+    expect(stripLine("Listening…", true, null, "⌃⌥H")).toBe("Still recording — ⌃⌥H to stop");
   });
 
   it("the still-recording prompt fits the strip's one line (no ellipsis eats 'stop')", () => {
-    expect(
-      fitsSideDockStrip(STILL_RECORDING_LINE),
-      `${STILL_RECORDING_LINE} is ${stripTextWidthPx(STILL_RECORDING_LINE)} px > ${SIDE_DOCK_TEXT_PX}`,
-    ).toBe(true);
+    for (const key of [DEFAULT_STOP_KEY, "fn", "fn / fn⌃", "⌃⌥⇧⌘Space"]) {
+      const STILL_RECORDING_LINE = stillRecordingLine(key);
+      expect(
+        fitsSideDockStrip(STILL_RECORDING_LINE),
+        `${STILL_RECORDING_LINE} is ${stripTextWidthPx(STILL_RECORDING_LINE)} px > ${SIDE_DOCK_TEXT_PX}`,
+      ).toBe(true);
+      expect(STILL_RECORDING_LINE.endsWith(`${key} to stop`)).toBe(true);
+    }
   });
 
   it("float.css shows the strip while still recording, though `listening` keeps it hidden", () => {
@@ -884,7 +894,7 @@ describe("yap-qa-hotkey-walk-binding — fn alone under fn⌃ says why", () => {
     const lib = readSibling("../../src-tauri/src/lib.rs");
     expect(lib).toContain(`const FN_HINT_EVENT: &str = "${FN_HINT_EVENT}";`);
     expect(stripLine("Ready", false, FN_HINT_LINE)).toBe(FN_HINT_LINE);
-    expect(stripLine("Ready", true, FN_HINT_LINE)).toBe(STILL_RECORDING_LINE);
+    expect(stripLine("Ready", true, FN_HINT_LINE)).toBe(stillRecordingLine());
     expect(stripLine("Ready", false, null)).toBe("Ready");
   });
 
@@ -893,7 +903,7 @@ describe("yap-qa-hotkey-walk-binding — fn alone under fn⌃ says why", () => {
     expect(css).toMatch(/html\[data-fn-hint="true"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
     const shell = readSibling("../float-main.tsx");
     expect(shell).toContain("listen<string>(FN_HINT_EVENT");
-    expect(shell).toContain("stripLine(line, stillRecording, fnHint)");
+    expect(shell).toContain("stripLine(line, stillRecording, fnHint, chordLabel)");
   });
 });
 
@@ -962,8 +972,8 @@ describe("Y5-J — accessible names and the one live region", () => {
       readSibling(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*\/\/.*$/gm, "");
     for (const file of ["./PillShell.tsx", "./YappyPill.tsx"]) {
       const src = code(file);
-      expect(src, file).toContain("<PhaseAnnouncer phase={gate} />");
-      expect(src, file).toContain("aria-label={phaseAccessibleName(gate, progress)}");
+      expect(src, file).toContain("<PhaseAnnouncer phase={gate} chordLabel={chordLabel} />");
+      expect(src, file).toContain("aria-label={phaseAccessibleName(gate, progress, chordLabel)}");
       // `role="status"` is an IMPLICIT polite live region: a second one here
       // would read every chunk tick on top of the announcer.
       expect(src, file).not.toMatch(/role="status"/);
@@ -1166,5 +1176,76 @@ describe("yap24-PILL2 take_stage", () => {
   it("decoding never hides real chunk progress", () => {
     expect(reduce2("transcribing", stage("decoding"))).toBe("transcribing");
     expect(reduce2("model-loading", stage("decoding"))).toBe("thinking");
+  });
+});
+
+describe("yap24-PILL4 — hands-free looks different from hold", () => {
+  const REBOUND = "⌃⌥H";
+  const rec = (handsFree: boolean): TakeStatus => ({ recording: true, busy: false, handsFree });
+
+  it("a hands-free status (lib.rs hands_free) selects listening-locked; a hold stays listening", () => {
+    expect(reduceTakePhase("idle", { type: "status", status: rec(true) })).toBe("listening-locked");
+    expect(reduceTakePhase("idle", { type: "status", status: rec(false) })).toBe("listening");
+    // A hold latched mid-take (the hands-free chord while holding) re-labels.
+    expect(reduceTakePhase("listening", { type: "status", status: rec(true) })).toBe("listening-locked");
+    expect(isLegalTransition("listening", "listening-locked")).toBe(true);
+    // And it ends exactly like a hold: never `done`, never `idle`.
+    const off: TakeStatus = { recording: false, busy: false };
+    expect(reduceTakePhase("listening-locked", { type: "status", status: off })).toBe("thinking");
+    expect(reduceTakePhase("listening-locked", { type: "progress" })).toBe("transcribing");
+    expect(reduceTakePhase("listening-locked", { type: "status", status: { ...off, lastError: "x" } })).toBe("error");
+  });
+
+  it("the shell's ranking keeps the latch: the gate reducer's plain listening never wins over it", () => {
+    const gate = reduceGatePhase("idle", { type: "recording", recording: true });
+    expect(gate).toBe("listening");
+    expect(winningPhase(gate, "listening-locked")).toBe("listening-locked");
+    expect(winningPhase("blocked", "listening-locked")).toBe("blocked");
+    expect(reduceGatePhase("listening-locked", { type: "license_required" })).toBe("listening-locked");
+  });
+
+  it("is a live, unbounded take that keeps the frame loop and the commentary running", () => {
+    expect(isListening("listening-locked")).toBe(true);
+    expect(phaseVisual("listening-locked").tone).toBe("live");
+    expect(PHASE_HOLD_MS["listening-locked"]).toBeNull();
+    expect(ALL_LIVE_PHASES).toContain("listening-locked");
+    expect(PHASE_ID["listening-locked"]).toBe("listening_locked");
+    expect(framePlan("listening-locked", { level: 0, busyVisuals: false, reduceMotion: false, settled: true }).mode)
+      .toBe("raf");
+  });
+
+  it("the stop hint names a REBOUND key and the old literal does not survive", () => {
+    const label = phaseVisual("listening-locked", REBOUND).label;
+    expect(label).toBe(`Hands-free — ${REBOUND} to stop`);
+    expect(label).not.toContain("fn");
+    expect(label).not.toContain("tap fn");
+    expect(handsFreeLabel(REBOUND)).toBe(label);
+    // The accessible name and the one announcement say the same thing.
+    expect(phaseAccessibleName("listening-locked", null, REBOUND)).toBe(label);
+    expect(phaseAnnouncement("listening-locked", REBOUND)).toBe(label);
+    // The default (before the first status lands) is the backend's default hold key.
+    expect(phaseVisual("listening-locked").label).toBe(`Hands-free — ${DEFAULT_STOP_KEY} to stop`);
+  });
+
+  it("the stop hint plus the lock chip fits a side dock, and a very long rebind keeps the key", () => {
+    for (const key of [DEFAULT_STOP_KEY, "fn", "fn / fn⌃", "⌃⌥⇧⌘Space", REBOUND]) {
+      const line = handsFreeLabel(key);
+      expect(stripTextWidthPx(line) + LOCK_CHIP_PX, line).toBeLessThanOrEqual(SIDE_DOCK_TEXT_PX);
+      expect(line).toContain(key);
+    }
+    expect(handsFreeLabel("⌃⌥⇧⌘Backspace")).toBe("⌃⌥⇧⌘Backspace to stop");
+    expect(handsFreeLabel("  ")).toContain(DEFAULT_STOP_KEY);
+  });
+
+  it("the shell wires it: float-main reads hands_free/chordLabel, draws the lock chip, and float.css shows the strip", () => {
+    const shell = readSibling("../float-main.tsx");
+    expect(shell).toContain("handsFree: !!st.handsFree");
+    expect(shell).toContain("handsFreeLabel(chordLabel)");
+    expect(shell).toContain('className="lock-chip"');
+    expect(shell).toContain("stripLine(line, stillRecording, fnHint, chordLabel)");
+    const css = readSibling("../float.css");
+    expect(css).toMatch(/html\[data-phase="listening_locked"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
+    const rust = readSibling("../../src-tauri/src/lib.rs");
+    expect(rust).toContain("pub chord_label: String");
   });
 });

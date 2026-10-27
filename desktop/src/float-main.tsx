@@ -32,6 +32,9 @@ import {
   withBlind,
   TAKE_STAGE_EVENT,
   type TakeStageNotice,
+  DEFAULT_STOP_KEY,
+  handsFreeLabel,
+  isListening,
   stripLine,
   FN_HINT_EVENT,
   FN_HINT_SHOW_MS,
@@ -54,6 +57,7 @@ import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock"
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
 import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
+import { Lock } from "lucide-react";
 import "./tokens.css";
 import "./float.css";
 // Y5-J — the one global focus ring (see main.tsx for why nothing may zero
@@ -146,6 +150,13 @@ interface BackendStatus extends BlindStatusSlice {
   lastErrorCode?: string | null;
   /** yap-hotkey-stop — the live take is in its "Still recording" state. */
   stillRecording?: boolean;
+  /**
+   * yap24-PILL4 — lib.rs `AppStatus.hands_free`: the take is LATCHED (fn
+   * double-tap or the hands-free chord), so the pill shows `listening-locked`.
+   */
+  handsFree?: boolean;
+  /** yap24-PILL4 — lib.rs `AppStatus.chord_label`: the key that ends the latch. */
+  chordLabel?: string;
 }
 
 /** The `transcript` event, for its word count only (lib.rs:2509). */
@@ -198,6 +209,8 @@ function Float() {
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
+  // yap24-PILL4 — the key that ends a hands-free take, off the status payload.
+  const [chordLabel, setChordLabel] = useState<string>(DEFAULT_STOP_KEY);
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
   // says so (throttled) and the strip shows it for FN_HINT_SHOW_MS.
   const [fnHint, setFnHint] = useState<string | null>(null);
@@ -342,11 +355,13 @@ function Float() {
         prev === null || nextBlind === null
           ? nextBlind
           : prev.app === nextBlind.app && prev.chord === nextBlind.chord ? prev : nextBlind);
+      setChordLabel(st.chordLabel?.trim() || DEFAULT_STOP_KEY);
       const status: TakeStatus = {
         recording: !!st.recording,
         busy: !!st.busy,
         engineLoading: !!st.engineLoading,
         lastError: st.lastError ?? null,
+        handsFree: !!st.handsFree,
       };
       setTake((prev) => reduceTakePhase(prev, { type: "status", status }));
     };
@@ -461,14 +476,14 @@ function Float() {
     // The same handle `data-phase` gives a screenshot or a browser test.
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
-  const pillProps = { gate: phase, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
+  const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
   useEffect(() => {
     document.documentElement.dataset.fnHint = fnHint ? "true" : "false";
   }, [fnHint]);
   // Y8-B — the slot context is decided ONCE, here, like every other shell
   // input: the phase, the dock, the meeting, Y3-C's real progress and the
   // listening estimate. The capsule lays the slots out; it decides none of it.
-  const listenEst = useListenEstimate(phase === "listening");
+  const listenEst = useListenEstimate(isListening(phase));
   const slots: SlotCtx = {
     phase,
     dock,
@@ -506,8 +521,14 @@ function Float() {
   // `error` is the one phase whose line is not a preset: it says WHAT went
   // wrong, in one line — the catalogue's line for the take's error code.
   // yap24-PILL3 — `blind` names the holder and the user's real chord.
+  //
+  // yap24-PILL4 — `listening-locked` is the other one: its line is the WAY OUT,
+  // built from the key the user bound (`chordLabel`), and it wears the shell's
+  // lock chip — at all three docks, for both characters, because it is drawn
+  // here and not inside either capsule.
   const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
+    ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
   return (
     <>
@@ -528,7 +549,10 @@ function Float() {
         // PhaseAnnouncer is the one place a phase change is announced, and a
         // second region here read every change twice.
       >
-        {stripLine(line, stillRecording, fnHint)}
+        {phase === "listening-locked" && (
+          <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
+        )}
+        {stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
     </>
   );

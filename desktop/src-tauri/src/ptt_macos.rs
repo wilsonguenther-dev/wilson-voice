@@ -298,9 +298,13 @@ pub const POLL_INTERVAL_MS: u64 = 30;
 /// A hold take with no key-up for this long, or any take during which the tap
 /// was disabled, puts "Still recording" on the pill.
 pub const STILL_RECORDING_AFTER_SECS: u64 = 90;
-/// The pill line for that state. Mirrored by `STILL_RECORDING_LINE` in
-/// `src/pill/live.ts` (tests/hotkey_stop.rs holds the two together).
-pub const STILL_RECORDING_MESSAGE: &str = "Still recording — tap fn to stop";
+/// The pill line for that state, naming the key the user actually bound
+/// (yap24-PILL4: `AppStatus.chord_label`, never a hardcoded "fn"). Mirrored by
+/// `stillRecordingLine` in `src/pill/live.ts` (tests/hotkey_stop.rs holds the
+/// two together).
+pub fn still_recording_message(stop_key: &str) -> String {
+    format!("Still recording — {stop_key} to stop")
+}
 /// Where the tap sits: kCGHIDEventTap, below every app, so the stop path never
 /// depends on Yap (or any particular app) being frontmost.
 pub const TAP_LOCATION: u32 = KCG_HID_EVENT_TAP;
