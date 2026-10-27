@@ -1,8 +1,10 @@
 //! YV99 · error-matrix row 16 — "sleep / lid close mid-meeting".
 //!
-//! Required behaviour: `NSWorkspaceWillSleepNotification` finalizes the journal
-//! and marks the meeting `paused_by_sleep`; on wake, Yap OFFERS resume as a new
-//! segment rather than pretending the gap did not happen.
+//! Required behaviour: will-sleep finalizes the journal and files the meeting
+//! `partial` with "Stopped when the Mac went to sleep." (yap24-NT10: a stop
+//! REASON, never a new state); on wake, Yap OFFERS resume as a new segment
+//! rather than pretending the gap did not happen. The IOKit hold that delays
+//! the sleep until that finalize is done is `tests/meeting_survives_sleep.rs`.
 //!
 //! This row is why YV91's power assertion is not enough on its own:
 //! `kIOPMAssertionTypePreventUserIdleSystemSleep` cannot stop a lid close or a
@@ -28,7 +30,7 @@
 //! the notification on a real sleep is AppKit's contract, not something an
 //! in-process test can trigger. The meeting closure in `lib.rs` delegates the
 //! whole meeting-side action to `MeetingController::on_sleep_wake`, which
-//! `will_sleep_stops_a_real_meeting_with_paused_by_sleep` drives against a
+//! `will_sleep_stops_a_real_meeting_as_partial` drives against a
 //! real controller (fix-239). The dictation closure needs a Tauri host
 //! (`cancel_recording`, the global Escape shortcut), so its half is checked
 //! against the source, not run.
@@ -40,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use wilson_voice_lib::meeting_control::{MeetingController, MeetingStatus, SleepStep, StatusSink};
 use wilson_voice_lib::meeting_energy::MeetingDiagnostics;
 use wilson_voice_lib::meeting_matrix::{
-    Coverage, SleepAction, SleepEvent, SleepPolicy, PAUSED_BY_SLEEP, ROWS,
+    Coverage, SleepAction, SleepEvent, SleepPolicy, ROWS, SLEEP_STOP_NOTE, SLEEP_STOP_REASON,
 };
 use wilson_voice_lib::permissions::{self, WatchReason};
 use wilson_voice_lib::power::{
@@ -185,7 +187,7 @@ fn one_observer_fans_out_to_dictation_meetings_and_permissions() {
             let now = *rec.lock().unwrap();
             let action = policy.lock().unwrap().drive(now, e);
             if action == SleepAction::FinalizeAndPause {
-                // what lib.rs does: controller.stop(PAUSED_BY_SLEEP)
+                // what lib.rs does: the controller stops it for sleep
                 *rec.lock().unwrap() = false;
             }
             m.lock().unwrap().push(action);
@@ -221,7 +223,7 @@ fn one_observer_fans_out_to_dictation_meetings_and_permissions() {
     );
     assert!(
         !*meeting_recording.lock().unwrap(),
-        "meeting stopped {PAUSED_BY_SLEEP}"
+        "meeting stopped: {SLEEP_STOP_REASON}"
     );
     assert_eq!(*perms.lock().unwrap(), vec![None, Some(WatchReason::Wake)]);
     observer.unregister();
@@ -362,7 +364,7 @@ fn recording() -> SleepPolicy {
 }
 
 #[test]
-fn sleep_finalizes_and_marks_paused_by_sleep() {
+fn sleep_finalizes_and_records_the_sleep_stop() {
     let mut p = recording();
     assert!(p.is_recording());
 
@@ -375,10 +377,10 @@ fn sleep_finalizes_and_marks_paused_by_sleep() {
         "capture must stop before the machine goes down"
     );
     assert!(
-        p.paused_by_sleep(),
+        p.stopped_by_sleep(),
         "the meeting row records why it has a seam"
     );
-    assert_eq!(PAUSED_BY_SLEEP, "paused_by_sleep");
+    assert_eq!(SLEEP_STOP_NOTE, "Stopped when the Mac went to sleep.");
 }
 
 #[test]
@@ -400,7 +402,7 @@ fn wake_offers_resume_as_a_new_segment_never_a_pretended_continuity() {
     assert!(p.resume_accepted());
     assert!(p.is_recording());
     assert!(
-        !p.paused_by_sleep(),
+        !p.stopped_by_sleep(),
         "the seam is closed once the user resumes"
     );
 }
@@ -473,7 +475,7 @@ fn sleep_while_idle_does_nothing_at_all() {
     let mut p = SleepPolicy::new();
     assert_eq!(p.observe(SleepEvent::WillSleep), SleepAction::Ignore);
     assert_eq!(p.observe(SleepEvent::DidWake), SleepAction::Ignore);
-    assert!(!p.paused_by_sleep());
+    assert!(!p.stopped_by_sleep());
     assert!(!p.awaiting_resume());
 }
 
@@ -521,12 +523,13 @@ fn two_lid_closes_in_one_meeting_produce_two_offers_and_no_lost_state() {
 /// fix-239 — the finalize half of row 16, driven end to end: the REAL observer
 /// hears a posted will-sleep, the hub calls `MeetingController::on_sleep_wake`
 /// (the one call the `lib.rs` meeting closure makes), and a REAL recording
-/// meeting is stopped with the `paused_by_sleep` reason, read back from the
-/// meeting row's diagnostics blob. The wake that follows reports the offer
+/// meeting is stopped with the sleep stop reason, read back from the meeting
+/// row's diagnostics blob, and the row is filed `partial` with the one sentence
+/// (yap24-NT10). The wake that follows reports the offer
 /// (row 16b) and stops nothing.
 #[cfg(target_os = "macos")]
 #[test]
-fn will_sleep_stops_a_real_meeting_with_paused_by_sleep() {
+fn will_sleep_stops_a_real_meeting_as_partial() {
     let _guard = support::exclusive();
     let _centre = centre_lock();
     support::install_fake_engine();
@@ -567,7 +570,9 @@ fn will_sleep_stops_a_real_meeting_with_paused_by_sleep() {
         .diagnostics
         .expect("the stopped meeting carries diagnostics");
     let d: MeetingDiagnostics = serde_json::from_str(&blob).expect("valid JSON");
-    assert_eq!(d.stop_reason.as_deref(), Some(PAUSED_BY_SLEEP));
+    assert_eq!(d.stop_reason.as_deref(), Some(SLEEP_STOP_REASON));
+    assert_eq!(row.state, "partial", "a sleep-stopped meeting is partial");
+    assert_eq!(row.error.as_deref(), Some(SLEEP_STOP_NOTE));
 
     // And `lib.rs` hands the meeting to exactly this method.
     let lib = code_of(&src("lib.rs"));

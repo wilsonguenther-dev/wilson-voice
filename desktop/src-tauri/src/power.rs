@@ -17,7 +17,10 @@
 //! It also does not cover lid close or an explicit Sleep — nothing can. Those
 //! are matrix row #16's sleep/wake path, which Y1-B registers further down this
 //! file ([`SleepWakeObserver`], fanned out through [`SleepWakeHub`]): this
-//! assertion PAIRS WITH that handling, it does not replace it.
+//! assertion PAIRS WITH that handling, it does not replace it. yap24-NT10 adds
+//! the IOKit half of that path ([`on_power_message`]): `IORegisterForSystemPower`
+//! is what lets Yap HOLD a sleep it cannot prevent until the meeting journal is
+//! finalized, acknowledging with `IOAllowPowerChange` only afterwards.
 //!
 //! The assertion is released by `Drop`, so every exit path out of a meeting —
 //! normal stop, watchdog stop, an error return, a panic unwinding through the
@@ -184,6 +187,232 @@ pub fn dictation_should_park_take(event: SleepEvent, take_in_flight: bool) -> bo
     event == SleepEvent::WillSleep && take_in_flight
 }
 
+// ── yap24-NT10 · the IOKit sleep HOLD ───────────────────────────────────────
+//
+// `NSWorkspaceWillSleepNotification` is a courtesy: macOS does not wait for its
+// observers, so a meeting finalizing there races the machine going down. The
+// root power domain DOES wait. A client registered with
+// `IORegisterForSystemPower` receives `kIOMessageSystemWillSleep` before any
+// hardware powers off, and the sleep does not proceed until every client has
+// called `IOAllowPowerChange` — or 30 s pass (IOPMLib.h, read from the SDK
+// header for this item). So the order is the whole design: publish
+// `WillSleep` to the hub (the meeting consumer stops the capture, closes the
+// journal, writes the row `partial`, enqueues it), THEN acknowledge.
+//
+// The NSWorkspace observer above is kept (PR #239's registration, the one hub):
+// both deliver `WillSleep` for one sleep and every consumer is idempotent on
+// the second — `SleepPolicy` ignores a duplicate, dictation has no take left
+// to park, permissions does nothing on sleep. Wake stays NSWorkspace-only:
+// IOKit's wake messages must NOT be acknowledged and add nothing.
+
+/// `kIOMessageCanSystemSleep` — `iokit_common_msg(0x270)`. Idle sleep is being
+/// considered; must be acknowledged (allow) or cancelled (veto).
+pub const IO_MESSAGE_CAN_SYSTEM_SLEEP: u32 = 0xE000_0270;
+/// `kIOMessageSystemWillSleep` — `iokit_common_msg(0x280)`. A non-abortable
+/// sleep (lid close, Apple menu Sleep, an idle sleep nobody vetoed). MUST be
+/// acknowledged with `IOAllowPowerChange`.
+pub const IO_MESSAGE_SYSTEM_WILL_SLEEP: u32 = 0xE000_0280;
+/// `kIOMessageSystemWillNotSleep` — `iokit_common_msg(0x290)`. Never acknowledged.
+pub const IO_MESSAGE_SYSTEM_WILL_NOT_SLEEP: u32 = 0xE000_0290;
+/// `kIOMessageSystemHasPoweredOn` — `iokit_common_msg(0x300)`. Never acknowledged.
+pub const IO_MESSAGE_SYSTEM_HAS_POWERED_ON: u32 = 0xE000_0300;
+/// `kIOMessageSystemWillPowerOn` — `iokit_common_msg(0x320)`. Never acknowledged.
+pub const IO_MESSAGE_SYSTEM_WILL_POWER_ON: u32 = 0xE000_0320;
+
+/// What [`on_power_message`] did about one root-domain message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerReply {
+    /// `IOAllowPowerChange` was called (after the hub, for a will-sleep).
+    Acknowledged,
+    /// A message IOPMLib.h says must NOT be acknowledged; nothing was sent.
+    NotAcknowledged,
+}
+
+/// The ONE handler of an IOKit root-domain power message. The C callback
+/// registered by [`SleepWakeObserver`] calls exactly this, and
+/// `tests/meeting_survives_sleep.rs` injects `kIOMessageSystemWillSleep`
+/// through it with a recording `acknowledge`.
+///
+/// - will-sleep: every hub consumer runs to completion FIRST (the meeting is
+///   finalized and its row written), THEN `acknowledge` releases the sleep.
+/// - can-sleep (idle): acknowledged straight away. Yap does not veto idle sleep
+///   here; keeping a meeting awake through idle is [`PowerAssertion`]'s job, and
+///   if that assertion was refused the will-sleep that follows finalizes the
+///   meeting like any other sleep.
+/// - everything else: not acknowledged, per IOPMLib.h.
+pub fn on_power_message(
+    hub: &SleepWakeHub,
+    message_type: u32,
+    acknowledge: impl FnOnce(),
+) -> PowerReply {
+    match message_type {
+        IO_MESSAGE_SYSTEM_WILL_SLEEP => {
+            hub.publish(SleepEvent::WillSleep);
+            acknowledge();
+            PowerReply::Acknowledged
+        }
+        IO_MESSAGE_CAN_SYSTEM_SLEEP => {
+            acknowledge();
+            PowerReply::Acknowledged
+        }
+        _ => PowerReply::NotAcknowledged,
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod hold {
+    use super::{on_power_message, SleepWakeHub};
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    type IoConnect = u32;
+    type IoObject = u32;
+    type IoReturn = i32;
+    type NotificationPort = *mut c_void;
+    type RunLoopSource = *mut c_void;
+    type RunLoop = *mut c_void;
+    type CfString = *const c_void;
+    type InterestCallback = extern "C" fn(*mut c_void, IoObject, u32, *mut c_void);
+
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IORegisterForSystemPower(
+            refcon: *mut c_void,
+            the_port_ref: *mut NotificationPort,
+            callback: InterestCallback,
+            notifier: *mut IoObject,
+        ) -> IoConnect;
+        fn IODeregisterForSystemPower(notifier: *mut IoObject) -> IoReturn;
+        fn IOAllowPowerChange(kernel_port: IoConnect, notification_id: isize) -> IoReturn;
+        fn IONotificationPortGetRunLoopSource(notify: NotificationPort) -> RunLoopSource;
+        fn IONotificationPortDestroy(notify: NotificationPort);
+        fn IOServiceClose(connect: IoConnect) -> IoReturn;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRunLoopGetMain() -> RunLoop;
+        fn CFRunLoopAddSource(rl: RunLoop, source: RunLoopSource, mode: CfString);
+        fn CFRunLoopRemoveSource(rl: RunLoop, source: RunLoopSource, mode: CfString);
+        static kCFRunLoopCommonModes: CfString;
+    }
+
+    /// What the C callback needs: the hub to publish to and the root-domain
+    /// connection to acknowledge on. Boxed so its address is stable for the
+    /// `refcon`, freed only after the registration is gone.
+    struct Ctx {
+        hub: Arc<SleepWakeHub>,
+        root_port: AtomicU32,
+    }
+
+    extern "C" fn power_callback(
+        refcon: *mut c_void,
+        _service: IoObject,
+        message_type: u32,
+        message_argument: *mut c_void,
+    ) {
+        if refcon.is_null() {
+            return;
+        }
+        // SAFETY: `refcon` is the `Ctx` box `PowerHold::register` leaked; it is
+        // freed in `Drop` only after the run-loop source is removed and the
+        // registration deregistered, both on the thread that delivers this.
+        let ctx = unsafe { &*(refcon as *const Ctx) };
+        let port = ctx.root_port.load(Ordering::Acquire);
+        // The notification id rides in `messageArgument` (IOPMLib.h).
+        let id = message_argument as isize;
+        // An unwinding panic across `extern "C"` aborts the process; the hub
+        // already catches consumer panics, this catches the rest.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            on_power_message(&ctx.hub, message_type, || {
+                // SAFETY: `port` is the live root-domain connection and `id`
+                // the notification id IOKit just handed us.
+                let r = unsafe { IOAllowPowerChange(port, id) };
+                if r != 0 {
+                    log::warn!("IOAllowPowerChange refused (IOReturn {r:#x})");
+                } else {
+                    log::info!("sleep acknowledged (message {message_type:#x})");
+                }
+            })
+        }));
+        if outcome.is_err() {
+            log::error!("power message {message_type:#x} handler panicked");
+        }
+    }
+
+    /// A live `IORegisterForSystemPower` registration whose notifications are
+    /// delivered on the MAIN run loop — the thread the NSWorkspace observer and
+    /// every hub consumer already run on.
+    pub struct PowerHold {
+        ctx: *mut Ctx,
+        port: NotificationPort,
+        notifier: IoObject,
+        root_port: IoConnect,
+        source: RunLoopSource,
+    }
+
+    // SAFETY: the raw handles are only touched in `register` and `Drop`; the
+    // IOKit and CFRunLoop calls made with them are documented thread-safe, and
+    // the callback state is behind `Arc` + atomics.
+    unsafe impl Send for PowerHold {}
+
+    impl PowerHold {
+        /// Register with the root power domain. `None` (logged) when IOKit
+        /// refuses — the NSWorkspace observer still finalizes, it just cannot
+        /// hold the sleep while it does.
+        pub fn register(hub: Arc<SleepWakeHub>) -> Option<Self> {
+            let ctx = Box::into_raw(Box::new(Ctx {
+                hub,
+                root_port: AtomicU32::new(0),
+            }));
+            let mut port: NotificationPort = std::ptr::null_mut();
+            let mut notifier: IoObject = 0;
+            // SAFETY: valid out-params; `ctx` outlives the registration (Drop).
+            let root_port = unsafe {
+                IORegisterForSystemPower(ctx.cast(), &mut port, power_callback, &mut notifier)
+            };
+            if root_port == 0 || port.is_null() {
+                log::warn!("IORegisterForSystemPower refused — sleep cannot be held for a meeting");
+                // SAFETY: never handed to a live registration.
+                drop(unsafe { Box::from_raw(ctx) });
+                return None;
+            }
+            // SAFETY: `ctx` is live; set before the source can deliver anything.
+            unsafe { (*ctx).root_port.store(root_port, Ordering::Release) };
+            // SAFETY: `port` is the notification port IOKit just allocated.
+            let source = unsafe { IONotificationPortGetRunLoopSource(port) };
+            // SAFETY: CFRunLoop is thread-safe; the source is owned by `port`.
+            unsafe { CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes) };
+            log::info!("sleep hold registered (IORegisterForSystemPower)");
+            Some(Self {
+                ctx,
+                port,
+                notifier,
+                root_port,
+                source,
+            })
+        }
+    }
+
+    impl Drop for PowerHold {
+        fn drop(&mut self) {
+            // SAFETY: each handle came from a successful `register` and is torn
+            // down exactly once, in the order IOPMLib.h prescribes (deregister,
+            // then destroy the port, then close the connection). The context is
+            // freed last, when nothing can call back into it.
+            unsafe {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), self.source, kCFRunLoopCommonModes);
+                IODeregisterForSystemPower(&mut self.notifier);
+                IONotificationPortDestroy(self.port);
+                IOServiceClose(self.root_port);
+                drop(Box::from_raw(self.ctx));
+            }
+            log::info!("sleep hold unregistered");
+        }
+    }
+}
+
 type Subscriber = Box<dyn Fn(SleepEvent) + Send + Sync + 'static>;
 
 /// The fan-out. The observer publishes ONE event here and every subscriber sees
@@ -265,6 +494,9 @@ mod observer {
     pub struct SleepWakeObserver {
         center: Retained<NSNotificationCenter>,
         tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
+        /// yap24-NT10 — the IOKit registration that HOLDS a sleep until the hub
+        /// has run. Same hub, same lifetime as the two tokens.
+        hold: Option<super::hold::PowerHold>,
     }
 
     // SAFETY: the tokens are opaque observer objects that are only ever handed
@@ -288,6 +520,7 @@ mod observer {
                 ]
             };
             let mut tokens = Vec::with_capacity(names.len());
+            let hold = super::hold::PowerHold::register(Arc::clone(&hub));
             for (name, event) in names {
                 let hub = Arc::clone(&hub);
                 let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
@@ -310,12 +543,21 @@ mod observer {
                 "sleep/wake observer registered ({} notifications)",
                 tokens.len()
             );
-            Self { center, tokens }
+            Self {
+                center,
+                tokens,
+                hold,
+            }
         }
 
         /// How many notifications this observer still holds. 2 while live.
         pub fn registered(&self) -> usize {
             self.tokens.len()
+        }
+
+        /// Is the IOKit sleep hold (`IORegisterForSystemPower`) live?
+        pub fn holds_sleep(&self) -> bool {
+            self.hold.is_some()
         }
 
         /// Remove both registrations now.
@@ -324,6 +566,9 @@ mod observer {
         }
 
         fn remove_all(&mut self) {
+            // The IOKit hold goes first: after this nothing can publish to the
+            // hub from a power message.
+            drop(self.hold.take());
             let n = self.tokens.len();
             for token in self.tokens.drain(..) {
                 let obj: &AnyObject = token.as_ref();
@@ -358,6 +603,9 @@ mod observer {
         }
         pub fn registered(&self) -> usize {
             0
+        }
+        pub fn holds_sleep(&self) -> bool {
+            false
         }
         pub fn unregister(self) {}
     }
