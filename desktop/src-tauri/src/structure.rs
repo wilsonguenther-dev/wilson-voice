@@ -490,6 +490,7 @@ fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]
         .next()
         .is_some_and(|t| t.ends_with([',', ':']));
     let first_item = items.first().map(|f| first_word(f)).unwrap_or_default();
+    let list_subject = subject_stem(&first_item);
     let complete = items.len() >= MIN_LIST_ITEMS;
     match cue {
         "then" => {
@@ -497,7 +498,7 @@ fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]
                 return true;
             }
             !set_off
-                && (subject_is_narration(next, &first_item, complete)
+                && (subject_is_narration(next, list_subject, complete)
                     || (NARRATIVE_DETERMINERS.contains(&next)
                         && complete
                         && !items
@@ -511,31 +512,46 @@ fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]
                         .get(1)
                         .is_some_and(|w| AT_LAST_AFTER_AT.contains(&w.as_str())));
             // "Finally I'm home": a subject contraction is a state reached —
-            // unless it is the subject the list is told with ("First, I'm
-            // going to check email. ... Finally I'm going to write the
-            // report."), which keeps leading its steps.
+            // unless its pronoun is the subject the list is told with
+            // ("First, we design it. ... Finally we're going to ship it.",
+            // "First, I'll check email. ... Finally I'm going to write the
+            // report."), which keeps leading its steps. Even then, "at last"
+            // wins when an at-last word follows ("Finally we're home").
             let contraction = next.contains('\'')
                 && NARRATIVE_SUBJECTS.contains(&next)
-                && !(NARRATIVE_SUBJECTS.contains(&first_item.as_str()) && next == first_item);
+                && (list_subject != subject_stem(next)
+                    || lead_words(rest, 2)
+                        .get(1)
+                        .is_some_and(|w| AT_LAST_WORDS.contains(&w.as_str())));
             !set_off
-                && (at_last || contraction || subject_is_narration(next, &first_item, complete))
+                && (at_last || contraction || subject_is_narration(next, list_subject, complete))
         }
         _ => false,
     }
 }
 
+/// The pronoun a lowercase lead word is told with: "we're" and "we" are both
+/// "we", "i'll" and "i'm" are both "i". `None` when the word is not a subject
+/// pronoun (an imperative or noun-phrase item).
+fn subject_stem(word: &str) -> Option<&str> {
+    let stem = word.split('\'').next().unwrap_or(word);
+    NARRATIVE_SUBJECTS.contains(&stem).then_some(stem)
+}
+
 /// A subject right after a bare continuation cue: narration, or a step of a
-/// list told that way? `first_item` is the list's first word, lowercase.
-fn subject_is_narration(next: &str, first_item: &str, complete: bool) -> bool {
+/// list told that way? `list_subject` is the pronoun the list's first item
+/// leads with ([`subject_stem`]), `None` for an imperative list.
+fn subject_is_narration(next: &str, list_subject: Option<&str>, complete: bool) -> bool {
     if !NARRATIVE_SUBJECTS.contains(&next) {
         return false;
     }
-    if NARRATIVE_SUBJECTS.contains(&first_item) {
+    if let Some(subject) = list_subject {
         // A list told with a subject ("First, we design it. Then we build
         // it.") takes any subject until it is a list, then runs on for as
-        // long as THAT subject leads: "Then we ship it." is step four, "Then
-        // I went home." is the story after it.
-        return complete && next != first_item;
+        // long as THAT subject leads, contracted or not: "Then we ship it." /
+        // "Then we're shipping it." is step four, "Then I went home." is the
+        // story after it.
+        return complete && subject_stem(next) != Some(subject);
     }
     // An imperative list: "Then you tap General." is a step addressed to the
     // reader; any other subject ("Then I drove home.") is narration.
@@ -1421,6 +1437,62 @@ mod tests {
             (
                 "First, we packed. Then we drove ten hours. Finally I'm home.",
                 "First, we packed. Then we drove ten hours. Finally I'm home.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
+    }
+
+    #[test]
+    fn structure_finally_contraction_of_the_list_pronoun_is_a_step() {
+        // needs-human sweep, #273 round 3: the list's pronoun and its
+        // contraction are one subject ("we" / "we're", "I'll" / "I'm"), so a
+        // planning list keeps its Finally step exactly as main did.
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, we design it. Then we build it. Finally we're going to ship it.",
+                "1. We design it.\n2. We build it.\n3. We're going to ship it.",
+            ),
+            (
+                "First, I need to check email. Then I need to call Bob. Finally I'm going to write the report.",
+                "1. I need to check email.\n2. I need to call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, I'll check email. Then I'll call Bob. Finally I'm going to write the report.",
+                "1. I'll check email.\n2. I'll call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, you open it. Then you read it. Finally you're going to sign it.",
+                "1. You open it.\n2. You read it.\n3. You're going to sign it.",
+            ),
+            (
+                "First, I check email. Then I'm calling Bob. Finally I'm writing the report.",
+                "1. I check email.\n2. I'm calling Bob.\n3. I'm writing the report.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally we're going to ship it.",
+                "1. We design it.\n2. We build it.\n3. We test it.\n4. We're going to ship it.",
+            ),
+            // Guards: "at last" still wins when an at-last word follows the
+            // list's own pronoun, and a different pronoun is still the story.
+            (
+                "First, we pack. Then we drive. Then we unload. Finally we're home.",
+                "1. We pack.\n2. We drive.\n3. We unload.\nFinally we're home.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally I'm done.",
+                "1. We design it.\n2. We build it.\n3. We test it.\nFinally I'm done.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally I'm going to sleep.",
+                "1. We design it.\n2. We build it.\n3. We test it.\nFinally I'm going to sleep.",
             ),
         ] {
             let out = structure_text(s, &[], md);
