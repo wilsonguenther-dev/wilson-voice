@@ -52,8 +52,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
-// Y6-A: +1 (dictation_proven).
-const APP_SETTINGS_FIELD_COUNT: usize = 41;
+// Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
+const APP_SETTINGS_FIELD_COUNT: usize = 43;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -71,6 +71,9 @@ fn fully_populated() -> AppSettings {
         // test asserts a byte-for-byte round trip, not a migration.
         schema_version: 2,
         language: "fr".into(),
+        // Y10-A — non-default on purpose, so the round trip proves both persist.
+        language_set: vec!["fr".into(), "en".into()],
+        language_auto: false,
         auto_paste: false,
         hotkey_label: "fn".into(),
         show_floating_pill: false,

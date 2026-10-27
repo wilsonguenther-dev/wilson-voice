@@ -1060,6 +1060,40 @@ where
         structure_format,
         style,
         pauses,
+        crate::languages::DEFAULT_LANGUAGE,
+        apply_dictionary,
+        polish,
+    )
+}
+
+/// Y10-A — [`run_cleanup_structured_traced`] for a take in `language` (ISO
+/// code). Every stage that `languages::CleanupStage` marks English-shaped is
+/// SKIPPED for a non-English take rather than applying English rules to it;
+/// an English (or blank) language is exactly the old pipeline.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cleanup_for_language<D, P>(
+    raw: &str,
+    level: CleanupLevel,
+    mode: DictationMode,
+    structure_format: crate::structure::StructureFormat,
+    style: Style,
+    pauses: &[PauseSpan],
+    language: &str,
+    apply_dictionary: D,
+    polish: P,
+) -> (String, FormattingTrace)
+where
+    D: Fn(&str) -> String,
+    P: Fn(&str) -> Result<String, &'static str>,
+{
+    cleanup_pipeline(
+        raw,
+        level,
+        mode,
+        structure_format,
+        style,
+        pauses,
+        language,
         apply_dictionary,
         polish,
     )
@@ -1094,6 +1128,7 @@ where
         structure_format,
         style,
         pauses,
+        crate::languages::DEFAULT_LANGUAGE,
         apply_dictionary,
         polish,
     )
@@ -1108,6 +1143,7 @@ fn cleanup_pipeline<D, P>(
     structure_format: crate::structure::StructureFormat,
     style: Style,
     pauses: &[PauseSpan],
+    language: &str,
     apply_dictionary: D,
     polish: P,
 ) -> (String, FormattingTrace)
@@ -1127,7 +1163,8 @@ where
     let mut text = raw.to_string();
 
     // Stage 1 — dictionary/vocabulary replacement.
-    if level.runs_dictionary() {
+    use crate::languages::CleanupStage as Stage;
+    if level.runs_dictionary() && Stage::Dictionary.runs_for(language) {
         trace.stages.push(STAGE_DICTIONARY);
         let out = apply_dictionary(&text);
         if !out.trim().is_empty() {
@@ -1135,7 +1172,7 @@ where
         }
     }
     // Stage 2 — backtrack cleanup (fillers + self-correction).
-    if level.runs_backtrack() {
+    if level.runs_backtrack() && Stage::Backtrack.runs_for(language) {
         trace.stages.push(STAGE_BACKTRACK);
         let out = clean_backtrack(&text);
         if !out.trim().is_empty() {
@@ -1146,7 +1183,7 @@ where
     // internally, so at Medium/High the standalone Stage 2 above is idempotent.
     if level.runs_format() {
         trace.stages.push(STAGE_RULES);
-        if should_format(mode) {
+        if should_format(mode) && Stage::ListFormat.runs_for(language) {
             let out = format_dictation(&text);
             if !out.trim().is_empty() {
                 text = out;
@@ -1156,13 +1193,15 @@ where
         // introduces line breaks, and the ones before it normalise whitespace.
         // `apply_spoken_marks` carries its own mode gate (inert in `Code`), so
         // punctuation dictated by name still lands in `Plain`.
-        let out = apply_spoken_marks(&text, mode);
-        if !out.trim().is_empty() {
-            text = out;
+        if Stage::SpokenMarks.runs_for(language) {
+            let out = apply_spoken_marks(&text, mode);
+            if !out.trim().is_empty() {
+                text = out;
+            }
         }
         // R13 (YV62) — email shape. After the marks, so a spoken "period" is
         // already a glyph when the sign-off is cut off the tail.
-        if mode == DictationMode::Email {
+        if mode == DictationMode::Email && Stage::EmailShape.runs_for(language) {
             let out = format_email_shape(&text);
             if !out.trim().is_empty() {
                 text = out;
@@ -1182,7 +1221,11 @@ where
                 at_fraction: p.at_voiced_fraction,
             })
             .collect();
-        let structured = crate::structure::structure_text(&text, &spans, structure_format);
+        let structured = if Stage::Structure.runs_for(language) {
+            crate::structure::structure_text(&text, &spans, structure_format)
+        } else {
+            text.clone()
+        };
         let did_structure = structured != text && !structured.trim().is_empty();
         if did_structure {
             text = structured;
@@ -1193,7 +1236,7 @@ where
         // text that already carries line breaks, so cutting paragraphs first
         // would silently disable the greeting/sign-off rule. Inert in `Chat`
         // (a newline sends the message), `Code`, `Plain` and `List`.
-        if !did_structure {
+        if !did_structure && Stage::Paragraphs.runs_for(language) {
             let out = insert_paragraphs(&text, pauses, mode, style);
             if !out.trim().is_empty() {
                 text = out;
@@ -1202,7 +1245,7 @@ where
         // R3/R14 (YV62) — the tone-dialled trailing period, last of the rules:
         // it decides about the FINAL character, so everything that can add one
         // has to have run already. Inert in `Code`/`Plain`, which stay verbatim.
-        if should_format(mode) {
+        if should_format(mode) && Stage::TrailingPeriod.runs_for(language) {
             let out = strip_trailing_period(&text, mode, style);
             if !out.trim().is_empty() {
                 text = out;
@@ -1210,7 +1253,9 @@ where
         }
     }
     // Stage 4 — local-LLM polish (guarded). `None`/empty ⇒ keep current text.
-    if level.runs_llm() {
+    if level.runs_llm() && !Stage::Polish.runs_for(language) {
+        trace.llm_skip_reason = Some("non_english_take");
+    } else if level.runs_llm() {
         match polish(&text) {
             Ok(out) if !out.trim().is_empty() => {
                 text = out;

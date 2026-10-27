@@ -94,7 +94,12 @@ export interface AppSettings {
    * backend's migration state round-trips untouched.
    */
   schemaVersion?: number;
+  /** Primary dictation language (ISO code). */
   language: string;
+  /** Y10-A — the languages the user speaks; empty = just `language`. */
+  languageSet?: string[];
+  /** Y10-A — auto-detect among `languageSet` (held to it). */
+  languageAuto?: boolean;
   autoPaste: boolean;
   hotkeyLabel: string;
   showFloatingPill: boolean;

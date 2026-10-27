@@ -328,6 +328,18 @@ pub trait Transcriber: Send + 'static {
     /// only on the way out. Without this the second preemption would find an
     /// engine that aborts every decode instantly.
     fn reset_cancel(&mut self) {}
+
+    /// Y10-A — the loaded model's PROBED language support. `None` for an
+    /// engine that reports nothing; `languages::plan_decode` then treats it as
+    /// unable to detect, so a picker never claims what the model cannot do.
+    fn language_support(&self) -> Option<crate::languages::LanguageSupport> {
+        None
+    }
+
+    /// Y10-A — the language the most recent decode detected, if any.
+    fn last_detected_language(&self) -> Option<String> {
+        None
+    }
 }
 
 impl Transcriber for asr_engine::AsrEngine {
@@ -357,6 +369,14 @@ impl Transcriber for asr_engine::AsrEngine {
     fn reset_cancel(&mut self) {
         asr_engine::reset_cancel(self);
     }
+
+    fn language_support(&self) -> Option<crate::languages::LanguageSupport> {
+        Some(asr_engine::language_support(self))
+    }
+
+    fn last_detected_language(&self) -> Option<String> {
+        asr_engine::last_detected_language(self)
+    }
 }
 
 /// One finished transcription as the dictation pipeline consumes it: the text
@@ -384,6 +404,13 @@ pub struct AsrOutput {
     pub chunks_failed: usize,
     /// Never carries transcript text.
     pub degraded_reason: Option<String>,
+    /// Y10-A — the ISO code the take was decoded in (`languages::decode_in_set`).
+    /// The cleanup pipeline skips its English-shaped stages when this is not
+    /// English.
+    pub language: String,
+    /// Y10-A — what the user must be told about the language plan (e.g. the
+    /// model cannot detect languages), or `None`.
+    pub language_notice: Option<String>,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
@@ -1505,6 +1532,32 @@ impl TranscriptionManager {
             &DictationChunking::default(),
             observer,
         )
+    }
+
+    /// Y10-A — the probed language support of `model_id`, loading it first
+    /// if it is not resident. Pinned like a dictation decode, so the answer is
+    /// about the dictation's model and never the meeting's.
+    pub fn language_support_on(
+        &self,
+        model_id: &str,
+        model_path: &Path,
+    ) -> Result<Option<crate::languages::LanguageSupport>, String> {
+        self.leased_interactive_on(Some((model_id, model_path)), |engine| {
+            Ok(engine.language_support())
+        })
+    }
+
+    /// Y10-A — the language `model_id`'s engine detected on its last decode.
+    /// `None` if a different model decoded in between (the slot was swapped),
+    /// which `languages::resolve_detected` treats as "re-decode as primary".
+    pub fn last_detected_language_on(
+        &self,
+        model_id: &str,
+        model_path: &Path,
+    ) -> Result<Option<String>, String> {
+        self.leased_interactive_on(Some((model_id, model_path)), |engine| {
+            Ok(engine.last_detected_language())
+        })
     }
 
     /// The real body every take entry point delegates to. `expect` pins every
