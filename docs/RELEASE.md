@@ -36,8 +36,10 @@ bundle has no designated requirement either, and it passes any "no ad-hoc"
 check. Neither is ever produced on purpose here.
 
 The identity is resolved at sign time from `APPLE_SIGNING_IDENTITY`, or from the
-keychain by `scripts/sign-local.sh`. No certificate name, team id or SHA is
-committed to this repo.
+keychain by `scripts/sign-local.sh`. No certificate name or SHA is committed to
+this repo. The team id **VHYV8C2JNU** is pinned in `scripts/qa/release-smoke.sh` and
+`scripts/smoke-dmg.sh` — it is public (every signed binary carries it), and the
+smoke fails any release whose `TeamIdentifier` is not this one.
 
 | | RELEASE | LOCAL |
 |---|---|---|
@@ -296,6 +298,68 @@ signs anything they are expected to accept.
    repo is private. The app takes the newest version across both endpoints, so a
    late re-stage only delays private-window updates; it never hides a GitHub
    release from anyone.
+8. **DMG smoke (mandatory — a release is not announced until it passes).** After
+   publishing (step 6) and staging (step 7), on any Mac, against the DMG asset
+   users actually download:
+
+   ```bash
+   gh release download v0.7.1 --repo wilsonguenther-dev/wilson-voice \
+     --pattern '*.dmg' --dir "$SMOKE_DIR"
+   scripts/smoke-dmg.sh "$SMOKE_DIR"/*.dmg
+   ```
+
+   Exit 0 (`smoke-dmg: OK profile=release`) or nothing is announced — see
+   [DMG smoke](#dmg-smoke--scriptssmoke-dmgsh) for what it asserts.
+
+## DMG smoke — `scripts/smoke-dmg.sh`
+
+*Y7-E.* Required before a release is announced, on both the tagged and the manual
+path. It is the user's side of the pipeline: everything a first-time user's Mac
+does to the DMG before Yap ever runs, checked without installing anything. The
+DMG is mounted `-readonly -nobrowse` on a temp mountpoint, the updater payload
+is downloaded to a temp dir, both are removed on exit, and nothing is copied
+into `/Applications` or launched — so it is safe to run next to the installed
+Yap. Its output prints no certificate serial, no key material and no password;
+it is safe to paste into a PR.
+
+```bash
+scripts/smoke-dmg.sh <path-to-dmg>                     # RELEASE profile (default)
+scripts/smoke-dmg.sh --profile local <path-to-dmg>     # LOCAL profile
+scripts/smoke-dmg.sh --self-test                       # proves every check can fail
+```
+
+| check | asserts (RELEASE) | LOCAL |
+|---|---|---|
+| `gatekeeper` | `spctl --assess --type exec -vv` on the `.app` inside the DMG → `accepted`, `source=Notarized Developer ID` | reported, never asserted |
+| `stapled` | `xcrun stapler validate` passes on the app or the DMG | not run |
+| `signature` | `codesign -dv --verbose=4`: not `Signature=adhoc`, leaf is `Developer ID Application`, `TeamIdentifier=VHYV8C2JNU`, hardened runtime | `Apple Development` (or Developer ID), any team, runtime |
+| `seal` | `codesign --verify --deep --strict` | same |
+| `requirement` | designated requirement names `identifier "com.wilsonguenther.wilson-voice"` + a certificate, no `cdhash` (stable across builds = TCC grants survive) | same |
+| `entitlements` | `codesign -d --entitlements`: `app-sandbox` present and **false** (the value, not the key), `device.audio-input` true, `cs.disable-library-validation` and `cs.allow-dyld-environment-variables` absent | same |
+| `bundle_id` | `CFBundleIdentifier` is still `com.wilsonguenther.wilson-voice` (a rename resets every user's TCC grants) | same |
+| `info_plist` | `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `NSAppleEventsUsageDescription` present and non-empty | same |
+| `sidecars` | `yap-polish` and `yap-diarize` are in the bundle (Tauri places `externalBin` in `Contents/MacOS`) and each passes the same identity/runtime check, `--verify --strict`, sandbox not true, dylib-injection pair absent | same |
+| `detritus` | no `com.apple.quarantine` / `FinderInfo` / `ResourceFork` xattrs and no `._*` / `.DS_Store` / `Icon\r` inside the bundle — the "resource fork, Finder information, or similar detritus" codesign flake, by name | same |
+| `updater` | UPD-B's triple, for every endpoint compiled into the shipped binary: `latest.json` resolves with every required field, its `url` (`.app.tar.gz`) and `url.sig` resolve, the `.sig` equals the manifest's signature, and the minisign signature verifies against the pubkey **extracted from the shipped binary** (python3 + OpenSSL 3). When the manifest version equals the DMG's, the payload's CDHash must equal the DMG app's — the update is the same build | only with `--updater-manifest` |
+
+The updater check reads what the endpoints serve *now*, which is why step 8 runs
+after publishing and staging. `--updater-manifest URL|FILE` (repeatable) checks a
+manifest that is not live yet; `--no-updater "<reason>"` skips it with the reason
+printed on the `check=updater skip` line — a skip without a named reason is a
+usage error.
+
+`--require-artifact-or-name-the-reason` is the loop's form: it smokes
+`$YAP_SMOKE_DMG` (or the newest DMG under the Tauri bundle dirs) for real with
+`$YAP_SMOKE_PROFILE` (default `release`), and with no artifact prints
+`smoke-dmg: SKIP reason=no-artifact (...)` naming every place it looked, then runs
+`--self-test`. It is NOT part of the per-item gate: a signed, notarized DMG is
+minutes of build plus Apple's servers, so it belongs here and to the review pass
+with `{dmg: true}`.
+
+Measured 2026-10-27 against the published `Yap-0.9.2-arm64.dmg`: `smoke-dmg: OK
+profile=release` (Notarized Developer ID, ticket stapled on the DMG not the app,
+both sidecars in `Contents/MacOS`, both endpoints' triples verified against key
+`19A9307B0C08F020`, payload CDHash equal to the DMG app's).
 
 ## Local release script (UPD-B — the normal path while Actions is off)
 
@@ -476,6 +540,10 @@ gh release create v0.7.1 --repo wilsonguenther-dev/wilson-voice --draft \
   "src-tauri/target/release/bundle/macos/Yap.app.tar.gz" \
   latest.json
 ```
+
+Then publish, stage (tagged-path steps 6–7) and run the **DMG smoke** on the
+uploaded asset before announcing anything — tagged-path step 8, same command:
+`scripts/smoke-dmg.sh <the downloaded .dmg>`.
 
 ## `latest.json` shape
 
