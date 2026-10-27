@@ -2427,14 +2427,19 @@ fn run_model_transform_take(
     selection: &str,
     source_app: &str,
     source_bundle_id: Option<&str>,
-    cursor_context: Option<&str>,
+    cursor_context: &focus::AxContext,
     paste_generation: &AtomicU64,
     generation: u64,
 ) -> TakeOutcome {
     // The mode decides only one thing here: a code editor is `Code`, and code
     // never reaches a model (V8) — the stage refuses it as `not_eligible`.
     let mode =
-        dictation::resolve_mode_with_context(&settings.dictation_mode, source_app, cursor_context);
+        dictation::resolve_mode_with_context(
+            &settings.dictation_mode,
+            source_app,
+            cursor_context.before_caret.as_deref(),
+            cursor_context.browser_mode,
+        );
     let cfg = polish::PolishConfig::from_settings(settings, mode);
     let mut result = transforms::run_installed(def, selection, mode, &cfg);
     if result.status == transforms::TransformStatus::Succeeded {
@@ -2898,7 +2903,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                             &selection,
                             source_app.as_deref().unwrap_or_default(),
                             source_bundle_id.as_deref(),
-                            cursor_context.as_deref(),
+                            &cursor_context,
                             &state2.paste_generation,
                             generation,
                         ));
