@@ -1,6 +1,7 @@
 import { levelNeedsPolishModel, selectedSpeed } from "../../formatting";
 import { useAppCtx } from "../../appShell";
 import { useState } from "react";
+import VoicePreferencesPanel from "../../VoicePreferencesPanel";
 import {
   STRUCTURE_CHOICES,
   type StructureChoice,
@@ -411,6 +412,8 @@ export default function Dictation() {
                     Auto-paste needs the Accessibility permission.
                   </p>
                   </div>
+                  {/* Y9-C — spoken preference rules, with an explicit Apply step. */}
+                  <VoicePreferencesPanel />
                 </section>
   );
 }

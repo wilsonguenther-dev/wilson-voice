@@ -208,6 +208,12 @@ static POLISH_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// the parent already gave up on and is discarded (`parse_response_for`).
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Y9-C: a request id from the SAME counter the rewriter uses, so a derivation
+/// answer can never be mistaken for a dictation's on the shared warm sidecar.
+pub(crate) fn next_request_id() -> u64 {
+    NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// The warm sidecar and its lifecycle, held for the app's lifetime. Built on
 /// first use so the production launcher can be swapped for a stub process in
 /// the tests (see [`SidecarPool`]).
@@ -283,6 +289,12 @@ pub struct PolishConfig {
     /// Tone dial for the take's mode (YV62). The same value the rules stage runs
     /// R3 with, so the model is asked for the tone the rules already applied.
     pub style: Style,
+    /// Y9-C: the user's APPLIED spoken preference rules that matched this take's
+    /// mode / app / language, already bounded by
+    /// [`crate::polish_protocol::bound_preferences`]. Empty — the default and
+    /// the state of every take before the user applies a rule — sends the
+    /// byte-identical request Yap sent before Y9-C.
+    pub preferences: Vec<String>,
 }
 
 impl Default for PolishConfig {
@@ -291,6 +303,7 @@ impl Default for PolishConfig {
             model: String::new(),
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
             style: Style::Default,
+            preferences: Vec::new(),
         }
     }
 }
@@ -303,7 +316,16 @@ impl PolishConfig {
             model: settings.polish_model.trim().to_string(),
             deadline_ms: clamp_polish_deadline_ms(settings.polish_deadline_ms),
             style: style_for_mode(settings, mode),
+            preferences: Vec::new(),
         }
+    }
+
+    /// Y9-C: attach the take's matching spoken rules. Bounded here, at the one
+    /// place a rule set enters the polish stage, so no caller can hand the
+    /// model more than the shared budget allows.
+    pub fn with_preferences(mut self, rules: Vec<String>) -> Self {
+        self.preferences = crate::polish_protocol::bound_preferences(&rules);
+        self
     }
 }
 
@@ -382,6 +404,9 @@ pub fn build_chunk_request(
         .map(str::trim)
         .filter(|c| !c.is_empty())
         .map(str::to_string);
+    // Y9-C: only rules that passed the filter allowlist AND matched this take
+    // are on the config; bound again so a hand-built config cannot overrun.
+    req.preferences = crate::polish_protocol::bound_preferences(&cfg.preferences);
     Some(req)
 }
 
@@ -1844,6 +1869,7 @@ mod polish_fallback_tests {
     /// request. No file is ever touched — the client is injected.
     fn on() -> PolishConfig {
         PolishConfig {
+            preferences: Vec::new(),
             model: "qwen2.5-0.5b-instruct-q4_k_m".to_string(),
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
             style: Style::Default,
