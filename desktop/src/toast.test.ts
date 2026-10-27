@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_TOASTS, MAX_TOAST_MS, MIN_TOAST_MS, QUEUE_LIMIT, TOAST_CAP, dismissToast, dismissWhere,
-  expireToasts, nextExpiry, pushToast, toastDuration, type ToastState,
+  expireToasts, nextExpiry, pushToast, toastDuration, toastReducer, type ToastState,
 } from "./toast";
 
 const T0 = 1_000;
@@ -102,5 +102,31 @@ describe("toast duration", () => {
     s = expireToasts(s, due + toastDuration("three"));
     expect(s.visible).toHaveLength(0);
     expect(nextExpiry(s)).toBeNull();
+  });
+});
+
+// The reducer `useToasts` dispatches into. Each action must reach its own pure
+// transition: a "dismiss" that fell through to "expire" would leave a toast up
+// until its timer, and nothing above would notice.
+describe("toast reducer", () => {
+  it("routes push, dismiss, dismissWhere and expire to their transitions", () => {
+    let s = toastReducer(EMPTY_TOASTS, { type: "push", input: { line: "one" }, now: T0 });
+    s = toastReducer(s, { type: "push", input: { line: "two", key: "take_failed" }, now: T0 });
+    s = toastReducer(s, { type: "push", input: { line: "three" }, now: T0 });
+    expect(s.visible.map((t) => t.line)).toEqual(["one", "two"]);
+    expect(s.queued.map((t) => t.line)).toEqual(["three"]);
+
+    s = toastReducer(s, { type: "dismiss", id: s.visible[0].id, now: T0 + 10 });
+    expect(s.visible.map((t) => t.line)).toEqual(["two", "three"]);
+    expect(s.visible[1].shownAt).toBe(T0 + 10);
+
+    s = toastReducer(s, { type: "dismissWhere", pred: (t) => t.key === "take_failed", now: T0 + 20 });
+    expect(s.visible.map((t) => t.line)).toEqual(["three"]);
+
+    const due = nextExpiry(s)!;
+    expect(toastReducer(s, { type: "expire", now: due - 1 })).toBe(s);
+    s = toastReducer(s, { type: "expire", now: due });
+    expect(s.visible).toHaveLength(0);
+    expect(s.queued).toHaveLength(0);
   });
 });

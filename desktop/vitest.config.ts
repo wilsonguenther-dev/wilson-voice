@@ -68,7 +68,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "scratchpad/notesModel.ts": { lines: 100, branches: 96, functions: 100, statements: 96 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
-  "toast.ts": { lines: 84, branches: 82, functions: 69, statements: 81 },
+  "toast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
   "writingSamples.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
