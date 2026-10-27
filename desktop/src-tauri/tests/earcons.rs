@@ -42,6 +42,7 @@ impl FakeOutput {
             state: Mutex::new(OutputAudioState {
                 muted: false,
                 volume: Some(0.6),
+                device: None,
             }),
         }
     }
