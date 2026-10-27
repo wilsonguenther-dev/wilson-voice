@@ -10,7 +10,7 @@
 //
 // This module is PURE on purpose: no `invoke`, no React, no `window`. The copy
 // and the action for a status are decidable from the status alone, so they are
-// testable without a Tauri host, and `Onboarding.tsx` stays the thing that
+// testable without a Tauri host, and `OnboardingFlow.tsx` stays the thing that
 // merely renders the answer.
 //
 // The System Settings URL is deliberately NOT here. It is a compile-time

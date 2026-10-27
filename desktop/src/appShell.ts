@@ -652,6 +652,11 @@ export function useAppShell() {
         /* ignore */
       }
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Y6-A — the backend's first pasted take proves dictation works; drop the
+    // "hasn't pasted yet" reminder without waiting for a settings reload.
+    listen("dictation_proven", () => {
+      setSettings((s) => (s ? { ...s, dictationProven: true } : s));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     // Y5-F: keyed "paste", so the `paste_failed` that may follow REPLACES this
     // line with the catalogue's, plus its "Copy again" action.
     listen<string>("paste_outcome", (e) => {
@@ -1186,12 +1191,18 @@ export function useAppShell() {
 
   // YV9 — persist onboarding completion (+ optional calibration sample) so the
   // first-run flow does not re-appear on next launch. Uses saveSettings per spec.
-  async function finishOnboarding(sample: string | null) {
+  /**
+   * Y6-A — the ONLY writer of `onboarded: true` from the flow, called from its
+   * "done" step (reachable only by a landed try-it take or an explicit skip).
+   * `proven` never un-proves: the backend keeps `dictationProven` monotonic.
+   */
+  async function finishOnboarding(sample: string | null, proven: boolean) {
     if (!settings) return;
     await saveSettings(
       {
         ...settings,
         onboarded: true,
+        dictationProven: proven || !!settings.dictationProven,
         calibrationSample: sample ?? settings.calibrationSample ?? null,
       },
       { quiet: true },

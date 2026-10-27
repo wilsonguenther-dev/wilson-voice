@@ -5,9 +5,10 @@ import { AppContext, useAppShell } from "./appShell";
 import { TEST_CHIP } from "./buildChannel";
 import { invoke } from "@tauri-apps/api/core";
 import { repairPane } from "./hotkeyStatus";
-import Onboarding from "./Onboarding";
+import Onboarding from "./OnboardingFlow";
 import { ModelRibbon } from "./ModelSetup";
 import { PermissionHealthRow } from "./PermissionHealthRow";
+import { unprovenLine } from "./onboarding";
 import { PermissionRepair } from "./PermissionRepairRow";
 import { canRepair, nameProduct, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
@@ -31,7 +32,7 @@ export default function App() {
     copyText, dictionary, dismissToast, finishOnboarding, openModelSettings, openSupportSheet, toasts, toastError,
     history, installUpdateNow, installedVersion, installing, 
     licenseChip, meetings, modelSetup, nav, needsPerms, openLicenseTab,
-    perms, pillClass, refreshAll, refreshPerms, retryFailed, retrying,
+    perms, pillClass, refreshAll, refreshPerms, replayOnboarding, retryFailed, retrying,
     scratch, sendSupportBundle, setBuyPrompt, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
@@ -111,8 +112,8 @@ export default function App() {
   if (settings && !settings.onboarded) {
     return (
       <Onboarding
-        onFinish={(sample) => finishOnboarding(sample)}
-        onSkip={() => finishOnboarding(null)}
+        onFinish={(sample, proven) => finishOnboarding(sample, proven)}
+        onSkip={() => finishOnboarding(null, false)}
       />
     );
   }
@@ -343,7 +344,11 @@ export default function App() {
         {/* PERM-E — the single permission surface. Renders NOTHING while all
             four grants are fine, which is why it sits unconditionally here
             rather than behind a nav check: it is its own visibility rule. */}
-        <PermissionHealthRow report={perms} />
+        <PermissionHealthRow
+          report={perms}
+          unproven={unprovenLine(settings)}
+          onTryIt={replayOnboarding}
+        />
         {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
             the same probe onboarding renders. */}
         <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />

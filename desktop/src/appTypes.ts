@@ -234,6 +234,13 @@ export interface AppSettings {
   earcons?: boolean;
   /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
   onboarded?: boolean;
+  /**
+   * Y6-A — at least one dictation has actually pasted (onboarding's try-it
+   * step, or any take since). False after a "Skip for now" finish, which keeps
+   * the main window's health row raised until a take lands. The backend flips
+   * it on the first pasted take and never back.
+   */
+  dictationProven?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */
   calibrationSample?: string | null;
   /**

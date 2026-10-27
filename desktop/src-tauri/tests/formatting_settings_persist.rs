@@ -135,6 +135,7 @@ fn fully_populated() -> AppSettings {
         // Y8-C — the shipped value is OFF, so ON is the one a store must carry.
         earcons: true,
         onboarded: true,
+        dictation_proven: true,
         calibration_sample: Some("the quick brown fox".into()),
         native_model: "ggml-small.en".into(),
         preload_model: true,

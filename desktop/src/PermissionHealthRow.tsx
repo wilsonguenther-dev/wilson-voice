@@ -18,10 +18,35 @@ import {
  */
 export function PermissionHealthRow({
   report,
+  unproven,
+  onTryIt,
 }: {
   report?: ({ grants?: PermissionGrantRow[] | null } & PermissionTruth) | null;
+  /**
+   * Y6-A — `unprovenLine(settings)`: set after a "Skip for now" onboarding
+   * finish, until the first take actually pastes. A failing grant still wins
+   * the row (it names the cause); this line raises it when every grant reads
+   * fine but nothing has ever pasted.
+   */
+  unproven?: string | null;
+  /** Re-open onboarding's try-it flow. */
+  onTryIt?: () => void;
 }) {
   const health = permissionHealth(report);
+  if (!health.visible && unproven) {
+    return (
+      <div className="perm-health" role="status" data-unproven>
+        <div className="perm-health-text">
+          <span className="perm-health-line">{unproven}</span>
+        </div>
+        {onTryIt && (
+          <button type="button" className="perm-health-action" onClick={onTryIt}>
+            Try it
+          </button>
+        )}
+      </div>
+    );
+  }
   if (!health.visible) return null;
 
   return (
