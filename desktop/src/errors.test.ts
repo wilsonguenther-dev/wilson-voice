@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   adviceFor, ERROR_CATALOGUE, errorAdvice, errorCode, errorText, GENERIC_ADVICE, isLicenseRequired, LICENSE_REQUIRED,
+  pasteFailedToast, REFUSED_CODE,
 } from "./errors";
 
 describe("command rejections", () => {
@@ -59,7 +60,7 @@ describe("error catalogue", () => {
   it("every take-path failure has its own line, not the generic one", () => {
     const takePath = [
       "mic_unavailable", "mic_disconnected", "model_missing", "capture_failed", "transcription_failed",
-      "history_write_failed", "clipboard_failed", "paste_not_confirmed", "take_failed",
+      "history_write_failed", "clipboard_failed", "paste_not_confirmed", "paste_not_copied", "take_failed",
       "silent_capture", "mic_permission_required", "license_required", "cancelled",
     ];
     for (const code of takePath) expect(errorAdvice(code), code).not.toBe(GENERIC_ADVICE);
@@ -74,5 +75,33 @@ describe("error catalogue", () => {
     expect(a.action?.kind).toBe("support");
     expect(adviceFor(raw, "Yap could not save that word.").line).toBe("Yap could not save that word.");
     expect(adviceFor({ code: "model_missing", message: "x" })).toBe(ERROR_CATALOGUE.model_missing);
+  });
+});
+
+// Y5-F fix round 1 — the two reviewer BLOCKINGs this file can see.
+describe("fix round 1", () => {
+  it("a refusal Yap wrote reaches the toast word for word (reserved chord)", () => {
+    const why = "⌘Space is macOS's Spotlight — pick another chord";
+    const a = adviceFor({ code: REFUSED_CODE, message: why });
+    expect(a.line).toBe(why);
+    expect(a.line).not.toBe(GENERIC_ADVICE.line);
+    expect(a.action).toBeNull();
+    // A bare string is still never shown raw.
+    expect(adviceFor("Os { code: 2 }").line).toBe(GENERIC_ADVICE.line);
+    // An uncatalogued command failure (lib.rs COMMAND_FAILED_CODE) stays hidden.
+    expect(adviceFor({ code: "command_failed", message: "io: denied" }).line).toBe(GENERIC_ADVICE.line);
+  });
+
+  it("paste_failed only says the text is on the clipboard when it is", () => {
+    const kept = pasteFailedToast({ id: "r1", code: "paste_not_confirmed" });
+    expect(kept.line).toBe(ERROR_CATALOGUE.paste_not_confirmed.line);
+    expect(kept.action).toEqual({ kind: "copy-again", label: "Copy again", arg: "r1" });
+    for (const code of ["paste_not_copied", null, undefined, "something_else"]) {
+      const t = pasteFailedToast({ id: "r2", code });
+      expect(t.line).not.toMatch(/is on your clipboard/);
+      expect(t.line).toBe(ERROR_CATALOGUE.paste_not_copied.line);
+      expect(t.key).toBe("paste");
+      expect(t.action.kind).toBe("copy-again");
+    }
   });
 });

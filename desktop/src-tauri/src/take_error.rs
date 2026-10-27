@@ -33,8 +33,41 @@ pub const HISTORY_WRITE_FAILED: &str = "history_write_failed";
 pub const CLIPBOARD_FAILED: &str = "clipboard_failed";
 /// The paste went out but nothing confirmed it landed (YV74).
 pub const PASTE_NOT_CONFIRMED: &str = "paste_not_confirmed";
+/// The paste went out unconfirmed AND the transcript is NOT on the clipboard
+/// (the user's own copy won, or the clipboard write failed) — Y5-F fix round 1.
+pub const PASTE_NOT_COPIED: &str = "paste_not_copied";
 /// Anything on the take path that has no better code yet.
 pub const TAKE_FAILED: &str = "take_failed";
+
+/// The status-chip line for [`CLIPBOARD_FAILED`] (errors.ts carries the same).
+pub const CLIPBOARD_FAILED_LINE: &str =
+    "Yap could not put the text on the clipboard — it is saved in History.";
+/// The status-chip line for [`PASTE_NOT_CONFIRMED`] (errors.ts carries the same).
+/// Only ever used when the transcript IS on the clipboard.
+pub const PASTE_NOT_CONFIRMED_LINE: &str =
+    "The paste may not have landed — the text is on your clipboard.";
+
+/// The take's `last_error` after a paste attempt. `copied` is the ONLY input
+/// that decides between the two lines, and no outcome text is accepted, so a
+/// raw clipboard/plugin error can never reach the chip.
+pub fn paste_last_error(copied: bool, pasted: bool, auto_paste: bool) -> Option<LastError> {
+    if pasted {
+        None
+    } else if !copied {
+        Some(LastError::new(CLIPBOARD_FAILED, CLIPBOARD_FAILED_LINE))
+    } else if auto_paste {
+        Some(LastError::new(PASTE_NOT_CONFIRMED, PASTE_NOT_CONFIRMED_LINE))
+    } else {
+        None
+    }
+}
+
+/// The `paste_failed` payload: the row id plus the code that says whether the
+/// transcript is on the clipboard (`copied`) or not.
+pub fn paste_failed_payload(id: &str, copied: bool) -> serde_json::Value {
+    let code = if copied { PASTE_NOT_CONFIRMED } else { PASTE_NOT_COPIED };
+    serde_json::json!({ "id": id, "code": code })
+}
 
 /// What a person reads for [`TAKE_FAILED`] — never the raw string.
 pub const TAKE_FAILED_LINE: &str = "Yap could not finish that take.";
@@ -52,6 +85,7 @@ pub const TAKE_PATH_CODES: &[&str] = &[
     HISTORY_WRITE_FAILED,
     CLIPBOARD_FAILED,
     PASTE_NOT_CONFIRMED,
+    PASTE_NOT_COPIED,
     TAKE_FAILED,
     // Emitted elsewhere on the take path with their own channels:
     "silent_capture",          // lib.rs SILENT_CAPTURE_CODE (take_failed)
@@ -142,6 +176,37 @@ mod tests {
 
     /// The frontend catalogue, read from the other end of the wire.
     const CATALOGUE: &str = include_str!("../../src/errors.ts");
+
+    /// Y5-F fix round 1 (BLOCKING 1): a paste that did not land only claims
+    /// "the text is on your clipboard" when it is. UserCopyWins and a failed
+    /// clipboard write both arrive as copied=false.
+    #[test]
+    fn paste_failed_only_claims_the_clipboard_when_copied() {
+        assert_eq!(paste_failed_payload("r1", true)["code"], PASTE_NOT_CONFIRMED);
+        assert_eq!(paste_failed_payload("r1", false)["code"], PASTE_NOT_COPIED);
+        assert_eq!(paste_failed_payload("r1", false)["id"], "r1");
+        let not_copied = paste_last_error(false, false, true).unwrap();
+        assert_eq!(not_copied.code, CLIPBOARD_FAILED);
+        assert!(!not_copied.message.contains("is on your clipboard"));
+    }
+
+    /// Y5-F fix round 1 (BLOCKING 2): the chip's paste lines are the
+    /// catalogue's lines, not the outcome text (which can hold a plugin error).
+    #[test]
+    fn paste_chip_lines_are_catalogue_lines() {
+        assert_eq!(paste_last_error(true, true, true), None);
+        assert_eq!(paste_last_error(true, false, false), None);
+        let soft = paste_last_error(true, false, true).unwrap();
+        assert_eq!((soft.code, soft.message.as_str()), (PASTE_NOT_CONFIRMED, PASTE_NOT_CONFIRMED_LINE));
+        let hard = paste_last_error(false, false, false).unwrap();
+        assert_eq!((hard.code, hard.message.as_str()), (CLIPBOARD_FAILED, CLIPBOARD_FAILED_LINE));
+        for line in [CLIPBOARD_FAILED_LINE, PASTE_NOT_CONFIRMED_LINE] {
+            assert!(
+                CATALOGUE.contains(&format!("line: \"{line}\"")),
+                "chip line `{line}` differs from errors.ts"
+            );
+        }
+    }
 
     #[test]
     fn every_take_path_code_has_a_catalogue_line() {

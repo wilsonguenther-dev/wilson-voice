@@ -83,10 +83,18 @@ export const ERROR_CATALOGUE = {
   history_write_failed: { line: "Yap transcribed that take but could not save it to History.", action: SUPPORT },
   clipboard_failed: { line: "Yap could not put the text on the clipboard — it is saved in History.", action: null },
   paste_not_confirmed: { line: "The paste may not have landed — the text is on your clipboard.", action: { kind: "copy-again", label: "Copy again" } },
+  paste_not_copied: { line: "The paste may not have landed, and the text is not on your clipboard — press Copy again to put it there.", action: { kind: "copy-again", label: "Copy again" } },
   take_failed: { line: "Yap could not finish that take. Send a report so we can see why.", action: SUPPORT },
 } satisfies Record<string, ErrorAdvice>;
 
 export type CatalogueCode = keyof typeof ERROR_CATALOGUE;
+
+/**
+ * Y5-F fix round 1 — `CommandError { code: "refused" }` (lib.rs REFUSED_CODE):
+ * the command refused the request and its `message` is Yap's own sentence
+ * saying what to do instead, so the toast shows it verbatim.
+ */
+export const REFUSED_CODE = "refused";
 
 /** The advice for anything with no catalogue entry — still says what to do. */
 export const GENERIC_ADVICE: ErrorAdvice = {
@@ -114,7 +122,39 @@ export function errorAdvice(code: string | null | undefined): ErrorAdvice {
 export function adviceFor(e: unknown, fallbackLine?: string): ErrorAdvice {
   const code = errorCode(e);
   if (code && isCatalogued(code)) return ERROR_CATALOGUE[code];
+  // Y5-F fix round 1: a deliberate refusal is a sentence Yap wrote for the
+  // person ("⌘Space is macOS's Spotlight — pick another chord") — show it.
+  if (code === REFUSED_CODE && isCommandError(e) && e.message.trim()) {
+    return { line: e.message, action: null };
+  }
   console.warn("[yap] uncatalogued failure:", e);
   if (fallbackLine) return { line: fallbackLine, action: SUPPORT };
   return GENERIC_ADVICE;
+}
+
+/**
+ * Y5-F fix round 1 — the toast for `paste_failed`. The backend says whether
+ * the transcript is on the clipboard (`paste_not_confirmed`) or not
+ * (`paste_not_copied`: the user's own copy won, or the clipboard write
+ * failed); only the first may say "the text is on your clipboard". An
+ * unknown or missing code takes the NOT-copied line — the claim that can
+ * never send a ⌘V to paste the user's own clipboard where they meant the
+ * transcript. Keyed "paste" so it replaces the `paste_outcome` line.
+ */
+export function pasteFailedToast(payload: { id: string; code?: string | null }): {
+  key: string;
+  line: string;
+  tone: "error";
+  action: { kind: "copy-again"; label: string; arg: string };
+} {
+  const advice =
+    payload.code === "paste_not_confirmed"
+      ? ERROR_CATALOGUE.paste_not_confirmed
+      : ERROR_CATALOGUE.paste_not_copied;
+  return {
+    key: "paste",
+    line: advice.line,
+    tone: "error",
+    action: { kind: "copy-again", label: "Copy again", arg: payload.id },
+  };
 }

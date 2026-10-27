@@ -10,7 +10,7 @@ import {
 } from "./meetings/progress";
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
-import { adviceFor, errorAdvice, errorCode, errorText, isLicenseRequired } from "./errors";
+import { adviceFor, errorAdvice, errorCode, errorText, isLicenseRequired, pasteFailedToast } from "./errors";
 import { finishFailedToast } from "./recoveryToast";
 import { useToasts, type ToastAction, type ToastInput } from "./toast";
 import { useFormattingOptions } from "./formatting";
@@ -635,14 +635,10 @@ export function useAppShell() {
     // YV74 — the backend only claims "Pasted" when the target app read the
     // clipboard; when it didn't, the transcript may no longer be on it (the
     // user's own copy is left alone), so the toast offers to put it back.
-    listen<string>("paste_failed", (e) => {
-      const advice = errorAdvice("paste_not_confirmed");
-      pushToast({
-        key: "paste",
-        line: advice.line,
-        tone: "error",
-        action: { kind: "copy-again", label: "Copy again", arg: e.payload },
-      });
+    // Y5-F fix round 1: the payload says whether the transcript IS on the
+    // clipboard (take_error::paste_failed_payload) — the line is chosen by it.
+    listen<{ id: string; code?: string | null }>("paste_failed", (e) => {
+      pushToast(pasteFailedToast(e.payload));
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — a failed take must be visible IN the app, not only as a macOS
     // notification the user may have muted (or never sees while Yap is focused).
