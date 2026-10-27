@@ -1308,6 +1308,7 @@ impl ActiveCapture for SessionCapture {
 /// Returns `(id, old state, new state)` per reconciled row, each also logged.
 pub fn reconcile_stranded_meetings(
     db: &Database,
+    progress_dir: &Path,
     enqueue: &dyn Fn(&str),
 ) -> Vec<(String, String, String)> {
     let rows = match db.list_meetings(100_000, None) {
@@ -1341,11 +1342,16 @@ pub fn reconcile_stranded_meetings(
             continue;
         }
         let new_state = if state == MeetingState::Summarizing && m.segment_count > 0 {
-            // Only the summary was interrupted. #250 fix round 1 (B3): the
-            // pre-summary state was never stored, so a row with a pipeline
-            // note goes back to `partial` (keeps Retry), never `complete`.
-            let back = crate::summary_jobs::state_after_stale_summarizing(m.error.as_deref());
-            let _ = db.set_meeting_state(&m.id, back, m.error.as_deref());
+            // Only the summary was interrupted. The pre-summary state was never
+            // stored, and every shipped writer of `summarizing` cleared `error`
+            // (#250 fix round 1, independent B1) — so the per-track resume
+            // ledger's failed windows decide: such a row goes back to
+            // `partial` with the pipeline's note (keeps Retry), never `complete`.
+            let (back, note) = crate::summary_jobs::state_after_stale_summarizing(
+                m.error.as_deref(),
+                crate::meeting_pipeline::ledger_records_failed_window(progress_dir, &m.id),
+            );
+            let _ = db.set_meeting_state(&m.id, back, note.as_deref());
             back
         } else if has_audio {
             if state == MeetingState::Recording {

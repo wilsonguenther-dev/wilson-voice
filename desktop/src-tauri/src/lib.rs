@@ -6166,7 +6166,8 @@ fn dismiss_notes_backlog() {
 fn resume_pending_summaries(state: &AppState) {
     // A5: nothing is summarizing at launch, so a row still marked
     // `summarizing` is a crash's leftover (an older build wrote that state).
-    // Fix round 1 (B3): back to `partial` when it carries a pipeline note, so
+    // Fix round 1 (B3) + #250 fix round 1 (independent B1): back to `partial`
+    // when its resume ledger records a failed window (or a note survived), so
     // a partial transcript is never claimed complete and keeps its Retry.
     if let Ok(rows) = state.db.list_meetings(500, None) {
         let pairs: Vec<(String, String)> =
@@ -6179,8 +6180,14 @@ fn resume_pending_summaries(state: &AppState) {
         };
         for id in summary_jobs::stale_summarizing(&pairs, &active) {
             let error = rows.iter().find(|m| m.id == id).and_then(|m| m.error.clone());
-            let back = summary_jobs::state_after_stale_summarizing(error.as_deref());
-            if state.db.set_meeting_state(&id, back, error.as_deref()).is_ok()
+            // #250 fix round 1 (independent B1): shipped builds cleared `error`
+            // when they wrote `summarizing`, so the failed-window ledger beside
+            // the audio is what tells a partial transcript apart.
+            let (back, note) = summary_jobs::state_after_stale_summarizing(
+                error.as_deref(),
+                meeting_pipeline::ledger_records_failed_window(&meetings_dir(), &id),
+            );
+            if state.db.set_meeting_state(&id, back, note.as_deref()).is_ok()
             {
                 log::info!("summary: meeting {id} was left 'summarizing' by a crash — reset for Retry");
             }
@@ -7956,11 +7963,18 @@ pub fn run() {
         // #250 round 3 (B3): the notes worker, its own thread, before anything
         // can submit to it; and the upgrade ledger, stamped on first run (A3).
         let report_state = state.clone();
-        let jobs = summary_jobs::SummaryJobs::spawn(
+        // #250 fix round 1 (independent B2): a refused worker thread is logged,
+        // never a launch panic. Every caller already fails closed on a missing
+        // worker ("the notes worker is not running — restart Yap").
+        match summary_jobs::SummaryJobs::spawn(
             Arc::new(AppNotes { state: state.clone() }),
             Arc::new(move |st: &summary_jobs::NotesStatus| emit_notes_status(&report_state, st)),
-        );
-        let _ = SUMMARY_JOBS.set(jobs);
+        ) {
+            Ok(jobs) => {
+                let _ = SUMMARY_JOBS.set(jobs);
+            }
+            Err(e) => log::error!("summary: {e} — meeting notes are off until Yap restarts"),
+        }
         let _ = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
         std::thread::Builder::new()
             .name("wv-summary-resume".into())
@@ -8048,9 +8062,10 @@ pub fn run() {
             start_delay: meeting_pipeline::QUEUE_START_DELAY,
         };
         meeting_pipeline::install(meeting_pipeline::spawn(deps));
-        let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &|id| {
-            meeting_pipeline::enqueue(id);
-        });
+        let reconciled =
+            meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
+                meeting_pipeline::enqueue(id);
+            });
         if !reconciled.is_empty() {
             log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
         }

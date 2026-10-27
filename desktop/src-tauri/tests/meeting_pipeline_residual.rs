@@ -495,7 +495,7 @@ fn a_missing_model_waits_keeps_the_audio_and_requeues_on_download() {
     // Relaunch before the download: reconcile requeues it.
     let mut relaunch = Vec::new();
     let seen = Mutex::new(&mut relaunch);
-    reconcile_stranded_meetings(&db, &|m| seen.lock().unwrap().push(m.to_string()));
+    reconcile_stranded_meetings(&db, &dir, &|m| seen.lock().unwrap().push(m.to_string()));
     assert_eq!(relaunch, vec![id.clone()]);
 
     // The model-download-complete event.
@@ -743,7 +743,7 @@ fn a_partial_capture_that_waited_for_a_model_still_ends_partial() {
         {
             let seen = Mutex::new(&mut queued);
             if via_reconcile {
-                reconcile_stranded_meetings(&db, &|m| seen.lock().unwrap().push(m.to_string()));
+                reconcile_stranded_meetings(&db, &dir, &|m| seen.lock().unwrap().push(m.to_string()));
             } else {
                 requeue_waiting_for_model(&db, &|m| seen.lock().unwrap().push(m.to_string()));
             }
@@ -777,7 +777,7 @@ fn a_whole_capture_that_waited_ends_complete_without_the_waiting_sentence() {
     );
     assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::WaitingForModel);
     present.store(true, Ordering::SeqCst);
-    reconcile_stranded_meetings(&db, &|_| {});
+    reconcile_stranded_meetings(&db, &dir, &|_| {});
     assert_eq!(guarded_job(&d, &id).unwrap(), MeetingState::Complete);
     let (s, err) = state_of(&db, &id);
     assert_eq!(s, "complete");

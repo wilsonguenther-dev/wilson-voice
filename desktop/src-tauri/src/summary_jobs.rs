@@ -239,8 +239,25 @@ pub struct SummaryJobs {
 }
 
 impl SummaryJobs {
-    /// Start the one notes worker.
-    pub fn spawn(backend: Arc<dyn NotesBackend>, report: Reporter) -> Self {
+    /// Start the one notes worker. `Err` (never a panic) when the OS refuses
+    /// the thread: launch carries on without notes, and every caller already
+    /// fails closed on a missing worker (#250 fix round 1, independent B2).
+    pub fn spawn(backend: Arc<dyn NotesBackend>, report: Reporter) -> Result<Self, String> {
+        Self::spawn_with(backend, report, |name, body| {
+            std::thread::Builder::new()
+                .name(name.into())
+                .spawn(body)
+                .map(|_| ())
+        })
+    }
+
+    /// [`Self::spawn`] over an injectable thread starter, so the refusal path
+    /// is testable without exhausting the process's threads.
+    pub fn spawn_with(
+        backend: Arc<dyn NotesBackend>,
+        report: Reporter,
+        start: impl FnOnce(&str, Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()>,
+    ) -> Result<Self, String> {
         let inner = Arc::new(Inner {
             q: Mutex::new(Queue {
                 pending: VecDeque::new(),
@@ -253,11 +270,9 @@ impl SummaryJobs {
             report,
         });
         let worker = inner.clone();
-        std::thread::Builder::new()
-            .name("wv-summary".into())
-            .spawn(move || worker_loop(&worker))
-            .expect("spawn the notes worker");
-        Self { inner }
+        start("wv-summary", Box::new(move || worker_loop(&worker)))
+            .map_err(|e| format!("could not start the notes worker: {e}"))?;
+        Ok(Self { inner })
     }
 
     /// Queue `id` for notes. `false` when that meeting is already queued or
@@ -601,17 +616,35 @@ pub fn stale_summarizing(rows: &[(String, String)], active: &dyn Fn(&str) -> boo
         .collect()
 }
 
-/// Fix round 1 (B3) — the transcript state a row left in DB state
-/// `summarizing` goes back to. Notes jobs no longer write `summarizing` over
-/// the transcript state at all, so only a row from an OLDER build (or a crash
-/// inside one) reaches this, and its pre-summary state was never stored. It is
-/// inferred on the side that keeps Retry: a row carrying a pipeline note
-/// (failed windows, a cut capture) is `partial`, never claimed `complete`.
-pub fn state_after_stale_summarizing(error: Option<&str>) -> crate::meetings::MeetingState {
-    if error.is_some_and(|e| !e.trim().is_empty()) {
-        crate::meetings::MeetingState::Partial
+/// Fix round 1 (B3), corrected in #250 fix round 1 (independent B1) — the
+/// transcript state, and the note, a row left in DB state `summarizing` goes
+/// back to. Notes jobs no longer write `summarizing` at all, so only a row from
+/// an OLDER build (or a crash inside one) reaches this.
+///
+/// Every shipped writer of `summarizing` (v0.9.1, v0.9.2, main up to #250)
+/// called `set_meeting_state(id, Summarizing, None)`, and that UPDATE clears
+/// `error` — so a legacy row's own note is ALWAYS gone and cannot be the
+/// signal. The durable signal is the per-track resume ledger the transcription
+/// pipeline leaves beside the audio: a window recorded `asr_failed` there is
+/// exactly what made the pipeline end the row `partial`
+/// ([`crate::meeting_pipeline::ledger_records_failed_window`]). Such a row goes
+/// back to `partial` with the pipeline's own note, so it keeps its Retry; a
+/// note that somehow survived is kept the same way. Only a row with neither is
+/// `complete`.
+pub fn state_after_stale_summarizing(
+    error: Option<&str>,
+    ledger_has_failed_window: bool,
+) -> (crate::meetings::MeetingState, Option<String>) {
+    let note = error.filter(|e| !e.trim().is_empty());
+    if let Some(note) = note {
+        (crate::meetings::MeetingState::Partial, Some(note.to_string()))
+    } else if ledger_has_failed_window {
+        (
+            crate::meetings::MeetingState::Partial,
+            Some(crate::meeting_pipeline::SOME_WINDOWS_FAILED_MESSAGE.to_string()),
+        )
     } else {
-        crate::meetings::MeetingState::Complete
+        (crate::meetings::MeetingState::Complete, error.map(str::to_string))
     }
 }
 
@@ -731,7 +764,8 @@ mod tests {
         let j = SummaryJobs::spawn(
             stub.clone(),
             Arc::new(move |st: &NotesStatus| s.lock().unwrap().push(st.clone())),
-        );
+        )
+        .expect("spawn the test worker");
         (j, seen)
     }
 
@@ -1072,7 +1106,8 @@ mod tests {
 
     #[test]
     fn a_panicking_job_fails_that_meeting_and_the_worker_keeps_going() {
-        let j = SummaryJobs::spawn(Arc::new(Panicky), Arc::new(|_: &NotesStatus| {}));
+        let j = SummaryJobs::spawn(Arc::new(Panicky), Arc::new(|_: &NotesStatus| {}))
+            .expect("spawn the test worker");
         assert!(j.submit("boom"));
         assert!(j.submit("fine"));
         let boom = j.wait_for("boom", Duration::from_secs(5)).expect("status");
@@ -1085,6 +1120,20 @@ mod tests {
         assert!(j.wait_idle(Duration::from_secs(5)));
     }
 
+
+    /// #250 fix round 1 (independent B2): the OS refusing the worker thread is
+    /// an `Err` the launch path logs, never a panic on the main thread.
+    #[test]
+    fn a_refused_worker_thread_is_an_error_not_a_panic() {
+        let out = std::panic::catch_unwind(|| {
+            SummaryJobs::spawn_with(Arc::new(Panicky), Arc::new(|_: &NotesStatus| {}), |_, _| {
+                Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "no threads left"))
+            })
+        });
+        let res = out.expect("spawn_with must not panic when the thread is refused");
+        let err = res.err().expect("a refused thread is an Err");
+        assert!(err.contains("no threads left"), "the OS reason is carried: {err}");
+    }
 
     /// review-opus2 A7: only a network-shaped error reads "offline".
     #[test]
