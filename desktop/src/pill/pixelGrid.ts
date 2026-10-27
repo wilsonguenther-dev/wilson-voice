@@ -248,7 +248,8 @@ export const DOCKS: readonly Dock[] = ["bottom", "left", "right"];
 /**
  * YV53 — on a side dock the window is parked flush to the screen edge, so the
  * capsule is drawn this many CSS px in from it: enough for its glow/shadow, not
- * so much that it stops reading as docked. Mirrors the .stage inset in float.css.
+ * so much that it stops reading as docked. Mirrors --flow-bar-inset (tokens.css),
+ * the .stage inset float.css parks the bar at on a side dock (Y5-I).
  */
 export const DOCK_PAD = 10;
 

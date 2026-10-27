@@ -1,0 +1,142 @@
+{
+  "about": "Y5-I - the SHELL's bar geometry: the size and orientation of the window content box for every phase at every dock, in CSS px. One table for every character; a character only decides how it fills the box it is given. Wispr rows are [BUNDLE]-sourced from the parity research (section 4.2). Vertical (a column) is the BASE; a row is the override, supplied by the bottom dock or by a banner phase. Rows marked yap_only are Yap phases Wispr does not have, decided by the 30 px crush rule: a phase whose box carries a fixed-width label (a numeral, a note, a clock) cannot live in a 30 px column, so it stays a horizontal banner.",
+  "strip_px": 30,
+  "docks": ["bottom", "left", "right"],
+  "phases": {
+    "idle": {
+      "wispr": "resting",
+      "orientation": "strip",
+      "why": "Wispr resting bar. No label, so it rotates into the strip.",
+      "bottom": { "width": 40, "height": 8 },
+      "left": { "width": 8, "height": 40 },
+      "right": { "width": 8, "height": 40 }
+    },
+    "sleepy": {
+      "wispr": "resting",
+      "orientation": "strip",
+      "why": "The resting bar after a long idle; same box as idle.",
+      "bottom": { "width": 40, "height": 8 },
+      "left": { "width": 8, "height": 40 },
+      "right": { "width": 8, "height": 40 }
+    },
+    "model-loading": {
+      "wispr": "ready",
+      "orientation": "strip",
+      "why": "The armed-but-not-yet-listening bar (Wispr ready). A glyph only; the words ride in the phase strip outside the box.",
+      "bottom": { "width": 50, "height": 30 },
+      "left": { "width": 30, "height": 50 },
+      "right": { "width": 30, "height": 50 }
+    },
+    "listening": {
+      "wispr": "activePopo",
+      "orientation": "strip",
+      "why": "Yap's listening bar always carries its stop control beside the waveform, which is Wispr's activePopo (waveform plus cancel/stop), not the bare activePtt 30x73.",
+      "bottom": { "width": 102.5, "height": 30 },
+      "left": { "width": 30, "height": 102.5 },
+      "right": { "width": 30, "height": 102.5 }
+    },
+    "transcribing": {
+      "wispr": "processing",
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "Carries a determinate fill AND a fixed-width numeral (3/12). The numeral crushes in a 30 px column, so it stays horizontal, sized as Wispr processing.",
+      "bottom": { "width": 98, "height": 30 },
+      "left": { "width": 98, "height": 30 },
+      "right": { "width": 98, "height": 30 }
+    },
+    "polishing": {
+      "wispr": "polishProcessing",
+      "orientation": "strip",
+      "why": "Wispr polishProcessing: 136x30 at the bottom; on a side dock a column with the label hidden. Yap draws no label inside this box, so the column holds nothing that can crush.",
+      "bottom": { "width": 136, "height": 30 },
+      "left": { "width": 30, "height": 136 },
+      "right": { "width": 30, "height": 136 }
+    },
+    "pasting": {
+      "wispr": "processing",
+      "orientation": "banner",
+      "why": "Post-capture work, Wispr processing: stays horizontal in both docks.",
+      "bottom": { "width": 98, "height": 30 },
+      "left": { "width": 98, "height": 30 },
+      "right": { "width": 98, "height": 30 }
+    },
+    "thinking": {
+      "wispr": "processing",
+      "orientation": "banner",
+      "why": "Post-capture work, Wispr processing: stays horizontal in both docks.",
+      "bottom": { "width": 98, "height": 30 },
+      "left": { "width": 98, "height": 30 },
+      "right": { "width": 98, "height": 30 }
+    },
+    "done": {
+      "wispr": "polishCompleted",
+      "orientation": "banner",
+      "why": "The completion banner. Wispr keeps it horizontal (152x30) on a side dock; Yap does the same at every dock.",
+      "bottom": { "width": 152, "height": 30 },
+      "left": { "width": 152, "height": 30 },
+      "right": { "width": 152, "height": 30 }
+    },
+    "empty": {
+      "wispr": "error",
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "An outcome that is not a success, a sibling of error: a banner, sized as Wispr error.",
+      "bottom": { "width": 91, "height": 30 },
+      "left": { "width": 91, "height": 30 },
+      "right": { "width": 91, "height": 30 }
+    },
+    "cancelled": {
+      "wispr": "error",
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "An outcome that is not a success, a sibling of error: a banner, sized as Wispr error.",
+      "bottom": { "width": 91, "height": 30 },
+      "left": { "width": 91, "height": 30 },
+      "right": { "width": 91, "height": 30 }
+    },
+    "error": {
+      "wispr": "error",
+      "orientation": "banner",
+      "why": "Wispr error 91x30: stays horizontal in both docks.",
+      "bottom": { "width": 91, "height": 30 },
+      "left": { "width": 91, "height": 30 },
+      "right": { "width": 91, "height": 30 }
+    },
+    "gated": {
+      "wispr": null,
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "Carries a glyph plus a fixed-width note (the trial-ended headline). Crushes in a column, so a banner, as wide as the widest Wispr working bar.",
+      "bottom": { "width": 136, "height": 30 },
+      "left": { "width": 136, "height": 30 },
+      "right": { "width": 136, "height": 30 }
+    },
+    "waiting": {
+      "wispr": null,
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "Carries a fixed-width note (Allow the mic...). Crushes in a column, so a banner.",
+      "bottom": { "width": 136, "height": 30 },
+      "left": { "width": 136, "height": 30 },
+      "right": { "width": 136, "height": 30 }
+    },
+    "blocked": {
+      "wispr": null,
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "Carries a fixed-width note (Mic blocked). Crushes in a column, so a banner.",
+      "bottom": { "width": 136, "height": 30 },
+      "left": { "width": 136, "height": 30 },
+      "right": { "width": 136, "height": 30 }
+    },
+    "meeting-on-screen": {
+      "wispr": null,
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "Not a take phase: a meeting on screen while no dictation is (the badge and its running clock). The clock is a fixed-width label, so a banner.",
+      "bottom": { "width": 136, "height": 30 },
+      "left": { "width": 136, "height": 30 },
+      "right": { "width": 136, "height": 30 }
+    }
+  }
+}

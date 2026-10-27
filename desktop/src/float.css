@@ -26,40 +26,53 @@ body,
   overflow: hidden;
 }
 
+/* Y5-I — the shell's bar root (float-main). Full-window, so every character's
+ * own stage still fills the float window; it exists to carry the box (the two
+ * orientation-neutral tokens) and the override (`data-bar-position` and
+ * `data-bar-orientation`) down to whichever character renders inside it. */
+.bar {
+  width: 100%;
+  height: 100%;
+}
+
+/* Where the bar sits in the window. BASE = a side dock: the window is parked
+ * flush to the screen edge and the bar hugs it at the inset (which also keeps
+ * its ambient shadow off the screen edge). The bottom dock is the override. */
 .stage {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding: 0 var(--flow-bar-inset);
   -webkit-user-select: none;
   user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
-/* YV53 — side docks. The window itself is parked flush to the screen edge, so
- * the capsule hugs that edge instead of floating in the middle of the (much
- * wider, transparent) window. It stays a horizontal capsule, vertically centred;
- * the small inset keeps its ambient shadow from being clipped by the screen. */
-:root[data-dock="left"] .stage {
-  justify-content: flex-start;
-  padding-left: 10px;
-}
-:root[data-dock="right"] .stage {
+[data-bar-position="right"] .stage {
   justify-content: flex-end;
-  padding-right: 10px;
+}
+[data-bar-position="bottom"] .stage {
+  justify-content: center;
+  padding: 0;
 }
 
 .pill {
   position: relative;
   display: flex;
+  /* Y5-I — the COLUMN is the base. A side dock draws this rule as written; the
+     row is the override below. The box is the SHELL's (pill/dock-geometry.json
+     via pill/dock.ts), never this character's: length runs along the bar,
+     thickness across it, and nothing here knows which axis is which. */
+  flex-direction: column;
   align-items: center;
   justify-content: center; /* content is centered in every state */
-  gap: 8px;
-  height: 16px; /* compact "seed" at rest — a tiny capsule, not a bar */
-  min-width: 56px;
-  max-width: 260px;
-  padding: 0 10px;
-  border-radius: 22px; /* perfect capsule */
+  gap: var(--flow-bar-gap);
+  flex: none;
+  width: var(--flow-bar-thickness);
+  height: var(--flow-bar-length);
+  padding: 6px 0; /* Wispr activePopo: 6px 0 on a side dock */
+  border-radius: 999px; /* a capsule at every size */
   color: var(--pill-text);
   isolation: isolate;
   cursor: pointer;
@@ -88,19 +101,42 @@ body,
     box-shadow var(--dur-morph, 100ms) var(--ease-state, ease),
     background var(--dur-morph, 100ms) var(--ease-state, ease),
     transform var(--dur-morph, 100ms) var(--ease-state, ease),
+    width var(--dur-expand, 340ms) var(--ease-state, ease),
     height var(--dur-expand, 340ms) var(--ease-state, ease),
-    min-width var(--dur-expand, 340ms) var(--ease-state, ease),
     gap var(--dur-collapse, 300ms) var(--ease-state, ease),
     padding var(--dur-collapse, 300ms) var(--ease-state, ease);
 }
-/* Expand to the full "radio pill" on activity (listening / transcribing / done). */
-.pill.live,
-.pill.busy,
-.pill.done {
-  height: 44px;
-  min-width: 200px;
-  gap: 10px;
-  padding: 0 14px 0 8px;
+/* Y5-I — the override: a ROW. The bottom dock supplies it for every phase, and
+   a BANNER phase supplies it in every dock — processing, completion and error
+   banners stay horizontal even when side-docked, because a fixed-width label
+   crushes in a 30px column. Same two tokens, read along the other axis. */
+[data-bar-position="bottom"] .pill,
+[data-bar-orientation="banner"] .pill {
+  flex-direction: row;
+  width: var(--flow-bar-length);
+  height: var(--flow-bar-thickness);
+  padding: 0 6px;
+}
+/* The resting bar (Wispr resting: 8x40, rgba(0,0,0,.5), a 1px rgba(255,255,255,.5)
+   rim, radius 6). The rim is an inset shadow so it never changes the box. */
+[data-bar-phase="idle"] .pill,
+[data-bar-phase="sleepy"] .pill {
+  padding: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.34);
+}
+[data-bar-phase="idle"] .seed,
+[data-bar-phase="sleepy"] .seed {
+  width: 4px;
+  height: 4px;
+}
+/* A working bar's control does nothing (the click returns early), so it gives
+   its room to the fill and the numeral. */
+.pill.busy .ctrl {
+  display: none;
 }
 /* ── Y5-E: the hot area, and hover hysteresis ──
    `.pill-hot` wraps the capsule exactly (its layout box IS the capsule's, so it
@@ -258,27 +294,37 @@ body,
 }
 
 /* ── waveform (heights driven by --level) ── */
+/* Y5-I — the waveform inverts its axis WITH the bar. Base (a column): the bars
+   are 2px tall and stack down the bar, growing along X. The row override flips
+   one token (--flow-wave-on-x) and the bars grow along Y again. One rule draws
+   both, so the two axes can never disagree about the level. */
+@property --wave-extent {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 3px;
+}
 .wave {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  height: 14px;
-  min-width: 44px;
-  transition: height 0.3s var(--ease-glide), min-width 0.3s ease;
+  gap: var(--flow-wave-gap);
 }
-.pill.live .wave,
-.pill.busy .wave {
-  height: 22px;
-  min-width: 76px;
+[data-bar-position="bottom"] .wave,
+[data-bar-orientation="banner"] .wave {
+  flex-direction: row;
+  --flow-wave-on-x: 0;
+  --flow-wave-bar: 3px;
+  --flow-wave-gap: 2px;
 }
 .wave i {
-  width: 3px;
+  --wave-extent: calc(3px + var(--level) * var(--peak, 1) * var(--flow-wave-reach));
+  flex: none;
   border-radius: 99px;
   background: rgba(255, 255, 255, 0.3);
-  height: calc(3px + var(--level) * var(--peak, 1) * 16px);
-  transition: height 0.085s var(--ease-standard), background 0.2s;
-  will-change: height;
+  width: calc(var(--flow-wave-on-x) * var(--wave-extent) + (1 - var(--flow-wave-on-x)) * var(--flow-wave-bar));
+  height: calc(var(--flow-wave-on-x) * var(--flow-wave-bar) + (1 - var(--flow-wave-on-x)) * var(--wave-extent));
+  transition: --wave-extent 0.085s var(--ease-standard), background 0.2s;
 }
 .wave i:nth-child(1),
 .wave i:nth-child(9) {
@@ -314,10 +360,10 @@ body,
 @keyframes breathe {
   0%,
   100% {
-    height: 4px;
+    --wave-extent: 4px;
   }
   50% {
-    height: 9px;
+    --wave-extent: 9px;
   }
 }
 /* transcribing: bars self-animate (ignore --level) */
@@ -329,11 +375,11 @@ body,
 @keyframes busy-bar {
   0%,
   100% {
-    height: 4px;
+    --wave-extent: 4px;
     opacity: 0.5;
   }
   50% {
-    height: 15px;
+    --wave-extent: 15px;
     opacity: 1;
   }
 }
@@ -341,8 +387,8 @@ body,
 /* ── control button ── */
 .ctrl {
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
+  width: calc(var(--flow-bar-thickness) - 8px);
+  height: calc(var(--flow-bar-thickness) - 8px);
   border: 0;
   border-radius: 50%;
   display: grid;
@@ -367,8 +413,8 @@ body,
   transform: scale(0.95);
 }
 .ctrl svg {
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
 }
 .pill.live .ctrl {
   background: radial-gradient(120% 120% at 30% 25%, hsl(var(--accent-live) / 1), hsl(351 90% 45%));
@@ -638,13 +684,10 @@ button.meeting-after:focus-visible {
   }
 }
 
-/* A meeting expands the capsule for as long as it runs — the same expansion the
- * live/busy/done states use, so there is one pill shape, not two. */
+/* A meeting takes the bar for as long as it runs with no take on screen — the
+ * shell's `meeting` row in pill/dock-geometry.json, a banner (its clock is a
+ * fixed-width label). */
 .pill.meeting {
-  height: 44px;
-  min-width: 168px;
-  gap: 10px;
-  padding: 0 12px;
   box-shadow:
     inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
     0 12px 34px rgba(0, 0, 0, 0.46),
@@ -811,7 +854,8 @@ button.meeting-after:focus-visible {
 .pill.transcribing .xscribe-track {
   position: relative;
   display: block;
-  width: 78px;
+  flex: 1 1 auto;
+  min-width: 20px;
   height: 4px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.16);
@@ -934,7 +978,7 @@ html[data-phase="empty"] .phase-strip { color: rgba(255, 255, 255, 0.58); }
 /* left dock: the capsule hugs the left edge, so the line sits above it, left
    aligned to the same 10px screen inset the stage uses. */
 html[data-dock="left"] .phase-strip {
-  left: 10px;
+  left: var(--flow-bar-inset);
   right: auto;
   transform: none;
   text-align: left;
@@ -943,9 +987,24 @@ html[data-dock="left"] .phase-strip {
    the screen edge the window is parked against. */
 html[data-dock="right"] .phase-strip {
   left: auto;
-  right: 10px;
+  right: var(--flow-bar-inset);
   transform: none;
   text-align: right;
+}
+/* Y5-I — a COLUMN fills the window's height at the edge, so on a side dock a
+   strip phase's line sits BESIDE the column, vertically centred, instead of on
+   top of it. A banner is a row, so its line stays above it (the rules above). */
+.bar[data-bar-position="left"][data-bar-orientation="strip"] ~ .phase-strip {
+  left: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.bar[data-bar-position="right"][data-bar-orientation="strip"] ~ .phase-strip {
+  right: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /* Y5-C — the per-character motion hint both capsules publish as `data-motion`.

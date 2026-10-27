@@ -299,8 +299,16 @@ export const SQUASH_PRESS = 1;
  * rest, so the landing still bounces instead of doing nothing.
  */
 export const SQUASH_DOCK = 0.55;
-/** Scale change at full squash: 6% wider, 6% shorter. Soft, never cartoonish. */
-export const SQUASH_SCALE = 0.06;
+/**
+ * Scale change at full squash. Soft, never cartoonish.
+ *
+ * Y5-I — 0.06 was tuned on the old 56px resting capsule (a 3.36px squash). The
+ * resting bar is now Wispr's 40px (pill/dock-geometry.json), so the scale rises
+ * to keep the SAME pixel amplitude on it: 0.084 x 40 = 3.36px. Without this a
+ * released tap stretched the resting bar 0.8px, under one device pixel at 1x
+ * (motion.test `release_stretch_is_visible_in_pixels_on_the_seed_capsule`).
+ */
+export const SQUASH_SCALE = 0.084;
 
 /**
  * Y5-D review fix — WHY THE REBOUND NEEDS A KICK. The snap spring's free

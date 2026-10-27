@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 // The float window's stylesheet as TEXT. `?raw` is Vite's own loader, typed by
 // `vite/client`, so this is the same file the bundle ships and cannot drift.
 import FLOAT_CSS from "../float.css?raw";
+import { barBox } from "./dock";
 import {
   createSpring, createSoftBody, DURATION, EASE_STATE_CHANGE, morphTransition,
   SOFT_LIMIT, SOFT_REST_DELTA, softened, SPRING_SETTLE, SPRING_SNAP, SQUASH_PRESS, SQUASH_SCALE,
@@ -37,12 +38,14 @@ const FRAME = 1 / 60;
  */
 const MIN_VISIBLE_PX = 1;
 
-/** The seed capsule's min-width, read from the first `.pill {` rule in float.css. */
+/**
+ * The resting bar's length. Y5-I: the box is the SHELL's now — float.css sizes
+ * the bar only with the --flow-bar-* tokens the shell writes off
+ * dock-geometry.json — so the seed's width is read from that table (resting,
+ * bottom dock: 40 px along the bar), which dock.test proves float.css draws.
+ */
 function seedWidthPx(): number {
-  const block = /\n\.pill\s*\{([^}]*)\}/.exec(FLOAT_CSS);
-  const m = block && /min-width:\s*(\d+(?:\.\d+)?)px/.exec(block[1]);
-  if (!m) throw new Error("float.css: no .pill min-width found");
-  return Number(m[1]);
+  return barBox("idle", "bottom").width;
 }
 
 /** Drive a soft body to rest, recording its stretch trough and the swing after it. */
