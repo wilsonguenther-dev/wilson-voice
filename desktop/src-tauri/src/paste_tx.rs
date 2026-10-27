@@ -269,6 +269,33 @@ pub fn publish_and_paste(app: &tauri::AppHandle, text: &str) -> Result<PasteHand
     Ok(PasteHandle::new(state))
 }
 
+/// Y6-B — copy `text` to the clipboard AFTER settling any paste transaction
+/// still holding the pasteboard, on the main thread (where every settle runs),
+/// so the copy is the last write and a pending restore can never overwrite it.
+/// Blocks until the main thread has done it; never call it from main.
+#[cfg(target_os = "macos")]
+pub fn copy_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    let app_main = app.clone();
+    let text = text.to_string();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(mac::settle_then_copy(&app_main, text));
+    })
+    .map_err(|e| format!("schedule main-thread copy: {e}"))?;
+    rx.recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "copy timed out waiting for main thread".to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn copy_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard()
+        .write_text(text.to_string())
+        .map_err(|e| format!("clipboard write: {e}"))
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn publish_and_paste(_app: &tauri::AppHandle, _text: &str) -> Result<PasteHandle, String> {
     Err("paste only implemented on macOS".into())
@@ -476,6 +503,15 @@ mod mac {
                 }
             });
         });
+    }
+
+    /// Y6-B — main-thread half of `copy_sequenced`: settle whatever paste is
+    /// still open (its restore, if any, happens NOW), then write the copy.
+    pub fn settle_then_copy(app: &AppHandle, text: String) -> Result<(), String> {
+        flush_pending(app);
+        app.clipboard()
+            .write_text(text)
+            .map_err(|e| format!("clipboard write: {e}"))
     }
 
     /// Main-thread half: publish the promise, post ⌘V, arm the waiter. The
