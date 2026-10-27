@@ -31,6 +31,7 @@ fn on() -> PolishConfig {
         deadline_ms: 1200,
         style: Style::Default,
         preferences: Vec::new(),
+        profile: Default::default(),
         instruction: None,
     }
 }
