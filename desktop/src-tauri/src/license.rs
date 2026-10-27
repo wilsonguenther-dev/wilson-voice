@@ -5,7 +5,8 @@
 //! WHAT YAP SELLS
 //! --------------
 //! A $29 one-time lifetime license (a $19 `FOUNDING19` promo runs against the
-//! same SKU). There is no Yap account, no login, and no license-server call on
+//! same SKU for the 30 days after launch, see [`founding_valid`]). There is no
+//! Yap account, no login, and no license-server call on
 //! the hot path: a license is a signed blob the customer pastes in, and this
 //! module verifies it against a public key compiled into the binary.
 //!
@@ -170,7 +171,8 @@ pub const GRACE_DEFAULT_DAYS: i64 = TRIAL_DAYS;
 /// § "Live objects": Payment Link `plink_1U2yNFBc7RJSrX28KrzOuXwk`, price
 /// `price_1U2yN4Bc7RJSrX287I33050v` ($29.00 one-time), product
 /// `prod_V34VzbYj8scmQC`, `allow_promotion_codes: true` so `FOUNDING19` (coupon
-/// `z8UZkIH2`, −$10, 500 redemptions, expires 2026-11-08) applies at checkout.
+/// `z8UZkIH2`, −$10, 500 redemptions, valid 30 days from FOUNDING_OPENED_AT
+/// (the launch), see founding_valid) applies at checkout.
 ///
 /// The link is currently **`active: false`** on Stripe — deliberately
 /// deactivated until the delivery path is proven end to end (see that doc's
@@ -188,9 +190,76 @@ pub const PAYMENT_LINK_URL: &str = "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B6
 /// `active: false` on Stripe and the issuer does not answer, so a Buy action on
 /// the pill would dead-end. While it is false the pill still COUNTS DOWN (the
 /// trial is never silent) but carries no purchase action at all. Wilson flips
-/// this in the same release that opens checkout. It governs the pill only; the
-/// Settings → License panel and the tray keep their own copy.
+/// this in the same release that opens checkout. It governs the pill's purchase
+/// chip and, through [`founding_valid`], every line of founding-price copy; the
+/// Settings → License panel and the tray otherwise keep their own copy.
+///
+/// Flipping it REQUIRES [`FOUNDING_OPENED_AT`] in the same release: the const
+/// assertion below refuses to compile a build that opens checkout without
+/// saying when the founding window started.
 pub const PURCHASE_OPEN: bool = false;
+
+/// yap-founding-coupon-follows-launch — the ONE global instant the founding
+/// window (`FOUNDING19`, coupon `z8UZkIH2`) opened: RFC 3339, UTC, e.g.
+/// `Some("2026-12-01T17:00:00Z")`.
+///
+/// A release-time const, set in the SAME release that flips [`PURCHASE_OPEN`],
+/// because PURCHASE_OPEN itself is a release-time const. It is deliberately not
+/// each install's first run: a Mac that installs on day 29 gets one day of the
+/// founding price, exactly like everybody else, and Stripe agrees with it.
+///
+/// OWNER-ONLY on launch day (never an agent — money): set the Stripe coupon
+/// `z8UZkIH2` `redeem_by` to this instant + [`FOUNDING_WINDOW_DAYS`].
+pub const FOUNDING_OPENED_AT: Option<&str> = None;
+
+/// How long the founding price runs after [`FOUNDING_OPENED_AT`].
+pub const FOUNDING_WINDOW_DAYS: i64 = 30;
+
+// Opening checkout without a founding instant is a release that cannot say
+// whether FOUNDING19 is valid. Refuse to build it (the unit test
+// `founding_purchase_open_requires_opened_at` pins the same rule).
+const _: () = assert!(
+    !PURCHASE_OPEN || FOUNDING_OPENED_AT.is_some(),
+    "PURCHASE_OPEN is true but FOUNDING_OPENED_AT is None: set the launch instant in the same release"
+);
+
+/// [`FOUNDING_OPENED_AT`], parsed. `None` when it is unset — or malformed,
+/// which `LicenseManager::new` logs at ERROR and the unit test
+/// `founding_opened_at_const_parses_when_set` refuses to ship.
+pub fn founding_opened_at() -> Option<chrono::DateTime<chrono::Utc>> {
+    parse_founding_opened_at(FOUNDING_OPENED_AT)
+}
+
+fn parse_founding_opened_at(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    raw.and_then(|s| chrono::DateTime::parse_from_rfc3339(s.trim()).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// Is the founding price (`FOUNDING19`) redeemable right now?
+///
+/// `purchase_open && opened_at <= now < opened_at + 30 days`. A closed
+/// checkout, or no launch instant, is never founding — whatever the clock says.
+/// The backend computes this into [`LicenseStatus::founding_open`]; the webview
+/// never recomputes it.
+pub fn founding_valid(
+    purchase_open: bool,
+    opened_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let Some(opened_at) = opened_at else {
+        return false;
+    };
+    purchase_open
+        && opened_at <= now
+        && now < opened_at + chrono::Duration::days(FOUNDING_WINDOW_DAYS)
+}
+
+/// [`founding_valid`] for this build's consts at the manager's clock (`now_ms`,
+/// wall milliseconds). An unrepresentable clock reads as closed.
+fn founding_open_at_ms(now_ms: i64) -> bool {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms)
+        .is_some_and(|now| founding_valid(PURCHASE_OPEN, founding_opened_at(), now))
+}
 
 /// Filename under `data_dir()`.
 pub const LICENSE_FILE: &str = "license.json";
@@ -862,6 +931,9 @@ pub struct LicenseStatus {
     /// yap24-PILL1 — [`PURCHASE_OPEN`], on the payload, so the pill decides
     /// from what the backend says rather than from a TS copy of the switch.
     pub purchase_open: bool,
+    /// yap-founding-coupon-follows-launch — [`founding_valid`] for this build
+    /// at status time. The ONLY gate on founding-price copy in the webview.
+    pub founding_open: bool,
 }
 
 impl LicenseStatus {
@@ -1132,6 +1204,20 @@ impl LicenseManager {
         // policy this build shipped with (no path, no key material).
         log::info!(
             "license pill_policy purchase_open={PURCHASE_OPEN} quiet_from_days={PILL_QUIET_FROM_DAYS} show_days={PILL_SHOW_DAYS} urgent_days={PILL_URGENT_DAYS}"
+        );
+        // yap-founding-coupon-follows-launch — which founding window this build
+        // carries, once per launch. A set-but-unparseable instant would silently
+        // hide the promo a customer was promised: say so loudly.
+        let opened_at = founding_opened_at();
+        if FOUNDING_OPENED_AT.is_some() && opened_at.is_none() {
+            log::error!(
+                "license founding_policy failure=unparseable_opened_at purchase_open={PURCHASE_OPEN}"
+            );
+        }
+        log::info!(
+            "license founding_policy purchase_open={PURCHASE_OPEN} opened_at={} window_days={FOUNDING_WINDOW_DAYS} founding_open_now={}",
+            opened_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "none".to_string()),
+            founding_open_at_ms(wall_now_ms())
         );
         Self::with_clock(dir, store, Box::new(wall_now_ms))
     }
@@ -1405,6 +1491,7 @@ impl LicenseManager {
             revocation_checked_at_ms,
             revoked_count,
             purchase_open: PURCHASE_OPEN,
+            founding_open: founding_open_at_ms((self.now)()),
         }
     }
 
@@ -1775,6 +1862,123 @@ mod tests {
 
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    // ─── yap-founding-coupon-follows-launch ─────────────────────────
+
+    fn t0() -> chrono::DateTime<chrono::Utc> {
+        parse_founding_opened_at(Some("2026-12-01T17:00:00Z")).expect("fixture instant parses")
+    }
+
+    #[test]
+    fn founding_closed_checkout_is_never_valid() {
+        let t0 = t0();
+        let d = chrono::Duration::days;
+        let opened = [None, Some(t0), Some(t0 - d(400)), Some(t0 + d(400))];
+        let nows = [
+            t0 - d(1),
+            t0,
+            t0 + d(1),
+            t0 + d(29),
+            t0 + d(30),
+            t0 + d(31),
+            t0 + d(3650),
+        ];
+        for opened_at in opened {
+            for now in nows {
+                assert!(
+                    !founding_valid(false, opened_at, now),
+                    "closed checkout must never be founding: opened_at={opened_at:?} now={now}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn founding_open_without_instant_is_not_valid() {
+        assert!(!founding_valid(true, None, t0()));
+    }
+
+    #[test]
+    fn founding_valid_for_thirty_days_from_the_flip() {
+        let t0 = t0();
+        assert!(
+            founding_valid(true, Some(t0), t0),
+            "valid at the flip instant"
+        );
+        assert!(
+            founding_valid(
+                true,
+                Some(t0),
+                t0 + chrono::Duration::days(29) + chrono::Duration::hours(23)
+            ),
+            "valid at t0 + 29d23h"
+        );
+        assert!(
+            founding_valid(
+                true,
+                Some(t0),
+                t0 + chrono::Duration::days(30) - chrono::Duration::milliseconds(1)
+            ),
+            "valid up to the last millisecond of day 30"
+        );
+        assert!(
+            !founding_valid(true, Some(t0), t0 + chrono::Duration::days(30)),
+            "invalid at t0 + 30d"
+        );
+        assert!(
+            !founding_valid(true, Some(t0), t0 + chrono::Duration::days(31)),
+            "invalid at t0 + 31d"
+        );
+        assert!(
+            !founding_valid(true, Some(t0), t0 - chrono::Duration::seconds(1)),
+            "not valid before the launch instant"
+        );
+    }
+
+    #[test]
+    fn founding_purchase_open_requires_opened_at() {
+        // The build-time guard (`const _` beside the consts) and this test say
+        // the same thing: a release that opens checkout names its launch.
+        const { assert!(!PURCHASE_OPEN || FOUNDING_OPENED_AT.is_some()) };
+        if PURCHASE_OPEN {
+            assert!(
+                founding_opened_at().is_some(),
+                "PURCHASE_OPEN is true: FOUNDING_OPENED_AT must be a valid RFC 3339 instant"
+            );
+        }
+    }
+
+    #[test]
+    fn founding_opened_at_const_parses_when_set() {
+        assert_eq!(FOUNDING_OPENED_AT.is_some(), founding_opened_at().is_some());
+        assert!(parse_founding_opened_at(Some("not a date")).is_none());
+        assert!(parse_founding_opened_at(None).is_none());
+        assert_eq!(
+            parse_founding_opened_at(Some("2026-12-01T12:00:00-05:00")),
+            Some(t0()),
+            "offsets normalise to the same UTC instant"
+        );
+    }
+
+    #[test]
+    fn license_status_payload_carries_founding_open() {
+        let (dir, store) = temp_env("founding-open");
+        let mgr = LicenseManager::new(dir.path(), store);
+        let status = mgr.status();
+        let expected = founding_valid(PURCHASE_OPEN, founding_opened_at(), chrono::Utc::now());
+        assert_eq!(status.founding_open, expected);
+        if !PURCHASE_OPEN {
+            assert!(
+                !status.founding_open,
+                "checkout closed => payload founding_open false"
+            );
+        }
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json["founding_open"],
+            serde_json::json!(status.founding_open)
+        );
+    }
 
     /// A license key signed by the REAL, deployed issuer key.
     ///

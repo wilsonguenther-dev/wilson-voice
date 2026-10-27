@@ -18,10 +18,16 @@ import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, PRICE_LABEL } from "./status";
  *    and this is the moment to be warm, not stern.
  */
 export default function PurchasePrompt({
+  foundingOpen,
   onBuy,
   onEnterKey,
   onDismiss,
 }: {
+  /**
+   * The backend's `LicenseStatus.founding_open` (Rust `founding_valid`). The
+   * founding price and code render ONLY when this is true.
+   */
+  foundingOpen: boolean;
   onBuy: () => Promise<void> | void;
   /** Jump to Settings → License with the key box in view. */
   onEnterKey: () => void;
@@ -74,9 +80,13 @@ export default function PurchasePrompt({
         </div>
 
         <p className="buy-fine">
-          One time, no subscription, no account. Founding price{" "}
-          <strong className="license-price">{FOUNDING_PRICE_LABEL}</strong> with{" "}
-          <code>{FOUNDING_CODE}</code> at checkout.
+          One time, no subscription, no account.
+          {foundingOpen && (
+            <>
+              {" "}Founding price <strong className="license-price">{FOUNDING_PRICE_LABEL}</strong>{" "}
+              with <code>{FOUNDING_CODE}</code> at checkout.
+            </>
+          )}
         </p>
         <button type="button" className="ghost buy-dismiss" onClick={onDismiss}>
           Not now

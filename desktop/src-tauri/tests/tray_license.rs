@@ -84,6 +84,7 @@ fn trial(days_left: i64) -> LicenseStatus {
         revocation_checked_at_ms: None,
         revoked_count: 0,
         purchase_open: false,
+        founding_open: false,
     }
 }
 
@@ -102,6 +103,7 @@ fn licensed() -> LicenseStatus {
         revocation_checked_at_ms: None,
         revoked_count: 0,
         purchase_open: false,
+        founding_open: false,
     }
 }
 
@@ -118,6 +120,7 @@ fn required(reason: &str) -> LicenseStatus {
         revocation_checked_at_ms: None,
         revoked_count: 0,
         purchase_open: false,
+        founding_open: false,
     }
 }
 

@@ -38,6 +38,7 @@ function trial(days: number, over: Partial<LicenseStatus> = {}): LicenseStatus {
     revocation_checked_at_ms: null,
     revoked_count: 0,
     purchase_open: false,
+    founding_open: false,
     ...over,
   } as LicenseStatus;
 }
@@ -56,6 +57,7 @@ function licensed(over: Partial<LicenseStatus> = {}): LicenseStatus {
     revocation_checked_at_ms: EXPIRES,
     revoked_count: 0,
     purchase_open: false,
+    founding_open: false,
     ...over,
   } as LicenseStatus;
 }
@@ -72,6 +74,7 @@ function required(reason = "trial_expired", over: Partial<LicenseStatus> = {}): 
     revocation_checked_at_ms: null,
     revoked_count: 0,
     purchase_open: false,
+    founding_open: false,
     ...over,
   } as LicenseStatus;
 }

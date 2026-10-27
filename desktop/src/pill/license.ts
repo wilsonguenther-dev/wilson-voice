@@ -319,6 +319,7 @@ const ENDED_FOR_COPY: LicenseStatus = {
   revocation_checked_at_ms: null,
   revoked_count: 0,
   purchase_open: false,
+  founding_open: false,
 };
 
 /** "Dictation is paused" — the headline the capsule wears. */
