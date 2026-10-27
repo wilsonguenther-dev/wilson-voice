@@ -1933,9 +1933,12 @@ button.star.on {
      intrinsic ratio, so resizing the store can never feed back into layout).
      YappyHouse sizes the backing store to this box in whole device px and
      draws the room at an integer cell, centred, margin in the scene colour —
-     so CSS never rescales it and image-rendering is only a safety net. */
+     so CSS never rescales it and image-rendering is only a safety net.
+     object-fit / object-position are READ by YappyHouse to pick contain vs
+     cover (see the short-window rule below), so they stay meaningful. */
   aspect-ratio: 3 / 2;
   max-height: 300px;
+  object-fit: contain;
   border-radius: 8px;
   image-rendering: pixelated;
   image-rendering: crisp-edges;

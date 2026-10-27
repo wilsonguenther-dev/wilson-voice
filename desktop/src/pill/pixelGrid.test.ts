@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error -- node builtin, untyped here; the test runs under Node.
 import { readFileSync } from "node:fs";
 import {
-  backingScale, dockCentreX, fillSpan, fitCell, pixelGrid, sceneBlit, snapRect, toDevice,
+  backingScale, coverCell, dockCentreX, fillSpan, fitCell, parseObjectPosition, pixelGrid, sceneBlit, snapRect, toDevice,
   DOCKS, DOCK_PAD, type PixelGrid, type SceneBlit,
 } from "./pixelGrid";
 
@@ -32,6 +32,11 @@ const CAPSULE = {
   rest: { capW: 72, capH: 22, viewW: 26, centre: { x: 88, y: 18 } },
   open: { capW: 236, capH: 60, viewW: 176 * 0.8, centre: { x: 88, y: 22 } },
 } as const;
+
+/** YappyPill's offscreen world (PW x PH art px) — the ONLY pixels a blit may read. */
+const BUF = { w: 176, h: 44 } as const;
+/** YappyPill's capsule tiers: no prop, the pad, the desk (tierOpen). */
+const TIERS = [1, 1.05, 1.16] as const;
 
 const isInt = (n: number) => Number.isInteger(n);
 
@@ -58,7 +63,7 @@ function expectLargestFit(g: PixelGrid, gridW: number, gridH: number) {
   }
 }
 
-function expectWholeBlit(b: SceneBlit) {
+function expectWholeBlit(b: SceneBlit, buf: { w: number; h: number } = BUF) {
   for (const r of [b.clip, b.src, b.dst]) for (const n of [r.x, r.y, r.w, r.h]) expect(isInt(n)).toBe(true);
   expect(isInt(b.cell)).toBe(true);
   expect(b.dst.w).toBe(b.src.w * b.cell);   // never stretched
@@ -73,18 +78,29 @@ function expectWholeBlit(b: SceneBlit) {
   expect(b.clip.y - b.dst.y).toBeLessThan(b.cell);
   expect(b.dst.x + b.dst.w - (b.clip.x + b.clip.w)).toBeLessThan(b.cell);
   expect(b.dst.y + b.dst.h - (b.clip.y + b.clip.h)).toBeLessThan(b.cell);
-  // the requested view fits at that cell, and is the largest cell that does
-  expect(b.gridW * b.cell).toBeLessThanOrEqual(b.clip.w);
-  expect(b.gridH * b.cell).toBeLessThanOrEqual(b.clip.h);
-  expect((b.cell + 1) * b.gridW > b.clip.w || (b.cell + 1) * b.gridH > b.clip.h).toBe(true);
+  // review r1 BLOCKING 1: the source NEVER leaves the scene buffer. A drawImage
+  // source rect outside the buffer does not throw in WebKit — those device px are
+  // simply not painted, so the capsule fill shows through (the letterbox the
+  // reviewer measured). Every src px must be a real scene px.
+  expect(b.src.x).toBeGreaterThanOrEqual(0);
+  expect(b.src.y).toBeGreaterThanOrEqual(0);
+  expect(b.src.x + b.src.w).toBeLessThanOrEqual(buf.w);
+  expect(b.src.y + b.src.h).toBeLessThanOrEqual(buf.h);
+  // the cell is the largest that fits the requested view — unless the buffer at
+  // that cell is too small to cover the window, then the SMALLEST cell that does
+  // (zoom in, crop the view; never letterbox)
+  expect(b.cell).toBe(Math.max(fitCell(b.clip.w, b.clip.h, b.gridW, b.gridH), coverCell(b.clip.w, b.clip.h, buf.w, buf.h)));
+  expect(buf.w * b.cell).toBeGreaterThanOrEqual(b.clip.w);
+  expect(buf.h * b.cell).toBeGreaterThanOrEqual(b.clip.h);
 }
 
 /** The blit YappyPill makes for a dock, a capsule state and a DPR — the same arithmetic as the draw loop. */
-function pillBlit(dock: string, state: keyof typeof CAPSULE, dpr: number, canvas = FLOAT): SceneBlit {
+function pillBlit(dock: string, state: keyof typeof CAPSULE, dpr: number, tier = 1, canvas = FLOAT): SceneBlit {
   const c = CAPSULE[state];
-  const cx = dockCentreX(dock, canvas.w, c.capW), cy = canvas.h * 0.56;
-  const x0 = cx - c.capW / 2, y0 = cy - c.capH / 2, iw = c.capW - 2, ih = c.capH - 2;
-  return sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: c.viewW, h: c.viewW * (ih / iw) }, centre: c.centre, dpr });
+  const capW = state === "open" ? c.capW * tier : c.capW, capH = state === "open" ? c.capH * tier : c.capH;
+  const cx = dockCentreX(dock, canvas.w, capW), cy = canvas.h * 0.56;
+  const x0 = cx - capW / 2, y0 = cy - capH / 2, iw = capW - 2, ih = capH - 2;
+  return sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: c.viewW, h: c.viewW * (ih / iw) }, centre: c.centre, buffer: BUF, dpr });
 }
 
 describe("pixelGrid — the pure fit", () => {
@@ -121,6 +137,30 @@ describe("pixelGrid — the pure fit", () => {
       }
     });
 
+    it(`DPR ${dpr}: the Home room under main's short-window rule (max-height 112px, object-fit cover, 50% 70%)`, () => {
+      // review r1 BLOCKING 2: main #243's @media (max-height: 800px) rule makes the
+      // stage a 112 px band that CROPS the room (cover). The default 980x700 window
+      // is inside that query. Fitting the whole room there drew a tiny stamp.
+      const pos = parseObjectPosition("50% 70%");
+      expect(pos).toEqual({ x: 0.5, y: 0.7 });
+      for (const cssW of [300, 450, 600, 700, 812, 940]) {
+        const g = pixelGrid({ w: cssW, h: 112 }, { w: 192, h: 128 }, dpr, { fit: "cover", pos });
+        for (const n of [g.backingW, g.backingH, g.cell, g.drawW, g.drawH, g.offsetX, g.offsetY]) expect(isInt(n)).toBe(true);
+        expect(g.backingH).toBe(112 * dpr);
+        // the room covers the WHOLE stage — no wall-coloured margin anywhere
+        expect(g.offsetX).toBeLessThanOrEqual(0);
+        expect(g.offsetY).toBeLessThanOrEqual(0);
+        expect(g.offsetX + g.drawW).toBeGreaterThanOrEqual(g.backingW);
+        expect(g.offsetY + g.drawH).toBeGreaterThanOrEqual(g.backingH);
+        // ...at the SMALLEST integer cell that covers it (no more crop than needed)
+        expect(g.cell).toBe(coverCell(g.backingW, g.backingH, 192, 128));
+        expect((g.cell - 1) * 192 < g.backingW || (g.cell - 1) * 128 < g.backingH || g.cell === 1).toBe(true);
+        // object-position 50% 70% honoured on whole device px
+        expect(g.offsetX).toBe(Math.floor((g.backingW - g.drawW) * 0.5));
+        expect(g.offsetY).toBe(Math.floor((g.backingH - g.drawH) * 0.7));
+      }
+    });
+
     it(`DPR ${dpr}: the 30 px side dock — a 30 px-wide box still gets a whole-px grid`, () => {
       for (const [grid, box] of [
         [{ w: 26, h: 7 }, { w: 30, h: 140 }],   // Yappy's resting face view in a 30 px strip
@@ -142,21 +182,21 @@ describe("pixelGrid — the pure fit", () => {
     for (const dock of DOCKS) {
       for (const state of ["rest", "open"] as const) {
         it(`DPR ${dpr}: ${dock} dock, capsule ${state} — the camera blit is whole device px, scene-filled`, () => {
-          expectWholeBlit(pillBlit(dock, state, dpr));
+          for (const tier of TIERS) expectWholeBlit(pillBlit(dock, state, dpr, tier));
         });
       }
     }
 
     it(`DPR ${dpr}: every frame of the open/close camera tween stays on whole device px`, () => {
-      for (const dock of DOCKS) {
+      for (const dock of DOCKS) for (const tier of TIERS) {
         for (let i = 0; i <= 40; i++) {
           const t = i / 40;
-          const capW = 72 + (236 - 72) * t, capH = 22 + (60 - 22) * t;
+          const capW = 72 + (236 * tier - 72) * t, capH = 22 + (60 * tier - 22) * t;
           const cx = dockCentreX(dock, FLOAT.w, capW), cy = FLOAT.h * 0.56;
           const iw = capW - 2, ih = capH - 2, viewW = 26 + (176 * 0.8 - 26) * t;
           expectWholeBlit(sceneBlit({
             rect: { x: cx - capW / 2 + 1, y: cy - capH / 2 + 1, w: iw, h: ih },
-            view: { w: viewW, h: viewW * (ih / iw) }, centre: { x: 88, y: 18 + (22 - 18) * t }, dpr,
+            view: { w: viewW, h: viewW * (ih / iw) }, centre: { x: 88, y: 18 + (22 - 18) * t }, buffer: BUF, dpr,
           }));
         }
       }
@@ -175,6 +215,20 @@ describe("pixelGrid — the pure fit", () => {
     expect(pillBlit("bottom", "rest", 1).cell).toBe(2);
     expect(pillBlit("bottom", "rest", 2).cell).toBe(5);
     expect(pillBlit("left", "open", 2).cell).toBe(3);
+  });
+
+  it("review r1 BLOCKING 1 — the reviewer's probe geometries read only real scene px (no letterbox)", () => {
+    // Reviewer's numbers on the r0 head: DPR 1 open src {x:-28,y:-6,w:234,h:58};
+    // desk DPR 1 src {x:-47,y:-11,w:272,h:67}; desk DPR 2 src {x:-2,y:0,w:182,h:45}.
+    const open1 = pillBlit("bottom", "open", 1);
+    const desk1 = pillBlit("bottom", "open", 1, 1.16);
+    const desk2 = pillBlit("bottom", "open", 2, 1.16);
+    for (const b of [open1, desk1, desk2]) expectWholeBlit(b);
+    // DPR 1 fully open: cell 1 cannot cover a 234 px window from a 176 px world,
+    // so the camera zooms in to 2 (the old continuous zoom was 1.66).
+    expect(open1.cell).toBe(2);
+    expect(desk1.cell).toBe(2);
+    expect(desk2.cell).toBe(4);
   });
 
   it("snapRect: shared CSS edges stay shared device edges", () => {
@@ -209,9 +263,21 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
 
   it("YappyHouse sizes its backing store from the grid, not a fixed 5x", () => {
     expect(house).toMatch(/from "\.\.\/pill\/pixelGrid"/);
-    expect(house).toMatch(/pixelGrid\(\{ w: r\.width, h: r\.height \}, \{ w: W, h: H \}, devicePixelRatio\)/);
+    expect(house).toMatch(/pixelGrid\(\{ w: r\.width, h: r\.height \}, \{ w: W, h: H \}, devicePixelRatio, \{/);
+    // the CSS object-fit / object-position are READ, so main's short-window cover rule stays live
+    expect(house).toMatch(/objectFit === "cover"/);
+    expect(house).toMatch(/parseObjectPosition\(cs\.objectPosition\)/);
     expect(house).not.toMatch(/W \* S, H \* S/);
     expect(house).toMatch(/grid\.offsetX, grid\.offsetY, grid\.drawW, grid\.drawH/);
+  });
+
+  it("App.css: the short-window cover rule this module honours is still there", () => {
+    const css = readSibling("../App.css");
+    expect(css).toMatch(/@media \(max-height: 800px\)[\s\S]*?\.yappy-house \.yh-stage \{\s*max-height: 112px;\s*object-fit: cover;\s*object-position: 50% 70%;/);
+  });
+
+  it("YappyPill hands its scene buffer to sceneBlit (the src clamp needs it)", () => {
+    expect(pill).toMatch(/buffer: \{ w: PW, h: PH \}/);
   });
 
   it("ClassicPill draws no pixel art: it is a DOM capsule with no canvas", () => {

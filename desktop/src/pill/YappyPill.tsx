@@ -477,9 +477,12 @@ export default function YappyPill(
       const vcx = FX, vcy = lerp(FY, PH * 0.5, openV); // pan from the face to the scene centre
       // yap24-UI1 — the camera view is fitted at the largest WHOLE number of device
       // px per art px, on a whole-device-px origin; the leftover margin is more of
-      // the world at the same cell, never a stretch. Drawn under an identity
-      // transform (the clip above is already in device space).
-      const blit = sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: viewW, h: viewH }, centre: { x: vcx, y: vcy }, dpr: DPR });
+      // the world at the same cell, never a stretch. When the world (PW x PH) is too
+      // small to cover the capsule at that cell, the cell steps UP to the smallest
+      // one that covers it (fully open at DPR 1: 2x, the view cropped) — src never
+      // reads past the buffer, so the capsule is never letterboxed. Drawn under an
+      // identity transform (the clip above is already in device space).
+      const blit = sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: viewW, h: viewH }, centre: { x: vcx, y: vcy }, buffer: { w: PW, h: PH }, dpr: DPR });
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
       // sparkles (done) inside the pill — 2 CSS px squares, snapped to whole device px

@@ -23,7 +23,7 @@ import { invoke } from "@tauri-apps/api/core";
 // yap24-UI1 — the integer pixel grid (shared with the pill): the room is drawn at
 // the largest WHOLE number of device px per art px that fits the stage, centred
 // on a whole device px, with the leftover margin painted in the scene colour.
-import { backingScale, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
+import { backingScale, parseObjectPosition, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
 
 interface AppStatus {
   recording: boolean;
@@ -874,9 +874,18 @@ export default function YappyHouse({
     // yap24-UI1 — size the backing store to the stage's device box and pick the
     // cell. Resizing a canvas resets its context state, so smoothing is turned
     // back off every time. Reduced motion has no loop, so it repaints here.
+    // The CSS object-fit / object-position on .yh-stage are READ here, not left to
+    // the compositor (the backing store matches the box, so CSS fitting is inert):
+    // the default rule is contain (whole room, wall-coloured margin); main's
+    // short-window rule (@media max-height 800px: a 112 px band, cover, 50% 70%)
+    // crops the room on the same integer grid instead of shrinking it to a stamp.
     function regrid() {
       const r = stage!.getBoundingClientRect();
-      grid = pixelGrid({ w: r.width, h: r.height }, { w: W, h: H }, devicePixelRatio);
+      const cs = getComputedStyle(stage!);
+      grid = pixelGrid({ w: r.width, h: r.height }, { w: W, h: H }, devicePixelRatio, {
+        fit: cs.objectFit === "cover" ? "cover" : "contain",
+        pos: parseObjectPosition(cs.objectPosition),
+      });
       if (stage!.width !== grid.backingW) stage!.width = grid.backingW;
       if (stage!.height !== grid.backingH) stage!.height = grid.backingH;
       dctx!.imageSmoothingEnabled = false;

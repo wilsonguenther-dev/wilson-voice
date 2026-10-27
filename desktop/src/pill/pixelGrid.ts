@@ -76,6 +76,46 @@ export function toDevice(css: number, dpr: number): number {
   return Math.max(1, Math.round(css * backingScale(dpr)));
 }
 
+/**
+ * The SMALLEST integer cell at which the grid covers the device box (>= 1) — the
+ * integer form of `object-fit: cover`. Used where a margin must never show: the
+ * pill's world behind the capsule, and the Home room under a cover rule.
+ */
+export function coverCell(devW: number, devH: number, gridW: number, gridH: number): number {
+  const gw = Math.max(1, Math.round(gridW));
+  const gh = Math.max(1, Math.round(gridH));
+  return Math.max(1, Math.ceil(devW / gw), Math.ceil(devH / gh));
+}
+
+/** How the art is fitted to the box — the CSS `object-fit` the element carries. */
+export type ArtFit = "contain" | "cover";
+export interface FitOptions {
+  /** contain (default): whole art, largest integer cell, margin left for the caller to paint.
+   *  cover: art fills the box, smallest integer cell that covers it, the overflow cropped. */
+  fit?: ArtFit;
+  /** Where the art sits in the box, as fractions 0..1 per axis (CSS `object-position`). Default centre. */
+  pos?: { x: number; y: number };
+}
+
+/**
+ * A computed `object-position` ("50% 70%", "left top", "center") -> fractions 0..1.
+ * Anything it cannot read as a percentage or keyword (a length) reads as centre.
+ */
+export function parseObjectPosition(css: string | undefined | null): { x: number; y: number } {
+  const parts = String(css ?? "").trim().split(/\s+/).filter(Boolean);
+  const one = (tok: string | undefined): number | null => {
+    if (tok === undefined) return null;
+    if (tok === "left" || tok === "top") return 0;
+    if (tok === "center") return 0.5;
+    if (tok === "right" || tok === "bottom") return 1;
+    const m = /^(-?\d+(?:\.\d+)?)%$/.exec(tok);
+    return m ? Math.min(1, Math.max(0, Number(m[1]) / 100)) : null;
+  };
+  // a lone vertical keyword ("top") names y, not x
+  if (parts.length === 1 && (parts[0] === "top" || parts[0] === "bottom")) return { x: 0.5, y: one(parts[0])! };
+  return { x: one(parts[0]) ?? 0.5, y: one(parts[1]) ?? 0.5 };
+}
+
 /** The largest integer cell such that the grid still fits the device box (>= 1). */
 export function fitCell(devW: number, devH: number, gridW: number, gridH: number): number {
   const gw = Math.max(1, Math.round(gridW));
@@ -83,10 +123,11 @@ export function fitCell(devW: number, devH: number, gridW: number, gridH: number
   return Math.max(1, Math.min(Math.floor(devW / gw), Math.floor(devH / gh)));
 }
 
-function fitInDevice(devW: number, devH: number, gridW: number, gridH: number, dpr: number): PixelGrid {
+function fitInDevice(devW: number, devH: number, gridW: number, gridH: number, dpr: number, opts: FitOptions = {}): PixelGrid {
   const gw = Math.max(1, Math.round(gridW));
   const gh = Math.max(1, Math.round(gridH));
-  const cell = fitCell(devW, devH, gw, gh);
+  const cell = opts.fit === "cover" ? coverCell(devW, devH, gw, gh) : fitCell(devW, devH, gw, gh);
+  const px = opts.pos?.x ?? 0.5, py = opts.pos?.y ?? 0.5;
   const drawW = gw * cell;
   const drawH = gh * cell;
   return {
@@ -96,8 +137,8 @@ function fitInDevice(devW: number, devH: number, gridW: number, gridH: number, d
     cell,
     drawW,
     drawH,
-    offsetX: Math.floor((devW - drawW) / 2),
-    offsetY: Math.floor((devH - drawH) / 2),
+    offsetX: Math.floor((devW - drawW) * px),
+    offsetY: Math.floor((devH - drawH) * py),
   };
 }
 
@@ -106,9 +147,9 @@ function fitInDevice(devW: number, devH: number, gridW: number, gridH: number, d
  * the largest integer device-pixel cell, the canvas backing size and the centring
  * offset in whole device pixels.
  */
-export function pixelGrid(box: Size, grid: Size, dprRaw: number | undefined | null): PixelGrid {
+export function pixelGrid(box: Size, grid: Size, dprRaw: number | undefined | null, opts: FitOptions = {}): PixelGrid {
   const dpr = backingScale(dprRaw);
-  return fitInDevice(toDevice(box.w, dpr), toDevice(box.h, dpr), grid.w, grid.h, dpr);
+  return fitInDevice(toDevice(box.w, dpr), toDevice(box.h, dpr), grid.w, grid.h, dpr, opts);
 }
 
 /** Snap a CSS rect to the device grid: whole device px, edges rounded independently
@@ -134,12 +175,14 @@ export function fillSpan(g: PixelGrid): { left: number; top: number; right: numb
 export interface SceneBlit {
   /** Device px per art px — integer. */
   cell: number;
-  /** The camera view the caller asked for, rounded to whole art px (what must fit). */
+  /** The camera view the caller asked for, rounded to whole art px (what the cell is fitted to,
+   *  unless the buffer is too small to cover the window at that cell — then the view is cropped). */
   gridW: number;
   gridH: number;
   /** The clip window (the capsule interior) on the device grid. */
   clip: IntRect;
-  /** Source rect in the scene buffer, whole art px — the view PLUS the scene that fills the margin. */
+  /** Source rect in the scene buffer, whole art px, ALWAYS inside [0, buffer] — the view plus
+   *  the scene that fills the margin. */
   src: IntRect;
   /** Destination rect, whole device px. Always exactly src * cell: never stretched. */
   dst: IntRect;
@@ -147,9 +190,17 @@ export interface SceneBlit {
 
 /**
  * A camera into a scene buffer that is LARGER than what it shows (YappyPill's
- * world). The view is fitted with `pixelGrid` inside the clip window, and the
- * leftover margin is filled with MORE OF THE SCENE at the same integer cell —
- * so the margin is scene-coloured by construction and nothing is stretched.
+ * world), drawn into a clip window (the capsule interior) on the device grid.
+ *
+ * The cell is the largest integer that fits the requested view in the window —
+ * unless the buffer at that cell is too narrow or too short to cover the window,
+ * in which case it is the smallest integer that DOES cover it (the camera zooms
+ * in and crops the view; the window is never letterboxed). The camera centre
+ * lands on the window centre, panned back inside the buffer when it would show
+ * past an edge. `src` therefore only ever reads real scene px — a drawImage source
+ * rect past the buffer does not throw, it just leaves those device px unpainted —
+ * and `dst` = src * cell covers the whole clip window.
+ *
  * The caller clips to `clip` (or a shape inside it) and draws
  * `drawImage(buf, src.x, src.y, src.w, src.h, dst.x, dst.y, dst.w, dst.h)`
  * under an identity transform.
@@ -161,24 +212,33 @@ export function sceneBlit(o: {
   view: Size;
   /** The art px the camera is centred on. */
   centre: { x: number; y: number };
+  /** The scene buffer's size, in art px — the only pixels `src` may read. */
+  buffer: Size;
   dpr: number;
 }): SceneBlit {
   const dpr = backingScale(o.dpr);
   const clip = snapRect(o.rect, dpr);
-  const g = fitInDevice(clip.w, clip.h, o.view.w, o.view.h, dpr);
-  const gridW = g.drawW / g.cell;
-  const gridH = g.drawH / g.cell;
-  const sx = Math.round(o.centre.x - gridW / 2);
-  const sy = Math.round(o.centre.y - gridH / 2);
-  const f = fillSpan(g);
-  const src = { x: sx - f.left, y: sy - f.top, w: gridW + f.left + f.right, h: gridH + f.top + f.bottom };
-  const dst = {
-    x: clip.x + g.offsetX - f.left * g.cell,
-    y: clip.y + g.offsetY - f.top * g.cell,
-    w: src.w * g.cell,
-    h: src.h * g.cell,
+  const gridW = Math.max(1, Math.round(o.view.w));
+  const gridH = Math.max(1, Math.round(o.view.h));
+  const bufW = Math.max(1, Math.round(o.buffer.w));
+  const bufH = Math.max(1, Math.round(o.buffer.h));
+  const cell = Math.max(fitCell(clip.w, clip.h, gridW, gridH), coverCell(clip.w, clip.h, bufW, bufH));
+  // One axis: the art coordinate at the window's leading edge (centred on the
+  // camera, clamped into the buffer — `cell` guarantees bufLen*cell >= clipLen),
+  // split into a whole art px `s` and a whole-device-px lead-in before the window.
+  const axis = (clipPos: number, clipLen: number, centre: number, bufLen: number) => {
+    const span = clipLen / cell;
+    const a0 = Math.min(Math.max(centre - span / 2, 0), Math.max(0, bufLen - span));
+    const s = Math.max(0, Math.floor(a0));
+    const lead = Math.min(cell - 1, Math.max(0, Math.floor((a0 - s) * cell)));
+    const len = Math.min(bufLen - s, Math.ceil((clipLen + lead) / cell));
+    return { s, len, d: clipPos - lead };
   };
-  return { cell: g.cell, gridW, gridH, clip, src, dst };
+  const ax = axis(clip.x, clip.w, o.centre.x, bufW);
+  const ay = axis(clip.y, clip.h, o.centre.y, bufH);
+  const src = { x: ax.s, y: ay.s, w: ax.len, h: ay.len };
+  const dst = { x: ax.d, y: ay.d, w: src.w * cell, h: src.h * cell };
+  return { cell, gridW, gridH, clip, src, dst };
 }
 
 /** The three docks the float window can sit on (`<html data-dock>`). */
