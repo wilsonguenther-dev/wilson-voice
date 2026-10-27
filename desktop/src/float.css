@@ -1239,7 +1239,7 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   background: rgba(255, 255, 255, 0.12);
 }
 .meeting-offer-actions .meeting-offer-record { background: #e5484d; color: #fff; }
-.meeting-offer-actions button:focus-visible { outline: 2px solid #9db6ff; outline-offset: 1px; }
+/* Y5-J — focus ring for .meeting-offer-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
  * capsule says which way that runs (a column only for a strip phase at a side
