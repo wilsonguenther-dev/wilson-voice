@@ -8,6 +8,7 @@ import { MEETING_PROGRESS_EVENT, foldProgress, type MeetingProgressEvent } from 
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
+import { finishFailedToast } from "./recoveryToast";
 import { useFormattingOptions } from "./formatting";
 import { IDLE_MEETING, MEETING_EVENT, parseNavigate, type MeetingStatus } from "./pill/meeting";
 import { type MeetingConsent } from "./meetings/consent";
@@ -986,9 +987,12 @@ export function useAppShell() {
     if (retrying) return;
     setRetrying(id);
     try {
+      // `confirm` — the backend refuses Keep without it (yap-recovery-followups
+      // (b)); it is only ever true here after the user said yes to the dialog.
       const entry = await invoke<TranscriptEntry>("retry_failed_dictation", {
         id,
         keepPartial,
+        confirm: keepPartial,
       });
       setFailed((f) => f.filter((x) => x.id !== id));
       setRetryId((cur) => (cur === id ? null : cur));
@@ -1002,9 +1006,21 @@ export function useAppShell() {
       );
       await refreshInsights();
     } catch (e) {
-      toast(String(e));
-      // The clip may have been dropped (audio gone) — resync either way.
-      await loadFailed().catch(() => {});
+      if (keepPartial) {
+        toast(String(e));
+        // The clip may have been dropped (audio gone) — resync either way.
+        await loadFailed().catch(() => {});
+      } else {
+        // yap-recovery-followups (d): a failed Finish says, in plain words,
+        // what the user can do next — never the engine's error text. The row
+        // is re-read first: whether Keep is on offer depends on it.
+        const before = failed.find((x) => x.id === id);
+        const rows = await invoke<FailedDictation[]>("list_failed_dictations").catch(
+          () => null,
+        );
+        if (rows) setFailed(rows);
+        toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
+      }
     } finally {
       setRetrying(null);
     }

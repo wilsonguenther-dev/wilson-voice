@@ -487,3 +487,108 @@ fn a_completed_take_leaves_nothing_recoverable() {
     drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// yap-recovery-followups — the same three advisories driven through the
+// crate's PUBLIC surface: (a) one history row per take under concurrent
+// saves, (b) Keep's confirmation enforced by the backend, (c) Retry/Keep of a
+// live partial take merging into the entry saved live.
+// ---------------------------------------------------------------------------
+
+use wilson_voice_lib::{keep_what_was_transcribed, RecoveryClaims, RecoveryError, RecoveryRefusal};
+
+#[test]
+fn concurrent_saves_of_one_recovered_take_leave_one_history_row() {
+    let dir = tmpdir("followups-a");
+    let db = Database::open(dir.join("wilson_voice.db")).expect("db opens");
+    let recovery = dir.join("recovery");
+    let spill = write_abandoned_spill(&recovery, "take-a", 1.0);
+    db.record_take_chunk("take-a", 0, "words the take already had", 16_000)
+        .unwrap();
+    let row = db
+        .record_failed_dictation_for_take(&spill, 1.0, "Yap quit", None, Some("take-a".into()))
+        .unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|s| {
+        for _ in 0..2 {
+            s.spawn(|| {
+                barrier.wait();
+                let _ = db.convert_failed_dictation(
+                    &row.id,
+                    "words the take already had".into(),
+                    "stub".into(),
+                    0.1,
+                    None,
+                );
+            });
+        }
+    });
+    assert_eq!(db.transcripts_for_take("take-a").unwrap(), 1);
+    assert_eq!(db.list_transcripts(10, None).unwrap().len(), 1);
+}
+
+#[test]
+fn keep_is_refused_without_confirm_and_while_a_retry_runs() {
+    let dir = tmpdir("followups-b");
+    let db = Database::open(dir.join("wilson_voice.db")).expect("db opens");
+    let recovery = dir.join("recovery");
+    let spill = write_abandoned_spill(&recovery, "take-b", 1.0);
+    let said = "one two three four five six seven eight nine ten eleven twelve";
+    db.record_take_chunk("take-b", 0, said, 16_000).unwrap();
+    let row = db
+        .record_failed_dictation_for_take(&spill, 1.0, "Yap quit", None, Some("take-b".into()))
+        .unwrap();
+    let claims = RecoveryClaims::new();
+    let same = |_: &wilson_voice_lib::db::FailedDictation, raw: &str| raw.to_string();
+    assert_eq!(
+        keep_what_was_transcribed(&db, &claims, &row.id, None, same).unwrap_err(),
+        RecoveryError::Refused(RecoveryRefusal::ConfirmRequired)
+    );
+    let retry = claims.claim(&row.id).unwrap();
+    assert_eq!(
+        keep_what_was_transcribed(&db, &claims, &row.id, Some(true), same).unwrap_err(),
+        RecoveryError::Refused(RecoveryRefusal::RetryInFlight)
+    );
+    assert!(spill.exists(), "a refused Keep deletes no audio");
+    assert!(db.list_transcripts(10, None).unwrap().is_empty());
+    drop(retry);
+    let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), same).unwrap();
+    assert_eq!(entry.text, said);
+    assert!(!spill.exists(), "a confirmed Keep deletes the clip");
+}
+
+#[test]
+fn keep_after_a_live_partial_take_merges_into_its_entry() {
+    let dir = tmpdir("followups-c");
+    let db = Database::open(dir.join("wilson_voice.db")).expect("db opens");
+    let row = db
+        .record_failed_dictation(&dir.join("live.wav"), 5.0, "a section failed", None)
+        .unwrap();
+    let key = wilson_voice_lib::db::recovery_key(&row);
+    let live = db
+        .insert_transcript_for_take(
+            "what the live take got".into(),
+            "native".into(),
+            1.0,
+            5.0,
+            700,
+            None,
+            chrono::Utc::now(),
+            None,
+            Some(&key),
+        )
+        .unwrap();
+    db.note_failed_retry(&row.id, "failed again", Some("what the live take got and then some more"))
+        .unwrap();
+    let entry = keep_what_was_transcribed(
+        &db,
+        &RecoveryClaims::new(),
+        &row.id,
+        Some(true),
+        |_, raw| raw.to_string(),
+    )
+    .unwrap();
+    assert_eq!(entry.id, live.id);
+    assert_eq!(db.list_transcripts(10, None).unwrap().len(), 1);
+    assert_eq!(db.transcripts_for_take(&key).unwrap(), 1);
+}
