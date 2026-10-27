@@ -2,6 +2,8 @@
 # Provision the two notetaker eval inputs ONCE, at fixed paths, verified by hash.
 #
 #   model:  $YAP_MODEL_DIR/<Q8_0 filename>   default $HOME/code/wilson-voice-loop/cache/models
+#   notes:  $YAP_MODEL_DIR/<qwen2.5-1.5b Q4_K_M filename>  (yap24-NT4 R1 — the default notes model,
+#           pinned in the catalog's polish_models; tests/meeting_notes_recall_eval.rs reads it here)
 #   corpus: $YAP_EVAL_CORPUS                 default $HOME/yap-eval-corpus/meetings
 #
 # Every model-backed eval gate points at these two paths explicitly — never at Wilson's real
@@ -81,6 +83,53 @@ else
   mv -f "$PARTIAL" "$MODEL_PATH"
   verified "$MODEL_PATH" || die "model failed verification after rename: $MODEL_PATH"
   echo "model ok (provisioned)"
+fi
+
+# ── b2. the notes model (yap24-NT4 R1) ─────────────────────────────────────────
+# The default notes model (summarize::DEFAULT_SUMMARY_MODEL), pinned in the catalog's
+# polish_models. Same rules as the ASR model above: the pin comes from the catalog, the
+# installed copy is only read and APFS-cloned, a download is verified before its rename.
+NOTES_ID="qwen2.5-1.5b-instruct-q4_k_m"
+NOTES_ROW="$(jq -ec --arg id "$NOTES_ID" '.polish_models[] | select(.id == $id)' "$CATALOG")" \
+  || die "catalog has no polish model $NOTES_ID"
+NOTES_REPO="$(jq -er '.repo' <<<"$NOTES_ROW")"
+NOTES_REV="$(jq -er '.revision' <<<"$NOTES_ROW")"
+NOTES_FILE="$(jq -er '.file.filename' <<<"$NOTES_ROW")"
+NOTES_SIZE="$(jq -er '.file.size_bytes' <<<"$NOTES_ROW")"
+NOTES_SHA="$(jq -er '.file.sha256' <<<"$NOTES_ROW")"
+[[ "$NOTES_SHA" =~ ^[0-9a-f]{64}$ ]] || die "catalog sha256 for $NOTES_FILE is malformed: $NOTES_SHA"
+[[ "$NOTES_FILE" != */* && "$NOTES_FILE" != .* ]] || die "catalog filename is not a plain name: $NOTES_FILE"
+NOTES_PATH="$MODEL_DIR/$NOTES_FILE"
+NOTES_PARTIAL="$NOTES_PATH.partial"
+notes_verified() { [[ -f "$1" ]] && [[ "$(stat -f '%z' "$1")" == "$NOTES_SIZE" ]] && [[ "$(sha_of "$1")" == "$NOTES_SHA" ]]; }
+
+if notes_verified "$NOTES_PATH"; then
+  echo "notes model ok"
+else
+  [[ -e "$NOTES_PATH" ]] && { echo "cached $NOTES_FILE fails its catalog sha256; replacing it"; rm -f "$NOTES_PATH"; }
+  rm -f "$NOTES_PARTIAL"
+  NOTES_INSTALLED="$INSTALLED_DIR/$NOTES_FILE"
+  if notes_verified "$NOTES_INSTALLED"; then
+    cp -c "$NOTES_INSTALLED" "$NOTES_PARTIAL" || cp "$NOTES_INSTALLED" "$NOTES_PARTIAL"
+    echo "cloned the installed notes model (read-only source): $NOTES_INSTALLED"
+  else
+    URLS=("https://huggingface.co/$NOTES_REPO/resolve/$NOTES_REV/$NOTES_FILE")
+    for m in ${MIRRORS[@]+"${MIRRORS[@]}"}; do URLS+=("$m/$NOTES_REPO/$NOTES_REV/$NOTES_FILE"); done
+    got=""
+    for u in "${URLS[@]}"; do
+      echo "downloading $u"
+      if curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$NOTES_PARTIAL" "$u"; then got="$u"; break; fi
+      rm -f "$NOTES_PARTIAL"
+    done
+    [[ -n "$got" ]] || die "every download URL failed for $NOTES_FILE"
+  fi
+  if ! notes_verified "$NOTES_PARTIAL"; then
+    actual="$(sha_of "$NOTES_PARTIAL")"; rm -f "$NOTES_PARTIAL"
+    die "sha256 mismatch for $NOTES_FILE: expected $NOTES_SHA, got $actual — partial deleted"
+  fi
+  mv -f "$NOTES_PARTIAL" "$NOTES_PATH"
+  notes_verified "$NOTES_PATH" || die "notes model failed verification after rename: $NOTES_PATH"
+  echo "notes model ok (provisioned)"
 fi
 
 # ── c. the corpus ───────────────────────────────────────────────────────────────

@@ -7107,33 +7107,70 @@ impl summary_jobs::NotesBackend for AppNotes {
         cancel: &summary_jobs::CancelToken,
     ) -> Result<(), summary_jobs::NotesError> {
         use summary_jobs::{classify_download_error, NotesError};
-        let chosen = self.state.settings.lock().polish_model.clone();
-        let m = match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
-            summarize::SummaryModelPlan::Use(_) => return Ok(()),
-            summarize::SummaryModelPlan::Download(m) => m,
+        // yap24-NT4 R3: `polish_model` is read (it is the user's override) and
+        // never written — the notes model install cannot switch dictation
+        // polish on. `tests/notes_model_install_keeps_polish_model.rs`.
+        let settings = &self.state.settings;
+        let mut download = |m: &str| -> Result<(), NotesError> {
+            let model = models::polish_model(m).ok_or_else(|| {
+                NotesError::Summary(format!("Yap doesn't know the notes model {m}."))
+            })?;
+            let dir = models::models_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| classify_download_error(&e.to_string()))?;
+            models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))
+                .map_err(NotesError::DiskFull)?;
+            log::info!("summary: fetching the default notes model {m}");
+            let token = cancel.clone();
+            let stop = move || token.is_cancelled();
+            tauri::async_runtime::block_on(models::download_polish_model_cancellable(
+                m,
+                |done, total| {
+                    let pct = if total == 0 {
+                        0
+                    } else {
+                        ((done.saturating_mul(100)) / total).min(100) as u8
+                    };
+                    progress(pct);
+                },
+                &stop,
+            ))
+            .map(|_| ())
+            .map_err(|e| {
+                log::warn!("summary: the notes model download stopped: {e}");
+                classify_download_error(&e)
+            })
         };
-        let model = models::polish_model(&m)
-            .ok_or_else(|| NotesError::Summary(format!("Yap doesn't know the notes model {m}.")))?;
-        let dir = models::models_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| classify_download_error(&e.to_string()))?;
-        models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))
-            .map_err(NotesError::DiskFull)?;
-        log::info!("summary: fetching the default notes model {m}");
-        let token = cancel.clone();
-        let stop = move || token.is_cancelled();
-        tauri::async_runtime::block_on(models::download_polish_model_cancellable(
-            &m,
-            |done, total| {
-                let pct = if total == 0 { 0 } else { ((done.saturating_mul(100)) / total).min(100) as u8 };
-                progress(pct);
-            },
-            &stop,
-        ))
+        summary_jobs::ensure_notes_model(
+            &|| settings.lock().polish_model.clone(),
+            &summary_model_on_disk,
+            &mut download,
+        )
         .map(|_| ())
-        .map_err(|e| {
-            log::warn!("summary: the notes model download stopped: {e}");
-            classify_download_error(&e)
-        })
+    }
+
+    /// yap24-NT4 R4 — the notes sidecar never starts next to a live decode:
+    /// not while a meeting is being transcribed, not while a dictation wants
+    /// the engine, and not when the app is already too big to add ~1.4 GB.
+    fn defer_reason(&self) -> Option<String> {
+        use meeting_asr::EngineDemand;
+        if meeting_pipeline::transcribing_now() {
+            return Some("transcription_running".to_string());
+        }
+        if self.state.transcription.dictation_pending() {
+            return Some("dictation_pending".to_string());
+        }
+        let app_mb = hygiene::resident_mb();
+        if summary_jobs::memory_defers(
+            app_mb,
+            summary_jobs::NOTES_SIDECAR_PEAK_MB,
+            summary_jobs::NOTES_RSS_CEILING_MB,
+        ) {
+            return Some(format!(
+                "memory app_rss_mb={app_mb:.0} ceiling_mb={:.0}",
+                summary_jobs::NOTES_RSS_CEILING_MB
+            ));
+        }
+        None
     }
 
     fn summarize(

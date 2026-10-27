@@ -198,6 +198,78 @@ pub trait NotesBackend: Send + Sync {
     /// Summarize one meeting and store the notes. A cancelled run stores
     /// NOTHING and returns [`NotesError::Cancelled`].
     fn summarize(&self, id: &str, cancel: &CancelToken) -> Result<(), NotesError>;
+
+    /// yap24-NT4 R4 — a reason to hold the summary back right now (a meeting
+    /// is being transcribed, a dictation wants the engine, or the app is
+    /// already above the memory ceiling), or `None` to run it. A deferred job
+    /// is retried on the next idle tick and is never failed for waiting.
+    fn defer_reason(&self) -> Option<String> {
+        None
+    }
+
+    /// How long a deferred job waits before it asks again.
+    fn idle_tick(&self) -> Duration {
+        NOTES_IDLE_TICK
+    }
+}
+
+/// yap24-NT4 R4 — the next idle tick: how often a deferred notes job asks
+/// [`NotesBackend::defer_reason`] again.
+pub const NOTES_IDLE_TICK: Duration = Duration::from_secs(15);
+
+/// yap24-NT4 R4 — the longest a notes job waits for an idle moment. Past it the
+/// job runs anyway (logged), so a machine that never goes idle — or an RSS
+/// figure that never drops — cannot hold a meeting's notes back forever.
+pub const NOTES_MAX_DEFERRAL: Duration = Duration::from_secs(30 * 60);
+
+/// yap24-NT4 R4 — peak resident memory (app plus the notes sidecar) a summary
+/// may push the machine to, in MB, on the 8 GB floor machine. Measured in
+/// docs/BUDGETS.md ("summary recall and memory").
+pub const NOTES_RSS_CEILING_MB: f64 = 2560.0;
+
+/// yap24-NT4 R4 — what the 1.5B notes sidecar adds while it summarizes, in
+/// MB (peak, measured by tests/meeting_notes_recall_eval.rs; see BUDGETS.md).
+pub const NOTES_SIDECAR_PEAK_MB: f64 = 1400.0;
+
+/// yap24-NT4 R4 — would starting the notes sidecar now take the app above
+/// [`NOTES_RSS_CEILING_MB`]? `app_rss_mb <= 0` means "unknown" (the `ps`
+/// probe failed) and never defers: telemetry never blocks notes.
+pub fn memory_defers(app_rss_mb: f64, sidecar_mb: f64, ceiling_mb: f64) -> bool {
+    app_rss_mb > 0.0 && app_rss_mb + sidecar_mb > ceiling_mb
+}
+
+/// yap24-NT4 R3 — make sure the notes model is on disk, and say which model
+/// the summary will use. The user's dictation `polish_model` is READ (it is
+/// the override when it names an installed model) and never written: the
+/// notes model is fetched into the managed models dir and nothing else moves,
+/// so installing it cannot turn LLM polish on for dictation.
+pub fn ensure_notes_model(
+    polish_model: &dyn Fn() -> String,
+    on_disk: &dyn Fn(&str) -> bool,
+    download: &mut dyn FnMut(&str) -> Result<(), NotesError>,
+) -> Result<String, NotesError> {
+    use crate::summarize::{plan_summary_model, SummaryModelPlan};
+    let chosen = polish_model();
+    match plan_summary_model(&chosen, on_disk) {
+        SummaryModelPlan::Use(m) => Ok(m),
+        SummaryModelPlan::Download(m) => {
+            let started = Instant::now();
+            log::info!("summary notes_model_fetch start model={m}");
+            match download(&m) {
+                Ok(()) => {
+                    log::info!(
+                        "summary notes_model_fetch finish model={m} ms={}",
+                        started.elapsed().as_millis()
+                    );
+                    Ok(m)
+                }
+                Err(e) => {
+                    log::warn!("summary notes_model_fetch failure model={m} reason={}", e.plain());
+                    Err(e)
+                }
+            }
+        }
+    }
 }
 
 pub type Reporter = Arc<dyn Fn(&NotesStatus) + Send + Sync>;
@@ -496,12 +568,59 @@ fn run_one(inner: &Arc<Inner>, id: &str, token: &CancelToken) -> NotesStatus {
     if token.is_cancelled() {
         return end(NotesError::Cancelled);
     }
+    // yap24-NT4 R4: serialized with ASR — never start the notes sidecar while a
+    // meeting is decoding or the app is above the memory ceiling; wait for the
+    // next idle tick instead (capped by NOTES_MAX_DEFERRAL).
+    if let Err(e) = wait_for_idle(inner, id, token) {
+        return end(e);
+    }
     inner.set(status(NotesPhase::Summarizing, 0, None));
     match inner.backend.summarize(id, token) {
         Ok(()) => status(NotesPhase::Ready, 100, None),
         Err(_) if token.is_cancelled() => end(NotesError::Cancelled),
         Err(e) => end(e),
     }
+}
+
+/// yap24-NT4 R4 — hold the job while [`NotesBackend::defer_reason`] says so,
+/// one idle tick at a time. A cancel during the wait ends the job; the wait is
+/// capped at [`NOTES_MAX_DEFERRAL`], after which the job runs anyway.
+fn wait_for_idle(inner: &Arc<Inner>, id: &str, token: &CancelToken) -> Result<(), NotesError> {
+    let started = Instant::now();
+    let mut last: Option<String> = None;
+    let mut ticks = 0u64;
+    while let Some(why) = inner.backend.defer_reason() {
+        if token.is_cancelled() {
+            return Err(NotesError::Cancelled);
+        }
+        if started.elapsed() >= NOTES_MAX_DEFERRAL {
+            log::warn!(
+                "summary defer_cap meeting={id} reason={why} waited_ms={} — running anyway",
+                started.elapsed().as_millis()
+            );
+            return Ok(());
+        }
+        if last.as_deref() != Some(why.as_str()) {
+            log::info!("summary deferred meeting={id} reason={why}");
+            last = Some(why);
+        }
+        ticks += 1;
+        let q = inner.q.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = inner
+            .cv
+            .wait_timeout(q, inner.backend.idle_tick())
+            .unwrap_or_else(|p| p.into_inner());
+    }
+    if ticks > 0 {
+        log::info!(
+            "summary defer_end meeting={id} ticks={ticks} waited_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+    if token.is_cancelled() {
+        return Err(NotesError::Cancelled);
+    }
+    Ok(())
 }
 
 /// #250 fix round 4 (independent B1) — is a meeting in this `state` done
@@ -1173,4 +1292,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    /// yap24-NT4 R4 — a summary never starts while the backend says ASR (or
+    /// memory) is busy; it runs on the first idle tick after, and a cancel
+    /// during the wait stores nothing.
+    struct Deferring {
+        inner: Arc<Stub>,
+        busy_ticks: AtomicUsize,
+    }
+    impl NotesBackend for Deferring {
+        fn model_ready(&self) -> bool {
+            self.inner.model_ready()
+        }
+        fn fetch_model(&self, p: &mut dyn FnMut(u8), c: &CancelToken) -> Result<(), NotesError> {
+            self.inner.fetch_model(p, c)
+        }
+        fn summarize(&self, id: &str, c: &CancelToken) -> Result<(), NotesError> {
+            assert_eq!(self.busy_ticks.load(Ordering::SeqCst), 0, "summarized while ASR was busy");
+            self.inner.summarize(id, c)
+        }
+        fn defer_reason(&self) -> Option<String> {
+            let left = self.busy_ticks.load(Ordering::SeqCst);
+            if left == 0 {
+                return None;
+            }
+            self.busy_ticks.store(left - 1, Ordering::SeqCst);
+            Some("transcription running".into())
+        }
+        fn idle_tick(&self) -> Duration {
+            Duration::from_millis(5)
+        }
+    }
+
+    #[test]
+    fn a_summary_waits_for_asr_to_go_idle_then_runs() {
+        let stub = Stub::new(true);
+        let backend = Arc::new(Deferring { inner: stub.clone(), busy_ticks: AtomicUsize::new(4) });
+        let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).unwrap();
+        assert!(jobs.submit("m1"));
+        let end = jobs.wait_for("m1", Duration::from_secs(5)).expect("a status");
+        assert_eq!(end.phase, NotesPhase::Ready);
+        assert_eq!(backend.busy_ticks.load(Ordering::SeqCst), 0);
+        assert_eq!(*stub.stored.lock().unwrap(), vec!["m1".to_string()]);
+    }
+
+    #[test]
+    fn a_cancel_while_deferred_stores_nothing() {
+        let stub = Stub::new(true);
+        let backend = Arc::new(Deferring { inner: stub.clone(), busy_ticks: AtomicUsize::new(usize::MAX) });
+        let jobs = SummaryJobs::spawn(backend, Arc::new(|_: &NotesStatus| {})).unwrap();
+        assert!(jobs.submit("m2"));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(jobs.cancel("m2"));
+        let end = jobs.wait_for("m2", Duration::from_secs(5)).expect("a status");
+        assert_eq!(end.phase, NotesPhase::Cancelled);
+        assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
+        assert!(stub.stored.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn memory_defers_only_above_the_ceiling_and_never_on_unknown() {
+        assert!(!memory_defers(900.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
+        assert!(memory_defers(1300.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
+        assert!(!memory_defers(0.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
+    }
 }

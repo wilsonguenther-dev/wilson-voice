@@ -35,6 +35,7 @@ pub mod diarize_stub;
 /// notes owner accuracy, summary verbatim ratio) that score a transcript of it.
 pub mod call_bleed;
 pub mod eval_metrics;
+pub mod notes_planted;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

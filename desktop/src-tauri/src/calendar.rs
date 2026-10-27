@@ -256,3 +256,64 @@ mod tests {
         assert_eq!(status_name(0), "not_determined");
     }
 }
+
+/// One attendee of the calendar event a meeting was matched to (yap24-NT4 R5).
+/// Only ever read from the opt-in calendar match; never from Accessibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarAttendee {
+    /// What the calendar shows for this person ("Jordan Lee"); may be empty.
+    pub display_name: String,
+    /// The attendee's address, as the calendar stores it (`mailto:` or bare).
+    pub address: String,
+}
+
+fn bare_address(address: &str) -> String {
+    let a = address.trim();
+    let a = a
+        .strip_prefix("mailto:")
+        .or_else(|| a.strip_prefix("MAILTO:"))
+        .unwrap_or(a);
+    a.trim().to_ascii_lowercase()
+}
+
+/// yap24-NT4 R5 — the v1 remote-name path. The display name of the OTHER
+/// party when the event has exactly one attendee who is not the user, and
+/// `None` for zero or two-plus (a group call's far track is not one person,
+/// so the notes must not pick one of them). `self_addresses` are the user's
+/// own addresses; they are excluded however the calendar spells them. The
+/// same address listed twice is one person. A lone other attendee with no
+/// display name is `None`: an address is not a name to show in the notes.
+///
+/// A Them-track item's owner in the notes uses this name when it is `Some`
+/// and reads "Them" otherwise; transcript labels stay Me / Them.
+pub fn other_party_name(attendees: &[CalendarAttendee], self_addresses: &[&str]) -> Option<String> {
+    let mine: Vec<String> = self_addresses.iter().map(|a| bare_address(a)).collect();
+    let mut others: Vec<&CalendarAttendee> = Vec::new();
+    for a in attendees {
+        let addr = bare_address(&a.address);
+        if addr.is_empty() || mine.contains(&addr) {
+            continue;
+        }
+        if others.iter().any(|o| bare_address(&o.address) == addr) {
+            continue;
+        }
+        others.push(a);
+    }
+    match others.as_slice() {
+        [one] => {
+            let name = one.display_name.trim();
+            (!name.is_empty()).then(|| name.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The owner label a Them-track notes item carries: the other party's name
+/// from [`other_party_name`] when there is one, else "Them".
+pub fn them_owner_label(other_party: Option<&str>) -> String {
+    other_party
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("Them")
+        .to_string()
+}

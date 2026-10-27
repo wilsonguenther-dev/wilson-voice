@@ -338,3 +338,75 @@ verified (the likeliest reading is that the windows' spans are not joinable, so 
 text — overlap included — is written). This needs its own item. Until it lands the pipeline arm
 asserts a measured regression ceiling (`PIPELINE_WER_CEILING = 0.08`), to be lowered to
 `WER_GATE` by the fix.
+
+---
+
+## summary recall and memory (yap24-NT4)
+
+**What it is:** whether the default meeting notes (the 1.5B notes model, `qwen2.5-1.5b-instruct-q4_k_m`,
+through `summary_jobs` exactly as the app runs a notes job) find what a meeting committed to, and
+what that job costs in memory on the 8 GB floor machine.
+
+**Fixture:** `tests/support/notes_planted.rs`, a 15-minute two-person call (Me on the mic track,
+Them on the system track, 56 lines spread over 900 s) planting 6 explicit commitments, 4 implicit
+commitments, 2 decisions, 6 small-talk distractors that use "going to" / "'ll", and 3 commitments
+in the last 20% of the call. It is fed as transcript segments (the ASR leg is measured by
+`meeting_stop_to_notes` above; this eval measures the notes).
+
+**Falsifier:** `real_notes_model_meets_the_summary_recall_gates` in
+`desktop/src-tauri/tests/meeting_notes_recall_eval.rs`, `#[ignore]`, REQUIRED under
+`YAP_EVAL_REQUIRE=1` (a missing model or sidecar panics). The model is provisioned next to the
+parakeet file by `scripts/provision-notetaker-eval.sh` (pin read from the catalog's `polish_models`,
+APFS-cloned from the installed copy). The un-ignored tests in the same file prove every metric
+scores known answers and that each audit failure mode trips its gate.
+
+```
+cd desktop/src-tauri
+YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 \
+  YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  cargo test --features custom-protocol --test meeting_notes_recall_eval -- --ignored --nocapture --test-threads=1
+```
+
+**Gates and the measured numbers, 2026-10-27**, Apple M4 Pro 24 GB, `yap-polish` release sidecar,
+one MAP chunk, 47.9 s wall:
+
+| metric | gate | measured | passes |
+|---|---|---|---|
+| action recall (all 10 commitments) | >= 0.8 | **0.20** (explicit 0.17, implicit 0.25, last-20% 0.33) | no |
+| action precision | >= 0.8 | **0.50** (6 actions, 1 distractor filed) | no |
+| decision recall | >= 0.5 | 1.00 | yes |
+| Summary 4-gram verbatim ratio | <= 0.5 | 0.35 | yes |
+| cross-section duplicates | = 0 | **16** | no |
+| items per cited segment | <= 2 | **3** | no |
+| owner accuracy, blank counts as no claim | >= 0.8 | **0.50** (1 right, 1 wrong, 0 blank) | no |
+
+**This is a finding, not a target met.** The default notes fail five of seven gates on a fixture
+built to look like the audit's real meetings (docs/audits/meeting-notetaker-audit-2026-10-26.md,
+issues #2 and #18): one line is filed as an action, a decision and a question at once, plain
+statements become "decisions", and the implicit and end-of-call commitments are mostly missed.
+The mechanical fixes belong to yap-audit-notes-guards and the strategy to yap-audit-notes-strategy;
+this eval is their falsifier, and its gates are not lowered to match today's model.
+
+**Human half (numbers only), 2026-10-27**, `scripts/eval/compare-reference.py --notes` on a read-only
+`.backup` copy of the 31-minute real meeting (1864 s) as #250 summarized it on Wilson's Mac:
+items=35, duplicate_lines=8, max_items_per_cited_segment=4, owners Me=27 Them=8 Someone-here=0
+blank=0. The script read summary_words=0 from that row (its Summary section did not parse), so its
+summary_verbatim_ratio=0.0000 is not a measurement; the audit's 0.91-0.97 stands for that meeting.
+
+### Memory during a summary (R4)
+
+| what | peak RSS |
+|---|---|
+| notes sidecar (1.5B Q4_K_M, one MAP chunk + REDUCE + HEADLINE) | **1395 MB** |
+| test host + sidecar | 1408 MB |
+| app with the meeting ASR engine warm (from meeting_stop_to_notes above) | 1128-1216 MB |
+
+ASR warm plus the notes sidecar is about 2.6 GB, over the **2560 MB ceiling** for the 8 GB floor
+machine. So the notes job is serialized with ASR (`summary_jobs::wait_for_idle`): it does not start
+while a meeting is being transcribed (`meeting_pipeline::transcribing_now`), while a dictation
+wants the engine, or while app RSS + `NOTES_SIDECAR_PEAK_MB` (1400) would exceed
+`NOTES_RSS_CEILING_MB` (2560). It waits for the next idle tick (`NOTES_IDLE_TICK`, 15 s), which
+in practice means until the ASR engine's 15-minute idle unload, and runs anyway after
+`NOTES_MAX_DEFERRAL` (30 min) so a machine that never idles still gets notes. Every wait is logged
+(`summary deferred`, `summary defer_end`, `summary defer_cap`). The 8 GB machine itself was not
+measured; the figures above are per-process RSS from the 24 GB dev machine.
