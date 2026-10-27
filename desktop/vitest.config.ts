@@ -109,8 +109,56 @@ function rawSourceIsolation(): Plugin {
 /** `src/`-relative module path -> the root-relative path coverage reports. */
 export const coveragePath = (mod: string): string => `src/${mod}`;
 
-export default defineConfig(async (env) =>
-  mergeConfig(await viteConfig(env), {
+/** Words the vitest CLI reads as a command, not as a test-file filter. */
+const VITEST_COMMANDS = new Set(["run", "watch", "dev", "related", "bench", "list"]);
+
+/**
+ * The positional test-file filters on a vitest command line
+ * (`vitest run --coverage pill/motion` -> `["pill/motion"]`).
+ *
+ * Everything after the binary that is not an option and not a command word.
+ * An option VALUE written with a space (`--reporter verbose`) is collected
+ * too; `scopeFloors` is built so that such a stray word can only ever fall
+ * back to the full, strict table, never loosen it.
+ */
+export function cliFilters(argv: readonly string[]): string[] {
+  return argv
+    .slice(2)
+    .filter((a) => a !== "" && !a.startsWith("-") && !VITEST_COMMANDS.has(a))
+    .map((a) => a.replace(/^\.\//, ""));
+}
+
+/**
+ * Y5-D — the per-module floors a run is accountable for.
+ *
+ * With no filter (CI's `npm test`) that is every PURE_MODULES entry, so the
+ * gate is unchanged. A FILTERED run (`npm test -- pill/motion`) only loads the
+ * test files whose path contains a filter, so every other module measures 0%
+ * and fails its floor — 38 errors about files the run never touched, and a
+ * red exit that says nothing about the module under test. A filtered run is
+ * therefore held to the floors of the modules whose sibling test it selects,
+ * using vitest's own rule (the filter is a substring of the test file path).
+ *
+ * If the filters select no pure module at all (a stray option value, or a
+ * test of a non-pure file) the full table applies: a filter can narrow the
+ * gate to what it runs, but it can never switch the gate off.
+ */
+export function scopeFloors(
+  filters: readonly string[],
+  floors: Record<string, CoverageFloor> = PURE_MODULES,
+): Record<string, CoverageFloor> {
+  if (filters.length === 0) return floors;
+  const selected = Object.entries(floors).filter(([mod]) => {
+    const stem = coveragePath(mod).replace(/\.ts$/, "");
+    const tests = [`${stem}.test.ts`, `${stem}.test.tsx`];
+    return filters.some((f) => tests.some((t) => t.includes(f)));
+  });
+  return selected.length === 0 ? floors : Object.fromEntries(selected);
+}
+
+export default defineConfig(async (env) => {
+  const floors = scopeFloors(cliFilters(process.argv));
+  return mergeConfig(await viteConfig(env), {
     plugins: [rawSourceIsolation()],
     test: {
       // Y5-D — vitest stubs every CSS module to the empty string by default,
@@ -125,12 +173,12 @@ export default defineConfig(async (env) =>
         experimentalAstAwareRemapping: true,
         // An explicit include list: a file that no test loads still reports
         // (at 0%) instead of quietly vanishing from the denominator.
-        include: Object.keys(PURE_MODULES).map(coveragePath),
+        include: Object.keys(floors).map(coveragePath),
         reporter: ["text"],
         thresholds: Object.fromEntries(
-          Object.entries(PURE_MODULES).map(([mod, floor]) => [coveragePath(mod), floor]),
+          Object.entries(floors).map(([mod, floor]) => [coveragePath(mod), floor]),
         ),
       },
     },
-  }),
-);
+  });
+});
