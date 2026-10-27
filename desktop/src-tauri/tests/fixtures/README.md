@@ -362,3 +362,19 @@ not an assertion about any model: the `rejected` cases are rewrites V3 / V4 / V6
 refuse (a Concise cut that drops content words, an invented time, an assistant
 preamble). The suite also asserts the request that reached the client carried
 the row's `prompt` as its `instruction`, with the stage's own deadline.
+
+## `meeting-two-track/` (yap24-NT9)
+
+The two-track meeting the headless notetaker proof (`scripts/notetaker-e2e.sh`)
+runs through `wilson-voice --transcribe-meeting track0.wav --sys track1.wav`:
+`track0.wav` is the microphone ("Me"), `track1.wav` the system-audio track
+("Them"). A few seconds each, 16 kHz mono 16-bit, rendered on the machine with
+the same recipe as `quick-brown-fox-16k.wav` from invented, mundane sentences
+with no names, so the proof needs no network and no owner-gated corpus:
+
+```sh
+say -v Samantha -o /tmp/t0.aiff "Thanks for joining the budget review. I will send the updated budget to the team by Friday."
+say -v Daniel   -o /tmp/t1.aiff "Sounds good. Please book the conference room for the design review on Tuesday."
+afconvert -f WAVE -d LEI16@16000 -c 1 /tmp/t0.aiff track0.wav
+afconvert -f WAVE -d LEI16@16000 -c 1 /tmp/t1.aiff track1.wav
+```

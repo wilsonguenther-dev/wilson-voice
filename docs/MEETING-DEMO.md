@@ -115,3 +115,67 @@ repository claims them:
 Put the take (or the four screenshots from steps 4, 6, 7 and 8) on the PR, and
 say which macOS version and which meeting app were used. A pass that does not
 name the OS version is not a pass: this entire feature is gated on 14.4.
+
+## yap24 — what a meeting does now
+
+The headless half of this demo is one command (yap24-NT9). It needs no microphone, no TCC grant
+and no window: it files a two-track meeting into a **scratch** state root, runs the shipped
+pipeline worker over both tracks, writes notes through the same notes pass the Meetings card uses,
+exports the Markdown through the same writer, and asserts on every one of those. It never passes
+without running — a missing input is a non-zero exit that names it and the provisioning command
+(`scripts/provision-notetaker-eval.sh`, yap24-NT0).
+
+```sh
+YAP_DATA_DIR="$(mktemp -d)/yap-state" \
+YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" \
+YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh
+```
+
+Underneath it is the app binary's own flag, usable on its own:
+
+```sh
+YAP_DATA_DIR="$(mktemp -d)/yap-state" wilson-voice --transcribe-meeting mic.wav --sys sys.wav [--title "..."]
+```
+
+It refuses (exit 78) an unset `YAP_DATA_DIR` or the default root, prints one JSON report on stdout
+(`state`, `segmentsMic`, `segmentsSys`, `asrModel`, `notes`, `summary`, `export`, stage times) and
+exits non-zero unless the row is `complete` with segments on every track it was given. `notes` is
+the #250 notes phase: `notes_ready` when the notes model is installed, `notes_queued` when it is
+not (the job waits for the model; the headless run never downloads one).
+
+A pasted run (2026-10-27, Apple Silicon, release build, notes model linked):
+
+```
+notetaker-e2e: root=/var/folders/…/yap-state asr=parakeet-unified-en-0.6b-Q8_0.gguf notes_model=linked
+notetaker-e2e: [fixture] …/release/wilson-voice --transcribe-meeting track0.wav --sys track1.wav
+cli transcribe_meeting_finish id=3222a822-… state=complete segments_mic=1 segments_sys=1 notes=notes_ready transcribe_ms=352 notes_ms=6679
+notetaker-e2e: [fixture] PASS — export nt9-fixture-20261027-152027.md: 31 lines, sections: ## Summary|### Key points|### Action items|### Decisions|## Transcript|
+notetaker-e2e: [two-track-ordering] …/release/wilson-voice --transcribe-meeting track0.wav --sys track1.wav
+cli transcribe_meeting_finish id=b3838cc7-… state=complete segments_mic=3 segments_sys=3 notes=notes_ready transcribe_ms=2906 notes_ms=15465
+notetaker-e2e: [two-track-ordering] PASS — export nt9-two-track-ordering-20261027-152034.md: 38 lines, sections: ## Summary|### Key points|### Open questions|## Transcript|
+notetaker-e2e: PASS (2 meetings: committed fixture + corpus two-track-ordering)
+```
+
+The fixture's export, verbatim:
+
+```markdown
+## Summary
+
+**Budget Review and Design Review**
+
+### Action items
+
+- Send the updated budget to the team by Friday (Me, 00:00:00)
+- Book the conference room for the design review on Tuesday (Them, 00:00:00)
+
+## Transcript
+
+**[00:00:00] Me:** Thanks for joining the budget review. I will send the updated budget to the team by Friday.
+
+**[00:00:00] Them:** Sounds good. Please book the conference room for the design review on Tuesday.
+```
+
+(Key points and Decisions trimmed here.) What this does **not** prove is the capture half: a real
+call recorded on a real Mac, with the system-audio tap and the TCC grants. That is steps 1–8 above,
+and it stays a manual check.
