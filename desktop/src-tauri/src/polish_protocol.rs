@@ -225,6 +225,14 @@ pub struct PolishRequest {
     /// [`MAX_CUSTOM_RULES_WORDS`]. Absent (and so not on the wire) when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<String>,
+    /// Y9-A — a named transform's instruction ("Rewrite it in a formal
+    /// register."), for [`KIND_POLISH`] only. Present ⇒ the sidecar swaps the
+    /// mode overlay for the transform system turn built around it; absent ⇒
+    /// the plain rewriter, byte for byte as before. It is a TABLE string from
+    /// `transforms.rs`, never user text, and the answer still goes through the
+    /// parent's `validate_polish` like any other rewrite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
 }
 
 impl PolishRequest {
@@ -250,6 +258,7 @@ impl PolishRequest {
             preferences: Vec::new(),
             samples: Vec::new(),
             rules: None,
+            instruction: None,
         }
     }
 
@@ -276,6 +285,7 @@ impl PolishRequest {
             preferences: Vec::new(),
             samples: Vec::new(),
             rules: None,
+            instruction: None,
         }
     }
 
@@ -294,6 +304,7 @@ impl PolishRequest {
             preferences: Vec::new(),
             samples: Vec::new(),
             rules: None,
+            instruction: None,
         }
     }
 
@@ -314,6 +325,7 @@ impl PolishRequest {
             preferences: Vec::new(),
             samples: Vec::new(),
             rules: None,
+            instruction: None,
         }
     }
 

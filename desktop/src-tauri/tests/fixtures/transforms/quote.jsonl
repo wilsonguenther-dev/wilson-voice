@@ -1,0 +1,1 @@
+{"case": "wrapped in quotes", "instruction": "wrap in quotes", "input": "ship it", "expected_status": "succeeded", "expected_text": "\"ship it\""}

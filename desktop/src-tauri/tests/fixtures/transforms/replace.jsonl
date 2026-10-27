@@ -1,0 +1,1 @@
+{"case": "spoken operands", "instruction": "replace monday with tuesday", "input": "see you monday", "expected_status": "succeeded", "expected_text": "see you tuesday"}

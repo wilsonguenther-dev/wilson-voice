@@ -1,0 +1,1 @@
+{"case": "the selection goes", "instruction": "delete that", "input": "remove this sentence", "expected_status": "succeeded", "expected_text": ""}

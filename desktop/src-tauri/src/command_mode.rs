@@ -311,6 +311,13 @@ pub fn to_one_paragraph(text: &str) -> String {
 /// uppercase.", "make  it uppercase" and "Yap, make it uppercase" all reduce to
 /// the same table key. Only punctuation that ASR sprinkles between words is
 /// removed — no table phrase contains any of it.
+/// Y9-A — the exact normalization [`parse_command`] matches its fixed phrases
+/// against, exposed so the transform library's model rows match spoken
+/// instructions by the same no-guessing rule.
+pub fn normalized_instruction(instruction: &str) -> String {
+    strip_filler(&normalize(instruction))
+}
+
 fn normalize(instruction: &str) -> String {
     instruction
         .to_lowercase()

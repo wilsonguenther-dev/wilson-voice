@@ -1,0 +1,1 @@
+{"case": "letters lowercased", "instruction": "make it lowercase", "input": "Ship It Today", "expected_status": "succeeded", "expected_text": "ship it today"}

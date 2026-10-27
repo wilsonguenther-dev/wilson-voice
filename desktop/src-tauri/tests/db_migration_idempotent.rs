@@ -23,7 +23,8 @@ use support::{open_db, temp_dir};
 /// `meeting_segments.cluster_index`, which is where the branch's ANSWER lands.
 /// 6 = yap24-NT2's `meetings.asr_model`, the model that transcribed the row.
 /// 7 = Y9-B's `user_context` table (writing samples + custom rules).
-const EXPECTED_VERSION: i64 = 7;
+/// 8 = Y9-A's `transform_runs`, the per-invocation transform status log.
+const EXPECTED_VERSION: i64 = 8;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -35,6 +36,9 @@ const EXPECTED_VERSION: i64 = 7;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 8 {
+        sql.push_str("DROP TABLE transform_runs;\n");
+    }
     if version < 7 {
         sql.push_str("DROP TABLE user_context;\n");
     }
@@ -703,4 +707,35 @@ fn migration_seven_adds_user_context_without_touching_existing_rows() {
     db.add_writing_sample(&sample)
         .expect("the new table takes a sample");
     assert_eq!(db.user_context().unwrap().writing_samples.len(), 1);
+}
+
+/// Y9-A — migration 8 adds the transform status log to a database that was on
+/// rung 7, without touching anything it already held.
+#[test]
+fn migration_eight_adds_transform_runs() {
+    let dir = temp_dir("transform-runs");
+    let db = open_db(&dir);
+    drop(db);
+    let path = dir.join("wilson_voice.db");
+    rewind_to(&path, 7);
+    assert!(
+        columns(&path, "transform_runs").is_empty(),
+        "rewound below 8"
+    );
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    let cols = columns(&path, "transform_runs");
+    for col in [
+        "created_at",
+        "transform_id",
+        "status",
+        "reason",
+        "input_chars",
+        "output_chars",
+    ] {
+        assert!(
+            cols.iter().any(|c| c == col),
+            "transform_runs.{col} missing: {cols:?}"
+        );
+    }
 }

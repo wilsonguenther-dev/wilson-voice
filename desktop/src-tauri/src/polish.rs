@@ -299,6 +299,11 @@ pub struct PolishConfig {
     /// rules). Empty by default, and empty means the request is byte-identical
     /// to the pre-Y9-B one.
     pub profile: StyleProfile,
+    /// Y9-A — a named transform's instruction (`transforms::TRANSFORMS`).
+    /// `None` for dictation: the plain rewriter. `Some` turns the SAME stage —
+    /// same chunker, same deadline, same `validate_polish` — into that
+    /// transform; it only changes the system turn the sidecar builds.
+    pub instruction: Option<String>,
 }
 
 impl Default for PolishConfig {
@@ -309,6 +314,7 @@ impl Default for PolishConfig {
             style: Style::Default,
             preferences: Vec::new(),
             profile: StyleProfile::default(),
+            instruction: None,
         }
     }
 }
@@ -383,6 +389,7 @@ impl PolishConfig {
             style: style_for_mode(settings, mode),
             preferences: Vec::new(),
             profile: StyleProfile::default(),
+            instruction: None,
         }
     }
 
@@ -484,6 +491,12 @@ pub fn build_chunk_request(
     // fields stay off the wire and the request is byte-identical to before.
     req.samples = cfg.profile.samples.clone();
     req.rules = cfg.profile.rules.clone();
+    req.instruction = cfg
+        .instruction
+        .as_deref()
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .map(str::to_string);
     Some(req)
 }
 
@@ -1358,15 +1371,23 @@ pub fn polish_llm_outcome(
     mode: DictationMode,
     cfg: &PolishConfig,
 ) -> Option<PolishOutcome> {
-    let model = models::polish_model(cfg.model.trim())
-        .filter(|m| models::is_polish_downloaded(m))
-        .map(models::polish_model_path)?;
     Some(polish_stage_chunked(
         text,
         mode,
         cfg,
-        &SidecarClient::new(model),
+        &installed_client(cfg)?,
     ))
+}
+
+/// The app-wide sidecar client for the model `cfg` names, or `None` when that
+/// model is not configured or not fully downloaded. Shared by the dictation
+/// stage above and the Y9-A transform library, so both reach the model through
+/// ONE pool and one restart budget.
+pub fn installed_client(cfg: &PolishConfig) -> Option<SidecarClient<'static>> {
+    let model = models::polish_model(cfg.model.trim())
+        .filter(|m| models::is_polish_downloaded(m))
+        .map(models::polish_model_path)?;
+    Some(SidecarClient::new(model))
 }
 
 /// The polish model this machine could actually run right now: the catalog's

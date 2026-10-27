@@ -11,7 +11,7 @@
 pub mod asr_engine;
 pub mod channel;
 mod cli;
-mod command_mode;
+pub mod command_mode;
 pub mod take_error;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
@@ -144,6 +144,9 @@ pub mod power;
 // truncate-and-warn budget fitting all live here, and
 // `tests/summarize_grammar_chain.rs` holds them to their contract.
 pub mod polish_protocol;
+// Y9-A — the named transform library (one table, model + deterministic rows)
+// and its per-invocation status enum. Public so tests/transforms.rs drives it.
+pub mod transforms;
 // Public since Y1-A: the tap-disable classifier and the session's tap-health
 // counters are asserted by `tests/tap_health.rs`, which cannot reach a private
 // module — and a claim about a hotkey that silently stops listening is exactly
@@ -2409,6 +2412,61 @@ fn transcribe_native(
     })
 }
 
+/// Y9-A — one command-mode take that named a MODEL row of the transform
+/// library ("make it formal"). The rewrite runs through the validated polish
+/// stage (`transforms::run_installed` → `polish_stage_chunked` →
+/// `validate_polish`); ONLY a `Succeeded` result is pasted, every other status
+/// leaves the selection exactly as it was. Every invocation is persisted to
+/// `transform_runs`, so a failure is a counted row and a toast, never silence.
+#[allow(clippy::too_many_arguments)]
+fn run_model_transform_take(
+    app: &AppHandle,
+    db: &Database,
+    settings: &AppSettings,
+    def: &'static transforms::TransformDef,
+    selection: &str,
+    source_app: &str,
+    source_bundle_id: Option<&str>,
+    cursor_context: Option<&str>,
+    paste_generation: &AtomicU64,
+    generation: u64,
+) -> TakeOutcome {
+    // The mode decides only one thing here: a code editor is `Code`, and code
+    // never reaches a model (V8) — the stage refuses it as `not_eligible`.
+    let mode =
+        dictation::resolve_mode_with_context(&settings.dictation_mode, source_app, cursor_context);
+    let cfg = polish::PolishConfig::from_settings(settings, mode);
+    let mut result = transforms::run_installed(def, selection, mode, &cfg);
+    if result.status == transforms::TransformStatus::Succeeded {
+        // YV39: the model call can take seconds — a cancel in the meantime
+        // means the user's app is never edited.
+        if paste_generation.load(Ordering::SeqCst) != generation {
+            log::warn!("stale transform (cancelled while the model ran) — no edit");
+            result.status = transforms::TransformStatus::Error;
+            result.reason = Some("cancelled");
+            result.text = selection.to_string();
+        } else {
+            let outcome = paste::insert_dictated_take(app, &result.text, true, source_bundle_id);
+            if !outcome.pasted {
+                result.status = transforms::TransformStatus::NotEditable;
+                result.reason = Some("paste_failed");
+            }
+        }
+    }
+    // YV20/M2: tags and counts only — never the selection or the rewrite.
+    log::info!(
+        "transform {}: {} ({} selected chars, reason {})",
+        def.id,
+        result.status.tag(),
+        selection.chars().count(),
+        result.reason.unwrap_or("-")
+    );
+    if let Err(e) = db.record_transform_run(&transforms::TransformRun::of(&result, selection)) {
+        log::warn!("transform run not recorded: {e}");
+    }
+    TakeOutcome::Soft(result.message())
+}
+
 /// What a finished take produced (YV49).
 ///
 /// Dictation inserts a transcript row and pastes it. A command-mode take does
@@ -2827,7 +2885,24 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // exactly as it was — guessing would silently mangle text the user
             // cannot get back.
             if let Some(selection) = command_selection {
+                // Y9-A: a deterministic command first; failing that, a MODEL row
+                // of the transform library ("make it formal", "polish it") —
+                // both matched exactly, and only then the "didn't catch" toast.
                 let Some(command) = command_mode::parse_command(&raw_text) else {
+                    if let Some(def) = transforms::match_spoken(&raw_text) {
+                        return Ok(run_model_transform_take(
+                            &app2,
+                            &db,
+                            &settings,
+                            def,
+                            &selection,
+                            source_app.as_deref().unwrap_or_default(),
+                            source_bundle_id.as_deref(),
+                            cursor_context.as_deref(),
+                            &state2.paste_generation,
+                            generation,
+                        ));
+                    }
                     // YV20/M2 hygiene: count only, never log the spoken text.
                     log::info!(
                         "command mode: unrecognised instruction ({} chars) — selection untouched",
@@ -2846,12 +2921,28 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // `Delete` is carried out as a real Delete keystroke rather than
                 // pasting an empty string (a no-op in several apps), which also
                 // leaves the user's clipboard alone.
+                // Y9-A: the deterministic row of the transform table this
+                // command belongs to, run and persisted like any transform.
+                let mut result = transforms::run_command(&command, &selection);
                 let outcome = if command == command_mode::Command::Delete {
                     paste::delete_selection(&app2, source_bundle_id.as_deref())
                 } else {
-                    let edited = command_mode::apply(&command, &selection);
-                    paste::insert_dictated_take(&app2, &edited, true, source_bundle_id.as_deref())
+                    paste::insert_dictated_take(
+                        &app2,
+                        &result.text,
+                        true,
+                        source_bundle_id.as_deref(),
+                    )
                 };
+                if !outcome.pasted {
+                    result.status = transforms::TransformStatus::NotEditable;
+                    result.reason = Some("paste_failed");
+                }
+                if let Err(e) =
+                    db.record_transform_run(&transforms::TransformRun::of(&result, &selection))
+                {
+                    log::warn!("transform run not recorded: {e}");
+                }
                 log::info!(
                     "command mode: {} ({} selected chars) → {}",
                     command.label(),

@@ -1,0 +1,1 @@
+{"case": "each word capitalized", "instruction": "make it title case", "input": "the quiet years", "expected_status": "succeeded", "expected_text": "The Quiet Years"}
