@@ -105,5 +105,10 @@
     "trial_expires_at_ms": 1793379600000,
     "revocation_checked_at_ms": null,
     "revoked_count": 0
+  },
+  "meeting_detect_settings": {
+    "offerDetected": true,
+    "useCalendar": false,
+    "calendarAccess": "not_determined"
   }
 }

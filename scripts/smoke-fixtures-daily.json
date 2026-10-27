@@ -971,5 +971,10 @@
       "recommended": false,
       "recommendedRank": null
     }
-  ]
+  ],
+  "meeting_detect_settings": {
+    "offerDetected": true,
+    "useCalendar": false,
+    "calendarAccess": "not_determined"
+  }
 }
