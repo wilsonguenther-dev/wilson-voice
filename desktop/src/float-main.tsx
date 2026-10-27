@@ -33,6 +33,8 @@ import {
   FN_HINT_SHOW_MS,
   toChatTone,
   winningPhase,
+  advanceLive,
+  createLiveState,
   CANCELLED_SETTLE_MS,
   GATED_SETTLE_MS,
   PHASE_HOLD_MS,
@@ -43,12 +45,64 @@ import {
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
+import type { ListenEstimate, SlotCtx } from "./pill/slots";
 import { forcedPill, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import "./tokens.css";
 import "./float.css";
 
-interface Settings { pillStyle?: string; pillPosition?: string; companionTone?: string }
+interface Settings {
+  pillStyle?: string;
+  pillPosition?: string;
+  companionTone?: string;
+  /**
+   * Y8-B — the Scratchpad's "Add to Flow Bar" toggle. Not on the backend's
+   * Settings yet: it ships with DB-D (the Scratchpad window), and until then
+   * it reads as off and `SCRATCHPAD_WINDOW_LANDED` keeps the slot hidden.
+   */
+  scratchpadOnBar?: boolean;
+}
+
+/**
+ * Y8-B — the WPM slot's numbers while LISTENING: an estimate off voiced
+ * seconds (`advanceLive` — the same machine Yappy's commentary runs), plus the
+ * wall seconds listened. Driven by the `audio_level` events the backend already
+ * emits, re-rendered only when the whole-word estimate or the whole second
+ * changes, never on a timer. The seconds are LATCHED when listening ends, so
+ * the transcribing rate is real decoded words over the time actually spoken.
+ */
+function useListenEstimate(listening: boolean): ListenEstimate {
+  const [est, setEst] = useState<ListenEstimate>({ estWords: 0, sec: 0 });
+  useEffect(() => {
+    if (!listening) return;
+    const live = createLiveState();
+    const t0 = performance.now();
+    let last = t0;
+    let shownWords = -1;
+    let shownSec = -1;
+    let dead = false;
+    let unsub: (() => void) | undefined;
+    setEst({ estWords: 0, sec: 0 });
+    listen<number>("audio_level", (e) => {
+      const now = performance.now();
+      const level = typeof e.payload === "number" ? Math.max(0, Math.min(1, e.payload)) : 0;
+      const f = advanceLive(live, (now - last) / 1000, level, "friendly");
+      last = now;
+      const sec = (now - t0) / 1000;
+      if (Math.round(f.estWords) !== shownWords || Math.floor(sec) !== shownSec) {
+        shownWords = Math.round(f.estWords);
+        shownSec = Math.floor(sec);
+        setEst({ estWords: f.estWords, sec });
+      }
+    }).then((u) => (dead ? u() : (unsub = u)));
+    return () => {
+      dead = true;
+      unsub?.();
+      setEst((prev) => ({ ...prev, sec: (performance.now() - t0) / 1000 }));
+    };
+  }, [listening]);
+  return est;
+}
 
 /**
  * PERM-C — the backend's refusal payload. `prompting` is true only while the
@@ -111,7 +165,11 @@ function Float() {
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
   // the capsule inside keeps its identity, so it never remounts.
+  // Y8-B — the dock edge is SHELL state as well as an <html> attribute: the
+  // flow-bar slots lay out along its length axis and flip their tooltips off
+  // it (pill/slots.tsx).
   const [dock, setDock] = useState<BarDock>(barDock(FORCED?.dock));
+  const [scratchpadOnBar, setScratchpadOnBar] = useState(false);
   // PERM-C — the permission phase lives HERE, above both pill styles, because it
   // is a property of the app and not of whichever capsule happens to be drawn.
   // Both pills receive it; neither invents it.
@@ -308,6 +366,7 @@ function Float() {
       const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
       document.documentElement.dataset.dock = d;
       setDock(d);
+      setScratchpadOnBar(!!s?.scratchpadOnBar);
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
@@ -375,7 +434,19 @@ function Float() {
   useEffect(() => {
     document.documentElement.dataset.fnHint = fnHint ? "true" : "false";
   }, [fnHint]);
-  const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} />;
+  // Y8-B — the slot context is decided ONCE, here, like every other shell
+  // input: the phase, the dock, the meeting, Y3-C's real progress and the
+  // listening estimate. The capsule lays the slots out; it decides none of it.
+  const listenEst = useListenEstimate(phase === "listening");
+  const slots: SlotCtx = {
+    phase,
+    dock,
+    meetingOnScreen: meeting.status.recording || meetingAfter !== null,
+    progress,
+    listen: listenEst,
+    scratchpadOnBar,
+  };
+  const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} slots={slots} />;
   // Y5-I — the BOX is the shell's, decided ONCE here for every character: the
   // table row for this phase at this dock (pill/dock-geometry.json), carried as
   // two orientation-neutral tokens plus the override attributes float.css reads.
