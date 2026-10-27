@@ -316,7 +316,10 @@ resolves the RELEASE profile (Developer ID — the SEC-A identity). Then it:
 
 1. stages the build the host serves **now** as the rollback (and refuses a
    version that is not strictly newer — the app would never install it);
-2. runs `npm run desktop:build -- --bundles dmg updater` (signs with that
+2. runs `npm run desktop:build -- --bundles app dmg` (`app` is what yields the
+   updater triple — `createUpdaterArtifacts` makes `Yap.app.tar.gz` + `.sig`
+   only when the app bundle is a target; `dmg updater` deletes the `.app` and
+   makes no tarball; signs with that
    identity; tauri notarizes and staples the `.app` because the Apple variables
    are set; ends in the mandatory release smoke), and checks the `.app` is stapled;
 3. notarizes, staples, validates and Gatekeeper-assesses the DMG, and runs the
@@ -339,7 +342,9 @@ scripts/release-local.sh --verify-endpoint-or-name-the-reason
 It verifies the minisign signature (key id, the Ed25519 signature over the
 BLAKE2b-prehashed tarball, and the trusted-comment signature) in pure Python,
 with no `minisign` install needed. Offline it prints `SKIP: offline — <reason>`
-and exits 0 — a named skip, never a quiet pass. The script does **not** create a
+and exits 0 — a named skip, never a quiet pass — but only in the bare form: with
+`--expect-version` or `--require-rollback` an offline run exits 1, because an
+assertion nothing checked is a failure. The script does **not** create a
 GitHub release; the GitHub endpoint is the fallback, and the app takes the
 newest version across both endpoints, so a GitHub release that lags only matters
 while the site host is down.
@@ -393,7 +398,8 @@ greater than the running one. So a rollback has two halves:
    `scripts/release-local.sh --verify-endpoint-or-name-the-reason --expect-version <previous>`.
    With `--expect-version` that check fails unless the newest version offered
    across **all** endpoints is `<previous>`, and fails if any endpoint did not
-   answer (the effective offer is then unknown).
+   answer — including when none answered — or a fallback errored with anything
+   other than a definite HTTP 404 (the effective offer is then unknown).
 
 2. **Downgrade a Mac that already took the bad build.** No in-app path exists,
    by design. On that Mac: quit Yap, download

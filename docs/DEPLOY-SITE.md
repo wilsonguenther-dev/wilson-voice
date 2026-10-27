@@ -127,8 +127,9 @@ scripts/release-local.sh --verify-staged "$OUT" "$VER"   # all four + rollback, 
 After **either** deploy, verify the live endpoint over the network — it fetches
 `latest.json` from every `plugins.updater.endpoints` entry, downloads the tarball
 each one names, and verifies the signature against the pubkey committed in
-`tauri.conf.json`, exactly as the installed app does. Offline it exits 0 with a
-`SKIP: offline — <reason>` line, never silently:
+`tauri.conf.json`, exactly as the installed app does. Offline, the bare form exits
+0 with a `SKIP: offline — <reason>` line, never silently; with `--expect-version`
+or `--require-rollback` (as below) offline is a FAIL, exit 1:
 
 ```bash
 scripts/release-local.sh --verify-endpoint-or-name-the-reason --expect-version "$VER" --require-rollback

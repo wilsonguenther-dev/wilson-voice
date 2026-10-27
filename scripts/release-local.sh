@@ -10,7 +10,9 @@
 #          site/dist/index.html already links the new DMG, the updater key is in
 #          the environment, notarization credentials are in the environment, and
 #          scripts/sign-local.sh resolves the RELEASE profile (Developer ID, SEC-A)
-#       2. npm run desktop:build -- --bundles dmg updater   (sign-local.sh: signs
+#       2. npm run desktop:build -- --bundles app dmg   (app carries the updater
+#          triple: tauri-bundler makes Yap.app.tar.gz + .sig only when the app
+#          bundle is a target; 'updater' alone drops the .app; sign-local.sh: signs
 #          with that identity, tauri notarizes + staples the .app, mandatory smoke)
 #       3. notarize + staple the DMG, validate, Gatekeeper-assess it, smoke it again
 #       4. write latest.json from the real .sig, stage DMG + Yap.app.tar.gz + .sig +
@@ -26,7 +28,11 @@
 #       download the tarball each manifest names, and verify the manifest's
 #       signature over those bytes against plugins.updater.pubkey — the same check
 #       the installed app runs. Offline (no endpoint resolves or connects): exit 0
-#       with "SKIP: offline — <reason>", never a silent pass.
+#       with "SKIP: offline — <reason>", never a silent pass — UNLESS
+#       --expect-version or --require-rollback was given: an assertion that
+#       nothing checked is a FAIL (exit 1), never a skip. Under --expect-version
+#       a fallback that errors with anything but a definite HTTP 404 also FAILS:
+#       what it offers is unknown.
 #
 #   scripts/release-local.sh --verify-staged <dir>      offline check of a staged
 #                                                       site/dist (or its parent)
@@ -303,11 +309,16 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 # curl into a file; prints the curl exit code on stdout instead of dying, so the
 # caller can tell "offline" (6 resolve, 7 connect, 28 timeout) from "broken".
+# The final HTTP status (after redirects) lands in $TMPROOT/fetch.code — "000"
+# when no response arrived — so a caller can tell a definite 404 from anything
+# else (this curl reports a 404 over HTTP/2 as 56, not 22, so rc alone cannot).
 fetch() {
   local url="$1" out="$2" rc=0
-  curl -sS -f -L --max-time "$CURL_TIMEOUT" -o "$out" "$url" 2>"$TMPROOT/fetch.err" || rc=$?
+  curl -sS -f -L --max-time "$CURL_TIMEOUT" -w '%{http_code}' -o "$out" "$url" \
+    >"$TMPROOT/fetch.code" 2>"$TMPROOT/fetch.err" || rc=$?
   echo "$rc"
 }
+fetch_code() { local c; c="$(cat "$TMPROOT/fetch.code" 2>/dev/null)"; echo "${c:-000}"; }
 is_offline_rc() { [[ "$1" == 6 || "$1" == 7 || "$1" == 28 ]]; }
 
 # Download the manifest's tarball(s) and verify each against the pubkey.
@@ -360,6 +371,12 @@ verify_endpoint() {
       if [[ $i -eq 0 ]]; then
         echo "FAIL: endpoint[0] $url (primary): curl $rc — $(tr -d '\n' < "$TMPROOT/fetch.err")"
         failures=$((failures + 1))
+      elif [[ -n "$expect" && "$(fetch_code)" != 404 ]]; then
+        # Only a definite 404 means "this endpoint offers nothing". A 5xx, a TLS
+        # error or a reset leaves its offer unknown, so the effective offer the
+        # app would install cannot be confirmed as v$expect.
+        echo "FAIL: --expect-version v$expect: fallback endpoint[$i] $url: curl $rc, HTTP $(fetch_code) — not a definite 404, so what it offers is unknown: $(tr -d '\n' < "$TMPROOT/fetch.err")"
+        failures=$((failures + 1))
       else
         echo "WARN: endpoint[$i] $url (fallback): curl $rc — $(tr -d '\n' < "$TMPROOT/fetch.err"). Expected while the repo is private; the primary carries updates."
       fi
@@ -378,6 +395,13 @@ verify_endpoint() {
     fi
   done
   if [[ $reachable -eq 0 ]]; then
+    if [[ -n "$expect" || $require_rb -eq 1 ]]; then
+      # An explicit assertion (the rollback confirmation, the --deploy final
+      # gate) must never pass with nothing checked.
+      echo "FAIL: no updater endpoint resolved or connected, so${expect:+ --expect-version v$expect}$([[ $require_rb -eq 1 ]] && echo ' --require-rollback') could NOT be checked: ${offline_reasons[*]}"
+      echo "verify-endpoint: FAILED (offline with an assertion given)"
+      return 1
+    fi
     echo "SKIP: offline — no updater endpoint resolved or connected, so the live manifest and its signature were NOT verified: ${offline_reasons[*]}"
     return 0
   fi
@@ -530,7 +554,10 @@ release() {
   # Rollback first: it reads the live host, and refuses a version that is not newer.
   stage_rollback "$stage" "$ver"
 
-  (cd "$DESKTOP" && npm run desktop:build -- --bundles dmg updater) || die "desktop:build failed (build, signature verification or the mandatory release smoke) — not a release"
+  # app + dmg, never 'dmg updater': tauri-bundler (2.11.4 bundle.rs) builds the
+  # updater tarball + .sig only when the app bundle is a package type, and
+  # deletes Yap.app when it is not. createUpdaterArtifacts=true adds the triple.
+  (cd "$DESKTOP" && npm run desktop:build -- --bundles app dmg) || die "desktop:build failed (build, signature verification or the mandatory release smoke) — not a release"
   local app bundle tarball dmg
   app="$(bash "$ROOT/scripts/sign-local.sh" --which-app)"
   bundle="$(dirname "$(dirname "$app")")"
