@@ -3404,3 +3404,18 @@ button.primary.big {
   font-size: var(--text-xs);
   white-space: pre-wrap;
 }
+
+/* #250 round 2 — meeting notes in Open transcript, rendered as sections. */
+.meeting-notes { display: grid; gap: 14px; }
+.meeting-notes .meeting-notes-heading { margin: 0; font-size: 1.05rem; color: var(--text); }
+.meeting-notes-section h4 {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.meeting-notes-section p { margin: 0 0 6px; line-height: 1.5; }
+.meeting-notes-section ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.meeting-notes-section li { line-height: 1.45; }
+.meeting-notes-note { font-size: 0.85rem; }

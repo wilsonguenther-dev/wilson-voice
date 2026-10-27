@@ -1341,9 +1341,12 @@ pub fn reconcile_stranded_meetings(
             continue;
         }
         let new_state = if state == MeetingState::Summarizing && m.segment_count > 0 {
-            // The transcript is whole; only the summary was interrupted.
-            let _ = db.set_meeting_state(&m.id, MeetingState::Complete, m.error.as_deref());
-            MeetingState::Complete
+            // Only the summary was interrupted. #250 fix round 1 (B3): the
+            // pre-summary state was never stored, so a row with a pipeline
+            // note goes back to `partial` (keeps Retry), never `complete`.
+            let back = crate::summary_jobs::state_after_stale_summarizing(m.error.as_deref());
+            let _ = db.set_meeting_state(&m.id, back, m.error.as_deref());
+            back
         } else if has_audio {
             if state == MeetingState::Recording {
                 let _ = db.set_meeting_state(&m.id, MeetingState::Partial, m.error.as_deref());

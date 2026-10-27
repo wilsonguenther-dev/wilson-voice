@@ -169,6 +169,35 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     expect(MEETING_PROGRESS_EVENT).toBe("meeting:progress");
   });
 
+  it("follows the #250 notes worker's phases after the transcript lands", () => {
+    const seen = run([
+      progress({ state: "complete", percent: 100 }),
+      progress({ state: "notes_queued", percent: 0 }),
+      progress({ state: "preparing_notes", percent: 40 }),
+      progress({ state: "summarizing", percent: 100 }),
+      progress({ state: "notes_ready", percent: 100 }),
+    ]);
+    expect(seen.map((p) => p.kind)).toEqual([
+      "notes-ready",
+      "processing",
+      "processing",
+      "processing",
+      "notes-ready",
+    ]);
+    // A notes phase is never left hanging on "Writing notes".
+    expect(meetingAfterView(seen[4], "idle")?.label).toBe("Notes ready — Open");
+    const failed = run([
+      progress({ state: "summarizing", percent: 100 }),
+      progress({ state: "notes_failed", percent: 0, error: "The notes model could not be downloaded." }),
+    ]);
+    expect(failed[1]).toEqual({ kind: "failed", id: "m1", sentence: "The notes model could not be downloaded." });
+    const cancelled = run([
+      progress({ state: "notes_queued", percent: 0 }),
+      progress({ state: "notes_cancelled", percent: 0 }),
+    ]);
+    expect(cancelled[1].kind).toBe("notes-ready");
+  });
+
   it("walks recording -> processing 0..100 -> notes-ready", () => {
     const seen = run([
       status(recording()),

@@ -231,11 +231,23 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
           }
           return { kind: "processing", id: e.id, percent: pct, step: "transcribing" };
         }
+        // #250 — notes run on their own worker after the transcript lands, and
+        // it reports its own phases on this same event.
+        case "notes_queued":
+        case "preparing_notes":
         case "summarizing":
           return { kind: "processing", id: e.id, percent: 100, step: "summarizing" };
         case "complete":
         case "partial":
+        case "notes_ready":
+        case "notes_cancelled":
           return prev.kind === "notes-ready" && prev.id === e.id ? prev : { kind: "notes-ready", id: e.id };
+        case "notes_failed": {
+          // The transcript stands; the sentence is the notes worker's reason,
+          // and the pill opens the meeting page that carries "Retry notes".
+          const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
+          return { kind: "failed", id: e.id, sentence };
+        }
         case "failed": {
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
           return { kind: "failed", id: e.id, sentence };
