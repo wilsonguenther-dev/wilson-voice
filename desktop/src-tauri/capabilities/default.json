@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Wilson Voice main + floating windows",
-  "windows": ["main", "float"],
+  "description": "Wilson Voice main + floating + Scratchpad windows",
+  "windows": ["main", "float", "scratchpad"],
   "permissions": [
     "core:default",
     "core:event:default",

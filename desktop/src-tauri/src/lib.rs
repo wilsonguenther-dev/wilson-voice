@@ -193,6 +193,7 @@ pub mod resample;
 // YV91 — the preallocated lock-free SPSC ring the capture callback writes into
 // (OS-7). Public so the zero-allocation claim is a test rather than a comment.
 pub mod rtring;
+pub mod scratchpad;
 mod secure_input;
 // YV95 — every global chord in one table, so "the meeting hotkey does not
 // collide with dictation-hold" (finding #6) is `tests/tray_hotkey_no_collision.rs`
@@ -2608,6 +2609,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // user's app over AX and can stall for seconds (see
     // `record::end_at_stop_edge`). Off the main thread, so a wedged capture
     // worker can never freeze the UI; the worker below joins it.
+    // DB-D — the Scratchpad note that had focus as the take stopped, if any:
+    // with the non-activating panel key, the frontmost app is still the one
+    // BEHIND it, so this — not `source_bundle_id` — is where the take goes.
+    let scratchpad_note = scratchpad::dictation_note();
     let (capture_stop, (source_app, source_bundle_id, cursor_context)) = record::end_at_stop_edge(
         move || record::end_capture(active),
         || {
@@ -3134,8 +3139,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 text_field_focused,
             );
             let t_paste = std::time::Instant::now();
-            let outcome =
-                paste::insert_dictated_take(&app2, &text, want_paste, source_bundle_id.as_deref());
+            // DB-D — a take for a Scratchpad note is wanted whenever it is not
+            // stale; auto-paste and the focused-text-input probe are about the
+            // app behind the panel, not the note.
+            let want = if scratchpad_note.is_some() {
+                current_generation == generation
+            } else {
+                want_paste
+            };
+            let outcome = paste::insert_take_for(
+                &app2,
+                &text,
+                want,
+                paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
+            );
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
             let _ = app2.emit(
@@ -5664,6 +5681,72 @@ fn delete_scratch(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
     state.db.delete_scratch(&id)
 }
 
+// --- DB-D Scratchpad window ---
+
+#[tauri::command]
+fn open_scratchpad(app: AppHandle) -> Result<(), String> {
+    scratchpad::open(&app)
+}
+
+#[tauri::command]
+fn hide_scratchpad(app: AppHandle) {
+    scratchpad::hide(&app);
+}
+
+/// The Scratchpad webview's focus report — the dictation target.
+#[tauri::command]
+fn scratchpad_focus(focused: bool, note_id: Option<String>) {
+    scratchpad::set_focused_note(focused, note_id);
+}
+
+#[tauri::command]
+fn list_notes(state: State<'_, Arc<AppState>>) -> Result<Vec<db::Note>, String> {
+    state.db.list_notes()
+}
+
+#[tauri::command]
+fn search_notes(state: State<'_, Arc<AppState>>, query: String) -> Result<Vec<db::Note>, String> {
+    state.db.search_notes(&query)
+}
+
+#[tauri::command]
+fn save_note_draft(
+    state: State<'_, Arc<AppState>>,
+    id: Option<String>,
+    title: String,
+    content: String,
+) -> Result<db::Note, String> {
+    state.db.save_note_draft(id, title, content)
+}
+
+#[tauri::command]
+fn finalize_note(
+    state: State<'_, Arc<AppState>>,
+    id: Option<String>,
+    title: String,
+    content: String,
+) -> Result<db::Note, String> {
+    state.db.finalize_note(id, title, content)
+}
+
+#[tauri::command]
+fn delete_note(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    state.db.delete_note(&id)
+}
+
+#[tauri::command]
+fn set_note_pinned(state: State<'_, Arc<AppState>>, id: String, pinned: bool) -> Result<(), String> {
+    state.db.set_note_pinned(&id, pinned)
+}
+
+#[tauri::command]
+fn list_note_versions(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<Vec<db::NoteVersion>, String> {
+    state.db.list_note_versions(&id)
+}
+
 #[tauri::command]
 fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
     paste::copy_text(&app, &text)
@@ -7715,8 +7798,11 @@ fn run_shortcut_job(app: &AppHandle, state: &Arc<AppState>, job: shortcut_defer:
         // Y8-A ⌃⌘J — Yap forward, on the Scratchpad.
         J::OpenScratchpad => {
             log::info!("scratchpad chord pressed — open Scratchpad");
-            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
-            let _ = app.emit("navigate", "scratchpad");
+            // DB-D — the Scratchpad is its own non-activating panel: the app
+            // you were in stays active; the main window is never brought up.
+            if let Err(e) = scratchpad::open(app) {
+                log::warn!("scratchpad chord: {e}");
+            }
         }
     }
 }
@@ -9101,6 +9187,16 @@ pub fn run() {
             set_snippet_enabled,
             delete_snippet,
             list_scratch,
+            open_scratchpad,
+            hide_scratchpad,
+            scratchpad_focus,
+            list_notes,
+            search_notes,
+            save_note_draft,
+            finalize_note,
+            delete_note,
+            set_note_pinned,
+            list_note_versions,
             save_scratch,
             delete_scratch,
             copy_entry,
@@ -9255,6 +9351,20 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
+            // DB-D — the Scratchpad panel's red X HIDES it (its notes and the
+            // webview survive), and a panel that loses key drops the dictation
+            // target so a take started elsewhere goes to the app guard.
+            if let Some(sp) = app.get_webview_window(scratchpad::WINDOW_LABEL) {
+                let sp2 = sp.clone();
+                sp.on_window_event(move |e| {
+                    if let WindowEvent::CloseRequested { api, .. } = e {
+                        api.prevent_close();
+                        scratchpad::hide(sp2.app_handle());
+                    } else if let WindowEvent::Focused(false) = e {
+                        scratchpad::set_focused_note(false, None);
+                    }
+                });
+            }
             if let Some(win) = app.get_webview_window("main") {
                 if smoke::release_armed() {
                     // yap-p0-release-smoke: the run inserts into TextEdit, so

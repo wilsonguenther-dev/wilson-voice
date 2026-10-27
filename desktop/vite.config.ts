@@ -67,6 +67,8 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, "index.html"),
         float: resolve(__dirname, "float.html"),
+        // DB-D — the Scratchpad panel, its own React tree like the pill.
+        scratchpad: resolve(__dirname, "scratchpad.html"),
         ...(devTooling
           ? {
               licensePreview: resolve(__dirname, "dev/license-preview.html"),

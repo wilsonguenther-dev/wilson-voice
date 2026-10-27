@@ -670,6 +670,26 @@ fn a_database_from_every_rung_climbs_to_five() {
     }
 }
 
+/// DB-D — the Scratchpad's notes / note_versions / notes_fts are created with
+/// `IF NOT EXISTS` beside the baseline, so reopening never wipes or duplicates
+/// them, and the pre-DB-D `scratchpad` table is gone after the first open.
+#[test]
+fn reopening_keeps_scratchpad_notes_and_versions() {
+    let dir = temp_dir("migrate-notes");
+    let db = open_db(&dir);
+    let n = db.finalize_note(None, "Keep".into(), "me".into()).unwrap();
+    drop(db);
+    for _ in 0..2 {
+        let db = open_db(&dir);
+        assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+        assert_eq!(db.list_notes().unwrap().len(), 1);
+        assert_eq!(db.list_note_versions(&n.id).unwrap().len(), 1);
+        assert_eq!(db.search_notes("keep").unwrap().len(), 1);
+    }
+    assert!(columns(&dir.join("wilson_voice.db"), "scratchpad").is_empty());
+    assert!(columns(&dir.join("wilson_voice.db"), "notes").contains(&"searchable_content".to_string()));
+}
+
 // ── Y9-B · migration 7 ───────────────────────────────────────────────────────
 
 /// A version-6 database (every meeting column, no `user_context`) gains the

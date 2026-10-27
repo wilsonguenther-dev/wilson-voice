@@ -448,7 +448,34 @@ pub enum PasteTarget<'a> {
     /// (NSWorkspace bundle id, readable without Accessibility). `None` = it
     /// could not be read, and an unconfirmed target is never typed into.
     Dictated(Option<&'a str>),
+    /// DB-D — a dictation started while the Scratchpad panel was key: the take
+    /// is for THAT note (its id), never for the app behind the panel. The
+    /// panel is non-activating, so the frontmost app is still the previous one
+    /// — which is exactly why this cannot be a `Dictated` target.
+    Note(&'a str),
 }
+
+/// DB-D — the YV21 guard RE-POINTED, not bypassed: which target a finished
+/// take is for. `scratchpad_note` is the note the Scratchpad panel had focused
+/// when the take stopped (`scratchpad::dictation_note`), `dictated_app` the
+/// frontmost bundle id read at the same moment. A focused note wins; anything
+/// else keeps the existing app guard exactly as it was.
+pub fn take_target<'a>(
+    scratchpad_note: Option<&'a str>,
+    dictated_app: Option<&'a str>,
+) -> PasteTarget<'a> {
+    match scratchpad_note {
+        Some(id) => PasteTarget::Note(id),
+        None => PasteTarget::Dictated(dictated_app),
+    }
+}
+
+/// DB-D — the outcome message for a take that landed in a Scratchpad note.
+pub const NOTE_DELIVERED_MESSAGE: &str = "Added to your Scratchpad note";
+/// DB-D — the Scratchpad was closed (or the note deleted) before the take
+/// finished: the take is held on the pill, never typed into the app behind.
+pub const NOTE_GONE_MESSAGE: &str =
+    "The Scratchpad note closed before the take finished — it's held on the pill";
 
 /// The `insert-copy-card` payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -538,6 +565,12 @@ pub trait InsertBackend {
     fn post_delete(&mut self) -> Result<(), String>;
     /// Emit `insert-copy-card`.
     fn show_copy_card(&mut self, card: CopyCard);
+    /// DB-D — hand a take to the Scratchpad note `note_id`. `Err` = the panel
+    /// is gone / hidden or no longer has that note, and the take is held.
+    fn deliver_to_note(&mut self, note_id: &str, text: &str) -> Result<(), String> {
+        let _ = (note_id, text);
+        Err("no Scratchpad window".into())
+    }
     /// A ⌘V with no receipt: the detail line for the card (the live backend
     /// also pokes the permission watcher so the health row agrees).
     fn no_receipt_detail(&mut self, reason: &str) -> String {
@@ -682,6 +715,36 @@ pub fn insert_traced(
             InsertPath::CopyCard => InsertFallback::NoPermission,
         },
     };
+    // DB-D — a take for a Scratchpad note never touches the app behind the
+    // panel: no secure-field read of it, no AX, no ⌘V, no clipboard write.
+    // Delivered to the note, or HELD on the pill (never re-targeted to an app).
+    if let PasteTarget::Note(note_id) = target {
+        trace.app = Some(crate::scratchpad::TRACE_APP.into());
+        if !want_paste {
+            return (
+                copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
+                trace,
+            );
+        }
+        return match b.deliver_to_note(note_id, text) {
+            Ok(()) => (
+                PasteOutcome {
+                    copied: true,
+                    pasted: true,
+                    message: NOTE_DELIVERED_MESSAGE.into(),
+                },
+                trace,
+            ),
+            Err(why) => {
+                trace.path = InsertPath::CopyCard;
+                trace.fallback = InsertFallback::WrongTarget;
+                (
+                    hold_with(b, text, CopyCardReason::TargetMoved, true, why, NOTE_GONE_MESSAGE),
+                    trace,
+                )
+            }
+        };
+    }
     // Y6-C: a dictated take headed for a password field is refused BEFORE
     // anything else — including the copy-only path (auto-paste off, a stale
     // take), because the failure being prevented is the dictation sitting on
@@ -980,6 +1043,9 @@ impl InsertBackend for LiveInsert<'_> {
     fn post_delete(&mut self) -> Result<(), String> {
         post_delete_on_main(self.app)
     }
+    fn deliver_to_note(&mut self, note_id: &str, text: &str) -> Result<(), String> {
+        crate::scratchpad::deliver(self.app, note_id, text)
+    }
     fn show_copy_card(&mut self, card: CopyCard) {
         crate::float_pill::hold_copy_card(self.app, card.clone());
         if let Err(e) = self.app.emit(INSERT_COPY_CARD_EVENT, card) {
@@ -1027,6 +1093,17 @@ pub fn insert_dictated_take(
         want_paste,
         PasteTarget::Dictated(target_bundle_id),
     )
+}
+
+/// DB-D — a dictation take, routed by [`take_target`]: into the focused
+/// Scratchpad note, else through the unchanged app guard.
+pub fn insert_take_for(
+    app: &AppHandle,
+    text: &str,
+    want_paste: bool,
+    target: PasteTarget<'_>,
+) -> PasteOutcome {
+    insert_take(app, text, want_paste, target)
 }
 
 fn insert_take(
