@@ -51,11 +51,38 @@ describe("extendPillHitbox", () => {
   it("a held rect (Copy card) still wins, and release restores capsule + badge", () => {
     drag.reportPillHitbox(114, 67, 72, 22);
     drag.extendPillHitbox({ x: 90, y: 113, w: 120, h: 21 });
-    drag.holdPillHitbox({ x: 10, y: 10, w: 280, h: 120 });
+    drag.holdPillHitbox({ x: 10, y: 10, w: 280, h: 120 }, "copy-card");
     expect(lastHitbox()).toEqual({ x: 10, y: 10, w: 280, h: 120 });
     drag.extendPillHitbox({ x: 90, y: 112, w: 130, h: 22 });
     expect(lastHitbox()).toEqual({ x: 10, y: 10, w: 280, h: 120 });
-    drag.holdPillHitbox(null);
+    drag.holdPillHitbox(null, "copy-card");
     expect(lastHitbox()).toEqual({ x: 90, y: 67, w: 130, h: 67 });
+  });
+});
+
+// #272 fix round 1 (BLOCKING) — the Copy card and the meeting offer can both be
+// up in the pill's top band. Each holds the hitbox under its own name, so one
+// card releasing its hold never makes the other card's buttons click-through.
+describe("holdPillHitbox — two holders at once", () => {
+  const copyRect = { x: 10, y: 6, w: 280, h: 60 };
+  const offerRect = { x: 20, y: 6, w: 260, h: 90 };
+  it("the offer releasing keeps the Copy card clickable", () => {
+    drag.reportPillHitbox(114, 67, 72, 22);
+    drag.holdPillHitbox(copyRect, "copy-card");
+    drag.holdPillHitbox(offerRect, "meeting-offer");
+    expect(lastHitbox()).toEqual({ x: 10, y: 6, w: 280, h: 90 });
+    drag.holdPillHitbox(null, "meeting-offer");
+    expect(lastHitbox()).toEqual(copyRect);
+  });
+  it("the Copy card releasing keeps Record / Not now clickable", () => {
+    drag.reportPillHitbox(114, 67, 72, 22);
+    drag.holdPillHitbox(offerRect, "meeting-offer");
+    drag.holdPillHitbox(copyRect, "copy-card");
+    drag.holdPillHitbox(null, "copy-card");
+    expect(lastHitbox()).toEqual(offerRect);
+    drag.reportPillHitbox(110, 66, 80, 24); // the capsule moving under a hold is ignored
+    expect(lastHitbox()).toEqual(offerRect);
+    drag.holdPillHitbox(null, "meeting-offer");
+    expect(lastHitbox()).toEqual({ x: 110, y: 66, w: 80, h: 24 });
   });
 });

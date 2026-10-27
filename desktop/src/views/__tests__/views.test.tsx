@@ -37,6 +37,7 @@ const SETTINGS_TABS = [
   "Audio",
   "Shortcut",
   "Advanced",
+  "Meetings",
   "Privacy",
   "License",
 ];
