@@ -294,6 +294,12 @@ impl MeetingPipeline {
         }
     }
 
+    /// Is a meeting queued or being transcribed? (yap24-NT4 R4)
+    pub fn busy(&self) -> bool {
+        let (lock, _) = &*self.pending;
+        lock.lock().map(|p| p.in_flight > 0).unwrap_or(false)
+    }
+
     /// Block until every queued job has finished, or `timeout`. Tests and the
     /// headless CLI only — the app never waits on the pipeline.
     pub fn wait_idle(&self, timeout: Duration) -> bool {
@@ -333,6 +339,13 @@ pub fn install(pipeline: MeetingPipeline) -> bool {
 /// The installed pipeline, if any.
 pub fn installed() -> Option<&'static MeetingPipeline> {
     INSTALLED.get()
+}
+
+/// yap24-NT4 R4 — is the installed pipeline transcribing (or holding a queued
+/// meeting) right now? The notes worker reads it so a summary never runs
+/// concurrently with a meeting's ASR decode. `false` with no pipeline.
+pub fn transcribing_now() -> bool {
+    INSTALLED.get().is_some_and(MeetingPipeline::busy)
 }
 
 /// Queue on the installed pipeline. Returns false (and logs) when none is
