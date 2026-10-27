@@ -133,7 +133,7 @@ fn transcribe_file(wav: &Path, timed: bool, cleanup: bool) -> i32 {
 fn cleanup_report(raw: &str) -> String {
     let settings = crate::AppSettings::default();
     let level = dictation::CleanupLevel::from_setting(&settings.cleanup_level);
-    let mode = dictation::resolve_mode_with_context(&settings.dictation_mode, "", None);
+    let mode = dictation::resolve_mode_with_context(&settings.dictation_mode, "", None, None);
     let structure_format = dictation::structure_format_for_take(
         settings.structure_enabled && settings.dictation_mode.trim() != "plain",
         &settings.structure_app_overrides,
