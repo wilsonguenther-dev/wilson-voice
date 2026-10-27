@@ -36,6 +36,7 @@ import {
   type TranscribeProgress,
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
+import { forcedPill, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import "./tokens.css";
 import "./float.css";
@@ -73,6 +74,22 @@ interface BackendStatus {
 /** The `transcript` event, for its word count only (lib.rs:2509). */
 interface TranscriptNotice { wordCount?: number; word_count?: number }
 
+/**
+ * yap24-UI3 — DEV-ONLY: `float.html?phase=…&pill=…&dock=…` pins the pill to one
+ * phase so `scripts/pill-matrix.mjs` can photograph every phase x dock x
+ * character headlessly. Both operands are compile-time constants that are
+ * false in a release build, so rollup removes this branch and `./pill/forced`
+ * with it; the released float window ignores its query string entirely.
+ */
+const FORCED: ForcedPill | null =
+  import.meta.env.DEV || __YAP_PILL_MATRIX__ ? forcedPill(window.location.search) : null;
+if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
+  // The matrix reads its phase list from HERE — the pill's own phaseVisual
+  // table — so a phase a later item adds is photographed automatically.
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = matrixPhases();
+  if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+}
+
 const DOCKS = ["bottom", "left", "right"];
 const dockOf = (s?: Settings) => {
   const p = s?.pillPosition || "bottom";
@@ -80,7 +97,7 @@ const dockOf = (s?: Settings) => {
 };
 
 function Float() {
-  const [style, setStyle] = useState<string>("classic");
+  const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
   // PERM-C — the permission phase lives HERE, above both pill styles, because it
   // is a property of the app and not of whichever capsule happens to be drawn.
   // Both pills receive it; neither invents it.
@@ -88,7 +105,7 @@ function Float() {
   // Y3-C — decode progress lives HERE for the same reason `gate` does: it is a
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
-  const [progress, setProgress] = useState<TranscribeProgress | null>(null);
+  const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -254,8 +271,8 @@ function Float() {
     // The dock edge rides on <html> (not React state) — it only drives CSS
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
-      setStyle(s?.pillStyle || "classic");
-      document.documentElement.dataset.dock = dockOf(s);
+      setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
+      document.documentElement.dataset.dock = FORCED?.dock ?? dockOf(s);
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
@@ -283,7 +300,9 @@ function Float() {
   // take, exactly as PHASE_PRECEDENCE says and exactly as `start_recording`
   // does in the backend: the pill is never allowed to disagree about the reason
   // a press did nothing.
-  const phase = winningPhase(gate, take);
+  // yap24-UI3 — a forced phase (dev-only, see FORCED) replaces the derived one
+  // wholesale; every consumer below reads `phase`, so nothing else changes.
+  const phase = FORCED ? FORCED.phase : winningPhase(gate, take);
   const chatTone = toChatTone(tone);
   useEffect(() => {
     // The phase rides on <html> beside the dock and the license, for the same
