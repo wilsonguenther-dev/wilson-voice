@@ -94,8 +94,20 @@ elif [ ! -f "$ROOT/desktop/dist/index.html" ]; then
 fi
 
 # ── serve it and walk it ────────────────────────────────────────────────────
+# A listener already on $PORT is a server this run did not start: the curl
+# probe below would succeed against it and the walk would judge whatever dist
+# it cached, not the one just built (yap-uiux-2026-10-16-Z found a 96-minute-old
+# orphan doing exactly that). Refuse loudly instead of judging the wrong tree.
+if curl -fsS "http://127.0.0.1:$PORT/index.html" -o /dev/null 2>/dev/null; then
+  echo "smoke: something is already serving 127.0.0.1:$PORT — refusing to judge a server this run did not start" >&2
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 2>/dev/null || true
+  exit 2
+fi
 PREVIEW_LOG="$(mktemp "${TMPDIR:-/tmp}/yap-smoke-preview.XXXXXX")"
-( cd "$ROOT/desktop" && npm run preview -- --port "$PORT" --strictPort >"$PREVIEW_LOG" 2>&1 ) &
+# exec vite itself, not 'npm run preview': npm does not forward SIGTERM to its
+# node child, so killing npm's PID left vite listening on $PORT after every run.
+# With exec, $! IS the vite process and cleanup() really stops it.
+( cd "$ROOT/desktop" && exec ./node_modules/.bin/vite preview --port "$PORT" --strictPort >"$PREVIEW_LOG" 2>&1 ) &
 PREVIEW_PID=$!
 cleanup() {
   kill "$PREVIEW_PID" 2>/dev/null || true

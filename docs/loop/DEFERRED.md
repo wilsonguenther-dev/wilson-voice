@@ -309,3 +309,15 @@ cost (target ~10x), keep the wedged chunk's hang clearly longer than the timeout
 **The shape.** A sub-second wall-clock upper bound on "the writer never blocks the producer".
 **Destination.** Assert on a non-blocking primitive (a `try_send` result / an overflow counter)
 rather than wall time, or size the bound from the blocking case it must distinguish.
+
+## 21. Shell nav at 720 wide hides Scratchpad and Settings behind the Dictate button (yap-uiux-2026-10-16-Z re-walk, Z2)
+
+**The shape.** At the minimum window size (720x520), the top nav row ("Yap · Home · Permissions ·
+Meetings · Insights · Dictionary · Scra…") is cut off by the Dictate button. Two destinations
+can only be reached by scrolling the nav horizontally, and nothing shows that it scrolls.
+The structural smoke cannot see this, because the nav is an `overflow-x: auto` scroller
+(no out-of-bounds box). Evidence:
+`~/Obsidian/Wilson-Brain/Projects/Loop-Logs/yap-uiux-2026-10-16/rewalk-daily/2026-10-27T00-02-24-014Z/home-720x520.png`.
+**Destination.** The fix spans `desktop/src/App.tsx` and `desktop/src/App.css`, not one view
+file. Collapse the labels to icons, or move the overflow into a "More" menu, under ~800 px,
+and keep Dictate visible.
