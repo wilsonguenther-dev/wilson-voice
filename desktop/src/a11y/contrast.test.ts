@@ -134,6 +134,7 @@ const PAIRS: Pair[] = [
   { fg: "--text-on-inverse", bg: "--surface-inverse", floor: BODY, where: "toast" },
   { fg: "--accent-on-inverse", bg: "--surface-inverse", floor: BODY, where: "toast action" },
   { fg: "--retro-paper", bg: "--retro-wood-deep", floor: BODY, where: "house tag lettering" },
+  { fg: "--text-on-test-channel", bg: "--surface-test-channel", floor: BODY, where: "TEST BUILD chip (main window and pill)" },
   // ── the pill's always-dark world ─────────────────────────────────────────
   { fg: "--pill-text", bg: "--pill-shell-top", floor: BODY, where: "pill capsule text" },
   { fg: "--pill-text", bg: "--pill-shell-bottom", floor: BODY, where: "pill capsule text" },
