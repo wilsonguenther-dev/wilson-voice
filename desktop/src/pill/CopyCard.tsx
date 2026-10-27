@@ -9,10 +9,12 @@ import {
   COPY_CARD_TTL_MS,
   INSERT_COPY_CARD_EVENT,
   blockedLine,
+  canInsertHere,
   canRepair,
   cardHint,
   cardPreview,
   isCopyCard,
+  isHeldTake,
   settingsPaneFor,
   type CopyCardPayload,
 } from "./copyCardModel";
@@ -63,9 +65,10 @@ export default function CopyCard() {
       const r = el.getBoundingClientRect();
       holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "copy-card");
     }
-    const t = setTimeout(dismiss, COPY_CARD_TTL_MS);
+    // Y6-C: a held take never times out — it waits for Insert, Copy or ×.
+    const t = isHeldTake(card) ? undefined : setTimeout(dismiss, COPY_CARD_TTL_MS);
     return () => {
-      clearTimeout(t);
+      if (t !== undefined) clearTimeout(t);
       holdPillHitbox(null, "copy-card");
     };
   }, [card, dismiss]);
@@ -79,6 +82,16 @@ export default function CopyCard() {
     } catch {
       setCopied(false);
     }
+  };
+  // Y6-C: Insert puts the held take wherever the user is now. The pill is a
+  // nonactivating panel, so clicking it leaves the user's app frontmost, and
+  // paste_entry is the explicit re-paste (the current app IS the target).
+  const insertable = canInsertHere(card);
+  const insertHere = () => {
+    if (!insertable) return;
+    const text = card.text;
+    dismiss();
+    invoke("paste_entry", { text }).catch(() => {});
   };
   const repairable = canRepair(card);
   const repair = () => {
@@ -113,6 +126,11 @@ export default function CopyCard() {
       <p className="copy-card-text">{cardPreview(card.text)}</p>
       <p className="copy-card-hint" role="status">{cardHint(copied, repairable, card.reason)}</p>
       <div className="copy-card-actions">
+        {insertable && (
+          <button type="button" className="copy-card-insert" onClick={insertHere}>
+            Insert
+          </button>
+        )}
         <button type="button" className="copy-card-copy" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy"}
         </button>

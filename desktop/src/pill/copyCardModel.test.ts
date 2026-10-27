@@ -9,11 +9,15 @@ import {
   COPY_CARD_HINT,
   COPY_CARD_HINT_NO_REPAIR,
   INSERT_COPY_CARD_EVENT,
+  COPY_CARD_HINT_SECURE_FIELD,
+  COPY_CARD_HINT_TARGET_MOVED,
   blockedLine,
+  canInsertHere,
   canRepair,
   cardHint,
   cardPreview,
   isCopyCard,
+  isHeldTake,
   settingsPaneFor,
 } from "./copyCardModel";
 
@@ -89,5 +93,30 @@ describe("yap-test-channel-product-name — the blocked line names the running p
     const named = pasteRs.match(/product: crate::perm_truth::product_name\(\),/g) ?? [];
     expect(shown.length).toBeGreaterThan(0);
     expect(named.length).toBe(shown.length);
+  });
+});
+
+describe("Y6-C — a take whose target moved is held and insertable", () => {
+  it("pins the pill lines to paste.rs verbatim", () => {
+    const one = (name: string) => {
+      const m = pasteRs.match(new RegExp(`pub const ${name}: &str =\\s*"([^"]*)";`));
+      return m?.[1];
+    };
+    expect(one("TARGET_MOVED_MESSAGE")).toBe(COPY_CARD_HINT_TARGET_MOVED);
+    expect(one("SECURE_FIELD_MESSAGE")).toBe(COPY_CARD_HINT_SECURE_FIELD);
+    expect(pasteRs).toContain("TargetMoved,");
+    expect(pasteRs).toContain("SecureField,");
+  });
+
+  it("offers Insert only for a moved target, and never times a held take out", () => {
+    expect(canInsertHere({ reason: "target_moved" })).toBe(true);
+    expect(canInsertHere({ reason: "secure_field" })).toBe(false);
+    expect(canInsertHere({ reason: "no_receipt" })).toBe(false);
+    expect(isHeldTake({ reason: "target_moved" })).toBe(true);
+    expect(isHeldTake({ reason: "secure_field" })).toBe(true);
+    expect(isHeldTake({ reason: "no_receipt" })).toBe(false);
+    expect(cardHint(true, false, "target_moved")).toBe(COPY_CARD_HINT_TARGET_MOVED);
+    expect(cardHint(false, false, "secure_field")).toBe(COPY_CARD_HINT_SECURE_FIELD);
+    expect(COPY_CARD_HINT_SECURE_FIELD).toContain("not on your clipboard");
   });
 });
