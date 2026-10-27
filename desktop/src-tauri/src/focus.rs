@@ -6,14 +6,33 @@
 //! Also resolves frontmost app name for transcript hygiene (source_app), the
 //! current selection (YV49 command mode) and the text just before the caret
 //! (YV50 context awareness).
+//!
+//! PERM-F widens the context read: `AXSelectedText`, the text after the caret
+//! and — for Chrome, Safari and Firefox — the focused page's URL, all read
+//! IN-PROCESS in one pass ([`read_ax_context`]). Every text field is cut to a
+//! named budget before it leaves this module, and the URL never leaves it at
+//! all: it is turned into a dictation mode inside [`context_from_reads`] and
+//! dropped. No page HTML, no screenshot, no subprocess.
 
-/// Hard bound on the pre-caret context read by [`text_before_cursor`]: at most
+/// Hard bound on the pre-caret context read by [`read_ax_context`]: at most
 /// this many characters immediately before the caret ever leave Accessibility.
 ///
 /// PRIVACY (YV50): that string is a formatting signal only. It lives in the
 /// dictation call stack and is dropped there — never logged, never persisted,
 /// never emitted to the UI, never sent anywhere.
 pub const CONTEXT_CHAR_LIMIT: usize = 500;
+
+/// PERM-F budget for the text AFTER the caret: a whole document below the
+/// caret is cut to this many characters (the ones adjacent to the caret)
+/// before it reaches the pipeline. Same privacy rule as [`CONTEXT_CHAR_LIMIT`].
+pub const AFTER_CARET_CHAR_LIMIT: usize = 200;
+
+/// PERM-F budget for `AXSelectedText` in the dictation context: a select-all
+/// over a long document is cut to its first this-many characters.
+pub const SELECTION_CHAR_LIMIT: usize = 500;
+
+/// How far up the `AXParent` chain the URL read looks for the `AXWebArea`.
+const MAX_AX_PARENT_HOPS: usize = 32;
 
 #[cfg(target_os = "macos")]
 mod ax {
@@ -305,41 +324,93 @@ mod ax {
         }
     }
 
-    /// Caret offset (UTF-16 units, the unit AX ranges are expressed in) from
-    /// AXSelectedTextRange. `None` when the element exposes no selection.
-    fn caret_offset(element: AXUIElementRef) -> Option<usize> {
+    /// `name` as a URL string: a CFURL (`AXURL` on a web area) or a CFString
+    /// (`AXDocument` on a browser window). Type-checked like [`attr_cfstring`].
+    fn attr_url_string(element: AXUIElementRef, name: &str) -> Option<String> {
+        use core_foundation::url::{CFURLRef, CFURL};
         unsafe {
-            let key = CFString::new("AXSelectedTextRange");
+            let key = CFString::new(name);
             let mut val: CFTypeRef = std::ptr::null_mut();
             let err = AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &mut val);
             if err != AX_OK || val.is_null() {
                 return None;
             }
-            let mut range = CFRange {
-                location: 0,
-                length: 0,
-            };
-            let ok = AXValueGetValue(
-                val,
-                AX_VALUE_CF_RANGE,
-                &mut range as *mut CFRange as *mut c_void,
-            );
-            CFRelease(val);
-            if ok == 0 || range.location < 0 {
-                return None;
+            let ty = CFGetTypeID(val);
+            if ty == CFURL::type_id() {
+                return Some(
+                    CFURL::wrap_under_create_rule(val as CFURLRef)
+                        .get_string()
+                        .to_string(),
+                );
             }
-            Some(range.location as usize)
+            if ty == CFString::type_id() {
+                return Some(CFString::wrap_under_create_rule(val as CFStringRef).to_string());
+            }
+            CFRelease(val);
+            None
         }
     }
 
-    /// The text immediately BEFORE the caret in the focused text control, capped
-    /// at `limit` characters (YV50). `None` on a secure field, an element with no
-    /// value/caret, or nothing focused.
-    pub fn text_before_cursor(limit: usize) -> Option<String> {
+    /// PERM-F — the URL of the web page that holds the focused element: walk
+    /// `AXParent` up to the enclosing `AXWebArea` (bounded by
+    /// [`super::MAX_AX_PARENT_HOPS`]) and read its `AXURL`; failing that, the
+    /// focused window's `AXDocument`. In-process, no subprocess, no AppleScript
+    /// — the bundle stays the only TCC row. The string is handed straight to
+    /// [`super::context_from_reads`], which classifies and drops it.
+    fn focused_page_url(focused: AXUIElementRef) -> Option<String> {
+        unsafe {
+            let mut owned: Option<CFTypeRef> = None;
+            let mut cur = focused;
+            let mut url = None;
+            for _ in 0..super::MAX_AX_PARENT_HOPS {
+                if attr_string(cur, "AXRole").as_deref() == Some("AXWebArea") {
+                    url = attr_url_string(cur, "AXURL");
+                    break;
+                }
+                let key = CFString::new("AXParent");
+                let mut parent: CFTypeRef = std::ptr::null_mut();
+                let err =
+                    AXUIElementCopyAttributeValue(cur, key.as_concrete_TypeRef(), &mut parent);
+                if let Some(prev) = owned.take() {
+                    CFRelease(prev);
+                }
+                if err != AX_OK || parent.is_null() {
+                    break;
+                }
+                owned = Some(parent);
+                cur = parent as AXUIElementRef;
+            }
+            if let Some(prev) = owned {
+                CFRelease(prev);
+            }
+            if url.is_some() {
+                return url;
+            }
+            let key = CFString::new("AXWindow");
+            let mut window: CFTypeRef = std::ptr::null_mut();
+            let err =
+                AXUIElementCopyAttributeValue(focused, key.as_concrete_TypeRef(), &mut window);
+            if err != AX_OK || window.is_null() {
+                return None;
+            }
+            let doc = attr_url_string(window as AXUIElementRef, "AXDocument");
+            CFRelease(window);
+            doc
+        }
+    }
+
+    /// PERM-F — every raw Accessibility field the dictation pipeline reads, in
+    /// ONE pass over the focused element: the value and the selection range
+    /// (for the text before AND after the caret), `AXSelectedText`, and — only
+    /// when `want_url` (one of [`super::URL_BROWSERS`] is frontmost) — the page
+    /// URL. A secure/password field yields nothing but the URL. Every failure
+    /// is a `None` field, never an error: the take never depends on this read.
+    pub fn read_raw(want_url: bool) -> super::AxRaw {
+        let mut raw = super::AxRaw::default();
         unsafe {
             let system = AXUIElementCreateSystemWide();
             if system.is_null() {
-                return None;
+                return raw;
             }
             let key = CFString::new("AXFocusedUIElement");
             let mut focused: CFTypeRef = std::ptr::null_mut();
@@ -347,27 +418,27 @@ mod ax {
                 AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
             CFRelease(system as CFTypeRef);
             if err != AX_OK || focused.is_null() {
-                return None;
+                return raw;
             }
             let el = focused as AXUIElementRef;
             // Never read a password field, even though AX would hand us its value.
-            let secure = attr_string(el, "AXRole").unwrap_or_default() == "AXSecureTextField"
+            raw.secure = attr_string(el, "AXRole").unwrap_or_default() == "AXSecureTextField"
                 || attr_string(el, "AXSubrole")
                     .unwrap_or_default()
                     .contains("Secure");
-            let context = if secure {
-                None
-            } else {
-                match (attr_cfstring(el, "AXValue"), caret_offset(el)) {
-                    (Some(value), Some(caret)) => {
-                        Some(super::prefix_before_caret(&value, caret, limit))
-                    }
-                    _ => None,
-                }
-            };
+            if !raw.secure {
+                raw.value = attr_cfstring(el, "AXValue");
+                raw.range = selected_range(el)
+                    .filter(|(location, _)| *location >= 0)
+                    .map(|(location, length)| (location as usize, length.max(0) as usize));
+                raw.selected = attr_cfstring(el, "AXSelectedText");
+            }
+            if want_url {
+                raw.url = focused_page_url(el);
+            }
             CFRelease(focused);
-            context
         }
+        raw
     }
 
     /// Frontmost application title via AX (no NSWorkspace dep).
@@ -446,29 +517,155 @@ fn prefix_before_caret(value: &str, caret: usize, limit: usize) -> String {
     prefix.chars().skip(chars - limit).collect()
 }
 
-/// Up to [`CONTEXT_CHAR_LIMIT`] characters of the text immediately before the
-/// caret in the focused text control (YV50 context awareness).
+/// PERM-F — the first `limit` characters of `value` from the AX offset `start`
+/// (UTF-16 units) on: the text after the caret, bounded. Only `2 * limit` units
+/// are ever materialised, so a whole document below the caret costs nothing.
+fn suffix_after_caret(value: &str, start: usize, limit: usize) -> String {
+    let units: Vec<u16> = value
+        .encode_utf16()
+        .skip(start)
+        .take(limit.saturating_mul(2))
+        .collect();
+    String::from_utf16_lossy(&units)
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+/// PERM-F — the raw Accessibility reads, exactly as macOS returned them. Lives
+/// for one call: [`context_from_reads`] bounds the text fields, turns the URL
+/// into a mode and drops it. Deliberately NOT `Debug`, so not even a stray
+/// `{:?}` can print a raw field (the URL above all).
+#[derive(Default)]
+pub struct AxRaw {
+    /// AXSecureTextField / a Secure subrole: no text field is read at all.
+    pub secure: bool,
+    /// `AXValue` of the focused element.
+    pub value: Option<String>,
+    /// `AXSelectedTextRange` as (location, length), in UTF-16 units.
+    pub range: Option<(usize, usize)>,
+    /// `AXSelectedText` of the focused element.
+    pub selected: Option<String>,
+    /// The focused page's URL (browsers in [`URL_BROWSERS`] only).
+    pub url: Option<String>,
+}
+
+/// PERM-F — what the dictation pipeline is allowed to see of the focused
+/// field. Three bounded text fields and a MODE; the browser URL itself has no
+/// field here on purpose, so it cannot reach the DB, a log, an event or a
+/// support bundle — it died inside [`context_from_reads`].
 ///
-/// `None` — treated by every caller as "no signal, format as-is" — whenever
-/// Accessibility is denied, the focused element is a secure/password field, or
-/// the element exposes no value or selection. `Some("")` is DIFFERENT and
-/// meaningful: an empty field, i.e. the start of a fresh sentence.
+/// `Default` (all `None`) is exactly today's no-Accessibility path.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct AxContext {
+    /// Up to [`CONTEXT_CHAR_LIMIT`] chars immediately before the caret (YV50).
+    /// `Some("")` = an empty field / start of the text.
+    pub before_caret: Option<String>,
+    /// Up to [`SELECTION_CHAR_LIMIT`] chars of `AXSelectedText`; `None` when
+    /// nothing is selected.
+    pub selection: Option<String>,
+    /// Up to [`AFTER_CARET_CHAR_LIMIT`] chars immediately after the caret (or
+    /// after the selection the take will replace).
+    pub after_caret: Option<String>,
+    /// The dictation mode the focused browser page implies (Gmail → Email,
+    /// a Google Doc → Document), derived from the URL and nothing else.
+    pub browser_mode: Option<crate::dictation::DictationMode>,
+}
+
+/// Lengths only — the content of the context is never formatted anywhere.
+impl std::fmt::Debug for AxContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = |s: &Option<String>| s.as_ref().map(|s| s.chars().count());
+        f.debug_struct("AxContext")
+            .field("before_caret_chars", &len(&self.before_caret))
+            .field("selection_chars", &len(&self.selection))
+            .field("after_caret_chars", &len(&self.after_caret))
+            .field("browser_mode", &self.browser_mode)
+            .finish()
+    }
+}
+
+/// The three browsers whose page URL Yap resolves (Chrome, Safari, Firefox),
+/// by bundle id. Anything else never has its URL read.
+pub const URL_BROWSERS: &[&str] = &[
+    "com.google.Chrome",
+    "com.apple.Safari",
+    "org.mozilla.firefox",
+];
+
+/// True when `bundle_id` is one of [`URL_BROWSERS`].
+pub fn is_url_browser(bundle_id: &str) -> bool {
+    URL_BROWSERS
+        .iter()
+        .any(|b| b.eq_ignore_ascii_case(bundle_id.trim()))
+}
+
+/// The pure half of the PERM-F read: the grant check, the budgets and the URL
+/// classification, with the AX calls injected as `read` so a test can drive it.
 ///
-/// PRIVACY: the returned string never leaves the dictation call stack. It is
-/// never logged, never written to the history DB, never emitted to the UI —
-/// only the formatting decisions derived from it are.
-pub fn text_before_cursor() -> Option<String> {
-    if !crate::permissions::is_accessibility_trusted() {
-        return None;
+/// WITHOUT the Accessibility grant `read` is never called and the result is
+/// [`AxContext::default`] — byte for byte what the pipeline saw before PERM-F,
+/// when `text_before_cursor` returned `None` on the same check.
+pub fn context_from_reads(trusted: bool, read: impl FnOnce() -> AxRaw) -> AxContext {
+    if !trusted {
+        return AxContext::default();
     }
-    #[cfg(target_os = "macos")]
-    {
-        ax::text_before_cursor(CONTEXT_CHAR_LIMIT)
+    let raw = read();
+    // The URL is consumed HERE and goes no further: only the mode it implies
+    // leaves this function.
+    let browser_mode = raw
+        .url
+        .as_deref()
+        .and_then(crate::dictation::mode_for_browser_url);
+    if raw.secure {
+        return AxContext {
+            browser_mode,
+            ..AxContext::default()
+        };
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
+    let (before_caret, after_caret) = match (raw.value.as_deref(), raw.range) {
+        (Some(value), Some((location, length))) => (
+            Some(prefix_before_caret(value, location, CONTEXT_CHAR_LIMIT)),
+            Some(suffix_after_caret(
+                value,
+                location.saturating_add(length),
+                AFTER_CARET_CHAR_LIMIT,
+            )),
+        ),
+        _ => (None, None),
+    };
+    let selection = raw
+        .selected
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(SELECTION_CHAR_LIMIT).collect());
+    AxContext {
+        before_caret,
+        selection,
+        after_caret,
+        browser_mode,
     }
+}
+
+/// PERM-F (supersedes YV50's `text_before_cursor`) — the focused field's
+/// context for one take: before-caret, selection, after-caret and, for the
+/// browsers in [`URL_BROWSERS`], the mode the page URL implies.
+///
+/// Never fails: Accessibility denied, nothing focused, a secure field or any
+/// AX error degrades to (part of) [`AxContext::default`], which is the
+/// pre-PERM-F path. Nothing here is logged, stored, emitted or sent.
+pub fn read_ax_context(bundle_id: Option<&str>) -> AxContext {
+    let want_url = bundle_id.is_some_and(is_url_browser);
+    context_from_reads(crate::permissions::is_accessibility_trusted(), || {
+        #[cfg(target_os = "macos")]
+        {
+            ax::read_raw(want_url)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = want_url;
+            AxRaw::default()
+        }
+    })
 }
 
 /// yap-format-structure — the frontmost app's bundle id (`notion.id`,
