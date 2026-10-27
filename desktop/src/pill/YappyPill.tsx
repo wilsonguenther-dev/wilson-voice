@@ -25,6 +25,10 @@ import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 // Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
 // two places; `no_duration_literal_outside_motion_ts` now forbids that shape.
 import { DURATION } from "./motion";
+// yap24-UI1 — the integer pixel grid: the canvas backing store, the camera blit
+// and the dock anchor all come from one pure module, so every art pixel lands
+// on whole device pixels at every dock and every backing scale.
+import { backingScale, dockCentreX, sceneBlit, toDevice } from "./pixelGrid";
 
 /**
  * Y5-C — Yappy's art for EVERY phase, as DATA.
@@ -102,10 +106,6 @@ class SOD {
   update(dt: number, x: number): number { const xd = (x - this.xp) / Math.max(dt, 1e-4); this.xp = x; const k2 = Math.max(this.k2, dt * dt / 2 + dt * this.k1 / 2, dt * this.k1); this.yv += dt * this.yd; this.yd += dt * (x + this.k3 * xd - this.yv - this.k1 * this.yd) / k2; return this.yv; }
 }
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-// YV53 — on a side dock the window is parked flush to the screen edge, so the
-// capsule is drawn this many px in from it: enough for its glow/shadow, not so
-// much that it stops reading as docked. Mirrors the .stage inset in float.css.
-const DOCK_PAD = 10;
 
 /**
  * PERM-C — `gate` is the microphone permission phase, owned by `float-main`:
@@ -262,8 +262,17 @@ export default function YappyPill(
       }
     }
 
-    let W = 0, H = 0; const DPR = Math.min(devicePixelRatio || 1, 2);
-    const resize = () => { const r = cv.getBoundingClientRect(); W = r.width; H = r.height; cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); };
+    // yap24-UI1 — the backing store is WHOLE device px of the CSS box at the REAL
+    // backing scale (no clamp: a store smaller than the device grid is upscaled by
+    // a non-integer ratio). The DPR is re-read every frame, so dragging the pill to
+    // a display with another backing scale re-grids it without a resize event.
+    let W = 0, H = 0, DPR = backingScale(devicePixelRatio);
+    const resize = () => {
+      DPR = backingScale(devicePixelRatio);
+      const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+      cv.width = toDevice(W, DPR); cv.height = toDevice(H, DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    };
     resize(); const ro = new ResizeObserver(resize); ro.observe(cv);
 
     let phase: Phase = "idle";
@@ -439,6 +448,7 @@ export default function YappyPill(
       drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
+      if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
       ctx.clearRect(0, 0, W, H);
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
@@ -447,10 +457,7 @@ export default function YappyPill(
       // window is parked flush to that screen edge, so the capsule hugs it instead
       // of sitting mid-window. ONLY the anchor moves — capsule size and the camera
       // below are untouched, so the world keeps its aspect (never letterboxed).
-      const dock = document.documentElement.dataset.dock;
-      const cx = dock === "left" ? DOCK_PAD + capW / 2
-        : dock === "right" ? W - DOCK_PAD - capW / 2
-          : W / 2;
+      const cx = dockCentreX(document.documentElement.dataset.dock, W, capW);
       const cy = H * 0.56;
       const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
       // YV65 — the capsule IS the grab handle: publish exactly where it was just
@@ -468,9 +475,20 @@ export default function YappyPill(
       const viewW = lerp(26, PW * 0.8, openV);         // zoom in: see ~80% of the buffer at open (bigger chick + grass)
       const viewH = viewW * (ih / iw);                // match the capsule aspect → no distortion
       const vcx = FX, vcy = lerp(FY, PH * 0.5, openV); // pan from the face to the scene centre
-      ctx.drawImage(os, vcx - viewW / 2, vcy - viewH / 2, viewW, viewH, x0 + 1, y0 + 1, iw, ih);
-      // sparkles (done) inside the pill
-      for (const q of sparkle) { ctx.save(); ctx.globalAlpha = Math.max(0, q.life); ctx.translate(cx + q.x, cy + q.y); ctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; ctx.fillRect(-1, -1, 2, 2); ctx.restore(); }
+      // yap24-UI1 — the camera view is fitted at the largest WHOLE number of device
+      // px per art px, on a whole-device-px origin; the leftover margin is more of
+      // the world at the same cell, never a stretch. When the world (PW x PH) is too
+      // small to cover the capsule at that cell, the cell steps UP to the smallest
+      // one that covers it (fully open at DPR 1: 2x, the view cropped) — src never
+      // reads past the buffer, so the capsule is never letterboxed. Drawn under an
+      // identity transform (the clip above is already in device space).
+      const blit = sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: viewW, h: viewH }, centre: { x: vcx, y: vcy }, buffer: { w: PW, h: PH }, dpr: DPR });
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
+      // sparkles (done) inside the pill — 2 CSS px squares, snapped to whole device px
+      const sp = Math.max(1, Math.round(2 * DPR));
+      for (const q of sparkle) { ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; ctx.fillRect(Math.round((cx + q.x - 1) * DPR), Math.round((cy + q.y - 1) * DPR), sp, sp); }
+      ctx.restore();
       ctx.restore();
       ctx.lineWidth = 1; ctx.strokeStyle = openV > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)"; rr(x0 + .5, y0 + .5, capW - 1, capH - 1, capH / 2); ctx.stroke();
 

@@ -1929,9 +1929,14 @@ button.star.on {
   width: 100%;
   height: auto;
   /* YV19: bound the displayed height so the full scene fits above the fold.
-     object-fit keeps the 3:2 aspect (never stretches, never crops Yappy or the
-     window) and image-rendering keeps the upscaled pixels nearest-neighbour
-     crisp if the stage is ever scaled to fit within this cap. */
+     yap24-UI1: the box is a fixed 3:2 (aspect-ratio, NOT the backing store's
+     intrinsic ratio, so resizing the store can never feed back into layout).
+     YappyHouse sizes the backing store to this box in whole device px and
+     draws the room at an integer cell, centred, margin in the scene colour —
+     so CSS never rescales it and image-rendering is only a safety net.
+     object-fit / object-position are READ by YappyHouse to pick contain vs
+     cover (see the short-window rule below), so they stay meaningful. */
+  aspect-ratio: 3 / 2;
   max-height: 300px;
   object-fit: contain;
   border-radius: 8px;
