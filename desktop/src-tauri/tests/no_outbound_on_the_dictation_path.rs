@@ -127,6 +127,8 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
         "model download",
         &[
             ("models.rs", "download_file"),
+            // The cancellable twin (meeting notes model, stoppable download).
+            ("models.rs", "download_file_cancellable"),
             ("models.rs", "download_attempt"),
             ("models.rs", "ensure_silero_vad_model"),
         ],
