@@ -615,7 +615,7 @@ ITEMS.push({
     grep -q "fn reconcile_stranded_meetings" desktop/src-tauri/src/meetings.rs desktop/src-tauri/src/lib.rs desktop/src-tauri/src/meeting_control.rs
     grep -rln "append_meeting_segments" desktop/src-tauri/src | grep -v "db.rs" | grep -q .
     ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
-    grep -rl "System Audio Recording" desktop/src --include=*.ts --include=*.tsx | grep -q .
+    grep -rl "System Audio Recording" desktop/src --include='*.ts' --include='*.tsx' | grep -q .
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired ; test $? -eq 0
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial ; test $? -eq 0
