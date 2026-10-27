@@ -226,6 +226,7 @@ pub mod snippets;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
+pub mod take_stage;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
@@ -2516,6 +2517,14 @@ pub const PASTE_OUTCOME_EVENT: &str = "paste_outcome";
 /// `message` is `null` on the success path and the reason otherwise.
 pub const TAKE_DONE_EVENT: &str = "take_done";
 
+/// yap24-PILL2 — which stage a dictation take is in, so the pill can say
+/// "polishing" and "pasting" instead of one undifferentiated busy phase.
+/// Payload: `take_stage::TakeStagePayload` (`{ stage, takeId, words? }`).
+/// Every emit goes through `take_stage::TakeStages::emit`; the stage table and
+/// each stage's single emit site are in `take_stage.rs`. Mirrored by
+/// `TAKE_STAGE_EVENT` in `desktop/src/pill/live.ts`.
+pub const TAKE_STAGE_EVENT: &str = "take_stage";
+
 /// YV74 — an auto-paste take that produced NO read receipt, so the transcript
 /// never reached the target app. Payload: the transcript row's id, which the
 /// toast turns into a "Copy again" action (the transcript may not be on the
@@ -2921,6 +2930,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // Y5-F: `TakeError`, not `String` — every early return below carries a
         // code by type (see take_error.rs), so the one `Err` arm can always
         // tell the UI WHICH failure this was.
+        // yap24-PILL2: this take's stage reporter (see `take_stage.rs`).
+        let take_stages = take_stage::TakeStages::new(&app2);
         let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
@@ -2958,6 +2969,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // persists its prefix under it, and the in-flight recovery link the
             // clip writer made carries the same stem.
             let take_id = rec.clip.take_id();
+            take_stages.set_take_id(take_id.as_deref());
             pending = Some((rec.clip, rec.speech_seconds, source_app.clone()));
             // Y3-D checkpoint — the capture→decode boundary, placed immediately
             // after `pending` takes the clip so the cancel arm inherits YV52's
@@ -3081,6 +3093,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // death skips the drop.
             let db_ref: &Database = &db;
             let mut persist = PersistTakeChunks::new(&mut progress, db_ref, take_id.as_deref());
+            take_stages.emit(take_stage::TakeStage::Decoding, None);
             let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -3331,7 +3344,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // (`deadline` / `no_model` / `no_sidecar` / a validator tag)
                 // instead of as an indistinguishable `None`. Both polish
                 // failure modes are otherwise invisible by construction.
-                |t| polish::polish_llm_result(t, dictation_mode, &polish_config),
+                // yap24-PILL2: wrapped so `polishing` is reported exactly when
+                // the cleanup pipeline actually calls the polish stage.
+                take_stages.polishing(|t| polish::polish_llm_result(t, dictation_mode, &polish_config)),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -3439,6 +3454,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &text,
                 want,
                 paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
+                Some(&take_stages),
             );
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
@@ -3508,6 +3524,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             ))
         })();
 
+        // yap24-PILL2: the take's ONE terminal stage, before any outcome arm's
+        // own emits and before the final `emit_status`, so the pill hears how
+        // the take ended before a not-busy status could make it guess.
+        let (terminal, words) = terminal_stage(&result);
+        take_stages.emit(terminal, words);
         match result {
             Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {
                 if outcome.pasted {
@@ -3796,6 +3817,28 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // Reached the normal end — no soft-lock, disarm the panic guard.
         busy_guard.armed = false;
     });
+}
+
+/// yap24-PILL2 — how a take ended, as the pill's terminal stage. A dictated
+/// take is `done` with its word count; every outcome that typed nothing
+/// (no speech, a gate rejection, a silent capture, a command-mode result) is
+/// `empty` — the phase the pill already inferred for them; a cancel is
+/// `cancelled`; a pipeline failure is `error` (its sentence rides on
+/// `status.lastError`, as before).
+fn terminal_stage(
+    result: &Result<TakeOutcome, take_error::TakeError>,
+) -> (take_stage::TakeStage, Option<u32>) {
+    use take_stage::TakeStage;
+    match result {
+        Ok(TakeOutcome::Dictated(entry, ..)) => {
+            (TakeStage::Done, u32::try_from(entry.word_count).ok())
+        }
+        Ok(TakeOutcome::Cancelled) => (TakeStage::Cancelled, None),
+        Ok(TakeOutcome::Soft(_))
+        | Ok(TakeOutcome::Rejected { .. })
+        | Ok(TakeOutcome::SilentCapture { .. }) => (TakeStage::Empty, None),
+        Err(_) => (TakeStage::Error, None),
+    }
 }
 
 /// YV52 — preserve a failed take: move its wav into the recovery dir and write
@@ -10742,6 +10785,31 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn take_stage_terminal_for_each_outcome() {
+        use super::{terminal_stage, TakeOutcome};
+        use crate::{take_error, take_stage::TakeStage};
+        assert_eq!(
+            terminal_stage(&Ok(TakeOutcome::Cancelled)),
+            (TakeStage::Cancelled, None)
+        );
+        assert_eq!(
+            terminal_stage(&Ok(TakeOutcome::Soft("nothing heard".into()))),
+            (TakeStage::Empty, None)
+        );
+        assert_eq!(
+            terminal_stage(&Ok(TakeOutcome::Rejected {
+                message: "loop".into(),
+                reason: "hallucination",
+            })),
+            (TakeStage::Empty, None)
+        );
+        assert_eq!(
+            terminal_stage(&Err(take_error::capture_failed("boom".into()))),
+            (TakeStage::Error, None)
+        );
+    }
+
     use super::{
         apply_settings_migrations, load_settings, preload_engine_at_startup, salvage_settings,
         status_message, update_is_skipped, write_settings_file, AppSettings, StatusInputs,
