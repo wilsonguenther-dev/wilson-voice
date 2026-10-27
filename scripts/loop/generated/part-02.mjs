@@ -88,9 +88,13 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 48 items (yap-lic-01-jws-verifier..Y3-G). The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 45 items (yap-qa-hotkey-walk-binding..Y4-H). The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
+    { title: "yap-qa-hotkey-walk-binding", detail: "hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding's modifier" },
+    { title: "yap-lic-00-kill-forge-fetch", detail: "SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands" },
+    { title: "yap-dev-perm-probe-attribution", detail: "A dev build's permission probe says \"dev build: permissions are the host terminal's\" instead of showing the launching terminal's TCC grants as Yap's green rows" },
+    { title: "loop-dependency-marker-stdout-only", detail: "The harness's dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat's JSON" },
     { title: "yap-lic-01-jws-verifier", detail: "Offline verifier for drivia[.]consulting license tokens: compact JWS, alg EdDSA + typ JWT pinned, kid looked up in EMBEDDED keys only (never a fetched key set), prd yap, ent.dictation, plan lifetime, exp + 30-day grace, rollback ratchet reused" },
     { title: "yap-lic-02-activation-client", detail: "Activate / refresh / deactivate against https://drivia[.]consulting/api/v1/licensing with X-Drivia-App; token + device_id in the Keychain (security-framework) with device_id mirrored in license.json; refresh at most every 24 h; 403 revoked/expired/deactivated + 401 reactivate_required/device_mismatch delete the token; never downgrade on network/5xx/429/400/413; NO key-list fetch; the Forge format deleted" },
     { title: "yap-lic-04-ui-states-and-buy", detail: "One license panel plus the existing tray state: key prefix, \"Manage Macs\" link to the portal, grace copy with the 60-day date, seat-limit lists devices; Buy opens https://drivia[.]consulting/yap (PAYMENT_LINK_URL -> PURCHASE_URL); no legacy state" },
@@ -132,13 +136,6 @@ export const meta = {
     { title: "Y4-F", detail: "App-aware formatting: the six modes change the output, proven per app, and auto mode picks correctly" },
     { title: "Y4-G", detail: "The user can see what formatting did and undo it in one key — the trust mechanism" },
     { title: "Y4-H", detail: "The formatting settings stop being engineer words, and every one of them persists" },
-    { title: "Y3-A", detail: "Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling" },
-    { title: "Y3-B", detail: "Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call" },
-    { title: "Y3-C", detail: "The pill reports real progress on a long take instead of an honest-looking lie" },
-    { title: "Y3-D", detail: "Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio" },
-    { title: "DB-B", detail: "A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch" },
-    { title: "Y3-F", detail: "A declared maximum session length with a warning before it, instead of an undeclared cliff" },
-    { title: "Y3-G", detail: "A measured latency and energy budget for long takes, published as a test that fails on regression" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -217,7 +214,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"yap-lic-01-jws-verifier":0,"yap-lic-02-activation-client":0,"yap-lic-04-ui-states-and-buy":0,"yap-lic-05-site-privacy-copy":0,"yap-hx-done-check-by-main":1,"yap-hx-lanes1-skip-laneB-warm":1,"yap-hx-reviewers-reuse-target":1,"yap-hx-dependency-marker-scan":1,"yap-hx-test-build-repo-resolve":1,"yap-hx-flaky-timing-under-load":1,"yap-hx-fmt-clippy-debt":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0}
+const LANE_BY_ID = {"yap-qa-hotkey-walk-binding":1,"yap-lic-00-kill-forge-fetch":1,"yap-dev-perm-probe-attribution":1,"loop-dependency-marker-stdout-only":1,"yap-lic-01-jws-verifier":0,"yap-lic-02-activation-client":0,"yap-lic-04-ui-states-and-buy":0,"yap-lic-05-site-privacy-copy":0,"yap-hx-done-check-by-main":1,"yap-hx-lanes1-skip-laneB-warm":1,"yap-hx-reviewers-reuse-target":1,"yap-hx-dependency-marker-scan":1,"yap-hx-test-build-repo-resolve":1,"yap-hx-flaky-timing-under-load":1,"yap-hx-fmt-clippy-debt":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -510,12 +507,97 @@ VERIFICATION THAT VERIFIES NOTHING — the whole catalogue. Read it before you c
  * build script does not re-run, so the same commands pass — the false green that made a measured
  * gate table necessary in the first place.
  *
- * fmt IS A GATE CONJUNCT NOW. The tree was swept (`cargo fmt --all`, 152 hunks / 21 files, listed
- * in .git-blame-ignore-revs) and `cargo fmt --all -- --check` exits 0 on main as of that commit.
+ * fmt IS ADVISORY, NOT A GATE CONJUNCT (audit 2026-10-26). The land gate once required fmt while main
+ * was red on it (65 hunks), so every PASS/PASS PR came back ci-red for the same command for two hours.
+ * Which command blocks is written down ONCE, in GATE_BLOCKING / GATE_ADVISORY below; the echo labels
+ * in GATE_CMDS must be exactly those names (stall-detector.test.mjs fails on drift either way), and
+ * recon, the land gate and the stall rules all read the same two arrays.
  * clippy is NOT run with `-- -D warnings`: a mechanical `cargo clippy --fix` sweep landed, and 16
  * lints survive it that need real refactors (very-complex-type, too-many-arguments, clamp-like
  * pattern, const assertions in tests). See PLAN.md's Panel revisions section.
  */
+const GATE_BLOCKING = ['typecheck','test','build','polish','diarize','stage','polishtest','diarizetest','clippy','cargotest']
+const GATE_ADVISORY = ['fmt']
+/** Sentinel the external monitor watches (scripts/loop/stall-alarm.sh). Only the orchestrator deletes it. */
+const STALL_FILE = '/Users/wilsonguenther/code/wilson-voice-loop/STALL.txt'
+
+/*
+ * THE STALL RULES (item yap-loop-stall-detector). The SOURCE is scripts/loop/stall.mjs; this is a
+ * byte-identical copy of its block (the generated workflow cannot import), checked by
+ * scripts/loop/stall-detector.test.mjs. Edit stall.mjs, then paste the block here.
+ */
+// STALL-RULES-BEGIN — byte-identical in scripts/loop/stall.mjs and scripts/loop/template.mjs
+/** An exit code is readable only as an integer (a number, or a string of digits from a text payload). */
+function exitCodeOf(v) {
+  if (typeof v === 'number' && Number.isInteger(v)) return v
+  if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v.trim())
+  return null
+}
+/** The first non-zero BLOCKING command in gateExits, in GATE_BLOCKING order, or null. */
+function firstBlockingRed(gateExits) {
+  if (!gateExits || typeof gateExits !== 'object') return null
+  for (const cmd of GATE_BLOCKING) {
+    const code = exitCodeOf(gateExits[cmd])
+    if (code !== null && code !== 0) return cmd
+  }
+  return null
+}
+/**
+ * Rule 1 input. landResult carries the fix-land status the harness already derived, plus whatever the
+ * LAND seat returned. For ci-red the reason is the failing BLOCKING command; otherwise the reason field.
+ */
+function stallReason(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  const status = typeof r.status === 'string' && r.status ? r.status : 'unknown'
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  if (status === 'ci-red') {
+    return { status, reason: firstBlockingRed(r.gateExits) || text(r.failingCommand) || text(r.reason) || 'unknown' }
+  }
+  return { status, reason: text(r.reason) || 'none' }
+}
+/** Rule 1. True when the most recent prior entry for the SAME pr has the same status and reason (never 'merged'). */
+function sameReasonTwice(history, next) {
+  if (!next || next.status === 'merged') return false
+  const list = Array.isArray(history) ? history : []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const h = list[i]
+    if (!h || String(h.pr) !== String(next.pr)) continue
+    return h.status === next.status && h.reason === next.reason
+  }
+  return false
+}
+/** Rule 2. Blocking non-zero -> red; blocking missing / non-integer -> unreadable (fail closed); advisory non-zero -> advisoryRed. */
+function gateRedOnMain(gateExits, blocking, advisory) {
+  const exits = gateExits && typeof gateExits === 'object' ? gateExits : {}
+  const red = []
+  const unreadable = []
+  const advisoryRed = []
+  for (const cmd of blocking || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code === null) unreadable.push(cmd)
+    else if (code !== 0) red.push(cmd)
+  }
+  for (const cmd of advisory || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code !== null && code !== 0) advisoryRed.push(cmd)
+  }
+  return { red, unreadable, advisoryRed }
+}
+/** Rule 3 input. A land outcome is a gate failure when it is ci-red or carries a non-zero BLOCKING exit. */
+function isGateFailure(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  return r.status === 'ci-red' || firstBlockingRed(r.gateExits) !== null
+}
+/** Rule 3. The LAST n land outcomes are n DISTINCT PRs, none merged, every one a gate failure. */
+function noProgress(results, n = 3) {
+  const list = Array.isArray(results) ? results : []
+  if (list.length < n) return false
+  const last = list.slice(-n)
+  if (new Set(last.map((r) => String(r && r.pr))).size !== n) return false
+  return last.every((r) => r && r.status !== 'merged' && r.gateFailure === true)
+}
+// STALL-RULES-END
+
 const GATE_CMDS = (dir, target) => `
     cd ${dir}/${APP} && export CARGO_TARGET_DIR=${target}
     npx tsc --noEmit ; echo "typecheck=$?"
@@ -526,10 +608,12 @@ const GATE_CMDS = (dir, target) => `
     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${target}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${target}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stage=$?"
     cargo test -p yap-polish --release ; echo "polishtest=$?"
     cargo test -p yap-diarize --release ; echo "diarizetest=$?"
-    cargo fmt --all -- --check ; echo "fmt=$?"
+    cargo fmt --all -- --check > ${target}/fmt-check.txt 2>&1 ; echo "fmt=$? (ADVISORY)" ; echo "fmtHunks=$(grep -c '^Diff in' ${target}/fmt-check.txt)"
     cd ${dir}/${APP}/src-tauri && cargo clippy --all-targets --features custom-protocol ; echo "clippy=$?"
     cd ${dir}/${APP}/src-tauri && cargo test --features custom-protocol ; echo "cargotest=$?"
-ALL ELEVEN MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+THE ${GATE_BLOCKING.length} BLOCKING COMMANDS (${GATE_BLOCKING.join(', ')}) MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+ADVISORY (${GATE_ADVISORY.join(', ')}): run it, report "fmt: advisory, <fmtHunks> hunks", and NEVER let its exit code
+fail the gate, earn ci-red, or block a merge. The drift is on main, not on the PR; do NOT reformat files the PR did not touch.
 BOTH SIDECARS ARE BUILT AND BOTH ARE STAGED, and that step comes BEFORE any cargo command against
 the app: bundle.externalBin makes binaries/yap-polish-<triple> AND binaries/yap-diarize-<triple>
 preconditions of every cargo build of wilson-voice. If a cargo command against the app dies with
@@ -619,8 +703,10 @@ OUTCOMES IN THIS MODE:
   - every command 0, sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
     "local-gate", and localGate: {sha, typecheck, test, build, polish, diarize, stage, polishtest,
     diarizetest, fmt, clippy, cargotest}.
-  - any command non-zero  -> this is a red gate. Fix it if this PR is yours to fix; otherwise label
-    ci-red, comment WHICH command failed with its failing output, and report status "ci-red".
+  - any BLOCKING command (${GATE_BLOCKING.join(', ')}) non-zero -> this is a red gate. Fix it if this PR is
+    yours to fix; otherwise label ci-red, comment WHICH command failed with its failing output, and report
+    status "ci-red" with failingCommand set to that command's name. An ADVISORY command (${GATE_ADVISORY.join(', ')})
+    that exits non-zero is reported, never a red gate.
     "The local gate failed" with no command name is not a triage.
   - CONFLICTING after your rebase -> label needs-rebase, status "needs-rebase".
 THERE IS NO "ci-pending" IN THIS MODE. Do not return it, do not poll, do not sleep, do not run
@@ -1439,6 +1525,13 @@ async function withAgents(n, fn) {
 let REVIEW_QUEUE = []
 let queueCursor = 0
 const reviewOutcomes = []
+/** STALL STATE (rules 1 and 3). Per-PR land history, every land outcome in completion order, the PRs
+ *  already loop-stalled, the no-progress flag reviewChain checks next to `halted`, and its one-shot guard. */
+const landHistory = new Map()
+const landResults = []
+const stalledPrs = new Set()
+let stalled = false
+let noProgressFired = false
 function takeNextPr() {
   if (queueCursor >= REVIEW_QUEUE.length) return null
   const entry = REVIEW_QUEUE[queueCursor]
@@ -1467,6 +1560,11 @@ async function reviewOnePr(entry, chain) {
   const klass = entry && entry.klass === 'security' ? 'security' : 'standard'
   const seats = klass === 'security' ? 2 : 1
   const facts = JSON.stringify(entry || {})
+  // RULE 1 (stall): a PR this pass already loop-stalled is never dispatched again — no reviewer, no land.
+  if (stalledPrs.has(pr)) {
+    log(`stall same-reason-twice skip pr=${pr} item=${itemId} — loop-stalled earlier in this pass; not dispatched again`)
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled' }
+  }
 
   const reReview = (round, prior) =>
     round === 0
@@ -1785,8 +1883,13 @@ it review-pending. Label it needs-human instead, comment the gate's line verbati
 "needs-human" with reviewGate set to that line.
 ${CI_GATE(dir, target)}
 
+THE LAND MARKER — on EVERY return except "merged", post exactly one comment whose body is ONE line:
+    gh pr comment -R ${REPO} ${pr} --body "loop-land: status=<the status you return> reason=<failingCommand for ci-red, else a one-word reason> head=<headRefOid>"
+Tokens only (no spaces inside a value). The next pass's triage reads it, and the stall rule compares it with
+that pass's land outcome: the same status and reason twice in a row stops the loop re-landing this PR.
+
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending"|"needs-human",
-         landed: true|false, reason, mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
+         landed: true|false, reason, failingCommand: "<the first non-zero BLOCKING command, for ci-red>", mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
          ciCheckConclusion}` : ''}
 
@@ -1799,6 +1902,14 @@ review:review-pending, review:needs-human or review:closed-superseded — and th
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 ${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
+  }
+  // RULE 1 ACROSS PASSES: a PR is landed once per pass, so this pass's history starts from the land
+  // outcome triage read off the PR's last "loop-land:" marker comment (same status + reason as the one
+  // about to come back -> loop-stalled, no third attempt next pass: triage holds the loop-stalled label).
+  if (!landHistory.has(pr) && entry && entry.lastLand && typeof entry.lastLand === 'object' && entry.lastLand.status) {
+    const prior = { pr, status: stallToken(entry.lastLand.status), reason: stallToken(entry.lastLand.reason || 'none') }
+    landHistory.set(pr, [prior])
+    log(`stall same-reason-twice seed pr=${pr} item=${itemId} prior_status=${prior.status} prior_reason=${prior.reason}`)
   }
   const land = await withAgents(1, () => agentR(fixLandPrompt('land', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
@@ -1818,6 +1929,26 @@ ${GUARD(dir)}`
     statusOf(/"status"\s*:\s*"ci-red"/i, 'ci-red') ||
     statusOf(/"status"\s*:\s*"needs-rebase"/i, 'needs-rebase') ||
     'ci-pending'
+  // RULE 1 — SAME REASON TWICE. The land outcome joins this PR's history; if the most recent prior
+  // entry for the SAME PR had the same status and reason, the next fix-land would fail the same way:
+  // record the stall once and move on. Never on 'merged'. Rule 3 reads landResults.
+  const landExits = gateExitsOf(land)
+  const why0 = stallReason({ ...objectOf(land), gateExits: landExits, status })
+  const nextLand = { pr, status: stallToken(why0.status), reason: stallToken(why0.reason) }
+  landResults.push({ pr, itemId, status, reason: nextLand.reason, gateFailure: isGateFailure({ status, gateExits: landExits }) })
+  const landHist = landHistory.get(pr) || []
+  const twice = sameReasonTwice(landHist, nextLand)
+  landHist.push(nextLand)
+  landHistory.set(pr, landHist)
+  if (twice) {
+    stalledPrs.add(pr)
+    const st = stallToken(nextLand.status)
+    const why = stallToken(nextLand.reason)
+    const line = `STALL pr=${pr} item=${stallToken(itemId)} status=${st} reason=${why}`
+    log(`${line} — the same land outcome twice in a row; no third fix-land, the chain moves to the next PR`)
+    await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 1, itemId: stallToken(itemId), pr, line, stage: 'review:needs-human', note: `STALL: ${why} (${st} twice in a row)`, comment: `loop-stalled: ${st} ${why} twice in a row`, sentinel: false }), { model: 'opus', effort: 'low', phase: itemId, label: `stall-writer:${itemId}` }))
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled', reason: nextLand.reason, blocked, verdicts, land }
+  }
   log(`PR#${pr} (${itemId}, ${klass}, chain ${REVIEW_TAGS[chain]}): ${blocked ? `BLOCKED, ${round} fix round(s), re-reviewed PASS` : 'PASS'} -> ${status}`)
   return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status, blocked, verdicts, land }
 }
@@ -1844,11 +1975,26 @@ async function reviewOnePrSafe(entry, chain) {
 async function reviewChain(chain) {
   for (;;) {
     if (halted) break
+    if (stalled) break
     const entry = takeNextPr()
     if (entry === null) break
-    reviewOutcomes.push(await reviewOnePrSafe(entry, chain))
+    const outcome = await reviewOnePrSafe(entry, chain)
+    reviewOutcomes.push(outcome)
+    // RULE 3 — NO PROGRESS. The last 3 land outcomes were gate failures on 3 distinct PRs and none
+    // merged: the gate is what is broken, not the PRs. Stop pulling; the sweeper and verify still run.
+    if (!stalled && noProgress(landResults, 3)) {
+      stalled = true
+      if (!noProgressFired) {
+        noProgressFired = true
+        const last = landResults.slice(-3).map((r) => `${r.pr}:${stallToken(r.reason)}`).join(', ')
+        const line = `STALL no-progress: last 3 land results were gate failures: ${last}`
+        log(`stall no-progress HALT-REVIEW chain=${REVIEW_TAGS[chain]} — ${line}. The review barrier stops pulling PRs; sweeper and main-verify still run.`)
+        const stallItem = stallToken((outcome && outcome.itemId) || `PR-${(entry && (entry.pr || entry.number)) || '?'}`)
+        await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 3, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }), { model: 'opus', effort: 'low', phase: stallItem, label: 'stall-writer:_stall' }))
+      }
+    }
   }
-  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): drained the queue`)
+  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): ${stalled ? 'STOPPED by the no-progress stall rule' : 'drained the queue'}`)
 }
 /* ══ REVIEW CHAIN REGION END ═══════════════════════════════════════════════════════════════ */
 
@@ -1894,6 +2040,166 @@ async function runBuildSafe(item, lane) {
 // PREVIEW_PORT, PREVIEW_PORT_B, LOG, TELEMETRY, NPM_CACHE, STATUS_BOARD — and nothing else
 // (build.mjs fails the build on any other ${IDENT} in an item file).
 const ITEMS = []
+// ── 07b-yap-walk-defects-2026-10-19.mjs ───────────────────────────────────
+// yap-walk-defects-2026-10-19 — the defects the live walk of main 3569ce4 + installed 0.9.1 found
+// (Projects/Loop-Logs/yap-live-walk-2026-10-19.md, seat yap-live-walk, 03:14Z-03:22Z). Sorted after
+// 07-yap-p0-broken so this lane runs after the P0 lane. D1 (Carbon chord deadlock), D4 (capture tail)
+// and D6 (RSS) are fixed or answered in PR fix/chord-deadlock-and-take-length, not here.
+//
+// HAZARD (same as 07): no seat launches the GUI app, posts events into, signals or quits Wilson's
+// running /Applications/Yap.app, or writes TCC on this machine. Every automated proof is a cargo test,
+// a vitest, or a script self-test. SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+// NO GUESSING: the root-cause probe goes into the PR body under "Root cause, proven" AND into
+// docs/loop/evidence/<item id>.md, first line exactly "ROOT-CAUSE-PROBE <item id>".
+
+ITEMS.push({
+  id: 'yap-qa-hotkey-walk-binding', prompt: 'yap-qa-hotkey-walk-binding', branch: 'loop/yap-qa-hotkey-walk-configured-chord', gated: null,
+  title: 'hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding\'s modifier',
+  preflight: `
+    grep -q 'pttBinding' scripts/qa/hotkey-walk.sh && grep -q -- '--dev-build' scripts/qa/hotkey-walk.sh && grep -q 'FN_WITHOUT_MODIFIER_HINT' desktop/src-tauri/src/ptt_macos.rs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D2, P1).
+    Root cause (walk): scripts/qa/fn-post.swift "down" sets only maskSecondaryFn and HOLD_STEPS in
+    scripts/qa/hotkey-walk.sh assumes binding "fn"; Wilson's binding (and the default) is
+    pttBinding: "fn_control", so the walk's fn-only post never matches and the walk FAILS on a
+    working app. Product side: the UI says "Hold fn⌃"; a user holding fn alone gets nothing and no
+    reason.
+    DO 1 — hotkey-walk.sh reads pttBinding from Yap's settings.json (same data dir the app uses;
+    --settings <path> override for tests) and posts the matching chord through fn-post.swift (ctrl
+    down, then fn down; release in reverse). Unknown binding -> refuse with a named error, post
+    nothing. --self-test covers fn, fn_control and an unknown value against fixture settings files
+    and prints one line per case "binding=<value> chord=<keys>".
+    DO 2 — --dev-build flag for an unbundled dev binary (matches the process by its target path
+    instead of the bundle), replacing the YAP_QA_FAKE_PIDS workaround for live dev walks
+    (YAP_QA_FAKE_PIDS stays self-test-only).
+    DO 3 — ptt_macos: when fn goes down and up (or is held > 400 ms) WITHOUT the binding's modifier,
+    emit one hint event (constant FN_WITHOUT_MODIFIER_HINT, e.g. "Hold fn⌃ — fn alone does nothing
+    with this binding"), throttled to once per 30 s, shown on the pill. Pure decision function
+    fn_hint_due(binding, fn_down, ctrl_down, held_ms, last_hint_ms, now_ms) -> bool with unit tests.
+  `,
+  acceptance: `
+    bash scripts/qa/hotkey-walk.sh --self-test > desktop/target/qa-walk-binding.txt 2>&1
+    grep -q '^binding=fn_control chord=ctrl+fn$' desktop/target/qa-walk-binding.txt
+    grep -q '^binding=fn chord=fn$' desktop/target/qa-walk-binding.txt
+    grep -q 'unknown binding' desktop/target/qa-walk-binding.txt
+    shellcheck scripts/qa/hotkey-walk.sh
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib fn_hint_due) > desktop/target/qa-fn-hint.txt 2>&1
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-fn-hint.txt
+    test -s docs/loop/evidence/yap-qa-hotkey-walk-binding.md
+    head -1 docs/loop/evidence/yap-qa-hotkey-walk-binding.md | grep -qx 'ROOT-CAUSE-PROBE yap-qa-hotkey-walk-binding'
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-lic-00-kill-forge-fetch', prompt: 'yap-lic-00-kill-forge-fetch', branch: 'loop/yap-lic-00-kill-forge-revocation-fetch', gated: null,
+  title: 'SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands',
+  preflight: `
+    ! git grep -qnE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs && ! git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs && ! grep -qiE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
+  `,
+  spec: `
+    Panel: not required — FIX, class SECURITY (walk D3; supersedes the earlier yap-license-revocation-dead-host
+    draft). Spec source: Projects/Yap/licensing-migration-plan-2026-10-19.md "## Items (draft, not yet filed)"
+    -> yap-lic-00.
+    Root cause (walk yap.log 2026-10-19T03:19:57Z): "license: revocation refresh skipped (error sending request
+    for url (https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json))". Every launch (and every activation)
+    sends a GET to the decommissioned Forge box: license.rs ISSUER_HOST / REVOCATION_URL (:151-156) and the
+    fetch at :1467-1479; callers lib.rs spawn_revocation_refresh (:5672 in activate_license, :5724-5736 the fn,
+    :6891-6895 at launch). A dead sslip.io name that anybody can later answer for is a licensing input the app
+    trusts — security class, not cosmetics.
+    DO — remove REVOCATION_URL, ISSUER_HOST, fetch_revocations and spawn_revocation_refresh and both call
+    sites. NO replacement endpoint: licensing moves to the consulting app's existing /api/v1/licensing (sibling repo) in later
+    items yap-lic-01..06 — do NOT implement any of those here. Keep READING any cached revoked_kids, so an
+    install that has a cached list behaves exactly as before. Local licence verification (Ed25519 claims,
+    trial, grace) is unchanged. Remove the host from every config and doc mention, and correct
+    docs/ARCHITECTURE-AUDIT-2026-09-26.md §9 ("harmless no-op" was wrong: it was a live GET every launch).
+    PRIVACY.md (repo root, outside the grep scope above, so it is named here): delete list item 3 "The
+    revocation check" from "The only times Yap uses the network" — the list becomes the model download and
+    the update check, TWO calls — and say plainly that the licensing path makes no network call: a licence
+    is verified on the Mac against the compiled-in public key. The acceptance refuses PRIVACY.md text
+    matching revocation (check|list|refresh|download) or "refunded or charged back", so do not phrase the
+    removal as "no longer downloads a revocation list". PRIV-A (30-y6) pins the same two call sites.
+    Legitimate unrelated "forge" words stay: forget/forged/forgeable, and the issuer-repo citations
+    "drivia-forge" and the signing-key path.
+    Tests: (1) launch_license_init_makes_no_network_call — the launch-time licence init takes an injected
+    transport/client; a recording fake asserts zero requests across init + status + a cached revoked_kids load.
+    (2) license_rs_has_no_http_client — reads license.rs via include_str! and fails on "sslip.io", "reqwest",
+    "ureq" or "http://"/"https://" outside the PAYMENT_LINK_URL constant. (3) existing licence tests green.
+    Can ship alone in the next release.
+  `,
+  acceptance: `
+    ! git grep -nE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs
+    ! git grep -nE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src desktop/src
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib license) > desktop/target/qa-lic00.txt 2>&1
+    grep -q 'launch_license_init_makes_no_network_call ... ok' desktop/target/qa-lic00.txt
+    grep -q 'license_rs_has_no_http_client ... ok' desktop/target/qa-lic00.txt
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-lic00.txt
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_gate)
+    ! grep -niE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
+    test -s docs/loop/evidence/yap-lic-00-kill-forge-fetch.md
+    head -1 docs/loop/evidence/yap-lic-00-kill-forge-fetch.md | grep -qx 'ROOT-CAUSE-PROBE yap-lic-00-kill-forge-fetch'
+    (cd desktop && npm run loop:validate)
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-dev-perm-probe-attribution', prompt: 'yap-dev-perm-probe-attribution', branch: 'loop/yap-dev-perm-probe-host-terminal', gated: null,
+  title: 'A dev build\'s permission probe says "dev build: permissions are the host terminal\'s" instead of showing the launching terminal\'s TCC grants as Yap\'s green rows',
+  preflight: `
+    grep -q 'pub fn running_as_bundle' desktop/src-tauri/src/perm_probe.rs && grep -q 'DevHostAttributed' desktop/src-tauri/src/perm_probe.rs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D5, P2).
+    Root cause (walk step 2c): the dev binary is ad hoc signed and unbundled, so TCC attributes it to
+    the RESPONSIBLE process (the launching terminal) and answered accessibility=true
+    input_monitoring=true — the terminal's grants, shown as Yap's.
+    DO — perm_probe gets pub fn running_as_bundle(exe_path, bundle_id_of_main_bundle,
+    code_signature) -> bool (pure, unit-tested: /Applications/Yap.app/Contents/MacOS/wilson-voice with
+    the Developer ID -> true; desktop/target/debug/wilson-voice ad hoc -> false). When false,
+    probe_all marks every service ProbeState::DevHostAttributed (new variant) and the Permissions
+    screen shows ONE line "dev build: permissions are the host terminal's" with no green rows and no
+    Repair button (Repair would reset the wrong identity). The installed build is unchanged.
+    Frontend: a vitest for the Permissions screen rendering DevHostAttributed.
+  `,
+  acceptance: `
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib running_as_bundle) > desktop/target/qa-dev-attrib.txt 2>&1
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-dev-attrib.txt
+    grep -rq "dev build: permissions are the host terminal's" desktop/src
+    (cd desktop && npx vitest run --reporter=dot) 
+    test -s docs/loop/evidence/yap-dev-perm-probe-attribution.md
+    head -1 docs/loop/evidence/yap-dev-perm-probe-attribution.md | grep -qx 'ROOT-CAUSE-PROBE yap-dev-perm-probe-attribution'
+  `,
+})
+
+ITEMS.push({
+  id: 'loop-dependency-marker-stdout-only', prompt: 'loop-dependency-marker-stdout-only', branch: 'loop/harness-dependency-marker-executed-output-only', gated: null,
+  title: 'The harness\'s dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat\'s JSON',
+  preflight: `
+    grep -q 'dependencyMarkerPrinted' scripts/loop/template.mjs && grep -q 'dependencyMarkerPrinted' scripts/loop/dependency-marker.test.mjs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D7, harness).
+    Root cause: on main 3569ce4 the harness recorded yap-p0-perm-repair as "skipped: dependency not
+    on main" although #228 is merged and its preflight passed. Every item preflight already assembles
+    the marker at run time ("DEPENDENCY-NOT-ON-$(printf MAIN)"; build.mjs now REFUSES a literal one),
+    but template.mjs runBuild tests /DEPENDENCY-NOT-ON-MAIN/ against asText(pre) — the WHOLE runner
+    result JSON, including any free text the seat wrote (a note such as "no DEPENDENCY-NOT-ON-MAIN
+    printed" trips it). Prove which field carried it from that run's log before changing code.
+    DO — export a pure dependencyMarkerPrinted(pre) that looks only at the executed commands' captured
+    stdout and matches /^DEPENDENCY-NOT-ON-MAIN:/m, and use it in runBuild. Tests (node --test, in
+    review-gate.test.mjs or a sibling): marker line in stdout -> true; marker only in a notes/summary
+    field -> false; marker text inside the echoed command string -> false.
+  `,
+  acceptance: `
+    grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs
+    ! grep -q '/DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))' scripts/loop/template.mjs
+    mkdir -p desktop/target && node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-dep-marker.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-dep-marker.txt
+    grep -Eq '^# pass [1-9][0-9]*$' desktop/target/qa-dep-marker.txt
+    (cd desktop && npm run loop:build && npm run loop:validate)
+  `,
+})
+
 // ── 07c-yap-licensing-2026-10-19.mjs ──────────────────────────────────────
 // yap-licensing-2026-10-19 — Yap becomes a client of the drivia[.]consulting licensing API (database #2). Filed 2026-10-19 by seat
 // file-license-items from ~/Obsidian/Wilson-Brain/Projects/Yap/licensing-migration-plan-2026-10-19.md ("## Items", "## Wilson's
@@ -4778,582 +5084,6 @@ ITEMS.push({
   `,
 })
 
-// ── 15-y3-long-dictations.mjs ─────────────────────────────────────────────
-// Y3 — LONG DICTATIONS. Wilson, 2026-09-12, verbatim: "no handling for long
-// dictations."
-//
-// AUDIT — the dictation path is one-shot from end to end. There is no chunking,
-// no streaming, no memory bound, no progress, and a hard wall at 120 seconds of
-// DECODE that silently kills the whole take:
-//
-//   src-tauri/src/transcription.rs:54
-//     pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
-//   its own doc, :51-53: "Way above any real clip (a 60 s take is ~1 s on
-//   Metal) — this exists only so a wedged native call surfaces as an error".
-//   That reasoning holds for a 60 s take and fails for a 15 minute one.
-//
-//   src-tauri/src/lib.rs:1350   manager.transcribe(samples, language, bias_prompt)
-//     ONE call, the ENTIRE take's samples, no windowing.
-//
-//   src-tauri/src/record.rs:2368  self.mono.extend_from_slice(interleaved)
-//   src-tauri/src/record.rs:2377  self.raw.extend_from_slice(&self.mono)
-//     TWO unbounded Vec<f32> for the whole take. At 48 kHz stereo a 15-minute
-//     dictation is ~345 MB in `raw` alone before the 16 kHz downsample, and
-//     both live until finalize_take (record.rs:2445).
-//
-//   src-tauri/src/polish.rs:73
-//     const MAX_POLISH_WORDS: usize = 400;
-//   its own doc, :71-72: "Long-form is rules-only: chunking is a later item,
-//   and a single pass over 400+ words cannot hold the deadline". That later
-//   item is THIS one. A long dictation gets no formatting at all, which is the
-//   other half of Wilson's formatting complaint.
-//
-// THE MACHINERY ALREADY EXISTS — for MEETINGS, not for dictation:
-//   meeting_asr.rs + transcription.rs chunk geometry, MAX_SANCTIONED_CHUNK_DECODE_SECONDS
-//   (transcription.rs:101), seam dedupe via max_timestamp_kind (asr_engine.rs:382),
-//   rtring.rs (YV91 lock-free SPSC ring, whose doc at rtring.rs:6-10 says in as
-//   many words: "A five-second dictation never exposes that. Three continuous
-//   hours on a meeting ... does"), the capture journal + recovery dir (YV63),
-//   and asr_engine.rs:130 which "cancels a meeting chunk whenever a dictation
-//   wants the engine".
-//   Y3 is largely a REUSE job, not an invention job. Anything Y3 builds that
-//   meeting_asr.rs already does is a defect in Y3.
-//
-// Wispr's comparable number, for calibration: max session length 20 min, raised
-// from 5 (reference_wispr_parity_research §2.1 [OFFICIAL]).
-//
-// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y3-A', prompt: 'Y3', branch: 'loop/y3-a-bounded-capture-spill-to-disk', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #170) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling',
-  preflight: `
-    test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"
-    grep -q 'SpillWriter\\|spill_to_disk' desktop/src-tauri/src/record.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test dictation_capture_memory
-  `,
-  spec: `
-    MEASURED: \`record.rs:2280-2284\` holds \`out\`, \`raw\` and \`mono\` as
-    \`Vec<f32>\`; \`:2368\` appends every interleaved callback to \`mono\` and
-    \`:2377\` appends \`mono\` to \`raw\`. Nothing bounds either. \`finalize_take\`
-    (:2445) then takes the whole thing by value.
-
-    There is already a proven pattern in this repo for exactly this problem and
-    it must be reused rather than re-derived: \`tests/meeting_capture_memory.rs\`
-    asserts a memory ceiling for the meeting path, and \`rtring.rs\` is the
-    real-time-safe hand-off built once "so 22-B reuses it verbatim rather than
-    growing a second copy" (rtring.rs:16-18). Dictation is now the third
-    consumer.
-
-    Do:
-      * The capture consumer writes finalized PCM to the take's WAV incrementally
-        (a \`SpillWriter\` over the existing \`recordings\` dir path, which
-        \`start_recording\` already passes in at lib.rs:1142) and keeps only a
-        bounded working window in RAM.
-      * Ceiling: a named constant \`MAX_RESIDENT_CAPTURE_BYTES\`, set so that a
-        take of ANY length holds under ~32 MB resident for the audio buffers.
-        Pick the window from the DSP's actual lookahead needs (high_pass,
-        normalize_rms, denoise all operate blockwise — read record.rs:2483-2600
-        and size the window to the largest true dependency, then say the number
-        in the doc comment).
-      * \`finalize_take\` reads back from the spill instead of taking a giant Vec.
-        \`read_wav_16k_mono\` (record.rs:826) already exists for the read side.
-      * RNNoise denoise (\`denoise: true\` is the shipped default, lib.rs:419)
-        must still run, blockwise, with identical output on a short clip. That is
-        the regression that would be easy to miss: assert byte-identical output
-        against today's path for the existing fixture
-        \`tests/fixtures/quick-brown-fox-16k.wav\`.
-      * The capture journal (YV63) and recovery dir keep working unchanged — a
-        take that dies mid-spill must still be recoverable, and a spilled WAV is
-        strictly easier to recover than a lost Vec.
-
-    Tests \`tests/dictation_capture_memory.rs\`:
-      * \`resident_bytes_are_bounded_across_a_synthetic_twenty_minute_take\` —
-        feed 20 minutes of generated frames through the consumer and assert peak
-        resident buffer bytes < MAX_RESIDENT_CAPTURE_BYTES. Model it on
-        meeting_capture_memory.rs so the two agree on how "resident" is counted.
-      * \`short_take_output_is_byte_identical_to_the_pre_spill_path\` — against
-        the committed fixture WAV.
-      * \`spill_survives_a_mid_take_abort_and_lands_in_the_recovery_dir\`.
-      * \`the_audio_callback_still_never_allocates\` — reuse the assertion shape
-        from tests/meeting_capture_rt_safety.rs; do not write a second one.
-
-    What NOT to do:
-      - Do NOT move DSP into the audio callback to avoid buffering. rtring.rs's
-        entire premise is that the callback copies and returns.
-      - Do NOT change the WAV format or sample rate on disk. Other code reads it.
-      - Do NOT bound by TRUNCATING audio. Dropping the end of a long dictation
-        is the bug, not the fix.
-  `,
-  acceptance: `
-    test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"   # 0 (was 1)
-    grep -q 'MAX_RESIDENT_CAPTURE_BYTES' desktop/src-tauri/src/record.rs
-    test -f desktop/src-tauri/tests/dictation_capture_memory.rs
-    grep -q 'resident_bytes_are_bounded_across_a_synthetic_twenty_minute_take' desktop/src-tauri/tests/dictation_capture_memory.rs
-    grep -q 'short_take_output_is_byte_identical_to_the_pre_spill_path' desktop/src-tauri/tests/dictation_capture_memory.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test dictation_capture_memory ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_capture_memory   ; test $? -eq 0
-    cargo test --features custom-protocol --test capture_journal_recovery ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_capture_rt_safety; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y3-B', prompt: 'Y3', branch: 'loop/y3-b-chunked-decode-for-the-dictation-path', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #172) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call',
-  preflight: `
-    grep -q 'chunk' desktop/src-tauri/src/lib.rs
-    grep -q 'DICTATION_CHUNK' desktop/src-tauri/src/transcription.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test dictation_chunked
-  `,
-  spec: `
-    MEASURED: \`lib.rs:1350\` is \`manager.transcribe(samples, language,
-    bias_prompt)\` — the whole take, one call — under
-    \`TRANSCRIBE_TIMEOUT = 120s\` (transcription.rs:54). Whisper decode is
-    roughly real-time-divided-by-N on Metal; the 120 s wall is generous for a
-    minute of speech and fatal somewhere in the multi-minute range, and when it
-    trips the user loses the ENTIRE take. There is no partial result to keep.
-
-    Reuse, do not rebuild. Read these first and extract the shared piece:
-      transcription.rs:86-110  the chunk-decode budget and
-                               MAX_SANCTIONED_CHUNK_DECODE_SECONDS (:101) with
-                               its own warning that "the two constants
-                               disagreeing is precisely how a legal 37 s chunk
-                               could ..." — read that comment in full.
-      asr_engine.rs:382-394    max_timestamp_kind / max_audio_ms — "is there an
-                               alignment to dedupe seams with at all?" and "is a
-                               35 s window ..." This is the seam machinery.
-      asr_engine.rs:221-236    Shift onto another timeline (a chunk's own start).
-      meeting_asr.rs           the working chunker.
-
-    Do:
-      * Factor the chunk geometry + seam dedupe out of the meeting path into a
-        module both callers use. If meeting_asr.rs's chunker is already
-        general, call it; if it is entangled with meeting state, extract the
-        pure part. Either way the outcome is ONE chunker with one set of tests.
-      * Dictation decodes in windows with overlap, deduping at seams by
-        timestamp when \`max_timestamp_kind\` supports it and by longest-common-
-        suffix/prefix when it does not — and when NEITHER is available, it must
-        fail loudly rather than silently double a phrase at every seam.
-      * \`TRANSCRIBE_TIMEOUT\` becomes per-CHUNK, not per-take, so a long take has
-        no wall at all. Keep a separate, generous whole-take deadline so a truly
-        wedged engine still surfaces; derive it from chunk count so it scales.
-      * Partial results are kept: if chunk 9 of 12 fails, the take returns the
-        first 8 chunks' text, marks the take degraded, and preserves the clip in
-        the recovery dir for a retry (the retry path exists — lib.rs:6230, YV66).
-        Losing 11 minutes because minute 12 failed is the behaviour being deleted.
-      * Short takes must take a byte-identical path to today. The single-window
-        case has to produce the same bytes, or every formatting fixture and the
-        YV66 hallucination-gate corpus shift under us for no reason.
-
-    Tests \`tests/dictation_chunked.rs\`:
-      * \`single_window_take_is_byte_identical_to_the_unchunked_path\` (fixture WAV).
-      * \`seams_do_not_duplicate_or_drop_words\` — synthesize a known sentence
-        stream across a seam and assert exact text.
-      * \`a_failed_middle_chunk_keeps_the_earlier_chunks\`
-      * \`per_chunk_deadline_not_per_take\` — assert a 12-chunk take is not
-        subject to a 120 s total.
-      * \`chunker_has_exactly_one_implementation\` — a call-site sweep asserting
-        meeting and dictation resolve to the same function.
-      * Keep \`tests/matrix_new_asr_chunk_timeout.rs\` green; it already covers
-        the meeting side of a chunk timeout and must not regress.
-
-    Depends on Y3-A (a spilled WAV is what the chunker reads).
-
-    What NOT to do:
-      - Do NOT fix this by raising TRANSCRIBE_TIMEOUT. A bigger wall is still a
-        wall, and a 15-minute single-window decode also blows the memory ceiling
-        Y3-A just established.
-      - Do NOT let dictation chunks contend with a meeting for the engine.
-        asr_engine.rs:130 already makes dictation PREEMPT meetings; preserve that
-        priority and keep tests/meeting_dictation_preempts_transcription.rs green.
-    PANEL 2026-09-12 — the cliff that justifies this item is not where the audit
-    put it, so the scope narrows. MEASURED: a 601-second WAV (241x the
-    quick-brown-fox fixture, 16 kHz mono) through the shipped headless path —
-    \`./target/debug/wilson-voice --transcribe-file <601s.wav>\` — returned exit
-    0 in 30.5 s with ~1,900 words. That is ~20x real time INCLUDING model load,
-    consistent with the repo's own note (transcription.rs:51-54, "a 60 s take is
-    ~1 s on Metal"), which puts the 120 s TRANSCRIBE_TIMEOUT near 45 minutes of
-    audio, not four. What actually broke at ten minutes is what the plan ranked
-    lower: 1,900 words arriving as one unbroken block (no paragraph rule, no
-    polish past 400 words), with no progress and no cancel.
-      * KEEP the narrow, high-value half: TRANSCRIBE_TIMEOUT becomes PER-CHUNK,
-        and a trip keeps the chunks already decoded instead of losing the take.
-      * Put the measurement in the pre-flight: a timed long-WAV decode row with
-        the observed real-time factor, written to docs/BUDGETS.md, so Y3-F's
-        declared maximum session length is derived from a number somebody took.
-      * Refactoring the WORKING meeting chunker into a shared module is the one
-        change in this lane that can regress a shipped subsystem. Do it only as
-        far as the per-chunk timeout and the seam dedupe require, and say in the
-        PR body what the meeting path's behaviour was before and after.
-      * Y3-A (the 345 MB ceiling), Y4-C (paragraphing, rules-only) and
-        Y3-C/Y3-D (progress and cancel) are what a ten-minute take needs; this
-        item must not block them.
-
-  `,
-  acceptance: `
-    grep -q 'DICTATION_CHUNK' desktop/src-tauri/src/transcription.rs
-    test -f desktop/src-tauri/tests/dictation_chunked.rs
-    grep -q 'single_window_take_is_byte_identical_to_the_unchunked_path' desktop/src-tauri/tests/dictation_chunked.rs
-    grep -q 'seams_do_not_duplicate_or_drop_words' desktop/src-tauri/tests/dictation_chunked.rs
-    grep -q 'a_failed_middle_chunk_keeps_the_earlier_chunks' desktop/src-tauri/tests/dictation_chunked.rs
-    grep -q 'chunker_has_exactly_one_implementation' desktop/src-tauri/tests/dictation_chunked.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test dictation_chunked                          ; test $? -eq 0
-    cargo test --features custom-protocol --test matrix_new_asr_chunk_timeout               ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_dictation_preempts_transcription   ; test $? -eq 0
-    cargo test --features custom-protocol --test formatting_fixtures                        ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y3-C', prompt: 'Y3', branch: 'loop/y3-c-long-take-progress-in-the-pill', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #174) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'The pill reports real progress on a long take instead of an honest-looking lie',
-  preflight: `
-    grep -q '"transcribing"' desktop/src/pill/live.ts
-    grep -q 'transcribe_progress' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && npm test -- pill/live
-  `,
-  spec: `
-    Two separate honesty problems, both already named by Wilson.
-
-    (1) THE ESCALATION IS A TIMER. project_yap_open_bugs BUG 2, resolved as
-    YV17 but only partly: "the pill's live escalation was TIMER-based, not real
-    word/sentence tracking ... it 'just moves along' regardless of what's
-    actually said. Wilson wants it to react to ACTUAL words/sentences." The
-    machinery still estimates: \`live.ts:44\`
-    \`wordsFromVoiced = (voicedSec) => voicedSec * WORDS_PER_SEC\`, and
-    \`liveTierForWords\` (:46) drives quick|notes|desk|essay|saga off that
-    estimate. On a 10-minute take the estimate's error is enormous and the
-    persona it promises is unearned. Y3-B's chunker gives the first real fix
-    available: each completed chunk yields REAL text and a REAL word count
-    mid-take. Feed it.
-
-    (2) THERE IS NO PROGRESS AT ALL AFTER THE HOLD ENDS. ClassicPill.tsx tracks
-    \`{recording, busy, message}\`; \`busy\` is a boolean. A 15-minute take
-    decoding across 12 chunks shows the same undifferentiated busy state for
-    minutes. project_yap_pill_vision names this exactly: "fill the dead time
-    after talking stops and before text appears (transcribe/think gap)".
-
-    Do:
-      * Rust emits \`transcribe_progress { chunk, of, words_so_far }\` per
-        completed chunk from Y3-B's loop. No timer, no interpolation — only real
-        completions. Emit nothing for a single-window take (a short take has no
-        progress to report and a flicker of 1/1 is worse than silence).
-      * \`LivePhase\` gains \`"transcribing"\` as a first-class phase distinct from
-        \`thinking\` (which is the polish/LLM gap), and carries
-        \`{ chunk, of, wordsSoFar }\`.
-      * Both pills render it: a determinate fill, the numeral in Departure Mono,
-        and — this is the character beat — Yappy's live commentary escalates on
-        \`wordsSoFar\` from real chunks instead of \`wordsFromVoiced\`. Keep
-        \`wordsFromVoiced\` for the LISTENING phase only, where nothing better
-        exists, and mark it in its doc comment as an estimate that the
-        transcribing phase must not use.
-      * Cap the claim: for a take still recording, the pill must never state a
-        word count as fact. "Listening" states may be playful; numeric states
-        may not be wrong.
-
-    Tests in \`desktop/src/pill/live.test.ts\`:
-      * \`transcribing_uses_real_chunk_words_not_the_voiced_estimate\`
-      * \`single_window_take_emits_no_progress_phase\`
-      * \`progress_is_monotonic_and_never_exceeds_of\`
-      * \`listening_tier_still_uses_the_estimate\` (the deliberate exception).
-    Rust: \`tests/transcribe_progress_events.rs\` — one event per completed
-    chunk, zero for a single window, and none after the take ends.
-
-    Depends on Y3-B.
-
-    PR body owes a capture of the transcribing phase at 3/12 in both pill styles
-    and at all three dock positions.
-
-    What NOT to do:
-      - Do NOT show an indeterminate spinner for a chunked take. The whole point
-        is that the count is now knowable.
-      - Do NOT interpolate progress between chunk completions to make the bar
-        smooth. A smooth bar that is lying is the defect being removed.
-  `,
-  acceptance: `
-    grep -q '"transcribing"' desktop/src/pill/live.ts
-    grep -q 'transcribe_progress' desktop/src-tauri/src/lib.rs
-    grep -q 'transcribing_uses_real_chunk_words_not_the_voiced_estimate' desktop/src/pill/live.test.ts
-    grep -q 'single_window_take_emits_no_progress_phase' desktop/src/pill/live.test.ts
-    grep -q 'progress_is_monotonic_and_never_exceeds_of' desktop/src/pill/live.test.ts
-    test -f desktop/src-tauri/tests/transcribe_progress_events.rs
-    cd ${APP} && npm ci
-    npm test -- pill ; test $? -eq 0
-    cd src-tauri && cargo test --features custom-protocol --test transcribe_progress_events ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y3-D', prompt: 'Y3', branch: 'loop/y3-d-cancel-a-long-take-at-any-stage', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #176) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio',
-  preflight: `
-    grep -q 'CANCEL' desktop/src-tauri/src/shortcuts.rs
-    grep -q 'cancel_transcription' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test cancel_long_take
-  `,
-  spec: `
-    \`cancel_recording\` exists (referenced at lib.rs:478: "cleared by
-    \`cancel_recording\`") and stops a RECORDING. Once the hold ends and decode
-    starts, there is nothing to press: a 15-minute take that the user
-    immediately regrets occupies the engine to completion. And there is no
-    cancel HOTKEY at all — \`shortcuts.rs:143 ALL\` is
-    PASTE_LAST, UNDO_AI_EDIT, DICTATION_TOGGLE_LEGACY, MEETING_TOGGLE.
-    Wispr ships a dedicated rebindable cancel key
-    (reference_wispr_parity_research §2.1 [BUNDLE]
-    \`settings_hotkey_dialog_cancel_*\`, listed as ❌ for Yap).
-
-    Do:
-      * \`shortcuts::CANCEL\` — a new Binding in the existing table (the table
-        exists so bindings are declared once; shortcuts.rs:3-8 explains why).
-        Default: Escape while a take is active, rebindable through the YV15
-        capture control. It must not register a global Escape that eats Escape
-        from every app: bind it only while a take is in flight, or scope it to
-        the pill's own window plus a take-active global. State which and why.
-      * \`cancel_transcription\`: cooperative cancellation checked at every chunk
-        boundary in Y3-B's loop, plus the existing engine-cancel path
-        (transcription.rs already has one — \`PREEMPTED_FOR_DICTATION\` :68 and
-        \`ABANDONED_FOR_EXIT\` :84 prove chunk decode is already cancellable;
-        reuse that mechanism, add a third reason \`CANCELLED_BY_USER\`).
-      * A cancel NEVER deletes the clip. It parks it in the recovery dir with
-        the same 7-day purge lifecycle (YV52/YV63) so "actually, transcribe that"
-        is possible from History. A cancel that destroys 15 minutes of audio is
-        a worse bug than the one being fixed.
-      * A cancel pastes NOTHING and writes no transcript row. Assert both.
-      * The pill shows a cancelled state that settles to idle — not an error.
-
-    Tests \`tests/cancel_long_take.rs\`:
-      * \`cancel_mid_recording_writes_no_row_and_pastes_nothing\`
-      * \`cancel_mid_decode_stops_at_the_next_chunk_boundary\`
-      * \`cancelled_clip_lands_in_the_recovery_dir\`
-      * \`cancel_reason_is_distinguishable_from_preempted_and_abandoned\` — three
-        distinct constants; a string compared against a literal in another
-        module is the bug transcription.rs:74-77 already warns about.
-      * \`escape_is_not_a_global_shortcut_while_idle\`
-
-    Depends on Y3-B.
-
-    What NOT to do:
-      - Do NOT implement cancel by killing the engine process. The engine is
-        in-process and shared with meetings; killing it takes a meeting down.
-      - Do NOT reuse PREEMPTED_FOR_DICTATION as the cancel reason.
-  `,
-  acceptance: `
-    grep -q 'pub const CANCEL' desktop/src-tauri/src/shortcuts.rs
-    grep -q 'CANCELLED_BY_USER' desktop/src-tauri/src/transcription.rs
-    grep -q 'fn cancel_transcription' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/cancel_long_take.rs
-    grep -q 'cancelled_clip_lands_in_the_recovery_dir' desktop/src-tauri/tests/cancel_long_take.rs
-    grep -q 'cancel_reason_is_distinguishable_from_preempted_and_abandoned' desktop/src-tauri/tests/cancel_long_take.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test cancel_long_take        ; test $? -eq 0
-    cargo test --features custom-protocol --test tray_hotkey_no_collision; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'DB-B', prompt: 'Y3', branch: 'loop/db-b-crash-recovery-for-a-long-take', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #178 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch',
-  preflight: `
-    grep -q 'resume_take\\|recover_dictation' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test long_take_recovery
-  `,
-  spec: `
-    The pieces exist and are not connected for the dictation path:
-      * YV63 capture journal + recovery dir (\`recovery_dir()\`, lib.rs:1145),
-        with \`tests/capture_journal_recovery.rs\` green.
-      * The meeting path re-decodes abandoned chunks on next launch
-        (transcription.rs:70-84: "the relaunch resumed AFTER a chunk that had
-        never been decoded: a permanent [gap]" — a bug they already fixed there).
-      * \`tests/matrix_new_quit_mid_processing.rs\` covers quit-mid-processing for
-        meetings.
-    For a long dictation there is no equivalent: the spilled WAV (Y3-A) and any
-    completed chunk text (Y3-B) are on disk, and nothing reads them back.
-
-    Do:
-      * Persist per-take chunk results as they complete (a small sidecar JSON
-        next to the spilled WAV in the recovery dir, or a \`take_chunks\` table —
-        prefer the DB, it is already WAL and already the durable store, and
-        db.rs:1191 already reasons about which tables hold user text).
-      * On launch, \`recover_dictation()\` finds takes with audio + partial text
-        and NO transcript row, and offers them in History as recoverable with
-        one action: "Finish transcribing". It must not auto-paste anything —
-        pasting into whatever app happens to be focused minutes or days later is
-        the wrong behaviour and would violate YV21's paste-target guard.
-      * Honour the existing 7-day purge so the recovery dir cannot grow forever.
-      * A recovered take runs the SAME cleanup and hallucination gates as a live
-        take. lib.rs:6230 already records this rule for the retry path ("the
-        retry path runs the SAME gate as the live path") — extend it, do not
-        fork it.
-
-    Tests \`tests/long_take_recovery.rs\`:
-      * \`kill_mid_decode_leaves_audio_plus_partial_text_and_no_transcript_row\`
-      * \`next_launch_offers_the_take_and_never_pastes_it\`
-      * \`finishing_a_recovered_take_runs_the_same_gates_as_a_live_take\`
-      * \`recovery_dir_purge_still_bounds_growth\`
-      * \`a_completed_take_leaves_nothing_recoverable\` (no phantom offers).
-
-    Depends on Y3-A, Y3-B.
-
-    What NOT to do:
-      - Do NOT auto-resume decode at launch without the user asking. A cold
-        launch that pins the GPU for four minutes is its own bug.
-      - Do NOT store partial TEXT anywhere outside the app's data dir. Transcript
-        text must never reach a log or a support bundle unredacted — there are
-        already tests for that (tests/support_bundle_redaction.rs); keep them green.
-  `,
-  acceptance: `
-    grep -q 'fn recover_dictation' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/long_take_recovery.rs
-    grep -q 'next_launch_offers_the_take_and_never_pastes_it' desktop/src-tauri/tests/long_take_recovery.rs
-    grep -q 'finishing_a_recovered_take_runs_the_same_gates_as_a_live_take' desktop/src-tauri/tests/long_take_recovery.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test long_take_recovery        ; test $? -eq 0
-    cargo test --features custom-protocol --test capture_journal_recovery  ; test $? -eq 0
-    cargo test --features custom-protocol --test support_bundle_redaction  ; test $? -eq 0
-    cargo test --features custom-protocol --test matrix_new_quit_mid_processing ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y3-F', prompt: 'Y3', branch: 'loop/y3-f-max-session-length-and-the-honest-ceiling', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #180) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'A declared maximum session length with a warning before it, instead of an undeclared cliff',
-  preflight: `
-    grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test max_session
-  `,
-  spec: `
-    There is no maximum take length in the code — \`git grep "MAX_TAKE\\|
-    max_take\\|MAX_RECORD\\|session_len" desktop\` returns nothing functional.
-    That is not generosity; it means the failure mode at some unknown length is
-    a timeout or an OOM rather than a message. Wispr declares 20 minutes,
-    raised from 5 (reference_wispr_parity_research §2.1 [OFFICIAL]).
-
-    Do:
-      * \`record::MAX_SESSION_SECONDS\` — a declared ceiling. Choose it from what
-        Y3-A/B actually hold and SAY the measurement in the doc comment; do not
-        copy Wispr's 20 minutes without evidence. If the measured answer is
-        larger than 20 minutes, declare the larger number — the point is that it
-        is declared and tested, not that it matches a competitor.
-      * At 80% of the ceiling the pill says so, once, calmly (reuse the
-        transcribing/listening phase copy path from Y3-C — no new toast system).
-      * At the ceiling the take STOPS cleanly and transcribes what it has. It
-        does not error, does not truncate mid-word if a VAD boundary is within
-        a couple of seconds (vad.rs:803 lines of machinery already exists — use
-        it to pick the cut), and does not discard anything.
-      * A meeting is NOT subject to this ceiling. \`tests/matrix_row17_meeting_cap.rs\`
-        already covers the meeting cap; assert the two ceilings are separate
-        constants so tightening one never silently tightens the other.
-
-    Tests \`tests/max_session.rs\`:
-      * \`take_stops_at_the_ceiling_and_transcribes_what_it_has\`
-      * \`warning_fires_once_at_eighty_percent\`
-      * \`cut_prefers_a_vad_boundary_within_the_grace_window\`
-      * \`meeting_cap_and_dictation_cap_are_separate_constants\`
-
-    Depends on Y3-A, Y3-C.
-
-    What NOT to do:
-      - Do NOT pick 5 minutes to be safe. Wilson dictates long; a low ceiling is
-        the same complaint in a new costume.
-      - Do NOT stop the take without transcribing it.
-  `,
-  acceptance: `
-    grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
-    test -f desktop/src-tauri/tests/max_session.rs
-    grep -q 'take_stops_at_the_ceiling_and_transcribes_what_it_has' desktop/src-tauri/tests/max_session.rs
-    grep -q 'meeting_cap_and_dictation_cap_are_separate_constants' desktop/src-tauri/tests/max_session.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test max_session              ; test $? -eq 0
-    cargo test --features custom-protocol --test matrix_row17_meeting_cap ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y3-G', prompt: 'Y3', branch: 'loop/y3-g-long-take-latency-and-energy-budget', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #181) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'A measured latency and energy budget for long takes, published as a test that fails on regression',
-  preflight: `
-    test -f desktop/src-tauri/tests/long_take_budget.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test long_take_budget
-  `,
-  spec: `
-    \`latency.rs\` (146 lines) already instruments the press->capture_start span
-    (YV35, anchored on physical key-down — lib.rs:1138). YV81 was an explicit
-    energy pass ("no busy timers, idle animations park, polish sidecar unloads
-    when unused"). Y3 adds chunked decode, a spill writer and a progress event
-    stream — three new opportunities to undo all of that.
-
-    Also note the marketing stake, which is real and already written down:
-    reference_wispr_parity_research §2.11 records Wispr at ~800 MB RAM / ~8% CPU
-    idle and says of Yap "Measure it and publish the number — it is free
-    marketing." A regression test is how that number stays true.
-
-    Create \`tests/long_take_budget.rs\` with named budgets as constants and a
-    comment giving the machine and the date each was measured on:
-      * \`press_to_capture_start\` unchanged by the spill writer (compare against
-        latency.rs's existing measurement path, not a new stopwatch).
-      * \`chunk_decode_wall_per_audio_second\` — a ceiling, measured on the
-        committed fixture, so a chunker regression that halves throughput fails.
-      * \`progress_events_per_minute_of_audio\` — a CEILING. An event storm from
-        the progress stream is an energy regression that nothing else would catch.
-      * \`resident_bytes_after_a_long_take_return_to_baseline\` — the spill
-        buffers and the chunk text must be dropped, not leaked, when the take
-        finalizes.
-      * \`no_new_polling_timer_was_introduced\` — sweep for
-        \`Duration::from_millis\`/\`from_secs\` under a threshold in the modules Y3
-        touched (record.rs, transcription.rs, lib.rs's take path), asserting
-        against an explicit allowlist of the ones that already exist. This is
-        the standing guard for YV81.
-
-    Then write the numbers into docs/loop/PLAN.md's audit section as measured
-    facts with their date, so the next loop inherits evidence instead of folklore.
-
-    Depends on Y3-A..F.
-
-    What NOT to do:
-      - Do NOT assert a wall-clock latency budget that depends on the runner's
-        GPU. Express the decode budget as a RATIO against the same fixture
-        decoded single-window on the same machine in the same run.
-      - Do NOT use a timing test as the only proof of a correctness fix.
-    PANEL 2026-09-12 — the budget list is missing the app itself and the write
-    target does not exist in a lane worktree.
-      * Budgets go to docs/BUDGETS.md (TRACKED). docs/loop/PLAN.md is UNTRACKED
-        in git — \`git status --porcelain --untracked=all\` lists it, and
-        \`git ls-files docs/loop\` returns HARNESS.md only — so a lane worktree,
-        which is a checkout of origin/main, does not contain it and the old
-        \`grep -q 'measured' docs/loop/PLAN.md\` could never pass.
-      * ADD A FOOTPRINT CEILING: peak resident bytes with the ASR engine AND
-        the polish child both loaded, asserted as a ceiling, on the declared
-        floor machine (Y6-E names it). SEC-C turns on a 1.12 GB resident GGUF
-        and Y4-E runs a multi-chunk pass over it while ASR is loaded; Y3-A caps
-        only the audio buffers (~32 MB). "Budgets on the weakest supported Mac"
-        cannot be enforced until the weakest Mac is named.
-
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/long_take_budget.rs
-    grep -q 'progress_events_per_minute_of_audio' desktop/src-tauri/tests/long_take_budget.rs
-    grep -q 'resident_bytes_after_a_long_take_return_to_baseline' desktop/src-tauri/tests/long_take_budget.rs
-    grep -q 'no_new_polling_timer_was_introduced' desktop/src-tauri/tests/long_take_budget.rs
-    # PANEL: docs/loop/PLAN.md is UNTRACKED in git, so it does not exist in any
-    # lane worktree and this grep could never pass. Budgets go in a tracked doc.
-    test -f docs/BUDGETS.md
-    grep -qE '[0-9]+ ?ms' docs/BUDGETS.md
-    grep -q 'peak_resident_bytes_with_asr_and_polish_loaded' desktop/src-tauri/tests/long_take_budget.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test long_take_budget ; test $? -eq 0
-  `,
-})
-
 
 // ── RUN ─────────────────────────────────────────────────────────────────────
 phase('Recon')
@@ -5406,10 +5136,12 @@ will waste an hour reading it as a code defect.
 
 # 4 — BASELINE GATE, ONCE, IN LANE A ONLY (both lanes sit on the same origin/main sha)
 ${GATE_CMDS(WORKDIR, CARGO_TARGET_A)}
-Plus the informational one, so the run knows its baseline:
-    cd ${WORKDIR}/${APP} && cargo fmt --all -- --check ; echo "fmt=$?"
-MEASURED ON main 2026-09-12: typecheck=0 test=0 build=0 sidecar=0 polishtest=0 clippy=0 cargotest=0
-and fmt=1. If any of the eight is non-zero for you, report it as the BASELINE state; do not fix it,
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+If any BLOCKING code is non-zero for you, report it as the BASELINE state; do not fix it,
 and do not let a later agent be blamed for it. Do NOT repeat the baseline in lane B — confirm the
 two shas match instead.
 
@@ -5442,8 +5174,8 @@ item to "already-done" when every command passes. Do NOT run the items' pre-flig
 pre-flight run by recon and reported second-hand is exactly the shared-false-premise failure this
 harness has already had once. Just publish the sha the items will measure against:
     cd ${WORKDIR} && git rev-parse origin/main
-RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false, typecheckExit,
-         testExit, buildExit, sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit,
+RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
          ciMode: "github"|"local", ciModeWhy, openPrsBefore, preexistingPrs: [...], notes}
 ${WORKTREE_CONTRACT(WORKDIR, PREVIEW_PORT, CARGO_TARGET_A, WORKDIR_B)}
 ${VERIFY_NOTHING}
@@ -5484,7 +5216,13 @@ create a third worktree or a clone: disk hygiene is a hard rule here.
 
 # 3 — BASELINE GATE, ONCE, IN CHAIN R1 ONLY (both sit on the same origin/main sha)
 ${GATE_CMDS(REVIEW_DIRS[0], REVIEW_TARGETS[0])}
-Read each exit code BARE, never through a pipe. Report all eight. A non-zero here is the BASELINE
+Read each exit code BARE, never through a pipe.
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+A non-zero here is the BASELINE
 state of main after the build pass's merges — report it, do NOT fix it, and make sure no PR is later
 blamed for it. Confirm the two worktrees' shas match rather than re-running the gate in R2.
 
@@ -5498,8 +5236,9 @@ instead. Do not guess it, do not infer it from a red check, and do not soften it
 # 5 — THE BOARD
     node ${STATUS} --part ${PART} --total ${ITEMS.length} --current none
 
-RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha, typecheckExit, testExit, buildExit,
-         sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit, openPrsBefore,
+RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
+         openPrsBefore,
          ciMode: "github"|"local", ciModeWhy, notes}
 ${VERIFY_NOTHING}
 ${LOGLINE('review recon', '_recon', 'harness:recon')}
@@ -5518,15 +5257,18 @@ const RECON_SCHEMA = {
     headSha: { type: 'string' },
     npmCiOk: { type: 'boolean' },
     cargoWarmOk: { type: 'boolean' },
-    typecheckExit: { type: 'number' },
-    testExit: { type: 'number' },
-    buildExit: { type: 'number' },
-    clippyExit: { type: 'number' },
-    cargoTestExit: { type: 'number' },
+    // The baseline gate on main, one NUMBER per GATE_CMDS label. Required: gateRedOnMain() reads it,
+    // and a missing key is UNREADABLE, which fails closed (halts the pass).
+    gateExits: {
+      type: 'object',
+      properties: Object.fromEntries([...GATE_BLOCKING, ...GATE_ADVISORY].map((k) => [k, { type: 'number' }])),
+      required: [...GATE_BLOCKING, ...GATE_ADVISORY],
+    },
+    fmtHunks: { type: 'number' },
     openPrsBefore: { type: 'number' },
     notes: { type: 'string' },
   },
-  required: ['ciMode'],
+  required: ['ciMode', 'gateExits'],
 }
 
 const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
@@ -5559,6 +5301,95 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
       : 'CI_MODE=github — Actions is placing jobs on runners again; the check run is the merge gate, ' +
           'and the local clippy run is still owed because CI treats clippy and fmt as informational.'
   )
+}
+
+
+// ── stall helpers (template-only; the RULES are the STALL-RULES block above GATE_CMDS) ──
+/** A seat's return as an object: the typed payload, or the JSON text it sent instead, else {}. */
+const objectOf = (v) => {
+  if (v && typeof v === 'object') return v
+  if (typeof v !== 'string') return {}
+  try {
+    const o = JSON.parse(v)
+    return o && typeof o === 'object' ? o : {}
+  } catch (err) {
+    log(`stall objectOf: seat return is not JSON (${String(err && err.message ? err.message : err).slice(0, 80)}) — reading gateExits from its text instead`)
+    return {}
+  }
+}
+/** gateExits from a seat return: the typed field, or the first {...} after "gateExits" in its text. */
+const gateExitsOf = (v) => {
+  const o = objectOf(v)
+  if (o.gateExits && typeof o.gateExits === 'object') return o.gateExits
+  const m = /"gateExits"\s*:\s*(\{[^{}]*\})/.exec(asText(v))
+  if (!m) return null
+  try {
+    return JSON.parse(m[1])
+  } catch (err) {
+    return null
+  }
+}
+/** Seat output is UNTRUSTED and goes into shell commands in the stall-writer prompt: keep it a token. */
+const stallToken = (v) => String(v == null || v === '' ? 'unknown' : v).replace(/[^A-Za-z0-9_.:+-]/g, '_').slice(0, 80)
+/**
+ * THE STALL WRITER. One low-effort opus seat that records a stall in every place a human or the
+ * orchestrator looks: the PR (label + comment, rule 1 only), the Loop-Logs LOG, the board, and the
+ * STALL_FILE sentinel the external monitor turns into an "ALERT STALL" line (rules 2 and 3).
+ * Every interpolated value is a stallToken or harness-built text: no seat prose reaches the shell.
+ */
+const STALL_WRITER_PROMPT = ({ rule, itemId, pr, line, stage, note, comment, sentinel }) => `You are the STALL WRITER for ${REPO} (${itemId}${pr ? `, PR #${pr}` : ''}). The loop has detected its OWN stall
+(rule ${rule}). You fix nothing, review nothing, merge nothing, rebase nothing and launch nothing: you RECORD the stall,
+loudly, in the places below, and return. Run each command exactly as written and read every exit code BARE.
+Budget: 8 tool calls.
+${pr && comment ? `
+# THE PR — label it loop-stalled (create the label first) and say why, once
+    gh label create -R ${REPO} loop-stalled --color B60205 --description "the loop saw the same land failure twice" || true
+    gh pr edit -R ${REPO} ${pr} --add-label loop-stalled
+    gh pr comment -R ${REPO} ${pr} --body '${comment}'
+Do NOT relabel it needs-human, do NOT re-dispatch anything, do NOT close it.` : ''}
+
+# THE LOG — exactly one line, appended
+    mkdir -p "$(dirname '${LOG}')" && printf '%s\\n' '${line}' >> '${LOG}'
+
+# THE BOARD
+    node ${STATUS} ${itemId} ${stage} '${note} ci=${CI_MODE}'${pr ? ` ${pr}` : ''}
+${sentinel ? `
+# THE SENTINEL — the external monitor (scripts/loop/stall-alarm.sh) prints one "ALERT STALL" line while it exists
+    mkdir -p "$(dirname '${STALL_FILE}')" && { date -u +%Y-%m-%dT%H:%M:%SZ ; echo 'rule ${rule}' ; printf '%s\\n' '${line}' ; } > '${STALL_FILE}'
+A fresh stall OVERWRITES it. Never delete it: only the orchestrator removes it, and that removal is the acknowledgement.` : ''}
+
+RETURN: {rule: ${rule}, pr: ${pr || 0}, labelled: true|false, commented: true|false, logged: true|false, board: true|false, sentinel: true|false}
+${GUARD(MODE === 'review' ? BOTH_REVIEW_DIRS : BOTH_DIRS)}`
+
+/**
+ * RULE 2 — GATE RED ON MAIN. Recon measured the baseline gate on main; a red (or unreadable — fail
+ * closed) BLOCKING command there means every downstream gate fails the same way, so the pass halts
+ * BEFORE any triage, review or build and says so in four places. Advisory red is a log line only.
+ * Returns the verdict when the pass must halt, else null.
+ */
+async function haltIfGateRedOnMain(where) {
+  const exits = gateExitsOf(recon)
+  const verdict = gateRedOnMain(exits, GATE_BLOCKING, GATE_ADVISORY)
+  if (verdict.advisoryRed.length) {
+    const r = objectOf(recon)
+    const hunksRaw = r.fmtHunks != null ? r.fmtHunks : exits && exits.fmtHunks
+    const hunks = hunksRaw != null ? stallToken(hunksRaw) : 'unknown'
+    log(`stall gate-red-on-main advisory red on main: ${verdict.advisoryRed.join(', ')}, ${hunks} hunks — advisory, never a halt`)
+  }
+  if (!verdict.red.length && !verdict.unreadable.length) {
+    log(`stall gate-red-on-main ok where=${where} blocking=${GATE_BLOCKING.length} red=0 unreadable=0`)
+    return null
+  }
+  const parts = []
+  if (verdict.red.length) parts.push(`GATE RED ON MAIN: ${verdict.red.join(', ')}`)
+  if (verdict.unreadable.length) parts.push(`GATE UNREADABLE ON MAIN: ${verdict.unreadable.join(', ')}`)
+  const line = parts.join(' ; ')
+  log(`stall gate-red-on-main HALT where=${where} red=${verdict.red.join(',') || 'none'} unreadable=${verdict.unreadable.join(',') || 'none'} — ${line}. No triage, no chains, no builders, no sweeper, no verify.`)
+  await agentR(
+    STALL_WRITER_PROMPT({ rule: 2, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }),
+    { model: 'opus', effort: 'low', phase: 'Recon', label: 'stall-writer:_stall' }
+  )
+  return verdict
 }
 
 // ── THE RUN ────────────────────────────────────────────────────────────────
@@ -5637,6 +5468,8 @@ const TRIAGE_SCHEMA = {
           files: { type: 'number' },
           additions: { type: 'number' },
           labels: { type: 'array', items: { type: 'string' } },
+          // Rule 1 across passes: the status/reason from the PR's latest "loop-land:" comment (absent when none).
+          lastLand: { type: 'object', properties: { status: { type: 'string' }, reason: { type: 'string' } } },
         },
         required: ['pr', 'item', 'klass', 'ci', 'mergeable', 'files'],
       },
@@ -5663,6 +5496,12 @@ const TRIAGE_SCHEMA = {
 }
 
 async function reviewPass() {
+  // RULE 2 — GATE RED ON MAIN, BEFORE ANY REVIEW: every land gate in this pass would fail the same way.
+  const mainRed = await haltIfGateRedOnMain('review')
+  if (mainRed) {
+    log(`review pass HALTED (gate-red-on-main): red=[${mainRed.red.join(', ')}] unreadable=[${mainRed.unreadable.join(', ')}] — no triage, no chains, no sweeper, no main-verify ran. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    return { halted: 'gate-red-on-main', red: mainRed.red, unreadable: mainRed.unreadable, queued: 0 }
+  }
   const triage = await agentR(
     `TRIAGE for the REVIEW PASS of ${REPO}. ONE job: turn the open ${LOOP_LABEL} PRs into an ordered
 queue, and close the ones that should never be reviewed at all. You review nothing, fix nothing and
@@ -5673,6 +5512,12 @@ merge nothing — two review chains do that immediately after you, driven by wha
 SKIP every PR labelled needs-human: it is HELD for a human (an outside-seat BLOCK, or a BLOCK after the last fix
 round). Do not queue it, do not review it, do not land it — no seat is spent on it. List each one in held[]
 with the comment id its needs-human comment names, and put it in the queue doc's held table.
+SKIP every PR labelled loop-stalled the same way (the loop saw the same land failure twice; a human removes the
+label to release it): held[] with why "loop-stalled".
+For every PR you DO queue, read its LAST LAND OUTCOME from an earlier pass — the stall rules compare against it:
+    gh pr view -R ${REPO} <n> --json comments --jq '[.comments[].body | select(startswith("loop-land:"))] | last'
+A line "loop-land: status=<s> reason=<r> ..." becomes lastLand: {status: "<s>", reason: "<r>"}; no such comment -> omit lastLand.
+Copy the two tokens exactly; never infer them from labels or prose.
     gh pr list -R ${REPO} --state merged --limit 200 --json number,title,headRefName,mergeCommit
 ALSO list the open PRs WITHOUT the ${LOOP_LABEL} label and report them separately, untouched: the
 feat/yv1xx PRs predate this loop. They are Drain's problem, not this queue's.
@@ -5722,7 +5567,7 @@ main under it and the most rebase debt — settle it before it rots further.
 Do NOT include a PR you closed. Do NOT include a PR that gh reports as already MERGED. Do NOT
 include a PR that lacks the ${LOOP_LABEL} label.
 
-RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels}],
+RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels, lastLand}],
                  closed: [{pr, survivor, why}], held: [{pr, comment, why}],
                  counts: {open, queued, closed, held, security, standard, unlabelled}}
 ${LOGLINE('review triage', '_review', 'harness:recon', '--open <the open loop-build PR count you just observed>')}
@@ -5730,12 +5575,14 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Recon', label: 'review-triage', schema: TRIAGE_SCHEMA }
   )
 
-  // needs-human is HELD: never queued, even when triage forgot to skip it (no reviewer or LAND seat is spent on it).
-  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => String((l && l.name) || l) === 'needs-human')
-  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: 'labelled needs-human' }))]
+  // needs-human and loop-stalled are HELD: never queued, even when triage forgot to skip them (no reviewer or LAND
+  // seat is spent on them). loop-stalled is rule 1's "no third attempt": it holds until a human removes the label.
+  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => ['needs-human', 'loop-stalled'].includes(String((l && l.name) || l)))
+  const holdLabelOf = (q) => (q.labels.map((l) => String((l && l.name) || l)).includes('loop-stalled') ? 'loop-stalled' : 'needs-human')
+  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: `labelled ${holdLabelOf(q)}` }))]
   REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))
   const closedByTriage = extractArray(triage, 'closed')
-  if (heldByTriage.length) log(`held (needs-human, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
+  if (heldByTriage.length) log(`held (needs-human / loop-stalled, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
   if (REVIEW_QUEUE.length === 0) {
     log(
       'review triage returned NO parseable queue[]. The chains have nothing to consume, so this pass ' +
@@ -5848,14 +5695,21 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Drain', label: 'main-verify' }
   )
 
-  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify }
+  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify, stalled, loopStalled: [...stalledPrs] }
 }
 
 let census = null
 if (MODE === 'review') {
   census = await reviewPass()
 } else {
-  await Promise.all([buildLane(0), buildLane(1)])
+  // RULE 2 in build mode too: a red blocking command on main fails every builder's hard gate the same way.
+  const buildRed = await haltIfGateRedOnMain('build')
+  if (buildRed) {
+    log(`build pass HALTED (gate-red-on-main): red=[${buildRed.red.join(', ')}] unreadable=[${buildRed.unreadable.join(', ')}] — no builder was dispatched. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    census = { halted: 'gate-red-on-main', red: buildRed.red, unreadable: buildRed.unreadable, queued: 0 }
+  } else {
+    await Promise.all([buildLane(0), buildLane(1)])
+  }
 }
 const results = MODE === 'review' ? reviewOutcomes.slice() : slots.filter((r) => r !== null)
 

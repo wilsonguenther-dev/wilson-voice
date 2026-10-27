@@ -412,7 +412,10 @@ async function runChain(script) {
     },
     apply: () => benign(),
   })
-  const generic = () => new Proxy({ status: 'ok', ok: true, halted: false, exits: [0], allZero: true, verdict: 'PASS', blocking: [], advisory: [], prs: [], items: [], result: {} },
+  // gateExits: recon's baseline on main, all green. Without it the stall rule gateRedOnMain() reads every blocking
+  // command as UNREADABLE (fail closed) and halts the pass before triage — which is what it is for, not this test.
+  const GREEN = { typecheck: 0, test: 0, build: 0, polish: 0, diarize: 0, stage: 0, polishtest: 0, diarizetest: 0, fmt: 0, clippy: 0, cargotest: 0 }
+  const generic = () => new Proxy({ status: 'ok', ok: true, halted: false, exits: [0], allZero: true, verdict: 'PASS', blocking: [], advisory: [], prs: [], items: [], result: {}, gateExits: GREEN },
     { get: (t, p) => (p in t ? t[p] : p === 'then' || p === 'toJSON' || typeof p === 'symbol' ? undefined : benign()) })
   const seats = []
   const logs = []
