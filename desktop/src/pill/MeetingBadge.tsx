@@ -86,7 +86,7 @@ export function useMeetingPill(): {
   const { phase } = state;
   useEffect(() => {
     const hold = meetingPillHoldMs(phase);
-    if (hold === null || (phase.kind !== "notes-ready" && phase.kind !== "failed")) return;
+    if (hold === null || (phase.kind !== "notes-ready" && phase.kind !== "failed" && phase.kind !== "waiting")) return;
     const id = phase.id;
     const t = window.setTimeout(() => dispatch({ type: "dismiss", id }), hold);
     return () => clearTimeout(t);
@@ -164,6 +164,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
       {view.kind === "processing" && <span className="meeting-after-bar" aria-hidden><i /></span>}
       {view.kind === "notes-ready" && <span className="meeting-after-dot" aria-hidden />}
       {view.kind === "failed" && <span className="meeting-after-dot failed" aria-hidden />}
+      {view.kind === "waiting" && <span className="meeting-after-dot waiting" aria-hidden />}
       <span className="meeting-after-label">{view.label}</span>
     </>
   );

@@ -1717,6 +1717,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // to THIS take and never leaks in from the last one.
             *state.session_cap_warned.lock() = false;
             *state.recording.lock() = true;
+            // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+            state.transcription.set_live_recording(true);
             // YV95 — the pill's hover watch must keep its fast cadence for a
             // take even when a meeting is recording underneath it.
             float_pill::set_dictating(true);
@@ -1925,6 +1927,8 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
         return;
     }
     *state.recording.lock() = false;
+    // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+    state.transcription.set_live_recording(false);
     float_pill::set_dictating(false);
     *state.hands_free.lock() = false;
     // YV49: a cancelled command press must not leave its selection armed for
@@ -2249,7 +2253,17 @@ fn transcribe_native(
     // per-call wall. A short take is the exact same single `transcribe` call
     // this line used to be; a long one decodes in windows under a PER-CHUNK
     // budget and comes back partial rather than empty if a window dies.
-    let take = manager.transcribe_take_observed(samples, language, bias_prompt, observer)?;
+    // yap24-NT2 fix round 2: pinned to `model_id`, so a meeting job that swaps
+    // its own pinned model into the shared slot mid-take can never have a
+    // dictation window decoded on it — the window reloads the user's model.
+    let take = manager.transcribe_take_observed_on(
+        model_id,
+        model_path,
+        samples,
+        language,
+        bias_prompt,
+        observer,
+    )?;
     let decode_ms = decode_started.elapsed().as_millis() as i64;
     if take.windowed {
         log::info!(
@@ -2337,6 +2351,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         return;
     }
     *state.recording.lock() = false;
+    // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
+    state.transcription.set_live_recording(false);
     float_pill::set_dictating(false);
     // YV28: un-mute the Mac immediately on release — restore the exact prior
     // mute + volume BEFORE the (async) transcription so audio comes right back.
@@ -6404,6 +6420,14 @@ async fn list_models(state: State<'_, Arc<AppState>>) -> Result<Vec<ModelEntry>,
 async fn download_model(app: AppHandle, id: String) -> Result<String, String> {
     let path = models::download_model(&app, &id).await?;
     log::info!("model '{id}' downloaded to {}", path.display());
+    // yap24-NT2 R3 — the model-download-complete event: every meeting that
+    // was waiting for a model goes back on the queue (it re-checks the pinned
+    // model, and waits again if this download was a different one).
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        meeting_pipeline::requeue_waiting_for_model(&state.db, &|mid| {
+            meeting_pipeline::enqueue(mid);
+        });
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -7148,24 +7172,36 @@ pub fn run() {
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
+            // yap24-NT2 R4: meeting ASR PREFERS the catalog's recommended model
+            // (parakeet Q8_0) when it is on disk. Fix round 1: when it is not,
+            // the user's own selected model is used if it is downloaded and
+            // passes the meeting gate (what this factory did before the pin),
+            // so an install that picked another model keeps transcribing its
+            // meetings. R3: only when NO usable model is on disk is the row
+            // `waiting_for_model`, not `failed`. The row records which model it
+            // got (`asr_model`).
             asr: Arc::new(move || {
-                let (native, language) = {
+                let (selected, language) = {
                     let s = asr_state.settings.lock();
                     (s.native_model.clone(), s.language.clone())
                 };
-                let (model_id, model_path) = native_model_ready(&native).ok_or_else(|| {
-                    "No speech model is downloaded yet — get one in Settings, then press Retry."
-                        .to_string()
-                })?;
-                meeting_asr::meeting_availability(Some(&model_id), Some(&language))
-                    .map_err(|e| e.message())?;
-                Ok(Box::new(meeting_asr::WarmEngineChunkAsr::new(
-                    asr_state.transcription.clone(),
-                    model_id,
-                    model_path,
-                    Some("en".to_string()),
-                    None,
-                )) as Box<dyn meeting_asr::ChunkAsr>)
+                let pinned = models::recommended_model();
+                let (model_id, model_path) = meeting_pipeline::resolve_meeting_model(
+                    &pinned.id,
+                    &selected,
+                    &language,
+                    &native_model_ready,
+                )?;
+                Ok(meeting_pipeline::MeetingEngine::new(
+                    model_id.clone(),
+                    Box::new(meeting_asr::WarmEngineChunkAsr::new(
+                        asr_state.transcription.clone(),
+                        model_id,
+                        model_path,
+                        Some("en".to_string()),
+                        None,
+                    )),
+                ))
             }),
             demand: Arc::new(state.transcription.clone()),
             quit: Arc::new(|| false),
@@ -7178,6 +7214,9 @@ pub fn run() {
                 auto_summarize_meeting(&sum_state, id)
             })),
             config: meeting_asr::MeetingAsrConfig::default(),
+            // yap24-NT2 R2: the launch-time requeue starts after the dictation
+            // engine's first warm-up, never racing it.
+            start_delay: meeting_pipeline::QUEUE_START_DELAY,
         };
         meeting_pipeline::install(meeting_pipeline::spawn(deps));
         let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &|id| {

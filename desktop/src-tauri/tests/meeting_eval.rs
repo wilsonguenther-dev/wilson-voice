@@ -391,10 +391,144 @@ fn corpus_root() -> PathBuf {
 fn corpus() -> Option<PathBuf> {
     let root = corpus_root();
     if root.is_dir() {
+        // yap24-NT2 R5: every corpus-gated arm starts here, so the pinned
+        // models are in the scratch root before ANY of them decodes or
+        // diarizes — not only the ones that build a `Decoder`.
+        provision_pinned_model();
         return Some(root);
+    }
+    // yap24-NT2 R5: on a machine EXPECTED to have the corpus, absence is a
+    // failure, never a green skip.
+    if eval_required() {
+        panic!("{REQUIRE_ENV}=1 but {CORPUS_ABSENT} (looked in {})", root.display());
     }
     eprintln!("{CORPUS_ABSENT}");
     None
+}
+
+// ---------------------------------------------------------------------------
+// yap24-NT2 R5 — a REQUIRED run, against the pinned model, in a scratch root
+// ---------------------------------------------------------------------------
+
+/// `YAP_EVAL_REQUIRE=1`: a missing corpus or a missing model panics instead of
+/// skipping. Set by the item acceptance on a machine provisioned by yap24-NT0.
+const REQUIRE_ENV: &str = "YAP_EVAL_REQUIRE";
+/// `YAP_MODEL_DIR`: a directory holding the pinned model file (the catalog's
+/// recommended model, parakeet Q8_0). It is linked into `<YAP_DATA_DIR>/models/`
+/// before the first decode, so the run never downloads and never reads the
+/// user's real data root.
+const MODEL_DIR_ENV: &str = "YAP_MODEL_DIR";
+const DATA_DIR_ENV: &str = "YAP_DATA_DIR";
+
+fn eval_required() -> bool {
+    std::env::var(REQUIRE_ENV).map(|v| v.trim() == "1").unwrap_or(false)
+}
+
+static MODEL_PROVISIONED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Link the pinned model from `YAP_MODEL_DIR` into the scratch state root and
+/// select it there, once per test process. Refuses an unset `YAP_DATA_DIR`: it
+/// must never seed (or read) the default data root.
+fn provision_pinned_model() {
+    MODEL_PROVISIONED.get_or_init(|| {
+        let pinned = wilson_voice_lib::models::recommended_model();
+        if let Ok(model_dir) = std::env::var(MODEL_DIR_ENV) {
+            let data_dir = std::env::var(DATA_DIR_ENV)
+                .ok()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{MODEL_DIR_ENV} is set but {DATA_DIR_ENV} is not — refusing to seed \
+                         or read the default data root"
+                    )
+                });
+            let file = pinned
+                .default_file()
+                .unwrap_or_else(|| panic!("catalog model {} lists no files", pinned.id));
+            let src = PathBuf::from(&model_dir).join(&file.filename);
+            assert!(
+                src.is_file(),
+                "{MODEL_DIR_ENV}={model_dir} has no {} (the pinned {} file)",
+                file.filename,
+                pinned.id
+            );
+            let models_dir = PathBuf::from(&data_dir).join("models");
+            assert_eq!(
+                models_dir,
+                wilson_voice_lib::models::models_dir(),
+                "the app resolves its models somewhere other than <{DATA_DIR_ENV}>/models"
+            );
+            fs::create_dir_all(&models_dir).expect("models dir");
+            let dest = models_dir.join(&file.filename);
+            if !dest.exists() {
+                std::os::unix::fs::symlink(&src, &dest).unwrap_or_else(|e| {
+                    panic!("cannot link {} -> {}: {e}", dest.display(), src.display())
+                });
+            }
+            // The catalog's diarization models, when the provisioned model dir
+            // carries them at the app's own relative layout (`diarize/<…>` for
+            // an extracted archive). The EER arm needs them in the SAME scratch
+            // root; without them it panics by design.
+            let app_models = wilson_voice_lib::models::models_dir();
+            for dm in wilson_voice_lib::models::diarize_models() {
+                let target = wilson_voice_lib::models::diarize_model_path(dm);
+                let Ok(rel) = target.strip_prefix(&app_models) else {
+                    continue;
+                };
+                let src = PathBuf::from(&model_dir).join(rel);
+                if src.is_file() && !target.exists() {
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent).expect("diarize model dir");
+                    }
+                    std::os::unix::fs::symlink(&src, &target).unwrap_or_else(|e| {
+                        panic!("cannot link {} -> {}: {e}", target.display(), src.display())
+                    });
+                    eprintln!("provisioned diarization model {}", rel.display());
+                }
+            }
+            // `--transcribe-file` honours the selected model; a scratch root
+            // with no settings would fall back to the smallest model and try to
+            // DOWNLOAD it. Select the pinned one.
+            let settings = PathBuf::from(&data_dir).join("settings.json");
+            if !settings.exists() {
+                fs::write(
+                    &settings,
+                    serde_json::json!({ "nativeModel": pinned.id }).to_string(),
+                )
+                .expect("scratch settings.json");
+            }
+            eprintln!(
+                "provisioned {} from {model_dir} into {}",
+                pinned.id,
+                models_dir.display()
+            );
+        }
+        if eval_required() {
+            assert!(
+                wilson_voice_lib::models::is_downloaded(pinned),
+                "{REQUIRE_ENV}=1 but the pinned model {} is not installed in {} — set \
+                 {MODEL_DIR_ENV} (provisioned by yap24-NT0)",
+                pinned.id,
+                wilson_voice_lib::models::models_dir().display()
+            );
+        }
+    });
+}
+
+/// Peak resident set size of THIS process, in MB (macOS reports bytes).
+fn peak_rss_mb() -> f64 {
+    // SAFETY: getrusage writes into the struct we hand it and nothing else.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if rc != 0 {
+        return f64::NAN;
+    }
+    let raw = usage.ru_maxrss as f64;
+    if cfg!(target_os = "macos") {
+        raw / (1024.0 * 1024.0)
+    } else {
+        raw / 1024.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -850,6 +984,9 @@ static DECODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Decoder {
     fn new() -> Decoder {
+        // yap24-NT2 R5: the pinned model is in the scratch root before the
+        // first decode, or (under YAP_EVAL_REQUIRE=1) the run fails here.
+        provision_pinned_model();
         let scratch = std::env::temp_dir().join(format!("yap-meeting-eval-{}", std::process::id()));
         fs::create_dir_all(&scratch).expect("a scratch directory");
         Decoder {
@@ -7658,4 +7795,128 @@ fn assert_no_literal_threshold_at(call_name: &str) {
         "only {checked} `{call}` call sites found — this guard has stopped \
          guarding anything"
     );
+}
+
+// ---------------------------------------------------------------------------
+// yap24-NT2 R5 — lecture-15min through the SHIPPED pipeline: WER, real-time
+// factor, stop-to-notes wall clock, peak RSS
+// ---------------------------------------------------------------------------
+
+/// The numbers nothing measured before this item. The `Decoder` above shells
+/// out once per window (a model load per window), which is right for scoring
+/// the MODEL but says nothing about how long a user waits after Stop. This arm
+/// runs the app's own `meeting_pipeline::run_meeting_job` — `WavWindows` over
+/// the WAV, the shipped `MeetingAsr` driver, `WarmEngineChunkAsr` over ONE warm
+/// `TranscriptionManager` holding the pinned model, segments landing in a real
+/// SQLite file — and times it from the job's start (the moment Stop hands the
+/// meeting over) to the row reaching `complete` (notes ready; no summary model
+/// is installed in the scratch root, so the summary stage is not in it).
+///
+/// The printed lines are what `docs/BUDGETS.md` records.
+/// The measured regression ceiling for the pipeline arm (see the assertion).
+const PIPELINE_WER_CEILING: f64 = 0.08;
+
+#[test]
+fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
+    use std::sync::Arc;
+    use std::time::Instant;
+    use wilson_voice_lib::db::Database;
+    use wilson_voice_lib::meeting_pipeline::{run_meeting_job, MeetingEngine, PipelineDeps};
+    use wilson_voice_lib::meeting_asr::{MeetingAsrConfig, NoDemand, WarmEngineChunkAsr};
+    use wilson_voice_lib::meetings::MeetingState as RowState;
+    use wilson_voice_lib::transcription::TranscriptionManager;
+
+    let Some(root) = corpus() else { return };
+    provision_pinned_model();
+    let pinned = wilson_voice_lib::models::recommended_model();
+    if !wilson_voice_lib::models::is_downloaded(pinned) {
+        // Unreachable under YAP_EVAL_REQUIRE=1: provisioning panicked already.
+        eprintln!("pinned model {} is not installed, skipping the pipeline arm", pinned.id);
+        return;
+    }
+    let model_path = wilson_voice_lib::models::model_path(pinned).expect("pinned model path");
+    let _one_at_a_time = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let meta = read_meta(&root, LECTURE);
+    let reference = normalize(&read_reference(&root, LECTURE));
+    let scratch = std::env::temp_dir().join(format!("yap-nt2-pipeline-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).expect("scratch");
+    let db = Arc::new(Database::open(scratch.join("eval.db")).expect("scratch db"));
+    let row = db.create_meeting("lecture-15min eval", "manual").expect("row");
+    let wav = root.join(LECTURE).join("audio.wav");
+    db.finish_meeting(&row.id, meta.duration_seconds, Some(&wav))
+        .expect("finish");
+    db.set_meeting_state(&row.id, RowState::Transcribing, None)
+        .expect("transcribing");
+
+    let manager = TranscriptionManager::new();
+    let rss_before = peak_rss_mb();
+    let (model_id, path, mgr) = (pinned.id.clone(), model_path.clone(), manager.clone());
+    let deps = PipelineDeps {
+        db: Arc::clone(&db),
+        progress_dir: scratch.clone(),
+        asr: Arc::new(move || {
+            Ok(MeetingEngine::new(
+                model_id.clone(),
+                Box::new(WarmEngineChunkAsr::new(
+                    mgr.clone(),
+                    model_id.clone(),
+                    path.clone(),
+                    Some("en".to_string()),
+                    None,
+                )),
+            ))
+        }),
+        demand: Arc::new(NoDemand),
+        quit: Arc::new(|| false),
+        sink: Arc::new(|_| {}),
+        after_transcript: None,
+        config: MeetingAsrConfig::default(),
+        start_delay: Duration::ZERO,
+    };
+    let started = Instant::now();
+    let state = run_meeting_job(&deps, &row.id).expect("the pipeline runs");
+    let wall = started.elapsed().as_secs_f64();
+    let peak = peak_rss_mb();
+
+    let segments = db.list_meeting_segments(&row.id).expect("segments");
+    let hypothesis = normalize(
+        &segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    let report = wer(&reference, &hypothesis);
+    let rtf = wall / meta.duration_seconds;
+    println!(
+        "meeting_eval NT2 {LECTURE} pipeline: model={} audio_s={:.1} segments={} wer={:.4} \
+         stop_to_notes_s={wall:.1} rtf={rtf:.4} peak_rss_mb={peak:.0} (before_model={rss_before:.0}) state={}",
+        pinned.id,
+        meta.duration_seconds,
+        segments.len(),
+        report.wer(),
+        state.as_str()
+    );
+    eprintln!("{LECTURE} pipeline: {report}");
+    assert_eq!(state, RowState::Complete, "the lecture must reach complete");
+    assert_eq!(
+        db.meeting_asr_model(&row.id).unwrap().as_deref(),
+        Some(pinned.id.as_str()),
+        "the row records the pinned model"
+    );
+    // NOT the 0.02 model gate (that is `meeting_eval_lecture_wer_is_under_the_gate`,
+    // unchanged). First measurement, 2026-10-26: wer 0.0728 = 15 sub / 0 del /
+    // 212 ins over 3117 words across 30 windows — about seven words per seam
+    // landing twice, i.e. the shipped per-window append duplicates overlap text
+    // that the harness's own merge removes. That is a pipeline defect recorded
+    // in docs/BUDGETS.md for its own item; this ceiling only stops it getting
+    // WORSE unnoticed, and is lowered to WER_GATE when the seam fix lands.
+    assert!(
+        report.wer() <= PIPELINE_WER_CEILING,
+        "{LECTURE} through the shipped pipeline regressed past the measured \
+         {PIPELINE_WER_CEILING} ceiling: {report}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
 }

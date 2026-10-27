@@ -523,6 +523,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             3 => meetings::MIGRATION_3_TWO_TRACK,
             4 => meetings::MIGRATION_4_MEETING_KIND,
             5 => meetings::MIGRATION_5_CLUSTER_INDEX,
+            6 => meetings::MIGRATION_6_ASR_MODEL,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1621,6 +1622,31 @@ impl Database {
             params![id, processed_through.max(0.0)],
         )
         .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// yap24-NT2 R4 — record the catalog id of the model transcribing this
+    /// meeting.
+    pub fn set_meeting_asr_model(&self, id: &str, model_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET asr_model = ?2 WHERE id = ?1",
+            params![id, model_id],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// yap24-NT2 R4 — the model that transcribed this meeting, if any.
+    pub fn meeting_asr_model(&self, id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT asr_model FROM meetings WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
         .map_err(|e| e.to_string())
     }
 

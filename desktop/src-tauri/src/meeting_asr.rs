@@ -593,12 +593,26 @@ pub trait ChunkAsr {
 
 /// Is an interactive decode (a dictation) waiting for the one warm engine?
 pub trait EngineDemand {
+    /// A dictation wants the engine: it is recording, or its decode is waiting
+    /// for / holding the engine.
     fn dictation_pending(&self) -> bool;
+
+    /// yap24-NT2 R1 — the demand is a LIVE RECORDING (the user is speaking
+    /// right now). Time spent yielding to a live recording never counts toward
+    /// [`MeetingAsrConfig::max_yield`]: that cap exists for a stuck "busy, not
+    /// recording" claim, and a hands-free take over two minutes is routine.
+    fn live_recording(&self) -> bool {
+        false
+    }
 }
 
 impl EngineDemand for TranscriptionManager {
     fn dictation_pending(&self) -> bool {
-        self.interactive_pending()
+        self.interactive_pending() || TranscriptionManager::live_recording(self)
+    }
+
+    fn live_recording(&self) -> bool {
+        TranscriptionManager::live_recording(self)
     }
 }
 
@@ -644,10 +658,21 @@ impl ChunkAsr for WarmEngineChunkAsr {
         // empty slot and build a SECOND multi-hundred-MB engine beside the live
         // one. Contention is answered by the driver's retry, not by a second
         // Metal device.
-        if !self.manager.is_loaded() {
+        //
+        // yap24-NT2 needs-human sweep (both seats BLOCKING on 24ba9f9): the
+        // meeting model is PINNED, so "something is loaded" is not enough — a
+        // dictation keeps its own model warm in the same slot. When the slot
+        // holds another model (and nothing is leased out) load the pinned one,
+        // and decode through `transcribe_timed_on`, which refuses any engine
+        // that is not the pinned id. A dictation that swaps the slot between
+        // the load and the take therefore costs a contended retry, never a
+        // chunk decoded on the wrong model under the pinned model's name.
+        let leased_out = self.manager.is_loaded() && self.manager.loaded_model().is_none();
+        if !leased_out && self.manager.loaded_model().as_deref() != Some(self.model_id.as_str()) {
             self.manager.load(&self.model_id, &self.model_path)?;
         }
-        self.manager.transcribe_timed(
+        self.manager.transcribe_timed_on(
+            &self.model_id,
             samples_16k_mono.to_vec(),
             self.language.clone(),
             self.bias_prompt.clone(),
@@ -1661,6 +1686,10 @@ pub struct MeetingAsrConfig {
     /// How long meeting ASR will stand down before deciding the dictation side
     /// is wedged and taking the engine anyway. Without a ceiling a stuck
     /// interactive claim would stall a meeting forever.
+    ///
+    /// yap24-NT2 R1: only time spent on a "busy, not recording" demand counts.
+    /// While [`EngineDemand::live_recording`] is true the clock is reset — a
+    /// person speaking is never "wedged", however long the take.
     pub max_yield: Duration,
 }
 
@@ -1930,9 +1959,14 @@ impl MeetingAsr<'_> {
         if !self.demand.dictation_pending() {
             return false;
         }
-        let started = Instant::now();
+        // Only "busy, not recording" time is stuck time (R1). A live take
+        // resets the clock, so a 3-minute hands-free dictation followed by its
+        // decode never hands the engine back mid-take.
+        let mut stuck_since = Instant::now();
         while self.demand.dictation_pending() {
-            if started.elapsed() >= self.config.max_yield {
+            if self.demand.live_recording() {
+                stuck_since = Instant::now();
+            } else if stuck_since.elapsed() >= self.config.max_yield {
                 log::warn!(
                     "meeting ASR waited {}s for the dictation path and is taking the engine",
                     self.config.max_yield.as_secs()

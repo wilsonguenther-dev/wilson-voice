@@ -47,6 +47,8 @@ export function meetingStateLabel(
       return hasSummary ? "Notes ready" : "Transcript ready · Add a summary model in Settings";
     case "partial":
       return "Partly transcribed";
+    case "waiting_for_model":
+      return "Waiting for a speech model";
     case "failed":
       return "Failed";
     default:

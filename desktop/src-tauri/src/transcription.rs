@@ -62,6 +62,12 @@ pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// someone to reword the message.
 pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
 
+/// yap24-NT2 fix round 2 — how many times one dictation decode may reload its
+/// own model after finding another model (a meeting's pinned one) resident.
+/// One reload is the expected case; the bound turns a swap loop into a failed
+/// window instead of a hang.
+const DICTATION_MODEL_RELOADS: u32 = 3;
+
 /// What a meeting chunk decode gets back when a dictation took the engine off
 /// it mid-decode (YV93). NOT a decode failure: the chunk's audio is still on
 /// disk, so meeting ASR re-decodes it after the handback instead of writing an
@@ -503,6 +509,11 @@ struct Inner {
     /// dictation coming without the engine mutex having any fairness at all.
     /// Raised BEFORE the engine is taken, dropped only once it is back.
     interactive_waiting: AtomicU64,
+    /// yap24-NT2 R1 — a dictation is RECORDING right now (the mic is open, the
+    /// take has not reached the engine yet). Meeting ASR stands down for it
+    /// like it does for a decode, and — unlike a decode claim — the time it
+    /// spends standing down never counts toward `MeetingAsrConfig::max_yield`.
+    live_recording: AtomicBool,
     /// Y3-D — the STICKY user-cancel latch for the take that is decoding now.
     ///
     /// `InFlight::discard` is consumed per decode (`*slot = None`), so it can
@@ -576,6 +587,7 @@ impl TranscriptionManager {
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 interactive_waiting: AtomicU64::new(0),
+                live_recording: AtomicBool::new(false),
                 user_cancelled: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
@@ -849,6 +861,20 @@ impl TranscriptionManager {
         language: Option<String>,
         bias_prompt: Option<String>,
     ) -> Result<String, String> {
+        self.transcribe_interactive_on(None, samples_16k_mono, language, bias_prompt)
+    }
+
+    /// [`Self::transcribe`], optionally PINNED to the dictation's own model
+    /// (yap24-NT2 fix round 2). With `expect` set the decode runs only on an
+    /// engine of that catalog id, reloading it when a meeting left its pinned
+    /// model resident — see [`Self::leased_interactive_on`].
+    fn transcribe_interactive_on(
+        &self,
+        expect: Option<(&str, &Path)>,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<String, String> {
         if samples_16k_mono.is_empty() {
             self.touch();
             return Ok(String::new());
@@ -858,13 +884,53 @@ impl TranscriptionManager {
         // waiting, which is the only moment yielding to it is worth anything.
         let _claim = self.claim_interactive();
         // NOT preemptible: this take exists nowhere but in the samples above.
-        self.leased(false, move |engine| {
+        self.leased_interactive_on(expect, move |engine| {
             engine.transcribe(
                 &samples_16k_mono,
                 language.as_deref(),
                 bias_prompt.as_deref(),
             )
         })
+    }
+
+    /// The NON-preemptible lease a dictation decodes under, pinned to the
+    /// dictation's model when `expect` is set (yap24-NT2 fix round 2).
+    ///
+    /// The meeting decoder pins its own model and swaps the shared slot to it
+    /// whenever the slot holds another model and nothing is leased out. A
+    /// dictation holds the engine only one decode at a time, so without this
+    /// check a windowed take that the meeting slipped in front of — at the
+    /// key release, or between two windows — decoded every later window on
+    /// the MEETING's model while reporting the user's. Here an engine of any
+    /// other model is handed back ([`Self::leased_on`] answers
+    /// [`NO_ENGINE_LOADED`]), the dictation's model is loaded, and the decode
+    /// retries — bounded, so a pathological swap loop ends as a failed window
+    /// rather than a hang.
+    ///
+    /// `expect == None` is exactly the old [`Self::leased`]`(false, ..)`.
+    fn leased_interactive_on<R: Send + 'static>(
+        &self,
+        expect: Option<(&str, &Path)>,
+        job: impl Fn(&mut dyn Transcriber) -> Result<R, String> + Send + Sync + 'static,
+    ) -> Result<R, String> {
+        let Some((model_id, model_path)) = expect else {
+            return self.leased(false, job);
+        };
+        let job = Arc::new(job);
+        let mut reloads = 0u32;
+        loop {
+            let run = job.clone();
+            match self.leased_on(false, Some(model_id), move |engine| run(engine)) {
+                Err(e) if e == NO_ENGINE_LOADED && reloads < DICTATION_MODEL_RELOADS => {
+                    reloads += 1;
+                    log::info!(
+                        "dictation needs '{model_id}' but another model is resident — reloading it (attempt {reloads})"
+                    );
+                    self.load(model_id, model_path)?;
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Transcribe with the alignment KEPT (YV93) — what meeting chunk ASR runs.
@@ -888,11 +954,35 @@ impl TranscriptionManager {
         language: Option<String>,
         bias_prompt: Option<String>,
     ) -> Result<asr_engine::TimedTranscript, String> {
+        self.transcribe_timed_inner(None, samples_16k_mono, language, bias_prompt)
+    }
+
+    /// [`Self::transcribe_timed`] pinned to one catalog id: it decodes only on
+    /// an engine of `model_id`, and returns [`NO_ENGINE_LOADED`] when another
+    /// model holds the slot. Meeting ASR uses this so the model a meeting row
+    /// records as `asr_model` is the model that really decoded every chunk.
+    pub fn transcribe_timed_on(
+        &self,
+        model_id: &str,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        self.transcribe_timed_inner(Some(model_id), samples_16k_mono, language, bias_prompt)
+    }
+
+    fn transcribe_timed_inner(
+        &self,
+        expect_model: Option<&str>,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
         if samples_16k_mono.is_empty() {
             self.touch();
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
-        self.leased(true, move |engine| {
+        self.leased_on(true, expect_model, move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -906,6 +996,20 @@ impl TranscriptionManager {
     /// this at every chunk boundary and stands down until it clears.
     pub fn interactive_pending(&self) -> bool {
         self.inner.interactive_waiting.load(Ordering::Acquire) != 0
+    }
+
+    /// yap24-NT2 R1 — the dictation path opened (`true`) or closed (`false`)
+    /// the microphone for a take. Set by lib.rs exactly where
+    /// `AppState::recording` flips.
+    pub fn set_live_recording(&self, recording: bool) {
+        self.inner
+            .live_recording
+            .store(recording, Ordering::Release);
+    }
+
+    /// True while a dictation take is being recorded.
+    pub fn live_recording(&self) -> bool {
+        self.inner.live_recording.load(Ordering::Acquire)
     }
 
     fn claim_interactive(&self) -> InteractiveClaim {
@@ -1058,9 +1162,33 @@ impl TranscriptionManager {
         preemptible: bool,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        self.leased_on(preemptible, None, job)
+    }
+
+    /// [`Self::leased`], but when `expect_model` is set the job runs ONLY on
+    /// that catalog id. An engine of any other model is handed straight back
+    /// and the caller gets [`NO_ENGINE_LOADED`] — the engine it needs is not
+    /// the one resident — so it can load the right one and retry instead of
+    /// decoding on whatever a dictation left warm (yap24-NT2 needs-human sweep).
+    fn leased_on<R: Send + 'static>(
+        &self,
+        preemptible: bool,
+        expect_model: Option<&str>,
+        job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let mut engine = self.take_engine()?;
+        if let Some(want) = expect_model {
+            if engine.model_id != want {
+                log::debug!(
+                    "ASR engine '{}' is resident but '{want}' was asked for — handing it back",
+                    engine.model_id
+                );
+                self.return_engine(engine, generation);
+                return Err(NO_ENGINE_LOADED.into());
+            }
+        }
         self.inner.leases.fetch_add(1, Ordering::AcqRel);
         // The cancel flag is sticky, so it is cleared HERE — with the engine
         // exclusively in hand and before anything can see it as in-flight —
@@ -1345,13 +1473,58 @@ impl TranscriptionManager {
         plan: &DictationChunking,
         observer: &mut dyn crate::transcribe_progress::TakeObserver,
     ) -> Result<DictationTake, String> {
+        self.transcribe_take_inner(
+            None,
+            samples_16k_mono,
+            language,
+            bias_prompt,
+            plan,
+            observer,
+        )
+    }
+
+    /// [`transcribe_take_observed`](Self::transcribe_take_observed) PINNED to
+    /// the dictation's own model (yap24-NT2 fix round 2) — the production
+    /// dictation path. Every decode of the take, single-call or windowed, runs
+    /// on an engine of `model_id` and reloads it from `model_path` if a meeting
+    /// swapped its pinned model into the shared slot in the meantime.
+    pub fn transcribe_take_observed_on(
+        &self,
+        model_id: &str,
+        model_path: &Path,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+        observer: &mut dyn crate::transcribe_progress::TakeObserver,
+    ) -> Result<DictationTake, String> {
+        self.transcribe_take_inner(
+            Some((model_id, model_path)),
+            samples_16k_mono,
+            language,
+            bias_prompt,
+            &DictationChunking::default(),
+            observer,
+        )
+    }
+
+    /// The real body every take entry point delegates to. `expect` pins every
+    /// decode to the dictation's model (see [`Self::leased_interactive_on`]).
+    fn transcribe_take_inner(
+        &self,
+        expect: Option<(&str, &Path)>,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+        plan: &DictationChunking,
+        observer: &mut dyn crate::transcribe_progress::TakeObserver,
+    ) -> Result<DictationTake, String> {
         let rate = plan.sample_rate.max(1) as f64;
         let total_seconds = samples_16k_mono.len() as f64 / rate;
         if total_seconds <= plan.threshold_seconds {
             // THE UNCHANGED PATH. Not "equivalent to" the old call — it is the
             // old call, so a single-window take cannot drift from the fixtures.
             return self
-                .transcribe(samples_16k_mono, language, bias_prompt)
+                .transcribe_interactive_on(expect, samples_16k_mono, language, bias_prompt)
                 .map(DictationTake::whole);
         }
         plan.config.validate()?;
@@ -1365,7 +1538,7 @@ impl TranscriptionManager {
             // The geometry did not actually split it; take the old path rather
             // than run a one-window "merge" that can only differ.
             return self
-                .transcribe(samples_16k_mono, language, bias_prompt)
+                .transcribe_interactive_on(expect, samples_16k_mono, language, bias_prompt)
                 .map(DictationTake::whole);
         }
 
@@ -1397,6 +1570,14 @@ impl TranscriptionManager {
         // is persisted for a resume: a resume decodes from the prefix's end, so
         // a prefix with a hole in it would skip the hole's audio forever.
         let mut prefix_intact = true;
+        // yap24-NT2 fix round 2 — ONE interactive claim held across the whole
+        // windowed take, on top of each window's own. Between two windows the
+        // per-window claim is down, and that gap is exactly where a queued
+        // meeting job used to slip in, swap the slot to its pinned model and
+        // leave it there for every later window. Holding the claim keeps the
+        // meeting standing down for the take; the model check in
+        // `leased_interactive_on` is the guarantee if it does not.
+        let _take_claim = self.claim_interactive();
         for window in &windows {
             // Y3-D — THE CHUNK BOUNDARY. Checked before every window, including
             // the first, so a cancel that lands while chunk 4 decodes stops the
@@ -1425,7 +1606,12 @@ impl TranscriptionManager {
                 continue;
             }
             let slice = window_samples(&samples_16k_mono, window, rate);
-            match self.transcribe_timed_interactive(slice, language.clone(), bias_prompt.clone()) {
+            match self.transcribe_timed_interactive(
+                expect,
+                slice,
+                language.clone(),
+                bias_prompt.clone(),
+            ) {
                 Ok(transcript) => {
                     decoded += 1;
                     // Y3-C — reported here, mid-loop, from the window's REAL
@@ -1505,6 +1691,7 @@ impl TranscriptionManager {
     /// still returning the alignment the seam merge needs.
     fn transcribe_timed_interactive(
         &self,
+        expect: Option<(&str, &Path)>,
         samples_16k_mono: Vec<f32>,
         language: Option<String>,
         bias_prompt: Option<String>,
@@ -1514,7 +1701,7 @@ impl TranscriptionManager {
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
         let _claim = self.claim_interactive();
-        self.leased(false, move |engine| {
+        self.leased_interactive_on(expect, move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -2229,5 +2416,190 @@ mod tests {
             MAX_SANCTIONED_CHUNK_DECODE_SECONDS <= TRANSCRIBE_TIMEOUT.as_secs_f64(),
             "the sanctioned decode is longer than the timeout that abandons it"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // yap24-NT2 fix round 2 — a dictation never decodes on the meeting's
+    // pinned model.
+    // -----------------------------------------------------------------------
+
+    /// An engine that logs which MODEL decoded each call (its file name) and
+    /// how many samples it was handed, so a test can tell a dictation window
+    /// from a meeting chunk and see which model each ran on.
+    struct NamedEngine {
+        name: String,
+        log: Arc<Mutex<Vec<(String, usize)>>>,
+    }
+
+    impl Transcriber for NamedEngine {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.log.lock().push((self.name.clone(), samples.len()));
+            Ok(format!("{} said these words", self.name))
+        }
+    }
+
+    fn named_manager(log: Arc<Mutex<Vec<(String, usize)>>>) -> TranscriptionManager {
+        let loader: EngineLoader = Arc::new(move |path: &Path| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Ok(Box::new(NamedEngine {
+                name,
+                log: log.clone(),
+            }) as Box<dyn Transcriber>)
+        });
+        TranscriptionManager::with_loader(
+            loader,
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            Duration::from_secs(10),
+        )
+    }
+
+    fn six_window_plan() -> DictationChunking {
+        DictationChunking {
+            threshold_seconds: 10.0,
+            config: meeting_asr::ChunkConfig {
+                target_seconds: 5.0,
+                min_seconds: 4.0,
+                max_seconds: 6.0,
+                overlap_seconds: 1.0,
+                min_silence_seconds: 0.2,
+            },
+            sample_rate: DICTATION_CHUNK_SAMPLE_RATE,
+        }
+    }
+
+    /// Plays the meeting job: after every finished dictation window it loads
+    /// the meeting's pinned model into the shared slot, exactly what
+    /// `WarmEngineChunkAsr::transcribe_timed` does when it finds another model
+    /// resident and nothing leased out.
+    struct MeetingSwapsBetweenWindows {
+        manager: TranscriptionManager,
+        pinned: PathBuf,
+        swaps: usize,
+    }
+
+    impl crate::transcribe_progress::TakeObserver for MeetingSwapsBetweenWindows {
+        fn planned(&mut self, _windows: usize) {}
+        fn chunk_done(&mut self, _text: &str) {
+            self.manager
+                .load("pinned", &self.pinned)
+                .expect("the meeting loads its pinned model");
+            self.swaps += 1;
+        }
+    }
+
+    /// THE BLOCKING FINDING. The meeting swaps the slot to its pinned model
+    /// between every pair of windows. The UNPINNED take (the pre-fix
+    /// behaviour, still reachable through `transcribe_take_with_observed`)
+    /// decodes later windows on `pinned` — this half proves the test can see
+    /// the defect — while the PINNED take, the one lib.rs now runs, decodes
+    /// every window on the user's `dict` model.
+    #[test]
+    fn a_windowed_dictation_never_decodes_on_a_model_a_meeting_swapped_in() {
+        let dict = stub_model_file("dict");
+        let pinned = stub_model_file("pinned");
+        let samples = vec![0.1f32; DICTATION_CHUNK_SAMPLE_RATE as usize * 30];
+
+        // Unpinned: the defect, reproduced.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let m = named_manager(log.clone());
+        m.load("dict", &dict).expect("dict loads");
+        let mut meeting = MeetingSwapsBetweenWindows {
+            manager: m.clone(),
+            pinned: pinned.clone(),
+            swaps: 0,
+        };
+        let take = m
+            .transcribe_take_with_observed(
+                samples.clone(),
+                None,
+                None,
+                &six_window_plan(),
+                &mut meeting,
+            )
+            .expect("unpinned take decodes");
+        assert!(
+            take.windowed && take.chunks_total >= 3,
+            "the take must window"
+        );
+        let unpinned: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
+        assert!(
+            unpinned.iter().any(|n| n == "pinned"),
+            "the unpinned path should show the defect: {unpinned:?}"
+        );
+
+        // Pinned: every window on the user's model.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let m = named_manager(log.clone());
+        m.load("dict", &dict).expect("dict loads");
+        let mut meeting = MeetingSwapsBetweenWindows {
+            manager: m.clone(),
+            pinned,
+            swaps: 0,
+        };
+        let take = m
+            .transcribe_take_inner(
+                Some(("dict", &dict)),
+                samples,
+                None,
+                None,
+                &six_window_plan(),
+                &mut meeting,
+            )
+            .expect("pinned take decodes");
+        assert!(
+            take.windowed && take.chunks_total >= 3,
+            "the take must window"
+        );
+        assert_eq!(take.chunks_failed, 0, "a reload must not cost a window");
+        assert!(
+            meeting.swaps >= 2,
+            "the meeting never got in between windows"
+        );
+        let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            decoded.len(),
+            take.chunks_total,
+            "one decode per window: {decoded:?}"
+        );
+        assert!(
+            decoded.iter().all(|n| n == "dict"),
+            "a dictation window decoded on the meeting's pinned model: {decoded:?}"
+        );
+    }
+
+    /// The single-call path has the same gap: the meeting swaps between
+    /// lib.rs's `load(dict)` and the take. The pinned take reloads `dict`.
+    #[test]
+    fn a_short_pinned_dictation_reloads_its_model_when_a_meeting_swapped_it_out() {
+        let dict = stub_model_file("dict");
+        let pinned = stub_model_file("pinned");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let m = named_manager(log.clone());
+        m.load("dict", &dict).expect("dict loads");
+        m.load("pinned", &pinned)
+            .expect("the meeting swaps in its model");
+        let take = m
+            .transcribe_take_inner(
+                Some(("dict", &dict)),
+                vec![0.1f32; 16_000 * 3],
+                None,
+                None,
+                &DictationChunking::default(),
+                &mut crate::transcribe_progress::NoObserver,
+            )
+            .expect("short take decodes");
+        assert!(!take.windowed);
+        let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(decoded, vec!["dict".to_string()]);
+        assert_eq!(m.loaded_model().as_deref(), Some("dict"));
     }
 }

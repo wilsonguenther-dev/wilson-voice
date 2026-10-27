@@ -25,6 +25,26 @@
 //! - The row ends `complete` only with at least one segment; `partial` when a
 //!   window failed or the capture was short; `failed` with a plain sentence
 //!   otherwise. Never `complete` with nothing in it.
+//!
+//! yap24-NT2 (residual guards):
+//!
+//! - R2 crash-loop guard: a per-meeting attempt marker (`<id>.attempts.json`,
+//!   beside the resume ledgers) is written when a job starts and removed when it
+//!   ends by ANY in-process route (finished, errored, interrupted, panicked —
+//!   the worker body runs under `catch_unwind`). A marker found at the next
+//!   start therefore means the PROCESS died mid-job. After
+//!   [`MAX_UNPROGRESSED_ATTEMPTS`] such deaths with no ledger progress between
+//!   them the row is `failed` with [`CRASH_LOOP_MESSAGE`], never retried
+//!   silently on every launch. The worker also waits
+//!   [`PipelineDeps::start_delay`] (30 s in the app) before its first job, so a
+//!   launch-time requeue never races the dictation engine's first warm-up.
+//! - R3 `waiting_for_model`: when the pinned model's file is not on disk the row
+//!   becomes [`MeetingState::WaitingForModel`], KEEPS its audio, and
+//!   [`requeue_waiting_for_model`] puts it back on the queue when a model
+//!   download completes (and reconcile does at the next launch).
+//! - R4 `asr_model`: the catalog id of the engine that transcribed the row is
+//!   recorded on it (migration 6). A resume never splices two models' output: a
+//!   ledger left by a different model is discarded and the meeting re-decoded.
 
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -43,6 +63,26 @@ use crate::meeting_asr::{
     MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
+
+/// yap24-NT2 R2 — how many launches may die mid-job WITHOUT the ledger moving
+/// before the meeting is marked failed instead of retried again.
+pub const MAX_UNPROGRESSED_ATTEMPTS: u32 = 2;
+
+/// yap24-NT2 R2 — how long after launch the worker takes its first job: after
+/// the dictation engine's first warm-up, never racing it.
+pub const QUEUE_START_DELAY: Duration = Duration::from_secs(30);
+
+/// yap24-NT2 R2 — the one honest sentence for a crash loop.
+pub const CRASH_LOOP_MESSAGE: &str =
+    "Yap quit unexpectedly twice while transcribing this meeting, so it stopped trying \
+     automatically. Your audio is kept — press Retry to try again.";
+
+/// yap24-NT2 R3 — what a `waiting_for_model` row says.
+/// It names what the user does next and never claims a download is running:
+/// nothing starts one on the user's behalf.
+pub const WAITING_FOR_MODEL_MESSAGE: &str =
+    "No speech model is downloaded yet. Download one in Settings and Yap transcribes this \
+     meeting automatically. Your audio is kept.";
 
 /// Track 0 (the microphone) and track 1 (call audio), as stored on segments.
 pub const MIC_TRACK: i64 = MIC_TRACK_INDEX as i64;
@@ -115,10 +155,74 @@ pub struct MeetingProgressEvent {
     pub error: Option<String>,
 }
 
+/// The chunk decoder for one job, and the catalog id of the model behind it
+/// (recorded on the row as `asr_model`, R4).
+pub struct MeetingEngine {
+    pub model_id: String,
+    pub asr: Box<dyn ChunkAsr>,
+}
+
+impl MeetingEngine {
+    pub fn new(model_id: impl Into<String>, asr: Box<dyn ChunkAsr>) -> Self {
+        MeetingEngine {
+            model_id: model_id.into(),
+            asr,
+        }
+    }
+}
+
+/// Why a job could not get a decoder.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AsrUnavailable {
+    /// R3 — the pinned model (`model_id`) is configured but its file is not on
+    /// disk. The row waits (`waiting_for_model`) with its audio kept.
+    ModelMissing { model_id: String },
+    /// A refusal no download fixes (the English-only gate). The row fails with
+    /// this sentence.
+    Refused(String),
+}
+
+/// yap24-NT2 R3/R4 (fix round 1) — which model a meeting job decodes with.
+///
+/// The pinned model (`pinned_id`, the catalog's recommended one) when its file
+/// is on disk. Otherwise the user's own selected model (`selected_id`) when it
+/// is downloaded AND passes the meeting gate — exactly what the factory used
+/// before the pin, so an install whose user picked another model keeps getting
+/// its meetings transcribed. Only when neither is on disk is the answer
+/// [`AsrUnavailable::ModelMissing`]. A spoken-language refusal is
+/// [`AsrUnavailable::Refused`] whatever is downloaded.
+///
+/// `ready` answers "is this catalog id downloaded, and where" — the app passes
+/// its `native_model_ready`, a test passes a stub.
+pub fn resolve_meeting_model(
+    pinned_id: &str,
+    selected_id: &str,
+    language: &str,
+    ready: &dyn Fn(&str) -> Option<(String, PathBuf)>,
+) -> Result<(String, PathBuf), AsrUnavailable> {
+    crate::meeting_asr::meeting_availability(Some(pinned_id), Some(language))
+        .map_err(|e| AsrUnavailable::Refused(e.message()))?;
+    if let Some(found) = ready(pinned_id) {
+        return Ok(found);
+    }
+    let selected = selected_id.trim();
+    if !selected.is_empty()
+        && selected != pinned_id
+        && crate::meeting_asr::meeting_availability(Some(selected), Some(language)).is_ok()
+    {
+        if let Some(found) = ready(selected) {
+            return Ok(found);
+        }
+    }
+    Err(AsrUnavailable::ModelMissing {
+        model_id: pinned_id.to_string(),
+    })
+}
+
 /// Builds the chunk decoder for one job. A factory, not an instance, because
-/// the model the user has selected is resolved when the job STARTS (the model
-/// may have been downloaded since launch), and because a test hands in a stub.
-pub type AsrFactory = Arc<dyn Fn() -> Result<Box<dyn ChunkAsr>, String> + Send + Sync>;
+/// the pinned model is resolved when the job STARTS (it may have been
+/// downloaded since launch), and because a test hands in a stub.
+pub type AsrFactory = Arc<dyn Fn() -> Result<MeetingEngine, AsrUnavailable> + Send + Sync>;
 pub type ProgressSink = Arc<dyn Fn(&MeetingProgressEvent) + Send + Sync>;
 /// Called once a meeting reaches `complete`/`partial` with a transcript —
 /// production runs the local summary model here when one is installed.
@@ -136,6 +240,9 @@ pub struct PipelineDeps {
     pub sink: ProgressSink,
     pub after_transcript: Option<AfterTranscript>,
     pub config: MeetingAsrConfig,
+    /// R2 — how long the worker waits before its first job
+    /// ([`QUEUE_START_DELAY`] in the app, zero in tests).
+    pub start_delay: Duration,
 }
 
 struct Pending {
@@ -249,8 +356,21 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
     let spawned = std::thread::Builder::new()
         .name("wv-meeting-pipeline".into())
         .spawn(move || {
+            // R2: let the dictation engine warm up first. Stepped, so a quit
+            // during the delay is not held up by it.
+            let mut waited = Duration::ZERO;
+            while waited < deps.start_delay && !quitting() && !(deps.quit)() {
+                let step = Duration::from_millis(250).min(deps.start_delay - waited);
+                std::thread::sleep(step);
+                waited += step;
+            }
             for id in rx {
-                let result = catch_unwind(AssertUnwindSafe(|| run_meeting_job(&deps, &id)));
+                // R2: the whole job body is panic-contained — one panic fails
+                // that row and the FIFO keeps going.
+                let result = catch_unwind(AssertUnwindSafe(|| guarded_job(&deps, &id)));
+                // Any in-process end of the job (including a caught panic)
+                // clears the crash marker: only a dead PROCESS leaves it.
+                clear_attempt_marker(&deps.progress_dir, &id);
                 match result {
                     Ok(Ok(state)) => {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
@@ -298,8 +418,23 @@ pub fn ledger_key(meeting_id: &str, track: i64) -> String {
 }
 
 /// Every ledger file a meeting can leave next to its audio — deleted with the
-/// WAVs (purge and delete), so nothing outlives the audio it describes.
+/// WAVs (purge and delete), so nothing outlives the audio it describes. The
+/// R2 attempt marker is one of them.
 pub fn ledger_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
+    let store = JsonProgressStore::new(dir);
+    let mut paths: Vec<PathBuf> = [MIC_TRACK, SYSTEM_TRACK]
+        .iter()
+        .map(|t| store.path_for(&ledger_key(meeting_id, *t)))
+        .collect();
+    paths.push(attempt_marker_path(dir, meeting_id));
+    paths.push(capture_carry_path(dir, meeting_id));
+    paths
+}
+
+/// The per-track resume ledgers only — what a re-decode discards (never the
+/// R2 attempt marker or the R3 capture carry, which describe the job and the
+/// capture, not the decoded windows).
+fn decode_ledger_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
     let store = JsonProgressStore::new(dir);
     [MIC_TRACK, SYSTEM_TRACK]
         .iter()
@@ -307,10 +442,179 @@ pub fn ledger_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+// ── R3: the capture carry ───────────────────────────────────────────────────
+
+/// What the capture said about itself (partial or not, and its note), carried
+/// across a `waiting_for_model` round trip. The row's own state and error are
+/// overwritten by the wait, so without this a partial capture would come back
+/// as `transcribing` with no note and could end `complete`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CaptureCarry {
+    pub partial: bool,
+    pub note: Option<String>,
+}
+
+/// `<progress_dir>/<id>.capture.json`, beside the ledgers (and deleted with
+/// them by purge and delete).
+pub fn capture_carry_path(dir: &Path, meeting_id: &str) -> PathBuf {
+    dir.join(format!("{meeting_id}.capture.json"))
+}
+
+/// The carry a `waiting_for_model` pass left, if any.
+pub fn read_capture_carry(dir: &Path, meeting_id: &str) -> Option<CaptureCarry> {
+    let bytes = std::fs::read(capture_carry_path(dir, meeting_id)).ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            // Unreadable carry: assume the capture WAS partial — never let a
+            // corrupt file promote a short capture to `complete`.
+            log::warn!("meeting {meeting_id}: unreadable capture carry ({e}) — treated as partial");
+            Some(CaptureCarry {
+                partial: true,
+                note: None,
+            })
+        }
+    }
+}
+
+/// Written BEFORE the row flips to `waiting_for_model`; an error stops the
+/// flip, so the row never loses its partial-ness to a failed write.
+fn write_capture_carry(dir: &Path, meeting_id: &str, carry: &CaptureCarry) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(carry).map_err(|e| e.to_string())?;
+    std::fs::write(capture_carry_path(dir, meeting_id), bytes).map_err(|e| e.to_string())
+}
+
+// ── R2: the crash-loop guard ────────────────────────────────────────────────
+
+/// What a job leaves on disk while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AttemptMarker {
+    /// Launches that died mid-job with no ledger progress since the one before.
+    pub unprogressed_crashes: u32,
+    /// Ledger progress (seconds, summed over tracks) when this attempt began.
+    pub progress_at_start: f64,
+}
+
+/// `<progress_dir>/<id>.attempts.json`, beside the per-track ledgers.
+pub fn attempt_marker_path(dir: &Path, meeting_id: &str) -> PathBuf {
+    dir.join(format!("{meeting_id}.attempts.json"))
+}
+
+/// The marker a previous attempt left, if the process died during it.
+pub fn read_attempt_marker(dir: &Path, meeting_id: &str) -> Option<AttemptMarker> {
+    let bytes = std::fs::read(attempt_marker_path(dir, meeting_id)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_attempt_marker(dir: &Path, meeting_id: &str, marker: AttemptMarker) {
+    let path = attempt_marker_path(dir, meeting_id);
+    let _ = std::fs::create_dir_all(dir);
+    match serde_json::to_vec(&marker) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(&path, bytes) {
+                log::warn!("meeting pipeline: cannot write {}: {e}", path.display());
+            }
+        }
+        Err(e) => log::warn!("meeting pipeline: cannot encode attempt marker: {e}"),
+    }
+}
+
+fn clear_attempt_marker(dir: &Path, meeting_id: &str) {
+    let _ = std::fs::remove_file(attempt_marker_path(dir, meeting_id));
+}
+
+/// Ledger progress summed over both tracks — what "progress" means for R2.
+fn ledger_progress(dir: &Path, meeting_id: &str) -> f64 {
+    let store = JsonProgressStore::new(dir);
+    [MIC_TRACK, SYSTEM_TRACK]
+        .iter()
+        .filter_map(|t| store.load(&ledger_key(meeting_id, *t)).ok())
+        .map(|p| p.processed_through_seconds)
+        .sum()
+}
+
+/// The crash-loop decision, pure: given the marker the last attempt left (if
+/// the process died during it) and the ledger progress now, how many
+/// unprogressed crashes does this meeting have?
+pub fn unprogressed_crashes(previous: Option<AttemptMarker>, progress_now: f64) -> u32 {
+    match previous {
+        None => 0,
+        Some(m) if progress_now > m.progress_at_start + 1e-6 => 0,
+        Some(m) => m.unprogressed_crashes.saturating_add(1),
+    }
+}
+
+/// [`run_meeting_job`] behind the R2 guard. The worker runs THIS.
+pub fn guarded_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String> {
+    let dir = &deps.progress_dir;
+    let progress_now = ledger_progress(dir, id);
+    let crashes = unprogressed_crashes(read_attempt_marker(dir, id), progress_now);
+    if crashes >= MAX_UNPROGRESSED_ATTEMPTS {
+        log::error!(
+            "meeting pipeline: {id} took Yap down {crashes} time(s) without progress — \
+             marked failed, not retried"
+        );
+        clear_attempt_marker(dir, id);
+        deps.db
+            .set_meeting_state(id, MeetingState::Failed, Some(CRASH_LOOP_MESSAGE))?;
+        emit_final(
+            deps,
+            id,
+            MeetingState::Failed,
+            Some(CRASH_LOOP_MESSAGE.into()),
+        );
+        return Ok(MeetingState::Failed);
+    }
+    if crashes > 0 {
+        log::warn!("meeting pipeline: {id} — the last launch died mid-job ({crashes}/{MAX_UNPROGRESSED_ATTEMPTS})");
+    }
+    write_attempt_marker(
+        dir,
+        id,
+        AttemptMarker {
+            unprogressed_crashes: crashes,
+            progress_at_start: progress_now,
+        },
+    );
+    let out = run_meeting_job(deps, id);
+    clear_attempt_marker(dir, id);
+    out
+}
+
+// ── R3: waiting_for_model ───────────────────────────────────────────────────
+
+/// A model download completed: every `waiting_for_model` row goes back on the
+/// queue (its audio was kept). Returns how many were requeued.
+pub fn requeue_waiting_for_model(db: &Database, enqueue: &dyn Fn(&str)) -> usize {
+    let rows = match db.list_meetings(100_000, None) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("meeting pipeline: cannot list waiting meetings ({e})");
+            return 0;
+        }
+    };
+    let mut n = 0;
+    for m in rows {
+        if MeetingState::parse(&m.state) == Some(MeetingState::WaitingForModel) {
+            let _ = db.set_meeting_state(&m.id, MeetingState::Transcribing, None);
+            enqueue(&m.id);
+            n += 1;
+        }
+    }
+    if n > 0 {
+        log::info!("meeting pipeline: model ready — {n} waiting meeting(s) requeued");
+    }
+    n
+}
+
 /// Forget every decoded window and segment of a meeting, so a Retry starts
 /// clean rather than resuming past windows that failed.
 pub fn reset_for_retry(db: &Database, dir: &Path, meeting_id: &str) -> Result<(), String> {
-    for path in ledger_paths(dir, meeting_id) {
+    for path in ledger_paths(dir, meeting_id)
+        .into_iter()
+        .filter(|p| *p != capture_carry_path(dir, meeting_id))
+    {
         let _ = std::fs::remove_file(path);
     }
     for track in [MIC_TRACK, SYSTEM_TRACK] {
@@ -463,6 +767,17 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     }
     let capture_was_partial = prior == MeetingState::Partial;
     let capture_note = meeting.error.clone();
+    // R3 (fix round 1): a row coming back from `waiting_for_model` (by the
+    // download requeue, which clears the error, or by launch reconcile, which
+    // leaves the waiting sentence in it) gets its capture's own partial-ness
+    // and note back from the carry, never the waiting sentence.
+    let (capture_was_partial, capture_note) = match read_capture_carry(&deps.progress_dir, id) {
+        Some(carry) => (capture_was_partial || carry.partial, carry.note),
+        None if capture_note.as_deref() == Some(WAITING_FOR_MODEL_MESSAGE) => {
+            (capture_was_partial, None)
+        }
+        None => (capture_was_partial, capture_note),
+    };
 
     let mut tracks: Vec<(i64, PathBuf)> = Vec::new();
     for (track, path) in [
@@ -506,16 +821,71 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     // reads `transcribing` while the job runs so the UI can draw progress.
     db.set_meeting_state(id, MeetingState::Transcribing, capture_note.as_deref())?;
 
-    let asr = match (deps.asr)() {
-        Ok(asr) => asr,
-        Err(e) => {
-            // The audio is kept (retention never purges a non-complete row),
-            // so Retry after a model download picks it straight back up.
+    let engine = match (deps.asr)() {
+        Ok(engine) => engine,
+        Err(AsrUnavailable::ModelMissing { model_id }) => {
+            // R3: not a failure. The audio is kept (retention only purges
+            // `complete`), and a finished download requeues the row.
+            log::info!("meeting {id}: waiting_for_model ({model_id} is not on disk)");
+            write_capture_carry(
+                &deps.progress_dir,
+                id,
+                &CaptureCarry {
+                    partial: capture_was_partial,
+                    note: capture_note.clone(),
+                },
+            )?;
+            db.set_meeting_state(
+                id,
+                MeetingState::WaitingForModel,
+                Some(WAITING_FOR_MODEL_MESSAGE),
+            )?;
+            emit_final(
+                deps,
+                id,
+                MeetingState::WaitingForModel,
+                Some(WAITING_FOR_MODEL_MESSAGE.into()),
+            );
+            return Ok(MeetingState::WaitingForModel);
+        }
+        Err(AsrUnavailable::Refused(e)) => {
             db.set_meeting_state(id, MeetingState::Failed, Some(&e))?;
             emit_final(deps, id, MeetingState::Failed, Some(e));
             return Ok(MeetingState::Failed);
         }
     };
+    // R4: one model per transcript. A ledger another model left is discarded
+    // rather than spliced onto this model's output.
+    let asr_model = engine.model_id.clone();
+    // A row with NO recorded model but with segments or ledgers on disk was
+    // partly transcribed before migration 6 — by an unknown model, so it is
+    // treated exactly like a different one (fix round 1: never fail open).
+    // This build records the model before it decodes a single window, so a row
+    // it touched always has one.
+    let discard = match db.meeting_asr_model(id)? {
+        Some(previous) if previous != asr_model => Some(previous),
+        Some(_) => None,
+        None => {
+            let has_segments = !db.list_meeting_segments(id)?.is_empty();
+            let has_ledger = decode_ledger_paths(&deps.progress_dir, id)
+                .iter()
+                .any(|p| p.exists());
+            (has_segments || has_ledger).then(|| "an unrecorded model".to_string())
+        }
+    };
+    if let Some(previous) = discard {
+        log::warn!(
+            "meeting {id}: was partly transcribed by {previous}, now decoding with {asr_model} — starting over"
+        );
+        for path in decode_ledger_paths(&deps.progress_dir, id) {
+            let _ = std::fs::remove_file(path);
+        }
+        for track in [MIC_TRACK, SYSTEM_TRACK] {
+            db.delete_meeting_segments_from(id, track, 0.0)?;
+        }
+    }
+    db.set_meeting_asr_model(id, &asr_model)?;
+    let asr = engine.asr;
 
     let mut done_before = 0.0f64;
     let mut decoded = 0usize;
@@ -583,6 +953,8 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     };
     db.set_meeting_progress(id, meeting.duration_seconds)?;
     db.set_meeting_state(id, state, error.as_deref())?;
+    // The capture's partial-ness now lives in the row's final state.
+    let _ = std::fs::remove_file(capture_carry_path(&deps.progress_dir, id));
     log::info!(
         "meeting {id}: transcribed {segments} segment(s) over {} track(s), {failed} failed window(s) → {}",
         sources.len(),

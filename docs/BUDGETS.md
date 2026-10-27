@@ -293,3 +293,48 @@ The emitter scan, the throttle scan and the timer census each run over a synthet
 contains the shape they are meant to catch, and assert they catch it, before they run over the
 real tree. A grep proving absence with the wrong pattern is a green test that guards nothing;
 these three prove the pattern can match the shape feared, not just the shape remembered.
+
+---
+
+## meeting_stop_to_notes (yap24-NT2)
+
+**What it is:** how long a user waits between pressing Stop on a meeting and the row reaching
+`complete` (transcript ready; no summary model installed, so the summary stage is not in it), for
+the 15-minute single-speaker lecture fixture. Measured through the app's own
+`meeting_pipeline::run_meeting_job`, not the harness's per-window subprocess decoder: `WavWindows`
+over the WAV, the shipped `MeetingAsr` driver, `WarmEngineChunkAsr` over ONE warm
+`TranscriptionManager` holding the pinned model (`handy-computer/parakeet-unified-en-0.6b-gguf`,
+Q8_0), segments landing in a real SQLite file.
+
+**Falsifier:** `meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline` in
+`desktop/src-tauri/tests/meeting_eval.rs`, run REQUIRED (a missing corpus or model panics):
+
+```
+cd desktop/src-tauri
+YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 \
+  YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" \
+  YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  cargo test --features custom-protocol --test meeting_eval -- --nocapture --test-threads=1
+```
+
+**Measured 2026-10-26**, Apple M4 Pro, 24 GB (Wilson's dev machine), `cargo test` debug test
+profile of the harness with the app crate's dependency profile, lecture-15min = 904.7 s of audio,
+30 windows:
+
+| run | stop_to_notes | real-time factor | peak RSS (test process) | pipeline WER |
+|---|---|---|---|---|
+| first run after build (cold model pages + Metal pipeline compile) | 49.2 s | 0.0544 | 1128 MB | 0.0728 |
+| second run (warm page cache) | 13.6 s | 0.0150 | 1216 MB | 0.0728 |
+
+The model-only WER on the same fixture (harness decoder, its own seam merge) is **0.0048**
+(`meeting_eval lecture-15min wer=0.0048`; timed merge 0.0090; VAD-cut timed merge 0.0042), under
+the 0.02 `WER_GATE`, which is unchanged.
+
+**Finding, not a target — the shipped pipeline WER is 0.0728.** 15 substitutions, 0 deletions,
+**212 insertions** over 3117 reference words across 30 windows: about seven words per seam land
+twice. The harness's merge removes the 2 s window overlap; the shipped per-window append
+(`meeting_pipeline::chunk_segment`) does not on this model's output. Root cause is not yet
+verified (the likeliest reading is that the windows' spans are not joinable, so the whole window
+text — overlap included — is written). This needs its own item. Until it lands the pipeline arm
+asserts a measured regression ceiling (`PIPELINE_WER_CEILING = 0.08`), to be lowered to
+`WER_GATE` by the fix.

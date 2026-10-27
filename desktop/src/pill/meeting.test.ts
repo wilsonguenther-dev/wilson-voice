@@ -11,6 +11,7 @@ import {
   formatElapsed,
   IDLE_MEETING,
   MEETING_FAILED_FALLBACK,
+  MEETING_WAITING_FALLBACK,
   MEETING_PILL_IDLE,
   MEETING_PROGRESS_EVENT,
   MEETING_RESULT_HOLD_MS,
@@ -230,6 +231,39 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     // A failure the backend did not explain is still a sentence, never blank.
     const [blank] = run([progress({ state: "failed", error: null })]);
     expect(blank.kind === "failed" && blank.sentence).toBe(MEETING_FAILED_FALLBACK);
+  });
+
+  it("waiting_for_model (yap24-NT2 R3) leaves 'Transcribing 0%' for a held wait sentence that opens the meeting", () => {
+    // NT7 announces the enqueue as transcribing 0%; NT2's no-model job then ends
+    // with state waiting_for_model. The pill must not stay on 0% forever.
+    const why =
+      "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically. Your audio is kept.";
+    const [queued, waiting] = run([
+      progress({ percent: 0 }),
+      progress({ state: "waiting_for_model", percent: 0, error: why }),
+    ]);
+    expect(queued.kind).toBe("processing");
+    expect(waiting).toEqual({ kind: "waiting", id: "m1", sentence: why });
+    expect(meetingPillHoldMs(waiting)).toBe(10_000);
+    const view = meetingAfterView(waiting, "idle");
+    expect(view?.kind).toBe("waiting");
+    expect(view?.label).toBe("Waiting for a speech model");
+    expect(view?.title).toBe(why);
+    expect(view?.percent).toBeNull();
+    expect(view?.opens).toBe(true);
+    // The hold's dismiss clears it, scoped to its meeting.
+    expect(reduceMeetingPill(waiting, { type: "dismiss", id: "other" })).toBe(waiting);
+    expect(reduceMeetingPill(waiting, { type: "dismiss", id: "m1" })).toBe(MEETING_PILL_IDLE);
+    // A wait the backend did not explain still says what to do.
+    const [blank] = run([progress({ state: "waiting_for_model", error: null })]);
+    expect(blank.kind === "waiting" && blank.sentence).toBe(MEETING_WAITING_FALLBACK);
+    // A download requeues the row: the next transcribing event resumes processing.
+    const [, , resumed] = run([
+      progress({ percent: 0 }),
+      progress({ state: "waiting_for_model", percent: 0, error: why }),
+      progress({ percent: 5 }),
+    ]);
+    expect(resumed).toEqual({ kind: "processing", id: "m1", percent: 5, step: "transcribing" });
   });
 
   it("a dictation during processing still shows the dictation phases (dictation outranks the badge)", () => {

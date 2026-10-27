@@ -588,6 +588,11 @@ button.meeting-after:focus-visible {
   background: hsl(38 92% 50%);
   box-shadow: 0 0 8px hsl(38 92% 50% / 0.6);
 }
+/* yap24-NT2 R3 — waiting for a speech model: not a failure, nothing running. */
+.meeting-after-dot.waiting {
+  background: hsl(210 15% 65%);
+  box-shadow: 0 0 8px hsl(210 15% 65% / 0.5);
+}
 @media (prefers-reduced-motion: reduce) {
   .meeting-after-bar > i {
     transition: none;

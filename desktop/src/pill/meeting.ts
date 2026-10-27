@@ -159,6 +159,13 @@ export const MEETING_RESULT_HOLD_MS = 10_000;
 export const MEETING_FAILED_FALLBACK = "Yap could not transcribe this meeting.";
 
 /**
+ * yap24-NT2 R3 — the sentence the pill shows when a meeting is waiting for a
+ * speech model and the event carried no sentence of its own.
+ */
+export const MEETING_WAITING_FALLBACK =
+  "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically.";
+
+/**
  * The meeting's phase on the pill. `recording` is the live meeting (YV95);
  * everything after it is new here.
  */
@@ -167,7 +174,14 @@ export type MeetingPillPhase =
   | { kind: "recording"; id: string | null }
   | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing" }
   | { kind: "notes-ready"; id: string }
-  | { kind: "failed"; id: string; sentence: string };
+  | { kind: "failed"; id: string; sentence: string }
+  /**
+   * yap24-NT2 R3 — the job ended `waiting_for_model`: no work is running, the
+   * audio is kept, and a model download requeues it. Held like a result, so
+   * the pill never sits on NT7's queued "Transcribing 0%" for a job that is
+   * not transcribing.
+   */
+  | { kind: "waiting"; id: string; sentence: string };
 
 export const MEETING_PILL_IDLE: MeetingPillPhase = { kind: "idle" };
 
@@ -226,12 +240,16 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
           return { kind: "failed", id: e.id, sentence };
         }
+        case "waiting_for_model": {
+          const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_WAITING_FALLBACK;
+          return { kind: "waiting", id: e.id, sentence };
+        }
         default:
           return prev;
       }
     }
     case "dismiss":
-      if ((prev.kind === "notes-ready" || prev.kind === "failed") && prev.id === input.id) {
+      if ((prev.kind === "notes-ready" || prev.kind === "failed" || prev.kind === "waiting") && prev.id === input.id) {
         return MEETING_PILL_IDLE;
       }
       return prev;
@@ -240,7 +258,9 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
 
 /** Does this phase hold on a deadline? (The shell arms the timer.) */
 export function meetingPillHoldMs(phase: MeetingPillPhase): number | null {
-  return phase.kind === "notes-ready" || phase.kind === "failed" ? MEETING_RESULT_HOLD_MS : null;
+  return phase.kind === "notes-ready" || phase.kind === "failed" || phase.kind === "waiting"
+    ? MEETING_RESULT_HOLD_MS
+    : null;
 }
 
 /**
@@ -252,7 +272,7 @@ const DICTATION_QUIET: ReadonlySet<LivePhase> = new Set<LivePhase>(["idle", "sle
 
 /** What the badge renders for a post-stop meeting phase. */
 export interface MeetingAfterView {
-  kind: "processing" | "notes-ready" | "failed";
+  kind: "processing" | "notes-ready" | "failed" | "waiting";
   /** The meeting this is about — the click opens it. */
   id: string;
   /** The words in the pill. */
@@ -285,6 +305,10 @@ export function meetingAfterView(phase: MeetingPillPhase, dictation: LivePhase):
       return { kind: "notes-ready", id: phase.id, label: "Notes ready — Open", title: "Meeting notes ready — open them in Yap", percent: null, opens: true };
     case "failed":
       return { kind: "failed", id: phase.id, label: phase.sentence, title: phase.sentence, percent: null, opens: true };
+    case "waiting":
+      // Short words in the pill (the Meetings view's own label); the full
+      // sentence — what to do next — is the tooltip and accessible name.
+      return { kind: "waiting", id: phase.id, label: meetingStateLabel("waiting_for_model", undefined, false), title: phase.sentence, percent: null, opens: true };
     default:
       return null;
   }
