@@ -894,11 +894,35 @@ impl TranscriptionManager {
         language: Option<String>,
         bias_prompt: Option<String>,
     ) -> Result<asr_engine::TimedTranscript, String> {
+        self.transcribe_timed_inner(None, samples_16k_mono, language, bias_prompt)
+    }
+
+    /// [`Self::transcribe_timed`] pinned to one catalog id: it decodes only on
+    /// an engine of `model_id`, and returns [`NO_ENGINE_LOADED`] when another
+    /// model holds the slot. Meeting ASR uses this so the model a meeting row
+    /// records as `asr_model` is the model that really decoded every chunk.
+    pub fn transcribe_timed_on(
+        &self,
+        model_id: &str,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        self.transcribe_timed_inner(Some(model_id), samples_16k_mono, language, bias_prompt)
+    }
+
+    fn transcribe_timed_inner(
+        &self,
+        expect_model: Option<&str>,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
         if samples_16k_mono.is_empty() {
             self.touch();
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
-        self.leased(true, move |engine| {
+        self.leased_on(true, expect_model, move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -1078,9 +1102,33 @@ impl TranscriptionManager {
         preemptible: bool,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        self.leased_on(preemptible, None, job)
+    }
+
+    /// [`Self::leased`], but when `expect_model` is set the job runs ONLY on
+    /// that catalog id. An engine of any other model is handed straight back
+    /// and the caller gets [`NO_ENGINE_LOADED`] — the engine it needs is not
+    /// the one resident — so it can load the right one and retry instead of
+    /// decoding on whatever a dictation left warm (yap24-NT2 needs-human sweep).
+    fn leased_on<R: Send + 'static>(
+        &self,
+        preemptible: bool,
+        expect_model: Option<&str>,
+        job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let mut engine = self.take_engine()?;
+        if let Some(want) = expect_model {
+            if engine.model_id != want {
+                log::debug!(
+                    "ASR engine '{}' is resident but '{want}' was asked for — handing it back",
+                    engine.model_id
+                );
+                self.return_engine(engine, generation);
+                return Err(NO_ENGINE_LOADED.into());
+            }
+        }
         self.inner.leases.fetch_add(1, Ordering::AcqRel);
         // The cancel flag is sticky, so it is cleared HERE — with the engine
         // exclusively in hand and before anything can see it as in-flight —

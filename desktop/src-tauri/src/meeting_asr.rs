@@ -658,10 +658,21 @@ impl ChunkAsr for WarmEngineChunkAsr {
         // empty slot and build a SECOND multi-hundred-MB engine beside the live
         // one. Contention is answered by the driver's retry, not by a second
         // Metal device.
-        if !self.manager.is_loaded() {
+        //
+        // yap24-NT2 needs-human sweep (both seats BLOCKING on 24ba9f9): the
+        // meeting model is PINNED, so "something is loaded" is not enough — a
+        // dictation keeps its own model warm in the same slot. When the slot
+        // holds another model (and nothing is leased out) load the pinned one,
+        // and decode through `transcribe_timed_on`, which refuses any engine
+        // that is not the pinned id. A dictation that swaps the slot between
+        // the load and the take therefore costs a contended retry, never a
+        // chunk decoded on the wrong model under the pinned model's name.
+        let leased_out = self.manager.is_loaded() && self.manager.loaded_model().is_none();
+        if !leased_out && self.manager.loaded_model().as_deref() != Some(self.model_id.as_str()) {
             self.manager.load(&self.model_id, &self.model_path)?;
         }
-        self.manager.transcribe_timed(
+        self.manager.transcribe_timed_on(
+            &self.model_id,
             samples_16k_mono.to_vec(),
             self.language.clone(),
             self.bias_prompt.clone(),
