@@ -196,6 +196,104 @@ pub struct ScratchNote {
     pub updated_at: DateTime<Utc>,
 }
 
+/// DB-D — one Scratchpad note: `notes(id,title,content,preview,pinned,created,modified)`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub preview: String,
+    pub pinned: bool,
+    pub created: DateTime<Utc>,
+    pub modified: DateTime<Utc>,
+}
+
+/// DB-D — one finalized state of a note.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteVersion {
+    pub id: i64,
+    pub note_id: String,
+    pub title: String,
+    pub content: String,
+    pub created: DateTime<Utc>,
+}
+
+/// DB-D — the rail's one-line preview: the first non-blank line, ≤ 140 chars.
+pub fn note_preview(content: &str) -> String {
+    let line = content.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    line.chars().take(140).collect()
+}
+
+fn note_searchable(title: &str, content: &str) -> String {
+    format!("{title}\n{content}")
+}
+
+const NOTE_COLS: &str = "id, title, content, preview, pinned, created, modified";
+
+fn map_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        preview: row.get(3)?,
+        pinned: row.get::<_, i64>(4)? != 0,
+        created: parse_dt(row.get::<_, String>(5)?),
+        modified: parse_dt(row.get::<_, String>(6)?),
+    })
+}
+
+impl From<Note> for ScratchNote {
+    fn from(n: Note) -> Self {
+        ScratchNote { id: n.id, title: n.title, body: n.content, updated_at: n.modified }
+    }
+}
+
+/// DB-D — move every pre-DB-D `scratchpad` row into `notes` (each becomes a
+/// note with one version row), then DROP the old table, in ONE transaction.
+/// Idempotent: on every later open the table is gone and this is a no-op.
+fn fold_legacy_scratchpad(conn: &Connection) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'scratchpad'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(());
+    }
+    let rows: Vec<(String, String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, title, body, updated_at FROM scratchpad")?;
+        let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        mapped.collect::<rusqlite::Result<_>>()?
+    };
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let run = || -> rusqlite::Result<()> {
+        for (id, title, body, at) in &rows {
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO notes (id, title, content, preview, pinned, created, modified, searchable_content)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5, ?6)",
+                params![id, title, body, note_preview(body), at, note_searchable(title, body)],
+            )?;
+            if inserted > 0 {
+                conn.execute(
+                    "INSERT INTO note_versions (note_id, title, content, created) VALUES (?1, ?2, ?3, ?4)",
+                    params![id, title, body, at],
+                )?;
+            }
+        }
+        conn.execute_batch("DROP TABLE scratchpad")?;
+        Ok(())
+    };
+    match run() {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Insights {
@@ -911,12 +1009,48 @@ impl Database {
               SELECT RAISE(ABORT, 'a retracted voice preference stays retracted');
             END;
 
-            CREATE TABLE IF NOT EXISTS scratchpad (
+            -- DB-D — the Scratchpad's notes. `searchable_content` (title + body)
+            -- is what `notes_fts` indexes, kept in step by the triggers below.
+            -- The pre-DB-D `scratchpad` table is folded in once by
+            -- `fold_legacy_scratchpad` and then dropped.
+            CREATE TABLE IF NOT EXISTS notes (
               id TEXT PRIMARY KEY,
               title TEXT NOT NULL DEFAULT 'Note',
-              body TEXT NOT NULL DEFAULT '',
-              updated_at TEXT NOT NULL
+              content TEXT NOT NULL DEFAULT '',
+              preview TEXT NOT NULL DEFAULT '',
+              pinned INTEGER NOT NULL DEFAULT 0,
+              created TEXT NOT NULL,
+              modified TEXT NOT NULL,
+              searchable_content TEXT NOT NULL DEFAULT ''
             );
+            CREATE INDEX IF NOT EXISTS idx_notes_order ON notes(pinned DESC, modified DESC);
+            -- DB-D — one row per FINALIZE (blur, tab switch, ⌘S, close, a
+            -- dictation landing) — never per keystroke. ON DELETE CASCADE and
+            -- `delete_note`'s explicit DELETE both remove a note's history.
+            CREATE TABLE IF NOT EXISTS note_versions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,
+              content TEXT NOT NULL,
+              created TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id, id);
+            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+              USING fts5(searchable_content, content='notes', content_rowid='rowid');
+            CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+              INSERT INTO notes_fts(rowid, searchable_content)
+                VALUES (new.rowid, new.searchable_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+              INSERT INTO notes_fts(notes_fts, rowid, searchable_content)
+                VALUES('delete', old.rowid, old.searchable_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+              INSERT INTO notes_fts(notes_fts, rowid, searchable_content)
+                VALUES('delete', old.rowid, old.searchable_content);
+              INSERT INTO notes_fts(rowid, searchable_content)
+                VALUES (new.rowid, new.searchable_content);
+            END;
 
             CREATE TABLE IF NOT EXISTS daily_stats (
               day TEXT PRIMARY KEY,
@@ -978,6 +1112,10 @@ impl Database {
         // and because nothing needs backfilling yet — a fresh install and a
         // three-year-old one both go 0 → 1 the same way.
         run_migrations(&conn).map_err(|e| OpenErr::classify("migrate", e))?;
+        // DB-D — the pre-DB-D `scratchpad` table, folded into `notes` exactly
+        // once (it is dropped in the same transaction, so a deleted note can
+        // never be resurrected by a later open).
+        fold_legacy_scratchpad(&conn).map_err(|e| OpenErr::classify("scratchpad fold", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -4233,62 +4371,186 @@ impl Database {
         Ok(out)
     }
 
+    /// The main window's Scratchpad view (and DB-C's Clear History test)
+    /// read notes through this legacy shape; it is the same `notes` table.
     pub fn list_scratch(&self) -> Result<Vec<ScratchNote>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, body, updated_at FROM scratchpad
-                 ORDER BY updated_at DESC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ScratchNote {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    body: row.get(2)?,
-                    updated_at: parse_dt(row.get::<_, String>(3)?),
-                })
-            })
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r.map_err(|e| e.to_string())?);
-        }
-        Ok(out)
+        Ok(self.list_notes()?.into_iter().map(ScratchNote::from).collect())
     }
 
+    /// A Save from the main window's view is a finalize: one version row.
     pub fn save_scratch(
         &self,
         id: Option<String>,
         title: String,
         body: String,
     ) -> Result<ScratchNote, String> {
-        let note = ScratchNote {
-            id: id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-            title,
-            body,
-            updated_at: Utc::now(),
-        };
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO scratchpad (id, title, body, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-               title = excluded.title,
-               body = excluded.body,
-               updated_at = excluded.updated_at",
-            params![note.id, note.title, note.body, note.updated_at.to_rfc3339()],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(note)
+        self.finalize_note(id, title, body).map(ScratchNote::from)
     }
 
     pub fn delete_scratch(&self, id: &str) -> Result<(), String> {
+        self.delete_note(id)
+    }
+
+    /// DB-D — every note, pinned first, then most recently modified.
+    pub fn list_notes(&self) -> Result<Vec<Note>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM scratchpad WHERE id = ?1", params![id])
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {NOTE_COLS} FROM notes ORDER BY pinned DESC, modified DESC"
+            ))
             .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], map_note).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_note(&self, id: &str) -> Result<Option<Note>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            &format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1"),
+            params![id],
+            map_note,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// DB-D — search titles + bodies through `notes_fts` (prefix terms, the
+    /// same query shape as History). An FTS syntax error degrades to a
+    /// substring match, never to an error.
+    pub fn search_notes(&self, query: &str) -> Result<Vec<Note>, String> {
+        let q = query.trim();
+        if q.is_empty() {
+            return self.list_notes();
+        }
+        let fts = q
+            .split_whitespace()
+            .map(|t| format!("\"{}\"*", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT {} FROM notes_fts f JOIN notes n ON n.rowid = f.rowid
+             WHERE notes_fts MATCH ?1 ORDER BY n.pinned DESC, n.modified DESC",
+            NOTE_COLS.split(", ").map(|c| format!("n.{c}")).collect::<Vec<_>>().join(", ")
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(rows) = stmt.query_map(params![fts], map_note) {
+                if let Ok(out) = rows.collect::<rusqlite::Result<Vec<_>>>() {
+                    return Ok(out);
+                }
+            }
+        }
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {NOTE_COLS} FROM notes WHERE searchable_content LIKE ?1
+                 ORDER BY pinned DESC, modified DESC"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![format!("%{q}%")], map_note)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    /// Upsert the note row (keeps `created` and `pinned`). Caller holds the lock.
+    fn upsert_note(conn: &Connection, id: &str, title: &str, content: &str) -> rusqlite::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO notes (id, title, content, preview, pinned, created, modified, searchable_content)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               title = excluded.title,
+               content = excluded.content,
+               preview = excluded.preview,
+               modified = excluded.modified,
+               searchable_content = excluded.searchable_content",
+            params![id, title, content, note_preview(content), now, note_searchable(title, content)],
+        )?;
         Ok(())
+    }
+
+    /// DB-D — the autosave while typing: the note row only, NO version row.
+    pub fn save_note_draft(
+        &self,
+        id: Option<String>,
+        title: String,
+        content: String,
+    ) -> Result<Note, String> {
+        let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            Self::upsert_note(&conn, &id, &title, &content).map_err(|e| e.to_string())?;
+        }
+        self.get_note(&id)?.ok_or_else(|| "note vanished".into())
+    }
+
+    /// DB-D — FINALIZE: the note row AND one `note_versions` row, in one
+    /// transaction. Every finalize writes a version; the window only calls it
+    /// when the note changed since its last finalize.
+    pub fn finalize_note(
+        &self,
+        id: Option<String>,
+        title: String,
+        content: String,
+    ) -> Result<Note, String> {
+        let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        {
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            Self::upsert_note(&tx, &id, &title, &content).map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO note_versions (note_id, title, content, created) VALUES (?1, ?2, ?3, ?4)",
+                params![id, title, content, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        self.get_note(&id)?.ok_or_else(|| "note vanished".into())
+    }
+
+    pub fn set_note_pinned(&self, id: &str, pinned: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE notes SET pinned = ?2 WHERE id = ?1",
+            params![id, i64::from(pinned)],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Newest first.
+    pub fn list_note_versions(&self, note_id: &str) -> Result<Vec<NoteVersion>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, note_id, title, content, created FROM note_versions
+                 WHERE note_id = ?1 ORDER BY id DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![note_id], |r| {
+                Ok(NoteVersion {
+                    id: r.get(0)?,
+                    note_id: r.get(1)?,
+                    title: r.get(2)?,
+                    content: r.get(3)?,
+                    created: parse_dt(r.get::<_, String>(4)?),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    /// DB-D — a note and its whole history go together. The explicit DELETE
+    /// does not lean on `PRAGMA foreign_keys` (the cascade is the backstop).
+    pub fn delete_note(&self, id: &str) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM note_versions WHERE note_id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM notes WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
     }
 
     /// Y8-C — lifetime words across every transcript, for the achievement

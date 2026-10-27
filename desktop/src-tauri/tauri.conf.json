@@ -27,6 +27,23 @@
         "transparent": false,
         "visible": true,
         "focus": true
+      },
+      {
+        "label": "scratchpad",
+        "title": "Scratchpad",
+        "url": "scratchpad.html",
+        "width": 760,
+        "height": 520,
+        "minWidth": 480,
+        "minHeight": 320,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "visible": false,
+        "focus": false,
+        "skipTaskbar": true
       }
     ],
     "security": {

@@ -208,6 +208,13 @@ export default function Scratchpad() {
           <button onClick={() => pasteText(noteBody)} disabled={!noteBody}>
             Paste
           </button>
+          {/* DB-D — the same notes in their own panel, over any app (⌃⌘J). */}
+          <button
+            onClick={() => void invoke("open_scratchpad").catch((e) => toastError(e))}
+            title="Open the Scratchpad over whatever app you are in"
+          >
+            Open as window
+          </button>
           {activeNoteId && (
             <button className="ghost danger" onClick={() => deleteNote(activeNoteId)}>
               Delete

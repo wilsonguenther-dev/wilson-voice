@@ -488,3 +488,33 @@ fn two_takes_cannot_interleave_their_pastes() {
         "B's paste may not start while A's is in flight, and order is arrival order"
     );
 }
+
+/// DB-D — the guard RE-POINTED for the Scratchpad. A take dictated into a note
+/// (the panel was key; it is non-activating, so Notes is still frontmost) is
+/// for the NOTE: it is never typed into the app behind the panel — not even
+/// when the note cannot take it (this backend has no Scratchpad, the default
+/// `deliver_to_note`), in which case it is held on the pill.
+#[test]
+fn a_take_for_the_scratchpad_note_never_reaches_the_app_behind_it() {
+    for path in [InsertPath::Ax, InsertPath::PasteBridge] {
+        let mut f = Fake::new(NOTES);
+        let target = paste::take_target(Some("note-1"), Some(NOTES));
+        assert_eq!(target, PasteTarget::Note("note-1"));
+        let (out, trace) = paste::insert_traced(&mut f, path, TAKE, true, target);
+        assert_eq!(f.posts, 0, "{path:?}: no ⌘V into Notes");
+        assert_eq!(f.ax_calls, 0, "{path:?}: no AX insert into Notes");
+        assert_eq!(f.secure_calls, 0, "{path:?}: Notes' focused field is not the target");
+        assert!(!out.pasted);
+        assert_eq!(out.message, paste::NOTE_GONE_MESSAGE);
+        assert_eq!(trace.fallback, InsertFallback::WrongTarget);
+        assert_eq!(f.cards.len(), 1, "{path:?}: held on the pill");
+        assert_eq!(f.cards[0].reason, CopyCardReason::TargetMoved);
+        assert_eq!(f.cards[0].text, TAKE);
+    }
+    // And with no note focused the very same call is the unchanged app guard.
+    let mut f = Fake::new(NOTES);
+    let target = paste::take_target(None, Some(NOTES));
+    assert_eq!(target, PasteTarget::Dictated(Some(NOTES)));
+    let _ = paste::insert_traced(&mut f, InsertPath::PasteBridge, TAKE, true, target);
+    assert_eq!(f.posts, 1, "a take with no note focused still pastes into Notes");
+}

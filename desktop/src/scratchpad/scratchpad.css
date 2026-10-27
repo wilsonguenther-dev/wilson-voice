@@ -1,0 +1,199 @@
+/* DB-D — the Scratchpad window. Roles come from tokens.css; nothing here
+   declares a literal colour the dark palette would not follow. */
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--surface);
+  color: var(--text-primary);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.sp {
+  display: grid;
+  grid-template-columns: minmax(170px, 30%) 1fr;
+  height: 100%;
+  min-height: 0;
+}
+.sp-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 10px;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface-sidebar);
+}
+.sp-search,
+.sp-title {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+/* Y5-J — keyboard focus for the search, title, text, list, buttons and tabs
+ * is the ONE global ring in src/a11y/focus.css (imported by scratchpad-main). */
+.sp-new,
+.sp-btn {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.sp-btn.danger {
+  color: var(--text-on-fill);
+  background: var(--danger, #b4372f);
+  border-color: transparent;
+}
+.sp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+.sp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.sp-item.on {
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.sp-item-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-pin {
+  color: var(--accent);
+  margin-right: 5px;
+  font-size: 0.7em;
+  vertical-align: middle;
+}
+.sp-item-preview,
+.sp-hint,
+.sp-foot {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-hint {
+  white-space: normal;
+  margin: 0 8px;
+}
+.sp-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 14px 10px;
+  gap: 8px;
+}
+.sp-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.sp-tab {
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+  max-width: 180px;
+  border: 1px solid transparent;
+}
+.sp-tab.on {
+  background: var(--surface-card);
+  border-color: var(--border);
+}
+.sp-tab button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.sp-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-tab-close {
+  color: var(--text-muted);
+}
+.sp-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.sp-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+}
+.sp-text {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font: 13.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.sp-blank {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+.sp-error {
+  margin: 0;
+  color: var(--danger, #b4372f);
+}
+.sp-versions {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 38%;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-card);
+}
+.sp-versions li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 4px;
+}
+.sp-versions time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
