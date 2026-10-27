@@ -276,7 +276,9 @@ fn every_stop_call_site_goes_through_stop_take() {
         .find("\n}\n")
         .expect("toggle_hands_free body ends");
     assert!(lib[hf_start..hf_start + hf_len].contains("stop_take(app, state, origin)"));
-    assert!(lib.contains("toggle_hands_free(app, &state, StopOrigin::MenuBar)"));
+    // Y6-B: the tray item dispatches through `run_tray_command`, where the
+    // state is already a reference.
+    assert!(lib.contains("toggle_hands_free(app, state, StopOrigin::MenuBar)"));
     assert!(lib.contains("toggle_hands_free(app, state, StopOrigin::Hotkey)"));
     // yap-p0-hotkeys-no-permission: the hotkey stop moved into the ONE
     // dispatcher, `take_hotkey_edge`, which both the fn tap's PttEvent::Stop
