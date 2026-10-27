@@ -348,7 +348,7 @@ describe("the duration table", () => {
 
     // ClassicPill's reduced-motion branch paints the static frame and returns
     // BEFORE the rAF loop is ever armed.
-    const pill = PILL_SOURCES["./ClassicPill.tsx"];
+    const pill = PILL_SOURCES["./PillShell.tsx"];
     expect(pill).toBeTypeOf("string");
     const guard = pill.slice(pill.indexOf("(prefers-reduced-motion: reduce)"));
     const stop = guard.indexOf("requestAnimationFrame");
@@ -368,7 +368,7 @@ describe("the duration table", () => {
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => f !== "./motion.ts");
     expect(files.length).toBeGreaterThan(4); // the sweep found real files to sweep
-    expect(files).toContain("./ClassicPill.tsx");
+    expect(files).toContain("./PillShell.tsx");
     expect(files).toContain("./YappyPill.tsx");
 
     const stripComments = (src: string) =>

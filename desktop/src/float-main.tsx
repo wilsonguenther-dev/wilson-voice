@@ -1,7 +1,6 @@
 /**
  * Float entry — picks the pill style from settings and renders it.
- *   "classic" → the original obsidian waveform capsule (ClassicPill)
- *   "yappy"   → the pixel-art chick companion (YappyPill)
+ *   any registered character id (pill/characters/registry.ts); unknown → classic
  * Live-switches when settings are saved (backend emits "settings").
  *
  * YV53: the same settings carry the dock edge (bottom | left | right). The
@@ -9,14 +8,14 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import ClassicPill from "./pill/ClassicPill";
-import YappyPill from "./pill/YappyPill";
+import PillShell from "./pill/PillShell";
+import { resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
@@ -478,7 +477,18 @@ function Float() {
     listen: listenEst,
     scratchpadOnBar,
   };
-  const pill = style === "yappy" ? <YappyPill {...pillProps} /> : <ClassicPill {...pillProps} slots={slots} />;
+  // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
+  // unknown id falls back to classic. The shell never branches on an id: a
+  // character that still owns its whole window declares a `stage`.
+  const character = resolveCharacter(style);
+  const Stage = character.stage;
+  const pill = Stage ? (
+    <Suspense fallback={null}>
+      <Stage {...pillProps} tone={chatTone} />
+    </Suspense>
+  ) : (
+    <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
+  );
   // Y5-I — the BOX is the shell's, decided ONCE here for every character: the
   // table row for this phase at this dock (pill/dock-geometry.json), carried as
   // two orientation-neutral tokens plus the override attributes float.css reads.

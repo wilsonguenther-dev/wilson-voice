@@ -16,7 +16,7 @@ const lineOf = (src: string, index: number) => src.slice(0, index).split("\n").l
 describe("a11y — semantics (Y5-J)", () => {
   it("the sweep actually sees the app", () => {
     expect(Object.keys(TSX)).toContain("../App.tsx");
-    expect(Object.keys(TSX)).toContain("../pill/ClassicPill.tsx");
+    expect(Object.keys(TSX)).toContain("../pill/PillShell.tsx");
     expect(Object.keys(CSS)).toContain("../App.css");
     expect(Object.keys(CSS)).toContain("../float.css");
     expect(Object.keys(CSS)).toContain("./focus.css");

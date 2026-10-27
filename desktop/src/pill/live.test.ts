@@ -23,7 +23,7 @@ import {
   errorSentence, fitsSideDockStrip, isLegalTransition, phaseCopy, phaseHoldMs, reduceTakePhase,
   AMBIENT_FRAME_MS, ALL_LIVE_PHASES, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS,
   IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_COPY, PHASE_HOLD_MS,
-  PHASE_ID, PHASE_NEXT, PHASE_PRECEDENCE, SHIPPED_CHARACTERS, SIDE_DOCK_TEXT_PX,
+  PHASE_ID, PHASE_NEXT, PHASE_PRECEDENCE, SIDE_DOCK_TEXT_PX,
   UNBOUNDED_PHASES,
   type ChatTone, type LiveFrame, type LivePhase, type TakeStatus, type TranscribeProgress,
 } from "./live";
@@ -31,8 +31,6 @@ import {
 // (Y5-K lifts them into a registry). Importing them here is what makes
 // "adding a creature adds a ROW" true: a new face with a missing phase fails
 // this file, not a hand-written test per character.
-import { CLASSIC_PHASE_ART } from "./ClassicPill";
-import { YAPPY_PHASE_ART } from "./YappyPill";
 
 /** The pill redraws on rAF; `audio_level` lands at HUD_FPS underneath it. */
 const FRAME = 1 / 60;
@@ -752,31 +750,6 @@ describe("Y5-C — the phase vocabulary", () => {
     expect(SIDE_DOCK_TEXT_PX).toBe(192);
   });
 
-  it("every_shipped_character_has_copy_and_art_for_every_phase", () => {
-    // Driven off the list of characters that SHIP, so adding a creature adds a
-    // row and not a test file — the fixture matrix Y5-K formalises.
-    const ART = { classic: CLASSIC_PHASE_ART, yappy: YAPPY_PHASE_ART } as const;
-    expect(Object.keys(ART).sort()).toEqual([...SHIPPED_CHARACTERS].sort());
-    for (const character of SHIPPED_CHARACTERS) {
-      const table = ART[character];
-      expect(Object.keys(table).sort(), `${character} art table`).toEqual([...ALL_LIVE_PHASES].sort());
-      for (const p of ALL_LIVE_PHASES) {
-        const art = table[p];
-        expect(art?.sprite?.length, `${character} has no sprite for ${p}`).toBeGreaterThan(0);
-        expect(["still", "breathe", "work", "pulse", "shake"], `${character}/${p} motion`)
-          .toContain(art.motion);
-        // The COPY is shared — that is the point of putting it in live.ts —
-        // so every character inherits a line for every phase in every tone.
-        for (const tone of TONES) expect(phaseCopy(p, tone).length).toBeGreaterThan(0);
-      }
-      // A settled state must not be given a working animation, or the pill
-      // looks busy while nothing is happening.
-      for (const p of ["done", "empty", "cancelled", "blocked", "gated"] as LivePhase[]) {
-        expect(table[p].motion, `${character} animates ${p} like work`).not.toBe("work");
-      }
-    }
-  });
-
   it("precedence: blocked > gated > error > cancelled > the happy path", () => {
     const at = (p: LivePhase) => PHASE_PRECEDENCE.indexOf(p);
     expect(at("blocked")).toBeLessThan(at("gated"));
@@ -987,7 +960,7 @@ describe("Y5-J — accessible names and the one live region", () => {
     // Code only: the doc comments are allowed to NAME the attribute.
     const code = (file: string) =>
       readSibling(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*\/\/.*$/gm, "");
-    for (const file of ["./ClassicPill.tsx", "./YappyPill.tsx"]) {
+    for (const file of ["./PillShell.tsx", "./YappyPill.tsx"]) {
       const src = code(file);
       expect(src, file).toContain("<PhaseAnnouncer phase={gate} />");
       expect(src, file).toContain("aria-label={phaseAccessibleName(gate, progress)}");

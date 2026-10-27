@@ -38,10 +38,12 @@ const isModule = (f: string) => /\.ts$/.test(f) && !isTest(f) && !f.endsWith(".d
 const ADAPTERS: Record<string, string> = {
   "appShell.ts": "the main window's bridge: every invoke() and listen() the views use",
   "diagnostics.ts": "Settings → Diagnostics reads diagnostics_snapshot and calls export_diagnostics over invoke()",
+  "home/habitat/events.ts": "subscribes the habitat director to the backend's take, paste and model-download events",
   "formatting.ts": "useFormattingOptions loads and saves the formatting settings over invoke()",
   "meetings/consentWatch.ts": "subscribes to the backend's meeting-consent event",
   "meetings/notetakerSetup.ts": "drives the notetaker setup commands",
   "permissionRepair.ts": "runs the per-service permission probe and repair commands",
+  "pill/characters/registry.ts": "registers Yappy, whose transitional canvas stage (pill/YappyPill.tsx, lazily imported) listens to the backend",
   "pill/drag.ts": "moves the float window through invoke(); its hit-box math is tested on its own",
   "updater.ts": "the check_for_update / install_update commands",
 };
@@ -52,7 +54,7 @@ const ADAPTERS: Record<string, string> = {
  * must be registered here or carry a test — a pill piece nobody looked at is
  * how the pill stops being drivable.
  */
-const PILL_COMPONENTS = ["ClassicPill.tsx", "CopyCard.tsx", "LanguageChip.tsx", "MeetingBadge.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "YappyPill.tsx"];
+const PILL_COMPONENTS = ["CopyCard.tsx", "LanguageChip.tsx", "MeetingBadge.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "PillShell.tsx", "YappyPill.tsx", "characters/classic/index.tsx", "characters/example/index.tsx", "characters/yappy/index.tsx"];
 /** Docs and data under src/pill/ (dock-geometry.json is the Y5-I table dock.ts reads and dock.test.ts pins). */
 const PILL_DOCS = ["README.md", "dock-geometry.json"];
 

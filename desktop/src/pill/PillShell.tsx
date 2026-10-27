@@ -1,14 +1,20 @@
 /**
- * ClassicPill — the original obsidian Dictate island (waveform capsule).
- * Restored as a selectable pill style. Waveform driven by a --level CSS var each
- * rAF frame (smoother than re-rendering 9 bars per audio event).
+ * PillShell — the pill's SHELL (Y5-K), ported from ClassicPill.
+ *
+ * Everything that is not the creature lives here, once, for every character:
+ * the capsule chrome, the slots, the box from dock-geometry.json, hover
+ * hysteresis, the drag gesture and its soft body, the license chip, the gate
+ * note, the determinate progress fill and the aria names. The CHARACTER is
+ * handed a frame (pill/characters/types.ts) and paints inside the body slot;
+ * it is resolved from `pill_style` once, by float-main, never by this file.
+ * Waveform level rides a --level CSS var each rAF frame.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction, progressNumeral,
-  type LivePhase, type PhaseArtTable, type TranscribeProgress,
+  type ChatTone, type LivePhase, type TranscribeProgress,
 } from "./live";
 import {
   GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute,
@@ -26,55 +32,19 @@ import MeetingBadge from "./MeetingBadge";
 import LanguageChip from "./LanguageChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
-import { barDock } from "./dock";
+import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
+import { resolveCharacter } from "./characters/registry";
+import type { Character, CharacterFrame, CharacterPaint } from "./characters/types";
 import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
 
 /** Y8-B — the centre slot: the capsule's own mic/stop control is the Dictate slot. */
 const DICTATE = slotById("dictate");
-
-/**
- * Y5-C — Classic's art for EVERY phase, as DATA.
- *
- * Classic is a DOM capsule, so its "sprite" is the element the capsule swaps in
- * (the mic glyph, the waveform, the determinate fill, the check) and its
- * "motion" is the CSS animation the capsule wears while the phase holds. Both
- * ride out as `data-sprite` / `data-motion` on the capsule, so float.css can
- * key a treatment off a phase without this component growing a branch per
- * phase — and so a phase with no art is a TYPE ERROR here rather than an
- * invisible state in a running app.
- *
- * It lives in this component on purpose (Y5-C's brief): Y5-K's first act is to
- * lift exactly this table, and Yappy's twin, into the character registry. Until
- * then nothing outside these two components may branch on the pill style.
- */
-export const CLASSIC_PHASE_ART: PhaseArtTable = {
-  idle: { sprite: "seed", motion: "breathe" },
-  sleepy: { sprite: "seed", motion: "still" },
-  listening: { sprite: "wave", motion: "pulse" },
-  "model-loading": { sprite: "mic", motion: "breathe" },
-  transcribing: { sprite: "xscribe", motion: "work" },
-  polishing: { sprite: "spark", motion: "work" },
-  pasting: { sprite: "caret", motion: "work" },
-  thinking: { sprite: "dots", motion: "work" },
-  done: { sprite: "check", motion: "still" },
-  empty: { sprite: "hush", motion: "still" },
-  cancelled: { sprite: "hush", motion: "still" },
-  error: { sprite: "alert", motion: "shake" },
-  gated: { sprite: "lock", motion: "still" },
-  waiting: { sprite: "mic-off", motion: "breathe" },
-  blocked: { sprite: "mic-off", motion: "still" },
-  // yap24-PILL3 — the resting seed, held still: Yap is ready (a click or the
-  // chord works), only the fn key is deaf. The strip carries the sentence.
-  blind: { sprite: "seed", motion: "still" },
-};
 
 interface AppStatus {
   recording: boolean;
   busy: boolean;
   message: string;
 }
-
-const BARS = Array.from({ length: 9 }, (_, i) => i);
 
 /**
  * PERM-C — `gate` is the microphone permission phase, owned by `float-main` and
@@ -83,8 +53,12 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = resolveCharacter(), tone = "friendly" }: {
     gate?: LivePhase;
+    /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: classic. */
+    character?: Character;
+    /** Y5-K — the companion tone, decided by the shell (float-main) and handed down in the frame. */
+    tone?: ChatTone;
     /**
      * Y8-B — the flow-bar slot context, decided by the SHELL (float-main).
      * `null` (a test mount, the dev matrix) draws the capsule with only its
@@ -342,9 +316,6 @@ export default function ClassicPill(
   // the same expanded capsule; `meetingAfter` is already null whenever a
   // dictation is on screen, so the take always outranks it.
   const cls = (meeting.recording || meetingAfter !== null) && !blocked && !gated ? `${base} meeting` : base;
-  // Y5-C — the phase's art, drawn from this character's own table. Every phase
-  // has a row, so this is never undefined and there is no fallback to forget.
-  const art = CLASSIC_PHASE_ART[gate];
   /**
    * Y2-D — where a license-driven press goes, decided by `pillLicenseRoute`
    * (i.e. by `pillLicense().action`) and by nothing in this component.
@@ -414,6 +385,26 @@ export default function ClassicPill(
   const barAxis = layoutSlots(slotCtx).axis;
   const tipSide = tooltipSide(slotCtx.dock);
   const slotActions = { toggleDictation: onToggle };
+  // Y5-K — the FRAME: what the shell already computed, handed to the character.
+  // The box is this phase's row of dock-geometry.json at this dock (Y5-I); the
+  // dock reaches the character only as an axis hint.
+  const shellPhase = shellBarPhase(gate, meeting.recording || meetingAfter !== null);
+  const bb = barBox(shellPhase, slotCtx.dock);
+  const frame: CharacterFrame = {
+    phase: gate,
+    tone,
+    level: levelRef.current,
+    box: { w: bb.width, h: bb.height },
+    dock: waveAxis(shellPhase, slotCtx.dock),
+    reducedMotion: prefersReducedMotion(),
+  };
+  // A character with nothing for a frame never blanks the pill: classic paints it.
+  const paintOf = (f: CharacterFrame): CharacterPaint =>
+    character.render(f) ?? (resolveCharacter().render(f) as CharacterPaint);
+  const paint = paintOf(frame);
+  const art = paint.art;
+  // The take-landed flash is the shell's timer; the creature only draws `done`.
+  const body = done && gate !== "done" ? paintOf({ ...frame, phase: "done" }).node : paint.node;
 
   return (
     <div className="stage">
@@ -510,17 +501,9 @@ export default function ClassicPill(
             </span>
             <span className="xscribe-count" aria-hidden>{progressNumeral(progress)}</span>
           </>
-        ) : done ? (
-          <svg className="check" viewBox="0 0 24 24" aria-hidden><path d="M4 12.5l5 5L20 6.5" /></svg>
         ) : (
-          <>
-            <span className="seed" aria-hidden />
-            <div className="wave" aria-hidden>
-              {BARS.map((i) => (
-                <i key={i} style={{ ["--i" as string]: String(i) } as React.CSSProperties} />
-              ))}
-            </div>
-          </>
+          // Y5-K — the creature's body slot: whatever the character painted.
+          <span className="char-body" data-character={character.id}>{body}</span>
         )}
         <FlowBarSlots ctx={slotCtx} group="trail" actions={slotActions} dragged={drag.dragged} />
       </div>

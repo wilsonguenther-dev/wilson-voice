@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import ClassicPill from "./ClassicPill";
+import ClassicPill from "./PillShell";
 import YappyPill from "./YappyPill";
 import { pillLicense } from "./license";
 import { sceneLicense } from "./forced";

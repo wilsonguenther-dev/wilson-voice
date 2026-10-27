@@ -1127,16 +1127,6 @@ export const fitsSideDockStrip = (text: string): boolean =>
 export const DOCK_SIDES = ["bottom", "left", "right"] as const;
 export type DockSide = (typeof DOCK_SIDES)[number];
 
-// ── the characters that ship ────────────────────────────────────────────────
-
-/**
- * The faces that ship today. Y5-K lifts the per-character art tables out of the
- * two components into a registry; until it does, this list is the fixture the
- * coverage test drives off, so ADDING A CREATURE ADDS A ROW and not a test file.
- */
-export const SHIPPED_CHARACTERS = ["classic", "yappy"] as const;
-export type PillCharacter = (typeof SHIPPED_CHARACTERS)[number];
-
 /**
  * What one character owes ONE phase: something to draw, and how it moves.
  * `motion` is a hint the component's own renderer reads — the components keep
