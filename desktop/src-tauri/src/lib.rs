@@ -9416,8 +9416,9 @@ pub fn run() {
         // below sees audio on the row and queues it instead of failing it.
         // Skipped on the in-memory DB fallback: the journals stay whole for
         // the next launch with the real DB.
-        let adopted =
-            meeting_control::recover_crashed_meetings_at_launch(&state.db, &meetings_dir());
+        let adopted = meeting_control::recover_crashed_meetings_at_launch(&state.db, || {
+            meeting::recover_orphaned_meetings(&meetings_dir())
+        });
         if !adopted.is_empty() {
             log::info!("recover: {} crashed meeting(s) recovered", adopted.len());
         }
