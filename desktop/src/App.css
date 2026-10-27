@@ -3444,7 +3444,7 @@ button.primary.big {
   white-space: pre-wrap;
 }
 
-/* #250 round 2 — meeting notes in Open transcript, rendered as sections. */
+/* PR 250 round 2 — meeting notes in Open transcript, rendered as sections. */
 .meeting-notes { display: grid; gap: 14px; }
 .meeting-notes .meeting-notes-heading { margin: 0; font-size: 1.05rem; color: var(--text); }
 .meeting-notes-section h4 {

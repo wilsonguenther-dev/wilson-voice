@@ -1186,12 +1186,12 @@ html[data-dock="right"] .phase-strip {
 }
 /* Y6-C — a held take's Insert is the primary action; Copy steps back. */
 .copy-card-actions .copy-card-insert {
-  background: #4f7cff;
-  color: #fff;
+  background: var(--overlay-action);
+  color: var(--overlay-text-on-action);
 }
 .copy-card-actions .copy-card-insert ~ .copy-card-copy {
   background: rgba(255, 255, 255, 0.12);
-  color: #f4f4f6;
+  color: var(--overlay-text);
 }
 .copy-card-actions .copy-card-close {
   margin-left: auto;
@@ -1220,7 +1220,7 @@ html[data-dock="right"] .phase-strip {
   padding: 0 6px 0 12px;
   border-radius: 16px;
   background: rgba(22, 22, 26, 0.94);
-  color: #f4f4f6;
+  color: var(--overlay-text);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
   letter-spacing: 0.01em;
@@ -1246,7 +1246,7 @@ html[data-dock="right"] .phase-strip {
   line-height: 1;
   cursor: pointer;
 }
-.nudge-close:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.nudge-close:hover { background: rgba(255, 255, 255, 0.12); color: var(--overlay-text-on-action); }
 /* Y5-J — .nudge-close focus ring: drawn once, globally, by src/a11y/focus.css. */
 /* Side docks: the same row, flush to the edge the window is parked against. */
 html[data-dock="left"] .nudge-row { left: 10px; right: auto; transform: none; }
@@ -1289,7 +1289,7 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   padding: 7px 9px 7px;
   border-radius: 12px;
   background: rgba(22, 22, 26, 0.94);
-  color: #f4f4f6;
+  color: var(--overlay-text);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
@@ -1308,7 +1308,7 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   font-size: 11px;
   color: rgba(244, 244, 246, 0.72);
 }
-.meeting-offer-error { margin-top: 2px; font-size: 11px; color: #ffb4a8; }
+.meeting-offer-error { margin-top: 2px; font-size: 11px; color: var(--overlay-text-urgent); }
 .meeting-offer-actions { display: flex; gap: 6px; margin-top: 5px; }
 .meeting-offer-actions button {
   font: inherit;
@@ -1318,10 +1318,10 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   border-radius: 7px;
   border: 0;
   cursor: pointer;
-  color: #f4f4f6;
+  color: var(--overlay-text);
   background: rgba(255, 255, 255, 0.12);
 }
-.meeting-offer-actions .meeting-offer-record { background: #e5484d; color: #fff; }
+.meeting-offer-actions .meeting-offer-record { background: var(--overlay-action-urgent); color: var(--overlay-text-on-action); }
 /* Y5-J — focus ring for .meeting-offer-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
@@ -1398,7 +1398,7 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   padding: 3px 7px;
   border-radius: 6px;
   background: rgba(18, 18, 22, 0.94);
-  color: #fff;
+  color: var(--text-on-fill);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.3;
