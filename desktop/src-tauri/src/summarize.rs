@@ -64,6 +64,8 @@
 //! YV128–130 build the profile table; nothing here needs to change when they
 //! do, which is the point of the seam.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -144,10 +146,82 @@ pub fn rejected_total() -> u64 {
     SUMMARY_REJECTED_TOTAL.load(Ordering::Relaxed)
 }
 
+thread_local! {
+    /// yap-audit-meeting-timings — rejections by reason for the summary run in
+    /// progress on THIS thread. `None` outside a run, so a validator called on
+    /// its own (a test, a future caller) counts toward the global total and
+    /// nothing else. A run is synchronous on one thread end to end, which is
+    /// what makes a thread-local the right scope rather than a global that two
+    /// concurrent runs would mix.
+    static RUN_REJECTIONS: RefCell<Option<BTreeMap<&'static str, usize>>> =
+        const { RefCell::new(None) };
+}
+
 fn reject(reason: &'static str) -> Option<String> {
     SUMMARY_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
-    log::info!("summary rejected: {reason}");
+    RUN_REJECTIONS.with(|tally| {
+        if let Some(tally) = tally.borrow_mut().as_mut() {
+            *tally.entry(reason).or_insert(0) += 1;
+        }
+    });
+    // One line per rejection is DEBUG: a notes run that rejects forty items is
+    // one INFO line with the counts by reason (see [`summary_run_line`]).
+    log::debug!("summary rejected: {reason}");
     None
+}
+
+/// What one summary run cost and threw away — the one INFO line per notes run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SummaryRunTimings {
+    /// How long the sidecar took to load its model and say it was ready.
+    /// `None` when the client did not spawn one (a stub, a reused session).
+    pub model_load_ms: Option<u64>,
+    /// MAP passes sent to the model (failed ones included).
+    pub map_passes: usize,
+    pub map_failed: usize,
+    pub map_ms: u64,
+    /// REDUCE passes sent to the model (failed ones included). Zero for a
+    /// meeting whose MAP left one narrative — nothing to fold.
+    pub reduce_passes: usize,
+    pub reduce_failed: usize,
+    pub reduce_ms: u64,
+    /// Validator rejections in this run, by reason (`v2_runaway`, `v3_ungrounded`, …).
+    pub rejections: BTreeMap<&'static str, usize>,
+    /// `ok`, or the [`SummaryError`] tag the run ended with.
+    pub outcome: &'static str,
+}
+
+/// The INFO line for one summary run.
+pub fn summary_run_line(t: &SummaryRunTimings) -> String {
+    let load = t
+        .model_load_ms
+        .map(|ms| ms.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let total: usize = t.rejections.values().sum();
+    let outcome = if t.outcome.is_empty() {
+        "ok"
+    } else {
+        t.outcome
+    };
+    let mut line = format!(
+        "summary run: outcome={} model_load_ms={load} map_passes={} map_failed={} map_ms={} \
+         reduce_passes={} reduce_failed={} reduce_ms={} rejections={total}",
+        outcome,
+        t.map_passes,
+        t.map_failed,
+        t.map_ms,
+        t.reduce_passes,
+        t.reduce_failed,
+        t.reduce_ms,
+    );
+    for (reason, count) in &t.rejections {
+        line.push_str(&format!(" {reason}={count}"));
+    }
+    line
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 /// Anything that can go wrong on the way to a summary. Tags only — never text.
@@ -1879,6 +1953,12 @@ pub trait SummaryClient: TokenCounter {
     fn cancelled(&self) -> bool {
         false
     }
+
+    /// How long this client's model took to load, when it loaded one for this
+    /// run. Diagnostics only.
+    fn model_load_ms(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// One finished summary.
@@ -1984,6 +2064,29 @@ pub fn summarize_segments_with(
     client: &dyn SummaryClient,
     speakers: &dyn SpeakerSource,
 ) -> Result<MeetingSummary, SummaryError> {
+    let mut timings = SummaryRunTimings {
+        model_load_ms: client.model_load_ms(),
+        ..SummaryRunTimings::default()
+    };
+    let outer = RUN_REJECTIONS.with(|tally| tally.borrow_mut().replace(BTreeMap::new()));
+    let result = summarize_run(segments, client, speakers, &mut timings);
+    timings.rejections = RUN_REJECTIONS
+        .with(|tally| std::mem::replace(&mut *tally.borrow_mut(), outer))
+        .unwrap_or_default();
+    timings.outcome = match &result {
+        Ok(_) => "ok",
+        Err(e) => e.tag(),
+    };
+    log::info!("{}", summary_run_line(&timings));
+    result
+}
+
+fn summarize_run(
+    segments: &[MeetingSegment],
+    client: &dyn SummaryClient,
+    speakers: &dyn SpeakerSource,
+    timings: &mut SummaryRunTimings,
+) -> Result<MeetingSummary, SummaryError> {
     let lines = transcript_lines_with(segments, speakers);
     if lines.is_empty() {
         return Err(SummaryError::NoSegments);
@@ -2020,7 +2123,14 @@ pub fn summarize_segments_with(
             source.clone(),
             Some(grammar),
         );
-        match client.generate(&req) {
+        let pass_started = Instant::now();
+        let answer = client.generate(&req);
+        timings.map_passes += 1;
+        timings.map_ms = timings.map_ms.saturating_add(elapsed_ms(pass_started));
+        if answer.is_err() {
+            timings.map_failed += 1;
+        }
+        match answer {
             // Parsed defensively: a MAP pass that hit its token budget
             // mid-array still contributes every item that closed.
             Ok(answer) => {
@@ -2072,7 +2182,7 @@ pub fn summarize_segments_with(
     }
     let narrative = if headline.summary.trim().is_empty() {
         let (narrative, reduce_truncated) =
-            reduce_narrative(&merged.narratives, &full_text, client);
+            reduce_narrative(&merged.narratives, &full_text, client, timings);
         truncated |= reduce_truncated;
         narrative
     } else {
@@ -2236,6 +2346,7 @@ fn reduce_narrative(
     narratives: &[String],
     source: &str,
     client: &dyn SummaryClient,
+    timings: &mut SummaryRunTimings,
 ) -> (String, bool) {
     let mut level: Vec<String> = narratives
         .iter()
@@ -2287,7 +2398,14 @@ fn reduce_narrative(
                 joined,
                 None,
             );
-            match client.generate(&req) {
+            let pass_started = Instant::now();
+            let answer = client.generate(&req);
+            timings.reduce_passes += 1;
+            timings.reduce_ms = timings.reduce_ms.saturating_add(elapsed_ms(pass_started));
+            if answer.is_err() {
+                timings.reduce_failed += 1;
+            }
+            match answer {
                 Ok(answer) => {
                     // Belt and braces: the fold is sized so this cannot happen,
                     // but if the sidecar still had to cut, the reader hears it.
@@ -2901,6 +3019,8 @@ pub struct SidecarSession {
     stdin: ChildStdin,
     lines: Receiver<String>,
     model: String,
+    /// Spawn to readiness line, in milliseconds.
+    load_ms: u64,
 }
 
 impl SidecarSession {
@@ -2908,6 +3028,7 @@ impl SidecarSession {
     /// line. Unlike the dictation path this DOES wait — a summary is background
     /// work with no keystroke behind it.
     pub fn spawn(binary: &Path, model_path: &Path, model_id: &str) -> Result<Self, SummaryError> {
+        let spawned_at = Instant::now();
         let mut child = Command::new(binary)
             .arg("--model")
             .arg(model_path)
@@ -2946,14 +3067,18 @@ impl SidecarSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(child.id());
-        let session = Self {
+        let mut session = Self {
             child,
             stdin,
             lines,
             model: model_id.to_string(),
+            load_ms: 0,
         };
         match ready_rx.recv_timeout(READY_BUDGET) {
-            Ok(true) => Ok(session),
+            Ok(true) => {
+                session.load_ms = elapsed_ms(spawned_at);
+                Ok(session)
+            }
             _ => Err(SummaryError::Unavailable),
         }
     }
@@ -3027,6 +3152,7 @@ pub struct SidecarSummaryClient {
     session: std::sync::Mutex<SidecarSession>,
     model: String,
     cancel: crate::summary_jobs::CancelToken,
+    load_ms: u64,
 }
 
 impl SidecarSummaryClient {
@@ -3037,10 +3163,12 @@ impl SidecarSummaryClient {
     /// The client a notes job uses: every model call checks `cancel` first.
     pub fn with_cancel(session: SidecarSession, cancel: crate::summary_jobs::CancelToken) -> Self {
         let model = session.model.clone();
+        let load_ms = session.load_ms;
         Self {
             session: std::sync::Mutex::new(session),
             model,
             cancel,
+            load_ms,
         }
     }
 
@@ -3093,6 +3221,10 @@ impl SummaryClient for SidecarSummaryClient {
 
     fn cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+
+    fn model_load_ms(&self) -> Option<u64> {
+        Some(self.load_ms)
     }
 }
 

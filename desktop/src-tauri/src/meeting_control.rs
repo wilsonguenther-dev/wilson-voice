@@ -672,6 +672,11 @@ impl MeetingController {
         }
 
         let wall_seconds = active.started.elapsed().as_secs_f64();
+        // yap-audit-meeting-timings — read BEFORE `stop`, which releases the
+        // active-capture slot the retunes live on.
+        let input_retunes = crate::meeting::active_capture()
+            .map(|c| c.input_retunes())
+            .unwrap_or_default();
         let outcome = active.capture.stop();
         let battery_at_end = self.probe.battery();
 
@@ -739,6 +744,7 @@ impl MeetingController {
             // the blob and the very next line is what writes it. A measurement
             // banked after the write is a measurement nobody ever reads.
             d.record_track_rates(&track_rates);
+            d.record_input_retunes(&input_retunes);
             d.finish(battery_at_end, reason);
             let _ = self.db.set_meeting_diagnostics(&active.id, &d.to_json());
         }

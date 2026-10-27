@@ -166,6 +166,17 @@ pub enum BoundaryKind {
     FixedClock,
 }
 
+impl BoundaryKind {
+    /// The same spelling the ledger's JSON uses, for log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoundaryKind::Edge => "edge",
+            BoundaryKind::Silence => "silence",
+            BoundaryKind::FixedClock => "fixed_clock",
+        }
+    }
+}
+
 /// Where a run begins, and what kind of cut that instant is.
 ///
 /// The seconds alone are not enough, and treating them as enough was a real
@@ -1507,6 +1518,36 @@ pub enum ChunkStatus {
     AsrFailed,
 }
 
+impl ChunkStatus {
+    /// The same spelling the ledger's JSON uses, for log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChunkStatus::Done => "done",
+            ChunkStatus::AsrFailed => "asr_failed",
+        }
+    }
+}
+
+/// What one window cost (yap-audit-meeting-timings). Reported to the
+/// [`ProgressStore`] after the chunk is recorded, and deliberately NOT part of
+/// [`ChunkOutcome`]: a timing is a fact about one run on one machine, and the
+/// ledger is what makes a resumed transcript identical to an uninterrupted one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChunkTiming {
+    pub index: usize,
+    /// Seconds of audio handed to the decoder — the window including the
+    /// overlap it decodes for context.
+    pub audio_seconds: f64,
+    /// Wall milliseconds spent inside `transcribe_timed` for this window,
+    /// summed over every attempt (a preempted or contended attempt included).
+    /// Time spent standing down for a dictation is NOT in here: that is what
+    /// tells a slow decode apart from a meeting that waited.
+    pub decode_ms: u64,
+    /// The cut this window ends at.
+    pub boundary: BoundaryKind,
+    pub status: ChunkStatus,
+}
+
 /// One finished chunk, as persisted. `spans` are already on the meeting's
 /// timeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1604,6 +1645,10 @@ pub trait ProgressStore {
     /// Persist ONE finished chunk. Must be durable before it returns: this is
     /// the write that makes the difference between resuming and restarting.
     fn record_chunk(&mut self, meeting_id: &str, chunk: &ChunkOutcome) -> Result<(), String>;
+    /// What the chunk just recorded cost. Called once per recorded chunk,
+    /// right after [`Self::record_chunk`] succeeds. Diagnostics only — the
+    /// default ignores it, and nothing durable may depend on it.
+    fn record_timing(&mut self, _meeting_id: &str, _timing: &ChunkTiming) {}
 }
 
 /// Progress as a small JSON file per meeting, written whole and renamed into
@@ -1858,8 +1903,12 @@ impl MeetingAsr<'_> {
                 .window(window.audio_start_seconds, window.audio_end_seconds)?;
             let mut attempt = 0usize;
             let mut preempts = 0usize;
+            let mut decode = Duration::ZERO;
             let outcome = loop {
-                match self.asr.transcribe_timed(&samples) {
+                let decode_started = Instant::now();
+                let decoded_window = self.asr.transcribe_timed(&samples);
+                decode += decode_started.elapsed();
+                match decoded_window {
                     Ok(transcript) => {
                         break Some(ChunkOutcome::from_transcript(window, transcript))
                     }
@@ -1944,6 +1993,16 @@ impl MeetingAsr<'_> {
                 break;
             };
             self.store.record_chunk(meeting_id, &outcome)?;
+            self.store.record_timing(
+                meeting_id,
+                &ChunkTiming {
+                    index: outcome.index,
+                    audio_seconds: (window.audio_end_seconds - window.audio_start_seconds).max(0.0),
+                    decode_ms: decode.as_millis().min(u64::MAX as u128) as u64,
+                    boundary: outcome.end_boundary,
+                    status: outcome.status,
+                },
+            );
             chunks.push(outcome);
             decoded += 1;
         }
