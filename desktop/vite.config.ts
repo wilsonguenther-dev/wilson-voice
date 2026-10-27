@@ -1,4 +1,3 @@
-/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
@@ -59,12 +58,8 @@ export default defineConfig(async () => ({
     __YAP_PILL_MATRIX__: JSON.stringify(yapEnv.YAP_PILL_MATRIX === "1"),
   },
 
-  // Y5-D — vitest stubs every CSS module to the empty string by default, which
-  // silently turns a stylesheet assertion into a test of "". `pill/motion.test`
-  // sweeps float.css for reduced-motion rules that would hide information, and
-  // that sweep has to see the real file. Processing CSS in tests costs a few ms
-  // and buys an assertion that cannot quietly become vacuous.
-  test: { css: true },
+  // Y7-D — the vitest block (css: true, coverage of the pure modules) lives in
+  // vitest.config.ts, which merges this file, so `vite build` never reads it.
 
   // Multi-page: main app + compact float pill (never share one React tree)
   build: {
