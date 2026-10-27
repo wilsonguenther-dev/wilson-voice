@@ -229,15 +229,36 @@ fn files_in(dir: &Path) -> Vec<String> {
 }
 
 #[test]
-fn a_journal_whose_row_was_deleted_is_not_resurrected_and_its_audio_goes() {
+fn a_meeting_deleted_while_recording_is_not_resurrected_and_its_audio_goes() {
     let dir = temp_dir("nt1-deleted-row");
     let db = open_db(&dir);
     let row = db.create_meeting("deleted by the user", "manual").unwrap();
-    // The finalize at stop failed: the journal outlives the row. Then the
-    // user deletes the row (DB half only, so the journal is still whole).
-    crash(&dir, 1, &[0], Some(&row.id), 1);
+    // The meeting is LIVE (its lock held) when the user deletes it, so the
+    // delete command cannot remove the journal — it tombstones it. Then the
+    // app crashes before the recording stops.
+    let journal = MeetingJournal::start(&dir, 1).expect("journal opens");
+    journal.bind_row(&row.id).unwrap();
+    let block = vec![0.25f32; TARGET_RATE as usize];
+    assert_eq!(journal.append(0, &block), block.len());
+    journal.index(IndexRecord {
+        host_ns: 1_000_000_000,
+        captured_samples: TARGET_RATE as u64,
+        spilled_samples: TARGET_RATE as u64,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
     db.delete_meeting_with_audio(&row.id).unwrap();
-    assert!(db.get_meeting(&row.id).unwrap().is_none());
+    assert!(
+        remove_journals_bound_to(&dir, &row.id).is_empty(),
+        "a live journal is never removed out from under its writer"
+    );
+    assert!(
+        files_in(&dir)
+            .iter()
+            .any(|n| n.ends_with(".meeting.deleted")),
+        "the live journal is tombstoned: {:?}",
+        files_in(&dir)
+    );
+    journal.abandon();
 
     let recovered = recover_orphaned_meetings(&dir);
     assert_eq!(
@@ -245,6 +266,7 @@ fn a_journal_whose_row_was_deleted_is_not_resurrected_and_its_audio_goes() {
         1,
         "the journal itself is still recoverable"
     );
+    assert!(recovered[0].deleted, "the tombstone reaches the adopt step");
     let wavs = recovered[0].tracks.clone();
     assert!(wavs.iter().all(|w| w.exists()));
     let adopted = adopt_recovered_meetings(&db, recovered);
@@ -260,6 +282,80 @@ fn a_journal_whose_row_was_deleted_is_not_resurrected_and_its_audio_goes() {
         wavs.iter().all(|w| !w.exists()),
         "the deleted meeting's recovered audio is deleted, not kept"
     );
+    assert!(
+        files_in(&dir)
+            .iter()
+            .all(|n| !n.ends_with(".meeting.deleted")),
+        "the tombstone is consumed with the journal: {:?}",
+        files_in(&dir)
+    );
+}
+
+// ── yap24-NT1 re-review BLOCKING — absence from THIS DB is not a deletion ──
+
+#[test]
+fn a_bound_journal_whose_row_is_absent_from_a_substitute_db_keeps_its_audio() {
+    // The real DB has the row in `recording`; this launch opened a DIFFERENT,
+    // empty DB (corruption quarantine recreated it). No tombstone exists.
+    let dir = temp_dir("nt1-absent-row");
+    let real = open_db(&dir);
+    let row = real.create_meeting("only copy", "manual").unwrap();
+    real.set_meeting_state(&row.id, MeetingState::Recording, None)
+        .unwrap();
+    crash(&dir, 1, &[0], Some(&row.id), 1);
+    let fresh_dir = temp_dir("nt1-absent-row-freshdb");
+    let fresh = open_db(&fresh_dir);
+    assert!(fresh.get_meeting(&row.id).unwrap().is_none());
+
+    let recovered = recover_orphaned_meetings(&dir);
+    assert_eq!(recovered.len(), 1);
+    assert!(!recovered[0].deleted, "no tombstone was written");
+    let wavs = recovered[0].tracks.clone();
+    let adopted = adopt_recovered_meetings(&fresh, recovered);
+    assert!(
+        wavs.iter().all(|w| w.exists()),
+        "the only copy of the audio is never unlinked on absence alone"
+    );
+    assert_eq!(adopted.len(), 1, "{adopted:?}");
+    let m = fresh.get_meeting(&adopted[0].0).unwrap().unwrap();
+    assert_eq!(m.source, "recovered", "filed where the user can find it");
+    assert_eq!(
+        m.mic_wav_path.as_deref().map(Path::new),
+        Some(wavs[0].as_path())
+    );
+}
+
+#[test]
+fn launch_recovery_skips_the_in_memory_fallback_and_leaves_journals_whole() {
+    use wilson_voice_lib::meeting_control::recover_crashed_meetings_at_launch;
+    let dir = temp_dir("nt1-inmemory");
+    let disk = open_db(&dir);
+    let row = disk.create_meeting("on disk", "manual").unwrap();
+    disk.set_meeting_state(&row.id, MeetingState::Recording, None)
+        .unwrap();
+    crash(&dir, 1, &[0], Some(&row.id), 1);
+    crash(&dir, 1, &[0], None, 1);
+    let before = files_in(&dir);
+
+    let mem = Database::open_in_memory().unwrap();
+    assert!(!mem.is_persistent());
+    assert!(disk.is_persistent());
+    let adopted = recover_crashed_meetings_at_launch(&mem, &dir);
+    assert!(adopted.is_empty(), "{adopted:?}");
+    assert!(mem.list_meetings(100, None).unwrap().is_empty());
+    assert_eq!(
+        files_in(&dir),
+        before,
+        "neither journal is consumed on the in-memory fallback"
+    );
+
+    // The next launch, with the real DB, recovers both: the bound one into
+    // its own row, the unbound one into a Recovered row.
+    let adopted = recover_crashed_meetings_at_launch(&disk, &dir);
+    assert_eq!(adopted.len(), 2, "{adopted:?}");
+    assert!(adopted.iter().any(|(id, _)| id == &row.id));
+    let m = disk.get_meeting(&row.id).unwrap().unwrap();
+    assert!(Path::new(m.mic_wav_path.as_deref().unwrap()).exists());
 }
 
 #[test]

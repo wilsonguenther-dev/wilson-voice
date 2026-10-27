@@ -202,6 +202,15 @@ const MEETING_ROW_EXT: &str = "meeting.row";
 /// when the process dies, so at launch a LOCKED journal is live in another Yap
 /// process and an UNLOCKED one is a crash. See [`recover_orphaned_meetings`].
 const MEETING_LOCK_EXT: &str = "meeting.lock";
+/// yap24-NT1 fix round 2 (review BLOCKING: delete-on-absence) —
+/// `<journal id>.meeting.deleted`, the TOMBSTONE. Written by
+/// [`remove_journals_bound_to`] for a journal it cannot remove because the
+/// journal is live, and holding the row id the user deleted. It is the ONLY
+/// thing that lets the launch scan delete recovered audio: a row that is merely
+/// absent from the DB this launch opened (an in-memory fallback, a DB recreated
+/// after corruption) is not a meeting the user deleted, and its audio — by then
+/// the only copy — is kept. See [`FinalizedMeeting::deleted`].
+const MEETING_DELETED_EXT: &str = "meeting.deleted";
 
 /// Bytes of free disk a meeting of `duration` requires before it may start.
 /// Finding #39: a manually-started meeting has no duration estimate, so the
@@ -1697,6 +1706,12 @@ pub struct FinalizedMeeting {
     /// capture opening and the row being written). The startup scan files the
     /// recovered audio under this row; with `None` it has to make a new one.
     pub row_id: Option<String>,
+    /// yap24-NT1 fix round 2 — `true` only when a tombstone
+    /// ([`MEETING_DELETED_EXT`]) naming THIS journal's bound row was on disk:
+    /// the user deleted the meeting while it was still recording. This, and
+    /// never a row's absence from the DB, is what licenses deleting the
+    /// recovered audio.
+    pub deleted: bool,
 }
 
 impl FinalizedMeeting {
@@ -1774,8 +1789,11 @@ fn take_journal_lock(path: &Path) -> Option<std::fs::File> {
 /// meeting's audio sat on disk under the journal's id until the next launch.
 ///
 /// A journal whose lock is HELD is live (this process or another) and is left
-/// alone — the adopt step at the next launch sees its row gone and deletes the
-/// recovered audio instead of resurrecting it. Returns the journal ids removed.
+/// alone, but it gets a TOMBSTONE (`<journal id>.meeting.deleted`, holding
+/// `row_id`): if that recording later crashes, the adopt step at the next
+/// launch deletes its recovered audio because the tombstone says the user
+/// deleted it — never merely because the row is missing from the DB.
+/// Returns the journal ids removed (tombstoned live journals are not listed).
 pub fn remove_journals_bound_to(dir: &Path, row_id: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -1807,7 +1825,17 @@ pub fn remove_journals_bound_to(dir: &Path, row_id: &str) -> Vec<String> {
             }
         };
         if let Err(e) = lock.try_lock() {
-            log::info!("meeting delete: journal {journal} is live or unlockable ({e}) — left");
+            let tombstone = dir.join(format!("{journal}.{MEETING_DELETED_EXT}"));
+            match std::fs::write(&tombstone, row_id) {
+                Ok(()) => log::info!(
+                    "meeting delete: journal {journal} is live or unlockable ({e}) — left, \
+                     tombstoned"
+                ),
+                Err(w) => log::warn!(
+                    "meeting delete: journal {journal} is live or unlockable ({e}) — left; \
+                     tombstone not written ({w}), so a crash would recover it as audio"
+                ),
+            }
             continue;
         }
         let prefix = format!("{journal}.");
@@ -2131,6 +2159,14 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty());
     let _ = std::fs::remove_file(&row_path);
+    // The tombstone counts only when it names the row this journal is bound
+    // to; an unbound journal is never "deleted" (there is no row to delete).
+    let tombstone_path = marker.with_file_name(format!("{id}.{MEETING_DELETED_EXT}"));
+    let deleted = match (&row_id, std::fs::read_to_string(&tombstone_path).ok()) {
+        (Some(row), Some(dead)) => dead.trim() == row.as_str(),
+        _ => false,
+    };
+    let _ = std::fs::remove_file(&tombstone_path);
     let _ = std::fs::remove_file(marker);
     if wavs.is_empty() {
         return Ok(None);
@@ -2144,6 +2180,7 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         spliced_silence_samples,
         track_rates,
         row_id,
+        deleted,
     }))
 }
 

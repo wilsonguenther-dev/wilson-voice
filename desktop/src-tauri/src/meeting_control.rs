@@ -1324,6 +1324,29 @@ impl ActiveCapture for SessionCapture {
     }
 }
 
+/// yap24-NT1 fix round 2 (review BLOCKING: in-memory fallback) — the launch
+/// step: recover every orphaned journal in `dir` and adopt it into `db`, but
+/// ONLY when `db` is persistent. Recovery CONSUMES the journal (marker and
+/// spill are gone once it is finalized), so recovering into the in-memory DB
+/// `open_db_graceful` falls back to would file the audio under rows that
+/// vanish at exit and leave the wavs nobody can find. On that fallback the
+/// journals are left whole, untouched, for the next launch that has the real
+/// DB. Returns what [`adopt_recovered_meetings`] adopted (empty when skipped).
+pub fn recover_crashed_meetings_at_launch(
+    db: &Database,
+    dir: &std::path::Path,
+) -> Vec<(String, String)> {
+    if !db.is_persistent() {
+        log::warn!(
+            "recover: the DB is in memory this launch — crash journals in {} are left \
+             for the next launch",
+            dir.display()
+        );
+        return Vec::new();
+    }
+    adopt_recovered_meetings(db, crate::meeting::recover_orphaned_meetings(dir))
+}
+
 /// What the crash note on a recovered meeting says. One sentence, and it does
 /// not pretend the meeting ended on purpose.
 pub const RECOVERED_MEETING_NOTE: &str =
@@ -1356,16 +1379,19 @@ pub fn adopt_recovered_meetings(
         let sys = finalized
             .wav_for_track(crate::meeting::SYSTEM_TRACK)
             .cloned();
-        // yap24-NT1 fix round 2 (review BLOCKING 2) — three cases, never one.
-        // A BOUND journal whose row is GONE is a meeting the user deleted: its
-        // recovered audio is deleted too, never filed under a new row and
-        // transcribed. A DB read ERROR adopts nothing and deletes nothing (the
-        // wavs stay on disk): fail closed, never a duplicate. Only a journal
-        // that was NEVER bound gets a new "Recovered" row.
+        // yap24-NT1 fix round 2 (review BLOCKING 2) + fix round 2 of the
+        // re-review (BLOCKING: delete-on-absence). Recovered audio is the ONLY
+        // copy — finalize has consumed the spill — so it is deleted on exactly
+        // one signal: a tombstone the delete_meeting command wrote for this
+        // journal's row ([`crate::meeting::FinalizedMeeting::deleted`]). A row
+        // that is merely ABSENT from this DB (a DB recreated after corruption,
+        // a substitute DB) is not a deletion: the audio is filed under a new
+        // "Recovered" row instead, findable and never unlinked. A DB read
+        // ERROR adopts nothing and deletes nothing (the wavs stay on disk).
         let bound = match finalized.row_id.as_deref() {
             Some(id) => match db.get_meeting(id) {
                 Ok(Some(row)) => Some(row),
-                Ok(None) => {
+                Ok(None) if finalized.deleted => {
                     for wav in &finalized.tracks {
                         match std::fs::remove_file(wav) {
                             Ok(()) => {}
@@ -1377,11 +1403,19 @@ pub fn adopt_recovered_meetings(
                         }
                     }
                     log::info!(
-                        "recover: journal {} belongs to meeting {id}, which was deleted — \
-                         its audio is deleted, not recovered",
+                        "recover: journal {} belongs to meeting {id}, which the user deleted \
+                         (tombstone) — its audio is deleted, not recovered",
                         finalized.id
                     );
                     continue;
+                }
+                Ok(None) => {
+                    log::warn!(
+                        "recover: journal {} is bound to meeting {id}, which this DB does not \
+                         have and no tombstone says was deleted — kept, filed as Recovered",
+                        finalized.id
+                    );
+                    None
                 }
                 Err(e) => {
                     log::warn!(

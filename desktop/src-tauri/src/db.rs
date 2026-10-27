@@ -730,6 +730,20 @@ impl Database {
         Self::open_inner(std::path::Path::new(":memory:")).map_err(OpenErr::into_string)
     }
 
+    /// yap24-NT1 fix round 2 — `false` for the [`Database::open_in_memory`]
+    /// fallback (no file behind the connection), `true` for an on-disk DB.
+    /// Anything written to a non-persistent DB is gone at exit, so work that
+    /// CONSUMES on-disk state to produce rows (the launch crash recovery) must
+    /// not run against it.
+    pub fn is_persistent(&self) -> bool {
+        let conn = self.conn.lock();
+        let path = match &conn {
+            Ok(c) => c.path().map(|p| p.to_string()),
+            Err(poisoned) => poisoned.get_ref().path().map(|p| p.to_string()),
+        };
+        matches!(path.as_deref(), Some(p) if !p.is_empty() && p != ":memory:")
+    }
+
     fn open_inner(path: &std::path::Path) -> Result<Self, OpenErr> {
         let conn = Connection::open(path).map_err(|e| OpenErr::classify("sqlite open", e))?;
         // busy_timeout FIRST — the journal_mode=WAL step below can itself return
