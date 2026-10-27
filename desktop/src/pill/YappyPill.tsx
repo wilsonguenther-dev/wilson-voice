@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
-import { usePillDrag, reportPillHitbox } from "./drag";
+import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
@@ -543,8 +543,49 @@ export default function YappyPill(
   // Y5-C — Yappy's own art for the phase, from her own table. Total record, so
   // a new phase cannot reach the canvas without a pose to draw.
   const art = YAPPY_PHASE_ART[gate];
+
+  // yap24-NT7 fix — the meeting badge ("Notes ready — Open", the failure, the
+  // recording stop button) is pinned to the window's bottom edge, OUTSIDE the
+  // canvas capsule this pill reports as its hitbox, so on a click-through panel
+  // its clicks fell through to the app underneath. While a badge is mounted its
+  // rect is unioned into the hitbox; a childList observer follows it as it
+  // swaps element (recording → processing → notes-ready), a ResizeObserver as
+  // its label grows, and unmount hands the hitbox back to the capsule alone.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let badge: HTMLElement | null = null;
+    const push = () => {
+      if (!badge || !badge.isConnected) {
+        extendPillHitbox(null);
+        return;
+      }
+      const r = badge.getBoundingClientRect();
+      extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height });
+    };
+    const ro = new ResizeObserver(push);
+    const track = () => {
+      const next = stage.querySelector<HTMLElement>(":scope > .meeting-badge");
+      if (next !== badge) {
+        if (badge) ro.unobserve(badge);
+        badge = next;
+        if (badge) ro.observe(badge);
+      }
+      push();
+    };
+    track();
+    const mo = new MutationObserver(track);
+    mo.observe(stage, { childList: true });
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+      extendPillHitbox(null);
+    };
+  }, []);
+
   return (
-    <div className="kami-stage" data-phase={PHASE_ID[gate]} data-sprite={art.sprite} data-motion={art.motion}>
+    <div ref={stageRef} className="kami-stage" data-phase={PHASE_ID[gate]} data-sprite={art.sprite} data-motion={art.motion}>
       <div ref={bubbleRef} className="kami-bubble"></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
