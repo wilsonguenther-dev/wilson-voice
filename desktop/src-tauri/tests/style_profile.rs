@@ -219,7 +219,7 @@ fn the_user_context_table_is_a_migration_and_reopening_is_idempotent() {
         db.add_writing_sample(SAMPLE).unwrap();
     }
     let db = open_db(&dir);
-    assert_eq!(db.schema_version().unwrap(), 7);
+    assert_eq!(db.schema_version().unwrap(), wilson_voice_lib::meetings::SCHEMA_VERSION);
     let view = db.user_context().unwrap();
     assert_eq!(view.writing_samples.len(), 1, "the row survived a reopen");
     let _ = std::fs::remove_dir_all(&dir);

@@ -336,3 +336,29 @@ committed replacement for this fixture must be synthesised or consented to
 explicitly — do not dump the transcripts table into this repo. YV76 settled that
 question: the synthetic `gate/` corpus above is the committed one, permanently,
 and this export stays a local check.
+
+## `transforms/*.jsonl` — golden fixtures for the transform library (Y9-A)
+
+One file per row of `transforms::TRANSFORMS`, named by the row's `id`
+(`polish.jsonl`, `formal.jsonl`, `upper_case.jsonl` …). `tests/transforms.rs`
+(`a_golden_fixture_per_transform`) fails if a row has no file, if a file names
+no row, or if a file is not ASCII. Same rule as `gate/`: every case is invented,
+mundane text — nobody's dictation.
+
+One JSON object per line:
+
+| field | rows | meaning |
+|-------|------|---------|
+| `case` | all | a short name, printed on failure |
+| `input` | all | the selection |
+| `model_output` | model | what the injected client answers — the case's whole "model" |
+| `instruction` | deterministic | the spoken command, parsed by `command_mode::parse_command` (so `replace X with Y` carries its operands) |
+| `expected_status` | all | `succeeded` / `no_changes` / `timeout` / `rejected` / `error` / `not_editable` |
+| `expected_text` | all | what the run hands back; for anything but `succeeded` it must equal `input` byte for byte |
+
+Model rows run the REAL `polish::polish_stage_chunked` → `validate_polish` path,
+so a model case's expected status is the validator's verdict on that answer,
+not an assertion about any model: the `rejected` cases are rewrites V3 / V4 / V6
+refuse (a Concise cut that drops content words, an invented time, an assistant
+preamble). The suite also asserts the request that reached the client carried
+the row's `prompt` as its `instruction`, with the stage's own deadline.

@@ -1,0 +1,1 @@
+{"case": "clauses become bullets", "instruction": "make it a list", "input": "eggs, milk, bread", "expected_status": "succeeded", "expected_text": "- eggs\n- milk\n- bread"}

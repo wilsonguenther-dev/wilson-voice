@@ -592,6 +592,8 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             5 => meetings::MIGRATION_5_CLUSTER_INDEX,
             6 => meetings::MIGRATION_6_ASR_MODEL,
             7 => MIGRATION_7_USER_CONTEXT,
+            // Y9-A — the transform library's per-invocation status log.
+            8 => crate::transforms::MIGRATION_8_TRANSFORM_RUNS,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -3227,6 +3229,59 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(inserted > 0)
+    }
+
+    /// Y9-A — persist one transform invocation. Counts and tags only; the
+    /// selection and the model's answer are never written.
+    pub fn record_transform_run(
+        &self,
+        run: &crate::transforms::TransformRun,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO transform_runs
+             (created_at, transform_id, status, reason, input_chars, output_chars)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                Utc::now().to_rfc3339(),
+                run.transform_id,
+                run.status.tag(),
+                run.reason,
+                run.input_chars,
+                run.output_chars,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Y9-A — persisted transform runs, newest first, capped at `limit`.
+    pub fn list_transform_runs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::transforms::TransformRun>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT transform_id, status, reason, input_chars, output_chars
+                 FROM transform_runs ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                let status: String = r.get(1)?;
+                Ok(crate::transforms::TransformRun {
+                    transform_id: r.get(0)?,
+                    status: crate::transforms::TransformStatus::from_tag(&status)
+                        .unwrap_or(crate::transforms::TransformStatus::Error),
+                    reason: r.get(2)?,
+                    input_chars: r.get(3)?,
+                    output_chars: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// YV64 — recorded crashes, newest first, capped at `limit`.

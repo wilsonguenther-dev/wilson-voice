@@ -1,0 +1,2 @@
+{"case": "letters uppercased", "instruction": "make it uppercase", "input": "ship it today", "expected_status": "succeeded", "expected_text": "SHIP IT TODAY"}
+{"case": "already uppercase", "instruction": "make it uppercase", "input": "DONE", "expected_status": "no_changes", "expected_text": "DONE"}

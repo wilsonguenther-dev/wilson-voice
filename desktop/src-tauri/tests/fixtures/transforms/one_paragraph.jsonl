@@ -1,0 +1,1 @@
+{"case": "list joined", "instruction": "make it one paragraph", "input": "- eggs\n- milk", "expected_status": "succeeded", "expected_text": "eggs milk"}
