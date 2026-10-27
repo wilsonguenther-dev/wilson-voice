@@ -119,6 +119,8 @@ export default function Permissions() {
     sysAudioGate.message,
     product,
   );
+  const sysAudioDenied =
+    step.showDeepLink && sysAudio?.hasRun === true && sysAudio.verdict === "looks_denied";
   // yap-uiux-2026-10-16-SETTINGS (walk row T3) — the grants lead: one row per
   // grant, its status and ONE button. The bundle-id prose is a footnote now,
   // and the speech model is not a permission, so it is a status line here and
@@ -176,7 +178,11 @@ export default function Permissions() {
                     read like the others: mic permission is knowable, this one is
                     not, so the row shows what Yap has observed rather than a
                     status it cannot query. After a denial macOS never asks
-                    again, so the deep link IS the one button. */}
+                    again, so the deep link IS the one button, but ONLY for the
+                    looks_denied verdict. setupState also offers the deep link
+                    for "failed" (a fault, not a refusal) and for "ran" (a quiet
+                    first run); there the remedy is running the check again, so
+                    those keep the run button (#268 fix round 1). */}
                 <li
                   data-row
                   className={step.tone === "ok" ? "ok" : step.tone === "bad" ? "bad" : ""}
@@ -185,7 +191,7 @@ export default function Permissions() {
                   <div>
                     <strong>System audio (meetings)</strong>
                     <p>{step.label}</p>
-                    {step.showDeepLink ? (
+                    {sysAudioDenied ? (
                       <button onClick={() => openPane(SYSTEM_AUDIO_PANE)}>
                         {SYSTEM_AUDIO_SETUP.openSettings}
                       </button>

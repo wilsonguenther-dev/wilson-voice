@@ -111,4 +111,24 @@ describe("walk row T3 — Permissions leads with the grants", () => {
     expect(html).toContain("Open Microphone settings");
     expect(html).not.toContain("Request Microphone");
   });
+  // #268 fix round 1 (BLOCKING): the system-audio row offers the deep link only
+  // for a denial. "failed" is a fault and "ran" is a quiet first run; both keep
+  // "Run the permission check again", which origin/main offered in every state.
+  const sysAudioAt = (verdict: string) =>
+    render(<Permissions />, {
+      ...state,
+      sysAudio: { hasRun: true, lastRunAt: "2026-10-20T12:00:00Z", verdict, blocksRecording: false },
+    });
+  const sysAudioRow = (html: string) =>
+    html.split("<li ").find((r) => r.includes("System audio (meetings)")) ?? "";
+  it.each(["granted", "failed", "ran"])("system audio verdict %s keeps the run-again button, no deep link", (verdict) => {
+    const row = sysAudioRow(sysAudioAt(verdict));
+    expect(row).toContain("Run the permission check again");
+    expect(row).not.toContain("Open System Audio Recording settings");
+  });
+  it("system audio verdict looks_denied gets the deep link as its one button", () => {
+    const row = sysAudioRow(sysAudioAt("looks_denied"));
+    expect(row).toContain("Open System Audio Recording settings");
+    expect(row).not.toContain("Run the permission check again");
+  });
 });
