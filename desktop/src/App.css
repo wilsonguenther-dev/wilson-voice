@@ -1573,24 +1573,34 @@ button.star.on {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
+  /* yap-uiux-2026-10-16-O2 (fix round 1) — the strip is a GRID, not a flex
+     row. The speech-model ribbon lives in .sidebar-foot; in a flex row the
+     flex:none foot took the ribbon's whole one-line width and .nav
+     (min-width:0) shrank to ZERO, so at 720x520 a running or failed download
+     hid Home…Settings entirely. Now row 1 is brand | nav | Dictate, with the
+     nav column minmax(0, 1fr) so it always keeps the leftover width, and the
+     ribbon takes a full-width row 2 of its own. */
   .sidebar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     min-width: 0;
-    flex-direction: row;
-    flex-wrap: nowrap;
     align-items: center;
-    gap: 10px;
+    gap: 6px 10px;
     padding: 8px 12px;
     border-right: none;
     border-bottom: 1px solid var(--glass-border);
   }
   .brand-block {
-    flex: none;
+    grid-column: 1;
+    grid-row: 1;
     padding: 0;
   }
   .brand-tag {
     display: none;
   }
   .nav {
+    grid-column: 2;
+    grid-row: 1;
     flex-direction: row;
     flex-wrap: nowrap;
     min-width: 0;
@@ -1605,13 +1615,19 @@ button.star.on {
     gap: 6px;
     padding: 0.45rem 0.6rem;
   }
+  /* The foot dissolves so the ribbon and Dictate are grid items. */
   .sidebar-foot {
-    flex: none;
-    padding-top: 0;
+    display: contents;
   }
   .dictate-side {
+    grid-column: 3;
+    grid-row: 1;
     width: auto;
     padding: 0.5rem 0.75rem;
+  }
+  .sidebar-foot .model-ribbon {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
   .stats-row,
   .panel-grid,
@@ -1862,6 +1878,23 @@ button.star.on {
 
 .sidebar-foot .model-ribbon-track {
   flex: 1 0 100%;
+}
+
+/* In the narrow one-row strip (see the H5 block) the ribbon has a full-width
+   row of its own, so it goes back to one line: track, text, Retry. This sits
+   AFTER the sidebar-width rules above so it wins at equal specificity. */
+@media (max-width: 860px) {
+  .sidebar-foot .model-ribbon {
+    flex-wrap: nowrap;
+    margin-bottom: 0;
+    padding: 5px 10px;
+  }
+  .sidebar-foot .model-ribbon-track {
+    flex: 0 0 88px;
+  }
+  .sidebar-foot .model-ribbon-text {
+    min-width: 0;
+  }
 }
 
 .model-ribbon-track {
