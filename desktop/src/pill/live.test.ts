@@ -797,7 +797,7 @@ describe("Y5-C — the phase vocabulary", () => {
     // Everything Yap is DOING either finishes or has failed, so everything
     // else has a deadline and the table says it.
     expect([...UNBOUNDED_PHASES].sort())
-      .toEqual(["blocked", "idle", "listening", "sleepy", "waiting"]);
+      .toEqual(["blind", "blocked", "idle", "listening", "sleepy", "waiting"]);
     for (const p of ALL_LIVE_PHASES) {
       const hold = phaseHoldMs(p);
       if (hold === null) continue;
@@ -1002,5 +1002,99 @@ describe("Y5-J — accessible names and the one live region", () => {
     // only polite regions in the pill are the announcer and the meeting card.
     expect(code("./PhaseAnnouncer.tsx").match(/aria-live="polite"/g)?.length).toBe(1);
     expect(code("./MeetingBadge.tsx").match(/aria-live="polite"/g)?.length).toBe(1);
+  });
+});
+
+// ═══ yap24-PILL3 — the blind state: status payloads -> phase -> the strip ═══
+import {
+  BLIND_LABEL,
+  PHASE_HOLD_MS as PILL3_HOLD,
+  SAMPLE_BLIND,
+  blindFromStatus,
+  blindLine,
+  phaseCopy as pill3Copy,
+  phaseVisual as pill3Visual,
+  stripLine as pill3Strip,
+  withBlind,
+  type LivePhase as Pill3Phase,
+} from "./live";
+
+describe("yap24-PILL3 — when fn cannot hear you, the pill says so", () => {
+  // The exact shape `build_status` serialises (lib.rs AppStatus, camelCase).
+  const chrome = {
+    secureInputBlocked: true,
+    secureInputApp: "Google Chrome",
+    dictateToggleLabel: "⌃⌥⌘Space",
+    dictateChordRegistered: true,
+  };
+  const clear = { secureInputBlocked: false, secureInputApp: null, dictateToggleLabel: "⌃⌥⌘Space", dictateChordRegistered: true };
+
+  it("a secure-input status payload is the blind phase, naming the holder and the chord", () => {
+    const b = blindFromStatus(chrome);
+    expect(b).toEqual({ cause: "secure-input", app: "Google Chrome", chord: "⌃⌥⌘Space" });
+    expect(withBlind("idle", b)).toBe("blind");
+    expect(withBlind("sleepy", b)).toBe("blind");
+  });
+
+  it("it clears the moment the status clears", () => {
+    expect(blindFromStatus(clear)).toBeNull();
+    expect(blindFromStatus(undefined)).toBeNull();
+    expect(blindFromStatus({})).toBeNull();
+    expect(withBlind("idle", blindFromStatus(clear))).toBe("idle");
+    // No timer of its own: an unbounded wait on the OS, like `blocked`.
+    expect(PILL3_HOLD.blind).toBeNull();
+  });
+
+  it("a take in progress, and the acknowledgement that closes it, outrank blind", () => {
+    const b = blindFromStatus(chrome);
+    const take: Pill3Phase[] = [
+      "listening", "model-loading", "transcribing", "polishing", "pasting", "thinking",
+      "done", "empty", "cancelled", "error",
+    ];
+    for (const p of take) expect(withBlind(p, b), p).toBe(p);
+    // ...and so do the refusals, which say why a press did nothing at all.
+    for (const p of ["blocked", "waiting", "gated"] as Pill3Phase[]) expect(withBlind(p, b), p).toBe(p);
+  });
+
+  it("render: the strip line carries the chord hint and says 'still works'", () => {
+    // status payload -> phase -> the line the shell draws (float-main's order).
+    const b = blindFromStatus(chrome)!;
+    const phase = withBlind("idle", b);
+    const line = pill3Strip(phase === "blind" ? blindLine(b) : pill3Copy(phase, "friendly"), false, null);
+    expect(line).toBe("fn is blocked by Google Chrome's secure field — ⌃⌥⌘Space still works");
+    expect(line).toContain("⌃⌥⌘Space");
+    expect(line).toContain("still works");
+  });
+
+  it("render: a REBOUND chord reads truthfully", () => {
+    const b = blindFromStatus({ ...chrome, dictateToggleLabel: "⌥⌘D" })!;
+    expect(blindLine(b)).toBe("fn is blocked by Google Chrome's secure field — ⌥⌘D still works");
+    expect(blindLine(b)).not.toContain("⌃⌥⌘Space");
+  });
+
+  it("never promises a chord that is not registered, and never names a holder macOS hid", () => {
+    const noChord = blindFromStatus({ ...chrome, dictateChordRegistered: false })!;
+    expect(noChord.chord).toBeNull();
+    expect(blindLine(noChord)).not.toContain("still works");
+    expect(blindLine(noChord)).toContain("click to dictate");
+    const noApp = blindFromStatus({ ...chrome, secureInputApp: "  " })!;
+    expect(blindLine(noApp)).toBe("fn is blocked by another app's secure field — ⌃⌥⌘Space still works");
+  });
+
+  it("the capsule keeps its action: calm, a click still dictates, and its name says why", () => {
+    const v = pill3Visual("blind");
+    expect(v).toEqual({ tone: "calm", label: BLIND_LABEL, needsPermission: false, placeholder: false });
+    expect(BLIND_LABEL).toMatch(/^Start dictation/);
+  });
+
+  it("the shell draws blindLine in the strip, and the strip may wrap in blind only", () => {
+    const main = readSibling("../float-main.tsx");
+    expect(main).toMatch(/withBlind\(winningPhase\(gate, take\), blind\)/);
+    expect(main).toMatch(/phase === "blind" && blindNow \? blindLine\(blindNow\)/);
+    const css = readSibling("../float.css");
+    expect(css).toMatch(/html\[data-phase="blind"\] \.phase-strip \{ opacity: 1; \}/);
+    expect(css).toMatch(/html\[data-phase="blind"\] \.phase-strip \{\s*white-space: normal;/);
+    // The matrix photographs the real sentence, not the tone fallback.
+    expect(blindLine(SAMPLE_BLIND)).toContain("still works");
   });
 });

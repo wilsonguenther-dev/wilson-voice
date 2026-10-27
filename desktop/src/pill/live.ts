@@ -425,7 +425,17 @@ export type LivePhase =
    * `cancel_settled` event — rather than being a resting state, because a pill
    * parked on "Cancelled" forever is just a stuck pill.
    */
-  | "cancelled"; // OWNED BY Y3-D
+  | "cancelled" // OWNED BY Y3-D
+  // ── yap24-PILL3 ──────────────────────────────────────────────────────────
+  /**
+   * The fn key cannot hear the user: another app holds macOS Secure Input, so
+   * the fn event tap is blind. FN ONLY — the Carbon dictate chord is delivered
+   * under Secure Input (hotkeys.rs), and so is a click on the capsule, so the
+   * line names the chord that still works rather than calling dictation dead.
+   * `calm`, not `warn`: Yap still works, one key of it does not. Outranks only
+   * rest (`idle`/`sleepy`), never a take; see [`blindFromStatus`].
+   */
+  | "blind"; // OWNED BY yap24-PILL3
 
 /** How a phase is drawn, and what a click on it means. */
 export interface PhaseVisual {
@@ -508,6 +518,11 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
       return { tone: "calm", label: "Nothing to type", needsPermission: false, placeholder: false };
     case "cancelled":
       return { tone: "calm", label: "Cancelled", needsPermission: false, placeholder: false };
+    case "blind":
+      // yap24-PILL3 — a click still starts a take (the click path never went
+      // through the fn tap), so the capsule keeps its idle action and its name
+      // says both halves: what it does, and why fn does not.
+      return { tone: "calm", label: BLIND_LABEL, needsPermission: false, placeholder: false };
   }
 }
 
@@ -619,6 +634,11 @@ export const PHASE_PRECEDENCE: readonly LivePhase[] = [
   // did arrive it outranks the absence of one. `idle`/`sleepy` stay unranked
   // (they are the absence of a phase, and must never win a tie).
   "empty",
+  // yap24-PILL3 — LAST of the ranked phases: it outranks rest (`idle`,
+  // `sleepy`, unranked) and NOTHING else. A take in progress — and the
+  // acknowledgement that closes one — keeps the pill; the blind line returns
+  // the moment the take settles, because the status still says so.
+  "blind",
 ];
 
 /** Rank of a phase in [`PHASE_PRECEDENCE`]; lower wins, unranked sorts last. */
@@ -832,6 +852,8 @@ export const ALL_LIVE_PHASES: readonly LivePhase[] = [
   // `blocked` before `waiting`: PERM-C asserts that order for the two phases a
   // click sends to the Permissions pane, and it is also the precedence order.
   "blocked", "waiting",
+  // yap24-PILL3.
+  "blind",
 ];
 
 /**
@@ -861,6 +883,7 @@ export const PHASE_ID: Record<LivePhase, string> = {
   gated: "gated",
   waiting: "waiting",
   blocked: "blocked",
+  blind: "blind",
 };
 
 /** The polish sidecar's own wall-clock deadline (polish.rs:59). */
@@ -887,6 +910,8 @@ export const PHASE_HOLD_MS: Record<LivePhase, number | null> = {
   listening: null,
   blocked: null,
   waiting: null,
+  /** yap24-PILL3 — waits on another app releasing Secure Input. */
+  blind: null,
   // ── bounded work ─────────────────────────────────────────────────────────
   /** YV80's lazy arm — a large model off a cold disk. Generous on purpose. */
   "model-loading": 20_000,
@@ -928,8 +953,8 @@ export const phaseHoldMs = (phase: LivePhase): number | null => PHASE_HOLD_MS[ph
  * `every_phase_has_a_way_back_to_idle` is a test, not a hope.
  */
 export const PHASE_NEXT: Record<LivePhase, readonly LivePhase[]> = {
-  idle: ["listening", "sleepy", "blocked", "waiting", "gated"],
-  sleepy: ["idle", "listening", "blocked", "waiting", "gated"],
+  idle: ["listening", "sleepy", "blocked", "waiting", "gated", "blind"],
+  sleepy: ["idle", "listening", "blocked", "waiting", "gated", "blind"],
   // NB: no "done". See above.
   listening: ["model-loading", "transcribing", "thinking", "cancelled", "error", "blocked"],
   "model-loading": ["transcribing", "thinking", "error", "cancelled"],
@@ -939,13 +964,16 @@ export const PHASE_NEXT: Record<LivePhase, readonly LivePhase[]> = {
   thinking: ["polishing", "pasting", "done", "empty", "error", "cancelled"],
   polishing: ["pasting", "done", "empty", "error"],
   pasting: ["done", "error"],
-  done: ["idle", "sleepy", "listening"],
-  empty: ["idle", "listening"],
-  cancelled: ["idle", "listening"],
-  error: ["idle", "listening"],
-  gated: ["idle", "listening"],
-  waiting: ["idle", "blocked", "listening"],
-  blocked: ["idle", "listening"],
+  done: ["idle", "sleepy", "listening", "blind"],
+  empty: ["idle", "listening", "blind"],
+  cancelled: ["idle", "listening", "blind"],
+  error: ["idle", "listening", "blind"],
+  gated: ["idle", "listening", "blind"],
+  waiting: ["idle", "blocked", "listening", "blind"],
+  blocked: ["idle", "listening", "blind"],
+  // yap24-PILL3 — the chord or a click still starts a take from here, and a
+  // permission/license refusal outranks it.
+  blind: ["idle", "sleepy", "listening", "blocked", "waiting", "gated"],
 };
 
 /** May the pill move straight from `from` to `to`? */
@@ -1040,6 +1068,14 @@ export const PHASE_COPY: Record<LivePhase, Record<ChatTone, string>> = {
     rude: "mic's blocked. fix it.",
     friendly: "mic blocked",
     rose: "i can't hear you 🌹",
+  },
+  // yap24-PILL3 — the tone presets are the FALLBACK only. The strip draws
+  // [`blindLine`] (the holder and the user's real chord) whenever the status
+  // carries a blind state; these say the same thing without either name.
+  blind: {
+    rude: "fn's blocked. use the chord.",
+    friendly: "fn is blocked — use the chord",
+    rose: "fn can't reach me 🌹",
   },
 };
 
@@ -1256,3 +1292,84 @@ export function stripLine(line: string, stillRecording: boolean, hint: string | 
   if (stillRecording) return STILL_RECORDING_LINE;
   return hint ?? line;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// yap24-PILL3 — the BLIND state: the fn key cannot hear the user.
+//
+// One cause after the 2026-10-26 panel rescope: another app holds macOS Secure
+// Input, so the fn CGEvent tap is blind (secure_input.rs). The other two causes
+// in the original spec are owned elsewhere — a disabled tap is re-armed on every
+// permission edge by #249's `attempt_tap`, and missing Accessibility is the Copy
+// card's (yap-insert-bridge). The Carbon dictate chord is delivered under Secure
+// Input, so the line names it: "fn is blocked by <app>'s secure field — <chord>
+// still works". Calling the hotkey dead would be a lie for anyone with the
+// chord on.
+//
+// The DWELL is the backend's, not a timer here: secure_input.rs needs two
+// consecutive 2 s samples (a hold of at least one full poll, >= 1 s) before it
+// reports, never reports a `loginwindow` (lock-screen) hold, and clears on the
+// first released sample — so this is a pure function of the status payload and
+// the state clears the moment the status does.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The capsule's accessible name in `blind`: its action, then the reason. */
+export const BLIND_LABEL = "Start dictation — fn is blocked by Secure Input";
+
+/** The slice of `build_status` (lib.rs `AppStatus`, camelCase) blind reads. */
+export interface BlindStatusSlice {
+  secureInputBlocked?: boolean;
+  /** The holding app's name, no pid (`secure_input::holder_app`). */
+  secureInputApp?: string | null;
+  /** `hotkeys::active_dictate()`'s label for the user's CURRENT chord. */
+  dictateToggleLabel?: string | null;
+  /** The Carbon chord is really registered (it may be promised). */
+  dictateChordRegistered?: boolean;
+}
+
+/** Why the fn key is blind, with the two names the line needs. */
+export interface BlindState {
+  cause: "secure-input";
+  /** Who holds Secure Input, or null when macOS does not say. */
+  app: string | null;
+  /** The chord that still works, or null when none is registered. */
+  chord: string | null;
+}
+
+const nonEmpty = (v: string | null | undefined): string | null => {
+  const t = (v ?? "").trim();
+  return t ? t : null;
+};
+
+/** The blind state a status payload describes, or null when fn can hear. */
+export function blindFromStatus(st: BlindStatusSlice | null | undefined): BlindState | null {
+  if (!st?.secureInputBlocked) return null;
+  return {
+    cause: "secure-input",
+    app: nonEmpty(st.secureInputApp),
+    chord: st.dictateChordRegistered ? nonEmpty(st.dictateToggleLabel) : null,
+  };
+}
+
+/**
+ * The one sentence the strip says in `blind`. The chord is the user's CURRENT
+ * one, so a rebound chord reads truthfully; with no chord registered it names
+ * the click, which the fn tap never carried and Secure Input cannot stop.
+ */
+export function blindLine(b: BlindState): string {
+  const who = b.app ?? "another app";
+  return b.chord
+    ? `fn is blocked by ${who}'s secure field — ${b.chord} still works`
+    : `fn is blocked by ${who}'s secure field — click to dictate`;
+}
+
+/**
+ * Fold a blind state into the pill's phase: `blind` wins over rest only, via
+ * [`PHASE_PRECEDENCE`], so a take in progress (or its acknowledgement) keeps
+ * the pill and a null state is the phase unchanged.
+ */
+export function withBlind(phase: LivePhase, blind: BlindState | null): LivePhase {
+  return blind ? winningPhase(phase, "blind") : phase;
+}
+
+/** The sample a forced `blind` matrix capture draws (forced.ts). */
+export const SAMPLE_BLIND: BlindState = { cause: "secure-input", app: "Google Chrome", chord: "⌃⌥⌘Space" };

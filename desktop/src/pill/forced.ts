@@ -24,7 +24,9 @@
 import {
   ALL_LIVE_PHASES,
   PHASE_ID,
+  SAMPLE_BLIND,
   phaseVisual,
+  type BlindState,
   type LivePhase,
   type PhaseVisual,
   type TranscribeProgress,
@@ -48,6 +50,13 @@ export interface ForcedPill {
   style: PillStyle | null;
   dock: PillDock | null;
   progress: TranscribeProgress | null;
+  /**
+   * yap24-PILL3 — `blind` is the other phase whose line needs data the phase
+   * does not carry (the holder and the chord). Without a sample the matrix
+   * would photograph the tone fallback, a line the app only says when the
+   * status names neither.
+   */
+  blind: BlindState | null;
 }
 
 /** A phase by its variant name or its product id; null for anything else. */
@@ -74,6 +83,7 @@ export function forcedPill(search: string): ForcedPill | null {
     style: (PILL_STYLES as readonly string[]).includes(pill ?? "") ? (pill as PillStyle) : null,
     dock: (PILL_DOCKS as readonly string[]).includes(dock ?? "") ? (dock as PillDock) : null,
     progress: phase === "transcribing" ? SAMPLE_PROGRESS : null,
+    blind: phase === "blind" ? SAMPLE_BLIND : null,
   };
 }
 
