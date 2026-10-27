@@ -399,7 +399,8 @@ export default function ClassicPill(
   // trail along the length axis); `pill/slots.tsx` owns whether each is shown.
   const slotCtx: SlotCtx = slots ?? {
     phase: gate,
-    dock: barDock(document.documentElement.dataset.dock),
+    // No `document` under a server render (ClassicPill.mark.test): bottom dock.
+    dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
     meetingOnScreen: meeting.recording || meetingAfter !== null,
     progress,
     listen: { estWords: 0, sec: 0 },

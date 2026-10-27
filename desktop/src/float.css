@@ -1274,11 +1274,11 @@ html[data-dock="right"] .phase-strip {
 /* The vertical-dock layout: at a side dock the listening bar is a column, the
  * waveform's bars grow across it, and the thickness is Y5-I's token once that
  * lands (`--flow-bar-thickness`), the live capsule's 44 px until then. */
+/* The column BOX is the shell's (Y5-I: `[data-bar-position] .pill` sizes it
+   from --flow-bar-length / --flow-bar-thickness); this rule only lays the
+   capsule's contents out along it. */
 .pill.live[data-bar-axis="column"] {
   flex-direction: column;
-  width: var(--flow-bar-thickness, 44px);
-  height: auto;
-  min-width: 0;
   padding: 6px 0;
   gap: 3px;
 }
