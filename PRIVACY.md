@@ -31,9 +31,10 @@ For transparency, here is **every** network connection Yap makes:
 
 1. **First-run model download.** The first time you use Yap, it downloads the speech model to your Mac so it can run offline afterward. After that, transcription is fully offline.
 2. **Update checks.** Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings.
-3. **The revocation check.** This is the **only** network call the licensing path makes. Your license is verified **on your Mac**, against a public key compiled into the app — activating it, and every launch after, involves no server at all. Separately, in the background, Yap downloads one small public file listing the licenses that have been refunded or charged back, and checks its own against that list locally. It is a plain download of a file that is identical for everyone: it carries no license key, no email, no device identifier, and no query of any kind, so it cannot tell us who is running Yap or where. If it fails — you are offline, the host is down, the response is garbage — nothing changes and Yap keeps working exactly as it did.
 
-That's the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
+Licensing makes **no** network call. Your license is verified **on your Mac**, against a public key compiled into the app — activating it, and every launch after, involves no server at all, and Yap never contacts us to check, renew or confirm it.
+
+Those two are the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
 
 ## Data stored on your Mac, and your control over it
 

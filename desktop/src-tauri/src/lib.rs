@@ -6257,9 +6257,8 @@ fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
 }
 
 /// Paste a license key. Verified BEFORE it is written, so a bad paste never
-/// lands on disk. On success the revocation list is refreshed in the background
-/// (a refund that predates this activation must be seen), but activation itself
-/// never waits on the network and never fails because of it.
+/// lands on disk. Activation is entirely local (yap-lic-00): the key is checked
+/// against the compiled-in public key and no network call is made.
 #[tauri::command]
 fn activate_license(
     app: AppHandle,
@@ -6268,7 +6267,6 @@ fn activate_license(
 ) -> Result<license::LicenseStatus, CommandError> {
     match state.license.activate(&key) {
         Ok(status) => {
-            spawn_revocation_refresh(&app, state.license.clone());
             let _ = app.emit("license", &status);
             Ok(status)
         }
@@ -6318,20 +6316,6 @@ fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> licens
     let status = state.license.status();
     let _ = app.emit("license", &status);
     status
-}
-
-/// Refresh the cached revocation list — the ONLY network call the licensing
-/// path makes, to the issuer host and nowhere else. Fire-and-forget: offline,
-/// DNS failure, a 500 or garbage JSON all leave local state untouched, so a Yap
-/// that never reaches the internet again keeps working exactly as it does now.
-fn spawn_revocation_refresh(app: &AppHandle, mgr: Arc<license::LicenseManager>) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let result = license::fetch_revocations(license::REVOCATION_URL).await;
-        if mgr.apply_fetch_result(result) {
-            let _ = app.emit("license", &mgr.status());
-        }
-    });
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -7100,9 +7084,12 @@ pub fn run() {
 
     // YP2: licensing state comes up BEFORE the app state that will hold it, so
     // the trial's first write happens once, on a DB that is already open.
-    let license_manager = Arc::new(license::LicenseManager::new(
+    // yap-lic-00: launch init is local-only — `NoNetwork` is the transport, and
+    // `launch_license_init_makes_no_network_call` pins that it is never used.
+    let license_manager = Arc::new(license::launch_init(
         &data_dir(),
         db.clone() as Arc<dyn license::LicenseStore>,
+        &license::NoNetwork,
     ));
     log::info!(
         "license: {}",
@@ -7507,12 +7494,6 @@ pub fn run() {
             // toggle stays authoritative even if the .app moved (which strands
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
-
-            // YP2: refresh the revocation list ONCE per launch, in the
-            // background. It is best-effort by design — nothing waits on it,
-            // nothing fails without it, and a machine that is offline forever
-            // simply keeps the list it last saw.
-            spawn_revocation_refresh(app.handle(), state.license.clone());
 
             if let Some(win) = app.get_webview_window("main") {
                 if smoke::release_armed() {

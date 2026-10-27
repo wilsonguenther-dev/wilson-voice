@@ -717,8 +717,8 @@ export function useAppShell() {
       if (!dock) return;
       setSettings((s) => (s && s.pillPosition !== dock ? { ...s, pillPosition: dock } : s));
     }).then((u) => (dead ? u() : unsubs.push(u)));
-    // YP3 — licensing. `license` is emitted on activation, removal and every
-    // revocation refresh that changed something; `license_required` is emitted
+    // YP3 — licensing. `license` is emitted on activation and removal (there is
+    // no background licensing fetch since yap-lic-00); `license_required` is emitted
     // by the gate itself, which is the ONLY way the hotkey / pill / tray paths
     // (none of which can surface a returned error) can say why nothing
     // happened. Both are read-only here: the sheet is a prompt, never a lock.

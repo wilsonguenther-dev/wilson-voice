@@ -126,7 +126,7 @@ function Float() {
   //
   // EVENT-DRIVEN, NOT POLLED. One read at mount for the value that already
   // exists, then the backend's own emissions: `license` on every change
-  // (activation, removal, a revocation refresh — lib.rs:4464/4511/4524) and
+  // (activation and removal; no background licensing fetch since yap-lic-00) and
   // `license_required` from the dictation gate itself (lib.rs:1232), which is
   // the only way the hotkey and pill paths can say why a press did nothing.
   // There is no interval here and there is no second clock: `days_left` arrives
