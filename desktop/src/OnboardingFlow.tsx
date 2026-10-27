@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ModelPicker,
   ModelRibbon,
   fmtSize,
   PolishModelPicker,
@@ -22,6 +23,16 @@ import {
   type MicPermissionStatus,
   type PermissionGrantRow,
 } from "./permission";
+import {
+  STEP_ORDER,
+  classifyTryItFailure,
+  completionFor,
+  nextStep,
+  progressStep,
+  tryItSucceeded,
+  type Outcome,
+  type Step,
+} from "./onboarding";
 
 // YV9 — first-run onboarding. Rendered as a full-screen overlay over the main
 // app while AppSettings.onboarded is false. Self-contained: it invokes the
@@ -44,7 +55,10 @@ import {
 // `PolishOffer` component below mounts only on the "done" step, so the catalog
 // read it performs never touches the welcome/permissions path at all.
 
-type Step = "welcome" | "permissions" | "calibration" | "done";
+// Y6-A — the steps, their order and the routing between them live in
+// `onboarding.ts` (`nextStep`), tested on their own. The last real step is
+// TRY IT: one dictation pasted into a field inside THIS window — never into
+// another app (YV21) — before "done" means anything.
 
 interface PermissionReport {
   /** fix-ax-probe-refresh — "Yap" / "Yap Test". */
@@ -78,7 +92,19 @@ interface TranscriptEntry {
 const CALIBRATION_PHRASE =
   "The quick brown fox jumps over the lazy dog, and Yap is listening.";
 
-const STEP_ORDER: Step[] = ["welcome", "permissions", "calibration", "done"];
+const NEXT: Outcome = { kind: "next" };
+const BACK: Outcome = { kind: "back" };
+const SKIP: Outcome = { kind: "skip" };
+const RETRY: Outcome = { kind: "retry" };
+const SUCCESS: Outcome = { kind: "success" };
+
+/**
+ * Y6-A — how long after the `transcript` event the try-it field may take to
+ * show the pasted text. The backend posts ⌘V BEFORE it emits the transcript,
+ * so the text is normally already there; this covers the webview applying
+ * the paste a beat later. Past it, the paste did not land.
+ */
+const PASTE_LAND_MS = 1500;
 
 /**
  * Last-resort ceiling on one calibration take. YV79 made every terminal take
@@ -133,11 +159,26 @@ function PolishOffer({ speechModelReady }: { speechModelReady: boolean }) {
 export default function Onboarding({
   onFinish,
   onSkip,
+  autoPaste,
+  onEnableAutoPaste,
 }: {
-  /** Finish onboarding; sample is the captured calibration phrase (or null). */
-  onFinish: (sample: string | null) => void;
-  /** Dismiss without recording anything (still marks onboarded). */
+  /**
+   * Finish onboarding; sample is the captured calibration phrase (or null).
+   * Y6-A — `proven` is true only when a try-it take actually pasted into the
+   * field; an explicit skip finishes with `false`, which keeps the main
+   * window's health row raised until a real take pastes.
+   */
+  onFinish: (sample: string | null, proven: boolean) => void;
+  /** "Skip for now" on the welcome screen — finishes unproven. */
   onSkip: () => void;
+  /**
+   * Fix round 1 — the user's "Paste my words automatically" setting. Off, no
+   * take can paste (backend `paste::should_paste`), so try-it names the
+   * setting instead of blaming the cursor, and never declares success.
+   */
+  autoPaste: boolean;
+  /** Turn auto-paste on from the try-it screen that names it as the cause. */
+  onEnableAutoPaste: () => Promise<void> | void;
 }) {
   const [step, setStep] = useState<Step>("welcome");
   const [perms, setPerms] = useState<PermissionReport | null>(null);
@@ -155,6 +196,40 @@ export default function Onboarding({
   // Calibration failure (backend `transcript_error`, or the watchdog below).
   // Shown inline with a Retry button so a failed take is a dead end no longer.
   const [calibError, setCalibError] = useState<string | null>(null);
+  // Y6-A — the try-it field, what Yap heard, and whether a take has landed.
+  const [tryText, setTryText] = useState("");
+  const [heard, setHeard] = useState<string | null>(null);
+  const [tryError, setTryError] = useState<string | null>(null);
+  const [proven, setProven] = useState(false);
+  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Fix round 1 — everything known about the CURRENT try-it take. `baseline`
+   * is what the field held when the take started (text already there proves
+   * nothing); `transcript` is null until this take produced words;
+   * `pasteFailed` is the backend's own "no receipt" (`paste_failed`);
+   * `pasted` is the backend's own paste receipt for this take, carried on
+   * `take_done` (fix round 2) — a hand ⌘V of the clipboard never sets it;
+   * `doneOk` is its terminal `take_done{ok:true}`, which arrives AFTER
+   * `transcript` and `paste_failed`, so success is decided only once the
+   * backend has said everything it will say about the paste; `settled` stops
+   * a take being judged twice.
+   */
+  const takeRef = useRef<{
+    baseline: string;
+    transcript: string | null;
+    pasteFailed: boolean;
+    pasted: boolean;
+    doneOk: boolean;
+    settled: boolean;
+  }>({
+    baseline: "",
+    transcript: null,
+    pasteFailed: false,
+    pasted: false,
+    doneOk: false,
+    settled: false,
+  });
+  const landTimerRef = useRef(0);
   // YV54 — silent setup: this overlay is the surface that starts the
   // recommended download, on mount, without asking. Nothing here blocks on it
   // except the calibration take, which needs an engine to transcribe with.
@@ -176,7 +251,14 @@ export default function Onboarding({
   // looking at has nothing to update. Coming back re-reads immediately, so the
   // 2s interval is never what the user waits on after granting.
   useEffect(() => {
-    if (step !== "permissions") return;
+    // Y6-A — the no-mic and no-Accessibility screens are the same errand
+    // (flip a toggle in System Settings, come back), so they poll the same way.
+    if (
+      step !== "permissions" &&
+      step !== "try-it-no-mic" &&
+      step !== "try-it-no-accessibility"
+    )
+      return;
     let t = 0;
     const stop = () => { if (t) { clearInterval(t); t = 0; } };
     const start = () => { if (!t) t = window.setInterval(refreshPerms, PERMISSION_POLL_MS); };
@@ -216,22 +298,40 @@ export default function Onboarding({
     // lands after teardown so no native listener leaks.
     let dead = false;
     const unsubs: Array<() => void> = [];
-    listen<boolean>("recording", (e) => setRecording(e.payload)).then((u) =>
-      dead ? u() : unsubs.push(u),
-    );
+    listen<boolean>("recording", (e) => {
+      setRecording(e.payload);
+      // Fix round 1 — a new try-it take starts: snapshot the field and forget
+      // the previous take's words, so nothing stale is shown or judged.
+      if (e.payload && stepRef.current === "try-it") tryItRef.current.onStart();
+      // Y6-A — a try-it take is driven by the hotkey, not a button here, so
+      // the end of the recording is what arms the "waiting for it" state.
+      if (!e.payload && stepRef.current === "try-it") setBusy(true);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<TranscriptEntry>("transcript", (e) => {
       if (stepRef.current === "calibration") {
         setSample(e.payload.text);
         setBusy(false);
         setCalibError(null);
         setNote("Voice sample captured — Yap will use it to personalize.");
+      } else if (stepRef.current === "try-it") {
+        tryItRef.current.onTranscript(e.payload.text);
       }
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Y6-A — the ⌘V went out and nothing took it: the try-it take failed at
+    // the very last stage, and the field will never fill. Name it now rather
+    // than waiting out PASTE_LAND_MS.
+    listen<string>("paste_failed", () => {
+      if (stepRef.current === "try-it") tryItRef.current.onPasteFailed();
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — the other half of "busy": the backend emits this whenever a take
     // fails to produce a transcript, so the failure clears the spinner and shows
     // its reason instead of the overlay waiting on a success that never comes.
     listen<{ message: string }>("transcript_error", (e) => {
       setBusy(false);
+      if (stepRef.current === "try-it") {
+        tryItRef.current.onFail(e.payload?.message || null);
+        return;
+      }
       setCalibError(e.payload?.message || "Transcription failed.");
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV79 — the terminal marker for a take, whatever its outcome. The three
@@ -239,8 +339,16 @@ export default function Onboarding({
     // mic permission / the wrong input device hits the loudest of them: the
     // no-speech gate, which only ever spoke on the toast channel behind this
     // overlay. Busy now clears for EVERY take, with the backend's own reason.
-    listen<{ ok: boolean; message: string | null }>("take_done", (e) => {
+    listen<{ ok: boolean; message: string | null; pasted?: boolean }>("take_done", (e) => {
       setBusy(false);
+      if (stepRef.current === "try-it") {
+        tryItRef.current.onDone(
+          !!e.payload?.ok,
+          e.payload?.message || null,
+          e.payload?.pasted === true,
+        );
+        return;
+      }
       if (!e.payload?.ok) {
         setCalibError(
           e.payload?.message || "That take produced nothing. Retry.",
@@ -262,6 +370,10 @@ export default function Onboarding({
     if (!busy) return;
     const t = setTimeout(() => {
       setBusy(false);
+      if (stepRef.current === "try-it") {
+        tryItRef.current.onFail("Yap didn't hear back from the recorder.");
+        return;
+      }
       setCalibError("Yap didn't hear back from the recorder. Retry.");
     }, CALIBRATION_WATCHDOG_MS);
     return () => clearTimeout(t);
@@ -315,9 +427,211 @@ export default function Onboarding({
     }
   }
 
-  /** Honest exit from a mic Yap cannot use: skip calibration, which needs one. */
+  /**
+   * Honest exit from a mic Yap cannot use. Y6-A: this is a SKIP — it ends on
+   * "done" unproven, and `Finish setup` then saves `dictationProven: false`.
+   */
   function continueWithoutDictation() {
-    setStep("done");
+    go(SKIP);
+  }
+
+  /** Every step change goes through the tested machine in `onboarding.ts`. */
+  function go(outcome: Outcome) {
+    if (outcome.kind === "success") setProven(true);
+    if (outcome.kind === "skip") setProven(false);
+    setStep((s) => nextStep(s, outcome));
+  }
+
+  async function openPrivacyPane(pane: "Accessibility") {
+    try {
+      await invoke("open_privacy_settings", { pane });
+    } catch (e) {
+      setNote(errorText(e));
+    }
+  }
+
+  // --- Y6-A try-it ----------------------------------------------------------
+
+  function clearLandTimer() {
+    if (landTimerRef.current) {
+      clearTimeout(landTimerRef.current);
+      landTimerRef.current = 0;
+    }
+  }
+
+  /** Fix round 1 — a fresh take: snapshot the field, forget the last take. */
+  function startTake() {
+    clearLandTimer();
+    takeRef.current = {
+      baseline: fieldRef.current?.value ?? "",
+      transcript: null,
+      pasteFailed: false,
+      pasted: false,
+      doneOk: false,
+      settled: false,
+    };
+    setHeard(null);
+    setTryError(null);
+  }
+
+  /**
+   * Did THIS take's transcript arrive in the field? Settles success only when
+   * the backend has finished the take (`take_done{ok:true}`) WITH its own
+   * paste receipt (`pasted`, fix round 2), sent no
+   * `paste_failed`, auto-paste is on, and the transcript occurs in the field
+   * more often than it did when the take started.
+   */
+  function checkLanded(value: string): boolean {
+    const take = takeRef.current;
+    if (take.settled) return false;
+    if (!tryItSucceeded(take, autoPaste, value, take.baseline)) return false;
+    take.settled = true;
+    clearLandTimer();
+    setBusy(false);
+    setTryError(null);
+    go(SUCCESS);
+    return true;
+  }
+
+  /**
+   * Name the stage that broke the take from a FRESH permission read (PERM-E's
+   * grant rows can have moved since the checklist), then route to its screen.
+   */
+  async function failTryIt(message: string | null) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    take.settled = true;
+    clearLandTimer();
+    setBusy(false);
+    let report = perms;
+    try {
+      report = await invoke<PermissionReport>("get_permissions");
+      setPerms(report);
+    } catch (e) {
+      console.error(e);
+    }
+    const mic = deriveMicStatus({
+      microphoneStatus: report?.microphoneStatus,
+      microphone: !!report?.microphone,
+      asked: micAsked,
+    });
+    setTryError(message);
+    go({
+      kind: "failure",
+      failure: classifyTryItFailure({
+        micAuthorized: mic === "authorized",
+        modelReady: modelSetup.ready,
+        heardText: !!take.transcript,
+        autoPaste,
+        accessibility: !!report?.accessibility,
+      }),
+    });
+  }
+
+  /** The take produced words. Recorded only; `take_done` decides the outcome. */
+  function onTryItTranscript(text: string) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    take.transcript = text;
+    setHeard(text);
+  }
+
+  /** The backend sent ⌘V and got no receipt: the paste stage failed. */
+  function onTryItPasteFailed() {
+    takeRef.current.pasteFailed = true;
+    failTryIt(null);
+  }
+
+  /**
+   * The backend's terminal marker for the take. Not ok: the take produced no
+   * dictation (no speech, cancel, rejected, silent) — fail with its reason.
+   * Ok: give the webview PASTE_LAND_MS to apply the ⌘V, then judge.
+   */
+  function onTryItDone(ok: boolean, message: string | null, pasted: boolean) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    if (!ok) {
+      failTryIt(message);
+      return;
+    }
+    take.doneOk = true;
+    take.pasted = pasted;
+    // Fix round 2 — no paste receipt for this take (the paste was never
+    // attempted, or it got no receipt): nothing the field shows from here on
+    // can be this take's paste, only the user's own ⌘V. Fail now, closed.
+    if (!autoPaste || !take.transcript || !pasted) {
+      // Copy-only by the user's own setting (or a take with nothing to
+      // paste): no paste can be proven, so name the cause now.
+      failTryIt(null);
+      return;
+    }
+    if (checkLanded(fieldRef.current?.value ?? "")) return;
+    clearLandTimer();
+    landTimerRef.current = window.setTimeout(() => {
+      landTimerRef.current = 0;
+      if (!checkLanded(fieldRef.current?.value ?? "")) failTryIt(null);
+    }, PASTE_LAND_MS);
+  }
+
+  // The event listeners are registered once; they reach the CURRENT handlers
+  // (fresh perms, fresh model state, fresh autoPaste) through this ref.
+  const tryItRef = useRef({
+    onStart: startTake,
+    onTranscript: onTryItTranscript,
+    onPasteFailed: onTryItPasteFailed,
+    onDone: onTryItDone,
+    onFail: failTryIt,
+  });
+  tryItRef.current = {
+    onStart: startTake,
+    onTranscript: onTryItTranscript,
+    onPasteFailed: onTryItPasteFailed,
+    onDone: onTryItDone,
+    onFail: failTryIt,
+  };
+
+  useEffect(() => () => clearLandTimer(), []);
+
+  // Land in the field on arrival, so the take has somewhere to paste. Fix
+  // round 1: arriving (or retrying) also opens a fresh take, so a take that
+  // never announced its start is still judged against the field as it is now.
+  useEffect(() => {
+    if (step !== "try-it") return;
+    fieldRef.current?.focus();
+    tryItRef.current.onStart();
+  }, [step]);
+
+  /**
+   * The on-screen alternative to the hotkey. `onMouseDown` keeps focus IN the
+   * field, which is where the backend's ⌘V lands — a click that moved focus
+   * to this button would leave nothing focused to paste into.
+   */
+  async function toggleTryIt() {
+    try {
+      setTryError(null);
+      await invoke("manual_toggle");
+    } catch (e) {
+      failTryIt(errorText(e));
+    }
+  }
+
+  async function enableAutoPaste() {
+    try {
+      await onEnableAutoPaste();
+      go(RETRY);
+    } catch (e) {
+      setNote(errorText(e));
+    }
+  }
+
+  async function copyHeard() {
+    if (!heard) return;
+    try {
+      await invoke("copy_entry", { text: heard });
+      setNote("Copied — press ⌘V wherever you want it.");
+    } catch (e) {
+      setNote(errorText(e));
+    }
   }
 
   async function requestAccessibility() {
@@ -344,13 +658,11 @@ export default function Onboarding({
   }
 
   function goNext() {
-    const i = STEP_ORDER.indexOf(step);
-    if (i < STEP_ORDER.length - 1) setStep(STEP_ORDER[i + 1]);
+    go(NEXT);
   }
 
   function goBack() {
-    const i = STEP_ORDER.indexOf(step);
-    if (i > 0) setStep(STEP_ORDER[i - 1]);
+    go(BACK);
   }
 
   const micStatus: MicPermissionStatus = deriveMicStatus({
@@ -397,9 +709,9 @@ export default function Onboarding({
             <span
               key={s}
               className={
-                s === step
+                s === progressStep(step)
                   ? "onboard-dot active"
-                  : STEP_ORDER.indexOf(s) < STEP_ORDER.indexOf(step)
+                  : STEP_ORDER.indexOf(s) < STEP_ORDER.indexOf(progressStep(step))
                     ? "onboard-dot done"
                     : "onboard-dot"
               }
@@ -421,6 +733,7 @@ export default function Onboarding({
             <ol className="onboard-plan">
               <li>Grant macOS permissions — each one says why Yap needs it.</li>
               <li>Record a short calibration phrase so Yap learns your voice.</li>
+              <li>Try it: dictate once into a field here and watch it paste.</li>
               <li className="muted">
                 Meanwhile your speech model
                 {modelSetup.target && !modelSetup.ready
@@ -435,6 +748,7 @@ export default function Onboarding({
               <button className="primary" onClick={goNext}>
                 Get started
               </button>
+              {/* Y6-A — `onSkip` finishes UNPROVEN (`completionFor(skip)`). */}
               <button className="ghost" onClick={onSkip}>
                 Skip for now
               </button>
@@ -604,9 +918,227 @@ export default function Onboarding({
           </div>
         )}
 
+        {step === "try-it" && (
+          <div className="onboard-step">
+            <h1>Try it</h1>
+            <p className="onboard-lede">
+              Click in the box below, hold <kbd>fn</kbd>+<kbd>⌃</kbd>, say
+              anything, and let go. Yap pastes what you said right here — the
+              same way it will in every other app.
+            </p>
+            <textarea
+              ref={fieldRef}
+              className="onboard-try-field"
+              aria-label="Try-it text field"
+              placeholder="Your words land here…"
+              rows={3}
+              value={tryText}
+              onChange={(e) => {
+                setTryText(e.target.value);
+                // Only ever settles once the backend has finished this take.
+                checkLanded(e.target.value);
+              }}
+            />
+            {/* YV54 — the SAME waiting affordance calibration uses: the button
+                wears the ribbon's line while the engine downloads, instead of
+                inviting a take that could only fail. */}
+            <button
+              className={recording ? "onboard-record live" : "onboard-record"}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={toggleTryIt}
+              disabled={busy || (!recording && (micWaiting || engineWaiting))}
+            >
+              {recording
+                ? "■ Stop"
+                : busy
+                  ? "Pasting…"
+                  : micWaiting
+                    ? calibrationBlockedReason
+                    : engineWaiting
+                      ? (modelSetup.ribbon ?? "Waiting for the speech model…")
+                      : "● Or tap here instead of the hotkey"}
+            </button>
+            {heard && (
+              <div className="onboard-sample">
+                <span className="muted tiny">Heard:</span>
+                <p>{heard}</p>
+              </div>
+            )}
+            {note && <p className="muted tiny">{note}</p>}
+            <div className="onboard-actions">
+              <button className="ghost" onClick={goBack} disabled={recording}>
+                Back
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)} disabled={recording}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-no-mic" && (
+          <div className="onboard-step" data-try-it-failure="no-mic">
+            <h1>Yap couldn’t hear you</h1>
+            <p className="onboard-lede">{micCopy.body}</p>
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            <div className="onboard-actions">
+              {micAction.kind === "request" && (
+                <button className="primary" onClick={requestMic}>{micAction.label}</button>
+              )}
+              {micAction.kind === "settings" && (
+                <button className="primary" onClick={() => openMicSettings(micAction.pane)}>
+                  {micAction.label}
+                </button>
+              )}
+              <button className="ghost" onClick={() => go(RETRY)} disabled={!micOk}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-no-accessibility" && (
+          <div className="onboard-step" data-try-it-failure="no-accessibility">
+            <h1>Yap heard you but can’t paste</h1>
+            <p className="onboard-lede">
+              {nameProduct(
+                "Pasting needs the Accessibility permission. Open System Settings → Privacy & Security → Accessibility and switch on Yap, then come back.",
+                perms?.productName,
+              )}
+            </p>
+            {heard && (
+              <div className="onboard-sample">
+                <span className="muted tiny">Heard:</span>
+                <p>{heard}</p>
+              </div>
+            )}
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            <div className="onboard-actions">
+              <button className="primary" onClick={() => openPrivacyPane("Accessibility")}>
+                Open Accessibility settings
+              </button>
+              <button className="ghost" onClick={() => go(RETRY)} disabled={!axOk}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-no-model" && (
+          <div className="onboard-step" data-try-it-failure="no-model">
+            <h1>The speech model isn’t ready</h1>
+            <p className="onboard-lede">
+              Yap transcribes on this Mac, so it needs its speech model before
+              it can turn your voice into text.
+            </p>
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            <ModelPicker setup={modelSetup} />
+            <div className="onboard-actions">
+              <button className="primary" onClick={() => go(RETRY)} disabled={!modelReady}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-paste-refused" && (
+          <div className="onboard-step" data-try-it-failure="paste-refused">
+            <h1>The text didn’t land</h1>
+            <p className="onboard-lede">
+              Yap pastes into whatever text field has the cursor when you let
+              go of the hotkey. This time nothing took the paste — usually
+              because the cursor wasn’t in the box. Your words are not lost:
+              copy them and paste them yourself, or try again with the cursor
+              in the box.
+            </p>
+            {heard && (
+              <div className="onboard-sample">
+                <span className="muted tiny">Heard:</span>
+                <p>{heard}</p>
+              </div>
+            )}
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            {note && <p className="muted tiny">{note}</p>}
+            <div className="onboard-actions">
+              {heard && (
+                <button className="primary" onClick={copyHeard}>
+                  Copy to clipboard
+                </button>
+              )}
+              <button className="ghost" onClick={() => go(RETRY)}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-no-speech" && (
+          <div className="onboard-step" data-try-it-failure="no-speech">
+            <h1>Yap didn’t catch any words</h1>
+            <p className="onboard-lede">
+              That take ended without any text, so there was nothing to paste.
+              Hold the hotkey a moment longer and speak clearly, then let go.
+            </p>
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            <div className="onboard-actions">
+              <button className="primary" onClick={() => go(RETRY)}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-auto-paste-off" && (
+          <div className="onboard-step" data-try-it-failure="auto-paste-off">
+            <h1>Automatic paste is turned off</h1>
+            <p className="onboard-lede">
+              Yap heard you and copied your words, but “Paste my words
+              automatically” is off in Settings, so it did not paste them.
+              Turn it on to have Yap paste for you, or keep it off and paste
+              with ⌘V yourself.
+            </p>
+            {heard && (
+              <div className="onboard-sample">
+                <span className="muted tiny">Heard:</span>
+                <p>{heard}</p>
+              </div>
+            )}
+            {note && <p className="muted tiny">{note}</p>}
+            <div className="onboard-actions">
+              <button className="primary" onClick={enableAutoPaste}>
+                Turn on automatic paste
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Keep it off
+              </button>
+            </div>
+          </div>
+        )}
+
         {step === "done" && (
           <div className="onboard-step">
-            <h1>You’re all set 🎉</h1>
+            <h1>{proven ? "It works — you’re all set 🎉" : "Setup skipped for now"}</h1>
+            {!proven && (
+              <p className="onboard-lede">
+                Dictation hasn’t pasted yet, so Yap will keep a reminder in the
+                main window until your first take lands.
+              </p>
+            )}
             <p className="onboard-lede">
               Hold <kbd>fn</kbd>+<kbd>⌃</kbd> anywhere, talk, and Yap types it
               out. Double-tap to go hands-free. You can replay this setup any
@@ -625,13 +1157,23 @@ export default function Onboarding({
               <li className={sample ? "ok" : "bad"}>
                 <StatusDot ok={!!sample} /> Voice sample
               </li>
+              <li className={proven ? "ok" : "bad"}>
+                <StatusDot ok={proven} /> Dictation pasted
+              </li>
             </ul>
             <PolishOffer speechModelReady={modelReady} />
             <div className="onboard-actions">
               <button className="ghost" onClick={goBack}>
                 Back
               </button>
-              <button className="primary" onClick={() => onFinish(sample)}>
+              <button
+                className="primary"
+                onClick={() =>
+                  // `done` is reachable only by success or skip, so this is
+                  // the one place `onboarded` is written from the flow.
+                  onFinish(sample, (completionFor(proven ? SUCCESS : SKIP) ?? { dictationProven: false }).dictationProven)
+                }
+              >
                 Finish setup
               </button>
             </div>

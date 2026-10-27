@@ -51,8 +51,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-// Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of main's 37.
-const APP_SETTINGS_FIELD_COUNT: usize = 40;
+// Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
+// Y6-A: +1 (dictation_proven).
+const APP_SETTINGS_FIELD_COUNT: usize = 41;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -135,6 +136,7 @@ fn fully_populated() -> AppSettings {
         // Y8-C — the shipped value is OFF, so ON is the one a store must carry.
         earcons: true,
         onboarded: true,
+        dictation_proven: true,
         calibration_sample: Some("the quick brown fox".into()),
         native_model: "ggml-small.en".into(),
         preload_model: true,

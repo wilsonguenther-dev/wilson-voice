@@ -559,6 +559,13 @@ pub struct AppSettings {
     /// welcome → permissions → voice-calibration flow; set true on finish.
     #[serde(default)]
     pub onboarded: bool,
+    /// Y6-A — at least one dictation has actually PASTED: onboarding's try-it
+    /// take, or any take since. `onboarded` can be true without it (an honest
+    /// "Skip for now"), and the main window's health row stays raised until it
+    /// flips. Monotonic: set by the first pasted take (`mark_dictation_proven`)
+    /// and never cleared by a save (see `save_settings`).
+    #[serde(default)]
+    pub dictation_proven: bool,
     /// Calibration phrase captured during onboarding, kept for later
     /// personalization (initial_prompt biasing / future voice adaptation).
     #[serde(default)]
@@ -696,6 +703,7 @@ impl Default for AppSettings {
             mute_while_dictating: true,
             earcons: false,
             onboarded: false,
+            dictation_proven: false,
             calibration_sample: None,
             native_model: default_native_model(),
             preload_model: false,
@@ -3206,6 +3214,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 
         match result {
             Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {
+                if outcome.pasted {
+                    mark_dictation_proven(&app2, &state2);
+                }
                 // Y5-F fix round 1: the status chip gets a Yap-authored line,
                 // never `outcome.message` (which can carry the clipboard
                 // plugin's raw error); that text goes to the log only.
@@ -3263,9 +3274,21 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // YV79 — terminal marker, last of this arm's emits so the
                 // `transcript` above has already handed the text over before any
                 // listener clears its busy state on this.
+                //
+                // Y6-A fix round 2 — `pasted` is THIS take's own paste receipt
+                // (`outcome.pasted`, the same bit `mark_dictation_proven` keys
+                // on). A take whose paste was never attempted (`want_paste`
+                // false: focus not a text input, stale generation) sends no
+                // `paste_failed`, so without this the onboarding try-it step
+                // could only judge the field — and a transcript the user pasted
+                // by hand from the clipboard read as a proven dictation.
                 let _ = app2.emit(
                     TAKE_DONE_EVENT,
-                    serde_json::json!({ "ok": true, "message": serde_json::Value::Null }),
+                    serde_json::json!({
+                        "ok": true,
+                        "message": serde_json::Value::Null,
+                        "pasted": outcome.pasted,
+                    }),
                 );
                 let preview = if entry.text.chars().count() > 100 {
                     let s: String = entry.text.chars().take(100).collect();
@@ -3856,6 +3879,34 @@ pub fn chord_setting(
     }
 }
 
+/// Y6-A — the event the frontend drops its "hasn't pasted yet" reminder on.
+pub const DICTATION_PROVEN_EVENT: &str = "dictation_proven";
+
+/// Y6-A — flip `dictation_proven` once, on the first take that really pasted,
+/// and persist it. A no-op on every later take (one lock, one bool read).
+fn mark_dictation_proven(app: &AppHandle, state: &AppState) {
+    let snapshot = {
+        let mut live = state.settings.lock();
+        if !set_dictation_proven(&mut live) {
+            return;
+        }
+        live.clone()
+    };
+    if let Err(e) = persist_settings(&snapshot) {
+        log::warn!("dictation_proven not persisted: {e}");
+    }
+    let _ = app.emit(DICTATION_PROVEN_EVENT, ());
+}
+
+/// The pure half of `mark_dictation_proven`: true when this call flipped it.
+fn set_dictation_proven(settings: &mut AppSettings) -> bool {
+    if settings.dictation_proven {
+        return false;
+    }
+    settings.dictation_proven = true;
+    true
+}
+
 /// Write settings.json (the single on-disk copy every settings writer goes
 /// through — `save_settings` and the YV31 model commands).
 fn persist_settings(settings: &AppSettings) -> Result<(), String> {
@@ -4131,6 +4182,9 @@ fn save_settings(
         // toggle must not un-choose it.
         next.cleanup_level_set_by_user =
             live.cleanup_level_set_by_user || next.cleanup_level != live.cleanup_level;
+        // Y6-A: proof that a take pasted is a fact, not a preference — a
+        // frontend save carrying a stale `false` must not erase it.
+        next.dictation_proven = live.dictation_proven || next.dictation_proven;
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -10666,6 +10720,25 @@ mod tests {
     // first-run flow, and older settings.json (written before the field existed)
     // must deserialize with onboarded=false via serde default — never panic.
     #[test]
+    fn dictation_proven_defaults_false_flips_once_and_round_trips() {
+        let mut s = AppSettings::default();
+        assert!(!s.dictation_proven);
+        assert!(
+            crate::set_dictation_proven(&mut s),
+            "first pasted take flips it"
+        );
+        assert!(
+            !crate::set_dictation_proven(&mut s),
+            "later takes are no-ops"
+        );
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"dictationProven\":true"));
+        // A settings file written before Y6-A loads unproven, never panics.
+        let legacy: AppSettings = serde_json::from_str(r#"{"onboarded": true}"#).unwrap();
+        assert!(legacy.onboarded && !legacy.dictation_proven);
+    }
+
+    #[test]
     fn onboarded_defaults_false_and_is_backward_compatible() {
         assert!(!AppSettings::default().onboarded);
         assert!(AppSettings::default().calibration_sample.is_none());
@@ -12468,6 +12541,35 @@ mod tests {
             );
             cursor = start + head.len();
         }
+    }
+
+    /// Y6-A fix round 2 — onboarding's try-it step proves a dictation only on
+    /// the backend's own paste receipt. The `Dictated` arm's terminal
+    /// `take_done` must carry `outcome.pasted`; without it a copy-only take
+    /// (`want_paste` false, so no `paste_failed`) plus a manual ⌘V by the user
+    /// read as "It works" and saved `dictationProven: true` forever.
+    #[test]
+    fn dictated_take_done_carries_this_takes_paste_receipt() {
+        const LIB: &str = include_str!("lib.rs");
+        let arm = LIB
+            .split_once("            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {")
+            .expect("the take-result match must still have its `Dictated` arm")
+            .1
+            .split_once("            Ok(TakeOutcome::Cancelled) => {")
+            .expect("`Cancelled` must follow `Dictated`")
+            .0;
+        let done = arm
+            .split_once("TAKE_DONE_EVENT,")
+            .expect("the `Dictated` arm must emit TAKE_DONE_EVENT")
+            .1
+            .split_once(");")
+            .expect("the TAKE_DONE_EVENT emit must close")
+            .0;
+        assert!(
+            done.contains("\"pasted\": outcome.pasted"),
+            "the `Dictated` arm's take_done payload must carry `pasted: outcome.pasted` — \
+             onboarding's try-it success requires it; got: {done}"
+        );
     }
 }
 
