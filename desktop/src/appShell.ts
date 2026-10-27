@@ -342,7 +342,36 @@ export function useAppShell() {
       limit: HISTORY_LIMIT,
     });
     setHistory(h);
+    setHistoryHasMore(h.length >= HISTORY_LIMIT);
   }, []);
+
+  // DB-C — the next page of History (or of the current search), keyed on the
+  // LAST row already shown. Keyset, not offset: the backend orders by
+  // (createdAt, id) so a page boundary inside a run of identical timestamps
+  // neither repeats nor drops a take.
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadOlderHistory = useCallback(async () => {
+    const last = history[history.length - 1];
+    if (!last || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await invoke<TranscriptEntry[]>("get_history", {
+        query: queryRef.current || null,
+        limit: HISTORY_LIMIT,
+        before: { createdAt: last.createdAt, id: last.id },
+      });
+      setHistory((h) => {
+        const seen = new Set(h.map((e) => e.id));
+        return [...h, ...page.filter((e) => !seen.has(e.id))];
+      });
+      setHistoryHasMore(page.length >= HISTORY_LIMIT);
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [history, loadingOlder]);
 
   // YV52 — the recoverable takes. Kept separate from `loadHistory` because the
   // backend purges expired clips on this call, so it must not ride the
@@ -1071,7 +1100,12 @@ export function useAppShell() {
   // the command resolves rather than clearing the list optimistically.
   async function clearAll() {
     if (clearing) return;
-    if (!confirm("Clear all transcript history from SQLite?")) return;
+    if (
+      !confirm(
+        "Clear all transcript history? This erases every dictation and its search index. Scratchpad notes and dictionary words you added are kept.",
+      )
+    )
+      return;
     setClearing(true);
     try {
       await invoke("clear_history");
@@ -1378,7 +1412,7 @@ export function useAppShell() {
     failed, feedbackEdits, finishOnboarding, fixDraft, fixingId, toasts, dismissToast, toastError, dropRetry, openSupportSheet,
     formatting, hasActivity, heat, heatSummary, history, insights,
     installUpdateNow, installedVersion, installing, license, licenseChip, loadFailed,
-    loadHistory, loadMeetings, maxApp, maxDaily30, maxWeek, meetingBusy,
+    loadHistory, loadOlderHistory, historyHasMore, loadingOlder, loadMeetings, maxApp, maxDaily30, maxWeek, meetingBusy,
     meetingsError, meetingsLoading, permsError, setMeetingsError, setMeetingsLoading, setPermsError,
     meetingKind, meetingKinds, meetingQuery, meetingStatus, meetings, modelIsReady,
     modelSetup, monthlySeries, monthlyView, nav, needsPerms, newExpansion,

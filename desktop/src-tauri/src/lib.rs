@@ -4106,8 +4106,13 @@ fn get_history(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
     limit: Option<i64>,
+    before: Option<db::HistoryCursor>,
 ) -> Result<Vec<TranscriptEntry>, String> {
-    state.db.list_transcripts(limit.unwrap_or(200), query)
+    // DB-C — `before` is the last row the History view already shows; `None`
+    // is the first page. Never license-gated (see the gate's own list below).
+    state
+        .db
+        .list_transcripts_page(limit.unwrap_or(200), query, before)
 }
 
 #[tauri::command]

@@ -12,7 +12,7 @@ export default function Home() {
   const {
     bootError, bootErrors, booting, retryBoot, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
-    insights, loadHistory, pasteText, perms, query, queryRef, refreshInsights,
+    insights, loadHistory, loadOlderHistory, historyHasMore, loadingOlder, pasteText, perms, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
     setNoteTitle, setQuery, dropRetry, setScratchComposing, settings, status, toast, toastError,
@@ -427,6 +427,17 @@ export default function Home() {
                   ))}
                 </ul>
               )}
+              {!permsGate && history.length > 0 && historyHasMore ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="history-show-older"
+                  disabled={loadingOlder}
+                  onClick={() => void loadOlderHistory()}
+                >
+                  {loadingOlder ? "Loading older takes…" : "Show older takes"}
+                </button>
+              ) : null}
             </>
   );
 }

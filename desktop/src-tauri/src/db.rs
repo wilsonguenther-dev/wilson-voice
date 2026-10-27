@@ -547,6 +547,91 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// DB-C — the column list every History read returns, in `map_transcript`
+/// order. One definition so the paged, searched and bulk reads cannot drift.
+#[rustfmt::skip]
+macro_rules! transcript_cols {
+    ($p:literal) => {
+        concat!(
+            $p, "id, ", $p, "text, ", $p, "backend, ", $p, "asr_seconds, ",
+            "COALESCE(", $p, "speech_seconds,0), COALESCE(", $p, "pipeline_ms,0), ",
+            $p, "word_count, ", $p, "source_app, ", $p, "created_at, ", $p, "raw_text, ",
+            $p, "stages_that_ran, ", $p, "polish_skip_reason, ", $p, "feedback"
+        )
+    };
+}
+
+/// DB-C — where the previous History page ended: the LAST row it showed.
+///
+/// Keyset ("seek") pagination, not OFFSET. `created_at` alone is NOT unique —
+/// two takes committed in the same instant (a retry that converts a failed
+/// take, an import, a burst of snippets) share it — so ordering by it alone
+/// lets SQLite return tied rows in any order, and a page boundary that falls
+/// inside a tie duplicates one row and skips another. `id` (the primary key)
+/// is the tiebreaker that makes the order total, and the cursor carries both.
+///
+/// `created_at` is compared as the exact TEXT the row was stored with:
+/// `to_rfc3339()` of the same `DateTime<Utc>`, which is what
+/// `insert_transcript_row_tx` writes, so the round trip through the frontend's
+/// JSON (`…Z`) lands back on the stored string (`…+00:00`) bit for bit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCursor {
+    pub created_at: DateTime<Utc>,
+    pub id: String,
+}
+
+/// DB-C — the History view's first page. `LIMIT`-bounded and walked off
+/// `idx_transcripts_created`, so its cost is the page size, not the history
+/// size. The `id DESC` tiebreak sorts only the run of rows that share the last
+/// timestamp ("TEMP B-TREE FOR RIGHT PART OF ORDER BY"), never the table.
+/// Public so `tests/history_at_volume.rs` reads the plan of the SQL that ships.
+pub const HISTORY_FIRST_PAGE_SQL: &str = concat!(
+    "SELECT ",
+    transcript_cols!(""),
+    " FROM transcripts ORDER BY created_at DESC, id DESC LIMIT ?1"
+);
+
+/// DB-C — every later History page. `created_at <= ?1` is the term the index
+/// range seeks on; the OR inside the parentheses resolves the tie on `id`.
+pub const HISTORY_NEXT_PAGE_SQL: &str = concat!(
+    "SELECT ",
+    transcript_cols!(""),
+    " FROM transcripts WHERE created_at <= ?1 AND (created_at < ?1 OR id < ?2)",
+    " ORDER BY created_at DESC, id DESC LIMIT ?3"
+);
+
+/// DB-C — FTS5 search, first page. Same total order as the History view.
+pub const SEARCH_FIRST_PAGE_SQL: &str = concat!(
+    "SELECT ",
+    transcript_cols!("t."),
+    " FROM transcripts_fts f JOIN transcripts t ON t.rowid = f.rowid",
+    " WHERE transcripts_fts MATCH ?1",
+    " ORDER BY t.created_at DESC, t.id DESC LIMIT ?2"
+);
+
+/// DB-C — FTS5 search, every later page.
+pub const SEARCH_NEXT_PAGE_SQL: &str = concat!(
+    "SELECT ",
+    transcript_cols!("t."),
+    " FROM transcripts_fts f JOIN transcripts t ON t.rowid = f.rowid",
+    " WHERE transcripts_fts MATCH ?1",
+    " AND t.created_at <= ?2 AND (t.created_at < ?2 OR t.id < ?3)",
+    " ORDER BY t.created_at DESC, t.id DESC LIMIT ?4"
+);
+
+/// DB-C — the Insights day series. Reads the `daily_stats` rollup through its
+/// primary key, never `transcripts`.
+pub const DAILY_SERIES_SQL: &str = "SELECT day, words, sessions FROM daily_stats WHERE day >= ?1";
+
+/// DB-C — the rows of ONE local calendar day, for the rollup refresh that runs
+/// after every take. A `created_at` range on `idx_transcripts_created`: before
+/// DB-C every dictation re-read the WHOLE table here (`recompute_daily_stats`),
+/// so the latency-critical take path got slower with every take ever saved.
+pub const DAY_ROLLUP_SQL: &str = "SELECT word_count, asr_seconds, COALESCE(speech_seconds,0),
+        COALESCE(pipeline_ms,0)
+ FROM transcripts WHERE created_at >= ?1 AND created_at < ?2";
+
 impl Database {
     /// Open the DB, recovering ONLY from genuine corruption: on a corrupt/unreadable
     /// file the bad files are quarantined (kept for manual recovery) and a fresh DB
@@ -1042,6 +1127,69 @@ impl Database {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    /// DB-C — re-derive the ONE `daily_stats` row for the local calendar day
+    /// that contains `at`, from that day's transcripts only.
+    ///
+    /// Same arithmetic as [`Self::recompute_daily_stats`] (per-row rounding,
+    /// `speech_seconds > 0.05`, `pipeline_ms` floored at 0) over the rows whose
+    /// `created_at` falls inside the day's UTC bounds, so the two agree row for
+    /// row — `tests/history_at_volume.rs` holds them to it. The day bounds are
+    /// written with the same `to_rfc3339()` the rows are, so the TEXT range is
+    /// the instant range. A local midnight that does not exist (a DST gap at
+    /// 00:00 in a few zones) falls back to the full rebuild rather than guess.
+    pub fn recompute_daily_stats_for(&self, at: DateTime<Utc>) -> Result<(), String> {
+        use chrono::TimeZone;
+        let day = at.with_timezone(&Local).date_naive();
+        let bound = |d: NaiveDate| {
+            d.and_hms_opt(0, 0, 0)
+                .and_then(|m| Local.from_local_datetime(&m).earliest())
+                .map(|t| t.with_timezone(&Utc).to_rfc3339())
+        };
+        let (Some(lo), Some(hi)) = (bound(day), day.succ_opt().and_then(bound)) else {
+            return self.recompute_daily_stats();
+        };
+
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let (mut words, mut sessions, mut asr_ms, mut speech_ms, mut pipeline_ms) =
+            (0i64, 0i64, 0i64, 0i64, 0i64);
+        {
+            let mut stmt = tx.prepare(DAY_ROLLUP_SQL).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![lo, hi], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, f64>(1)?,
+                        r.get::<_, f64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (w, asr_s, speech_s, pipe_ms) = row.map_err(|e| e.to_string())?;
+                words += w;
+                sessions += 1;
+                asr_ms += (asr_s * 1000.0).round() as i64;
+                if speech_s > 0.05 {
+                    speech_ms += (speech_s * 1000.0).round() as i64;
+                }
+                pipeline_ms += pipe_ms.max(0);
+            }
+        }
+        let day = day.to_string();
+        tx.execute("DELETE FROM daily_stats WHERE day = ?1", params![day])
+            .map_err(|e| e.to_string())?;
+        if sessions > 0 {
+            tx.execute(
+                "INSERT INTO daily_stats (day, words, sessions, asr_ms, speech_ms, pipeline_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![day, words, sessions, asr_ms, speech_ms, pipeline_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn insert_transcript(
         &self,
         text: String,
@@ -1146,7 +1294,10 @@ impl Database {
         // dictation. Propagating it here made the caller park a recovery WAV and
         // toast "Failed" for a take that was saved — and a later Retry then
         // wrote a SECOND row for the same utterance.
-        if let Err(e) = self.recompute_daily_stats() {
+        //
+        // DB-C — only the take's own local day is re-derived (a `created_at`
+        // range on the index), not the whole table: see `DAY_ROLLUP_SQL`.
+        if let Err(e) = self.recompute_daily_stats_for(entry.created_at) {
             log::warn!("daily rollup: {e}");
         }
         Ok(entry)
@@ -1250,78 +1401,99 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    /// The newest `limit` takes, optionally filtered by an FTS5 `query`. The
+    /// first page of [`Self::list_transcripts_page`]; kept for the many callers
+    /// that only ever want "the latest N".
     pub fn list_transcripts(
         &self,
         limit: i64,
         query: Option<String>,
     ) -> Result<Vec<TranscriptEntry>, String> {
+        self.list_transcripts_page(limit, query, None)
+    }
+
+    /// DB-C — one page of History, newest first, in a TOTAL order
+    /// (`created_at DESC, id DESC`). Pass the last row of the previous page as
+    /// `before` to get the next one; see [`HistoryCursor`] for why the tiebreak
+    /// is load-bearing. Search pages use the same order and the same cursor.
+    pub fn list_transcripts_page(
+        &self,
+        limit: i64,
+        query: Option<String>,
+        before: Option<HistoryCursor>,
+    ) -> Result<Vec<TranscriptEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let q = query.unwrap_or_default().trim().to_string();
+        let limit = limit.max(0);
+        let cursor = before.map(|c| (c.created_at.to_rfc3339(), c.id));
 
-        let mut out = Vec::new();
+        fn collect(
+            rows: impl Iterator<Item = rusqlite::Result<TranscriptEntry>>,
+        ) -> Result<Vec<TranscriptEntry>, String> {
+            rows.map(|r| r.map_err(|e| e.to_string())).collect()
+        }
+
         if q.is_empty() {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                            COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
-                            stages_that_ran, polish_skip_reason, feedback
-                     FROM transcripts ORDER BY created_at DESC LIMIT ?1",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit], map_transcript)
-                .map_err(|e| e.to_string())?;
-            for r in rows {
-                out.push(r.map_err(|e| e.to_string())?);
-            }
-        } else {
-            // FTS5: prefix-friendly query
-            let fts = q
-                .split_whitespace()
-                .map(|t| format!("\"{}\"*", t.replace('"', "")))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let mut stmt = conn
-                .prepare(
-                    "SELECT t.id, t.text, t.backend, t.asr_seconds, COALESCE(t.speech_seconds,0),
-                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at, t.raw_text,
-                            t.stages_that_ran, t.polish_skip_reason, t.feedback
-                     FROM transcripts_fts f
-                     JOIN transcripts t ON t.rowid = f.rowid
-                     WHERE transcripts_fts MATCH ?1
-                     ORDER BY t.created_at DESC
-                     LIMIT ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = match stmt.query_map(params![fts, limit], map_transcript) {
-                Ok(r) => r,
-                Err(_) => {
-                    // Fallback substring if FTS query invalid
-                    let mut stmt2 = conn
-                        .prepare(
-                            "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
-                            stages_that_ran, polish_skip_reason, feedback
-                             FROM transcripts
-                             WHERE text LIKE ?1
-                             ORDER BY created_at DESC LIMIT ?2",
-                        )
+            return match &cursor {
+                None => {
+                    let mut stmt = conn
+                        .prepare(HISTORY_FIRST_PAGE_SQL)
                         .map_err(|e| e.to_string())?;
-                    let like = format!("%{q}%");
-                    let rows2 = stmt2
-                        .query_map(params![like, limit], map_transcript)
+                    let rows = stmt
+                        .query_map(params![limit], map_transcript)
                         .map_err(|e| e.to_string())?;
-                    for r in rows2 {
-                        out.push(r.map_err(|e| e.to_string())?);
-                    }
-                    return Ok(out);
+                    collect(rows)
+                }
+                Some((at, id)) => {
+                    let mut stmt = conn
+                        .prepare(HISTORY_NEXT_PAGE_SQL)
+                        .map_err(|e| e.to_string())?;
+                    let rows = stmt
+                        .query_map(params![at, id, limit], map_transcript)
+                        .map_err(|e| e.to_string())?;
+                    collect(rows)
                 }
             };
-            for r in rows {
-                out.push(r.map_err(|e| e.to_string())?);
+        }
+
+        // FTS5: prefix-friendly query
+        let fts = q
+            .split_whitespace()
+            .map(|t| format!("\"{}\"*", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let fts_result = match &cursor {
+            None => conn.prepare(SEARCH_FIRST_PAGE_SQL).and_then(|mut stmt| {
+                stmt.query_map(params![fts, limit], map_transcript)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            }),
+            Some((at, id)) => conn.prepare(SEARCH_NEXT_PAGE_SQL).and_then(|mut stmt| {
+                stmt.query_map(params![fts, at, id, limit], map_transcript)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            }),
+        };
+        match fts_result {
+            Ok(rows) => Ok(rows),
+            Err(_) => {
+                // Fallback substring if the FTS query is invalid. Same total
+                // order and the same cursor, so paging a fallback result is as
+                // correct as paging a match.
+                let like = format!("%{q}%");
+                let (at, id) = cursor.unwrap_or_default();
+                let sql = concat!(
+                    "SELECT ",
+                    transcript_cols!(""),
+                    " FROM transcripts WHERE text LIKE ?1",
+                    " AND (?2 = '' OR (created_at <= ?2 AND (created_at < ?2 OR id < ?3)))",
+                    " ORDER BY created_at DESC, id DESC LIMIT ?4"
+                );
+                let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![like, at, id, limit], map_transcript)
+                    .map_err(|e| e.to_string())?;
+                collect(rows)
             }
         }
-        Ok(out)
     }
 
     /// Y4-G — record what the cleanup pipeline did to one take.
@@ -1371,12 +1543,26 @@ impl Database {
     }
 
     pub fn delete_transcript(&self, id: &str) -> Result<(), String> {
-        {
+        let created: Option<String> = {
             let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let created = conn
+                .query_row(
+                    "SELECT created_at FROM transcripts WHERE id = ?1",
+                    params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM transcripts WHERE id = ?1", params![id])
                 .map_err(|e| e.to_string())?;
+            created
+        };
+        // DB-C — re-derive only the deleted take's day; nothing to do when the
+        // row was already gone.
+        match created {
+            Some(at) => self.recompute_daily_stats_for(parse_dt(at)),
+            None => Ok(()),
         }
-        self.recompute_daily_stats()
     }
 
     /// YV78 — "Clear all transcript history" must DESTROY the words, not just
@@ -1406,9 +1592,18 @@ impl Database {
     /// `attempt_text`, which IS nulled above (its other words live in
     /// `take_chunks`, which IS cleared above), and its clips are
     /// the user's only copy of a take that was never transcribed;
-    /// `dict_candidates`, `snippets` and `scratchpad` are text the user typed,
-    /// with their own delete paths; `crash_events` is built from an allowlist
-    /// of structured fields.
+    /// `dict_candidates` and `snippets` are text the user typed, with their own
+    /// delete paths; `crash_events` is built from an allowlist of structured
+    /// fields.
+    ///
+    /// `scratchpad` — DB-C's DELIBERATE choice: KEPT. Scratchpad notes are
+    /// documents the user wrote and titled (db.rs classifies them as typed
+    /// text), not a record of what they dictated; "Clear history" erasing a
+    /// user's notes would be data loss they did not ask for. A note is
+    /// destroyed by its own Delete, and `secure_delete = ON` zeroes its freed
+    /// bytes there exactly as it does here. The confirm dialog says so, and
+    /// `tests/history_at_volume.rs::clear_history_keeps_scratchpad_notes_by_design`
+    /// holds this line.
     ///
     /// The DELETEs run in ONE transaction so "erase everything" is
     /// all-or-nothing. Then, after the commit and still under the lock:
@@ -3611,9 +3806,7 @@ impl Database {
         use std::collections::HashMap;
         let mut map: HashMap<String, (i64, i64)> = HashMap::new();
         {
-            let mut stmt = conn
-                .prepare("SELECT day, words, sessions FROM daily_stats WHERE day >= ?1")
-                .map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(DAILY_SERIES_SQL).map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![start], |r| {
                     Ok((
@@ -3723,7 +3916,7 @@ impl Database {
                 "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
                         COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
                             stages_that_ran, polish_skip_reason, feedback
-                 FROM transcripts ORDER BY created_at ASC",
+                 FROM transcripts ORDER BY created_at ASC, id ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
