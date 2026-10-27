@@ -330,6 +330,15 @@ pub struct AppSettings {
     /// focus-2026-10-19 — the Cancel take key rebind. `None` = Escape.
     #[serde(default)]
     pub cancel_chord: Option<hotkeys::ChordSetting>,
+    /// Y8-A — the Hands-free (toggle) chord rebind. `None` = ⌃⌘H.
+    #[serde(default)]
+    pub hands_free_chord: Option<hotkeys::ChordSetting>,
+    /// Y8-A — the Copy last transcript chord rebind. `None` = ⌃⌘C.
+    #[serde(default)]
+    pub copy_last_chord: Option<hotkeys::ChordSetting>,
+    /// Y8-A — the Open Scratchpad chord rebind. `None` = ⌃⌘J.
+    #[serde(default)]
+    pub scratchpad_chord: Option<hotkeys::ChordSetting>,
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
@@ -547,6 +556,9 @@ impl Default for AppSettings {
             dictate_toggle: None,
             meeting_chord: None,
             cancel_chord: None,
+            hands_free_chord: None,
+            copy_last_chord: None,
+            scratchpad_chord: None,
             pill_style: "classic".into(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
@@ -3689,6 +3701,24 @@ fn run_disk_sweep(db: &Database) {
 
 // --- Commands ---
 
+/// Y8-A — the stored rebind for one Carbon action, `None` = its default (and
+/// for the hold keys, which are not chords).
+pub fn chord_setting(
+    settings: &AppSettings,
+    action: hotkey_table::BindingAction,
+) -> Option<&hotkeys::ChordSetting> {
+    use hotkey_table::BindingAction as A;
+    match action {
+        A::DictateToggle => settings.dictate_toggle.as_ref(),
+        A::RecordMeeting => settings.meeting_chord.as_ref(),
+        A::Cancel => settings.cancel_chord.as_ref(),
+        A::HandsFreeToggle => settings.hands_free_chord.as_ref(),
+        A::CopyLast => settings.copy_last_chord.as_ref(),
+        A::OpenScratchpad => settings.scratchpad_chord.as_ref(),
+        A::DictateHold | A::HandsFree => None,
+    }
+}
+
 /// Write settings.json (the single on-disk copy every settings writer goes
 /// through — `save_settings` and the YV31 model commands).
 fn persist_settings(settings: &AppSettings) -> Result<(), String> {
@@ -3978,30 +4008,51 @@ fn save_settings(
         );
         let (cc, cl) =
             hotkey_table::resolve(hotkey_table::BindingAction::Cancel, next.cancel_chord.as_ref());
-        hotkey_table::check_distinct(&[
+        let mut all = vec![
             (hotkey_table::BindingAction::DictateToggle, dc, dl),
             (hotkey_table::BindingAction::RecordMeeting, mc, ml),
             (hotkey_table::BindingAction::Cancel, cc, cl),
-        ])
-        .map_err(CommandError::refused)?;
+        ];
+        // Y8-A — the three new always-global chords join the same check.
+        for a in [
+            hotkey_table::BindingAction::HandsFreeToggle,
+            hotkey_table::BindingAction::CopyLast,
+            hotkey_table::BindingAction::OpenScratchpad,
+        ] {
+            let (sc, label) = hotkey_table::resolve(a, chord_setting(&next, a));
+            all.push((a, sc, label));
+        }
+        hotkey_table::check_distinct(&all).map_err(CommandError::refused)?;
     }
     // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
     // PERSIST, then APPLY the chords; an apply that fails rolls back every
     // chord this save already swapped AND the persisted file, so the live
     // chords always match the stored settings.
-    let (meeting_changed, cancel_changed) = {
-        let live = state.settings.lock();
-        (live.meeting_chord != next.meeting_chord, live.cancel_chord != next.cancel_chord)
-    };
-    let new_meeting = if meeting_changed {
-        Some(match next.meeting_chord.as_ref() {
-            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::RecordMeeting, c)
-                .map_err(CommandError::refused)?,
-            None => hotkey_table::resolve(hotkey_table::BindingAction::RecordMeeting, None),
-        })
-    } else {
-        None
-    };
+    let cancel_changed = state.settings.lock().cancel_chord != next.cancel_chord;
+    // Y8-A — Record meeting and the three new chords are one family: held
+    // system-wide from launch, swapped atomically here, rolled back together.
+    let mut new_global: Vec<(
+        hotkey_table::BindingAction,
+        (tauri_plugin_global_shortcut::Shortcut, String),
+    )> = Vec::new();
+    for a in hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE {
+        let (live_c, next_c) = {
+            let live = state.settings.lock();
+            (
+                chord_setting(&live, a).cloned(),
+                chord_setting(&next, a).cloned(),
+            )
+        };
+        if live_c != next_c {
+            new_global.push((
+                a,
+                match next_c.as_ref() {
+                    Some(c) => hotkey_table::chord_for_action(a, c).map_err(CommandError::refused)?,
+                    None => hotkey_table::resolve(a, None),
+                },
+            ));
+        }
+    }
     let new_cancel = if cancel_changed {
         Some(match next.cancel_chord.as_ref() {
             Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)
@@ -4019,26 +4070,32 @@ fn save_settings(
     let prev = state.settings.lock().clone();
     persist_settings(&next)?;
     *state.settings.lock() = next.clone();
+    type Applied = Vec<(
+        hotkey_table::BindingAction,
+        (tauri_plugin_global_shortcut::Shortcut, String),
+    )>;
     // Y5-F fix round 2: a rollback carries a finished `CommandError`. A
     // registrar failure goes through `chord_rebind_error`, which logs the raw
     // Carbon / plugin text and sends only a fixed Yap sentence as `refused`
     // (the chord is taken) or an uncatalogued `command_failed` (anything else,
     // which the toast never shows verbatim). Only Yap's own constant sentences
     // ("finish the current take …") are built as `refused` here directly.
-    let rollback = |err: CommandError, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> CommandError {
-        if let Some((old_chord, old_label)) = meeting_applied {
-            let new_chord = hotkey_table::active_meeting().0;
-            let gs = app.global_shortcut();
-            if let Err(e) = hotkey_table::swap_chord(
-                new_chord,
-                old_chord,
-                &|s| gs.is_registered(s),
-                &mut |s| gs.register(s).map_err(|e| e.to_string()),
-                &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
-            ) {
-                log::warn!("record-meeting rollback to {old_label} failed: {e}");
+    let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
+        for (a, (old_chord, old_label)) in applied.iter().rev() {
+            let new_chord = hotkey_table::active_chord(*a).0;
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                if let Err(e) = hotkey_table::swap_chord(
+                    new_chord,
+                    *old_chord,
+                    &|s| gs.is_registered(s),
+                    &mut |s| gs.register(s).map_err(|e| e.to_string()),
+                    &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
+                ) {
+                    log::warn!("{} rollback to {old_label} failed: {e}", a.title());
+                }
             }
-            hotkey_table::set_active_meeting((old_chord, old_label));
+            hotkey_table::set_active_chord(*a, (*old_chord, old_label.clone()));
         }
         if dictate_applied {
             if let Err(e) = rebind_dictate_toggle(&app, &prev) {
@@ -4056,15 +4113,16 @@ fn save_settings(
     if dictate_changed && smoke::global_hotkeys_allowed() {
         if let Err(e) = rebind_dictate_toggle(&app, &next) {
             let new_label = dictate_toggle_chord(&next).1;
-            return Err(rollback(chord_rebind_error(&new_label, &e), false, None));
+            return Err(rollback(chord_rebind_error(&new_label, &e), false, &Vec::new()));
         }
         dictate_applied = true;
     }
-    // 2. Record meeting — atomic swap; runs on the command thread, never
-    // inside the shortcut plugin's handler (yap-p0-chord-deadlock).
-    let mut meeting_applied = None;
-    if let Some((new_chord, new_label)) = new_meeting {
-        let old = hotkey_table::active_meeting();
+    // 2. Record meeting + the Y8-A chords — atomic swaps; run on the command
+    // thread, never inside the shortcut plugin's handler
+    // (yap-p0-chord-deadlock). A refusal rolls back every swap before it.
+    let mut applied: Applied = Vec::new();
+    for (a, (new_chord, new_label)) in new_global {
+        let old = hotkey_table::active_chord(a);
         if smoke::global_hotkeys_allowed() {
             let gs = app.global_shortcut();
             let r = hotkey_table::swap_chord(
@@ -4078,15 +4136,18 @@ fn save_settings(
                 return Err(rollback(
                     chord_rebind_error(&new_label, &e),
                     dictate_applied,
-                    None,
+                    &applied,
                 ));
             }
-            hotkey_table::set_meeting_status(hotkeys::CarbonStatus::Registered);
+            hotkey_table::set_chord_status(a, hotkeys::CarbonStatus::Registered);
         }
-        log::info!("record-meeting chord → {new_label}");
-        hotkey_table::set_active_meeting((new_chord, new_label));
-        meeting_applied = Some(old);
+        log::info!("{} chord → {new_label}", a.title());
+        hotkey_table::set_active_chord(a, (new_chord, new_label));
+        applied.push((a, old));
     }
+    let meeting_applied = applied
+        .iter()
+        .any(|(a, _)| *a == hotkey_table::BindingAction::RecordMeeting);
     // 3. Cancel — registered per take. fix-249 advisory (c): the recording
     // lock is HELD across the check and the set, so a take cannot start in
     // between; and the release drops the key a take actually armed
@@ -4099,7 +4160,7 @@ fn save_settings(
             return Err(rollback(
                 CommandError::refused("finish the current take, then change the cancel key".into()),
                 dictate_applied,
-                meeting_applied,
+                &applied,
             ));
         }
         log::info!("cancel key → {}", v.1);
@@ -4107,7 +4168,7 @@ fn save_settings(
         drop(recording);
     }
     // fix-249 advisory (e): the tray item shows the live Record meeting chord.
-    if meeting_applied.is_some() {
+    if meeting_applied {
         if let Some(item) = state.tray_meeting.lock().as_ref() {
             if let Err(e) = item.set_accelerator(Some(hotkey_table::meeting_accelerator(
                 next.meeting_chord.as_ref(),
@@ -5412,6 +5473,38 @@ fn paste_last_transcript(app: &AppHandle, state: &AppState) {
         let o = paste::copy_and_maybe_paste(&app, &text, true, None);
         if !o.copied {
             log::warn!("paste last transcript failed: {}", o.message);
+        }
+    });
+}
+
+/// Y8-A — copy the newest transcript to the clipboard and STOP there: the
+/// ⌃⌘C chord, for when the cursor is not yet where the text should go. Same
+/// read as [`paste_last_transcript`], `want_paste: false`, off the main thread
+/// like every clipboard hop; no history row is written.
+fn copy_last_transcript(app: &AppHandle, state: &AppState) {
+    let text = match state.db.list_transcripts(1, None) {
+        Ok(entries) => match entries.into_iter().next() {
+            Some(e) => e.text,
+            None => {
+                log::info!("copy last transcript: history is empty");
+                return;
+            }
+        },
+        Err(err) => {
+            log::warn!("copy last transcript: db read failed: {err}");
+            return;
+        }
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let o = paste::copy_and_maybe_paste(&app, &text, false, None);
+        if o.copied {
+            log::info!(
+                "copy last transcript: {} chars on the clipboard",
+                text.chars().count()
+            );
+        } else {
+            log::warn!("copy last transcript failed: {}", o.message);
         }
     });
 }
@@ -7041,6 +7134,20 @@ fn current_binding_rows(state: &AppState) -> Vec<hotkey_table::BindingRow> {
         toggle_label: hotkeys::active_dictate().1,
         cancel_label: hotkey_table::active_cancel().1,
         meeting_label: hotkey_table::active_meeting().1,
+        extra_chords: [
+            hotkey_table::BindingAction::HandsFreeToggle,
+            hotkey_table::BindingAction::CopyLast,
+            hotkey_table::BindingAction::OpenScratchpad,
+        ]
+        .into_iter()
+        .map(|a| {
+            (
+                a,
+                hotkey_table::active_chord(a).1,
+                hotkey_table::chord_status(a),
+            )
+        })
+        .collect(),
         refusals: [
             (
                 hotkey_table::BindingAction::DictateToggle,
@@ -7054,9 +7161,27 @@ fn current_binding_rows(state: &AppState) -> Vec<hotkey_table::BindingRow> {
                 hotkey_table::BindingAction::Cancel,
                 settings.cancel_chord.as_ref(),
             ),
+            (
+                hotkey_table::BindingAction::HandsFreeToggle,
+                settings.hands_free_chord.as_ref(),
+            ),
+            (
+                hotkey_table::BindingAction::CopyLast,
+                settings.copy_last_chord.as_ref(),
+            ),
+            (
+                hotkey_table::BindingAction::OpenScratchpad,
+                settings.scratchpad_chord.as_ref(),
+            ),
         ]
         .into_iter()
         .filter_map(|(a, c)| hotkey_table::stored_chord_refusal(a, c).map(|why| (a, why)))
+        // Y8-A rule 4 — the hold keys the fn tap arms overlapping each other
+        // ("both" = fn AND fn⌃) is a warning on the Dictate (hold) row.
+        .chain(
+            shortcuts::validate::ptt_self_overlap(&settings.ptt_binding)
+                .map(|w| (hotkey_table::BindingAction::DictateHold, w)),
+        )
         .collect(),
     };
     hotkey_table::binding_table(&inputs)
@@ -7349,6 +7474,40 @@ fn run_shortcut_job(app: &AppHandle, state: &Arc<AppState>, job: shortcut_defer:
             log::info!("⌃⌘Z pressed — undo ai edit (paste raw)");
             paste_raw_last_transcript(app, state);
         }
+        // Y8-A ⌃⌘H — the tray's Hands-free item, as a chord.
+        J::HandsFreeToggle => {
+            log::info!("hands-free toggle chord pressed");
+            toggle_hands_free(app, state, StopOrigin::Hotkey);
+        }
+        // Y8-A ⌃⌘C — the newest transcript onto the clipboard, no paste.
+        J::CopyLast => {
+            log::info!("copy-last chord pressed — copy last transcript");
+            copy_last_transcript(app, state);
+        }
+        // Y8-A ⌃⌘J — Yap forward, on the Scratchpad.
+        J::OpenScratchpad => {
+            log::info!("scratchpad chord pressed — open Scratchpad");
+            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
+            let _ = app.emit("navigate", "scratchpad");
+        }
+    }
+}
+
+/// Y8-A — THE hands-free toggle, behind the tray's Hands-free item and the
+/// ⌃⌘H chord. ON: ensure a take is running, then latch it so key-release /
+/// stop will not finalize. OFF: finalize the take, clearing both the app-side
+/// and PTT tap-side latches (`stop_take`), then transcribe what was captured.
+fn toggle_hands_free(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin) {
+    if *state.hands_free.lock() {
+        stop_take(app, state, origin);
+    } else {
+        if !*state.recording.lock() && !*state.busy.lock() {
+            start_recording(app, state);
+        }
+        if *state.recording.lock() {
+            *state.hands_free.lock() = true;
+        }
+        emit_status(app, state);
     }
 }
 
@@ -9283,23 +9442,8 @@ pub fn run() {
                                 .spawn();
                         }
                         "hands_free" => {
-                            if *state.hands_free.lock() {
-                                // Turning hands-free OFF finalizes the take, mirroring
-                                // the physical "tap-to-end-hands-free" path — clear
-                                // both the app-side and PTT tap-side latches, then
-                                // transcribe what was captured.
-                                stop_take(app, &state, StopOrigin::MenuBar);
-                            } else {
-                                // Turning hands-free ON: ensure a take is running,
-                                // then latch it so key-release / stop won't finalize.
-                                if !*state.recording.lock() && !*state.busy.lock() {
-                                    start_recording(app, &state);
-                                }
-                                if *state.recording.lock() {
-                                    *state.hands_free.lock() = true;
-                                }
-                                emit_status(app, &state);
-                            }
+                            // Y8-A: one toggle for the tray item and the ⌃⌘H chord.
+                            toggle_hands_free(app, &state, StopOrigin::MenuBar);
                         }
                         "toggle" => {
                             if *state.recording.lock() {
@@ -9473,6 +9617,28 @@ pub fn run() {
                         Err(e) => log::warn!("{meeting_label} register failed: {e}"),
                     }
                     hotkey_table::set_meeting_status(hotkeys::CarbonStatus::from_result(&meeting_result));
+                    // Y8-A — hands-free toggle, copy last, open Scratchpad:
+                    // the Settings rebind when there is one (re-validated
+                    // here, so a stored chord that breaks a rule falls back
+                    // to the default), registered like ⌃⌘M, and the result
+                    // is that action's row status in the hotkey table.
+                    for a in [
+                        hotkey_table::BindingAction::HandsFreeToggle,
+                        hotkey_table::BindingAction::CopyLast,
+                        hotkey_table::BindingAction::OpenScratchpad,
+                    ] {
+                        let resolved = {
+                            let settings = st.settings.lock();
+                            hotkey_table::resolve(a, chord_setting(&settings, a))
+                        };
+                        hotkey_table::set_active_chord(a, resolved.clone());
+                        let r = h.global_shortcut().register(resolved.0);
+                        match &r {
+                            Ok(()) => log::info!("{} {} registered", resolved.1, a.title()),
+                            Err(e) => log::warn!("{} ({}) register failed: {e}", resolved.1, a.title()),
+                        }
+                        hotkey_table::set_chord_status(a, hotkeys::CarbonStatus::from_result(&r));
+                    }
                     {
                         // The binding table at launch, once the tap thread has
                         // answered — the first line to read in a hotkey report.

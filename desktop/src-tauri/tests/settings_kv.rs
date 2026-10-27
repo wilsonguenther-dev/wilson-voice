@@ -219,3 +219,50 @@ fn the_setup_step_never_blocks_a_recording() {
     // The consent notice's own promise is unchanged by any of it.
     assert!(!db.meeting_consent().blocks_recording);
 }
+
+/// Y8-A — every new hotkey rebind PERSISTS: written through the one settings
+/// writer, read back through the startup reader, each new chord comes back
+/// equal (the 2026-07-24 audit's top bug was settings that never persisted,
+/// PTT remap included). A real file, closed and re-read.
+#[test]
+fn the_y8a_hotkey_rebinds_survive_a_relaunch() {
+    use wilson_voice_lib::hotkeys::ChordSetting;
+    let dir = temp_dir("settings-kv-y8a-hotkeys");
+    let path = dir.join("settings.json");
+    let chord = |code: &str| ChordSetting {
+        code: code.into(),
+        ctrl: true,
+        alt: true,
+        shift: false,
+        cmd: false,
+    };
+    let mut s = wilson_voice_lib::AppSettings::default();
+    assert_eq!(
+        s.hands_free_chord, None,
+        "the default is ⌃⌘H, stored as None"
+    );
+    s.hands_free_chord = Some(chord("KeyF"));
+    s.copy_last_chord = Some(chord("KeyY"));
+    s.scratchpad_chord = Some(chord("KeyP"));
+    wilson_voice_lib::write_settings_file(&path, &s).expect("write settings.json");
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    for key in ["handsFreeChord", "copyLastChord", "scratchpadChord"] {
+        assert!(raw.contains(key), "{key} missing from settings.json: {raw}");
+    }
+    let back = wilson_voice_lib::load_settings(&path);
+    assert_eq!(back.hands_free_chord, Some(chord("KeyF")));
+    assert_eq!(back.copy_last_chord, Some(chord("KeyY")));
+    assert_eq!(back.scratchpad_chord, Some(chord("KeyP")));
+
+    // A reset (None) persists too — the Reset button must not be undone by a
+    // relaunch.
+    let mut reset = back.clone();
+    reset.copy_last_chord = None;
+    wilson_voice_lib::write_settings_file(&path, &reset).unwrap();
+    assert_eq!(wilson_voice_lib::load_settings(&path).copy_last_chord, None);
+    assert_eq!(
+        wilson_voice_lib::load_settings(&path).hands_free_chord,
+        Some(chord("KeyF"))
+    );
+}

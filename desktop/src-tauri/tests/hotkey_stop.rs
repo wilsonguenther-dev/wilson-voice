@@ -262,9 +262,20 @@ fn every_stop_call_site_goes_through_stop_take() {
     assert_eq!(
         lib.matches("stop_take(app, &state, StopOrigin::MenuBar)")
             .count(),
-        2,
-        "the tray Stop item and the tray Hands-free item"
+        1,
+        "the tray Stop item"
     );
+    // Y8-A: the tray Hands-free item and the ⌃⌘H chord share ONE toggle,
+    // and its only stop path is stop_take.
+    let hf_start = lib
+        .find("fn toggle_hands_free(")
+        .expect("toggle_hands_free exists");
+    let hf_len = lib[hf_start..]
+        .find("\n}\n")
+        .expect("toggle_hands_free body ends");
+    assert!(lib[hf_start..hf_start + hf_len].contains("stop_take(app, state, origin)"));
+    assert!(lib.contains("toggle_hands_free(app, &state, StopOrigin::MenuBar)"));
+    assert!(lib.contains("toggle_hands_free(app, state, StopOrigin::Hotkey)"));
     // yap-p0-hotkeys-no-permission: the hotkey stop moved into the ONE
     // dispatcher, `take_hotkey_edge`, which both the fn tap's PttEvent::Stop
     // and the Carbon dictate chord reach.

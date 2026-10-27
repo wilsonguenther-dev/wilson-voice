@@ -167,6 +167,40 @@ export default function Shortcut() {
                       onCapture={(s) => s.kind === "chord" && save({ ...settings, meetingChord: s.chord })}
                       onReset={() => save({ ...settings, meetingChord: null })}
                     />
+                    {/* Y8-A — the chords that complete the suite. Same capture
+                        control, same save path: the backend applies the rules
+                        (at most 3 keys, ⌃/⌥/⌘ required) and the error lands in
+                        tableError below. */}
+                    <HotkeyRecorder
+                      title="Hands-free (toggle)"
+                      keyLabel={rowFor("hands_free_toggle")?.key ?? "⌃⌘H"}
+                      defaultLabel="⌃⌘H"
+                      isDefault={!settings.handsFreeChord}
+                      mode="chord"
+                      row={rowFor("hands_free_toggle")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, handsFreeChord: s.chord })}
+                      onReset={() => save({ ...settings, handsFreeChord: null })}
+                    />
+                    <HotkeyRecorder
+                      title="Copy last transcript"
+                      keyLabel={rowFor("copy_last")?.key ?? "⌃⌘C"}
+                      defaultLabel="⌃⌘C"
+                      isDefault={!settings.copyLastChord}
+                      mode="chord"
+                      row={rowFor("copy_last")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, copyLastChord: s.chord })}
+                      onReset={() => save({ ...settings, copyLastChord: null })}
+                    />
+                    <HotkeyRecorder
+                      title="Open Scratchpad"
+                      keyLabel={rowFor("open_scratchpad")?.key ?? "⌃⌘J"}
+                      defaultLabel="⌃⌘J"
+                      isDefault={!settings.scratchpadChord}
+                      mode="chord"
+                      row={rowFor("open_scratchpad")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, scratchpadChord: s.chord })}
+                      onReset={() => save({ ...settings, scratchpadChord: null })}
+                    />
                     {tableError && <p className="error">{tableError}</p>}
                   </div>
                   <div className="panel" data-row>

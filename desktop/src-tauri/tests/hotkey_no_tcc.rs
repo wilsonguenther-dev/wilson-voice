@@ -382,7 +382,7 @@ fn rebind_to_held_chord_keeps_old_chord_and_errs() {
         .expect("the dictate rebind is applied after persisting");
     // Y5-F fix round 2: the registrar's raw text goes through
     // `chord_rebind_error` (log it, send a fixed sentence or command_failed).
-    assert!(LIB[persist + reg..].contains("return Err(rollback(chord_rebind_error(&new_label, &e), false, None));"));
+    assert!(LIB[persist + reg..].contains("return Err(rollback(chord_rebind_error(&new_label, &e), false, &Vec::new()));"));
     let rb = LIB.find("let rollback = |err: CommandError").expect("rollback closure");
     let rb_end = LIB[rb..].find("\n    };\n").expect("rollback closure end");
     assert!(
