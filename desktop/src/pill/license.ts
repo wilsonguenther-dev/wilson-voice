@@ -109,6 +109,37 @@ export interface PillLicense {
   action: PillLicenseAction;
 }
 
+/**
+ * Y2-D — the Rust command a `purchase` action reaches, named ONCE.
+ *
+ * It is not `open_purchase_page`, and the difference is the whole item. That
+ * command hands the Payment Link constant to `open(1)`; this one only
+ * unminimizes the main window and emits `show_purchase`, so the sheet — which
+ * owns the price, the founding code and the keep-forever line — is what a
+ * person sees before a checkout. The float webview is the least-trusted window
+ * in the app and it never gets to name a URL.
+ */
+export const REVEAL_PURCHASE_COMMAND = "reveal_purchase_prompt";
+
+/**
+ * Y2-D — what a press on a license affordance DOES, decided from the policy and
+ * nothing else, so both capsules route identically:
+ *
+ *   `purchase` → invoke `reveal_purchase_prompt` (main window + the sheet)
+ *   `license`  → the re-activate box (Settings → License). Y2-F's `problem`
+ *                tone is somebody who already PAID; a price is never shown.
+ *   `null`     → nothing at all. A licensed pill (or one with no payload yet)
+ *                has no route, so it has no click region either.
+ */
+export type PillLicenseRoute = "reveal_purchase" | "license_tab" | null;
+
+export function pillLicenseRoute(pill: PillLicense | null | undefined): PillLicenseRoute {
+  if (!pill?.show) return null;
+  if (pill.action === "purchase") return "reveal_purchase";
+  if (pill.action === "license") return "license_tab";
+  return null;
+}
+
 /** Is a purchase surface reachable from this result? The Y2-D rule, as a test. */
 export function offersPurchase(pill: PillLicense): boolean {
   return pill.show && pill.action === "purchase";

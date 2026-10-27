@@ -1210,25 +1210,43 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     });
 }
 
-/// Y2-E — the ONE place the menu bar opens the upgrade path.
+/// Y2-D — the ONE way the pill (and the menu bar) asks for the purchase SHEET.
 ///
-/// It deliberately does NOT launch the browser. `open_purchase_page` hands
-/// `license::PAYMENT_LINK_URL` straight to `open(1)`, and a menu item that
-/// silently throws up a Stripe tab is a worse surprise than one that shows you
-/// the page carrying the price and the Buy button first. So this lands on
-/// Settings -> License, which is exactly where the pill's own purchase action
-/// lands (`ClassicPill.tsx` / `YappyPill.tsx` emit the same `settings-tab`).
+/// The float window is an ambient capsule sitting over every app the user owns.
+/// It must never open a browser, and it must never be the thing that shows a
+/// price: the $29 / $19-founding copy, the seats line and the keep-forever
+/// promise all live in `src/license/PurchasePrompt.tsx`, and dropping somebody
+/// into a Stripe checkout straight from a corner of their screen would put them
+/// in front of a payment form with none of that context.
 ///
-/// Both events already have listeners in `desktop/src/appShell.ts` (`navigate`
-/// and `settings-tab`) — this adds no new frontend surface, and when Y2-D's
-/// dedicated purchase sheet lands there is a single function body to repoint.
-fn reveal_purchase_prompt(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-    let _ = app.emit("navigate", "settings");
-    let _ = app.emit("settings-tab", "license");
+/// So the caller's job ends at "ask the main window". This command unminimizes
+/// and focuses `main` (`present_main_window`, the same activation path the tray
+/// uses) and emits `show_purchase`; `appShell.ts` listens and raises the sheet
+/// that already exists. No new money surface, no second price string, no second
+/// Payment Link.
+///
+/// Y2-E's menu-bar "upgrade" item calls this same function. That item used to
+/// land on Settings -> License "until Y2-D's dedicated purchase sheet lands";
+/// this is that single body, repointed. The tray only lists the item when
+/// `license::tray_offers_purchase` says so, and the pill only invokes it for
+/// `pillLicense().action === "purchase"`, so a stored-key holder (Y2-F) never
+/// reaches it from either surface.
+///
+/// IT HANDS NO URL TO ANYTHING, AND THAT IS A SECURITY PROPERTY, NOT A STYLE
+/// PREFERENCE. `open_purchase_page` stays the only function in this binary that
+/// may pass a string to `open(1)`, so "open an arbitrary URL" never becomes a
+/// primitive reachable from the float webview — the least-trusted window in the
+/// app. `tests/purchase_from_pill.rs` reads this function's own source and fails
+/// if a URL, a payment constant or a process spawn ever appears inside it.
+#[tauri::command]
+fn reveal_purchase_prompt(app: AppHandle) {
+    // `present_main_window` unminimizes as well as shows: `show()` alone leaves
+    // a minimized window in the Dock, and a person who pressed the pill would
+    // see nothing happen at all.
+    present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
+    // The frontend raises the sheet; this command only asks. No payload: nothing
+    // about entitlement changed, somebody pressed an upgrade affordance.
+    let _ = app.emit("show_purchase", ());
 }
 
 fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
@@ -8328,7 +8346,8 @@ pub fn run() {
             license_status,
             activate_license,
             deactivate_license,
-            open_purchase_page
+            open_purchase_page,
+            reveal_purchase_prompt
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
@@ -8811,7 +8830,7 @@ pub fn run() {
                         // `license::tray_offers_purchase` said so, so this arm
                         // cannot fire for a licensed Mac or a stored-key holder.
                         "upgrade" => {
-                            reveal_purchase_prompt(app);
+                            reveal_purchase_prompt(app.clone());
                         }
                         // YV95 — start/stop a meeting from the menu bar. The
                         // picker is skipped on this path: `unknown`.

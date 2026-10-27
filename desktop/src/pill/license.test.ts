@@ -10,8 +10,10 @@ import { type LicenseStatus } from "../license/status";
 import {
   PILL_SHOW_DAYS,
   PILL_URGENT_DAYS,
+  REVEAL_PURCHASE_COMMAND,
   offersPurchase,
   pillLicense,
+  pillLicenseRoute,
   type PillLicense,
 } from "./license";
 
@@ -121,6 +123,34 @@ describe("pillLicense — the trial fortnight", () => {
       expect(got.glyph).not.toBe("");
       expect(got.title).not.toBe("");
     }
+  });
+});
+
+describe("Y2-D — where a press on the pill goes", () => {
+  it("routes the unpaid tones to the purchase SHEET, never to a URL", () => {
+    expect(pillLicenseRoute(pillLicense(trial(0)))).toBe("reveal_purchase"); // urgent
+    expect(pillLicenseRoute(pillLicense(required()))).toBe("reveal_purchase"); // ended
+    expect(pillLicenseRoute(pillLicense(trial(5)))).toBe("reveal_purchase"); // counting down
+    expect(REVEAL_PURCHASE_COMMAND).toBe("reveal_purchase_prompt");
+  });
+
+  it("is inert for a licensed install — no route, so no mark and no dead click region", () => {
+    const got = pillLicense(licensed());
+    expect(got.show).toBe(false);
+    expect(pillLicenseRoute(got)).toBeNull();
+    expect(offersPurchase(got)).toBe(false);
+  });
+
+  it("is inert before any license payload arrives, and for a silent trial", () => {
+    expect(pillLicenseRoute(null)).toBeNull();
+    expect(pillLicenseRoute(undefined)).toBeNull();
+    expect(pillLicenseRoute(pillLicense(trial(PILL_SHOW_DAYS + 1)))).toBeNull();
+  });
+
+  it("never sends a stored-key holder to a checkout (Y2-F)", () => {
+    const got = pillLicense(required("trial_expired", { has_stored_license: true }));
+    expect(got.tone).toBe("problem");
+    expect(pillLicenseRoute(got)).toBe("license_tab");
   });
 });
 

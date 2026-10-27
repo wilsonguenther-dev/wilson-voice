@@ -22,7 +22,10 @@ import {
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type PhaseArtTable,
   type TranscribeProgress,
 } from "./live";
-import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
+import {
+  GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute,
+  type PillLicense,
+} from "./license";
 // Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
 // two places; `no_duration_literal_outside_motion_ts` now forbids that shape.
 import { DURATION } from "./motion";
@@ -116,7 +119,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
     /**
@@ -129,9 +132,10 @@ export default function YappyPill(
     onMeetingOpen?: (id: string) => void;
     /**
      * Y2-A — the license as the pill is allowed to say it, already decided by
-     * `pillLicense` in float-main. Accepted here so the wiring is complete and
-     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
-     * this component deliberately does not read it yet.
+     * `pillLicense` in float-main. Y2-D reads its ROUTE (`pillLicenseRoute`) so
+     * this face sends a gated press to the SAME surface the classic capsule
+     * does. Yappy's capsule is canvas-drawn and grows no DOM upgrade mark here,
+     * but where a press GOES must not differ between two styles of one pill.
      */
     license?: PillLicense | null;
   },
@@ -160,15 +164,23 @@ export default function YappyPill(
     invoke("show_main").catch(() => {});
     emit("navigate", "permissions").catch(() => {});
   }, [drag]);
+  const licenseRoute = pillLicenseRoute(license);
   const openPurchase = useCallback(() => {
     if (drag.dragged()) return;
-    // Y2-C — raise the main window and land on Settings → License, which owns
-    // the checkout link. Existing `navigate` / `settings-tab` plumbing: no new
-    // command, no new capability.
+    // Y2-D — the policy decides, not this component. `reveal_purchase` raises
+    // the main window AND the PurchasePrompt sheet (price, founding code,
+    // seats, keep-forever line); anything else — Y2-F's `problem` tone, a
+    // paying customer with a broken key, or no license payload yet — lands on
+    // Settings → License, which is correct under every state. The classic
+    // capsule routes identically.
+    if (licenseRoute === "reveal_purchase") {
+      invoke(REVEAL_PURCHASE_COMMAND).catch(() => {});
+      return;
+    }
     invoke("show_main").catch(() => {});
     emit("navigate", "settings").catch(() => {});
     emit("settings-tab", "license").catch(() => {});
-  }, [drag]);
+  }, [drag, licenseRoute]);
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
   // ambient tick open for the whole session. The draw loop lives in a mount-once
