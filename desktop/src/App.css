@@ -1391,6 +1391,48 @@ button.star.on {
   margin-top: 0;
 }
 
+/* yap-uiux-2026-10-16-SETTINGS — the control leads and its explanation follows
+   in one quiet line, inside the card it explains. */
+.settings-hint {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* yap-uiux-2026-10-16-SETTINGS — a pane's save / reset / leave actions are
+   pinned to the bottom of the scroll area, on an opaque strip, so they stay
+   reachable at 720x520 without scrolling past every card. */
+.settings-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* walk row T3 — Permissions leads with the grants: the verdict and Re-check on
+   one line, then one row per grant, then the bundle-id footnote. */
+.perms-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.perms-head p {
+  margin: 0;
+  flex: 1 1 260px;
+}
+.perms-footnote {
+  margin-top: 14px;
+}
+
 .settings-section .sub {
   display: block;
   margin-top: 5px;

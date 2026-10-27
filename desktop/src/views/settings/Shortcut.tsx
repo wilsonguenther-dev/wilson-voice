@@ -76,23 +76,12 @@ export default function Shortcut() {
   }, [rebinding, settings, saveSettings]);
   if (!settings) return null;
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Shortcut
-                    <span className="sub">
-                      The key you hold to start talking.
-                    </span>
-                  </h2>
+                <section className="settings-panel" data-settings-pane="shortcut">
                   {/* yap-p0-hotkeys-no-permission — the zero-permission chord. */}
-                  <div className="panel">
-                    <h3>Works everywhere</h3>
-                    <p>
-                      Press <strong>{dictateLabel(status)}</strong> to start a
-                      take and press it again to stop — or hold it and let go.
-                      It needs no Accessibility or Input Monitoring permission
-                      and keeps working when another app has Secure Keyboard
-                      Entry on.
-                    </p>
+                  <div className="panel" data-row>
+                    <h3>
+                      Works everywhere: <strong>{dictateLabel(status)}</strong>
+                    </h3>
                     <div
                       style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
                     >
@@ -107,24 +96,19 @@ export default function Shortcut() {
                       >
                         {rebinding ? recorderPrompt("chord").listening : "Change"}
                       </button>
-                      {settings.dictateToggle && (
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => saveSettings({ ...settings, dictateToggle: null })}
-                        >
-                          Reset to ⌃⌥⌘Space
-                        </button>
-                      )}
                     </div>
                     {rebindHint && (
                       <p className="muted" style={{ marginTop: 8 }}>
                         {rebindHint}
                       </p>
                     )}
+                    <p className="settings-hint">
+                      Press to start, press again to stop — or hold and let go;
+                      no permission needed, even under Secure Keyboard Entry.
+                    </p>
                   </div>
                   {/* focus-2026-10-19 — every action: key, live status, recorder, reset. */}
-                  <div className="panel" data-testid="hotkey-table">
+                  <div className="panel" data-row data-testid="hotkey-table">
                     <h3>Hotkeys</h3>
                     {report?.liveDictateKey && rowFor("dictate_hold")?.fallback && (
                       <p className="muted">
@@ -184,15 +168,8 @@ export default function Shortcut() {
                     />
                     {tableError && <p className="error">{tableError}</p>}
                   </div>
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Hold-to-talk key</h3>
-                    <p>
-                      Default is <strong>fn + Control</strong>. Hold it to talk,
-                      double-tap to keep it running hands-free, then tap again to
-                      stop. Needs Accessibility permission. Tip: set Keyboard →
-                      “Press 🌐 key to” → <strong>Do Nothing</strong> so the
-                      Globe key doesn’t open emoji.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -265,31 +242,16 @@ export default function Shortcut() {
                       />
                       <span>Also let me hold ⌘⇧V as a backup</span>
                     </label>
-                    <p style={{ marginTop: 12 }}>
-                      Currently set to <strong>{settings.hotkeyLabel}</strong>.
-                      The companion stays bottom-center and follows you across
-                      every desktop. Yap also learns the words you use most over
-                      time.
+                    <p className="settings-hint">
+                      Hold to talk, double-tap for hands-free; needs Accessibility.
+                      Set Keyboard → “Press 🌐 key to” → Do Nothing so Globe
+                      doesn’t open emoji.
                     </p>
                   </div>
                   {/* YV49 — command mode: the same hold, plus one modifier,
                       edits the text you already selected instead of typing. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Command mode</h3>
-                    <p>
-                      Select some text, then hold{" "}
-                      <strong>
-                        {settings.hotkeyLabel}
-                        {(settings.commandBinding ?? "command") === "option"
-                          ? "⌥"
-                          : "⌘"}
-                      </strong>{" "}
-                      and say what to do with it — “make it a list”, “make it
-                      uppercase”, “wrap in quotes”, “replace Monday with
-                      Tuesday”, “delete that”. Yap only runs commands it knows
-                      exactly; anything else is ignored so your text is never
-                      guessed at.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -315,7 +277,31 @@ export default function Shortcut() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">
+                      Select text, hold{" "}
+                      <strong>
+                        {settings.hotkeyLabel}
+                        {(settings.commandBinding ?? "command") === "option"
+                          ? "⌥"
+                          : "⌘"}
+                      </strong>{" "}
+                      and say “make it a list” or “delete that”; anything Yap
+                      doesn’t know exactly is ignored.
+                    </p>
                   </div>
+                  {/* yap-uiux-2026-10-16-SETTINGS — the pane's reset sits in
+                      the pinned footer, not inside the card it resets. */}
+                  {settings.dictateToggle && (
+                    <div className="settings-footer">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => saveSettings({ ...settings, dictateToggle: null })}
+                      >
+                        Reset to ⌃⌥⌘Space
+                      </button>
+                    </div>
+                  )}
                 </section>
   );
 }

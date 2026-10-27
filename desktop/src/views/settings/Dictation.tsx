@@ -19,20 +19,9 @@ export default function Dictation() {
     useState<StructureChoice>("plain");
   if (!settings) return null;
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Dictation
-                    <span className="sub">
-                      How your speech is cleaned up and formatted.
-                    </span>
-                  </h2>
-                  <div className="panel">
+                <section className="settings-panel" data-settings-pane="dictation">
+                  <div className="panel" data-row>
                     <h3>Dictation mode</h3>
-                    <p>
-                      Auto shapes your text to fit whatever app you’re typing
-                      into. Pick a fixed mode to always format the same way. Your
-                      words are never dropped.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -61,6 +50,10 @@ export default function Dictation() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">
+                      Auto fits the app you’re typing into; a fixed mode always
+                      formats the same way.
+                    </p>
                   </div>
                   {/* Y4-H — controls first, prose last. The question is "how
                       much should Yap clean up?", not "what is cleanup_level?",
@@ -71,7 +64,7 @@ export default function Dictation() {
                       string here describes a stage, so none can go out of date.
                       The stored KEY (`cleanupLevel`: none|light|medium|high) is
                       untouched — only the label a person reads changed. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>How much should Yap clean up?</h3>
                     {/* Y4-A — ONE quiet line, and only for a user whose stored
                         level was migrated. `formattingNoticePending` is set by
@@ -175,23 +168,16 @@ export default function Dictation() {
                           </div>
                         </>
                       )}
-                    <p className="muted">
-                      Your words are never lost — Yap keeps the raw take too, so
-                      you can undo the edit with ⌃⌘Z, the menu-bar “Undo AI
-                      Edit” item, or “Paste raw” in History.
+                    <p className="settings-hint">
+                      Yap keeps the raw take too — undo with ⌃⌘Z, “Undo AI Edit”
+                      in the menu bar, or “Paste raw” in History.
                     </p>
                   </div>
                   {/* YV62 (R14) — the tone dial, per surface. It reaches the
                       rules, not just the local model: Formal keeps the full
                       stop, Very Casual drops it everywhere. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>How should Yap sound in each app?</h3>
-                    <p>
-                      How formal each surface sounds. The dial only changes
-                      capitalisation and punctuation — never your words. Formal
-                      always keeps the full stop; Very casual drops it
-                      everywhere.
-                    </p>
                     <div className="tone-dial">
                       {(
                         [
@@ -225,16 +211,14 @@ export default function Dictation() {
                         </label>
                       ))}
                     </div>
+                    <p className="settings-hint">
+                      Only capitalisation and punctuation change, never your words.
+                    </p>
                   </div>
                   {/* YV62 (R13) — the sign-off block. Opt-in, and pasted byte
                       for byte after every other stage so nothing rewrites it. */}
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Should Yap sign off for you?</h3>
-                    <p>
-                      Your sign-off block, pasted exactly as you type it here.
-                      It is added last, after everything else, so nothing
-                      rewrites it — and Yap never writes one for you.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -286,14 +270,13 @@ export default function Dictation() {
                         }}
                       />
                     </label>
-                  </div>
-                  <div className="panel">
-                    <h3>Lists</h3>
-                    <p>
-                      When you list things out loud, Yap writes them as a list
-                      in the app you’re typing into. Your words stay exactly as
-                      you said them.
+                    <p className="settings-hint">
+                      Pasted exactly as typed, after every other step, so nothing
+                      rewrites it.
                     </p>
+                  </div>
+                  <div className="panel" data-row>
+                    <h3>Lists</h3>
                     <label className="toggle">
                       <input
                         type="checkbox"
@@ -308,6 +291,10 @@ export default function Dictation() {
                       />
                       <span>Turn spoken lists into bullets</span>
                     </label>
+                    <p className="settings-hint">
+                      Spoken lists become a list in the app you’re typing into;
+                      your words stay as you said them.
+                    </p>
                     {structureOverrideRows(settings.structureAppOverrides).map(
                       ([appId, choice]) => (
                         <div className="field" key={appId}>
@@ -391,6 +378,8 @@ export default function Dictation() {
                       </button>
                     </div>
                   </div>
+                  <div className="panel" data-row>
+                  <h3>Paste and language</h3>
                   <label className="toggle">
                     <input
                       type="checkbox"
@@ -402,10 +391,7 @@ export default function Dictation() {
                         })
                       }
                     />
-                    <span>
-                      Paste my words automatically when I finish talking (needs
-                      Accessibility permission)
-                    </span>
+                    <span>Paste my words automatically when I finish talking</span>
                   </label>
                   <label className="field">
                     <span>Language I speak</span>
@@ -421,6 +407,10 @@ export default function Dictation() {
                       <option value="ht">Haitian Creole</option>
                     </select>
                   </label>
+                  <p className="settings-hint">
+                    Auto-paste needs the Accessibility permission.
+                  </p>
+                  </div>
                 </section>
   );
 }

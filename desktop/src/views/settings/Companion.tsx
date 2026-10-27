@@ -6,19 +6,9 @@ export default function Companion() {
   } = useAppCtx();
   if (!settings) return null;
   return (
-                <section className="settings-panel">
-                  <h2 className="settings-section">
-                    Companion
-                    <span className="sub">
-                      How Yap looks and feels while you talk.
-                    </span>
-                  </h2>
-                  <div className="panel">
+                <section className="settings-panel" data-settings-pane="companion">
+                  <div className="panel" data-row>
                     <h3>Pill style</h3>
-                    <p>
-                      Pick your companion — the little helper that appears when
-                      you dictate. It switches live, so try both.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -43,14 +33,10 @@ export default function Companion() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">It appears while you dictate and switches live, so try both.</p>
                   </div>
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Screen position</h3>
-                    <p>
-                      Where your companion sits. Bottom is the classic island;
-                      the side docks pin it to that edge, halfway down the
-                      screen, out of the way of what you’re typing into.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -76,14 +62,10 @@ export default function Companion() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">The side docks pin it halfway down that edge, out of the way of your text.</p>
                   </div>
-                  <div className="panel">
+                  <div className="panel" data-row>
                     <h3>Companion tone</h3>
-                    <p>
-                      How Yappy talks back when you finish — the reactive line
-                      keyed to how much you said. Warm, a little rude, or sweet.
-                      Independent of which companion you picked.
-                    </p>
                     <div className="profile-row">
                       {(
                         [
@@ -109,7 +91,10 @@ export default function Companion() {
                         </button>
                       ))}
                     </div>
+                    <p className="settings-hint">How Yappy reacts when you finish, whichever companion you picked.</p>
                   </div>
+                  <div className="panel" data-row>
+                  <h3>Always on screen</h3>
                   <label className="toggle">
                     <input
                       type="checkbox"
@@ -121,11 +106,10 @@ export default function Companion() {
                         })
                       }
                     />
-                    <span>
-                      Keep the companion on screen at all times (otherwise it
-                      only appears while you talk)
-                    </span>
+                    <span>Keep the companion on screen at all times</span>
                   </label>
+                  <p className="settings-hint">Off, it only appears while you talk.</p>
+                  </div>
                 </section>
   );
 }

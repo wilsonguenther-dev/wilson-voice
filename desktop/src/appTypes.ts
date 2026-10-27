@@ -30,11 +30,14 @@ export type SettingsTab =
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: "companion", label: "Companion" },
+  // yap-uiux-2026-10-16-SETTINGS (walk row T1) — Settings opens on what a
+  // first-run user came to set: how speech becomes text, then the key that
+  // starts it. Companion cosmetics come after the working parts.
   { id: "dictation", label: "Dictation" },
+  { id: "shortcut", label: "Shortcut" },
   { id: "snippets", label: "Snippets" },
   { id: "audio", label: "Audio" },
-  { id: "shortcut", label: "Shortcut" },
+  { id: "companion", label: "Companion" },
   { id: "advanced", label: "Advanced" },
   { id: "privacy", label: "Privacy" },
   // YP3 — last, because it is the tab you visit twice: once to see what is
