@@ -1809,9 +1809,21 @@ impl Database {
         if parsed.segments.is_empty() {
             return Err("an imported meeting needs at least one segment".into());
         }
+        // Checked, never `DateTime + TimeDelta` (which panics on overflow): the
+        // duration comes from a user-picked file. The parser bounds it already
+        // (meeting_import::MAX_TIMESTAMP_SECONDS); this is the write-side guard.
+        let d = parsed.duration_seconds;
+        if !d.is_finite() || !(0.0..=crate::meeting_import::MAX_TIMESTAMP_SECONDS).contains(&d) {
+            return Err(format!(
+                "an imported meeting's duration ({d}s) is out of range; nothing was imported"
+            ));
+        }
         let now = Utc::now();
-        let ended_at = started_at
-            + chrono::Duration::milliseconds((parsed.duration_seconds * 1000.0).round() as i64);
+        let ended_at = chrono::Duration::try_milliseconds((d * 1000.0).round() as i64)
+            .and_then(|delta| started_at.checked_add_signed(delta))
+            .ok_or_else(|| {
+                "an imported meeting's end time is out of range; nothing was imported".to_string()
+            })?;
         let id = Uuid::new_v4().to_string();
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;

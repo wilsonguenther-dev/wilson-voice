@@ -5290,9 +5290,23 @@ struct ImportOutcome {
 /// what the user picked; nothing here opens a path or a socket. Each file is
 /// parsed fully before anything is written, and written in one transaction,
 /// so a malformed file leaves no row (`meeting_import.rs`).
+///
+/// Async + `spawn_blocking`: a sync command runs on the main thread, and the
+/// parse and the SQLite writes for a folder of transcripts must not freeze the
+/// UI (PR #271 review, BLOCKING 2).
 #[tauri::command]
-fn import_meetings(
+async fn import_meetings(
     state: State<'_, Arc<AppState>>,
+    files: Vec<ImportFileIn>,
+) -> Result<Vec<ImportOutcome>, String> {
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || import_meetings_blocking(&state, files))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn import_meetings_blocking(
+    state: &AppState,
     files: Vec<ImportFileIn>,
 ) -> Result<Vec<ImportOutcome>, String> {
     let mut out = Vec::with_capacity(files.len());

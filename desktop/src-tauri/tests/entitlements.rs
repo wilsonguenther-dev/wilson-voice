@@ -111,6 +111,24 @@ fn microphone_entitlement_is_granted() {
     );
 }
 
+/// yap-notetaker-onboard (PR #271 review, BLOCKING 1). Connect calendar asks
+/// EventKit for full access. Under the hardened runtime (ON on every signing
+/// path, see the plist's comment) tccd refuses kTCCServiceCalendar outright —
+/// no prompt, `granted=false`, status stays not_determined — unless the
+/// signature carries this entitlement. The Info.plist usage string alone is not
+/// enough; this is the half that was missing.
+#[test]
+fn calendars_entitlement_is_granted() {
+    let ents = entitlements();
+    assert_eq!(
+        ents.get("com.apple.security.personal-information.calendars")
+            .copied(),
+        Some(true),
+        "com.apple.security.personal-information.calendars must be true — without it the \
+         hardened runtime denies EventKit with no prompt and Connect calendar can never succeed."
+    );
+}
+
 #[test]
 fn dylib_injection_entitlements_are_absent() {
     let ents = entitlements();

@@ -95,6 +95,13 @@ impl std::fmt::Display for ImportError {
     }
 }
 
+/// The latest timestamp an imported transcript may carry: 48 hours. No real
+/// meeting export runs longer, and every clock in a file is bounded by this
+/// BEFORE anything downstream adds it to a date — an unbounded hour field
+/// (`Bob  10000000000:00:00`) must be a refused file, never a chrono overflow
+/// panic on the command path (PR #271 review, BLOCKING 2).
+pub const MAX_TIMESTAMP_SECONDS: f64 = 48.0 * 3600.0;
+
 /// A fully parsed file, ready for ONE transactional insert.
 #[derive(Debug, Clone)]
 pub struct ParsedMeeting {
@@ -152,6 +159,17 @@ pub fn parse(file_name: &str, content: &str) -> Result<ParsedMeeting, ImportErro
         ImportFormat::OtterTxt => parse_otter_txt(content)?,
         ImportFormat::OtterSrt => parse_srt(content)?,
     };
+    if let Some(bad) = segments.iter().find(|s| {
+        !(s.start_seconds.is_finite() && s.end_seconds.is_finite())
+            || s.start_seconds < 0.0
+            || s.end_seconds > MAX_TIMESTAMP_SECONDS
+    }) {
+        return Err(ImportError::Malformed(format!(
+            "a timestamp ({:.0}s) is past the {}-hour limit",
+            bad.end_seconds.max(bad.start_seconds),
+            (MAX_TIMESTAMP_SECONDS / 3600.0) as u32
+        )));
+    }
     let first = segments.first().map(|s| s.start_seconds).unwrap_or(0.0);
     let last = segments
         .iter()
@@ -181,7 +199,9 @@ fn parse_clock(s: &str) -> Option<f64> {
         if i > 0 && n >= 60 {
             return None;
         }
-        total = total * 60 + n;
+        // Checked: a 19-digit hour field fits a u64 but `* 60` does not. An
+        // overflowing clock is not a clock, so the line is not a header.
+        total = total.checked_mul(60)?.checked_add(n)?;
     }
     Some(total as f64)
 }

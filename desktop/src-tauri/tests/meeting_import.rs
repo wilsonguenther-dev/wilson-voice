@@ -69,3 +69,49 @@ fn meeting_import_malformed_file_leaves_no_partial_row() {
         .unwrap()
         .is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// PR #271 review, BLOCKING 2: an unbounded clock in an imported file must be
+// REFUSED, never a panic. `import_meetings` runs these on the command path; a
+// `DateTime + TimeDelta` overflow or a `u64` multiply overflow there takes the
+// whole app down instead of reporting one bad file.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meeting_import_huge_txt_clock_is_refused_not_a_panic() {
+    // The reviewer's probe: parse=Ok, then import_meeting panicked (rc=101).
+    let err = meeting_import::parse("huge.txt", "Bob  10000000000:00:00\nhello there\n")
+        .expect_err("a ten-billion-hour clock is not a meeting");
+    assert!(err.to_string().contains("Nothing was imported"), "{err}");
+}
+
+#[test]
+fn meeting_import_txt_clock_that_overflows_u64_is_refused_not_a_panic() {
+    // 19 digits fits a u64; `* 60` on it does not (a panic in debug builds,
+    // a silent wrap in release).
+    let r = meeting_import::parse("wrap.txt", "Bob  9999999999999999999:00:00\nhello\n");
+    assert!(r.is_err(), "an overflowing clock must be refused: {r:?}");
+}
+
+#[test]
+fn meeting_import_huge_srt_cue_is_refused_not_a_panic() {
+    let srt = "1\n00:00:00,000 --> 99999999999:00:00,000\nhello there\n";
+    let err = meeting_import::parse("huge.srt", srt).expect_err("an absurd cue end is refused");
+    assert!(err.to_string().contains("Nothing was imported"), "{err}");
+}
+
+#[test]
+fn meeting_import_db_refuses_an_unrepresentable_duration_instead_of_panicking() {
+    // Defence in depth at the write: even a ParsedMeeting built by hand with a
+    // duration chrono cannot add to a date returns Err and writes no row.
+    let dir = temp_dir("import-huge-duration");
+    let db = open_db(&dir);
+    let before = db.list_meetings(500, None).unwrap().len();
+    for bad in [3.6e13_f64, f64::INFINITY, f64::NAN, -1.0] {
+        let mut parsed = meeting_import::parse("ok.srt", SRT).unwrap();
+        parsed.duration_seconds = bad;
+        let r = db.import_meeting(&parsed, Utc::now());
+        assert!(r.is_err(), "duration {bad} must be refused");
+    }
+    assert_eq!(db.list_meetings(500, None).unwrap().len(), before);
+}
