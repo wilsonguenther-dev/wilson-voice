@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --coverage",
     "smoke": "../scripts/loop-smoke.sh",
     "tauri": "tauri",
     "sidecar": "cargo build -p yap-polish -p yap-diarize --release && mkdir -p src-tauri/binaries && TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}') && cp ${CARGO_TARGET_DIR:-target}/release/yap-polish src-tauri/binaries/yap-polish-$TRIPLE && cp ${CARGO_TARGET_DIR:-target}/release/yap-diarize src-tauri/binaries/yap-diarize-$TRIPLE",
@@ -32,6 +32,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "3.2.7",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^3.2.7"

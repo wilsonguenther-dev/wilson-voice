@@ -49,3 +49,5 @@ docs/smoke-shots/
 # yap-qa-harness: hotkey-walk.sh self-test fixtures are hand-checked synthetic logs, never captured user logs
 !scripts/qa/fixtures/*.log
 !scripts/qa/fixtures/release-smoke-matrix/*.log
+# Y7-D: `npm test` runs vitest with coverage of the pure modules; its report dir is output
+desktop/coverage/
