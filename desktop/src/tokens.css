@@ -147,6 +147,21 @@
   --pill-bubble-surface: #20222e;
   --pill-bubble-text: #f7f1e6;
 
+  /* The Copy card — the dark glass card the float window raises when dictation
+     cannot be inserted (CopyCard.tsx). It sits over the user's screen like the
+     pill, so it is never themed either: these are NOT overridden in dark. */
+  --overlay-text: #f4f4f6;
+  --overlay-text-urgent: #ffb4a8; /* which permission blocks insertion */
+  --overlay-action: #4f7cff; /* the primary Copy button */
+  --overlay-text-on-action: #fff;
+  --overlay-focus-ring: #9db6ff;
+
+  /* The test-channel chip — "TEST BUILD <sha>" on a test build only (main
+     window and float window alike). Never themed: it must read identically in
+     light and dark so nobody mistakes a test build for a release. */
+  --surface-test-channel: #ffc940;
+  --text-on-test-channel: #1a1200;
+
   /* ══════════════════════════════════════════════════════════════════
      ELEVATION
      ══════════════════════════════════════════════════════════════════ */
