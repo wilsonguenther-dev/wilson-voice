@@ -18,7 +18,7 @@
 const LIB_RS: &str = include_str!("../src/lib.rs");
 const LICENSE_RS: &str = include_str!("../src/license.rs");
 const PILL_LICENSE_TS: &str = include_str!("../../src/pill/license.ts");
-const CLASSIC_PILL_TSX: &str = include_str!("../../src/pill/ClassicPill.tsx");
+const CLASSIC_PILL_TSX: &str = include_str!("../../src/pill/PillShell.tsx");
 const YAPPY_PILL_TSX: &str = include_str!("../../src/pill/YappyPill.tsx");
 const APP_SHELL_TS: &str = include_str!("../../src/appShell.ts");
 
@@ -208,14 +208,14 @@ fn pill_upgrade_is_inert_when_licensed() {
     // `reveal_purchase`.
     assert!(
         CLASSIC_PILL_TSX.contains("license?.show && !blocked && !gated"),
-        "ClassicPill no longer guards the upgrade mark on the policy's `show`"
+        "PillShell no longer guards the upgrade mark on the policy's `show`"
     );
     assert!(
         CLASSIC_PILL_TSX.contains("return licenseRoute !== null ? ("),
-        "ClassicPill no longer guards the upgrade BUTTON on the policy's route"
+        "PillShell no longer guards the upgrade BUTTON on the policy's route"
     );
     for (name, src) in [
-        ("ClassicPill", CLASSIC_PILL_TSX),
+        ("PillShell", CLASSIC_PILL_TSX),
         ("YappyPill", YAPPY_PILL_TSX),
     ] {
         assert!(

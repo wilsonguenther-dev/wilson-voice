@@ -18,20 +18,14 @@
  *   (4) prefers-reduced-motion renders a single calm frame with no loop.
  */
 import { useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { toChatTone, type ChatTone } from "../pill/live";
+import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
+import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
+import { subscribeHabitat } from "./habitat/events";
 // yap24-UI1 — the integer pixel grid (shared with the pill): the room is drawn at
 // the largest WHOLE number of device px per art px that fits the stage, centred
 // on a whole device px, with the leftover margin painted in the scene colour.
 import { backingScale, parseObjectPosition, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
-
-interface AppStatus {
-  recording: boolean;
-  busy: boolean;
-  message: string;
-}
-
-type YappyAppState = "idle" | "listening" | "thinking" | "done";
 
 interface YappyHouseProps {
   /** Words dictated today — from the real Insights rollup. Omitted → tile hidden. */
@@ -45,22 +39,12 @@ interface YappyHouseProps {
   companionTone?: string;
 }
 
-// YV27 — tone-keyed mood vocabulary. Same underlying state, different voice.
-type HouseTone = "friendly" | "rude" | "rose";
-type MoodKey = "listening" | "thinking" | "done" | "nap" | "work" | "idle";
-const MOODS: Record<HouseTone, Record<MoodKey, string>> = {
-  friendly: { listening: "listening", thinking: "thinking", done: "proud ♥", nap: "napping", work: "working", idle: "content" },
-  rude: { listening: "all ears", thinking: "hmm…", done: "not bad", nap: "do not disturb", work: "grinding", idle: "whatever" },
-  rose: { listening: "listening 🌹", thinking: "thinking of you", done: "adores you 🌹", nap: "dreaming", work: "working for you", idle: "missing you 🌹" },
-};
-const toHouseTone = (t?: string): HouseTone => (t === "rude" || t === "rose" ? t : "friendly");
+// YV27 / Y5-K — the mood words are Yappy's own copy (pill/characters/yappy).
 
 // Real system clock → sky phase. Prototype keyframes: 0 dawn · .25 day · .5 dusk
 // · .75 night (wraps). Map local time so dawn≈6am, noon≈day, 6pm≈dusk, midnight≈night.
 function phaseFromClock(): number {
-  const d = new Date();
-  const hoursDecimal = d.getHours() + d.getMinutes() / 60;
-  return (((hoursDecimal - 6 + 24) % 24) / 24) % 1;
+  return skyPhase(new Date());
 }
 
 export default function YappyHouse({
@@ -72,9 +56,9 @@ export default function YappyHouse({
   const moodRef = useRef<HTMLSpanElement | null>(null);
   // YV27 — keep the live tone in a ref so the mood label (set inside the
   // mount-once render effect) reads the current tone without re-running the loop.
-  const toneRef = useRef<HouseTone>(toHouseTone(companionTone));
+  const toneRef = useRef<ChatTone>(toChatTone(companionTone));
   useEffect(() => {
-    toneRef.current = toHouseTone(companionTone);
+    toneRef.current = toChatTone(companionTone);
   }, [companionTone]);
 
   useEffect(() => {
@@ -669,148 +653,29 @@ export default function YappyHouse({
       g!.fillRect(0, 0, W, H);
     }
 
-    // ---- Yappy's daily director --------------------------------------------
-    interface Station {
-      x: number;
-      pose: string;
-      face?: number;
-    }
-    const STATIONS: Record<string, Station> = {
-      nest: { x: 26, pose: "sleep" },
-      window: { x: 52, pose: "look" },
-      plant: { x: 74, pose: "water" },
-      coffee: { x: 96, pose: "sip" },
-      desk: { x: 121, pose: "work", face: 1 },
-    };
-    const state = {
-      appState: "idle" as YappyAppState,
-      x: 26,
-      face: 1,
-      activity: "sleep",
-      station: "nest",
-      mode: "act" as "walk" | "act" | "idle",
-      tLeft: 3,
-    };
-
-    function pickNext(phase: number): string {
-      // night favours the nest; day favours desk/plant/window
-      const night = phase > 0.55 && phase < 0.95;
-      const pool = night
-        ? ["nest", "nest", "nest", "window", "desk"]
-        : ["desk", "plant", "window", "coffee", "desk", "window"];
-      return pool[(Math.random() * pool.length) | 0];
-    }
-
-    function moveToward(tx: number, dt: number) {
-      const spd = 22 * dt;
-      if (state.x < tx) {
-        state.x = Math.min(tx, state.x + spd);
-        state.face = 1;
-      } else {
-        state.x = Math.max(tx, state.x - spd);
-        state.face = -1;
-      }
-      state.activity = "walk";
-    }
-
-    function director(dt: number, phase: number) {
-      // App-state overrides the ambient routine.
-      const as = state.appState;
-      if (as === "listening" || as === "thinking" || as === "done") {
-        state.station = "desk";
-        const dx = STATIONS.desk.x;
-        if (Math.abs(state.x - dx) > 1.2) {
-          state.mode = "walk";
-          moveToward(dx, dt * 1.7);
-          return;
-        }
-        state.x = dx;
-        state.face = 1;
-        state.mode = "act";
-        state.activity = as === "done" ? "happy" : "work";
-        return;
-      }
-      // ambient FSM
-      state.tLeft -= dt;
-      if (state.mode === "walk") {
-        const tx = STATIONS[state.station].x;
-        moveToward(tx, dt);
-        if (Math.abs(state.x - tx) <= 1.2) {
-          state.x = tx;
-          state.mode = "act";
-          state.activity = STATIONS[state.station].pose;
-          state.face = STATIONS[state.station].face ?? state.face;
-          state.tLeft =
-            state.activity === "sleep" ? 6 : 3 + Math.random() * 3;
-        }
-        return;
-      }
-      if (state.tLeft <= 0) {
-        // choose a new station and walk there
-        let key = pickNext(phase);
-        if (key === state.station) key = pickNext(phase);
-        state.station = key;
-        state.mode = "walk";
-        state.activity = "walk";
-      }
-    }
+    // ---- Yappy's daily director (Y5-K: home/habitat/habitat.ts) ----------
+    // Routines on the real clock, intent pathing, event-driven reactions.
+    const state = createDirector();
 
     // ---- live mood label (real state, not fabricated) ----------------------
     function setMood() {
       const el = moodRef.current;
       if (!el) return;
-      const key: MoodKey =
-        state.appState === "listening"
-          ? "listening"
-          : state.appState === "thinking"
-            ? "thinking"
-            : state.appState === "done"
-              ? "done"
-              : state.activity === "sleep"
-                ? "nap"
-                : state.activity === "work"
-                  ? "work"
-                  : "idle";
+      const key = moodOf(state);
       // Tone read live from the ref — never a hardcoded label (YV27).
-      const m = MOODS[toneRef.current][key];
+      const m = YAPPY_HABITAT_MOODS[toneRef.current][key];
       if (el.textContent !== m) el.textContent = m;
     }
 
-    // ---- REAL app events → Yappy's app-state -------------------------------
-    let energy = 0; // audio_level 0..1
-    let doneUntil = 0; // ms; while > now, hold the "done" reaction
-    // A synchronous cleanup can run before these listen() promises resolve
-    // (StrictMode double-mount + Home-tab remounts). A `dead` flag unsubscribes
-    // any listener that lands after teardown so no native listener leaks.
+    // ---- REAL app events → the director (pushed, never polled) ------------
+    // A synchronous cleanup can run before the subscription lands (StrictMode
+    // double-mount + Home-tab remounts); `dead` drops any late event.
     let dead = false;
-    const unsubs: Array<() => void> = [];
-
-    const toIdleIfClear = () => {
-      if (Date.now() > doneUntil) state.appState = "idle";
-    };
-    invoke<AppStatus>("get_status")
-      .then((s) => {
-        state.appState = s.recording ? "listening" : s.busy ? "thinking" : "idle";
-      })
-      .catch(() => {});
-    listen<AppStatus>("status", (e) => {
-      const s = e.payload;
-      if (s.recording) state.appState = "listening";
-      else if (s.busy) state.appState = "thinking";
-      else toIdleIfClear();
-    }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<boolean>("recording", (e) => {
-      if (e.payload) state.appState = "listening";
-    }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<number>("audio_level", (e) => {
-      const v = typeof e.payload === "number" ? e.payload : 0;
-      energy = Math.max(0, Math.min(1, v));
-    }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen("transcript", () => {
-      // a transcript landed → a brief happy/done reaction, ~2s, then back to life
-      state.appState = "done";
-      doneUntil = Date.now() + 2000;
-    }).then((u) => (dead ? u() : unsubs.push(u)));
+    const unsubs: Array<() => void> = [
+      subscribeHabitat((ev) => {
+        if (!dead) reactTo(state, ev, Date.now());
+      }),
+    ];
 
     // ---- main loop ---------------------------------------------------------
     let last = 0,
@@ -838,7 +703,7 @@ export default function YappyHouse({
         state.face,
       );
       drawLampShade(sky);
-      lighting(sky, lamp, tGlobal, state.activity === "work" ? energy : 0);
+      lighting(sky, lamp, tGlobal, state.activity === "work" ? state.energy : 0);
       // blit upscaled (nearest-neighbour) on the integer grid. A display with a
       // different backing scale re-grids here: no resize event fires for that.
       if (backingScale(devicePixelRatio) !== grid.dpr) regrid();
@@ -850,7 +715,7 @@ export default function YappyHouse({
     function frame(ms: number) {
       // idle throttle: skip this frame's redraw (but keep the rAF alive) until the
       // ~18fps budget elapses, whenever no dictation is active and the mic is quiet.
-      const idleNow = state.appState === "idle" && energy < 0.02;
+      const idleNow = state.appState === "idle" && state.energy < 0.02;
       if (idleNow && lastDraw && ms - lastDraw < IDLE_FRAME_MS) {
         raf = requestAnimationFrame(frame);
         return;
@@ -861,11 +726,7 @@ export default function YappyHouse({
       tGlobal += dt;
       const phase = phaseFromClock();
 
-      // drop the held "done" reaction once its window elapses
-      if (state.appState === "done" && Date.now() > doneUntil) {
-        state.appState = "idle";
-      }
-      director(dt, phase);
+      stepDirector(state, dt, new Date());
       setMood();
       render(phase);
       raf = requestAnimationFrame(frame);

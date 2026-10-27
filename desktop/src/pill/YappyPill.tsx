@@ -12,15 +12,16 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
+import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
-import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
+import { reactiveLine, DEFAULT_TONE, bucketFor } from "./tone";
 import {
   advanceLive, createLiveState, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
-  progressLabel, progressNumeral, resetLive, toChatTone, transcribeLine,
-  type ChatTone, type FrameMode, type LivePhase, type LiveProp, type PhaseArtTable,
+  progressLabel, progressNumeral, resetLive, transcribeLine,
+  type ChatTone, type FrameMode, type LivePhase, type LiveProp,
   type TranscribeProgress,
 } from "./live";
 import {
@@ -35,66 +36,13 @@ import { DURATION } from "./motion";
 // on whole device pixels at every dock and every backing scale.
 import { backingScale, dockCentreX, sceneBlit, toDevice } from "./pixelGrid";
 
-/**
- * Y5-C — Yappy's art for EVERY phase, as DATA.
- *
- * Yappy is a canvas creature, so a "sprite" here is the pose the draw loop puts
- * her in and "motion" is how she moves while the phase holds. The pair rides
- * out as `data-sprite` / `data-motion` on the stage, which is what the DOM
- * overlays and float.css key off — and what makes "does the chick have a face
- * for `empty`?" a table test instead of a bug report.
- *
- * Deliberately a SECOND TABLE and not a second copy of the phase LOGIC: the
- * durations, the successors and the copy are all in live.ts, shared. What is
- * per-character is only what a character looks like. Y5-K lifts this table and
- * Classic's twin into the character registry; until it does, nothing outside
- * these two components branches on the pill style.
- */
-export const YAPPY_PHASE_ART: PhaseArtTable = {
-  idle: { sprite: "face-rest", motion: "breathe" },
-  sleepy: { sprite: "face-asleep", motion: "still" },
-  listening: { sprite: "world-listen", motion: "pulse" },
-  "model-loading": { sprite: "world-stretch", motion: "breathe" },
-  transcribing: { sprite: "world-type", motion: "work" },
-  polishing: { sprite: "world-polish", motion: "work" },
-  pasting: { sprite: "world-hand-off", motion: "work" },
-  thinking: { sprite: "world-think", motion: "work" },
-  done: { sprite: "face-happy", motion: "still" },
-  empty: { sprite: "face-confused", motion: "still" },
-  cancelled: { sprite: "face-shrug", motion: "still" },
-  error: { sprite: "face-worried", motion: "shake" },
-  gated: { sprite: "face-locked", motion: "still" },
-  waiting: { sprite: "face-ear", motion: "breathe" },
-  blocked: { sprite: "face-deaf", motion: "still" },
-  // yap24-PILL3 — fn cannot reach Yappy, but Yappy is fine: the ear face,
-  // held still, not the deaf one `blocked` (the MIC) wears.
-  blind: { sprite: "face-ear", motion: "still" },
-};
-
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
-interface PillSettings { companionTone?: string }
 type Phase = LivePhase;
 type Prop = LiveProp;
 
-// ── tone-aware working chatter (final "done" line comes from reactiveLine) ──
-const WORK: Record<ChatTone, Partial<Record<Bucket, string[]>>> = {
-  rude: {
-    medium: ["ugh, writing…", "noting your rant…"],
-    long: ["filing this mess…", "typing, typing…", "you done yet?"],
-    epic: ["an ESSAY, huh…", "still typing…", "chapter two??", "my wings hurt…"],
-  },
-  friendly: {
-    medium: ["let me note that…", "jotting it down…"],
-    long: ["one moment, filing…", "typing it up…", "receptionist mode!"],
-    epic: ["that's an essay…", "formulating…", "chapter two…", "stamp, file, next!"],
-  },
-  rose: {
-    medium: ["noting every word…", "so worth writing 🌹"],
-    long: ["typing it up 🌹", "filing carefully…", "almost, love…"],
-    epic: ["your whole story 🌹", "typing it all…", "every word matters…"],
-  },
-};
+// ── tone-aware working chatter: Yappy's DATA (pill/characters/yappy, Y5-K) ──
+const WORK = YAPPY_CHATTER;
 // live chatter tone tracks the user's configured companion tone (rude/friendly/
 // rose, YV27); anything unknown falls back to friendly (`toChatTone`, live.ts).
 // The tone is read LIVE off the settings the float already subscribes to.
@@ -123,8 +71,10 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", tone = "friendly", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
+    /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
+    tone?: ChatTone;
     progress?: TranscribeProgress | null;
     /**
      * YV95 / yap24-NT7 — the meeting, owned by the SHELL (float-main) like
@@ -145,6 +95,12 @@ export default function YappyPill(
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Y5-K — the tone arrives from the shell; the mount-once draw loop reads it
+  // through this sink instead of subscribing to settings itself.
+  const toneRef = useRef<ChatTone>(tone);
+  toneRef.current = tone;
+  const toneSink = useRef<(t: ChatTone) => void>(() => {});
+  useEffect(() => { toneSink.current(tone); }, [tone]);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
@@ -328,7 +284,8 @@ export default function YappyPill(
     // YV27 — live companion tone, read off settings (not a hardcoded constant).
     // Seeded from get_settings + kept current via the "settings" event the float
     // already emits on save, so a tone change takes effect without a remount.
-    let chatTone: ChatTone = toChatTone(DEFAULT_TONE.tone === "off" ? undefined : DEFAULT_TONE.tone);
+    let chatTone: ChatTone = toneRef.current;
+    toneSink.current = (t) => { chatTone = t; };
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
@@ -380,8 +337,6 @@ export default function YappyPill(
     const unsubs: Array<() => void> = [];
     invoke<AppStatus>("get_status").then((s) => setPhase(s.recording ? "listening" : s.busy ? "thinking" : "idle")).catch(() => {});
     // YV27 — seed the companion tone, then track it live off the settings event.
-    invoke<PillSettings>("get_settings").then((s) => { chatTone = toChatTone(s.companionTone); }).catch(() => {});
-    listen<PillSettings>("settings", (e) => { chatTone = toChatTone(e.payload?.companionTone); }).then((u) => (dead ? u() : unsubs.push(u)));
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
     listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));

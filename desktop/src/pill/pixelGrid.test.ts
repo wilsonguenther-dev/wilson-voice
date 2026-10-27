@@ -284,7 +284,7 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
   });
 
   it("ClassicPill draws no pixel art: it is a DOM capsule with no canvas", () => {
-    const classic = readSibling("./ClassicPill.tsx");
+    const classic = readSibling("./PillShell.tsx");
     expect(classic).not.toMatch(/getContext\(|<canvas/);
   });
 });

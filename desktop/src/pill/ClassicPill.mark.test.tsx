@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import ClassicPill from "./ClassicPill";
+import ClassicPill from "./PillShell";
 import { REVEAL_PURCHASE_COMMAND, type PillLicense } from "./license";
 
 type Props = Record<string, unknown> & { children?: unknown };
