@@ -229,7 +229,7 @@ fn lex(src: &str) -> Scan {
                     blank(cs[k], &mut code);
                     k += 1;
                 }
-                code.extend(std::iter::repeat(' ').take(j - i + 2 + hashes));
+                code.extend(std::iter::repeat_n(' ', j - i + 2 + hashes));
                 strings.push((start, body));
                 i = k + 1 + hashes;
                 continue;
@@ -272,7 +272,7 @@ fn lex(src: &str) -> Scan {
                 while k < cs.len() && cs[k] != '\'' {
                     k += 1;
                 }
-                code.extend(std::iter::repeat(' ').take(k + 1 - i));
+                code.extend(std::iter::repeat_n(' ', k + 1 - i));
                 i = k + 1;
                 continue;
             }
@@ -321,7 +321,7 @@ fn find_word(code: &[char], word: &str) -> Vec<usize> {
     find_all(code, word)
         .into_iter()
         .filter(|&p| {
-            (p == 0 || !is_ident(code[p - 1])) && code.get(p + len).map_or(true, |c| !is_ident(*c))
+            (p == 0 || !is_ident(code[p - 1])) && code.get(p + len).is_none_or(|c| !is_ident(*c))
         })
         .collect()
 }
