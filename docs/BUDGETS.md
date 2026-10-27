@@ -426,6 +426,30 @@ copied into a mktemp dir from the private corpus. NS and AGC off, reference read
 | wall time for 1864 s of audio (M4 Pro) | 9.9 s |
 | peak RSS of the whole process (`/usr/bin/time -l`) | 18.6 MB |
 
+ASR side (fix round 2026-10-27, 30 s windowed `--transcribe-file --timed`, after the eval's
+timestamp-shift fix: `--timed` prints camelCase `startSeconds`, which the first version did not
+shift, so every window sat on 0-30 s). Numbers only:
+
+| metric | raw mic | AEC mic | gate |
+|---|---|---|---|
+| echo_dup_rate | 0.718 | 0.004 | <= 0.10 pass |
+| owner B share in Me | 0.701 | 0.639 | >= 0.60 pass |
+| remote A / C share in Me | 0.762 / 0.788 | 0.031 / 0.019 | <= 0.10 pass |
+| local D share in Me | 0.725 | 0.534 | >= 0.70 FAIL |
+| rendered WER (both tracks) | 0.964 | 0.584 | <= 0.25 FAIL |
+
+Why the two FAILs are not AEC defects (measured, not argued):
+- D's loss sits in 10 of D's 36 reference blocks (102 of 466 words) whose words are ALSO on the
+  system track (t1 transcribes >= 50% of each): D reaches this Mac through the call's playback.
+  There AEC takes D's mic share from 0.745 to 0.049 -- which is cancelling playback, its job. In D's
+  other 26 blocks (364 words) the share is 0.72 raw vs 0.67 after AEC. Ceiling without leaving the
+  echo in: 0.72 x 364 / 466 = 0.56 < 0.70. Five AEC3 suppressor tunings (default, nearend tuning
+  as normal, transparent masks, sensitive dominant-nearend, both) gave D 0.47-0.53: not the cause.
+- Rendered WER with a WORD-PERFECT mic track (the reference's own B and D words, oracle) and the
+  real system-track decode is 0.353 (0.299 with the hypothesis clipped to the reference's span; the
+  reference starts 209.75 s into the audio). The floor is the untouched system-track decode
+  (t1 WER 0.65, 816 insertions), not the mic track, so <= 0.25 is unreachable by this item.
+
 Gates (e): local-only p90 loss <= 1.0 dB, call p50 >= 15 dB. Both pass.
 
 ## AEC pre-pass (synthetic) (yap24-NT11)

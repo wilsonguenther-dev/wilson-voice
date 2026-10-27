@@ -24,7 +24,9 @@ use support::{open_db, temp_dir};
 /// 6 = yap24-NT2's `meetings.asr_model`, the model that transcribed the row.
 /// 7 = Y9-B's `user_context` table (writing samples + custom rules).
 /// 8 = Y9-A's `transform_runs`, the per-invocation transform status log.
-const EXPECTED_VERSION: i64 = 8;
+/// 9 = yap24-NT11's `meeting_segments.suppressed_as_echo`, the kept-but-hidden
+/// speaker-echo flag.
+const EXPECTED_VERSION: i64 = 9;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -36,6 +38,9 @@ const EXPECTED_VERSION: i64 = 8;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 9 {
+        sql.push_str("ALTER TABLE meeting_segments DROP COLUMN suppressed_as_echo;\n");
+    }
     if version < 8 {
         sql.push_str("DROP TABLE transform_runs;\n");
     }
@@ -377,7 +382,7 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
     let segments = columns(&path, "meeting_segments");
-    for col in ["track", "cluster_index"] {
+    for col in ["track", "cluster_index", "suppressed_as_echo"] {
         assert!(segments.contains(&col.to_string()), "{col}: {segments:?}");
     }
 }
@@ -758,4 +763,29 @@ fn migration_eight_adds_transform_runs() {
             "transform_runs.{col} missing: {cols:?}"
         );
     }
+}
+
+/// yap24-NT11 — migration 9 adds the speaker-echo flag to a database that was
+/// on rung 8 with a meeting in it: the old rows stay visible (flag 0), nothing
+/// they held changes.
+#[test]
+fn migration_nine_adds_suppressed_as_echo_without_hiding_existing_rows() {
+    let dir = temp_dir("suppressed-as-echo");
+    let path = dir.join("wilson_voice.db");
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Before NT11", &["one line", "two line"]);
+        drop(db);
+        rewind_to(&path, 8);
+        id
+    };
+    assert!(
+        !columns(&path, "meeting_segments").contains(&"suppressed_as_echo".to_string()),
+        "rewound below 9"
+    );
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert!(columns(&path, "meeting_segments").contains(&"suppressed_as_echo".to_string()));
+    assert_eq!(db.list_meeting_segments(&id).unwrap().len(), 2);
+    assert_eq!(db.count_suppressed_echo_segments(&id).unwrap(), 0);
 }

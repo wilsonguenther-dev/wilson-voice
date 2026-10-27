@@ -78,7 +78,10 @@ def decode(src, out):
             for key in ("segments", "words"):
                 for s in t.get(key, []):
                     for k in list(s):
-                        if k in ("start", "end", "start_seconds", "end_seconds", "t0", "t1"):
+                        # --timed prints camelCase (startSeconds/endSeconds,
+                        # asr_engine::TimedSpan); every spelling is shifted, or
+                        # every window lands on 0-30 s and the merge interleaves.
+                        if k in ("start", "end", "start_seconds", "end_seconds", "startSeconds", "endSeconds", "t0", "t1"):
                             s[k] = s[k] + off
                         elif k in ("start_ms", "end_ms"):
                             s[k] = s[k] + off * 1000

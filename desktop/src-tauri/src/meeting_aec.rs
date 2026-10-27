@@ -85,11 +85,26 @@ pub fn derived_paths_for_wav(wav: &Path) -> Vec<PathBuf> {
         aec_path_for(wav),
         wav.with_file_name(format!("{stem}.index.jsonl")),
     ];
-    // Track 0's legacy anchor name is `X.index.jsonl`, not `X.t0.index.jsonl`.
+    // Track 0 owns BOTH anchor spellings: the legacy `X.index.jsonl` and the
+    // per-track `X.t0.index.jsonl`. A `.t0` WAV adds the legacy one; a WAV with
+    // no `.tN` suffix at all IS track 0 under its legacy name (a single-file
+    // mic recording), so it adds the per-track one.
     if let Some(id) = stem.strip_suffix(".t0") {
         out.push(wav.with_file_name(format!("{id}.index.jsonl")));
+    } else if track_suffix(&stem).is_none() {
+        out.push(wav.with_file_name(format!("{stem}.t0.index.jsonl")));
     }
     out
+}
+
+/// The track number of a `X.tN` stem, or `None` when the stem has no `.tN`.
+fn track_suffix(stem: &str) -> Option<u32> {
+    let (_, tail) = stem.rsplit_once('.')?;
+    let digits = tail.strip_prefix('t')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// A mono WAV read as f32 samples, one at a time.
@@ -604,6 +619,18 @@ mod tests {
         assert!(d.contains(&PathBuf::from("/x/abc.t0.index.jsonl")));
         assert!(d.contains(&PathBuf::from("/x/abc.index.jsonl")));
         assert!(derived_paths_for_wav(Path::new("/x/abc.t0.aec.wav")).is_empty());
+        // A legacy single-file mic WAV is track 0 under its old name: it takes
+        // its AEC output and both anchor spellings with it.
+        let legacy = derived_paths_for_wav(Path::new("/x/abc.wav"));
+        assert_eq!(legacy.len(), 3);
+        assert!(legacy.contains(&PathBuf::from("/x/abc.aec.wav")));
+        assert!(legacy.contains(&PathBuf::from("/x/abc.index.jsonl")));
+        assert!(legacy.contains(&PathBuf::from("/x/abc.t0.index.jsonl")));
+        // The call track owns only its own anchor, never track 0's.
+        let t1 = derived_paths_for_wav(Path::new("/x/abc.t1.wav"));
+        assert!(t1.contains(&PathBuf::from("/x/abc.t1.index.jsonl")));
+        assert!(!t1.contains(&PathBuf::from("/x/abc.index.jsonl")));
+        assert!(!t1.contains(&PathBuf::from("/x/abc.t0.index.jsonl")));
     }
 
     #[test]
