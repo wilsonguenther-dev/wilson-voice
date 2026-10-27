@@ -7,7 +7,7 @@ import { useAppCtx } from "../../appShell";
 export default function Advanced() {
   const {
     modelSetup, perms, polishSetup, saveSettings,
-    setSettings, setUpdate, settings, toast,
+    setSettings, setUpdate, settings, toast, toastError,
   } = useAppCtx();
   if (!settings) return null;
   async function checkForUpdateNow() {
@@ -27,7 +27,9 @@ export default function Advanced() {
           : "You're on the latest Yap",
       );
     } catch (e) {
-      toast(`Couldn't check for updates: ${e}`);
+      // Y5-F fix round 2: save_settings rejects with a CommandError object, so
+      // `${e}` read "[object Object]". Every rejection goes through adviceFor.
+      toastError(e, "Yap could not check for updates.");
     }
   }
   return (

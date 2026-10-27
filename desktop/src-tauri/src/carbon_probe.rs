@@ -18,6 +18,16 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 pub const K_EVENT_HOT_KEY_EXCLUSIVE: u32 = 1 << 0;
 /// `eventHotKeyExistsErr` (CarbonEvents.h): the chord is registered elsewhere.
 pub const EVENT_HOT_KEY_EXISTS_ERR: i32 = -9878;
+/// The token `probe_result` puts in its "someone else holds it" error. Callers
+/// that turn a registrar error into a sentence for a person test for it with
+/// [`is_taken`] rather than echoing the Carbon text.
+pub const TAKEN_MARKER: &str = "eventHotKeyExistsErr";
+
+/// Y5-F fix round 2 — did a registrar error (anything a rebind wrapped around
+/// `probe_result`'s text) say another app or macOS already holds the chord?
+pub fn is_taken(err: &str) -> bool {
+    err.contains(TAKEN_MARKER)
+}
 
 /// Carbon modifier mask, built exactly like global-hotkey 0.8.0 builds it.
 pub fn carbon_mods(m: Modifiers) -> u32 {
@@ -213,7 +223,7 @@ pub fn probe_result(status: i32) -> Result<(), String> {
     match status {
         0 => Ok(()),
         EVENT_HOT_KEY_EXISTS_ERR => Err(format!(
-            "another app or macOS already uses it, eventHotKeyExistsErr {status}"
+            "another app or macOS already uses it, {TAKEN_MARKER} {status}"
         )),
         s => Err(format!(
             "exclusive RegisterEventHotKey failed, OSStatus {s}"

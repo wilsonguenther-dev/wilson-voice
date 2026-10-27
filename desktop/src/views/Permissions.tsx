@@ -34,7 +34,7 @@ export default function Permissions() {
   const {
     booting, permsError, perms, refreshPerms,
     runSystemAudioSetup, status, sysAudio, sysAudioBusy, sysAudioGate,
-    toast,
+    toast, toastError,
   } = useAppCtx();
   // PANEL 2026-09-12 — Permissions has NO empty state. There are always rows
   // to show; a report with nothing in it is a failed read, which is the error
@@ -71,7 +71,7 @@ export default function Permissions() {
       </div>
     );
   const openPane = (pane: string) =>
-    invoke("open_privacy_settings", { pane }).catch((e) => toast(String(e)));
+    invoke("open_privacy_settings", { pane }).catch((e) => toastError(e));
   // PERM-A: once macOS has answered "denied" (or a policy restricts it) the
   // request call is a no-op, so the row's one button becomes the deep link.
   const micAsked =
@@ -101,7 +101,7 @@ export default function Permissions() {
         );
       }
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
     refreshPerms();
   }
@@ -109,7 +109,7 @@ export default function Permissions() {
     try {
       await invoke("request_accessibility");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
     setTimeout(refreshPerms, 800);
   }

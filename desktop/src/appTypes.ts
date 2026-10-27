@@ -280,6 +280,8 @@ export interface AppStatus {
   recording: boolean;
   busy: boolean;
   lastError: string | null;
+  /** Y5-F — the catalogue code behind `lastError` (errors.ts). */
+  lastErrorCode?: string | null;
   message: string;
   accessibility: boolean;
   /** The Carbon dictate chord's register result and the fn tap's delivery. */

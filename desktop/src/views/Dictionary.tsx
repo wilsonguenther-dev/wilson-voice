@@ -65,7 +65,7 @@ export default function Dictionary() {
     bootError, bootErrors, booting, candidates, retryBoot, dictionary, editPreferred, editTerm, editingTermId, newPreferred,
     refreshAll,
     newTerm, setCandidates, setDictionary, setEditPreferred, setEditTerm, setEditingTermId,
-    setNewPreferred, setNewTerm, settings, toast,
+    setNewPreferred, setNewTerm, settings, toast, toastError,
   } = useAppCtx();
   const [dictQuery, setDictQuery] = useState("");
   async function addTerm() {
@@ -82,7 +82,7 @@ export default function Dictionary() {
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term added");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function removeTerm(id: string) {
@@ -92,7 +92,7 @@ export default function Dictionary() {
       // The search box unmounts with the last word; it must not come back pre-filled.
       if (dictionary.length <= 1) setDictQuery("");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function toggleStar(d: DictEntry) {
@@ -103,7 +103,7 @@ export default function Dictionary() {
       });
       setDictionary(await invoke("list_dictionary"));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   function startEditTerm(d: DictEntry) {
@@ -123,7 +123,7 @@ export default function Dictionary() {
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term updated");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function acceptCandidate(c: DictCandidate) {
@@ -137,7 +137,7 @@ export default function Dictionary() {
       setCandidates(cands);
       toast(`Added ${c.term} to your dictionary`);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function dismissCandidate(c: DictCandidate) {
@@ -145,7 +145,7 @@ export default function Dictionary() {
       await invoke("dismiss_dict_candidate", { id: c.id });
       setCandidates((cs) => cs.filter((x) => x.id !== c.id));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11

@@ -5,7 +5,6 @@ import {
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
 import NotesView from "../meetings/NotesView";
-import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
 import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
@@ -23,21 +22,21 @@ export default function Meetings() {
     meetingQuery, meetingStatus, meetings, modelSetup, openMeeting, openMeetingDetail,
     openModelSettings, setConfirmDeleteMeeting,
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting,
-    toast,
+    toast, toastError,
   } = useAppCtx();
   const { meetingProgress: progress, retryMeeting: retry, retryNotes, cancelNotes } = useAppCtx();
   const retryMeeting = async (id: string) => {
     try {
       await retry(id);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     }
   };
   const notesAction = async (run: (id: string) => Promise<void>, id: string) => {
     try {
       await run(id);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     }
   };
   // #250 round 3 (A3) — past meetings are summarized only on this one click;
@@ -54,7 +53,7 @@ export default function Meetings() {
       else await invoke("dismiss_notes_backlog");
       setBacklog(null);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     }
   }
   // Y5-B — a third `return null` blank page, and the worst of them: the read
@@ -75,7 +74,7 @@ export default function Meetings() {
       );
       toast(`Exported → ${path}`);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     } finally {
       setMeetingBusy(false);
     }
@@ -91,7 +90,7 @@ export default function Meetings() {
       setMeetingStatus(next);
       if (!next.recording) await loadMeetings(meetingQuery);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     } finally {
       setMeetingBusy(false);
     }
@@ -105,7 +104,7 @@ export default function Meetings() {
       await loadMeetings(meetingQuery);
       toast("Meeting deleted");
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     } finally {
       setMeetingBusy(false);
     }
@@ -122,7 +121,7 @@ export default function Meetings() {
       );
       await loadMeetings(meetingQuery);
     } catch (e) {
-      toast(errorText(e));
+      toastError(e);
     }
   }
   if (state === "error")

@@ -10,6 +10,7 @@
 // are pure; the only side effects are the two invokes at the bottom.
 
 import { invoke } from "@tauri-apps/api/core";
+import { adviceFor } from "./errors";
 import { nameProduct } from "./permission";
 
 /** `perm_probe::ProbeState`, verbatim off the wire. */
@@ -280,7 +281,7 @@ export async function repairFromPill(
   }
   if (!outcome.ok) {
     deps.toast(repairFailureMessage(outcome));
-    await deps.openPane().catch((e) => deps.toast(String(e)));
+    await deps.openPane().catch((e) => deps.toast(adviceFor(e, "Yap could not open System Settings — open it from the Apple menu.").line));
   }
   deps.refresh();
   return outcome;

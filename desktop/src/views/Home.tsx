@@ -15,7 +15,7 @@ export default function Home() {
     insights, loadHistory, pasteText, perms, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
-    setNoteTitle, setQuery, setRetryId, setScratchComposing, settings, status, toast,
+    setNoteTitle, setQuery, dropRetry, setScratchComposing, settings, status, toast, toastError,
     toggleRecord,
   } = useAppCtx();
   // Y5-B — was `if (!insights) return null`: a heading over a blank page on
@@ -39,7 +39,7 @@ export default function Home() {
       await invoke("delete_entry", { id });
       setHistory((h) => h.filter((e) => e.id !== id));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
       return;
     }
     await refreshInsights();
@@ -48,9 +48,9 @@ export default function Home() {
     try {
       await invoke("discard_failed_dictation", { id });
       setFailed((f) => f.filter((x) => x.id !== id));
-      setRetryId((cur) => (cur === id ? null : cur));
+      dropRetry(id);
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   function feedbackFor(e: TranscriptEntry): number | null {
@@ -93,7 +93,7 @@ export default function Home() {
           : "Transcript fixed",
       );
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   if (state === "error")

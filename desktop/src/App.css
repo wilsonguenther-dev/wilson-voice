@@ -599,11 +599,21 @@ code {
    The message itself stays native SF on purpose — "Copied", "Settings saved",
    "Recovered 84 words" is body prose the user reads as a sentence, and the
    pixel voice is reserved for data. Only the action chip below is chrome. */
-.toast {
+/* Y5-F — the stack the toast queue renders into: at most TOAST_CAP (2) toasts,
+   newest last, never covering more than a corner of the window. */
+.toast-stack {
   position: fixed;
   top: 14px;
   right: 18px;
   z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 36px));
+}
+
+.toast {
   background: var(--surface-inverse);
   color: var(--text-on-inverse);
   border: 1px solid rgba(239, 125, 60, 0.45);
@@ -623,8 +633,7 @@ code {
 
 /* YV74 — "Copy again" wears the same chip as Retry: both are the one action a
    failure toast offers, and a second treatment would read as a second rank. */
-.toast-retry,
-.toast-copy-again {
+.toast-action {
   background: rgba(255, 154, 92, 0.18);
   border: 1px solid rgba(255, 154, 92, 0.5);
   color: var(--accent-on-inverse);
@@ -634,8 +643,33 @@ code {
   font-weight: 600;
 }
 
-.toast-retry:disabled {
+.toast-action:disabled {
   opacity: 0.6;
+}
+
+/* Y5-F — an error toast keeps the accent border; an informational one is quiet. */
+.toast-info {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.toast-count {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-on-inverse);
+  opacity: 0.6;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
 }
 
 /* YV52 — recoverable takes above the transcript feed. */

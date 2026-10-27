@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { adviceFor } from "./errors";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -59,7 +60,7 @@ export function PermissionRepair({
         await invoke("request_microphone").catch((e) => console.error(e));
       }
     } catch (e) {
-      apply(service, { kind: "error", message: String(e) });
+      apply(service, { kind: "error", message: adviceFor(e, "Yap could not repair that permission — open System Settings and toggle Yap off and on.").line });
     }
   }
 

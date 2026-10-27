@@ -6,7 +6,7 @@ export default function Snippets() {
   const {
     editExpansion, editTrigger, editingSnippetId, newExpansion, newTrigger, saveSettings,
     setEditExpansion, setEditTrigger, setEditingSnippetId, setNewExpansion, setNewTrigger, setSnippets,
-    settings, snippets, toast,
+    settings, snippets, toast, toastError,
   } = useAppCtx();
   if (!settings) return null;
   async function addSnippet() {
@@ -21,7 +21,7 @@ export default function Snippets() {
       setSnippets(await invoke("list_snippets"));
       toast("Snippet saved");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   function startEditSnippet(s: Snippet) {
@@ -41,7 +41,7 @@ export default function Snippets() {
       setSnippets(await invoke("list_snippets"));
       toast("Snippet updated");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function toggleSnippet(s: Snippet) {
@@ -49,7 +49,7 @@ export default function Snippets() {
       await invoke("set_snippet_enabled", { id: s.id, enabled: !s.enabled });
       setSnippets(await invoke("list_snippets"));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function removeSnippet(id: string) {
@@ -57,7 +57,7 @@ export default function Snippets() {
       await invoke("delete_snippet", { id });
       setSnippets((all) => all.filter((s) => s.id !== id));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   return (

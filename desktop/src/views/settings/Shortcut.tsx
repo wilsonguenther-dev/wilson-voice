@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { adviceFor } from "../../errors";
 import { invoke } from "@tauri-apps/api/core";
 import HotkeyRecorder from "../../HotkeyRow";
 import { recorderPrompt, type HotkeyBindingsReport } from "../../hotkeyRecorder";
@@ -50,7 +51,7 @@ export default function Shortcut() {
     try {
       await saveSettings(next!);
     } catch (e) {
-      setTableError(String(e));
+      setTableError(adviceFor(e, "Yap could not read your shortcuts.").line);
     }
   };
   useEffect(() => {

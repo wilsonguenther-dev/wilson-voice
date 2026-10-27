@@ -40,7 +40,7 @@ const insights = (totalSessions: number) => ({
 const base = (over: State = {}): State => ({
   nav: "home", booting: false, bootError: null, bootErrors: new Map(), settings: { onboarded: true },
   insights: insights(0), perms: null, history: [], meetings: [], scratch: [], dictionary: [],
-  failed: [], toast: null, update: null, query: "", flash: null, retryId: null,
+  failed: [], toast: null, update: null, query: "", toasts: [],
   status: { modelReady: true, recording: false, busy: false, message: "", lastError: null },
   modelSetup: { ready: true, ribbon: null }, licenseChip: null, buyPrompt: null, consentOpen: false,
   supportOpen: false, supportPreview: null, needsPerms: false, pillClass: "status-pill ready",

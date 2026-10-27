@@ -12,6 +12,7 @@ pub mod asr_engine;
 pub mod channel;
 mod cli;
 mod command_mode;
+pub mod take_error;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
 pub mod crash;
@@ -570,6 +571,11 @@ pub struct AppStatus {
     pub recording: bool,
     pub busy: bool,
     pub last_error: Option<String>,
+    /// Y5-F — the stable code behind `last_error` (`desktop/src/errors.ts`
+    /// catalogue): the pill and the main window show the catalogue's line for
+    /// it, never a raw string.
+    #[serde(default)]
+    pub last_error_code: Option<String>,
     pub message: String,
     pub accessibility: bool,
     /// yap-p0-hotkeys-no-permission — what each keyboard surface is REALLY
@@ -641,7 +647,7 @@ struct AppState {
     /// stop / cancel / error / exit so the Mac is never left muted.
     saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
-    last_error: PLMutex<Option<String>>,
+    last_error: PLMutex<Option<take_error::LastError>>,
     /// yap-p0-hotkeys-no-permission — the ONE start/stop decision for every
     /// hotkey edge, Carbon or fn tap (see `take_hotkey_edge`).
     hotkey_arbiter: PLMutex<hotkeys::HotkeyArbiter>,
@@ -1014,7 +1020,9 @@ fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
-    let last_error = state.last_error.lock().clone();
+    let last = state.last_error.lock().clone();
+    let last_error = last.as_ref().map(|l| l.message.clone());
+    let last_error_code = last.map(|l| l.code.to_string());
     let accessibility = permissions::is_accessibility_trusted();
     let ptt = state.settings.lock().hotkey_label.clone();
     let ready = model_ready(state);
@@ -1073,6 +1081,7 @@ fn build_status(state: &AppState) -> AppStatus {
         recording,
         busy,
         last_error,
+        last_error_code,
         message,
         accessibility,
         hotkeys: hotkeys_now,
@@ -1817,10 +1826,17 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             });
         }
         Err(e) => {
+            // Y5-F: the cpal/io text goes to the log; the user gets a sentence
+            // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
-            *state.last_error.lock() = Some(e.clone());
+            let line =
+                "Yap could not open the microphone — check that an input device is connected.";
+            *state.last_error.lock() = Some(take_error::LastError::new(
+                take_error::MIC_UNAVAILABLE,
+                line,
+            ));
             emit_status(app, state);
-            notify(app, "Yap — Mic", e);
+            notify(app, "Yap — Mic", line);
         }
     }
 }
@@ -2452,7 +2468,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         let mut pending: Option<(record::ClipWav, f64, Option<String>)> = None;
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
-        let result = (|| -> Result<TakeOutcome, String> {
+        // Y5-F: `TakeError`, not `String` — every early return below carries a
+        // code by type (see take_error.rs), so the one `Err` arm can always
+        // tell the UI WHICH failure this was.
+        let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
             // downloaded or analysed on the hot path; `None` (model still
@@ -2465,8 +2484,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             };
             let ended = capture_stop
                 .join()
-                .map_err(|_| "the capture-stop thread panicked".to_string())??;
-            let rec = record::finish_recording(ended, iso_vad.as_deref())?;
+                .map_err(|_| take_error::capture_failed("the capture-stop thread panicked".into()))?
+                .map_err(take_error::capture_failed)?;
+            let rec = record::finish_recording(ended, iso_vad.as_deref())
+                .map_err(take_error::capture_failed)?;
             // YV20/M3: `rec.clip` unlinks the history wav on ANY exit of this
             // closure (success, the gates below, or the ASR/DB `?` failures) —
             // never leaked on error. YV37: that wav is written on a background
@@ -2508,7 +2529,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // `ClipWav::drop` would unlink the very audio we are trying to save —
             // which is the bug, not the fix.
             if rec.device_failed {
-                return Err(DEVICE_FAILED_MESSAGE.into());
+                return Err(take_error::TakeError::new(
+                    take_error::MIC_DISCONNECTED,
+                    DEVICE_FAILED_MESSAGE,
+                    "input device failed mid-take",
+                ));
             }
             // PERM-D — SILENT-CAPTURE gate, and it is asked BEFORE the
             // no-speech gate on purpose. An all-zero buffer passes through
@@ -2559,9 +2584,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // actionable message instead of pretending; the `transcript_error`
             // emit below is what unspins any UI waiting on this take.
             let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
-                return Err(
-                    "No speech model installed — open Settings → Models and download one.".into(),
-                );
+                return Err(take_error::TakeError::new(
+                    take_error::MODEL_MISSING,
+                    "No speech model installed — open Settings → Models and download one.",
+                    format!("native model {} not downloaded", settings.native_model),
+                ));
             };
             // YV47 — bias the decoder with the auto-learning dictionary: starred
             // terms first, then usage-ranked, capped to the prompt window. A DB
@@ -2620,7 +2647,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 Err(e) if e == transcription::CANCELLED_BY_USER => {
                     return Ok(TakeOutcome::Cancelled);
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(take_error::transcription_failed(e)),
             };
             drop(persist);
             // Y3-D checkpoint — post-decode. A decode with no cancel hook runs
@@ -2916,7 +2943,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // still has a transcript row to write.
             hygiene::log_snapshot_async(data_dir());
             // Store BOTH the polished text and the raw ASR transcript (YV10).
-            let mut entry = db.insert_transcript_for_take(
+            let inserted = db.insert_transcript_for_take(
                 text,
                 asr.backend,
                 asr.seconds,
@@ -2926,7 +2953,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 chrono::Utc::now(),
                 Some(raw_text),
                 live_take_key.as_deref(),
-            )?;
+            );
+            let mut entry = inserted.map_err(take_error::history_write_failed)?;
             // Y4-G — attribute this take's shape to the stages that made it.
             // AFTER the insert on purpose: the row is durable and the text is
             // already in the user's app, so a failure here costs the diff panel
@@ -2951,16 +2979,17 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 
         match result {
             Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {
-                if outcome.pasted {
-                    *state2.last_error.lock() = None;
-                } else if !outcome.copied {
-                    *state2.last_error.lock() = Some(outcome.message.clone());
-                } else if settings.auto_paste && !outcome.pasted {
-                    // Soft warning — text is still on clipboard
-                    *state2.last_error.lock() = Some(outcome.message.clone());
-                } else {
-                    *state2.last_error.lock() = None;
+                // Y5-F fix round 1: the status chip gets a Yap-authored line,
+                // never `outcome.message` (which can carry the clipboard
+                // plugin's raw error); that text goes to the log only.
+                if !outcome.pasted && !outcome.copied {
+                    log::warn!("take {}: {}", entry.id, outcome.message);
                 }
+                *state2.last_error.lock() = take_error::paste_last_error(
+                    outcome.copied,
+                    outcome.pasted,
+                    settings.auto_paste,
+                );
                 // YV51: this take is now the newest, so it decides whether
                 // "Undo AI Edit" has anything to undo. The tray item picks the
                 // new value up from the `emit_status` at the end of the take.
@@ -2978,8 +3007,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // action instead of a dead sentence: the toast offers "Copy
                 // again" for this row, so the text is one click away even when
                 // the clipboard has moved on.
+                // Y5-F fix round 1: the payload says whether the transcript IS
+                // on the clipboard, so the toast never claims it is when the
+                // user's own copy won or the clipboard write failed.
                 if attempted_paste && !outcome.pasted {
-                    let _ = app2.emit(PASTE_FAILED_EVENT, &entry.id);
+                    let _ = app2.emit(
+                        PASTE_FAILED_EVENT,
+                        take_error::paste_failed_payload(&entry.id, outcome.copied),
+                    );
                 }
                 let _ = app2.emit(
                     "latency",
@@ -3161,8 +3196,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
             }
             Err(e) => {
-                log::error!("pipeline failed: {e}");
-                *state2.last_error.lock() = Some(e.clone());
+                // Y5-F: the raw detail is for the log (and so the support
+                // bundle); every surface a person sees gets the coded line.
+                log::error!("pipeline failed [{}]: {}", e.code, e.detail);
+                *state2.last_error.lock() = Some(take_error::LastError::from(&e));
                 // YV52: a failed take is never lost. Keep the wav the pipeline
                 // already wrote and record a recoverable row, so the user can
                 // retry ASR on the same audio (the engine may since have
@@ -3170,7 +3207,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // re-speaking it. `None` = the clip could not be preserved, and
                 // the toast/History simply have nothing to retry.
                 let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
-                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, &e)
+                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, &e.message)
                 });
                 // YV32: tell the UI, not just the log. Any view waiting on a
                 // transcript (onboarding calibration, the pill) can now clear its
@@ -3179,16 +3216,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // Retry on exactly this take.
                 let _ = app2.emit(
                     TRANSCRIPT_ERROR_EVENT,
-                    serde_json::json!({ "message": e.clone(), "failed": recoverable }),
+                    take_error::error_payload(&e, recoverable),
                 );
                 // YV79 — terminal marker (see the `Soft` arm), emitted after the
                 // error payload above so a listener that clears busy on this one
                 // has the reason in hand already.
                 let _ = app2.emit(
                     TAKE_DONE_EVENT,
-                    serde_json::json!({ "ok": false, "message": &e }),
+                    serde_json::json!({ "ok": false, "message": &e.message, "code": e.code }),
                 );
-                notify(&app2, "Yap — Failed", e);
+                notify(&app2, "Yap — Failed", e.message);
             }
         }
         *state2.busy.lock() = false;
@@ -3806,7 +3843,7 @@ fn save_settings(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let mut next = settings;
     // YV46: the legacy-migration flag is backend bookkeeping the UI never
     // carries — take it from the live settings so a save can't re-arm the
@@ -3832,11 +3869,8 @@ fn save_settings(
         // Validate BEFORE persisting: a refused rebind is an error the
         // Settings capture shows, never a silently dead chord.
         if let Some(c) = next.dictate_toggle.as_ref() {
-            hotkeys::chord_from_setting(c)?;
             // fix-249 BLOCKING 2: the dictate chord is system-wide too.
-            if let Some(why) = hotkey_table::reserved_chord_reason(c, false) {
-                return Err(why);
-            }
+            refuse_dictate_chord(c)?;
         }
     }
     // fix-249 advisory (d): the three rebindable chords' NEW values must all
@@ -3856,7 +3890,8 @@ fn save_settings(
             (hotkey_table::BindingAction::DictateToggle, dc, dl),
             (hotkey_table::BindingAction::RecordMeeting, mc, ml),
             (hotkey_table::BindingAction::Cancel, cc, cl),
-        ])?;
+        ])
+        .map_err(CommandError::refused)?;
     }
     // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
     // PERSIST, then APPLY the chords; an apply that fails rolls back every
@@ -3868,7 +3903,8 @@ fn save_settings(
     };
     let new_meeting = if meeting_changed {
         Some(match next.meeting_chord.as_ref() {
-            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::RecordMeeting, c)?,
+            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::RecordMeeting, c)
+                .map_err(CommandError::refused)?,
             None => hotkey_table::resolve(hotkey_table::BindingAction::RecordMeeting, None),
         })
     } else {
@@ -3876,19 +3912,28 @@ fn save_settings(
     };
     let new_cancel = if cancel_changed {
         Some(match next.cancel_chord.as_ref() {
-            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)?,
+            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)
+                .map_err(CommandError::refused)?,
             None => hotkey_table::resolve(hotkey_table::BindingAction::Cancel, None),
         })
     } else {
         None
     };
     if new_cancel.is_some() && *state.recording.lock() {
-        return Err("finish the current take, then change the cancel key".into());
+        return Err(CommandError::refused(
+            "finish the current take, then change the cancel key".into(),
+        ));
     }
     let prev = state.settings.lock().clone();
     persist_settings(&next)?;
     *state.settings.lock() = next.clone();
-    let rollback = |why: String, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> String {
+    // Y5-F fix round 2: a rollback carries a finished `CommandError`. A
+    // registrar failure goes through `chord_rebind_error`, which logs the raw
+    // Carbon / plugin text and sends only a fixed Yap sentence as `refused`
+    // (the chord is taken) or an uncatalogued `command_failed` (anything else,
+    // which the toast never shows verbatim). Only Yap's own constant sentences
+    // ("finish the current take …") are built as `refused` here directly.
+    let rollback = |err: CommandError, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> CommandError {
         if let Some((old_chord, old_label)) = meeting_applied {
             let new_chord = hotkey_table::active_meeting().0;
             let gs = app.global_shortcut();
@@ -3912,13 +3957,14 @@ fn save_settings(
             log::warn!("settings rollback persist failed: {e}");
         }
         *state.settings.lock() = prev.clone();
-        why
+        err
     };
     // 1. dictate chord — new registered BEFORE the old is dropped.
     let mut dictate_applied = false;
     if dictate_changed && smoke::global_hotkeys_allowed() {
         if let Err(e) = rebind_dictate_toggle(&app, &next) {
-            return Err(rollback(e, false, None));
+            let new_label = dictate_toggle_chord(&next).1;
+            return Err(rollback(chord_rebind_error(&new_label, &e), false, None));
         }
         dictate_applied = true;
     }
@@ -3938,7 +3984,7 @@ fn save_settings(
             );
             if let Err(e) = r {
                 return Err(rollback(
-                    format!("{new_label} could not be registered ({e}) — the old chord stays"),
+                    chord_rebind_error(&new_label, &e),
                     dictate_applied,
                     None,
                 ));
@@ -3959,7 +4005,7 @@ fn save_settings(
         if *recording {
             drop(recording);
             return Err(rollback(
-                "finish the current take, then change the cancel key".into(),
+                CommandError::refused("finish the current take, then change the cancel key".into()),
                 dictate_applied,
                 meeting_applied,
             ));
@@ -6685,7 +6731,59 @@ pub struct CommandError {
     pub message: String,
 }
 
+/// Y5-F fix round 1 — a command REFUSED the request with a sentence Yap wrote
+/// for the person ("⌘Space is macOS's Spotlight — pick another chord"). The
+/// frontend shows `message` verbatim for this code (errors.ts `REFUSED_CODE`),
+/// where a bare string rejection gets the generic line instead.
+pub const REFUSED_CODE: &str = "refused";
+/// A command failed for a reason that is NOT a sentence for a person (io,
+/// SQLite, plugin text): uncatalogued on purpose, so the UI shows its own line.
+pub const COMMAND_FAILED_CODE: &str = "command_failed";
+
+/// Y5-F fix round 2 — what a person is told when a chord rebind's register
+/// failed. The registrar's text (Carbon OSStatus, "eventHotKeyExistsErr",
+/// the global-hotkey plugin's `to_string()`, a channel error) goes to the log
+/// only. A chord another app or macOS holds is a refusal with a fixed Yap
+/// sentence; every other failure is `command_failed`, which the frontend never
+/// shows verbatim (errors.ts adviceFor -> generic line + Send report).
+fn chord_rebind_error(new_label: &str, raw: &str) -> CommandError {
+    log::warn!("chord rebind to {new_label} failed: {raw}");
+    if carbon_probe::is_taken(raw) {
+        CommandError::refused(format!(
+            "{new_label} is already used by another app or macOS — pick another chord"
+        ))
+    } else {
+        CommandError::from(format!("{new_label} could not be registered: {raw}"))
+    }
+}
+
+impl From<String> for CommandError {
+    fn from(message: String) -> Self {
+        Self {
+            code: COMMAND_FAILED_CODE.to_string(),
+            message,
+        }
+    }
+}
+
+/// The dictate-chord checks `save_settings` runs before persisting, as a
+/// `refused` so the reason reaches the Settings toast word for word.
+fn refuse_dictate_chord(c: &hotkeys::ChordSetting) -> Result<(), CommandError> {
+    hotkeys::chord_from_setting(c).map_err(CommandError::refused)?;
+    if let Some(why) = hotkey_table::reserved_chord_reason(c, false) {
+        return Err(CommandError::refused(why));
+    }
+    Ok(())
+}
+
 impl CommandError {
+    fn refused(message: String) -> Self {
+        Self {
+            code: REFUSED_CODE.to_string(),
+            message,
+        }
+    }
+
     fn license_required() -> Self {
         Self {
             code: license::LICENSE_REQUIRED_CODE.to_string(),
@@ -9280,6 +9378,98 @@ mod tests {
         status_message, update_is_skipped, write_settings_file, AppSettings, StatusInputs,
         CURRENT_SETTINGS_SCHEMA_VERSION, ENGINE_PREPARING_MESSAGE,
     };
+
+    /// Y5-F fix round 1 (independent BLOCKING 1): a reserved dictate chord is
+    /// refused with Yap's own sentence under the `refused` code, which the
+    /// toast shows verbatim (errors.ts adviceFor) — never the generic line.
+    #[test]
+    fn reserved_dictate_chord_is_refused_with_its_reason() {
+        let spotlight = crate::hotkeys::ChordSetting {
+            code: "Space".into(),
+            cmd: true,
+            ..Default::default()
+        };
+        let why = crate::hotkey_table::reserved_chord_reason(&spotlight, false)
+            .expect("⌘Space is reserved");
+        let err = super::refuse_dictate_chord(&spotlight).expect_err("refused");
+        assert_eq!(err.code, super::REFUSED_CODE);
+        assert_eq!(err.message, why);
+        let wire = serde_json::to_value(&err).unwrap();
+        assert_eq!(wire["code"], "refused");
+        assert_eq!(wire["message"], why.as_str());
+        // A non-sentence failure converts to the uncatalogued code, so the UI
+        // keeps hiding raw text.
+        assert_eq!(super::CommandError::from("io: denied".to_string()).code, super::COMMAND_FAILED_CODE);
+    }
+
+    /// Y5-F fix round 2 — a chord rebind's register failure never reaches the
+    /// toast as raw Carbon / plugin text. A held chord is a `refused` with a
+    /// fixed sentence; everything else is the uncatalogued `command_failed`.
+    /// The inputs are the real shapes: `probe_result` wrapped by
+    /// `hotkeys::rebind`, a non-exists OSStatus, the global-hotkey plugin's
+    /// to_string(), and a channel error from `run_on_main_thread`.
+    #[test]
+    fn chord_rebind_refusals_carry_no_raw_registrar_text() {
+        struct Fails(String);
+        impl crate::hotkeys::CarbonRegistrar for Fails {
+            fn register(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+                Err(self.0.clone())
+            }
+            fn unregister(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+                Ok(())
+            }
+            fn is_registered(&self, _: tauri_plugin_global_shortcut::Shortcut) -> bool {
+                true
+            }
+        }
+        let mut sink = crate::hotkeys::HotkeysStatus::default();
+        let taken = crate::carbon_probe::probe_result(crate::carbon_probe::EVENT_HOT_KEY_EXISTS_ERR)
+            .expect_err("exists is an error");
+        let other = crate::carbon_probe::probe_result(-50).expect_err("-50 is an error");
+        let forbidden = ["OSStatus", "eventHotKey", "RegisterEventHotKey", "(", "Unable to", "-9878", "-50"];
+        let check = |err: &super::CommandError| {
+            if err.code == super::REFUSED_CODE {
+                for f in forbidden {
+                    assert!(!err.message.contains(f), "refused message {:?} carries {f:?}", err.message);
+                }
+            } else {
+                assert_eq!(err.code, super::COMMAND_FAILED_CODE);
+            }
+        };
+        // Dictate path: the raw text arrives already wrapped by hotkeys::rebind.
+        let old = crate::shortcuts::DICTATE_TOGGLE.shortcut();
+        let new = tauri_plugin_global_shortcut::Shortcut::new(
+            Some(tauri_plugin_global_shortcut::Modifiers::CONTROL | tauri_plugin_global_shortcut::Modifiers::ALT),
+            tauri_plugin_global_shortcut::Code::KeyD,
+        );
+        let wrapped_taken = crate::hotkeys::rebind(&mut Fails(taken.clone()), old, "fn", new, "⌃⌥D", &mut sink)
+            .expect_err("register failed");
+        assert!(wrapped_taken.contains("eventHotKeyExistsErr"), "fixture is the real shape: {wrapped_taken}");
+        let e = super::chord_rebind_error("⌃⌥D", &wrapped_taken);
+        assert_eq!(e.code, super::REFUSED_CODE);
+        assert_eq!(e.message, "⌃⌥D is already used by another app or macOS — pick another chord");
+        check(&e);
+        for raw in [
+            crate::hotkeys::rebind(&mut Fails(other.clone()), old, "fn", new, "⌃⌥D", &mut sink).unwrap_err(),
+            crate::hotkeys::rebind(
+                &mut Fails("Unable to register hotkey: RegisterEventHotKey failed for KeyD".into()),
+                old, "fn", new, "⌃⌥D", &mut sink,
+            )
+            .unwrap_err(),
+            "receiving on a closed channel".to_string(),
+            // Meeting path: swap_chord hands back the plugin's text unwrapped.
+            "Unable to register hotkey: RegisterEventHotKey failed for KeyD".to_string(),
+            other.clone(),
+        ] {
+            let e = super::chord_rebind_error("⌃⌥D", &raw);
+            assert_eq!(e.code, super::COMMAND_FAILED_CODE, "{raw} must not be a refusal");
+            check(&e);
+        }
+        // The meeting path with a held chord (if the plugin ever surfaces it).
+        let e = super::chord_rebind_error("⌃⌥M", &taken);
+        assert_eq!(e.code, super::REFUSED_CODE);
+        check(&e);
+    }
 
     /// UPD-A — a failed check names the endpoints it tried. Without this the
     /// toast reads "Couldn't check for updates: error sending request", which
