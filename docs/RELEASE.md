@@ -242,6 +242,9 @@ signs anything they are expected to accept.
 1. Bump `version` in `desktop/package.json` **and** `desktop/src-tauri/tauri.conf.json`
    (they must match — the updater compares the manifest version against the
    running app's config version).
+   Move ARCHITECTURE.md's `**App version:**` line and PRODUCT.md's
+   `## What Yap does at <version>` heading with it — `desktop/src-tauri/tests/docs_match_the_app.rs`
+   fails the build until the docs name the version the config ships.
 2. Add the release's line to `docs/CHANGELOG-YAP.md`, merge to `main`.
 3. Tag and push:
 

@@ -1,58 +1,94 @@
-# Wilson Voice
+# Yap
 
-**Product-grade local dictation for macOS** — a Wispr Flow / Superwhisper alternative.
+**Product-grade local dictation for macOS** — a Wispr Flow / Superwhisper alternative,
+plus a meeting notetaker. Audio is transcribed on your Mac.
 
-Not a pile of Python scripts. A real desktop app:
+A real desktop app:
 
-- **Native shell:** Tauri 2 + React + Rust (`com.wilsonguenther.wilson-voice`)
-- **Menu bar tray** + **floating Dictate pill** (Wispr-style always-on-top control)
-- **SQLite WAL + FTS5** for transcript history, dictionary, insights, scratchpad
-- **Local ASR:** MLX Whisper (`large-v3-turbo`) via Python sidecar — audio never leaves your Mac
+- **Native shell:** Tauri 2 + React + Rust, one app (`Yap.app`), menu-bar tray + Dock
+- **Floating Dictate pill:** an NSPanel that floats over full-screen apps on every Space
+- **Local ASR:** an in-process GGUF engine (`transcribe-cpp`, Metal) — no interpreter, no helper process
+- **SQLite WAL + FTS5** for transcript history, dictionary, snippets, insights, scratchpad, meetings
 - **OS paste:** clipboard + simulated ⌘V into the frontmost app
-- **UI:** Home · Insights · Dictionary · Scratchpad · Settings
+- **UI:** Home · Insights · Dictionary · Scratchpad · Meetings · Settings
 
-See [PRODUCT.md](./PRODUCT.md) for architecture research (Handy, VoiceInk, OpenWhispr, Muesli, sflow).
+See [PRODUCT.md](./PRODUCT.md) for the feature list, [ARCHITECTURE.md](./ARCHITECTURE.md)
+for decisions, runtime dependencies and the platform floor, and [ROADMAP.md](./ROADMAP.md)
+for what shipped and what is next.
+
+## The two names that did NOT change — and must not
+
+The product was called **Wilson Voice** before it was called **Yap**. Two identifiers
+still carry the old name, **on purpose**, and renaming either one is irreversible
+damage, not a tidy-up:
+
+- **Bundle identifier `com.wilsonguenther.wilson-voice`.** macOS keys the
+  Microphone, Accessibility and Input Monitoring grants (TCC) to the bundle id.
+  Renaming it makes every existing install a brand-new app to macOS: all three
+  grants are lost and dictation stops until the user re-grants them by hand.
+- **Data directory `~/Library/Application Support/WilsonVoice/`.** It holds the
+  SQLite history (`wilson_voice.db`), settings, models and meeting audio.
+  Renaming it orphans every existing user's history — the app would start empty
+  and the old data would sit unreferenced on disk.
+
+The display name (`productName`), window titles and every user-visible string say
+Yap. These two do not, and that is correct.
 
 ## Install (desktop app)
 
+Download the notarized DMG from the site, or build it:
+
 ```bash
-cd ~/Desktop/wilson-voice/desktop
-npm install
-# one-time: arm64 venv for ASR
-cd .. && python3.13 -m venv .venv && .venv/bin/pip install mlx-whisper
-cd desktop && npm run desktop:build
-open "src-tauri/target/release/bundle/macos/Wilson Voice.app"
-# or copy to Applications:
-# cp -R "src-tauri/target/release/bundle/macos/Wilson Voice.app" /Applications/
+cd desktop
+npm ci
+npm run desktop:build      # builds both sidecars, the frontend and the app + DMG
+open "src-tauri/target/release/bundle/macos/Yap.app"
 ```
+
+On first run the in-app model manager downloads the speech model (sha256-verified);
+nothing else needs installing. See ARCHITECTURE.md → Runtime Dependencies.
 
 ### Permissions (once)
 
-System Settings → Privacy & Security — grant **Wilson Voice** (not “Python”):
+System Settings → Privacy & Security — grant **Yap**:
 
 1. **Microphone**
 2. **Accessibility** (paste)
-3. **Input Monitoring** (global hotkeys)
+3. **Input Monitoring** (the fn-key hold)
+
+Meeting notes additionally ask for system-audio capture (macOS 14.4+) and, optionally,
+read-only Calendar access.
 
 ## Use
 
+**Default dictation key:** hold **fn⌃** (`ptt_binding = "fn_control"`).
+
 | Action | How |
 |--------|-----|
-| Dictate | Hold **⌥Space** or **⌘⇧V**, or click floating **Dictate** / tray |
+| Dictate | Hold the dictation key (fn, fn⌃ or either — Settings), or click the floating **Dictate** pill / tray. The Carbon ⌘⇧V chord is optional and off by default |
+| Cancel | Esc while a take is live |
 | History | Home tab — search is FTS5 over SQLite |
 | Re-paste | Copy / Paste on any card |
 | Dictionary | Add terms so ASR rewrites jargon correctly |
-| Insights | Words, WPM, streak, 7-day chart |
+| Snippets | Spoken trigger phrases expand to saved text |
+| Meetings | Record a call or an in-person meeting; transcript + summary stay local |
+| Insights | Words, WPM, streak, charts |
 | Quit | Tray → Quit (closing the window hides to tray) |
 
 ## Data
 
 ```
-~/Library/Application Support/WilsonVoice/
+~/Library/Application Support/WilsonVoice/     # frozen name — see above
   wilson_voice.db      # SQLite (WAL)
   settings.json
+  models/              # downloaded ASR / polish / VAD / diarization models
   recordings/          # temp WAVs
+  meetings/            # meeting audio (kept until its transcript exists)
+  logs/
 ```
+
+`YAP_DATA_DIR` relocates the whole root for test and agent launches (ARCHITECTURE.md);
+it is an override, never a rename.
 
 **At-rest storage:** transcripts and history live in a plain local **SQLite**
 database (`wilson_voice.db`); the app does not encrypt it itself and relies on
@@ -62,7 +98,7 @@ if the transcript history is sensitive.
 ## Dev
 
 ```bash
-cd ~/Desktop/wilson-voice/desktop
+cd desktop
 npm run desktop:dev
 ```
 
@@ -87,13 +123,13 @@ notarization) signs with the Developer ID cert without any config change.
 
 ## One app, two sidecars
 
-Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window
-(Home / Insights / Dictionary / Settings) plus an always-on-top Dictate pill.
+Yap is a single Tauri app (`desktop/`): a menu-bar–resident window
+(Home / Insights / Dictionary / Scratchpad / Meetings / Settings) plus an always-on-top Dictate pill.
 On-device ASR runs **inside the app binary** — a native GGUF engine
 (`transcribe-cpp`, Metal) driven by `src-tauri/src/transcription.rs`. There is
-no interpreter and no virtual environment: audio is decoded in-process (no
-`ffmpeg` binary) and the speech model is downloaded once from the in-app model
-manager.
+no interpreter and no virtual environment: audio is decoded in-process
+(no `ffmpeg` binary) and the speech model is downloaded once from the in-app
+model manager.
 
 There are two helper processes, both bundled as Tauri sidecars and both spoken
 to over newline-delimited JSON on stdio — no port, no listener, no network.
@@ -106,20 +142,19 @@ the two cannot share a link line. The split also makes the polish deadline
 bundled; with none installed the sidecar is never spawned and dictation behaves
 exactly as it does without it.
 
-**`yap-diarize`** (`desktop/yap-diarize/`, YV121) is the speaker-diarization
+**`yap-diarize`** (`desktop/yap-diarize/`, YV121/YV122) is the speaker-diarization
 stage, out of process for the identical reason one level down: the app already
 links onnxruntime statically through `vad-rs`/`ort`, and `sherpa-onnx` links its
 own vendored copy. It takes no model on argv — models arrive as a `load_models`
-request — so its readiness handshake announces a *process*, not a model. As of
-YV121 it ships with no inference dependency at all: the sidecar shape is proven
-with zero model bytes before the risky crate lands.
+request — so its readiness handshake announces a *process*, not a model. It is
+bundled and its handshake is tested, but no meeting is handed to it yet.
 
 `desktop/` is a Cargo workspace (`src-tauri` + `yap-polish` + `yap-diarize`),
 and `bundle.externalBin` makes the staged sidecars a precondition of building
 the app, so build them first:
 
 ```bash
-cd ~/Desktop/wilson-voice/desktop
+cd desktop
 npm run sidecar     # builds both sidecars --release, staged under the host triple
 ```
 
