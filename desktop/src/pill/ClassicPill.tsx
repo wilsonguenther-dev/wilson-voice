@@ -278,9 +278,17 @@ export default function ClassicPill(
    *                     a purchase is not.
    */
   const licenseRoute = pillLicenseRoute(license);
+  /*
+   * Deliberately NO drag guard here. The upgrade mark calls this directly, and
+   * the mark cannot start or close a drag: its `pointerdown` stops before the
+   * capsule's drag handler sees it. That same stop means a press on the mark
+   * never resets `usePillDrag`'s `moved` flag, so after any re-dock
+   * `drag.dragged()` stays true until the next press on the capsule body.
+   * Consulting it here made the mark dead after a drag (Y2-D review BLOCK on
+   * a01f20d). The capsule's own click keeps its YV65 guard in `onToggle`,
+   * which runs before it reaches this.
+   */
   const openLicenseSurface = useCallback(() => {
-    // YV65 — a press that only closed a drag is not a press on the mark.
-    if (drag.dragged()) return;
     if (licenseRoute === "reveal_purchase") {
       invoke(REVEAL_PURCHASE_COMMAND).catch(() => {});
       return;
@@ -288,7 +296,7 @@ export default function ClassicPill(
     invoke("show_main").catch(() => {});
     emit("navigate", "settings").catch(() => {});
     emit("settings-tab", "license").catch(() => {});
-  }, [drag, licenseRoute]);
+  }, [licenseRoute]);
   const onToggle = useCallback(() => {
     // YV65 — the click that closes a drag must never start/stop dictation.
     if (drag.dragged()) return;
@@ -296,7 +304,7 @@ export default function ClassicPill(
       // Y2-C/D — a gated capsule is a BUTTON to the purchase SHEET, not a dead
       // pill. Routed through the same policy-driven handler the upgrade mark
       // uses, so the capsule and the mark can never disagree about where a
-      // press goes.
+      // press goes. (The drag guard above already ran for this path.)
       openLicenseSurface();
       return;
     }
@@ -345,9 +353,11 @@ export default function ClassicPill(
             that one hitbox: the transparent shadow margin stays click-through.
             `pointerdown` stops so a press on the mark never starts a re-dock
             drag, and `click` stops so it never reaches `onToggle` and starts a
-            dictation. There is no hover handler and no tab stop on it: passing
-            the cursor over the pill must not pull focus off what the person is
-            typing into. The gated capsule is ITSELF the button, so the mark
+            dictation. Because a mark press can never be the tail of a drag, its
+            click does NOT consult `drag.dragged()` (that flag is stale after
+            any re-dock; see ClassicPill.mark.test.tsx). There is no hover
+            handler and no tab stop on it: passing the cursor over the pill
+            must not pull focus off what the person is typing into. The gated capsule is ITSELF the button, so the mark
             stands down there (and under a permission block, which outranks). */}
         {licenseRoute !== null && license && !blocked && !gated ? (
           <button
