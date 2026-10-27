@@ -87,13 +87,34 @@ export function meetingStateLabel(
     case "failed":
       return "Failed";
     default:
-      return state;
+      // yap24-NT6: no state renders an empty headline — an unknown word from a
+      // newer build is shown as itself, a blank one as "Unknown state".
+      return state.trim() || "Unknown state";
   }
 }
 
-/** A failed or partial meeting can be run through the pipeline again. */
-export function canRetry(state: string): boolean {
-  return state === "failed" || state === "partial";
+/**
+ * A failed or partial meeting can be run through the pipeline again — but
+ * ONLY when its audio is still there (yap24-NT6, panel 2026-10-26): Retry
+ * re-decodes the WAV, so it needs `audio_kept = 1` AND a WAV path. NT1 marks
+ * old rows failed with their audio already purged, and a Retry that can never
+ * work is worse than none. Mirrors `meeting_pipeline::retry_audio_refusal`,
+ * which refuses the command the same way before deleting a segment.
+ */
+export function canRetry(
+  state: string,
+  audioKept: boolean,
+  micWavPath: string | null | undefined,
+): boolean {
+  if (state !== "failed" && state !== "partial") return false;
+  return audioKept && !!micWavPath && micWavPath.trim() !== "";
+}
+
+/** The three row fields a Retry decision reads (a `Meeting` satisfies it). */
+export interface RetryRow {
+  state: string;
+  audioKept: boolean;
+  micWavPath?: string | null;
 }
 
 /** The two numbers a transcribing row reports, from the freshest source. */
@@ -182,8 +203,8 @@ export function summaryFirstLine(summary: string | null | undefined): string | n
  *  segment and re-transcribes. While a notes job is queued, fetching the model or
  *  writing, that job would read a half-rebuilt transcript, so the transcript
  *  Retry is hidden for EVERY active notes phase (the backend refuses it too). */
-export function canRetryTranscript(state: string, progress: MeetingProgressEvent | undefined): boolean {
-  return canRetry(state) && !canCancelNotes(progress);
+export function canRetryTranscript(row: RetryRow, progress: MeetingProgressEvent | undefined): boolean {
+  return canRetry(row.state, row.audioKept, row.micWavPath) && !canCancelNotes(progress);
 }
 
 /** B2 — notes that are queued, fetching the model or being written can be cancelled. */
@@ -230,4 +251,26 @@ export function reloadsMeetings(state: string): boolean {
 export function summaryTitle(summary: string | null | undefined): string | null {
   const line = (summary ?? "").split("\n").find((l) => l.startsWith("## "));
   return line ? line.slice(3).trim() || null : null;
+}
+
+/** yap24-NT6 — the buttons a meeting card offers besides Open, in order. */
+export type MeetingAction = "retry" | "cancel-notes" | "notes" | "export" | "delete";
+
+/**
+ * yap24-NT6 — every action a meeting card shows, from one pure decision the
+ * view renders as-is. A failed meeting with its audio gone gets Export and
+ * Delete only: no Retry that cannot work, no notes from a transcript that
+ * does not exist.
+ */
+export function meetingActions(
+  row: RetryRow,
+  progress: MeetingProgressEvent | undefined,
+  hasSummary: boolean,
+): MeetingAction[] {
+  const actions: MeetingAction[] = [];
+  if (canRetryTranscript(row, progress)) actions.push("retry");
+  if (canCancelNotes(progress)) actions.push("cancel-notes");
+  if (canRetryNotes(row.state, progress, hasSummary)) actions.push("notes");
+  actions.push("export", "delete");
+  return actions;
 }

@@ -840,9 +840,48 @@ fn unlink_purged_meeting_audio(
     }
 }
 
+/// yap24-NT6 — what a transcript Retry says when the meeting's audio is gone.
+pub const NO_AUDIO_RETRY_REFUSAL: &str =
+    "This meeting's audio is gone, so it can't be transcribed again. Its transcript is kept.";
+
+/// yap24-NT6 — a Retry re-decodes the WAV, so it needs `audio_kept = 1` AND a
+/// WAV path that still names a file. `Some(reason)` when either is missing
+/// (NT1 marks old rows failed with their audio already purged). Mirrors
+/// `canRetry(state, audioKept, micWavPath)` in `desktop/src/meetings/progress.ts`.
+pub fn retry_audio_refusal(
+    audio_kept: bool,
+    mic_wav_path: Option<&str>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<&'static str> {
+    match mic_wav_path {
+        Some(p) if audio_kept && !p.trim().is_empty() && is_file(Path::new(p)) => None,
+        _ => Some(NO_AUDIO_RETRY_REFUSAL),
+    }
+}
+
 /// Forget every decoded window and segment of a meeting, so a Retry starts
 /// clean rather than resuming past windows that failed.
+///
+/// yap24-NT6: refuses BEFORE deleting anything when the audio is gone —
+/// deleting a partial meeting's segments with nothing to re-decode would
+/// destroy the only transcript it has.
 pub fn reset_for_retry(db: &Database, dir: &Path, meeting_id: &str) -> Result<(), String> {
+    let meeting = db
+        .get_meeting(meeting_id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    if let Some(reason) = retry_audio_refusal(
+        meeting.audio_kept,
+        meeting.mic_wav_path.as_deref(),
+        Path::is_file,
+    ) {
+        log::warn!(
+            "meeting_pipeline retry_refused id={meeting_id} state={} audio_kept={} has_wav_path={}",
+            meeting.state,
+            meeting.audio_kept,
+            meeting.mic_wav_path.is_some()
+        );
+        return Err(reason.to_string());
+    }
     for path in ledger_paths(dir, meeting_id)
         .into_iter()
         .filter(|p| *p != capture_carry_path(dir, meeting_id))
@@ -1235,4 +1274,88 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         }
     }
     Ok(state)
+}
+
+#[cfg(test)]
+mod nt6_retry_tests {
+    use super::*;
+    use crate::meetings::NewMeetingSegment;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yap-nt6-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn retry_needs_audio_kept_and_a_wav_on_disk() {
+        let yes = |_: &Path| true;
+        let no = |_: &Path| false;
+        assert_eq!(retry_audio_refusal(true, Some("/m/a.wav"), yes), None);
+        assert_eq!(
+            retry_audio_refusal(false, Some("/m/a.wav"), yes),
+            Some(NO_AUDIO_RETRY_REFUSAL)
+        );
+        assert_eq!(
+            retry_audio_refusal(true, None, yes),
+            Some(NO_AUDIO_RETRY_REFUSAL)
+        );
+        assert_eq!(
+            retry_audio_refusal(true, Some("  "), yes),
+            Some(NO_AUDIO_RETRY_REFUSAL)
+        );
+        assert_eq!(
+            retry_audio_refusal(true, Some("/m/a.wav"), no),
+            Some(NO_AUDIO_RETRY_REFUSAL)
+        );
+    }
+
+    #[test]
+    fn retry_without_audio_refuses_and_keeps_the_transcript() {
+        let db = Database::open_in_memory().expect("db");
+        let dir = scratch("noaudio");
+        let m = db.create_meeting("Standup", "mic").expect("meeting");
+        db.finish_meeting(&m.id, 90.0, None).expect("finish");
+        db.append_meeting_segments(&m.id, &[NewMeetingSegment::new(0.0, 30.0, "hello")])
+            .expect("segment");
+        db.set_meeting_state(&m.id, MeetingState::Partial, None)
+            .expect("partial");
+
+        let err = reset_for_retry(&db, &dir, &m.id).expect_err("no audio must refuse");
+        assert_eq!(err, NO_AUDIO_RETRY_REFUSAL);
+        let after = db.get_meeting(&m.id).expect("read").expect("row");
+        assert_eq!(
+            after.segment_count, 1,
+            "the only transcript survives a refused Retry"
+        );
+        assert_eq!(after.state, "partial");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retry_with_audio_resets_to_transcribing() {
+        let db = Database::open_in_memory().expect("db");
+        let dir = scratch("audio");
+        let wav = dir.join("mic.wav");
+        std::fs::write(&wav, b"RIFF").expect("wav");
+        let m = db.create_meeting("Standup", "mic").expect("meeting");
+        db.finish_meeting(&m.id, 90.0, Some(&wav)).expect("finish");
+        db.append_meeting_segments(&m.id, &[NewMeetingSegment::new(0.0, 30.0, "hello")])
+            .expect("segment");
+        db.set_meeting_state(&m.id, MeetingState::Failed, Some("boom"))
+            .expect("failed");
+
+        reset_for_retry(&db, &dir, &m.id).expect("audio on disk → retry runs");
+        let after = db.get_meeting(&m.id).expect("read").expect("row");
+        assert_eq!(after.state, "transcribing");
+        assert_eq!(after.segment_count, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

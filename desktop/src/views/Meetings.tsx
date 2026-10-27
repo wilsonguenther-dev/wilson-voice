@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import {
-  canCancelNotes, canRetryNotes, canRetryTranscript, meetingStateLabel, notesLabel, retryNotesLabel,
+  canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
 import NotesView from "../meetings/NotesView";
@@ -341,6 +341,9 @@ export default function Meetings() {
                       ? `Transcribing ${transcribePercent(tp)}%`
                       : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
                     const notesJob = notesLabel(progress[m.id]);
+                    // yap24-NT6: one pure decision for every button — Retry only
+                    // when the audio is still there (audio_kept = 1 and a WAV).
+                    const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
                     return (
                       <li key={m.id} className="meeting-row" data-meeting-state={m.state}>
                         <div className="meeting-row-main">
@@ -407,17 +410,17 @@ export default function Meetings() {
                           <button className="primary" onClick={() => openMeetingDetail(m.id)}>
                             Open
                           </button>
-                          {canRetryTranscript(m.state, progress[m.id]) && (
+                          {actions.includes("retry") && (
                             <button onClick={() => void retryMeeting(m.id)}>Retry</button>
                           )}
-                          {canCancelNotes(progress[m.id]) && (
+                          {actions.includes("cancel-notes") && (
                             <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
                               Cancel notes
                             </button>
                           )}
-                          {canRetryNotes(m.state, progress[m.id], Boolean(m.summary)) && (
+                          {actions.includes("notes") && (
                             <button onClick={() => void notesAction(retryNotes, m.id)}>
-                              {canRetryTranscript(m.state, progress[m.id]) && retryNotesLabel(progress[m.id]) === "Retry"
+                              {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
                                 ? "Retry notes"
                                 : retryNotesLabel(progress[m.id])}
                             </button>
@@ -457,6 +460,21 @@ export default function Meetings() {
                 <button className="ghost" onClick={() => setOpenMeeting(null)}>
                   ← All meetings
                 </button>
+                {/* yap24-NT6: the detail page offers the same Retry the card does,
+                    and only when the WAV is still on disk. */}
+                {canRetryTranscript(
+                  { ...openMeeting.meeting, audioKept: openMeeting.meeting.audioKept && openMeeting.audioOnDisk },
+                  progress[openMeeting.meeting.id],
+                ) && (
+                  <button
+                    onClick={async () => {
+                      await retryMeeting(openMeeting.meeting.id);
+                      await openMeetingDetail(openMeeting.meeting.id);
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
                 <button
                   className="primary"
                   disabled={meetingBusy}
@@ -494,7 +512,11 @@ export default function Meetings() {
                 <span>
                   {formatTime(openMeeting.meeting.startedAt)} ·{" "}
                   {formatMeetingDuration(openMeeting.meeting.durationSeconds)} ·{" "}
-                  {openMeeting.meeting.state}
+                  {meetingStateLabel(
+                    openMeeting.meeting.state,
+                    progress[openMeeting.meeting.id],
+                    Boolean(openMeeting.meeting.summary),
+                  )}
                 </span>
                 <span>
                   {openMeeting.audioOnDisk
@@ -521,7 +543,11 @@ export default function Meetings() {
                       ? "Yap is still working through the audio. This page does not refresh itself."
                       : openMeeting.meeting.state === "waiting_for_model"
                         ? "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically. The audio is kept until then."
-                        : "Nothing was transcribed from this recording. The audio is still on disk for 7 days."}
+                        : openMeeting.audioOnDisk
+                          ? `Nothing was transcribed from this recording. The audio is still on disk for ${
+                              insights?.meetings?.audioRetentionDays ?? 7
+                            } days.`
+                          : "Nothing was transcribed from this recording, and its audio is gone, so it can't be transcribed again."}
                   </p>
                   <div className="actions">
                     <button
