@@ -1170,3 +1170,130 @@ html[data-dock="right"] .phase-strip {
 }
 .meeting-offer-actions .meeting-offer-record { background: #e5484d; color: #fff; }
 .meeting-offer-actions button:focus-visible { outline: 2px solid #9db6ff; outline-offset: 1px; }
+/* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
+ * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
+ * capsule says which way that runs (a column only for a strip phase at a side
+ * dock, pill/dock.ts), so ONE set of rules serves all three docks: the slot
+ * box is `--slot-length` along and `--slot-across` across, and only which of
+ * width/height each maps to changes. An invisible slot is not in the DOM, so
+ * there is no rule here for hiding one. */
+.slots {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.pill[data-bar-axis="column"] .slots {
+  flex-direction: column;
+}
+.slot {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--slot-length, 20px);
+  height: var(--slot-across, 20px);
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--pill-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--dur-morph, 100ms) var(--ease-state, ease);
+}
+.pill[data-bar-axis="column"] .slot {
+  width: var(--slot-across, 20px);
+  height: var(--slot-length, 20px);
+}
+.slot svg {
+  width: 12px;
+  height: 12px;
+}
+.slot:hover,
+.slot:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+}
+.slot.readout {
+  flex-direction: column;
+  cursor: default;
+  background: transparent;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.slot-words {
+  font-size: 10px;
+  font-weight: 600;
+}
+.slot-rate {
+  font-size: 8px;
+  opacity: 0.7;
+}
+/* Tooltips open AWAY from the docked edge (`tooltipSide`): up from the bottom
+ * dock, inward from a side dock. Never toward the edge, where they would open
+ * off-screen. */
+.ctrl {
+  position: relative;
+}
+.slot-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  white-space: nowrap;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(18, 18, 22, 0.94);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  transition: opacity 120ms var(--ease-state, ease);
+}
+.slot:hover > .slot-tip,
+.slot:focus-visible > .slot-tip,
+.ctrl:hover > .slot-tip {
+  opacity: 1;
+}
+.slot-tip[data-tip-side="top"] {
+  bottom: calc(100% + 8px);
+  left: 50%;
+  translate: -50% 0;
+}
+.slot-tip[data-tip-side="right"] {
+  left: calc(100% + 8px);
+  top: 50%;
+  translate: 0 -50%;
+}
+.slot-tip[data-tip-side="left"] {
+  right: calc(100% + 8px);
+  top: 50%;
+  translate: 0 -50%;
+}
+/* The vertical-dock layout: at a side dock the listening bar is a column, the
+ * waveform's bars grow across it, and the thickness is Y5-I's token once that
+ * lands (`--flow-bar-thickness`), the live capsule's 44 px until then. */
+.pill.live[data-bar-axis="column"] {
+  flex-direction: column;
+  width: var(--flow-bar-thickness, 44px);
+  height: auto;
+  min-width: 0;
+  padding: 6px 0;
+  gap: 3px;
+}
+.pill.live[data-bar-axis="column"] .ctrl {
+  width: 20px;
+  height: 20px;
+}
+.pill.live[data-bar-axis="column"] .wave {
+  flex-direction: column;
+  width: 22px;
+  height: auto;
+  min-width: 0;
+  gap: 1.5px;
+}
+.pill.live[data-bar-axis="column"] .wave i {
+  height: 2px;
+  width: calc(3px + var(--level) * var(--peak, 1) * 16px);
+}

@@ -6,7 +6,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { Mic, MicOff, Square } from "lucide-react";
 import {
   PHASE_ID, phaseVisual, progressFraction, progressLabel, progressNumeral,
   type LivePhase, type PhaseArtTable, type TranscribeProgress,
@@ -25,6 +24,11 @@ import {
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
+import { barDock } from "./dock";
+import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
+
+/** Y8-B — the centre slot: the capsule's own mic/stop control is the Dictate slot. */
+const DICTATE = slotById("dictate");
 
 /**
  * Y5-C — Classic's art for EVERY phase, as DATA.
@@ -74,8 +78,14 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null }: {
     gate?: LivePhase;
+    /**
+     * Y8-B — the flow-bar slot context, decided by the SHELL (float-main).
+     * `null` (a test mount, the dev matrix) draws the capsule with only its
+     * centre slot, at the bottom dock.
+     */
+    slots?: SlotCtx | null;
     progress?: TranscribeProgress | null;
     /**
      * YV95 / yap24-NT7 — the meeting, owned by the SHELL (float-main) like
@@ -385,6 +395,19 @@ export default function ClassicPill(
     if (busy || transcribing) return;
     invoke("manual_toggle").catch(() => {});
   }, [blocked, gated, busy, transcribing, drag, openLicenseSurface]);
+  // Y8-B — the bar's slots. The capsule owns WHERE they sit (lead · centre ·
+  // trail along the length axis); `pill/slots.tsx` owns whether each is shown.
+  const slotCtx: SlotCtx = slots ?? {
+    phase: gate,
+    dock: barDock(document.documentElement.dataset.dock),
+    meetingOnScreen: meeting.recording || meetingAfter !== null,
+    progress,
+    listen: { estWords: 0, sec: 0 },
+    scratchpadOnBar: false,
+  };
+  const barAxis = layoutSlots(slotCtx).axis;
+  const tipSide = tooltipSide(slotCtx.dock);
+  const slotActions = { toggleDictation: onToggle };
 
   return (
     <div className="stage">
@@ -395,6 +418,8 @@ export default function ClassicPill(
         data-phase={PHASE_ID[gate]}
         data-sprite={art.sprite}
         data-motion={art.motion}
+        data-bar-axis={barAxis}
+        data-bar-position={slotCtx.dock}
         role="button"
         tabIndex={0}
         aria-label={
@@ -412,6 +437,7 @@ export default function ClassicPill(
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
+        <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
         <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
@@ -440,8 +466,9 @@ export default function ClassicPill(
             {license.value ? <span className="pill-upgrade-value">{license.value}</span> : null}
           </button>
         ) : null}
-        <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
-          {blocked || gated ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
+        <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
+          {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : slotCtx.phase === "listening" ? "idle" : slotCtx.phase })}
+          <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>
         </button>
         {blocked ? (
           <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
@@ -475,6 +502,7 @@ export default function ClassicPill(
             </div>
           </>
         )}
+        <FlowBarSlots ctx={slotCtx} group="trail" actions={slotActions} dragged={drag.dragged} />
       </div>
       </div>
     </div>
