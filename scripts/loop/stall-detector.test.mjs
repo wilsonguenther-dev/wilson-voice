@@ -91,11 +91,66 @@ test('stall_rules_block_is_identical_to_stall_mjs', () => {
   for (const call of ['stallReason(', 'sameReasonTwice(landHist', 'gateRedOnMain(exits, GATE_BLOCKING, GATE_ADVISORY)', 'noProgress(landResults, 3)', 'isGateFailure(', 'if (stalled) break']) {
     assert.ok(outside.includes(call), `template.mjs never calls ${call}`)
   }
+  // Rule 1 is reachable ACROSS passes (a PR is landed once per pass): the land seat leaves a "loop-land:" marker,
+  // triage reads it back as lastLand, reviewOnePr seeds the history from it, and loop-stalled is HELD by triage.
+  assert.ok(outside.includes('loop-land: status=<the status you return> reason='), 'the land seat never writes the loop-land marker')
+  assert.ok(outside.includes('lastLand: { type:'), 'TRIAGE_SCHEMA never carries lastLand')
+  assert.ok(outside.includes('entry.lastLand'), 'reviewOnePr never seeds the history from lastLand')
+  const isHeld = new Function(`return ${TEMPLATE.match(/const isHeld = (\(q\) => [^\n]+)/)[1]}`)()
+  assert.equal(isHeld({ pr: 5, labels: [{ name: 'loop-stalled' }] }), true, 'triage does not hold loop-stalled PRs')
+  assert.equal(isHeld({ pr: 6, labels: ['loop-build'] }), false)
 })
+
+/**
+ * END TO END: execute the GENERATED review pass (scripts/loop/generated/part-01.mjs) against stubbed globals, the way
+ * review-gate.test.mjs's chain tests do, so the rules are proven WIRED in what the Workflow actually runs.
+ * recon's gateExits, the triage queue and every LAND return are scripted; every other seat gets a benign PASS.
+ */
+const GREEN = { typecheck: 0, test: 0, build: 0, polish: 0, diarize: 0, stage: 0, polishtest: 0, diarizetest: 0, fmt: 0, clippy: 0, cargotest: 0 }
+const HEAD = 'a'.repeat(40)
+async function runGenerated({ reconExits = GREEN, queue = [], land = () => ({ status: 'merged', landed: true }) } = {}) {
+  const src = fs.readFileSync(path.join(HERE, 'generated', 'part-01.mjs'), 'utf8').replace(/^export const meta/m, 'const meta')
+  const benign = () => new Proxy(function () {}, {
+    get(_t, p) {
+      if (p === 'then' || p === 'toJSON' || p === 'length') return p === 'length' ? 0 : undefined
+      if (p === Symbol.iterator) return function* () {}
+      if (p === Symbol.toPrimitive) return () => ''
+      if (typeof p === 'symbol') return undefined
+      return benign()
+    },
+    apply: () => benign(),
+  })
+  const generic = (extra = {}) => new Proxy({ status: 'ok', ok: true, halted: false, exits: [0], allZero: true, verdict: 'PASS', blocking: [], advisory: [], prs: [], items: [], result: {}, ...extra },
+    { get: (t, p) => (p in t ? t[p] : p === 'then' || p === 'toJSON' || typeof p === 'symbol' ? undefined : benign()) })
+  const seats = []
+  const logs = []
+  const prompts = []
+  const agent = async (prompt, opts = {}) => {
+    const label = String(opts.label || '')
+    seats.push(label)
+    if (label === 'review-triage') return { queue, closed: [], held: [] }
+    if (/^recon/.test(label) || /recon/.test(label)) return generic({ ciMode: 'local', gateExits: reconExits })
+    if (label.startsWith('stall-writer')) { prompts.push(String(prompt)); return { logged: true } }
+    if (label.startsWith('review-opus')) return { status: 'reviewed', verdict: 'PASS', blocking: [], advisory: [], recordHead: HEAD, recordPosted: true }
+    if (label.startsWith('fix-land:') && /You are the LAND agent/.test(String(prompt))) return land(Number((String(prompt).match(/This PR is #(\d+)/) || [])[1]))
+    return generic()
+  }
+  const FIXED = 1757808000000
+  class FrozenDate extends Date { constructor(...a) { super(...(a.length ? a : [FIXED])) } static now() { return FIXED } }
+  const boom = () => { throw new Error('no outside world in a stall e2e test') }
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const fn = new AsyncFunction('agent', 'parallel', 'pipeline', 'phase', 'log', 'workflow', 'args', 'budget', 'Date', 'Math', 'fetch', 'process', 'require', src)
+  await fn(agent, async (fs_) => Promise.all(fs_.map((f) => f())), async (fs_) => { const o = []; for (const f of fs_) o.push(await f()); return o },
+    () => {}, (m) => logs.push(String(m)), async () => ({ halted: false, parts: [], items: [] }), { mode: 'review' },
+    new Proxy({ remaining: 1e9, used: 0, limit: 1e9 }, { get: (t, p) => (p in t ? t[p] : benign()) }), FrozenDate, Object.create(Math, { random: { value: () => 0.42 } }),
+    boom, new Proxy({}, { get: boom }), boom)
+  return { seats, logs, prompts }
+}
+const qEntry = (pr, extra = {}) => ({ pr, item: `X-${pr}`, title: `X-${pr}: a change`, headRefName: `loop/x-${pr}`, klass: 'standard', ci: 'none', mergeable: 'MERGEABLE', files: 1, additions: 1, labels: ['loop-build'], ...extra })
 
 const ciRed = (pr, cmd) => ({ pr, ...stallReason({ status: 'ci-red', gateExits: { ...ALL_GREEN, [cmd]: 1 } }) })
 
-test('same_reason_twice_ci_red_same_command_stalls', () => {
+test('same_reason_twice_ci_red_same_command_stalls', async () => {
   const first = ciRed(101, 'clippy')
   assert.deepEqual(first, { pr: 101, status: 'ci-red', reason: 'clippy' })
   assert.equal(sameReasonTwice([], first), false, 'the first failure is never a stall')
@@ -105,6 +160,19 @@ test('same_reason_twice_ci_red_same_command_stalls', () => {
   assert.equal(stallReason({ status: 'ci-red' }).reason, 'unknown')
   assert.equal(stallReason({ status: 'needs-rebase', reason: 'CONFLICTING' }).reason, 'CONFLICTING')
   assert.equal(stallReason({ status: 'ci-pending' }).reason, 'none')
+  // END TO END, across passes: last pass's land marker said ci-red/clippy, this pass's LAND is ci-red on clippy again
+  // -> ONE stall-writer seat (label, comment, log, board), outcome loop-stalled, and no further fix-land for that PR.
+  const red = { status: 'ci-red', landed: false, failingCommand: 'clippy', gateExits: { ...ALL_GREEN, clippy: 101 } }
+  const r = await runGenerated({ queue: [qEntry(41, { lastLand: { status: 'ci-red', reason: 'clippy' } })], land: () => red })
+  assert.deepEqual(r.seats.filter((l) => l.startsWith('stall-writer')), ['stall-writer:X-41'], r.logs.join('\n'))
+  assert.ok(r.logs.some((l) => l.startsWith('STALL pr=41 item=X-41 status=ci-red reason=clippy')), r.logs.join('\n'))
+  assert.match(r.prompts[0], /--add-label loop-stalled/)
+  assert.match(r.prompts[0], /loop-stalled: ci-red clippy twice in a row/)
+  assert.match(r.prompts[0], /review:needs-human 'STALL: clippy/)
+  assert.equal(r.seats.filter((l) => l === 'fix-land:X-41').length, 1, 'exactly one LAND, never a third attempt')
+  // ...and a DIFFERENT prior reason (or none) never stalls.
+  const ok = await runGenerated({ queue: [qEntry(42, { lastLand: { status: 'ci-red', reason: 'test' } })], land: () => red })
+  assert.deepEqual(ok.seats.filter((l) => l.startsWith('stall-writer')), [], ok.logs.join('\n'))
 })
 
 test('same_reason_twice_different_command_does_not_stall', () => {
@@ -123,11 +191,23 @@ test('same_reason_twice_never_on_merged', () => {
   assert.equal(sameReasonTwice([merged], { ...merged }), false)
 })
 
-test('gate_red_on_main_flags_blocking_nonzero', () => {
+test('gate_red_on_main_flags_blocking_nonzero', async () => {
   const v = gateRedOnMain({ ...ALL_GREEN, clippy: 101, test: 1 }, GATE_BLOCKING, GATE_ADVISORY)
   assert.deepEqual(v, { red: ['test', 'clippy'], unreadable: [], advisoryRed: [] })
   assert.deepEqual(gateRedOnMain(ALL_GREEN, GATE_BLOCKING, GATE_ADVISORY), { red: [], unreadable: [], advisoryRed: [] })
   assert.deepEqual(gateRedOnMain({ ...ALL_GREEN, build: '2' }, GATE_BLOCKING, GATE_ADVISORY).red, ['build'], 'a numeric string from a text payload is readable')
+  // END TO END: recon reports clippy red on main -> the generated review pass halts BEFORE triage, writes the stall
+  // (board, log, STALL.txt) once, and dispatches no reviewer, LAND, sweeper or verify seat.
+  const r = await runGenerated({ reconExits: { ...ALL_GREEN, clippy: 101 }, queue: [qEntry(43)] })
+  assert.ok(!r.seats.includes('review-triage'), `triage ran on a red main: ${r.seats.join(', ')}`)
+  assert.deepEqual(r.seats.filter((l) => l.startsWith('stall-writer')), ['stall-writer:_stall'])
+  assert.match(r.prompts[0], /GATE RED ON MAIN: clippy/)
+  assert.match(r.prompts[0], /STALL\.txt/)
+  assert.ok(r.logs.some((l) => l.startsWith('review pass HALTED (gate-red-on-main): red=[clippy]')), r.logs.join('\n'))
+  // advisory fmt red on main is a log line, never a halt
+  const fmtRed = await runGenerated({ reconExits: { ...ALL_GREEN, fmt: 1 }, queue: [] })
+  assert.ok(fmtRed.seats.includes('review-triage'))
+  assert.ok(fmtRed.logs.some((l) => /advisory red on main: fmt/.test(l)), fmtRed.logs.join('\n'))
 })
 
 test('gate_red_on_main_ignores_advisory_fmt', () => {
@@ -151,13 +231,31 @@ test('gate_red_on_main_missing_key_is_unreadable_and_red', () => {
 
 const landed = (pr, status, exits) => ({ pr, status, gateFailure: isGateFailure({ status, gateExits: exits }) })
 
-test('no_progress_three_distinct_prs_gate_failures_halts', () => {
+test('no_progress_three_distinct_prs_gate_failures_halts', async () => {
   const results = [landed(1, 'ci-red'), landed(2, 'ci-red'), landed(3, 'ci-pending', { ...ALL_GREEN, cargotest: 101 })]
   assert.equal(results[2].gateFailure, true, 'a non-zero BLOCKING exit is a gate failure even without ci-red')
   assert.equal(noProgress(results), true)
   assert.equal(noProgress(results.slice(0, 2)), false, 'fewer than 3 results never halts')
   assert.equal(noProgress([landed(1, 'ci-red'), landed(2, 'ci-red'), landed(3, 'needs-rebase')]), false, 'a non-gate failure is not no-progress')
   assert.equal(landed(4, 'ci-pending', { ...ALL_GREEN, fmt: 1 }).gateFailure, false, 'advisory fmt is never a gate failure')
+  // END TO END: five queued PRs on the two review chains, every LAND ci-red on a different command -> after the third
+  // result the barrier stops pulling: the PR the OTHER chain already had in flight finishes (54), nothing new is taken
+  // (55 is never landed), ONE stall-writer writes the no-progress line, and the sweeper/verify still run.
+  const cmds = { 51: 'clippy', 52: 'test', 53: 'cargotest', 54: 'build', 55: 'typecheck' }
+  const r = await runGenerated({
+    queue: [qEntry(51), qEntry(52), qEntry(53), qEntry(54), qEntry(55)],
+    land: (pr) => ({ status: 'ci-red', landed: false, failingCommand: cmds[pr], gateExits: { ...ALL_GREEN, [cmds[pr]]: 1 } }),
+  })
+  assert.equal(r.seats.filter((l) => l.endsWith(':X-55')).length, 0, `a PR was pulled after no-progress: ${r.seats.join(', ')}`)
+  assert.ok(r.logs.some((l) => /STOPPED by the no-progress stall rule/.test(l)), r.logs.join('\n'))
+  assert.deepEqual(r.seats.filter((l) => l.startsWith('stall-writer')), ['stall-writer:_stall'], r.logs.join('\n'))
+  // Which three depends on how the two chains interleave; it is always three DISTINCT pr:command pairs from the script.
+  const m = /STALL no-progress: last 3 land results were gate failures: (\d+:\w+), (\d+:\w+), (\d+:\w+)/.exec(r.prompts[0])
+  assert.ok(m, r.prompts[0])
+  const pairs = m.slice(1)
+  assert.equal(new Set(pairs.map((x) => x.split(':')[0])).size, 3)
+  for (const x of pairs) assert.equal(cmds[x.split(':')[0]], x.split(':')[1], x)
+  assert.ok(r.seats.includes('main-verify'), `main-verify must still run: ${r.seats.join(', ')}`)
 })
 
 test('no_progress_same_pr_three_times_does_not_count', () => {

@@ -1829,6 +1829,11 @@ it review-pending. Label it needs-human instead, comment the gate's line verbati
 "needs-human" with reviewGate set to that line.
 ${CI_GATE(dir, target)}
 
+THE LAND MARKER — on EVERY return except "merged", post exactly one comment whose body is ONE line:
+    gh pr comment -R ${REPO} ${pr} --body "loop-land: status=<the status you return> reason=<failingCommand for ci-red, else a one-word reason> head=<headRefOid>"
+Tokens only (no spaces inside a value). The next pass's triage reads it, and the stall rule compares it with
+that pass's land outcome: the same status and reason twice in a row stops the loop re-landing this PR.
+
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending"|"needs-human",
          landed: true|false, reason, failingCommand: "<the first non-zero BLOCKING command, for ci-red>", mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
@@ -1843,6 +1848,14 @@ review:review-pending, review:needs-human or review:closed-superseded — and th
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 ${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
+  }
+  // RULE 1 ACROSS PASSES: a PR is landed once per pass, so this pass's history starts from the land
+  // outcome triage read off the PR's last "loop-land:" marker comment (same status + reason as the one
+  // about to come back -> loop-stalled, no third attempt next pass: triage holds the loop-stalled label).
+  if (!landHistory.has(pr) && entry && entry.lastLand && typeof entry.lastLand === 'object' && entry.lastLand.status) {
+    const prior = { pr, status: stallToken(entry.lastLand.status), reason: stallToken(entry.lastLand.reason || 'none') }
+    landHistory.set(pr, [prior])
+    log(`stall same-reason-twice seed pr=${pr} item=${itemId} prior_status=${prior.status} prior_reason=${prior.reason}`)
   }
   const land = await withAgents(1, () => agentR(fixLandPrompt('land', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
@@ -1866,7 +1879,8 @@ ${GUARD(dir)}`
   // entry for the SAME PR had the same status and reason, the next fix-land would fail the same way:
   // record the stall once and move on. Never on 'merged'. Rule 3 reads landResults.
   const landExits = gateExitsOf(land)
-  const nextLand = { pr, ...stallReason({ ...objectOf(land), gateExits: landExits, status }) }
+  const why0 = stallReason({ ...objectOf(land), gateExits: landExits, status })
+  const nextLand = { pr, status: stallToken(why0.status), reason: stallToken(why0.reason) }
   landResults.push({ pr, itemId, status, reason: nextLand.reason, gateFailure: isGateFailure({ status, gateExits: landExits }) })
   const landHist = landHistory.get(pr) || []
   const twice = sameReasonTwice(landHist, nextLand)
@@ -2064,7 +2078,7 @@ pre-flight run by recon and reported second-hand is exactly the shared-false-pre
 harness has already had once. Just publish the sha the items will measure against:
     cd ${WORKDIR} && git rev-parse origin/main
 RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false,
-         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven),
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
          ciMode: "github"|"local", ciModeWhy, openPrsBefore, preexistingPrs: [...], notes}
 ${WORKTREE_CONTRACT(WORKDIR, PREVIEW_PORT, CARGO_TARGET_A, WORKDIR_B)}
 ${VERIFY_NOTHING}
@@ -2126,7 +2140,7 @@ instead. Do not guess it, do not infer it from a red check, and do not soften it
     node ${STATUS} --part ${PART} --total ${ITEMS.length} --current none
 
 RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha,
-         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven),
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
          openPrsBefore,
          ciMode: "github"|"local", ciModeWhy, notes}
 ${VERIFY_NOTHING}
@@ -2153,6 +2167,7 @@ const RECON_SCHEMA = {
       properties: Object.fromEntries([...GATE_BLOCKING, ...GATE_ADVISORY].map((k) => [k, { type: 'number' }])),
       required: [...GATE_BLOCKING, ...GATE_ADVISORY],
     },
+    fmtHunks: { type: 'number' },
     openPrsBefore: { type: 'number' },
     notes: { type: 'string' },
   },
@@ -2259,7 +2274,9 @@ async function haltIfGateRedOnMain(where) {
   const exits = gateExitsOf(recon)
   const verdict = gateRedOnMain(exits, GATE_BLOCKING, GATE_ADVISORY)
   if (verdict.advisoryRed.length) {
-    const hunks = exits && exits.fmtHunks != null ? stallToken(exits.fmtHunks) : 'unknown'
+    const r = objectOf(recon)
+    const hunksRaw = r.fmtHunks != null ? r.fmtHunks : exits && exits.fmtHunks
+    const hunks = hunksRaw != null ? stallToken(hunksRaw) : 'unknown'
     log(`stall gate-red-on-main advisory red on main: ${verdict.advisoryRed.join(', ')}, ${hunks} hunks — advisory, never a halt`)
   }
   if (!verdict.red.length && !verdict.unreadable.length) {
@@ -2354,6 +2371,8 @@ const TRIAGE_SCHEMA = {
           files: { type: 'number' },
           additions: { type: 'number' },
           labels: { type: 'array', items: { type: 'string' } },
+          // Rule 1 across passes: the status/reason from the PR's latest "loop-land:" comment (absent when none).
+          lastLand: { type: 'object', properties: { status: { type: 'string' }, reason: { type: 'string' } } },
         },
         required: ['pr', 'item', 'klass', 'ci', 'mergeable', 'files'],
       },
@@ -2396,6 +2415,12 @@ merge nothing — two review chains do that immediately after you, driven by wha
 SKIP every PR labelled needs-human: it is HELD for a human (an outside-seat BLOCK, or a BLOCK after the last fix
 round). Do not queue it, do not review it, do not land it — no seat is spent on it. List each one in held[]
 with the comment id its needs-human comment names, and put it in the queue doc's held table.
+SKIP every PR labelled loop-stalled the same way (the loop saw the same land failure twice; a human removes the
+label to release it): held[] with why "loop-stalled".
+For every PR you DO queue, read its LAST LAND OUTCOME from an earlier pass — the stall rules compare against it:
+    gh pr view -R ${REPO} <n> --json comments --jq '[.comments[].body | select(startswith("loop-land:"))] | last'
+A line "loop-land: status=<s> reason=<r> ..." becomes lastLand: {status: "<s>", reason: "<r>"}; no such comment -> omit lastLand.
+Copy the two tokens exactly; never infer them from labels or prose.
     gh pr list -R ${REPO} --state merged --limit 200 --json number,title,headRefName,mergeCommit
 ALSO list the open PRs WITHOUT the ${LOOP_LABEL} label and report them separately, untouched: the
 feat/yv1xx PRs predate this loop. They are Drain's problem, not this queue's.
@@ -2445,7 +2470,7 @@ main under it and the most rebase debt — settle it before it rots further.
 Do NOT include a PR you closed. Do NOT include a PR that gh reports as already MERGED. Do NOT
 include a PR that lacks the ${LOOP_LABEL} label.
 
-RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels}],
+RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels, lastLand}],
                  closed: [{pr, survivor, why}], held: [{pr, comment, why}],
                  counts: {open, queued, closed, held, security, standard, unlabelled}}
 ${LOGLINE('review triage', '_review', 'harness:recon', '--open <the open loop-build PR count you just observed>')}
@@ -2453,12 +2478,14 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Recon', label: 'review-triage', schema: TRIAGE_SCHEMA }
   )
 
-  // needs-human is HELD: never queued, even when triage forgot to skip it (no reviewer or LAND seat is spent on it).
-  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => String((l && l.name) || l) === 'needs-human')
-  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: 'labelled needs-human' }))]
+  // needs-human and loop-stalled are HELD: never queued, even when triage forgot to skip them (no reviewer or LAND
+  // seat is spent on them). loop-stalled is rule 1's "no third attempt": it holds until a human removes the label.
+  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => ['needs-human', 'loop-stalled'].includes(String((l && l.name) || l)))
+  const holdLabelOf = (q) => (q.labels.map((l) => String((l && l.name) || l)).includes('loop-stalled') ? 'loop-stalled' : 'needs-human')
+  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: `labelled ${holdLabelOf(q)}` }))]
   REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))
   const closedByTriage = extractArray(triage, 'closed')
-  if (heldByTriage.length) log(`held (needs-human, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
+  if (heldByTriage.length) log(`held (needs-human / loop-stalled, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
   if (REVIEW_QUEUE.length === 0) {
     log(
       'review triage returned NO parseable queue[]. The chains have nothing to consume, so this pass ' +

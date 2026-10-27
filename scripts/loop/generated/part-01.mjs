@@ -88,7 +88,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 47 items (Y0-A..loop-dependency-marker-stdout-only), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 43 items (Y0-A..yap-p0-release-smoke), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -134,10 +134,6 @@ export const meta = {
     { title: "yap-p0-perm-repair", detail: "One truthful grant probe per service (live API, never the Settings list) in perm_probe.rs, a detected \"stale identity\" state, and a one-click Repair: tccutil reset for Yap's own bundle id, open the exact pane, re-probe until granted" },
     { title: "yap-p0-insertion-bridge-fallback", detail: "Insertion never silently fails: AX insertion only when the probe says trusted, a clipboard + ⌘V bridge when PostEvent is granted, an instant Copy card when neither is, and one failing backend call can no longer blank the app as \"Bridge error\"" },
     { title: "yap-p0-release-smoke", detail: "Every DMG build runs a signed-app smoke after signing (codesign --strict on app + DMG with the pinned Developer ID team, a designated-requirement change gate, launch, probe every service, register hotkeys, insert into TextEdit) and the release FAILS when any step fails, including a stale-identity grant" },
-    { title: "yap-qa-hotkey-walk-binding", detail: "hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding's modifier" },
-    { title: "yap-lic-00-kill-forge-fetch", detail: "SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands" },
-    { title: "yap-dev-perm-probe-attribution", detail: "A dev build's permission probe says \"dev build: permissions are the host terminal's\" instead of showing the launching terminal's TCC grants as Yap's green rows" },
-    { title: "loop-dependency-marker-stdout-only", detail: "The harness's dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat's JSON" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -216,7 +212,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0,"yap-qa-hotkey-walk-binding":1,"yap-lic-00-kill-forge-fetch":1,"yap-dev-perm-probe-attribution":1,"loop-dependency-marker-stdout-only":1}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -509,12 +505,97 @@ VERIFICATION THAT VERIFIES NOTHING — the whole catalogue. Read it before you c
  * build script does not re-run, so the same commands pass — the false green that made a measured
  * gate table necessary in the first place.
  *
- * fmt IS A GATE CONJUNCT NOW. The tree was swept (`cargo fmt --all`, 152 hunks / 21 files, listed
- * in .git-blame-ignore-revs) and `cargo fmt --all -- --check` exits 0 on main as of that commit.
+ * fmt IS ADVISORY, NOT A GATE CONJUNCT (audit 2026-10-26). The land gate once required fmt while main
+ * was red on it (65 hunks), so every PASS/PASS PR came back ci-red for the same command for two hours.
+ * Which command blocks is written down ONCE, in GATE_BLOCKING / GATE_ADVISORY below; the echo labels
+ * in GATE_CMDS must be exactly those names (stall-detector.test.mjs fails on drift either way), and
+ * recon, the land gate and the stall rules all read the same two arrays.
  * clippy is NOT run with `-- -D warnings`: a mechanical `cargo clippy --fix` sweep landed, and 16
  * lints survive it that need real refactors (very-complex-type, too-many-arguments, clamp-like
  * pattern, const assertions in tests). See PLAN.md's Panel revisions section.
  */
+const GATE_BLOCKING = ['typecheck','test','build','polish','diarize','stage','polishtest','diarizetest','clippy','cargotest']
+const GATE_ADVISORY = ['fmt']
+/** Sentinel the external monitor watches (scripts/loop/stall-alarm.sh). Only the orchestrator deletes it. */
+const STALL_FILE = '/Users/wilsonguenther/code/wilson-voice-loop/STALL.txt'
+
+/*
+ * THE STALL RULES (item yap-loop-stall-detector). The SOURCE is scripts/loop/stall.mjs; this is a
+ * byte-identical copy of its block (the generated workflow cannot import), checked by
+ * scripts/loop/stall-detector.test.mjs. Edit stall.mjs, then paste the block here.
+ */
+// STALL-RULES-BEGIN — byte-identical in scripts/loop/stall.mjs and scripts/loop/template.mjs
+/** An exit code is readable only as an integer (a number, or a string of digits from a text payload). */
+function exitCodeOf(v) {
+  if (typeof v === 'number' && Number.isInteger(v)) return v
+  if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v.trim())
+  return null
+}
+/** The first non-zero BLOCKING command in gateExits, in GATE_BLOCKING order, or null. */
+function firstBlockingRed(gateExits) {
+  if (!gateExits || typeof gateExits !== 'object') return null
+  for (const cmd of GATE_BLOCKING) {
+    const code = exitCodeOf(gateExits[cmd])
+    if (code !== null && code !== 0) return cmd
+  }
+  return null
+}
+/**
+ * Rule 1 input. landResult carries the fix-land status the harness already derived, plus whatever the
+ * LAND seat returned. For ci-red the reason is the failing BLOCKING command; otherwise the reason field.
+ */
+function stallReason(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  const status = typeof r.status === 'string' && r.status ? r.status : 'unknown'
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  if (status === 'ci-red') {
+    return { status, reason: firstBlockingRed(r.gateExits) || text(r.failingCommand) || text(r.reason) || 'unknown' }
+  }
+  return { status, reason: text(r.reason) || 'none' }
+}
+/** Rule 1. True when the most recent prior entry for the SAME pr has the same status and reason (never 'merged'). */
+function sameReasonTwice(history, next) {
+  if (!next || next.status === 'merged') return false
+  const list = Array.isArray(history) ? history : []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const h = list[i]
+    if (!h || String(h.pr) !== String(next.pr)) continue
+    return h.status === next.status && h.reason === next.reason
+  }
+  return false
+}
+/** Rule 2. Blocking non-zero -> red; blocking missing / non-integer -> unreadable (fail closed); advisory non-zero -> advisoryRed. */
+function gateRedOnMain(gateExits, blocking, advisory) {
+  const exits = gateExits && typeof gateExits === 'object' ? gateExits : {}
+  const red = []
+  const unreadable = []
+  const advisoryRed = []
+  for (const cmd of blocking || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code === null) unreadable.push(cmd)
+    else if (code !== 0) red.push(cmd)
+  }
+  for (const cmd of advisory || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code !== null && code !== 0) advisoryRed.push(cmd)
+  }
+  return { red, unreadable, advisoryRed }
+}
+/** Rule 3 input. A land outcome is a gate failure when it is ci-red or carries a non-zero BLOCKING exit. */
+function isGateFailure(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  return r.status === 'ci-red' || firstBlockingRed(r.gateExits) !== null
+}
+/** Rule 3. The LAST n land outcomes are n DISTINCT PRs, none merged, every one a gate failure. */
+function noProgress(results, n = 3) {
+  const list = Array.isArray(results) ? results : []
+  if (list.length < n) return false
+  const last = list.slice(-n)
+  if (new Set(last.map((r) => String(r && r.pr))).size !== n) return false
+  return last.every((r) => r && r.status !== 'merged' && r.gateFailure === true)
+}
+// STALL-RULES-END
+
 const GATE_CMDS = (dir, target) => `
     cd ${dir}/${APP} && export CARGO_TARGET_DIR=${target}
     npx tsc --noEmit ; echo "typecheck=$?"
@@ -525,10 +606,12 @@ const GATE_CMDS = (dir, target) => `
     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${target}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${target}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stage=$?"
     cargo test -p yap-polish --release ; echo "polishtest=$?"
     cargo test -p yap-diarize --release ; echo "diarizetest=$?"
-    cargo fmt --all -- --check ; echo "fmt=$?"
+    cargo fmt --all -- --check > ${target}/fmt-check.txt 2>&1 ; echo "fmt=$? (ADVISORY)" ; echo "fmtHunks=$(grep -c '^Diff in' ${target}/fmt-check.txt)"
     cd ${dir}/${APP}/src-tauri && cargo clippy --all-targets --features custom-protocol ; echo "clippy=$?"
     cd ${dir}/${APP}/src-tauri && cargo test --features custom-protocol ; echo "cargotest=$?"
-ALL ELEVEN MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+THE ${GATE_BLOCKING.length} BLOCKING COMMANDS (${GATE_BLOCKING.join(', ')}) MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+ADVISORY (${GATE_ADVISORY.join(', ')}): run it, report "fmt: advisory, <fmtHunks> hunks", and NEVER let its exit code
+fail the gate, earn ci-red, or block a merge. The drift is on main, not on the PR; do NOT reformat files the PR did not touch.
 BOTH SIDECARS ARE BUILT AND BOTH ARE STAGED, and that step comes BEFORE any cargo command against
 the app: bundle.externalBin makes binaries/yap-polish-<triple> AND binaries/yap-diarize-<triple>
 preconditions of every cargo build of wilson-voice. If a cargo command against the app dies with
@@ -618,8 +701,10 @@ OUTCOMES IN THIS MODE:
   - every command 0, sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
     "local-gate", and localGate: {sha, typecheck, test, build, polish, diarize, stage, polishtest,
     diarizetest, fmt, clippy, cargotest}.
-  - any command non-zero  -> this is a red gate. Fix it if this PR is yours to fix; otherwise label
-    ci-red, comment WHICH command failed with its failing output, and report status "ci-red".
+  - any BLOCKING command (${GATE_BLOCKING.join(', ')}) non-zero -> this is a red gate. Fix it if this PR is
+    yours to fix; otherwise label ci-red, comment WHICH command failed with its failing output, and report
+    status "ci-red" with failingCommand set to that command's name. An ADVISORY command (${GATE_ADVISORY.join(', ')})
+    that exits non-zero is reported, never a red gate.
     "The local gate failed" with no command name is not a triage.
   - CONFLICTING after your rebase -> label needs-rebase, status "needs-rebase".
 THERE IS NO "ci-pending" IN THIS MODE. Do not return it, do not poll, do not sleep, do not run
@@ -1438,6 +1523,13 @@ async function withAgents(n, fn) {
 let REVIEW_QUEUE = []
 let queueCursor = 0
 const reviewOutcomes = []
+/** STALL STATE (rules 1 and 3). Per-PR land history, every land outcome in completion order, the PRs
+ *  already loop-stalled, the no-progress flag reviewChain checks next to `halted`, and its one-shot guard. */
+const landHistory = new Map()
+const landResults = []
+const stalledPrs = new Set()
+let stalled = false
+let noProgressFired = false
 function takeNextPr() {
   if (queueCursor >= REVIEW_QUEUE.length) return null
   const entry = REVIEW_QUEUE[queueCursor]
@@ -1466,6 +1558,11 @@ async function reviewOnePr(entry, chain) {
   const klass = entry && entry.klass === 'security' ? 'security' : 'standard'
   const seats = klass === 'security' ? 2 : 1
   const facts = JSON.stringify(entry || {})
+  // RULE 1 (stall): a PR this pass already loop-stalled is never dispatched again — no reviewer, no land.
+  if (stalledPrs.has(pr)) {
+    log(`stall same-reason-twice skip pr=${pr} item=${itemId} — loop-stalled earlier in this pass; not dispatched again`)
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled' }
+  }
 
   const reReview = (round, prior) =>
     round === 0
@@ -1784,8 +1881,13 @@ it review-pending. Label it needs-human instead, comment the gate's line verbati
 "needs-human" with reviewGate set to that line.
 ${CI_GATE(dir, target)}
 
+THE LAND MARKER — on EVERY return except "merged", post exactly one comment whose body is ONE line:
+    gh pr comment -R ${REPO} ${pr} --body "loop-land: status=<the status you return> reason=<failingCommand for ci-red, else a one-word reason> head=<headRefOid>"
+Tokens only (no spaces inside a value). The next pass's triage reads it, and the stall rule compares it with
+that pass's land outcome: the same status and reason twice in a row stops the loop re-landing this PR.
+
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending"|"needs-human",
-         landed: true|false, reason, mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
+         landed: true|false, reason, failingCommand: "<the first non-zero BLOCKING command, for ci-red>", mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
          ciCheckConclusion}` : ''}
 
@@ -1798,6 +1900,14 @@ review:review-pending, review:needs-human or review:closed-superseded — and th
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 ${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
+  }
+  // RULE 1 ACROSS PASSES: a PR is landed once per pass, so this pass's history starts from the land
+  // outcome triage read off the PR's last "loop-land:" marker comment (same status + reason as the one
+  // about to come back -> loop-stalled, no third attempt next pass: triage holds the loop-stalled label).
+  if (!landHistory.has(pr) && entry && entry.lastLand && typeof entry.lastLand === 'object' && entry.lastLand.status) {
+    const prior = { pr, status: stallToken(entry.lastLand.status), reason: stallToken(entry.lastLand.reason || 'none') }
+    landHistory.set(pr, [prior])
+    log(`stall same-reason-twice seed pr=${pr} item=${itemId} prior_status=${prior.status} prior_reason=${prior.reason}`)
   }
   const land = await withAgents(1, () => agentR(fixLandPrompt('land', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
@@ -1817,6 +1927,26 @@ ${GUARD(dir)}`
     statusOf(/"status"\s*:\s*"ci-red"/i, 'ci-red') ||
     statusOf(/"status"\s*:\s*"needs-rebase"/i, 'needs-rebase') ||
     'ci-pending'
+  // RULE 1 — SAME REASON TWICE. The land outcome joins this PR's history; if the most recent prior
+  // entry for the SAME PR had the same status and reason, the next fix-land would fail the same way:
+  // record the stall once and move on. Never on 'merged'. Rule 3 reads landResults.
+  const landExits = gateExitsOf(land)
+  const why0 = stallReason({ ...objectOf(land), gateExits: landExits, status })
+  const nextLand = { pr, status: stallToken(why0.status), reason: stallToken(why0.reason) }
+  landResults.push({ pr, itemId, status, reason: nextLand.reason, gateFailure: isGateFailure({ status, gateExits: landExits }) })
+  const landHist = landHistory.get(pr) || []
+  const twice = sameReasonTwice(landHist, nextLand)
+  landHist.push(nextLand)
+  landHistory.set(pr, landHist)
+  if (twice) {
+    stalledPrs.add(pr)
+    const st = stallToken(nextLand.status)
+    const why = stallToken(nextLand.reason)
+    const line = `STALL pr=${pr} item=${stallToken(itemId)} status=${st} reason=${why}`
+    log(`${line} — the same land outcome twice in a row; no third fix-land, the chain moves to the next PR`)
+    await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 1, itemId: stallToken(itemId), pr, line, stage: 'review:needs-human', note: `STALL: ${why} (${st} twice in a row)`, comment: `loop-stalled: ${st} ${why} twice in a row`, sentinel: false }), { model: 'opus', effort: 'low', phase: itemId, label: `stall-writer:${itemId}` }))
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled', reason: nextLand.reason, blocked, verdicts, land }
+  }
   log(`PR#${pr} (${itemId}, ${klass}, chain ${REVIEW_TAGS[chain]}): ${blocked ? `BLOCKED, ${round} fix round(s), re-reviewed PASS` : 'PASS'} -> ${status}`)
   return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status, blocked, verdicts, land }
 }
@@ -1843,11 +1973,26 @@ async function reviewOnePrSafe(entry, chain) {
 async function reviewChain(chain) {
   for (;;) {
     if (halted) break
+    if (stalled) break
     const entry = takeNextPr()
     if (entry === null) break
-    reviewOutcomes.push(await reviewOnePrSafe(entry, chain))
+    const outcome = await reviewOnePrSafe(entry, chain)
+    reviewOutcomes.push(outcome)
+    // RULE 3 — NO PROGRESS. The last 3 land outcomes were gate failures on 3 distinct PRs and none
+    // merged: the gate is what is broken, not the PRs. Stop pulling; the sweeper and verify still run.
+    if (!stalled && noProgress(landResults, 3)) {
+      stalled = true
+      if (!noProgressFired) {
+        noProgressFired = true
+        const last = landResults.slice(-3).map((r) => `${r.pr}:${stallToken(r.reason)}`).join(', ')
+        const line = `STALL no-progress: last 3 land results were gate failures: ${last}`
+        log(`stall no-progress HALT-REVIEW chain=${REVIEW_TAGS[chain]} — ${line}. The review barrier stops pulling PRs; sweeper and main-verify still run.`)
+        const stallItem = stallToken((outcome && outcome.itemId) || `PR-${(entry && (entry.pr || entry.number)) || '?'}`)
+        await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 3, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }), { model: 'opus', effort: 'low', phase: stallItem, label: 'stall-writer:_stall' }))
+      }
+    }
   }
-  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): drained the queue`)
+  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): ${stalled ? 'STOPPED by the no-progress stall rule' : 'drained the queue'}`)
 }
 /* ══ REVIEW CHAIN REGION END ═══════════════════════════════════════════════════════════════ */
 
@@ -5376,166 +5521,6 @@ ITEMS.push({
   `,
 })
 
-// ── 07b-yap-walk-defects-2026-10-19.mjs ───────────────────────────────────
-// yap-walk-defects-2026-10-19 — the defects the live walk of main 3569ce4 + installed 0.9.1 found
-// (Projects/Loop-Logs/yap-live-walk-2026-10-19.md, seat yap-live-walk, 03:14Z-03:22Z). Sorted after
-// 07-yap-p0-broken so this lane runs after the P0 lane. D1 (Carbon chord deadlock), D4 (capture tail)
-// and D6 (RSS) are fixed or answered in PR fix/chord-deadlock-and-take-length, not here.
-//
-// HAZARD (same as 07): no seat launches the GUI app, posts events into, signals or quits Wilson's
-// running /Applications/Yap.app, or writes TCC on this machine. Every automated proof is a cargo test,
-// a vitest, or a script self-test. SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-// NO GUESSING: the root-cause probe goes into the PR body under "Root cause, proven" AND into
-// docs/loop/evidence/<item id>.md, first line exactly "ROOT-CAUSE-PROBE <item id>".
-
-ITEMS.push({
-  id: 'yap-qa-hotkey-walk-binding', prompt: 'yap-qa-hotkey-walk-binding', branch: 'loop/yap-qa-hotkey-walk-configured-chord', gated: null,
-  title: 'hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding\'s modifier',
-  preflight: `
-    grep -q 'pttBinding' scripts/qa/hotkey-walk.sh && grep -q -- '--dev-build' scripts/qa/hotkey-walk.sh && grep -q 'FN_WITHOUT_MODIFIER_HINT' desktop/src-tauri/src/ptt_macos.rs
-  `,
-  spec: `
-    Panel: not required — FIX (walk D2, P1).
-    Root cause (walk): scripts/qa/fn-post.swift "down" sets only maskSecondaryFn and HOLD_STEPS in
-    scripts/qa/hotkey-walk.sh assumes binding "fn"; Wilson's binding (and the default) is
-    pttBinding: "fn_control", so the walk's fn-only post never matches and the walk FAILS on a
-    working app. Product side: the UI says "Hold fn⌃"; a user holding fn alone gets nothing and no
-    reason.
-    DO 1 — hotkey-walk.sh reads pttBinding from Yap's settings.json (same data dir the app uses;
-    --settings <path> override for tests) and posts the matching chord through fn-post.swift (ctrl
-    down, then fn down; release in reverse). Unknown binding -> refuse with a named error, post
-    nothing. --self-test covers fn, fn_control and an unknown value against fixture settings files
-    and prints one line per case "binding=<value> chord=<keys>".
-    DO 2 — --dev-build flag for an unbundled dev binary (matches the process by its target path
-    instead of the bundle), replacing the YAP_QA_FAKE_PIDS workaround for live dev walks
-    (YAP_QA_FAKE_PIDS stays self-test-only).
-    DO 3 — ptt_macos: when fn goes down and up (or is held > 400 ms) WITHOUT the binding's modifier,
-    emit one hint event (constant FN_WITHOUT_MODIFIER_HINT, e.g. "Hold fn⌃ — fn alone does nothing
-    with this binding"), throttled to once per 30 s, shown on the pill. Pure decision function
-    fn_hint_due(binding, fn_down, ctrl_down, held_ms, last_hint_ms, now_ms) -> bool with unit tests.
-  `,
-  acceptance: `
-    bash scripts/qa/hotkey-walk.sh --self-test > desktop/target/qa-walk-binding.txt 2>&1
-    grep -q '^binding=fn_control chord=ctrl+fn$' desktop/target/qa-walk-binding.txt
-    grep -q '^binding=fn chord=fn$' desktop/target/qa-walk-binding.txt
-    grep -q 'unknown binding' desktop/target/qa-walk-binding.txt
-    shellcheck scripts/qa/hotkey-walk.sh
-    (cd desktop/src-tauri && cargo test --features custom-protocol --lib fn_hint_due) > desktop/target/qa-fn-hint.txt 2>&1
-    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-fn-hint.txt
-    test -s docs/loop/evidence/yap-qa-hotkey-walk-binding.md
-    head -1 docs/loop/evidence/yap-qa-hotkey-walk-binding.md | grep -qx 'ROOT-CAUSE-PROBE yap-qa-hotkey-walk-binding'
-  `,
-})
-
-ITEMS.push({
-  id: 'yap-lic-00-kill-forge-fetch', prompt: 'yap-lic-00-kill-forge-fetch', branch: 'loop/yap-lic-00-kill-forge-revocation-fetch', gated: null,
-  title: 'SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands',
-  preflight: `
-    ! git grep -qnE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs && ! git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs && ! grep -qiE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
-  `,
-  spec: `
-    Panel: not required — FIX, class SECURITY (walk D3; supersedes the earlier yap-license-revocation-dead-host
-    draft). Spec source: Projects/Yap/licensing-migration-plan-2026-10-19.md "## Items (draft, not yet filed)"
-    -> yap-lic-00.
-    Root cause (walk yap.log 2026-10-19T03:19:57Z): "license: revocation refresh skipped (error sending request
-    for url (https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json))". Every launch (and every activation)
-    sends a GET to the decommissioned Forge box: license.rs ISSUER_HOST / REVOCATION_URL (:151-156) and the
-    fetch at :1467-1479; callers lib.rs spawn_revocation_refresh (:5672 in activate_license, :5724-5736 the fn,
-    :6891-6895 at launch). A dead sslip.io name that anybody can later answer for is a licensing input the app
-    trusts — security class, not cosmetics.
-    DO — remove REVOCATION_URL, ISSUER_HOST, fetch_revocations and spawn_revocation_refresh and both call
-    sites. NO replacement endpoint: licensing moves to the consulting app's existing /api/v1/licensing (sibling repo) in later
-    items yap-lic-01..06 — do NOT implement any of those here. Keep READING any cached revoked_kids, so an
-    install that has a cached list behaves exactly as before. Local licence verification (Ed25519 claims,
-    trial, grace) is unchanged. Remove the host from every config and doc mention, and correct
-    docs/ARCHITECTURE-AUDIT-2026-09-26.md §9 ("harmless no-op" was wrong: it was a live GET every launch).
-    PRIVACY.md (repo root, outside the grep scope above, so it is named here): delete list item 3 "The
-    revocation check" from "The only times Yap uses the network" — the list becomes the model download and
-    the update check, TWO calls — and say plainly that the licensing path makes no network call: a licence
-    is verified on the Mac against the compiled-in public key. The acceptance refuses PRIVACY.md text
-    matching revocation (check|list|refresh|download) or "refunded or charged back", so do not phrase the
-    removal as "no longer downloads a revocation list". PRIV-A (30-y6) pins the same two call sites.
-    Legitimate unrelated "forge" words stay: forget/forged/forgeable, and the issuer-repo citations
-    "drivia-forge" and the signing-key path.
-    Tests: (1) launch_license_init_makes_no_network_call — the launch-time licence init takes an injected
-    transport/client; a recording fake asserts zero requests across init + status + a cached revoked_kids load.
-    (2) license_rs_has_no_http_client — reads license.rs via include_str! and fails on "sslip.io", "reqwest",
-    "ureq" or "http://"/"https://" outside the PAYMENT_LINK_URL constant. (3) existing licence tests green.
-    Can ship alone in the next release.
-  `,
-  acceptance: `
-    ! git grep -nE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs
-    ! git grep -nE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src desktop/src
-    (cd desktop/src-tauri && cargo test --features custom-protocol --lib license) > desktop/target/qa-lic00.txt 2>&1
-    grep -q 'launch_license_init_makes_no_network_call ... ok' desktop/target/qa-lic00.txt
-    grep -q 'license_rs_has_no_http_client ... ok' desktop/target/qa-lic00.txt
-    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-lic00.txt
-    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_gate)
-    ! grep -niE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
-    test -s docs/loop/evidence/yap-lic-00-kill-forge-fetch.md
-    head -1 docs/loop/evidence/yap-lic-00-kill-forge-fetch.md | grep -qx 'ROOT-CAUSE-PROBE yap-lic-00-kill-forge-fetch'
-    (cd desktop && npm run loop:validate)
-  `,
-})
-
-ITEMS.push({
-  id: 'yap-dev-perm-probe-attribution', prompt: 'yap-dev-perm-probe-attribution', branch: 'loop/yap-dev-perm-probe-host-terminal', gated: null,
-  title: 'A dev build\'s permission probe says "dev build: permissions are the host terminal\'s" instead of showing the launching terminal\'s TCC grants as Yap\'s green rows',
-  preflight: `
-    grep -q 'pub fn running_as_bundle' desktop/src-tauri/src/perm_probe.rs && grep -q 'DevHostAttributed' desktop/src-tauri/src/perm_probe.rs
-  `,
-  spec: `
-    Panel: not required — FIX (walk D5, P2).
-    Root cause (walk step 2c): the dev binary is ad hoc signed and unbundled, so TCC attributes it to
-    the RESPONSIBLE process (the launching terminal) and answered accessibility=true
-    input_monitoring=true — the terminal's grants, shown as Yap's.
-    DO — perm_probe gets pub fn running_as_bundle(exe_path, bundle_id_of_main_bundle,
-    code_signature) -> bool (pure, unit-tested: /Applications/Yap.app/Contents/MacOS/wilson-voice with
-    the Developer ID -> true; desktop/target/debug/wilson-voice ad hoc -> false). When false,
-    probe_all marks every service ProbeState::DevHostAttributed (new variant) and the Permissions
-    screen shows ONE line "dev build: permissions are the host terminal's" with no green rows and no
-    Repair button (Repair would reset the wrong identity). The installed build is unchanged.
-    Frontend: a vitest for the Permissions screen rendering DevHostAttributed.
-  `,
-  acceptance: `
-    (cd desktop/src-tauri && cargo test --features custom-protocol --lib running_as_bundle) > desktop/target/qa-dev-attrib.txt 2>&1
-    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-dev-attrib.txt
-    grep -rq "dev build: permissions are the host terminal's" desktop/src
-    (cd desktop && npx vitest run --reporter=dot) 
-    test -s docs/loop/evidence/yap-dev-perm-probe-attribution.md
-    head -1 docs/loop/evidence/yap-dev-perm-probe-attribution.md | grep -qx 'ROOT-CAUSE-PROBE yap-dev-perm-probe-attribution'
-  `,
-})
-
-ITEMS.push({
-  id: 'loop-dependency-marker-stdout-only', prompt: 'loop-dependency-marker-stdout-only', branch: 'loop/harness-dependency-marker-executed-output-only', gated: null,
-  title: 'The harness\'s dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat\'s JSON',
-  preflight: `
-    grep -q 'dependencyMarkerPrinted' scripts/loop/template.mjs && grep -q 'dependencyMarkerPrinted' scripts/loop/dependency-marker.test.mjs
-  `,
-  spec: `
-    Panel: not required — FIX (walk D7, harness).
-    Root cause: on main 3569ce4 the harness recorded yap-p0-perm-repair as "skipped: dependency not
-    on main" although #228 is merged and its preflight passed. Every item preflight already assembles
-    the marker at run time ("DEPENDENCY-NOT-ON-$(printf MAIN)"; build.mjs now REFUSES a literal one),
-    but template.mjs runBuild tests /DEPENDENCY-NOT-ON-MAIN/ against asText(pre) — the WHOLE runner
-    result JSON, including any free text the seat wrote (a note such as "no DEPENDENCY-NOT-ON-MAIN
-    printed" trips it). Prove which field carried it from that run's log before changing code.
-    DO — export a pure dependencyMarkerPrinted(pre) that looks only at the executed commands' captured
-    stdout and matches /^DEPENDENCY-NOT-ON-MAIN:/m, and use it in runBuild. Tests (node --test, in
-    review-gate.test.mjs or a sibling): marker line in stdout -> true; marker only in a notes/summary
-    field -> false; marker text inside the echoed command string -> false.
-  `,
-  acceptance: `
-    grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs
-    ! grep -q '/DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))' scripts/loop/template.mjs
-    mkdir -p desktop/target && node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-dep-marker.txt 2>&1
-    grep -q '^# fail 0$' desktop/target/qa-dep-marker.txt
-    grep -Eq '^# pass [1-9][0-9]*$' desktop/target/qa-dep-marker.txt
-    (cd desktop && npm run loop:build && npm run loop:validate)
-  `,
-})
-
 
 // ── RUN ─────────────────────────────────────────────────────────────────────
 phase('Recon')
@@ -5588,10 +5573,12 @@ will waste an hour reading it as a code defect.
 
 # 4 — BASELINE GATE, ONCE, IN LANE A ONLY (both lanes sit on the same origin/main sha)
 ${GATE_CMDS(WORKDIR, CARGO_TARGET_A)}
-Plus the informational one, so the run knows its baseline:
-    cd ${WORKDIR}/${APP} && cargo fmt --all -- --check ; echo "fmt=$?"
-MEASURED ON main 2026-09-12: typecheck=0 test=0 build=0 sidecar=0 polishtest=0 clippy=0 cargotest=0
-and fmt=1. If any of the eight is non-zero for you, report it as the BASELINE state; do not fix it,
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+If any BLOCKING code is non-zero for you, report it as the BASELINE state; do not fix it,
 and do not let a later agent be blamed for it. Do NOT repeat the baseline in lane B — confirm the
 two shas match instead.
 
@@ -5624,8 +5611,8 @@ item to "already-done" when every command passes. Do NOT run the items' pre-flig
 pre-flight run by recon and reported second-hand is exactly the shared-false-premise failure this
 harness has already had once. Just publish the sha the items will measure against:
     cd ${WORKDIR} && git rev-parse origin/main
-RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false, typecheckExit,
-         testExit, buildExit, sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit,
+RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
          ciMode: "github"|"local", ciModeWhy, openPrsBefore, preexistingPrs: [...], notes}
 ${WORKTREE_CONTRACT(WORKDIR, PREVIEW_PORT, CARGO_TARGET_A, WORKDIR_B)}
 ${VERIFY_NOTHING}
@@ -5666,7 +5653,13 @@ create a third worktree or a clone: disk hygiene is a hard rule here.
 
 # 3 — BASELINE GATE, ONCE, IN CHAIN R1 ONLY (both sit on the same origin/main sha)
 ${GATE_CMDS(REVIEW_DIRS[0], REVIEW_TARGETS[0])}
-Read each exit code BARE, never through a pipe. Report all eight. A non-zero here is the BASELINE
+Read each exit code BARE, never through a pipe.
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+A non-zero here is the BASELINE
 state of main after the build pass's merges — report it, do NOT fix it, and make sure no PR is later
 blamed for it. Confirm the two worktrees' shas match rather than re-running the gate in R2.
 
@@ -5680,8 +5673,9 @@ instead. Do not guess it, do not infer it from a red check, and do not soften it
 # 5 — THE BOARD
     node ${STATUS} --part ${PART} --total ${ITEMS.length} --current none
 
-RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha, typecheckExit, testExit, buildExit,
-         sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit, openPrsBefore,
+RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
+         openPrsBefore,
          ciMode: "github"|"local", ciModeWhy, notes}
 ${VERIFY_NOTHING}
 ${LOGLINE('review recon', '_recon', 'harness:recon')}
@@ -5700,15 +5694,18 @@ const RECON_SCHEMA = {
     headSha: { type: 'string' },
     npmCiOk: { type: 'boolean' },
     cargoWarmOk: { type: 'boolean' },
-    typecheckExit: { type: 'number' },
-    testExit: { type: 'number' },
-    buildExit: { type: 'number' },
-    clippyExit: { type: 'number' },
-    cargoTestExit: { type: 'number' },
+    // The baseline gate on main, one NUMBER per GATE_CMDS label. Required: gateRedOnMain() reads it,
+    // and a missing key is UNREADABLE, which fails closed (halts the pass).
+    gateExits: {
+      type: 'object',
+      properties: Object.fromEntries([...GATE_BLOCKING, ...GATE_ADVISORY].map((k) => [k, { type: 'number' }])),
+      required: [...GATE_BLOCKING, ...GATE_ADVISORY],
+    },
+    fmtHunks: { type: 'number' },
     openPrsBefore: { type: 'number' },
     notes: { type: 'string' },
   },
-  required: ['ciMode'],
+  required: ['ciMode', 'gateExits'],
 }
 
 const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
@@ -5741,6 +5738,95 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
       : 'CI_MODE=github — Actions is placing jobs on runners again; the check run is the merge gate, ' +
           'and the local clippy run is still owed because CI treats clippy and fmt as informational.'
   )
+}
+
+
+// ── stall helpers (template-only; the RULES are the STALL-RULES block above GATE_CMDS) ──
+/** A seat's return as an object: the typed payload, or the JSON text it sent instead, else {}. */
+const objectOf = (v) => {
+  if (v && typeof v === 'object') return v
+  if (typeof v !== 'string') return {}
+  try {
+    const o = JSON.parse(v)
+    return o && typeof o === 'object' ? o : {}
+  } catch (err) {
+    log(`stall objectOf: seat return is not JSON (${String(err && err.message ? err.message : err).slice(0, 80)}) — reading gateExits from its text instead`)
+    return {}
+  }
+}
+/** gateExits from a seat return: the typed field, or the first {...} after "gateExits" in its text. */
+const gateExitsOf = (v) => {
+  const o = objectOf(v)
+  if (o.gateExits && typeof o.gateExits === 'object') return o.gateExits
+  const m = /"gateExits"\s*:\s*(\{[^{}]*\})/.exec(asText(v))
+  if (!m) return null
+  try {
+    return JSON.parse(m[1])
+  } catch (err) {
+    return null
+  }
+}
+/** Seat output is UNTRUSTED and goes into shell commands in the stall-writer prompt: keep it a token. */
+const stallToken = (v) => String(v == null || v === '' ? 'unknown' : v).replace(/[^A-Za-z0-9_.:+-]/g, '_').slice(0, 80)
+/**
+ * THE STALL WRITER. One low-effort opus seat that records a stall in every place a human or the
+ * orchestrator looks: the PR (label + comment, rule 1 only), the Loop-Logs LOG, the board, and the
+ * STALL_FILE sentinel the external monitor turns into an "ALERT STALL" line (rules 2 and 3).
+ * Every interpolated value is a stallToken or harness-built text: no seat prose reaches the shell.
+ */
+const STALL_WRITER_PROMPT = ({ rule, itemId, pr, line, stage, note, comment, sentinel }) => `You are the STALL WRITER for ${REPO} (${itemId}${pr ? `, PR #${pr}` : ''}). The loop has detected its OWN stall
+(rule ${rule}). You fix nothing, review nothing, merge nothing, rebase nothing and launch nothing: you RECORD the stall,
+loudly, in the places below, and return. Run each command exactly as written and read every exit code BARE.
+Budget: 8 tool calls.
+${pr && comment ? `
+# THE PR — label it loop-stalled (create the label first) and say why, once
+    gh label create -R ${REPO} loop-stalled --color B60205 --description "the loop saw the same land failure twice" || true
+    gh pr edit -R ${REPO} ${pr} --add-label loop-stalled
+    gh pr comment -R ${REPO} ${pr} --body '${comment}'
+Do NOT relabel it needs-human, do NOT re-dispatch anything, do NOT close it.` : ''}
+
+# THE LOG — exactly one line, appended
+    mkdir -p "$(dirname '${LOG}')" && printf '%s\\n' '${line}' >> '${LOG}'
+
+# THE BOARD
+    node ${STATUS} ${itemId} ${stage} '${note} ci=${CI_MODE}'${pr ? ` ${pr}` : ''}
+${sentinel ? `
+# THE SENTINEL — the external monitor (scripts/loop/stall-alarm.sh) prints one "ALERT STALL" line while it exists
+    mkdir -p "$(dirname '${STALL_FILE}')" && { date -u +%Y-%m-%dT%H:%M:%SZ ; echo 'rule ${rule}' ; printf '%s\\n' '${line}' ; } > '${STALL_FILE}'
+A fresh stall OVERWRITES it. Never delete it: only the orchestrator removes it, and that removal is the acknowledgement.` : ''}
+
+RETURN: {rule: ${rule}, pr: ${pr || 0}, labelled: true|false, commented: true|false, logged: true|false, board: true|false, sentinel: true|false}
+${GUARD(MODE === 'review' ? BOTH_REVIEW_DIRS : BOTH_DIRS)}`
+
+/**
+ * RULE 2 — GATE RED ON MAIN. Recon measured the baseline gate on main; a red (or unreadable — fail
+ * closed) BLOCKING command there means every downstream gate fails the same way, so the pass halts
+ * BEFORE any triage, review or build and says so in four places. Advisory red is a log line only.
+ * Returns the verdict when the pass must halt, else null.
+ */
+async function haltIfGateRedOnMain(where) {
+  const exits = gateExitsOf(recon)
+  const verdict = gateRedOnMain(exits, GATE_BLOCKING, GATE_ADVISORY)
+  if (verdict.advisoryRed.length) {
+    const r = objectOf(recon)
+    const hunksRaw = r.fmtHunks != null ? r.fmtHunks : exits && exits.fmtHunks
+    const hunks = hunksRaw != null ? stallToken(hunksRaw) : 'unknown'
+    log(`stall gate-red-on-main advisory red on main: ${verdict.advisoryRed.join(', ')}, ${hunks} hunks — advisory, never a halt`)
+  }
+  if (!verdict.red.length && !verdict.unreadable.length) {
+    log(`stall gate-red-on-main ok where=${where} blocking=${GATE_BLOCKING.length} red=0 unreadable=0`)
+    return null
+  }
+  const parts = []
+  if (verdict.red.length) parts.push(`GATE RED ON MAIN: ${verdict.red.join(', ')}`)
+  if (verdict.unreadable.length) parts.push(`GATE UNREADABLE ON MAIN: ${verdict.unreadable.join(', ')}`)
+  const line = parts.join(' ; ')
+  log(`stall gate-red-on-main HALT where=${where} red=${verdict.red.join(',') || 'none'} unreadable=${verdict.unreadable.join(',') || 'none'} — ${line}. No triage, no chains, no builders, no sweeper, no verify.`)
+  await agentR(
+    STALL_WRITER_PROMPT({ rule: 2, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }),
+    { model: 'opus', effort: 'low', phase: 'Recon', label: 'stall-writer:_stall' }
+  )
+  return verdict
 }
 
 // ── THE RUN ────────────────────────────────────────────────────────────────
@@ -5819,6 +5905,8 @@ const TRIAGE_SCHEMA = {
           files: { type: 'number' },
           additions: { type: 'number' },
           labels: { type: 'array', items: { type: 'string' } },
+          // Rule 1 across passes: the status/reason from the PR's latest "loop-land:" comment (absent when none).
+          lastLand: { type: 'object', properties: { status: { type: 'string' }, reason: { type: 'string' } } },
         },
         required: ['pr', 'item', 'klass', 'ci', 'mergeable', 'files'],
       },
@@ -5845,6 +5933,12 @@ const TRIAGE_SCHEMA = {
 }
 
 async function reviewPass() {
+  // RULE 2 — GATE RED ON MAIN, BEFORE ANY REVIEW: every land gate in this pass would fail the same way.
+  const mainRed = await haltIfGateRedOnMain('review')
+  if (mainRed) {
+    log(`review pass HALTED (gate-red-on-main): red=[${mainRed.red.join(', ')}] unreadable=[${mainRed.unreadable.join(', ')}] — no triage, no chains, no sweeper, no main-verify ran. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    return { halted: 'gate-red-on-main', red: mainRed.red, unreadable: mainRed.unreadable, queued: 0 }
+  }
   const triage = await agentR(
     `TRIAGE for the REVIEW PASS of ${REPO}. ONE job: turn the open ${LOOP_LABEL} PRs into an ordered
 queue, and close the ones that should never be reviewed at all. You review nothing, fix nothing and
@@ -5855,6 +5949,12 @@ merge nothing — two review chains do that immediately after you, driven by wha
 SKIP every PR labelled needs-human: it is HELD for a human (an outside-seat BLOCK, or a BLOCK after the last fix
 round). Do not queue it, do not review it, do not land it — no seat is spent on it. List each one in held[]
 with the comment id its needs-human comment names, and put it in the queue doc's held table.
+SKIP every PR labelled loop-stalled the same way (the loop saw the same land failure twice; a human removes the
+label to release it): held[] with why "loop-stalled".
+For every PR you DO queue, read its LAST LAND OUTCOME from an earlier pass — the stall rules compare against it:
+    gh pr view -R ${REPO} <n> --json comments --jq '[.comments[].body | select(startswith("loop-land:"))] | last'
+A line "loop-land: status=<s> reason=<r> ..." becomes lastLand: {status: "<s>", reason: "<r>"}; no such comment -> omit lastLand.
+Copy the two tokens exactly; never infer them from labels or prose.
     gh pr list -R ${REPO} --state merged --limit 200 --json number,title,headRefName,mergeCommit
 ALSO list the open PRs WITHOUT the ${LOOP_LABEL} label and report them separately, untouched: the
 feat/yv1xx PRs predate this loop. They are Drain's problem, not this queue's.
@@ -5904,7 +6004,7 @@ main under it and the most rebase debt — settle it before it rots further.
 Do NOT include a PR you closed. Do NOT include a PR that gh reports as already MERGED. Do NOT
 include a PR that lacks the ${LOOP_LABEL} label.
 
-RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels}],
+RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels, lastLand}],
                  closed: [{pr, survivor, why}], held: [{pr, comment, why}],
                  counts: {open, queued, closed, held, security, standard, unlabelled}}
 ${LOGLINE('review triage', '_review', 'harness:recon', '--open <the open loop-build PR count you just observed>')}
@@ -5912,12 +6012,14 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Recon', label: 'review-triage', schema: TRIAGE_SCHEMA }
   )
 
-  // needs-human is HELD: never queued, even when triage forgot to skip it (no reviewer or LAND seat is spent on it).
-  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => String((l && l.name) || l) === 'needs-human')
-  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: 'labelled needs-human' }))]
+  // needs-human and loop-stalled are HELD: never queued, even when triage forgot to skip them (no reviewer or LAND
+  // seat is spent on them). loop-stalled is rule 1's "no third attempt": it holds until a human removes the label.
+  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => ['needs-human', 'loop-stalled'].includes(String((l && l.name) || l)))
+  const holdLabelOf = (q) => (q.labels.map((l) => String((l && l.name) || l)).includes('loop-stalled') ? 'loop-stalled' : 'needs-human')
+  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: `labelled ${holdLabelOf(q)}` }))]
   REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))
   const closedByTriage = extractArray(triage, 'closed')
-  if (heldByTriage.length) log(`held (needs-human, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
+  if (heldByTriage.length) log(`held (needs-human / loop-stalled, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
   if (REVIEW_QUEUE.length === 0) {
     log(
       'review triage returned NO parseable queue[]. The chains have nothing to consume, so this pass ' +
@@ -6030,14 +6132,21 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Drain', label: 'main-verify' }
   )
 
-  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify }
+  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify, stalled, loopStalled: [...stalledPrs] }
 }
 
 let census = null
 if (MODE === 'review') {
   census = await reviewPass()
 } else {
-  await Promise.all([buildLane(0), buildLane(1)])
+  // RULE 2 in build mode too: a red blocking command on main fails every builder's hard gate the same way.
+  const buildRed = await haltIfGateRedOnMain('build')
+  if (buildRed) {
+    log(`build pass HALTED (gate-red-on-main): red=[${buildRed.red.join(', ')}] unreadable=[${buildRed.unreadable.join(', ')}] — no builder was dispatched. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    census = { halted: 'gate-red-on-main', red: buildRed.red, unreadable: buildRed.unreadable, queued: 0 }
+  } else {
+    await Promise.all([buildLane(0), buildLane(1)])
+  }
 }
 const results = MODE === 'review' ? reviewOutcomes.slice() : slots.filter((r) => r !== null)
 

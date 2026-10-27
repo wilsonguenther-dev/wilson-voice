@@ -88,9 +88,16 @@
 export const meta = {
   name: "yap-overhaul-all-part-03",
   description:
-    "Part 03 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 59 items (LIC-A..Y11-F), 3 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 03 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 53 items (Y3-A..Y9-E), 2 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
+    { title: "Y3-A", detail: "Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling" },
+    { title: "Y3-B", detail: "Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call" },
+    { title: "Y3-C", detail: "The pill reports real progress on a long take instead of an honest-looking lie" },
+    { title: "Y3-D", detail: "Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio" },
+    { title: "DB-B", detail: "A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch" },
+    { title: "Y3-F", detail: "A declared maximum session length with a warning before it, instead of an undeclared cliff" },
+    { title: "Y3-G", detail: "A measured latency and energy budget for long takes, published as a test that fails on regression" },
     { title: "LIC-A", detail: "Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned" },
     { title: "Y2-A", detail: "The float window subscribes to license status — the wiring that does not exist" },
     { title: "Y2-B", detail: "A quiet trial numeral on the pill in both pill styles, in the 30px side dock too" },
@@ -137,19 +144,6 @@ export const meta = {
     { title: "PERM-G", detail: "IDE context: the identifiers in the open file bias the transcription — the highest personal-ROI item" },
     { title: "Y9-D", detail: "A denylist where the hotkey is inert — the honest complement to reading your context" },
     { title: "Y9-E", detail: "CSV round-trip for the dictionary and snippets, and the usage-frequency ranking that is only half there" },
-    { title: "Y10-A", detail: "Multi-language: expose what the engine can already do, with the picker in the bar" },
-    { title: "PERM-H", detail: "A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings" },
-    { title: "Y10-B", detail: "Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste" },
-    { title: "Y10-D", detail: "A non-primary mouse button as push-to-talk" },
-    { title: "Y10-E", detail: "Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy's dialogue" },
-    { title: "Y10-F", detail: "Measure and publish Yap's idle RAM and CPU — the free marketing line the research asked for" },
-    { title: "Y11-A", detail: "Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was" },
-    { title: "Y11-B", detail: "Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it" },
-    { title: "DB-E", detail: "Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest" },
-    { title: "Y11-C", detail: "Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path" },
-    { title: "Y11-D", detail: "Issue #153: split_partition's farthest-pair seeding does not separate speakers when an outlier is the far point" },
-    { title: "Y11-E", detail: "Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist" },
-    { title: "Y11-F", detail: "A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -228,7 +222,7 @@ const PART = 'part-03'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0}
+const LANE_BY_ID = {"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -521,12 +515,97 @@ VERIFICATION THAT VERIFIES NOTHING — the whole catalogue. Read it before you c
  * build script does not re-run, so the same commands pass — the false green that made a measured
  * gate table necessary in the first place.
  *
- * fmt IS A GATE CONJUNCT NOW. The tree was swept (`cargo fmt --all`, 152 hunks / 21 files, listed
- * in .git-blame-ignore-revs) and `cargo fmt --all -- --check` exits 0 on main as of that commit.
+ * fmt IS ADVISORY, NOT A GATE CONJUNCT (audit 2026-10-26). The land gate once required fmt while main
+ * was red on it (65 hunks), so every PASS/PASS PR came back ci-red for the same command for two hours.
+ * Which command blocks is written down ONCE, in GATE_BLOCKING / GATE_ADVISORY below; the echo labels
+ * in GATE_CMDS must be exactly those names (stall-detector.test.mjs fails on drift either way), and
+ * recon, the land gate and the stall rules all read the same two arrays.
  * clippy is NOT run with `-- -D warnings`: a mechanical `cargo clippy --fix` sweep landed, and 16
  * lints survive it that need real refactors (very-complex-type, too-many-arguments, clamp-like
  * pattern, const assertions in tests). See PLAN.md's Panel revisions section.
  */
+const GATE_BLOCKING = ['typecheck','test','build','polish','diarize','stage','polishtest','diarizetest','clippy','cargotest']
+const GATE_ADVISORY = ['fmt']
+/** Sentinel the external monitor watches (scripts/loop/stall-alarm.sh). Only the orchestrator deletes it. */
+const STALL_FILE = '/Users/wilsonguenther/code/wilson-voice-loop/STALL.txt'
+
+/*
+ * THE STALL RULES (item yap-loop-stall-detector). The SOURCE is scripts/loop/stall.mjs; this is a
+ * byte-identical copy of its block (the generated workflow cannot import), checked by
+ * scripts/loop/stall-detector.test.mjs. Edit stall.mjs, then paste the block here.
+ */
+// STALL-RULES-BEGIN — byte-identical in scripts/loop/stall.mjs and scripts/loop/template.mjs
+/** An exit code is readable only as an integer (a number, or a string of digits from a text payload). */
+function exitCodeOf(v) {
+  if (typeof v === 'number' && Number.isInteger(v)) return v
+  if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v.trim())
+  return null
+}
+/** The first non-zero BLOCKING command in gateExits, in GATE_BLOCKING order, or null. */
+function firstBlockingRed(gateExits) {
+  if (!gateExits || typeof gateExits !== 'object') return null
+  for (const cmd of GATE_BLOCKING) {
+    const code = exitCodeOf(gateExits[cmd])
+    if (code !== null && code !== 0) return cmd
+  }
+  return null
+}
+/**
+ * Rule 1 input. landResult carries the fix-land status the harness already derived, plus whatever the
+ * LAND seat returned. For ci-red the reason is the failing BLOCKING command; otherwise the reason field.
+ */
+function stallReason(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  const status = typeof r.status === 'string' && r.status ? r.status : 'unknown'
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  if (status === 'ci-red') {
+    return { status, reason: firstBlockingRed(r.gateExits) || text(r.failingCommand) || text(r.reason) || 'unknown' }
+  }
+  return { status, reason: text(r.reason) || 'none' }
+}
+/** Rule 1. True when the most recent prior entry for the SAME pr has the same status and reason (never 'merged'). */
+function sameReasonTwice(history, next) {
+  if (!next || next.status === 'merged') return false
+  const list = Array.isArray(history) ? history : []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const h = list[i]
+    if (!h || String(h.pr) !== String(next.pr)) continue
+    return h.status === next.status && h.reason === next.reason
+  }
+  return false
+}
+/** Rule 2. Blocking non-zero -> red; blocking missing / non-integer -> unreadable (fail closed); advisory non-zero -> advisoryRed. */
+function gateRedOnMain(gateExits, blocking, advisory) {
+  const exits = gateExits && typeof gateExits === 'object' ? gateExits : {}
+  const red = []
+  const unreadable = []
+  const advisoryRed = []
+  for (const cmd of blocking || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code === null) unreadable.push(cmd)
+    else if (code !== 0) red.push(cmd)
+  }
+  for (const cmd of advisory || []) {
+    const code = exitCodeOf(exits[cmd])
+    if (code !== null && code !== 0) advisoryRed.push(cmd)
+  }
+  return { red, unreadable, advisoryRed }
+}
+/** Rule 3 input. A land outcome is a gate failure when it is ci-red or carries a non-zero BLOCKING exit. */
+function isGateFailure(landResult) {
+  const r = landResult && typeof landResult === 'object' ? landResult : {}
+  return r.status === 'ci-red' || firstBlockingRed(r.gateExits) !== null
+}
+/** Rule 3. The LAST n land outcomes are n DISTINCT PRs, none merged, every one a gate failure. */
+function noProgress(results, n = 3) {
+  const list = Array.isArray(results) ? results : []
+  if (list.length < n) return false
+  const last = list.slice(-n)
+  if (new Set(last.map((r) => String(r && r.pr))).size !== n) return false
+  return last.every((r) => r && r.status !== 'merged' && r.gateFailure === true)
+}
+// STALL-RULES-END
+
 const GATE_CMDS = (dir, target) => `
     cd ${dir}/${APP} && export CARGO_TARGET_DIR=${target}
     npx tsc --noEmit ; echo "typecheck=$?"
@@ -537,10 +616,12 @@ const GATE_CMDS = (dir, target) => `
     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${target}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${target}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stage=$?"
     cargo test -p yap-polish --release ; echo "polishtest=$?"
     cargo test -p yap-diarize --release ; echo "diarizetest=$?"
-    cargo fmt --all -- --check ; echo "fmt=$?"
+    cargo fmt --all -- --check > ${target}/fmt-check.txt 2>&1 ; echo "fmt=$? (ADVISORY)" ; echo "fmtHunks=$(grep -c '^Diff in' ${target}/fmt-check.txt)"
     cd ${dir}/${APP}/src-tauri && cargo clippy --all-targets --features custom-protocol ; echo "clippy=$?"
     cd ${dir}/${APP}/src-tauri && cargo test --features custom-protocol ; echo "cargotest=$?"
-ALL ELEVEN MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+THE ${GATE_BLOCKING.length} BLOCKING COMMANDS (${GATE_BLOCKING.join(', ')}) MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+ADVISORY (${GATE_ADVISORY.join(', ')}): run it, report "fmt: advisory, <fmtHunks> hunks", and NEVER let its exit code
+fail the gate, earn ci-red, or block a merge. The drift is on main, not on the PR; do NOT reformat files the PR did not touch.
 BOTH SIDECARS ARE BUILT AND BOTH ARE STAGED, and that step comes BEFORE any cargo command against
 the app: bundle.externalBin makes binaries/yap-polish-<triple> AND binaries/yap-diarize-<triple>
 preconditions of every cargo build of wilson-voice. If a cargo command against the app dies with
@@ -630,8 +711,10 @@ OUTCOMES IN THIS MODE:
   - every command 0, sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
     "local-gate", and localGate: {sha, typecheck, test, build, polish, diarize, stage, polishtest,
     diarizetest, fmt, clippy, cargotest}.
-  - any command non-zero  -> this is a red gate. Fix it if this PR is yours to fix; otherwise label
-    ci-red, comment WHICH command failed with its failing output, and report status "ci-red".
+  - any BLOCKING command (${GATE_BLOCKING.join(', ')}) non-zero -> this is a red gate. Fix it if this PR is
+    yours to fix; otherwise label ci-red, comment WHICH command failed with its failing output, and report
+    status "ci-red" with failingCommand set to that command's name. An ADVISORY command (${GATE_ADVISORY.join(', ')})
+    that exits non-zero is reported, never a red gate.
     "The local gate failed" with no command name is not a triage.
   - CONFLICTING after your rebase -> label needs-rebase, status "needs-rebase".
 THERE IS NO "ci-pending" IN THIS MODE. Do not return it, do not poll, do not sleep, do not run
@@ -1450,6 +1533,13 @@ async function withAgents(n, fn) {
 let REVIEW_QUEUE = []
 let queueCursor = 0
 const reviewOutcomes = []
+/** STALL STATE (rules 1 and 3). Per-PR land history, every land outcome in completion order, the PRs
+ *  already loop-stalled, the no-progress flag reviewChain checks next to `halted`, and its one-shot guard. */
+const landHistory = new Map()
+const landResults = []
+const stalledPrs = new Set()
+let stalled = false
+let noProgressFired = false
 function takeNextPr() {
   if (queueCursor >= REVIEW_QUEUE.length) return null
   const entry = REVIEW_QUEUE[queueCursor]
@@ -1478,6 +1568,11 @@ async function reviewOnePr(entry, chain) {
   const klass = entry && entry.klass === 'security' ? 'security' : 'standard'
   const seats = klass === 'security' ? 2 : 1
   const facts = JSON.stringify(entry || {})
+  // RULE 1 (stall): a PR this pass already loop-stalled is never dispatched again — no reviewer, no land.
+  if (stalledPrs.has(pr)) {
+    log(`stall same-reason-twice skip pr=${pr} item=${itemId} — loop-stalled earlier in this pass; not dispatched again`)
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled' }
+  }
 
   const reReview = (round, prior) =>
     round === 0
@@ -1796,8 +1891,13 @@ it review-pending. Label it needs-human instead, comment the gate's line verbati
 "needs-human" with reviewGate set to that line.
 ${CI_GATE(dir, target)}
 
+THE LAND MARKER — on EVERY return except "merged", post exactly one comment whose body is ONE line:
+    gh pr comment -R ${REPO} ${pr} --body "loop-land: status=<the status you return> reason=<failingCommand for ci-red, else a one-word reason> head=<headRefOid>"
+Tokens only (no spaces inside a value). The next pass's triage reads it, and the stall rule compares it with
+that pass's land outcome: the same status and reason twice in a row stops the loop re-landing this PR.
+
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending"|"needs-human",
-         landed: true|false, reason, mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
+         landed: true|false, reason, failingCommand: "<the first non-zero BLOCKING command, for ci-red>", mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
          ciCheckConclusion}` : ''}
 
@@ -1810,6 +1910,14 @@ review:review-pending, review:needs-human or review:closed-superseded — and th
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 ${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
+  }
+  // RULE 1 ACROSS PASSES: a PR is landed once per pass, so this pass's history starts from the land
+  // outcome triage read off the PR's last "loop-land:" marker comment (same status + reason as the one
+  // about to come back -> loop-stalled, no third attempt next pass: triage holds the loop-stalled label).
+  if (!landHistory.has(pr) && entry && entry.lastLand && typeof entry.lastLand === 'object' && entry.lastLand.status) {
+    const prior = { pr, status: stallToken(entry.lastLand.status), reason: stallToken(entry.lastLand.reason || 'none') }
+    landHistory.set(pr, [prior])
+    log(`stall same-reason-twice seed pr=${pr} item=${itemId} prior_status=${prior.status} prior_reason=${prior.reason}`)
   }
   const land = await withAgents(1, () => agentR(fixLandPrompt('land', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
@@ -1829,6 +1937,26 @@ ${GUARD(dir)}`
     statusOf(/"status"\s*:\s*"ci-red"/i, 'ci-red') ||
     statusOf(/"status"\s*:\s*"needs-rebase"/i, 'needs-rebase') ||
     'ci-pending'
+  // RULE 1 — SAME REASON TWICE. The land outcome joins this PR's history; if the most recent prior
+  // entry for the SAME PR had the same status and reason, the next fix-land would fail the same way:
+  // record the stall once and move on. Never on 'merged'. Rule 3 reads landResults.
+  const landExits = gateExitsOf(land)
+  const why0 = stallReason({ ...objectOf(land), gateExits: landExits, status })
+  const nextLand = { pr, status: stallToken(why0.status), reason: stallToken(why0.reason) }
+  landResults.push({ pr, itemId, status, reason: nextLand.reason, gateFailure: isGateFailure({ status, gateExits: landExits }) })
+  const landHist = landHistory.get(pr) || []
+  const twice = sameReasonTwice(landHist, nextLand)
+  landHist.push(nextLand)
+  landHistory.set(pr, landHist)
+  if (twice) {
+    stalledPrs.add(pr)
+    const st = stallToken(nextLand.status)
+    const why = stallToken(nextLand.reason)
+    const line = `STALL pr=${pr} item=${stallToken(itemId)} status=${st} reason=${why}`
+    log(`${line} — the same land outcome twice in a row; no third fix-land, the chain moves to the next PR`)
+    await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 1, itemId: stallToken(itemId), pr, line, stage: 'review:needs-human', note: `STALL: ${why} (${st} twice in a row)`, comment: `loop-stalled: ${st} ${why} twice in a row`, sentinel: false }), { model: 'opus', effort: 'low', phase: itemId, label: `stall-writer:${itemId}` }))
+    return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-stalled', reason: nextLand.reason, blocked, verdicts, land }
+  }
   log(`PR#${pr} (${itemId}, ${klass}, chain ${REVIEW_TAGS[chain]}): ${blocked ? `BLOCKED, ${round} fix round(s), re-reviewed PASS` : 'PASS'} -> ${status}`)
   return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status, blocked, verdicts, land }
 }
@@ -1855,11 +1983,26 @@ async function reviewOnePrSafe(entry, chain) {
 async function reviewChain(chain) {
   for (;;) {
     if (halted) break
+    if (stalled) break
     const entry = takeNextPr()
     if (entry === null) break
-    reviewOutcomes.push(await reviewOnePrSafe(entry, chain))
+    const outcome = await reviewOnePrSafe(entry, chain)
+    reviewOutcomes.push(outcome)
+    // RULE 3 — NO PROGRESS. The last 3 land outcomes were gate failures on 3 distinct PRs and none
+    // merged: the gate is what is broken, not the PRs. Stop pulling; the sweeper and verify still run.
+    if (!stalled && noProgress(landResults, 3)) {
+      stalled = true
+      if (!noProgressFired) {
+        noProgressFired = true
+        const last = landResults.slice(-3).map((r) => `${r.pr}:${stallToken(r.reason)}`).join(', ')
+        const line = `STALL no-progress: last 3 land results were gate failures: ${last}`
+        log(`stall no-progress HALT-REVIEW chain=${REVIEW_TAGS[chain]} — ${line}. The review barrier stops pulling PRs; sweeper and main-verify still run.`)
+        const stallItem = stallToken((outcome && outcome.itemId) || `PR-${(entry && (entry.pr || entry.number)) || '?'}`)
+        await withAgents(1, () => agentR(STALL_WRITER_PROMPT({ rule: 3, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }), { model: 'opus', effort: 'low', phase: stallItem, label: 'stall-writer:_stall' }))
+      }
+    }
   }
-  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): drained the queue`)
+  log(`review chain ${REVIEW_TAGS[chain]} (${REVIEW_DIRS[chain]}, port ${REVIEW_PORTS[chain]}): ${stalled ? 'STOPPED by the no-progress stall rule' : 'drained the queue'}`)
 }
 /* ══ REVIEW CHAIN REGION END ═══════════════════════════════════════════════════════════════ */
 
@@ -1905,6 +2048,582 @@ async function runBuildSafe(item, lane) {
 // PREVIEW_PORT, PREVIEW_PORT_B, LOG, TELEMETRY, NPM_CACHE, STATUS_BOARD — and nothing else
 // (build.mjs fails the build on any other ${IDENT} in an item file).
 const ITEMS = []
+// ── 15-y3-long-dictations.mjs ─────────────────────────────────────────────
+// Y3 — LONG DICTATIONS. Wilson, 2026-09-12, verbatim: "no handling for long
+// dictations."
+//
+// AUDIT — the dictation path is one-shot from end to end. There is no chunking,
+// no streaming, no memory bound, no progress, and a hard wall at 120 seconds of
+// DECODE that silently kills the whole take:
+//
+//   src-tauri/src/transcription.rs:54
+//     pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+//   its own doc, :51-53: "Way above any real clip (a 60 s take is ~1 s on
+//   Metal) — this exists only so a wedged native call surfaces as an error".
+//   That reasoning holds for a 60 s take and fails for a 15 minute one.
+//
+//   src-tauri/src/lib.rs:1350   manager.transcribe(samples, language, bias_prompt)
+//     ONE call, the ENTIRE take's samples, no windowing.
+//
+//   src-tauri/src/record.rs:2368  self.mono.extend_from_slice(interleaved)
+//   src-tauri/src/record.rs:2377  self.raw.extend_from_slice(&self.mono)
+//     TWO unbounded Vec<f32> for the whole take. At 48 kHz stereo a 15-minute
+//     dictation is ~345 MB in `raw` alone before the 16 kHz downsample, and
+//     both live until finalize_take (record.rs:2445).
+//
+//   src-tauri/src/polish.rs:73
+//     const MAX_POLISH_WORDS: usize = 400;
+//   its own doc, :71-72: "Long-form is rules-only: chunking is a later item,
+//   and a single pass over 400+ words cannot hold the deadline". That later
+//   item is THIS one. A long dictation gets no formatting at all, which is the
+//   other half of Wilson's formatting complaint.
+//
+// THE MACHINERY ALREADY EXISTS — for MEETINGS, not for dictation:
+//   meeting_asr.rs + transcription.rs chunk geometry, MAX_SANCTIONED_CHUNK_DECODE_SECONDS
+//   (transcription.rs:101), seam dedupe via max_timestamp_kind (asr_engine.rs:382),
+//   rtring.rs (YV91 lock-free SPSC ring, whose doc at rtring.rs:6-10 says in as
+//   many words: "A five-second dictation never exposes that. Three continuous
+//   hours on a meeting ... does"), the capture journal + recovery dir (YV63),
+//   and asr_engine.rs:130 which "cancels a meeting chunk whenever a dictation
+//   wants the engine".
+//   Y3 is largely a REUSE job, not an invention job. Anything Y3 builds that
+//   meeting_asr.rs already does is a defect in Y3.
+//
+// Wispr's comparable number, for calibration: max session length 20 min, raised
+// from 5 (reference_wispr_parity_research §2.1 [OFFICIAL]).
+//
+// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'Y3-A', prompt: 'Y3', branch: 'loop/y3-a-bounded-capture-spill-to-disk', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #170) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling',
+  preflight: `
+    test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"
+    grep -q 'SpillWriter\\|spill_to_disk' desktop/src-tauri/src/record.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test dictation_capture_memory
+  `,
+  spec: `
+    MEASURED: \`record.rs:2280-2284\` holds \`out\`, \`raw\` and \`mono\` as
+    \`Vec<f32>\`; \`:2368\` appends every interleaved callback to \`mono\` and
+    \`:2377\` appends \`mono\` to \`raw\`. Nothing bounds either. \`finalize_take\`
+    (:2445) then takes the whole thing by value.
+
+    There is already a proven pattern in this repo for exactly this problem and
+    it must be reused rather than re-derived: \`tests/meeting_capture_memory.rs\`
+    asserts a memory ceiling for the meeting path, and \`rtring.rs\` is the
+    real-time-safe hand-off built once "so 22-B reuses it verbatim rather than
+    growing a second copy" (rtring.rs:16-18). Dictation is now the third
+    consumer.
+
+    Do:
+      * The capture consumer writes finalized PCM to the take's WAV incrementally
+        (a \`SpillWriter\` over the existing \`recordings\` dir path, which
+        \`start_recording\` already passes in at lib.rs:1142) and keeps only a
+        bounded working window in RAM.
+      * Ceiling: a named constant \`MAX_RESIDENT_CAPTURE_BYTES\`, set so that a
+        take of ANY length holds under ~32 MB resident for the audio buffers.
+        Pick the window from the DSP's actual lookahead needs (high_pass,
+        normalize_rms, denoise all operate blockwise — read record.rs:2483-2600
+        and size the window to the largest true dependency, then say the number
+        in the doc comment).
+      * \`finalize_take\` reads back from the spill instead of taking a giant Vec.
+        \`read_wav_16k_mono\` (record.rs:826) already exists for the read side.
+      * RNNoise denoise (\`denoise: true\` is the shipped default, lib.rs:419)
+        must still run, blockwise, with identical output on a short clip. That is
+        the regression that would be easy to miss: assert byte-identical output
+        against today's path for the existing fixture
+        \`tests/fixtures/quick-brown-fox-16k.wav\`.
+      * The capture journal (YV63) and recovery dir keep working unchanged — a
+        take that dies mid-spill must still be recoverable, and a spilled WAV is
+        strictly easier to recover than a lost Vec.
+
+    Tests \`tests/dictation_capture_memory.rs\`:
+      * \`resident_bytes_are_bounded_across_a_synthetic_twenty_minute_take\` —
+        feed 20 minutes of generated frames through the consumer and assert peak
+        resident buffer bytes < MAX_RESIDENT_CAPTURE_BYTES. Model it on
+        meeting_capture_memory.rs so the two agree on how "resident" is counted.
+      * \`short_take_output_is_byte_identical_to_the_pre_spill_path\` — against
+        the committed fixture WAV.
+      * \`spill_survives_a_mid_take_abort_and_lands_in_the_recovery_dir\`.
+      * \`the_audio_callback_still_never_allocates\` — reuse the assertion shape
+        from tests/meeting_capture_rt_safety.rs; do not write a second one.
+
+    What NOT to do:
+      - Do NOT move DSP into the audio callback to avoid buffering. rtring.rs's
+        entire premise is that the callback copies and returns.
+      - Do NOT change the WAV format or sample rate on disk. Other code reads it.
+      - Do NOT bound by TRUNCATING audio. Dropping the end of a long dictation
+        is the bug, not the fix.
+  `,
+  acceptance: `
+    test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"   # 0 (was 1)
+    grep -q 'MAX_RESIDENT_CAPTURE_BYTES' desktop/src-tauri/src/record.rs
+    test -f desktop/src-tauri/tests/dictation_capture_memory.rs
+    grep -q 'resident_bytes_are_bounded_across_a_synthetic_twenty_minute_take' desktop/src-tauri/tests/dictation_capture_memory.rs
+    grep -q 'short_take_output_is_byte_identical_to_the_pre_spill_path' desktop/src-tauri/tests/dictation_capture_memory.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test dictation_capture_memory ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_capture_memory   ; test $? -eq 0
+    cargo test --features custom-protocol --test capture_journal_recovery ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_capture_rt_safety; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y3-B', prompt: 'Y3', branch: 'loop/y3-b-chunked-decode-for-the-dictation-path', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #172) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call',
+  preflight: `
+    grep -q 'chunk' desktop/src-tauri/src/lib.rs
+    grep -q 'DICTATION_CHUNK' desktop/src-tauri/src/transcription.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test dictation_chunked
+  `,
+  spec: `
+    MEASURED: \`lib.rs:1350\` is \`manager.transcribe(samples, language,
+    bias_prompt)\` — the whole take, one call — under
+    \`TRANSCRIBE_TIMEOUT = 120s\` (transcription.rs:54). Whisper decode is
+    roughly real-time-divided-by-N on Metal; the 120 s wall is generous for a
+    minute of speech and fatal somewhere in the multi-minute range, and when it
+    trips the user loses the ENTIRE take. There is no partial result to keep.
+
+    Reuse, do not rebuild. Read these first and extract the shared piece:
+      transcription.rs:86-110  the chunk-decode budget and
+                               MAX_SANCTIONED_CHUNK_DECODE_SECONDS (:101) with
+                               its own warning that "the two constants
+                               disagreeing is precisely how a legal 37 s chunk
+                               could ..." — read that comment in full.
+      asr_engine.rs:382-394    max_timestamp_kind / max_audio_ms — "is there an
+                               alignment to dedupe seams with at all?" and "is a
+                               35 s window ..." This is the seam machinery.
+      asr_engine.rs:221-236    Shift onto another timeline (a chunk's own start).
+      meeting_asr.rs           the working chunker.
+
+    Do:
+      * Factor the chunk geometry + seam dedupe out of the meeting path into a
+        module both callers use. If meeting_asr.rs's chunker is already
+        general, call it; if it is entangled with meeting state, extract the
+        pure part. Either way the outcome is ONE chunker with one set of tests.
+      * Dictation decodes in windows with overlap, deduping at seams by
+        timestamp when \`max_timestamp_kind\` supports it and by longest-common-
+        suffix/prefix when it does not — and when NEITHER is available, it must
+        fail loudly rather than silently double a phrase at every seam.
+      * \`TRANSCRIBE_TIMEOUT\` becomes per-CHUNK, not per-take, so a long take has
+        no wall at all. Keep a separate, generous whole-take deadline so a truly
+        wedged engine still surfaces; derive it from chunk count so it scales.
+      * Partial results are kept: if chunk 9 of 12 fails, the take returns the
+        first 8 chunks' text, marks the take degraded, and preserves the clip in
+        the recovery dir for a retry (the retry path exists — lib.rs:6230, YV66).
+        Losing 11 minutes because minute 12 failed is the behaviour being deleted.
+      * Short takes must take a byte-identical path to today. The single-window
+        case has to produce the same bytes, or every formatting fixture and the
+        YV66 hallucination-gate corpus shift under us for no reason.
+
+    Tests \`tests/dictation_chunked.rs\`:
+      * \`single_window_take_is_byte_identical_to_the_unchunked_path\` (fixture WAV).
+      * \`seams_do_not_duplicate_or_drop_words\` — synthesize a known sentence
+        stream across a seam and assert exact text.
+      * \`a_failed_middle_chunk_keeps_the_earlier_chunks\`
+      * \`per_chunk_deadline_not_per_take\` — assert a 12-chunk take is not
+        subject to a 120 s total.
+      * \`chunker_has_exactly_one_implementation\` — a call-site sweep asserting
+        meeting and dictation resolve to the same function.
+      * Keep \`tests/matrix_new_asr_chunk_timeout.rs\` green; it already covers
+        the meeting side of a chunk timeout and must not regress.
+
+    Depends on Y3-A (a spilled WAV is what the chunker reads).
+
+    What NOT to do:
+      - Do NOT fix this by raising TRANSCRIBE_TIMEOUT. A bigger wall is still a
+        wall, and a 15-minute single-window decode also blows the memory ceiling
+        Y3-A just established.
+      - Do NOT let dictation chunks contend with a meeting for the engine.
+        asr_engine.rs:130 already makes dictation PREEMPT meetings; preserve that
+        priority and keep tests/meeting_dictation_preempts_transcription.rs green.
+    PANEL 2026-09-12 — the cliff that justifies this item is not where the audit
+    put it, so the scope narrows. MEASURED: a 601-second WAV (241x the
+    quick-brown-fox fixture, 16 kHz mono) through the shipped headless path —
+    \`./target/debug/wilson-voice --transcribe-file <601s.wav>\` — returned exit
+    0 in 30.5 s with ~1,900 words. That is ~20x real time INCLUDING model load,
+    consistent with the repo's own note (transcription.rs:51-54, "a 60 s take is
+    ~1 s on Metal"), which puts the 120 s TRANSCRIBE_TIMEOUT near 45 minutes of
+    audio, not four. What actually broke at ten minutes is what the plan ranked
+    lower: 1,900 words arriving as one unbroken block (no paragraph rule, no
+    polish past 400 words), with no progress and no cancel.
+      * KEEP the narrow, high-value half: TRANSCRIBE_TIMEOUT becomes PER-CHUNK,
+        and a trip keeps the chunks already decoded instead of losing the take.
+      * Put the measurement in the pre-flight: a timed long-WAV decode row with
+        the observed real-time factor, written to docs/BUDGETS.md, so Y3-F's
+        declared maximum session length is derived from a number somebody took.
+      * Refactoring the WORKING meeting chunker into a shared module is the one
+        change in this lane that can regress a shipped subsystem. Do it only as
+        far as the per-chunk timeout and the seam dedupe require, and say in the
+        PR body what the meeting path's behaviour was before and after.
+      * Y3-A (the 345 MB ceiling), Y4-C (paragraphing, rules-only) and
+        Y3-C/Y3-D (progress and cancel) are what a ten-minute take needs; this
+        item must not block them.
+
+  `,
+  acceptance: `
+    grep -q 'DICTATION_CHUNK' desktop/src-tauri/src/transcription.rs
+    test -f desktop/src-tauri/tests/dictation_chunked.rs
+    grep -q 'single_window_take_is_byte_identical_to_the_unchunked_path' desktop/src-tauri/tests/dictation_chunked.rs
+    grep -q 'seams_do_not_duplicate_or_drop_words' desktop/src-tauri/tests/dictation_chunked.rs
+    grep -q 'a_failed_middle_chunk_keeps_the_earlier_chunks' desktop/src-tauri/tests/dictation_chunked.rs
+    grep -q 'chunker_has_exactly_one_implementation' desktop/src-tauri/tests/dictation_chunked.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test dictation_chunked                          ; test $? -eq 0
+    cargo test --features custom-protocol --test matrix_new_asr_chunk_timeout               ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_dictation_preempts_transcription   ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures                        ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y3-C', prompt: 'Y3', branch: 'loop/y3-c-long-take-progress-in-the-pill', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #174) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'The pill reports real progress on a long take instead of an honest-looking lie',
+  preflight: `
+    grep -q '"transcribing"' desktop/src/pill/live.ts
+    grep -q 'transcribe_progress' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && npm test -- pill/live
+  `,
+  spec: `
+    Two separate honesty problems, both already named by Wilson.
+
+    (1) THE ESCALATION IS A TIMER. project_yap_open_bugs BUG 2, resolved as
+    YV17 but only partly: "the pill's live escalation was TIMER-based, not real
+    word/sentence tracking ... it 'just moves along' regardless of what's
+    actually said. Wilson wants it to react to ACTUAL words/sentences." The
+    machinery still estimates: \`live.ts:44\`
+    \`wordsFromVoiced = (voicedSec) => voicedSec * WORDS_PER_SEC\`, and
+    \`liveTierForWords\` (:46) drives quick|notes|desk|essay|saga off that
+    estimate. On a 10-minute take the estimate's error is enormous and the
+    persona it promises is unearned. Y3-B's chunker gives the first real fix
+    available: each completed chunk yields REAL text and a REAL word count
+    mid-take. Feed it.
+
+    (2) THERE IS NO PROGRESS AT ALL AFTER THE HOLD ENDS. ClassicPill.tsx tracks
+    \`{recording, busy, message}\`; \`busy\` is a boolean. A 15-minute take
+    decoding across 12 chunks shows the same undifferentiated busy state for
+    minutes. project_yap_pill_vision names this exactly: "fill the dead time
+    after talking stops and before text appears (transcribe/think gap)".
+
+    Do:
+      * Rust emits \`transcribe_progress { chunk, of, words_so_far }\` per
+        completed chunk from Y3-B's loop. No timer, no interpolation — only real
+        completions. Emit nothing for a single-window take (a short take has no
+        progress to report and a flicker of 1/1 is worse than silence).
+      * \`LivePhase\` gains \`"transcribing"\` as a first-class phase distinct from
+        \`thinking\` (which is the polish/LLM gap), and carries
+        \`{ chunk, of, wordsSoFar }\`.
+      * Both pills render it: a determinate fill, the numeral in Departure Mono,
+        and — this is the character beat — Yappy's live commentary escalates on
+        \`wordsSoFar\` from real chunks instead of \`wordsFromVoiced\`. Keep
+        \`wordsFromVoiced\` for the LISTENING phase only, where nothing better
+        exists, and mark it in its doc comment as an estimate that the
+        transcribing phase must not use.
+      * Cap the claim: for a take still recording, the pill must never state a
+        word count as fact. "Listening" states may be playful; numeric states
+        may not be wrong.
+
+    Tests in \`desktop/src/pill/live.test.ts\`:
+      * \`transcribing_uses_real_chunk_words_not_the_voiced_estimate\`
+      * \`single_window_take_emits_no_progress_phase\`
+      * \`progress_is_monotonic_and_never_exceeds_of\`
+      * \`listening_tier_still_uses_the_estimate\` (the deliberate exception).
+    Rust: \`tests/transcribe_progress_events.rs\` — one event per completed
+    chunk, zero for a single window, and none after the take ends.
+
+    Depends on Y3-B.
+
+    PR body owes a capture of the transcribing phase at 3/12 in both pill styles
+    and at all three dock positions.
+
+    What NOT to do:
+      - Do NOT show an indeterminate spinner for a chunked take. The whole point
+        is that the count is now knowable.
+      - Do NOT interpolate progress between chunk completions to make the bar
+        smooth. A smooth bar that is lying is the defect being removed.
+  `,
+  acceptance: `
+    grep -q '"transcribing"' desktop/src/pill/live.ts
+    grep -q 'transcribe_progress' desktop/src-tauri/src/lib.rs
+    grep -q 'transcribing_uses_real_chunk_words_not_the_voiced_estimate' desktop/src/pill/live.test.ts
+    grep -q 'single_window_take_emits_no_progress_phase' desktop/src/pill/live.test.ts
+    grep -q 'progress_is_monotonic_and_never_exceeds_of' desktop/src/pill/live.test.ts
+    test -f desktop/src-tauri/tests/transcribe_progress_events.rs
+    cd ${APP} && npm ci
+    npm test -- pill ; test $? -eq 0
+    cd src-tauri && cargo test --features custom-protocol --test transcribe_progress_events ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y3-D', prompt: 'Y3', branch: 'loop/y3-d-cancel-a-long-take-at-any-stage', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #176) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio',
+  preflight: `
+    grep -q 'CANCEL' desktop/src-tauri/src/shortcuts.rs
+    grep -q 'cancel_transcription' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test cancel_long_take
+  `,
+  spec: `
+    \`cancel_recording\` exists (referenced at lib.rs:478: "cleared by
+    \`cancel_recording\`") and stops a RECORDING. Once the hold ends and decode
+    starts, there is nothing to press: a 15-minute take that the user
+    immediately regrets occupies the engine to completion. And there is no
+    cancel HOTKEY at all — \`shortcuts.rs:143 ALL\` is
+    PASTE_LAST, UNDO_AI_EDIT, DICTATION_TOGGLE_LEGACY, MEETING_TOGGLE.
+    Wispr ships a dedicated rebindable cancel key
+    (reference_wispr_parity_research §2.1 [BUNDLE]
+    \`settings_hotkey_dialog_cancel_*\`, listed as ❌ for Yap).
+
+    Do:
+      * \`shortcuts::CANCEL\` — a new Binding in the existing table (the table
+        exists so bindings are declared once; shortcuts.rs:3-8 explains why).
+        Default: Escape while a take is active, rebindable through the YV15
+        capture control. It must not register a global Escape that eats Escape
+        from every app: bind it only while a take is in flight, or scope it to
+        the pill's own window plus a take-active global. State which and why.
+      * \`cancel_transcription\`: cooperative cancellation checked at every chunk
+        boundary in Y3-B's loop, plus the existing engine-cancel path
+        (transcription.rs already has one — \`PREEMPTED_FOR_DICTATION\` :68 and
+        \`ABANDONED_FOR_EXIT\` :84 prove chunk decode is already cancellable;
+        reuse that mechanism, add a third reason \`CANCELLED_BY_USER\`).
+      * A cancel NEVER deletes the clip. It parks it in the recovery dir with
+        the same 7-day purge lifecycle (YV52/YV63) so "actually, transcribe that"
+        is possible from History. A cancel that destroys 15 minutes of audio is
+        a worse bug than the one being fixed.
+      * A cancel pastes NOTHING and writes no transcript row. Assert both.
+      * The pill shows a cancelled state that settles to idle — not an error.
+
+    Tests \`tests/cancel_long_take.rs\`:
+      * \`cancel_mid_recording_writes_no_row_and_pastes_nothing\`
+      * \`cancel_mid_decode_stops_at_the_next_chunk_boundary\`
+      * \`cancelled_clip_lands_in_the_recovery_dir\`
+      * \`cancel_reason_is_distinguishable_from_preempted_and_abandoned\` — three
+        distinct constants; a string compared against a literal in another
+        module is the bug transcription.rs:74-77 already warns about.
+      * \`escape_is_not_a_global_shortcut_while_idle\`
+
+    Depends on Y3-B.
+
+    What NOT to do:
+      - Do NOT implement cancel by killing the engine process. The engine is
+        in-process and shared with meetings; killing it takes a meeting down.
+      - Do NOT reuse PREEMPTED_FOR_DICTATION as the cancel reason.
+  `,
+  acceptance: `
+    grep -q 'pub const CANCEL' desktop/src-tauri/src/shortcuts.rs
+    grep -q 'CANCELLED_BY_USER' desktop/src-tauri/src/transcription.rs
+    grep -q 'fn cancel_transcription' desktop/src-tauri/src/lib.rs
+    test -f desktop/src-tauri/tests/cancel_long_take.rs
+    grep -q 'cancelled_clip_lands_in_the_recovery_dir' desktop/src-tauri/tests/cancel_long_take.rs
+    grep -q 'cancel_reason_is_distinguishable_from_preempted_and_abandoned' desktop/src-tauri/tests/cancel_long_take.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test cancel_long_take        ; test $? -eq 0
+    cargo test --features custom-protocol --test tray_hotkey_no_collision; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'DB-B', prompt: 'Y3', branch: 'loop/db-b-crash-recovery-for-a-long-take', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #178 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
+  title: 'A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch',
+  preflight: `
+    grep -q 'resume_take\\|recover_dictation' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test long_take_recovery
+  `,
+  spec: `
+    The pieces exist and are not connected for the dictation path:
+      * YV63 capture journal + recovery dir (\`recovery_dir()\`, lib.rs:1145),
+        with \`tests/capture_journal_recovery.rs\` green.
+      * The meeting path re-decodes abandoned chunks on next launch
+        (transcription.rs:70-84: "the relaunch resumed AFTER a chunk that had
+        never been decoded: a permanent [gap]" — a bug they already fixed there).
+      * \`tests/matrix_new_quit_mid_processing.rs\` covers quit-mid-processing for
+        meetings.
+    For a long dictation there is no equivalent: the spilled WAV (Y3-A) and any
+    completed chunk text (Y3-B) are on disk, and nothing reads them back.
+
+    Do:
+      * Persist per-take chunk results as they complete (a small sidecar JSON
+        next to the spilled WAV in the recovery dir, or a \`take_chunks\` table —
+        prefer the DB, it is already WAL and already the durable store, and
+        db.rs:1191 already reasons about which tables hold user text).
+      * On launch, \`recover_dictation()\` finds takes with audio + partial text
+        and NO transcript row, and offers them in History as recoverable with
+        one action: "Finish transcribing". It must not auto-paste anything —
+        pasting into whatever app happens to be focused minutes or days later is
+        the wrong behaviour and would violate YV21's paste-target guard.
+      * Honour the existing 7-day purge so the recovery dir cannot grow forever.
+      * A recovered take runs the SAME cleanup and hallucination gates as a live
+        take. lib.rs:6230 already records this rule for the retry path ("the
+        retry path runs the SAME gate as the live path") — extend it, do not
+        fork it.
+
+    Tests \`tests/long_take_recovery.rs\`:
+      * \`kill_mid_decode_leaves_audio_plus_partial_text_and_no_transcript_row\`
+      * \`next_launch_offers_the_take_and_never_pastes_it\`
+      * \`finishing_a_recovered_take_runs_the_same_gates_as_a_live_take\`
+      * \`recovery_dir_purge_still_bounds_growth\`
+      * \`a_completed_take_leaves_nothing_recoverable\` (no phantom offers).
+
+    Depends on Y3-A, Y3-B.
+
+    What NOT to do:
+      - Do NOT auto-resume decode at launch without the user asking. A cold
+        launch that pins the GPU for four minutes is its own bug.
+      - Do NOT store partial TEXT anywhere outside the app's data dir. Transcript
+        text must never reach a log or a support bundle unredacted — there are
+        already tests for that (tests/support_bundle_redaction.rs); keep them green.
+  `,
+  acceptance: `
+    grep -q 'fn recover_dictation' desktop/src-tauri/src/lib.rs
+    test -f desktop/src-tauri/tests/long_take_recovery.rs
+    grep -q 'next_launch_offers_the_take_and_never_pastes_it' desktop/src-tauri/tests/long_take_recovery.rs
+    grep -q 'finishing_a_recovered_take_runs_the_same_gates_as_a_live_take' desktop/src-tauri/tests/long_take_recovery.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test long_take_recovery        ; test $? -eq 0
+    cargo test --features custom-protocol --test capture_journal_recovery  ; test $? -eq 0
+    cargo test --features custom-protocol --test support_bundle_redaction  ; test $? -eq 0
+    cargo test --features custom-protocol --test matrix_new_quit_mid_processing ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y3-F', prompt: 'Y3', branch: 'loop/y3-f-max-session-length-and-the-honest-ceiling', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #180) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'A declared maximum session length with a warning before it, instead of an undeclared cliff',
+  preflight: `
+    grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test max_session
+  `,
+  spec: `
+    There is no maximum take length in the code — \`git grep "MAX_TAKE\\|
+    max_take\\|MAX_RECORD\\|session_len" desktop\` returns nothing functional.
+    That is not generosity; it means the failure mode at some unknown length is
+    a timeout or an OOM rather than a message. Wispr declares 20 minutes,
+    raised from 5 (reference_wispr_parity_research §2.1 [OFFICIAL]).
+
+    Do:
+      * \`record::MAX_SESSION_SECONDS\` — a declared ceiling. Choose it from what
+        Y3-A/B actually hold and SAY the measurement in the doc comment; do not
+        copy Wispr's 20 minutes without evidence. If the measured answer is
+        larger than 20 minutes, declare the larger number — the point is that it
+        is declared and tested, not that it matches a competitor.
+      * At 80% of the ceiling the pill says so, once, calmly (reuse the
+        transcribing/listening phase copy path from Y3-C — no new toast system).
+      * At the ceiling the take STOPS cleanly and transcribes what it has. It
+        does not error, does not truncate mid-word if a VAD boundary is within
+        a couple of seconds (vad.rs:803 lines of machinery already exists — use
+        it to pick the cut), and does not discard anything.
+      * A meeting is NOT subject to this ceiling. \`tests/matrix_row17_meeting_cap.rs\`
+        already covers the meeting cap; assert the two ceilings are separate
+        constants so tightening one never silently tightens the other.
+
+    Tests \`tests/max_session.rs\`:
+      * \`take_stops_at_the_ceiling_and_transcribes_what_it_has\`
+      * \`warning_fires_once_at_eighty_percent\`
+      * \`cut_prefers_a_vad_boundary_within_the_grace_window\`
+      * \`meeting_cap_and_dictation_cap_are_separate_constants\`
+
+    Depends on Y3-A, Y3-C.
+
+    What NOT to do:
+      - Do NOT pick 5 minutes to be safe. Wilson dictates long; a low ceiling is
+        the same complaint in a new costume.
+      - Do NOT stop the take without transcribing it.
+  `,
+  acceptance: `
+    grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
+    test -f desktop/src-tauri/tests/max_session.rs
+    grep -q 'take_stops_at_the_ceiling_and_transcribes_what_it_has' desktop/src-tauri/tests/max_session.rs
+    grep -q 'meeting_cap_and_dictation_cap_are_separate_constants' desktop/src-tauri/tests/max_session.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test max_session              ; test $? -eq 0
+    cargo test --features custom-protocol --test matrix_row17_meeting_cap ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y3-G', prompt: 'Y3', branch: 'loop/y3-g-long-take-latency-and-energy-budget', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #181) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'A measured latency and energy budget for long takes, published as a test that fails on regression',
+  preflight: `
+    test -f desktop/src-tauri/tests/long_take_budget.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test long_take_budget
+  `,
+  spec: `
+    \`latency.rs\` (146 lines) already instruments the press->capture_start span
+    (YV35, anchored on physical key-down — lib.rs:1138). YV81 was an explicit
+    energy pass ("no busy timers, idle animations park, polish sidecar unloads
+    when unused"). Y3 adds chunked decode, a spill writer and a progress event
+    stream — three new opportunities to undo all of that.
+
+    Also note the marketing stake, which is real and already written down:
+    reference_wispr_parity_research §2.11 records Wispr at ~800 MB RAM / ~8% CPU
+    idle and says of Yap "Measure it and publish the number — it is free
+    marketing." A regression test is how that number stays true.
+
+    Create \`tests/long_take_budget.rs\` with named budgets as constants and a
+    comment giving the machine and the date each was measured on:
+      * \`press_to_capture_start\` unchanged by the spill writer (compare against
+        latency.rs's existing measurement path, not a new stopwatch).
+      * \`chunk_decode_wall_per_audio_second\` — a ceiling, measured on the
+        committed fixture, so a chunker regression that halves throughput fails.
+      * \`progress_events_per_minute_of_audio\` — a CEILING. An event storm from
+        the progress stream is an energy regression that nothing else would catch.
+      * \`resident_bytes_after_a_long_take_return_to_baseline\` — the spill
+        buffers and the chunk text must be dropped, not leaked, when the take
+        finalizes.
+      * \`no_new_polling_timer_was_introduced\` — sweep for
+        \`Duration::from_millis\`/\`from_secs\` under a threshold in the modules Y3
+        touched (record.rs, transcription.rs, lib.rs's take path), asserting
+        against an explicit allowlist of the ones that already exist. This is
+        the standing guard for YV81.
+
+    Then write the numbers into docs/loop/PLAN.md's audit section as measured
+    facts with their date, so the next loop inherits evidence instead of folklore.
+
+    Depends on Y3-A..F.
+
+    What NOT to do:
+      - Do NOT assert a wall-clock latency budget that depends on the runner's
+        GPU. Express the decode budget as a RATIO against the same fixture
+        decoded single-window on the same machine in the same run.
+      - Do NOT use a timing test as the only proof of a correctness fix.
+    PANEL 2026-09-12 — the budget list is missing the app itself and the write
+    target does not exist in a lane worktree.
+      * Budgets go to docs/BUDGETS.md (TRACKED). docs/loop/PLAN.md is UNTRACKED
+        in git — \`git status --porcelain --untracked=all\` lists it, and
+        \`git ls-files docs/loop\` returns HARNESS.md only — so a lane worktree,
+        which is a checkout of origin/main, does not contain it and the old
+        \`grep -q 'measured' docs/loop/PLAN.md\` could never pass.
+      * ADD A FOOTPRINT CEILING: peak resident bytes with the ASR engine AND
+        the polish child both loaded, asserted as a ceiling, on the declared
+        floor machine (Y6-E names it). SEC-C turns on a 1.12 GB resident GGUF
+        and Y4-E runs a multi-chunk pass over it while ASR is loaded; Y3-A caps
+        only the audio buffers (~32 MB). "Budgets on the weakest supported Mac"
+        cannot be enforced until the weakest Mac is named.
+
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'progress_events_per_minute_of_audio' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'resident_bytes_after_a_long_take_return_to_baseline' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'no_new_polling_timer_was_introduced' desktop/src-tauri/tests/long_take_budget.rs
+    # PANEL: docs/loop/PLAN.md is UNTRACKED in git, so it does not exist in any
+    # lane worktree and this grep could never pass. Budgets go in a tracked doc.
+    test -f docs/BUDGETS.md
+    grep -qE '[0-9]+ ?ms' docs/BUDGETS.md
+    grep -q 'peak_resident_bytes_with_asr_and_polish_loaded' desktop/src-tauri/tests/long_take_budget.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test long_take_budget ; test $? -eq 0
+  `,
+})
+
 // ── 20-y2-trial-and-limits.mjs ────────────────────────────────────────────
 // Y2 — TRIAL + LIMITS IN THE PILL. Wilson, 2026-09-12, verbatim: "the pill does
 // not tell people when they reach their limits or when the 14-day trial ends
@@ -2359,7 +3078,7 @@ ITEMS.push({
       desktop/src/license/status.ts:70      DEFAULT_SEATS = 3
       desktop/src/license/status.test.ts:162  "This license was refunded or
                                            charged back."
-      grep -rn 'storedKeyProblem|has_stored_license|license_problem_message'
+      grep -rn 'storedKeyProblem|has_stored_license|license_problem_message' scripts/loop/items
         over all item files -> no functional hit
     Y2-A's pillLicense policy enumerates exactly three inputs — licensed, trial
     with days, license_required — so a revoked, unreadable, clock-broken or
@@ -4729,7 +5448,7 @@ ITEMS.push({
     MEASURED at 4e8c9adf: \`shortcuts.rs:143 ALL\` contains four bindings —
     PASTE_LAST (:86), UNDO_AI_EDIT (:98), DICTATION_TOGGLE_LEGACY (:110),
     MEETING_TOGGLE (:129). \`git grep "hands_free_binding\\|cancel_binding\\|
-    copy_last"\` finds no hands-free hotkey, no cancel hotkey and no
+    copy_last" -- desktop\` finds no hands-free hotkey, no cancel hotkey and no
     copy-last command. §2.1 of the teardown scores hands-free 🟡 "tray toggle
     only, no dedicated hotkey", cancel ❌, copy-last ❌, paste-last ❌ "hotkey +
     menu item" (the command exists at lib.rs:2714; the MENU item is Y6-B).
@@ -5574,847 +6293,6 @@ ITEMS.push({
   `,
 })
 
-// ── 50-y10-parity-p2-surface.mjs ──────────────────────────────────────────
-// Y10 — THE P2 PARITY QUEUE: "surface & polish". Source of record:
-// ~/Obsidian/Wilson-Brain/Notes/Wispr-Full-Parity-Research-2026-08-09.md §3 P2
-// items 15-23, quoted per item. Two of the nine already left this file: #17
-// earcons and #20 coaching nudges went into 40-y8 because they are the cheapest
-// answers to "the app looks broken". #18 rich-text snippets is here. #21 Focus
-// Mode shipped its plumbing in Y9-D.
-//
-// Separate file from Y9 so the two run on opposite lanes.
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y10-A', prompt: 'Y10', branch: 'loop/y10-a-multi-language-and-the-in-bar-picker', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Multi-language: expose what the engine can already do, with the picker in the bar',
-  preflight: `
-    grep -q 'language_set' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test languages
-  `,
-  spec: `
-    P2 #15, VERBATIM: "Multi-language + in-bar language picker. (M · L) Whisper
-    is already multilingual; expose a language set + auto-detect and put the
-    picker in the bar."
-
-    MEASURED: \`language: "en"\` is the shipped default (lib.rs:400) and the
-    teardown's §2.1 row scores Yap "❌ English-only path" against Wispr's
-    "99-language auto-detect, or pick a language subset; language picker lives
-    in the Flow Bar". The capability exists in the engine —
-    \`asr_engine.rs:394\` carries \`supports_language_detect\` and
-    \`supports_streaming\` in the probed capabilities, and
-    \`tests/asr_capabilities_probe.rs\` already reads them.
-
-    Do:
-      * A language SET, not a single language: the user picks the languages they
-        actually speak, and auto-detect chooses among that set. A 99-language
-        auto-detect is worse than a 2-language one — it mis-detects.
-      * Drive it off the probed capability, not a hardcoded list: if
-        \`supports_language_detect\` is false for the installed model, the UI must
-        say so and fall back to the single selected language. A picker that
-        silently does nothing is the defect pattern this whole plan is about.
-      * The picker is a Y8-B slot in the bar, and also a Settings control.
-      * The formatting pipeline is English-shaped in places (spoken punctuation
-        names, \`format_email_shape\`). Do NOT pretend otherwise: state per
-        cleanup stage whether it is language-agnostic, and for a non-English
-        take skip the stages that are not, rather than applying English rules to
-        German. Assert that in a test.
-      * The meeting path is English-only by design and has a test for it
-        (\`tests/meeting_english_only_gate.rs\`). Keep it green; this item is
-        dictation only.
-
-    Tests \`tests/languages.rs\`: a model without detect support falls back and
-    says so; auto-detect only chooses within the set; English-shaped cleanup
-    stages are skipped for a non-English take; the default remains English for
-    an existing install.
-
-    What NOT to do:
-      - Do NOT expose 99 languages.
-      - Do NOT run the English spoken-punctuation table over a non-English take.
-      - Do NOT touch the meeting English-only gate.
-  `,
-  acceptance: `
-    grep -q 'language_set' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/languages.rs
-    grep -q 'a_model_without_detect_support_falls_back_and_says_so' desktop/src-tauri/tests/languages.rs
-    grep -q 'english_shaped_stages_are_skipped_for_a_non_english_take' desktop/src-tauri/tests/languages.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test languages                 ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_english_only_gate ; test $? -eq 0
-    cargo test --features custom-protocol --test asr_capabilities_probe    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'PERM-H', prompt: 'Y10', branch: 'loop/perm-h-microphone-ranking-and-device-intelligence', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings',
-  preflight: `
-    grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test mic_devices
-  `,
-  spec: `
-    P2 #16, VERBATIM: "Mic ranking + device intelligence. (S · L) Ordered
-    preference list, 'forget device', AirPods/clamshell/lid warnings. Yap
-    already has cpal device enumeration (YV35)."
-    The teardown's §2.1 row details what Wispr ships [BUNDLE]: "Ranked
-    preference list, drag to reorder, 'forget device', AirPods warning,
-    clamshell/lid-closed detection, Jabra wear-detection auto-switch, separate
-    Notetaker mic", Yap "🟡 single device pick".
-
-    Do:
-      * An ordered preference list persisted in settings; the highest-ranked
-        PRESENT device wins at take start. Drag to reorder. "Forget device"
-        removes a row so an old headset stops winning.
-      * AirPods warning: Bluetooth input is low-bandwidth and noticeably worse
-        for ASR. Say so once, when an AirPods-class device is selected, and
-        offer the built-in mic. This is the single most common cause of a bad
-        transcript that looks like a model problem.
-      * Clamshell / lid-closed: the built-in mic is unavailable or muffled.
-        Detect and warn. The teardown names Wispr's
-        \`settings_microphone_airpods_warning\` and
-        \`NoClamshellBuiltInMic\` notification as the [BUNDLE]/[LOCAL] evidence
-        that both cases are real enough to ship copy for.
-      * A DEVICE CHANGE MID-TAKE must not lose the take.
-        \`tests/matrix_row14_output_device_change.rs\` covers OUTPUT; input is
-        untested. Assert the take either continues on the new device or is
-        parked in recovery (Y3/DB-B), never silently truncated.
-      * Interaction with PERM-A: a device being present is a HARDWARE question
-        (\`input_device_present\`) and authorization is a TCC question
-        (\`authorization_status\`). This item must not re-merge them; PERM-A split
-        them deliberately.
-      * No Jabra wear-detection. Vendor-specific and out of scope; say so.
-
-    Tests \`tests/mic_devices.rs\`: the highest-ranked present device wins;
-    forget removes it from selection; the AirPods warning fires once per
-    selection; a mid-take input change does not silently truncate; ranking
-    persists across a restart (in Y4-H's round-trip).
-
-    Depends on PERM-A, DB-B, Y4-H.
-
-    What NOT to do:
-      - Do NOT conflate device presence with permission.
-      - Do NOT switch devices mid-take without telling the user.
-      - Do NOT add vendor-specific wear detection.
-  `,
-  acceptance: `
-    grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'the_highest_ranked_present_device_wins' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'the_airpods_warning_fires_once_per_selection' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'a_mid_take_input_change_does_not_silently_truncate' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'presence_and_authorization_stay_separate' desktop/src-tauri/tests/mic_devices.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test mic_devices     ; test $? -eq 0
-    cargo test --features custom-protocol --test mic_auth_status ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-B', prompt: 'Y10', branch: 'loop/y10-b-rich-text-snippets-on-the-pasteboard', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste',
-  preflight: `
-    grep -q 'rtf\\|public.rtf' desktop/src-tauri/src/paste.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test rich_snippets
-  `,
-  spec: `
-    P2 #18, VERBATIM: "Rich-text snippets. (M · L) RTF/HTML flavours on
-    \`NSPasteboard\`; interacts with the YV39 receipt-sequenced paste — needs its
-    own slice."
-    The teardown's §2.5 rows: Wispr's snippets are "rich text
-    (bold/italic/links/lists)" against Yap's "✅ plain-text (YV48)", and
-    "Replacement rules incl. HTML replacement" against Yap's "🟡 plain text".
-
-    The hazard named in the spec is the whole item. \`paste_tx.rs\` (641 lines,
-    YV39) sequences pastes by receipt precisely so two takes cannot interleave;
-    writing MULTIPLE pasteboard flavours is several writes where there was one,
-    and a half-written pasteboard is a paste of the wrong thing.
-
-    Do:
-      * Write all flavours for one paste as a single atomic pasteboard
-        declaration — declare the types, then set each — inside the existing
-        receipt transaction. Never a second transaction, never a write outside it.
-      * Flavours: \`public.utf8-plain-text\` always (so every target works), plus
-        \`public.rtf\` and/or \`public.html\` when the snippet carries markup. A
-        target that cannot take rich text must still get the plain text.
-      * Snippet storage gains a content-type. A plain snippet stays byte-for-byte
-        what it is today; assert that, because YV48's existing snippet tests are
-        the regression floor.
-      * The signature block is copied BYTE FOR BYTE after polish
-        (\`snippets::append_signature\`, lib.rs:283) — if a signature can now be
-        rich, it must stay byte-identical in the plain flavour and the rich
-        flavour must be derived, never re-authored by a model. Assert it.
-      * Y6-C's paste_target_e2e must be extended, not duplicated: two takes in
-        quick succession with rich flavours cannot interleave.
-
-    Tests \`tests/rich_snippets.rs\`: all flavours land in one transaction; a
-    plain snippet is byte-identical to today; a rich snippet degrades to plain
-    on a plain-only target; a signature stays byte-identical; no interleaving.
-
-    Depends on Y6-C.
-
-    What NOT to do:
-      - Do NOT write the pasteboard outside the receipt transaction.
-      - Do NOT drop the plain-text flavour.
-      - Do NOT let a model author the rich version of a signature.
-  `,
-  acceptance: `
-    grep -qE 'public.rtf|public.html' desktop/src-tauri/src/paste.rs
-    test -f desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'all_flavours_land_in_one_receipt_transaction' desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'a_plain_snippet_is_byte_identical_to_today' desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'a_signature_stays_byte_identical' desktop/src-tauri/tests/rich_snippets.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test rich_snippets    ; test $? -eq 0
-    cargo test --features custom-protocol --test paste_target_e2e ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-D', prompt: 'Y10', branch: 'loop/y10-d-mouse-button-push-to-talk', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'A non-primary mouse button as push-to-talk',
-  preflight: `
-    grep -q 'mouse_ptt\\|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test mouse_ptt
-  `,
-  spec: `
-    P2 #22, VERBATIM: "Mouse-button PTT. (M · L) Non-primary mouse button as
-    the hotkey."
-    The teardown's §2.1 row on Wispr's version ([BUNDLE]
-    \`settings_hotkey_dialog_mx_master_*\`, [OFFICIAL] whats-new 2026-03-31):
-    "Bind a non-primary mouse button as PTT; dedicated MX Master setup flow;
-    also an Enter rebind so a mouse button sends the message", Yap ❌.
-
-    \`ptt_macos.rs\` (590 lines) already owns the CGEvent tap for the
-    modifier-only fn / fn⌃ hold, which is the hard part — a mouse button is
-    another event type on the same tap.
-
-    Do:
-      * Bind button 3+ (never the primary or secondary button — stealing a
-        right-click is unacceptable and must be impossible, not merely
-        discouraged). Enforce it in the binding validator (Y8-A).
-      * The tap must not swallow the event for other apps. A PTT mouse button
-        that also fires in the game or the design tool the user is in is worse
-        than no feature; a PTT button that is swallowed everywhere is also wrong.
-        Decide, state the decision, and test the pass-through behaviour.
-      * Input Monitoring is required for a raw button tap the same way it is for
-        the modifier-only hold — PERM-E added Input Monitoring to the permission
-        report; this item consumes it. Without the grant, the feature must be
-        visibly unavailable rather than silently dead.
-      * No MX-Master-specific setup flow. Generic, any mouse.
-
-    Tests \`tests/mouse_ptt.rs\`: primary and secondary buttons are rejected by
-    the validator; a bound button starts and stops a take; pass-through is as
-    decided; without Input Monitoring the feature reports unavailable.
-
-    Depends on Y8-A, PERM-E.
-
-    What NOT to do:
-      - Do NOT allow binding the primary or secondary button.
-      - Do NOT ship it silently dead without Input Monitoring.
-      - Do NOT add a vendor-specific setup flow.
-  `,
-  acceptance: `
-    grep -qE 'mouse_ptt|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
-    test -f desktop/src-tauri/tests/mouse_ptt.rs
-    grep -q 'primary_and_secondary_buttons_are_rejected' desktop/src-tauri/tests/mouse_ptt.rs
-    grep -q 'without_input_monitoring_the_feature_reports_unavailable' desktop/src-tauri/tests/mouse_ptt.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test mouse_ptt           ; test $? -eq 0
-    cargo test --features custom-protocol --test shortcut_validation ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-E', prompt: 'Y10', branch: 'loop/y10-e-local-insights-v2-and-the-yappy-profile', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy\'s dialogue',
-  preflight: `
-    grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test insights_v2
-  `,
-  spec: `
-    P2 #23, VERBATIM: "Local Insights v2 / Yappy profile. (M · D) 'most
-    corrected word', 'peak hour', 'catch phrase' — Wispr computes these in the
-    cloud; Yap can do it in SQLite. Feeds Yappy's dialogue."
-    The teardown's §2.5 row on Wispr's gamified Voice Profile [LOCAL]/[BUNDLE]:
-    \`superpower_title\`, \`catch_phrase\`, \`persona\`, \`most_used_word\`,
-    \`most_removed_word\`, \`peak_time_top_app\`, \`word_count_milestone\`, with the
-    note "Yappy is the better version of this idea".
-
-    Yap has the raw material and is not using it: the dictionary learns from
-    corrections (YV47), \`raw_text\` and the formatted text are both stored
-    (YV10/51), \`get_insights\` and a day-series exist (lib.rs:2420-2432), and
-    DB-A's usage rollup lands the per-day words and voiced seconds.
-
-    Do:
-      * Computed in SQL over the existing tables, no new capture: most-used
-        word (stopword-filtered), most-CORRECTED word (from the raw-vs-final
-        diff Y4-G's diff module already computes — reuse it, do not write a
-        second differ), peak hour, peak app, longest take, current streak,
-        word-count milestones.
-      * Bounded cost: these run on demand when the Insights view opens, not on
-        every take, and DB-C's volume test must still pass with them
-        (10,000 takes, no full scans on the take path).
-      * FEEDS YAPPY. Y5-H's habitat reacts to real state; these are the richest
-        real state Yap has. Wire at least three of them into the habitat's
-        reaction table and into the pill's commentary via \`pill/tone.ts\`, so
-        the numbers become personality rather than a dashboard
-        (feedback_no_generic_ui: reject AI-dashboard aesthetics).
-      * Nothing is transmitted and nothing is a leaderboard. The teardown's
-        "explicitly not wanted" list includes teams and leaderboards.
-      * Insights must render honestly at ZERO takes — Y5-B's empty state for
-        this view exists because today the view renders blank (App.tsx:2953
-        renders nothing when \`insights\` is falsy).
-
-    Tests \`tests/insights_v2.rs\`: each metric on a seeded corpus with a known
-    answer; stopwords excluded from most-used; most-corrected uses the stored
-    raw-vs-final pair; zero takes yields a defined empty result, never a panic
-    and never a divide-by-zero; no query added to the take path.
-
-    Depends on DB-A, DB-C, Y4-G, Y5-H.
-
-    What NOT to do:
-      - Do NOT compute these on every take.
-      - Do NOT write a second diff implementation.
-      - Do NOT transmit any of it, and do not build a leaderboard.
-  `,
-  acceptance: `
-    grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
-    test -f desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'stopwords_are_excluded_from_most_used' desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'zero_takes_yields_a_defined_empty_result' desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'no_query_was_added_to_the_take_path' desktop/src-tauri/tests/insights_v2.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test insights_v2       ; test $? -eq 0
-    cargo test --features custom-protocol --test history_at_volume ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-F', prompt: 'Y10', branch: 'loop/y10-f-publish-the-idle-cost-number', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: yap23 install measured idle RSS ~135-138 MB (pid 87890); wakeups were never measured — yap24-OS5 depends on this item.`,
-  title: 'Measure and publish Yap\'s idle RAM and CPU — the free marketing line the research asked for',
-  preflight: `
-    test -f desktop/src-tauri/tests/idle_cost.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test idle_cost
-  `,
-  spec: `
-    From the teardown §2.11, verbatim: "Idle cost measured by users at ~800 MB
-    RAM / ~8% CPU; 8-10 s cold start ... **Yap's position:** a Rust/Tauri binary
-    with a warm GGUF engine and idle-throttled canvases (YV24) should beat that
-    by an order of magnitude. **Measure it and publish the number — it is free
-    marketing.**"
-
-    Yap's own recorded numbers: "138MB idle" for the build carrying the diarize
-    sidecar (project_yap_build_state, 2026-08-16), and an explicit energy pass
-    (YV80 lazy model load, YV81 no busy timers / idle animations park / the
-    polish sidecar unloads when unused).
-
-    Do:
-      * \`tests/idle_cost.rs\`: launch the built binary headless, let it settle,
-        and assert resident memory and CPU are under named ceilings — with the
-        machine and date in a comment, and the ceilings set with enough headroom
-        that they fail on a REGRESSION and not on a different Mac. Express CPU
-        as a ceiling over a sampling window, never an instantaneous read.
-      * Assert the specific things the energy pass bought, so they cannot erode:
-        no ASR model resident before the first take (YV80 — and
-        \`tests/meeting_no_model_resident.rs\` is the existing sibling
-        assertion, follow its shape), the polish sidecar not running when unused
-        (YV81), and no timer firing faster than the documented floor while idle.
-      * Cold start: measure and assert a ceiling.
-      * Publish the numbers in README.md and on the site copy, next to the
-        claim, with the measurement method in one sentence. A published number
-        with no method is a number nobody believes.
-
-    Depends on Y3-G (which establishes the long-take budget harness — reuse its
-    measurement helpers rather than writing a second sampler).
-
-    What NOT to do:
-      - Do NOT publish a number you did not measure on a build from this repo.
-      - Do NOT name the competitor's number in Yap's own marketing copy
-        (no competitor jabs). Publish Yap's number and let it stand alone.
-      - Do NOT set a ceiling so tight it goes red on a different Mac.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'no_asr_model_is_resident_before_the_first_take' desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'the_polish_sidecar_is_not_running_when_unused' desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'no_timer_fires_faster_than_the_documented_floor_while_idle' desktop/src-tauri/tests/idle_cost.rs
-    grep -qE 'idle' README.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test idle_cost                ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_no_model_resident ; test $? -eq 0
-  `,
-})
-
-// ── 55-y11-diarization-carryforward.mjs ───────────────────────────────────
-// Y11 — THE PARKED DIARIZATION QUEUE. The yap23 loop was stopped mid-finisher on
-// a fast-track order; six items were PARKED with real blocking defects, each with
-// a tracking issue on the repo carrying the `audit-carryforward` label, and six
-// PRs left open. Verified live on 2026-09-12 with
-// `gh issue list --repo wilsonguenther-dev/wilson-voice --state open` (6 open,
-// #150-#155) and the refs `origin/feat/yv127`…`origin/feat/yv134`.
-// docs/loop/HARNESS.md records the same six PRs and says Drain settles them.
-//
-// The resume note is explicit that PARKED = the FIRST work of the next Yap
-// session, and that ALL SIX also need a rebase picking up `min_embed`.
-//
-// Also carried forward, and the reason Y11-G exists: the eval numbers standing
-// in the repo are REGRESSION FLOORS measured on a `say`-generated synthetic
-// corpus (DER 0.34-0.45, EER 0.272 — the embedder hears the synthesizer), and a
-// real-voice corpus is a known, named next need.
-//
-// This file runs LAST. Diarization is the notetaker's accuracy layer; nothing in
-// Wilson's 2026-09-12 list depends on it, and it must not delay the dictation
-// work. It is in the plan because leaving six blocking defects untracked in a
-// shipped subsystem is how they become folklore.
-//
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y11-A', prompt: 'Y11', branch: 'loop/y11-a-rebase-the-six-parked-branches-on-min-embed', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. AMENDED 2026-09-26: the pre-flight used to require ZERO open PRs in the whole repo, which can never pass while loop-build PRs are open; it now counts only the six parked feat/yv PRs (#142-#146, #149, still open 2026-09-26).`,
-  title: 'Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was',
-  preflight: `
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv1*' | wc -l)"
-    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("feat/yv"))] | length' | grep -qx 0
-  `,
-  spec: `
-    MEASURED on 2026-09-12:
-      git for-each-ref  ->  origin/feat/yv127 (d6667ac), yv128 (6e386e1),
-                            yv129 (3d78900), yv130 (77a0c95), yv131 (5353261),
-                            yv134 (de0c4d6), all dated 2026-08-15/16.
-      origin/main       ->  4e8c9adf (YV126).
-      gh issue list     ->  #150-#155, all labelled audit-carryforward.
-
-    The resume note's instruction, which is the whole of this item: all six
-    "need a rebase picking up min_embed". Until they do, every review of them is
-    a review of a tree that no longer exists — and the sibling lesson here is
-    exact: main moves under long loops, so rebase before evaluating checks.
-
-    Do, per branch, in issue order (#150 first):
-      1. Rebase onto current main. Rerun the full gate
-         (docs/loop/HARNESS.md "The gate", all eight commands, exit codes read
-         bare).
-      2. Re-read its tracking issue and decide ONE of three outcomes, recorded
-         in the PR:
-            - the defect is fixed by the rebase (main moved past it) -> close the
-              issue with the evidence and merge or close the PR accordingly;
-            - the defect survives -> the PR stays open, the issue stays open, and
-              the specific item below (Y11-B..F) owns the fix;
-            - the branch is superseded -> close the PR naming the commit that
-              supersedes it, and keep the issue if the defect is still live.
-      3. Never merge a rebased branch whose tracking issue is still open and
-         unaddressed. That is the exact mistake that created six carry-forwards.
-      * Also settle the one open watch item: docs/loop/HARNESS.md and the resume
-        note both flag a transient red main run on c3fd5d89 (cargo test exit
-        101, logs expired, two green runs since). Run
-        \`cargo test --features custom-protocol\` ten times in a row on current
-        main and record the pass count in the PR body. If it recurs, capture the
-        log immediately — "CI is flaky" must not be allowed to take root.
-
-    What NOT to do:
-      - Do NOT merge a parked branch to clear the queue. Six open PRs is not the
-        problem; six unaddressed defects is.
-      - Do NOT close a tracking issue without the evidence in the comment.
-      - Do NOT squash the six into one branch. Each has its own defect and its
-        own issue.
-  `,
-  acceptance: `
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv12*' | wc -l)"
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv13*' | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol ; test $? -eq 0
-    cargo clippy --all-targets --features custom-protocol ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it',
-  preflight: `
-    gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #150, title verbatim: "YV127 overlap honesty (#142): the
-    impossibility framing survives in transcript.ts and the guard cannot see it".
-    Labelled \`audit-carryforward\` = "Verified finding carried forward from a
-    reflection/cleanup pass".
-
-    Read #150 and PR #142 in full before writing code. The shape of the defect,
-    which is the shape this whole plan keeps finding: a guard was added, a
-    string it was supposed to police lives in a file the guard's scope does not
-    cover, and the guard therefore passes while the wrong sentence ships. A grep
-    proving absence with the wrong SCOPE proves nothing.
-
-    Do:
-      * Fix the surviving string in \`desktop/src/meetings/transcript.ts\` so the
-        user-facing framing is accurate.
-      * WIDEN THE GUARD so it could not have missed it: the guard must cover
-        every file that can produce user-facing transcript copy — the TS
-        rendering modules and the Rust export path both — and the test must name
-        its scope explicitly rather than relying on a default search root.
-      * Prove it non-vacuously: reintroduce the offending sentence in a scratch
-        copy and assert the guard now fails. Record that in the PR body (the
-        repo's own convention, docs/pr-screenshots/YV105/…/non-vacuous-mutations.txt),
-        and add the row to Y7-C's docs/loop/MUTATIONS.md table.
-      * Keep \`tests/meeting_transcript_render_two_track.rs\`,
-        \`meeting_transcript_render_single_track_unchanged.rs\` and the vitest
-        \`src/meetings/transcript.test.ts\` green.
-      * Close #150 with the evidence.
-
-    Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT widen the guard by searching the whole repo without a scope. A
-        repo-wide grep that matches a doc or a test fixture is a guard that will
-        be disabled the first time it is inconvenient.
-      - Do NOT fix the string without fixing the guard. The guard is the defect.
-  `,
-  acceptance: `
-    gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'transcript.ts' docs/loop/MUTATIONS.md
-    cd ${APP} && npm ci
-    npm test ; test $? -eq 0
-    cd src-tauri
-    cargo test --features custom-protocol --test meeting_transcript_render_two_track ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_transcript_render_single_track_unchanged ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'DB-E', prompt: 'Y11', branch: 'loop/db-e-speaker-profiles-store-the-weights-digest', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest',
-  preflight: `
-    gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #151, verbatim: "YV128 speaker_profiles (#143): the model
-    skip stores a catalog id, not the pinned weights digest".
-
-    Why it is blocking and not cosmetic: a speaker embedding is only comparable
-    to another embedding produced by the SAME WEIGHTS. A catalog id is a
-    mutable label — the same id can point at re-quantized or updated weights —
-    so a profile enrolled under one set of weights will be silently scored
-    against another, and the failure looks like a bad match rather than a
-    schema bug. The repo already pins digests elsewhere: YV123 vendored the
-    models via a mirror and \`tests/supply_chain.rs\` asserts the sidecar pins
-    sherpa-onnx exactly. This is that same discipline, one layer up.
-
-    Do:
-      * A migration adding the weights DIGEST to \`speaker_profiles\` (and to the
-        skip record the issue names), idempotent
-        (tests/db_migration_idempotent.rs must stay green).
-      * Enrollment records the digest of the weights that produced the
-        embedding. Scoring REFUSES to compare across digests — refuses, not
-        silently re-embeds and not silently scores anyway. A refusal is a
-        visible state the UI can explain; a cross-weights score is a wrong
-        answer.
-      * A re-enrollment path so a user whose model changed can re-enroll rather
-        than lose their roster.
-      * There are no users of this feature to migrate (it shipped days before
-        the loop stopped), so prefer the correct schema over a compatibility
-        shim — but do not destroy existing rows: mark them as
-        unknown-digest and refuse to score them until re-enrolled.
-
-    Tests \`tests/speaker_profile_digest.rs\`: enrollment stores the digest;
-    scoring across digests refuses; an unknown-digest row is not scored and not
-    deleted; the migration is idempotent; re-enrollment clears the refusal.
-
-    Close #151 with the evidence. Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT store the catalog id as a proxy for the digest.
-      - Do NOT silently re-embed on a digest mismatch.
-      - Do NOT delete existing profile rows.
-  `,
-  acceptance: `
-    gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -qE 'weights_digest|weights_sha' desktop/src-tauri/src/db.rs
-    test -f desktop/src-tauri/tests/speaker_profile_digest.rs
-    grep -q 'scoring_across_digests_refuses' desktop/src-tauri/tests/speaker_profile_digest.rs
-    grep -q 'an_unknown_digest_row_is_not_scored_and_not_deleted' desktop/src-tauri/tests/speaker_profile_digest.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test speaker_profile_digest  ; test $? -eq 0
-    cargo test --features custom-protocol --test db_migration_idempotent ; test $? -eq 0
-    cargo test --features custom-protocol --test supply_chain            ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-C', prompt: 'Y11', branch: 'loop/y11-c-enrollment-bands-retuned-on-the-scored-population', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path',
-  preflight: `
-    gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #152, verbatim: "YV129 enrollment matching (#144): bands
-    tuned on utterance pairs, applied to roster-max centroid scoring
-    (FAR 1.000)". The resume note flags it with an exclamation mark for a
-    reason: "FAR 0.034 tuned vs 1.000 shipped path".
-
-    This is the single most serious defect in the parked queue. A false-accept
-    rate of 1.000 on the shipped scoring path means the matcher accepts
-    EVERY candidate — the feature reports confident speaker identities that are
-    not identities at all. And the tuned number that was recorded, 0.034, was
-    measured on a DIFFERENT scoring population (utterance-to-utterance pairs)
-    than the one that ships (max over a roster of centroids). A threshold tuned
-    on one population and applied to another is not a threshold.
-
-    Do:
-      * Retune the bands on the POPULATION THAT SHIPS: roster-max over
-        centroids, at the roster sizes the product actually produces. Report FAR
-        and FRR at the chosen operating point, and report them per roster size —
-        roster-max FAR grows with roster size and a single number hides that.
-      * Where the honest answer is "this mechanism cannot reach a usable FAR at
-        roster size N", SAY SO and gate the feature at N rather than shipping a
-        threshold that cannot hold. A refused identification is a product state;
-        a wrong one is a defect. YV126's own resolution was "a floor instead of
-        a reject", so the precedent for an honest floor already exists in this
-        subsystem.
-      * Every number written into the repo must name the population, the corpus,
-        the roster size and the date. The standing failure mode here is a
-        measurement outliving the thing that produced it, and ci.yml already
-        carries a guard built for exactly that
-        (\`meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend\`)
-        — keep it green and follow its example.
-      * The corpus caveat is not optional: the numbers standing in the repo are
-        floors on a \`say\`-generated synthetic corpus where the embedder hears
-        the synthesizer. Any number produced here inherits that caveat until
-        Y11-G lands a real-voice corpus, and the PR body must say so in one
-        sentence.
-
-    Tests: extend \`tests/diarization_metrics.rs\` and \`tests/meeting_eval.rs\`
-    with the roster-max arm, and add
-    \`bands_are_tuned_on_the_population_that_ships\` asserting the tuning
-    harness and the shipped scorer call the SAME function.
-
-    Close #152 with the numbers. Depends on Y11-A, DB-E.
-
-    What NOT to do:
-      - Do NOT re-report the 0.034 figure. It describes a path that does not ship.
-      - Do NOT ship a threshold you could not measure.
-      - Do NOT present a synthetic-corpus number as a real-voice number.
-  `,
-  acceptance: `
-    gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'bands_are_tuned_on_the_population_that_ships' desktop/src-tauri/tests/diarization_metrics.rs
-    grep -qE 'roster' desktop/src-tauri/tests/meeting_eval.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_cluster_attribution ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-D', prompt: 'Y11', branch: 'loop/y11-d-split-partition-seeding-and-the-outlier', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #153: split_partition\'s farthest-pair seeding does not separate speakers when an outlier is the far point',
-  preflight: `
-    gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #153, verbatim: "YV130 correction UX (#145):
-    split_partition's farthest-pair seeding does not separate speakers when an
-    outlier is the far point".
-
-    A farthest-pair seed is the textbook 2-means initialisation and it has a
-    textbook failure: if the two most distant embeddings are one real speaker
-    and one outlier (a cough, a door, a clipped segment), the split separates
-    the outlier from everything else and the two speakers stay merged. The
-    user-visible symptom is a correction action that appears to do nothing,
-    which is worse than an absent feature — this lives under "correction UX"
-    for that reason.
-
-    Do:
-      * Replace or guard the seeding. Options, in the order worth trying:
-        k-means++ style probabilistic seeding; a trimmed farthest pair that
-        excludes points beyond a robust distance quantile; or a seed pair chosen
-        to maximise the resulting partition's separation rather than the pair
-        distance. Implement ONE, measured against the others on the eval corpus,
-        and say in the PR body which you tried and what each scored.
-      * The outlier itself must go somewhere defensible: assign it to its
-        nearest cluster or to a named noise bucket, and NEVER let one outlier
-        become a "speaker" in the roster. A phantom speaker in the transcript is
-        the worst outcome of this bug.
-      * Reuse \`tests/diarize_cluster_distance_threshold.rs\` and
-        \`diarize_cluster_rank_and_floor.rs\` — YV126 established the distance
-        threshold and the floor, and this fix must not move either.
-      * Regression case, committed: a synthetic partition with one extreme
-        outlier and two genuinely distinct speakers, where the old seeding
-        provably fails and the new one provably separates. That fixture IS the
-        proof; without it this is an unverifiable refactor.
-
-    Tests \`tests/diarize_split_seeding.rs\`: the outlier fixture separates the
-    two speakers; one outlier never becomes a roster speaker; the seeding is
-    deterministic for a given input (no unseeded randomness — the loop's
-    generated scripts forbid nondeterminism and an eval that changes per run is
-    not an eval); the YV126 threshold and floor are unchanged.
-
-    Close #153 with the numbers. Depends on Y11-A, Y11-C.
-
-    What NOT to do:
-      - Do NOT introduce unseeded randomness. If the seeding is probabilistic,
-        the seed is an explicit parameter.
-      - Do NOT let an outlier become a speaker.
-      - Do NOT change the YV126 distance threshold in this item.
-  `,
-  acceptance: `
-    gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    test -f desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'the_outlier_fixture_separates_the_two_speakers' desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'one_outlier_never_becomes_a_roster_speaker' desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'seeding_is_deterministic_for_a_given_input' desktop/src-tauri/tests/diarize_split_seeding.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test diarize_split_seeding              ; test $? -eq 0
-    cargo test --features custom-protocol --test diarize_cluster_distance_threshold ; test $? -eq 0
-    cargo test --features custom-protocol --test diarize_cluster_rank_and_floor     ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist',
-  preflight: `
-    gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    gh issue view 155 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Two issues, one class of defect, so one item.
-
-    #154, verbatim: "YV131 cross-device drift (#146): the false-mechanism
-    sentence survives in the shipped cohort asset and its generator".
-    #155, verbatim: "YV134 phase-closing E2E (#149): the 0.35 comment claims
-    shipped call sites that do not exist".
-
-    Both are FALSE CAPABILITY CLAIMS in the tree: prose asserting a mechanism or
-    a call site that is not there. That class is a BLOCKING finding by the
-    reviewer contract, and it is corrosive beyond its size — the next engineer
-    reads the comment, believes the mechanism, and builds on it. The repo has
-    already been bitten: ci.yml carries a long note about an earlier revision of
-    that very file claiming a precondition it never reached
-    ("It was not, and could not be ... The arm returns on its first line here").
-
-    Do:
-      * #154: fix the sentence in the shipped cohort asset AND in its GENERATOR,
-        which is the part that matters — fixing only the asset means the next
-        regeneration restores the false claim. Then add the guard that would
-        have caught it, scoped to include generated assets, and prove it
-        non-vacuously.
-      * #155: delete or correct the 0.35 comment, and — the real fix — add the
-        assertion that a comment naming a call site must name one that exists.
-        The repo has the precedent:
-        \`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches\`
-        is exactly this kind of guard. Follow it, and keep
-        \`tests/matrix_coverage.rs\` green.
-      * Both rows go into Y7-C's docs/loop/MUTATIONS.md.
-      * Then sweep once for the same class across the diarization modules: any
-        doc comment naming a constant, a call site or a mechanism must name one
-        that exists. Report the count found in the PR body, fix them, and say
-        plainly if the sweep is not exhaustive and why — an honest partial sweep
-        beats a claimed complete one.
-
-    Close #154 and #155 with the evidence. Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT fix the asset without fixing the generator.
-      - Do NOT delete a comment to pass a guard. Either the mechanism exists and
-        the comment is right, or the comment goes and the guard proves it went.
-      - Do NOT claim an exhaustive sweep you did not run.
-  `,
-  acceptance: `
-    gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    gh issue view 155 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'cohort' docs/loop/MUTATIONS.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test matrix_coverage ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_eval    ; test $? -eq 0
-    cargo test --features custom-protocol ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-F', prompt: 'Y11', branch: 'loop/y11-f-real-voice-eval-corpus', gated: 'panel',
-  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
-  title: 'A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists',
-  preflight: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test meeting_eval
-  `,
-  spec: `
-    GATED: 'panel'. The mechanism is clear; what a corpus of real human voices
-    may contain and where it may live are Wilson's calls, not an agent's.
-
-    THE PROBLEM, from the yap23 close-out verbatim: "Eval numbers so far are
-    REGRESSION FLOORS on a synthetic say-voice corpus (DER 0.34-0.45,
-    EER 0.272 — CAM++ hears the synthesizer; real-voice corpus is a known next
-    need)." A speaker embedder scored on text-to-speech output is being asked to
-    tell apart one synthesizer from itself; the numbers bound regressions and
-    say nothing about accuracy on people. Every number Y11-C produces inherits
-    that ceiling.
-
-    WHAT THE PANEL AND WILSON MUST DECIDE before this item is built:
-      1. WHOSE VOICES. A public research corpus under a licence that permits
-         this use, voices recorded with explicit consent, or both. Each has a
-         different consent and licence posture.
-      2. WHERE IT LIVES. It cannot be committed to a public repo. The existing
-         scan corpus precedent is an external drive plus a manifest with
-         checksums in the repo — the eval already works this way
-         (tests/fixtures/meeting_eval_manifest.json plus its .sha256, and
-         meeting_eval.rs opening on a corpus path no runner has).
-      3. CONSENT AND RETENTION. Recorded voices are biometric data. How long is
-         it kept, who can access it, and what does a contributor's withdrawal
-         require? Yap's whole position is local-only privacy; an eval corpus of
-         real voices sitting on a build box is the one place that promise could
-         be undone by its own tooling.
-      4. WHETHER CI EVER SEES IT. The answer is almost certainly no, and the
-         existing pattern already handles that honestly: the corpus arm returns
-         on its first line in CI, and a separate guard asserts the measurement
-         stays backed by a real backend. Confirm rather than assume.
-
-    BUILD REGARDLESS, because it is useful the moment a corpus exists:
-      * A manifest schema + checksum file for a real-voice corpus, mirroring the
-        existing meeting_eval manifest exactly, with an EMPTY manifest committed.
-      * The eval arm that consumes it, skipping with a NAMED reason when the
-        corpus is absent — never a silent skip, which is how an unmeasured
-        number gets reported as measured.
-      * A report that prints DER/EER per corpus and refuses to print a single
-        blended number across a synthetic and a real corpus. Blending them is
-        how the synthetic ceiling would disappear from the record.
-      * Every published number carries its corpus name. Update the existing
-        recorded numbers to say "synthetic" explicitly, which is a one-line
-        honesty fix that does not need the panel.
-
-    Depends on Y11-C.
-
-    What NOT to do:
-      - Do NOT commit voice audio to the repo.
-      - Do NOT record anyone without explicit consent.
-      - Do NOT report a blended number.
-      - Do NOT skip the arm silently.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.sha256
-    grep -q 'synthetic' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'refuses_to_blend_corpora_into_one_number' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'absent_corpus_skips_with_a_named_reason' desktop/src-tauri/tests/meeting_eval.rs
-    test 0 -eq "$(find desktop/src-tauri/tests/fixtures -name '*.wav' -newer desktop/src-tauri/tests/fixtures/README.md | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
-    cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
-  `,
-})
-
 
 // ── RUN ─────────────────────────────────────────────────────────────────────
 phase('Recon')
@@ -6467,10 +6345,12 @@ will waste an hour reading it as a code defect.
 
 # 4 — BASELINE GATE, ONCE, IN LANE A ONLY (both lanes sit on the same origin/main sha)
 ${GATE_CMDS(WORKDIR, CARGO_TARGET_A)}
-Plus the informational one, so the run knows its baseline:
-    cd ${WORKDIR}/${APP} && cargo fmt --all -- --check ; echo "fmt=$?"
-MEASURED ON main 2026-09-12: typecheck=0 test=0 build=0 sidecar=0 polishtest=0 clippy=0 cargotest=0
-and fmt=1. If any of the eight is non-zero for you, report it as the BASELINE state; do not fix it,
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+If any BLOCKING code is non-zero for you, report it as the BASELINE state; do not fix it,
 and do not let a later agent be blamed for it. Do NOT repeat the baseline in lane B — confirm the
 two shas match instead.
 
@@ -6503,8 +6383,8 @@ item to "already-done" when every command passes. Do NOT run the items' pre-flig
 pre-flight run by recon and reported second-hand is exactly the shared-false-premise failure this
 harness has already had once. Just publish the sha the items will measure against:
     cd ${WORKDIR} && git rev-parse origin/main
-RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false, typecheckExit,
-         testExit, buildExit, sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit,
+RETURN: {worktreeCreated, worktreePath, headSha, npmCiOk, cargoWarmOk: true|false,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
          ciMode: "github"|"local", ciModeWhy, openPrsBefore, preexistingPrs: [...], notes}
 ${WORKTREE_CONTRACT(WORKDIR, PREVIEW_PORT, CARGO_TARGET_A, WORKDIR_B)}
 ${VERIFY_NOTHING}
@@ -6545,7 +6425,13 @@ create a third worktree or a clone: disk hygiene is a hard rule here.
 
 # 3 — BASELINE GATE, ONCE, IN CHAIN R1 ONLY (both sit on the same origin/main sha)
 ${GATE_CMDS(REVIEW_DIRS[0], REVIEW_TARGETS[0])}
-Read each exit code BARE, never through a pipe. Report all eight. A non-zero here is the BASELINE
+Read each exit code BARE, never through a pipe.
+CLASSIFY EACH EXIT WITH GATE_BLOCKING / GATE_ADVISORY — YOU DO NOT DECIDE WHAT IS INFORMATIONAL.
+BLOCKING: ${GATE_BLOCKING.join(', ')}. ADVISORY: ${GATE_ADVISORY.join(', ')}. The land gate reads the same two lists.
+Return every code as a NUMBER in gateExits: {${[...GATE_BLOCKING, ...GATE_ADVISORY].join(', ')}}. A missing or
+non-numeric code is read as RED: a red or unreadable BLOCKING code on main HALTS this pass before any
+review or build (every gate downstream would fail the same way), and that is the intended loud failure.
+A non-zero here is the BASELINE
 state of main after the build pass's merges — report it, do NOT fix it, and make sure no PR is later
 blamed for it. Confirm the two worktrees' shas match rather than re-running the gate in R2.
 
@@ -6559,8 +6445,9 @@ instead. Do not guess it, do not infer it from a red check, and do not soften it
 # 5 — THE BOARD
     node ${STATUS} --part ${PART} --total ${ITEMS.length} --current none
 
-RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha, typecheckExit, testExit, buildExit,
-         sidecarExit, polishTestExit, clippyExit, cargoTestExit, fmtExit, openPrsBefore,
+RETURN: {reviewWorktrees: [...], npmCiOk, cargoWarmOk, headSha,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest} (numbers, all eleven), fmtHunks (the fmtHunks= number GATE_CMDS echoes),
+         openPrsBefore,
          ciMode: "github"|"local", ciModeWhy, notes}
 ${VERIFY_NOTHING}
 ${LOGLINE('review recon', '_recon', 'harness:recon')}
@@ -6579,15 +6466,18 @@ const RECON_SCHEMA = {
     headSha: { type: 'string' },
     npmCiOk: { type: 'boolean' },
     cargoWarmOk: { type: 'boolean' },
-    typecheckExit: { type: 'number' },
-    testExit: { type: 'number' },
-    buildExit: { type: 'number' },
-    clippyExit: { type: 'number' },
-    cargoTestExit: { type: 'number' },
+    // The baseline gate on main, one NUMBER per GATE_CMDS label. Required: gateRedOnMain() reads it,
+    // and a missing key is UNREADABLE, which fails closed (halts the pass).
+    gateExits: {
+      type: 'object',
+      properties: Object.fromEntries([...GATE_BLOCKING, ...GATE_ADVISORY].map((k) => [k, { type: 'number' }])),
+      required: [...GATE_BLOCKING, ...GATE_ADVISORY],
+    },
+    fmtHunks: { type: 'number' },
     openPrsBefore: { type: 'number' },
     notes: { type: 'string' },
   },
-  required: ['ciMode'],
+  required: ['ciMode', 'gateExits'],
 }
 
 const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
@@ -6620,6 +6510,95 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
       : 'CI_MODE=github — Actions is placing jobs on runners again; the check run is the merge gate, ' +
           'and the local clippy run is still owed because CI treats clippy and fmt as informational.'
   )
+}
+
+
+// ── stall helpers (template-only; the RULES are the STALL-RULES block above GATE_CMDS) ──
+/** A seat's return as an object: the typed payload, or the JSON text it sent instead, else {}. */
+const objectOf = (v) => {
+  if (v && typeof v === 'object') return v
+  if (typeof v !== 'string') return {}
+  try {
+    const o = JSON.parse(v)
+    return o && typeof o === 'object' ? o : {}
+  } catch (err) {
+    log(`stall objectOf: seat return is not JSON (${String(err && err.message ? err.message : err).slice(0, 80)}) — reading gateExits from its text instead`)
+    return {}
+  }
+}
+/** gateExits from a seat return: the typed field, or the first {...} after "gateExits" in its text. */
+const gateExitsOf = (v) => {
+  const o = objectOf(v)
+  if (o.gateExits && typeof o.gateExits === 'object') return o.gateExits
+  const m = /"gateExits"\s*:\s*(\{[^{}]*\})/.exec(asText(v))
+  if (!m) return null
+  try {
+    return JSON.parse(m[1])
+  } catch (err) {
+    return null
+  }
+}
+/** Seat output is UNTRUSTED and goes into shell commands in the stall-writer prompt: keep it a token. */
+const stallToken = (v) => String(v == null || v === '' ? 'unknown' : v).replace(/[^A-Za-z0-9_.:+-]/g, '_').slice(0, 80)
+/**
+ * THE STALL WRITER. One low-effort opus seat that records a stall in every place a human or the
+ * orchestrator looks: the PR (label + comment, rule 1 only), the Loop-Logs LOG, the board, and the
+ * STALL_FILE sentinel the external monitor turns into an "ALERT STALL" line (rules 2 and 3).
+ * Every interpolated value is a stallToken or harness-built text: no seat prose reaches the shell.
+ */
+const STALL_WRITER_PROMPT = ({ rule, itemId, pr, line, stage, note, comment, sentinel }) => `You are the STALL WRITER for ${REPO} (${itemId}${pr ? `, PR #${pr}` : ''}). The loop has detected its OWN stall
+(rule ${rule}). You fix nothing, review nothing, merge nothing, rebase nothing and launch nothing: you RECORD the stall,
+loudly, in the places below, and return. Run each command exactly as written and read every exit code BARE.
+Budget: 8 tool calls.
+${pr && comment ? `
+# THE PR — label it loop-stalled (create the label first) and say why, once
+    gh label create -R ${REPO} loop-stalled --color B60205 --description "the loop saw the same land failure twice" || true
+    gh pr edit -R ${REPO} ${pr} --add-label loop-stalled
+    gh pr comment -R ${REPO} ${pr} --body '${comment}'
+Do NOT relabel it needs-human, do NOT re-dispatch anything, do NOT close it.` : ''}
+
+# THE LOG — exactly one line, appended
+    mkdir -p "$(dirname '${LOG}')" && printf '%s\\n' '${line}' >> '${LOG}'
+
+# THE BOARD
+    node ${STATUS} ${itemId} ${stage} '${note} ci=${CI_MODE}'${pr ? ` ${pr}` : ''}
+${sentinel ? `
+# THE SENTINEL — the external monitor (scripts/loop/stall-alarm.sh) prints one "ALERT STALL" line while it exists
+    mkdir -p "$(dirname '${STALL_FILE}')" && { date -u +%Y-%m-%dT%H:%M:%SZ ; echo 'rule ${rule}' ; printf '%s\\n' '${line}' ; } > '${STALL_FILE}'
+A fresh stall OVERWRITES it. Never delete it: only the orchestrator removes it, and that removal is the acknowledgement.` : ''}
+
+RETURN: {rule: ${rule}, pr: ${pr || 0}, labelled: true|false, commented: true|false, logged: true|false, board: true|false, sentinel: true|false}
+${GUARD(MODE === 'review' ? BOTH_REVIEW_DIRS : BOTH_DIRS)}`
+
+/**
+ * RULE 2 — GATE RED ON MAIN. Recon measured the baseline gate on main; a red (or unreadable — fail
+ * closed) BLOCKING command there means every downstream gate fails the same way, so the pass halts
+ * BEFORE any triage, review or build and says so in four places. Advisory red is a log line only.
+ * Returns the verdict when the pass must halt, else null.
+ */
+async function haltIfGateRedOnMain(where) {
+  const exits = gateExitsOf(recon)
+  const verdict = gateRedOnMain(exits, GATE_BLOCKING, GATE_ADVISORY)
+  if (verdict.advisoryRed.length) {
+    const r = objectOf(recon)
+    const hunksRaw = r.fmtHunks != null ? r.fmtHunks : exits && exits.fmtHunks
+    const hunks = hunksRaw != null ? stallToken(hunksRaw) : 'unknown'
+    log(`stall gate-red-on-main advisory red on main: ${verdict.advisoryRed.join(', ')}, ${hunks} hunks — advisory, never a halt`)
+  }
+  if (!verdict.red.length && !verdict.unreadable.length) {
+    log(`stall gate-red-on-main ok where=${where} blocking=${GATE_BLOCKING.length} red=0 unreadable=0`)
+    return null
+  }
+  const parts = []
+  if (verdict.red.length) parts.push(`GATE RED ON MAIN: ${verdict.red.join(', ')}`)
+  if (verdict.unreadable.length) parts.push(`GATE UNREADABLE ON MAIN: ${verdict.unreadable.join(', ')}`)
+  const line = parts.join(' ; ')
+  log(`stall gate-red-on-main HALT where=${where} red=${verdict.red.join(',') || 'none'} unreadable=${verdict.unreadable.join(',') || 'none'} — ${line}. No triage, no chains, no builders, no sweeper, no verify.`)
+  await agentR(
+    STALL_WRITER_PROMPT({ rule: 2, itemId: '_stall', pr: 0, line, stage: 'harness:halted', note: line, comment: '', sentinel: true }),
+    { model: 'opus', effort: 'low', phase: 'Recon', label: 'stall-writer:_stall' }
+  )
+  return verdict
 }
 
 // ── THE RUN ────────────────────────────────────────────────────────────────
@@ -6698,6 +6677,8 @@ const TRIAGE_SCHEMA = {
           files: { type: 'number' },
           additions: { type: 'number' },
           labels: { type: 'array', items: { type: 'string' } },
+          // Rule 1 across passes: the status/reason from the PR's latest "loop-land:" comment (absent when none).
+          lastLand: { type: 'object', properties: { status: { type: 'string' }, reason: { type: 'string' } } },
         },
         required: ['pr', 'item', 'klass', 'ci', 'mergeable', 'files'],
       },
@@ -6724,6 +6705,12 @@ const TRIAGE_SCHEMA = {
 }
 
 async function reviewPass() {
+  // RULE 2 — GATE RED ON MAIN, BEFORE ANY REVIEW: every land gate in this pass would fail the same way.
+  const mainRed = await haltIfGateRedOnMain('review')
+  if (mainRed) {
+    log(`review pass HALTED (gate-red-on-main): red=[${mainRed.red.join(', ')}] unreadable=[${mainRed.unreadable.join(', ')}] — no triage, no chains, no sweeper, no main-verify ran. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    return { halted: 'gate-red-on-main', red: mainRed.red, unreadable: mainRed.unreadable, queued: 0 }
+  }
   const triage = await agentR(
     `TRIAGE for the REVIEW PASS of ${REPO}. ONE job: turn the open ${LOOP_LABEL} PRs into an ordered
 queue, and close the ones that should never be reviewed at all. You review nothing, fix nothing and
@@ -6734,6 +6721,12 @@ merge nothing — two review chains do that immediately after you, driven by wha
 SKIP every PR labelled needs-human: it is HELD for a human (an outside-seat BLOCK, or a BLOCK after the last fix
 round). Do not queue it, do not review it, do not land it — no seat is spent on it. List each one in held[]
 with the comment id its needs-human comment names, and put it in the queue doc's held table.
+SKIP every PR labelled loop-stalled the same way (the loop saw the same land failure twice; a human removes the
+label to release it): held[] with why "loop-stalled".
+For every PR you DO queue, read its LAST LAND OUTCOME from an earlier pass — the stall rules compare against it:
+    gh pr view -R ${REPO} <n> --json comments --jq '[.comments[].body | select(startswith("loop-land:"))] | last'
+A line "loop-land: status=<s> reason=<r> ..." becomes lastLand: {status: "<s>", reason: "<r>"}; no such comment -> omit lastLand.
+Copy the two tokens exactly; never infer them from labels or prose.
     gh pr list -R ${REPO} --state merged --limit 200 --json number,title,headRefName,mergeCommit
 ALSO list the open PRs WITHOUT the ${LOOP_LABEL} label and report them separately, untouched: the
 feat/yv1xx PRs predate this loop. They are Drain's problem, not this queue's.
@@ -6783,7 +6776,7 @@ main under it and the most rebase debt — settle it before it rots further.
 Do NOT include a PR you closed. Do NOT include a PR that gh reports as already MERGED. Do NOT
 include a PR that lacks the ${LOOP_LABEL} label.
 
-RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels}],
+RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels, lastLand}],
                  closed: [{pr, survivor, why}], held: [{pr, comment, why}],
                  counts: {open, queued, closed, held, security, standard, unlabelled}}
 ${LOGLINE('review triage', '_review', 'harness:recon', '--open <the open loop-build PR count you just observed>')}
@@ -6791,12 +6784,14 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Recon', label: 'review-triage', schema: TRIAGE_SCHEMA }
   )
 
-  // needs-human is HELD: never queued, even when triage forgot to skip it (no reviewer or LAND seat is spent on it).
-  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => String((l && l.name) || l) === 'needs-human')
-  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: 'labelled needs-human' }))]
+  // needs-human and loop-stalled are HELD: never queued, even when triage forgot to skip them (no reviewer or LAND
+  // seat is spent on them). loop-stalled is rule 1's "no third attempt": it holds until a human removes the label.
+  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => ['needs-human', 'loop-stalled'].includes(String((l && l.name) || l)))
+  const holdLabelOf = (q) => (q.labels.map((l) => String((l && l.name) || l)).includes('loop-stalled') ? 'loop-stalled' : 'needs-human')
+  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: `labelled ${holdLabelOf(q)}` }))]
   REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))
   const closedByTriage = extractArray(triage, 'closed')
-  if (heldByTriage.length) log(`held (needs-human, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
+  if (heldByTriage.length) log(`held (needs-human / loop-stalled, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
   if (REVIEW_QUEUE.length === 0) {
     log(
       'review triage returned NO parseable queue[]. The chains have nothing to consume, so this pass ' +
@@ -6909,14 +6904,21 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Drain', label: 'main-verify' }
   )
 
-  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify }
+  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify, stalled, loopStalled: [...stalledPrs] }
 }
 
 let census = null
 if (MODE === 'review') {
   census = await reviewPass()
 } else {
-  await Promise.all([buildLane(0), buildLane(1)])
+  // RULE 2 in build mode too: a red blocking command on main fails every builder's hard gate the same way.
+  const buildRed = await haltIfGateRedOnMain('build')
+  if (buildRed) {
+    log(`build pass HALTED (gate-red-on-main): red=[${buildRed.red.join(', ')}] unreadable=[${buildRed.unreadable.join(', ')}] — no builder was dispatched. Fix main; the orchestrator removes ${STALL_FILE} after acting.`)
+    census = { halted: 'gate-red-on-main', red: buildRed.red, unreadable: buildRed.unreadable, queued: 0 }
+  } else {
+    await Promise.all([buildLane(0), buildLane(1)])
+  }
 }
 const results = MODE === 'review' ? reviewOutcomes.slice() : slots.filter((r) => r !== null)
 
