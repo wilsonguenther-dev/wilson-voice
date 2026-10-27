@@ -123,6 +123,32 @@ mod ax {
         }
     }
 
+    /// Y6-C — is the focused element a secure (password) field? `None` when
+    /// nothing is focused or the element cannot be read.
+    pub fn focused_is_secure() -> Option<bool> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let key = CFString::new("AXFocusedUIElement");
+            let mut focused: CFTypeRef = std::ptr::null_mut();
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || focused.is_null() {
+                return None;
+            }
+            let el = focused as AXUIElementRef;
+            let secure = attr_string(el, "AXRole").unwrap_or_default() == "AXSecureTextField"
+                || attr_string(el, "AXSubrole")
+                    .unwrap_or_default()
+                    .contains("Secure");
+            CFRelease(focused);
+            Some(secure)
+        }
+    }
+
     /// Text currently selected in the focused element, via AXSelectedText.
     ///
     /// YV49 (command mode) reads the thing the user is about to edit. `None`
@@ -481,6 +507,24 @@ pub fn should_auto_paste() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+/// Y6-C — is the focused element a secure (password) field, read at PASTE
+/// time by `paste::LiveInsert`? `None` when Accessibility is denied or nothing
+/// readable is focused; `paste::secure_target` then falls back to macOS's
+/// system-wide Secure Input flag.
+pub fn focused_is_secure() -> Option<bool> {
+    if !crate::permissions::is_accessibility_trusted() {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ax::focused_is_secure()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

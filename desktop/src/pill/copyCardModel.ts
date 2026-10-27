@@ -29,7 +29,24 @@ export const COPY_CARD_CLEAR_EVENT = "insert-copy-card-clear";
 /** How long an untouched card stays up. */
 export const COPY_CARD_TTL_MS = 30_000;
 
-export type CopyCardReason = "no_permission" | "no_receipt" | "paste_failed" | "ax_unverified";
+/**
+ * Y6-C — paste.rs `TARGET_MOVED_MESSAGE` / `SECURE_FIELD_MESSAGE`, verbatim.
+ * A take whose app is no longer in front at paste time (switched away, or it
+ * quit) is HELD here with one Insert button (PANEL 2026-09-12); a take aimed at
+ * a password field is held and is NOT on the clipboard.
+ */
+export const COPY_CARD_HINT_TARGET_MOVED =
+  "The app you dictated into isn't in front — held in the pill. Insert puts it where you are now.";
+export const COPY_CARD_HINT_SECURE_FIELD =
+  "Not pasted: that's a password field. Held in the pill, not on your clipboard.";
+
+export type CopyCardReason =
+  | "no_permission"
+  | "no_receipt"
+  | "paste_failed"
+  | "ax_unverified"
+  | "target_moved"
+  | "secure_field";
 
 /** paste.rs `CopyCard` (serde camelCase). */
 export interface CopyCardPayload {
@@ -67,8 +84,24 @@ export function canRepair(card: Pick<CopyCardPayload, "repairService">): boolean
   return typeof card.repairService === "string" && card.repairService.length > 0;
 }
 
+/**
+ * Y6-C — a held take (its app moved, or a password field refused it) is never
+ * timed out: it stays until Insert, Copy, × or the next take. History has it
+ * either way.
+ */
+export function isHeldTake(card: Pick<CopyCardPayload, "reason">): boolean {
+  return card.reason === "target_moved" || card.reason === "secure_field";
+}
+
+/** Y6-C — only a take whose app moved offers Insert (into wherever the user is now). */
+export function canInsertHere(card: Pick<CopyCardPayload, "reason">): boolean {
+  return card.reason === "target_moved";
+}
+
 /** The card's one line under the text. */
 export function cardHint(copied: boolean, repair = true, reason?: CopyCardReason): string {
+  if (reason === "target_moved") return COPY_CARD_HINT_TARGET_MOVED;
+  if (reason === "secure_field") return COPY_CARD_HINT_SECURE_FIELD;
   if (reason === "ax_unverified" && copied) return COPY_CARD_HINT_UNVERIFIED;
   if (!repair) return copied ? COPY_CARD_HINT_NO_REPAIR : COPY_CARD_HINT_NO_REPAIR_UNCOPIED;
   return copied ? COPY_CARD_HINT : COPY_CARD_HINT_UNCOPIED;

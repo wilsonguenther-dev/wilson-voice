@@ -1090,6 +1090,15 @@ html[data-dock="right"] .phase-strip {
   background: var(--overlay-action);
   color: var(--overlay-text-on-action);
 }
+/* Y6-C — a held take's Insert is the primary action; Copy steps back. */
+.copy-card-actions .copy-card-insert {
+  background: #4f7cff;
+  color: #fff;
+}
+.copy-card-actions .copy-card-insert ~ .copy-card-copy {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f4f4f6;
+}
 .copy-card-actions .copy-card-close {
   margin-left: auto;
   background: transparent;

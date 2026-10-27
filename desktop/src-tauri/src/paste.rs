@@ -161,6 +161,32 @@ pub const COPY_CARD_MESSAGE: &str = "Copied — press ⌘V. Repair to auto-inser
 /// [`repair_service_for`]).
 pub const COPY_CARD_MESSAGE_NO_REPAIR: &str = "Copied — press ⌘V.";
 
+/// Y6-C — what the pill says when the take's app is no longer in front at
+/// paste time (switched away, or quit). PANEL 2026-09-12: HELD AND OFFERED —
+/// the take waits on the pill with one Insert button and is in History.
+pub const TARGET_MOVED_MESSAGE: &str =
+    "The app you dictated into isn't in front — held in the pill. Insert puts it where you are now.";
+/// Y6-C — the take's identity was unreadable at record start, so no app can be
+/// confirmed as its target; held the same way.
+pub const UNKNOWN_TARGET_MESSAGE: &str =
+    "I couldn't tell which app you dictated into — held in the pill. Insert puts it where you are now.";
+/// Y6-C — the focused element at paste time is a password field.
+pub const SECURE_FIELD_MESSAGE: &str =
+    "Not pasted: that's a password field. Held in the pill, not on your clipboard.";
+
+/// Y6-C — is the paste target a secure (password) field?
+///
+/// `focused_is_secure` is the focused element's own AX answer
+/// (`AXSecureTextField` / a `Secure` subrole), `None` when it cannot be read
+/// (Accessibility denied, nothing focused). `secure_input_engaged` is macOS's
+/// system-wide `IsSecureEventInputEnabled()` flag. A positive AX answer wins
+/// either way; the global flag only decides when AX is blind — so a Terminal
+/// with Secure Keyboard Entry on does not block a paste into a plain field AX
+/// can see, and a password field never gets a paste because AX was denied.
+pub fn secure_target(focused_is_secure: Option<bool>, secure_input_engaged: bool) -> bool {
+    focused_is_secure.unwrap_or(secure_input_engaged)
+}
+
 // yap-insert-bridge-2026-10-26 — Wilson: "dictation no longer lands in the
 // focused text box". #229 made AX `kAXSelectedText` the FIRST path whenever
 // Accessibility was granted. Chromium/Electron (the Claude desktop app, Chrome,
@@ -254,10 +280,14 @@ pub enum InsertFallback {
     PasteFailed,
     /// Neither PostEvent nor Accessibility is granted → card.
     NoPermission,
-    /// The user switched apps during transcription → copied, nothing typed.
+    /// The user switched apps (or the app quit) during transcription →
+    /// held on the pill + clipboard, nothing typed (Y6-C).
     WrongTarget,
-    /// The dictated app's identity was unreadable → copied, nothing typed.
+    /// The dictated app's identity was unreadable → held, nothing typed.
     UnknownTarget,
+    /// Y6-C: the focused element is a password field → held, nothing typed,
+    /// nothing on the clipboard.
+    SecureField,
 }
 
 impl InsertFallback {
@@ -274,6 +304,7 @@ impl InsertFallback {
             InsertFallback::NoPermission => "no_permission",
             InsertFallback::WrongTarget => "wrong_target",
             InsertFallback::UnknownTarget => "unknown_target",
+            InsertFallback::SecureField => "secure_field",
         }
     }
 }
@@ -374,6 +405,17 @@ pub enum CopyCardReason {
     /// read back changed. The text may already be there, so no ⌘V follows
     /// (that would insert it twice); the card lets the user check and paste.
     AxUnverified,
+    /// Y6-C — the app the take was dictated into is no longer frontmost at
+    /// paste time (the user switched apps, or it quit), or its identity was
+    /// never readable. Nothing is typed anywhere: the take is HELD on the pill
+    /// with one Insert button that puts it wherever the user is now, and it is
+    /// in History. Never dropped, never clipboard-only behind a toast.
+    TargetMoved,
+    /// Y6-C — the focused element at paste time is a secure (password) field.
+    /// Nothing is typed and NOTHING is written to the clipboard: a password
+    /// field's dictation sitting on the pasteboard is worse than a refused
+    /// paste. The card holds the text; only the user's own Copy puts it there.
+    SecureField,
 }
 
 /// The permission the card's Repair button may reset, if any.
@@ -388,9 +430,11 @@ pub enum CopyCardReason {
 pub fn repair_service_for(reason: CopyCardReason) -> Option<&'static str> {
     match reason {
         CopyCardReason::NoPermission => Some(perm_probe::Service::Accessibility.key()),
-        CopyCardReason::NoReceipt | CopyCardReason::PasteFailed | CopyCardReason::AxUnverified => {
-            None
-        }
+        CopyCardReason::NoReceipt
+        | CopyCardReason::PasteFailed
+        | CopyCardReason::AxUnverified
+        | CopyCardReason::TargetMoved
+        | CopyCardReason::SecureField => None,
     }
 }
 
@@ -433,9 +477,11 @@ pub struct CopyCard {
 pub fn blocked_permissions_for(reason: CopyCardReason) -> Vec<&'static str> {
     match reason {
         CopyCardReason::NoPermission => vec!["PostEvent", "Accessibility"],
-        CopyCardReason::NoReceipt | CopyCardReason::PasteFailed | CopyCardReason::AxUnverified => {
-            Vec::new()
-        }
+        CopyCardReason::NoReceipt
+        | CopyCardReason::PasteFailed
+        | CopyCardReason::AxUnverified
+        | CopyCardReason::TargetMoved
+        | CopyCardReason::SecureField => Vec::new(),
     }
 }
 
@@ -475,6 +521,12 @@ pub trait InsertBackend {
     fn frontmost_app(&mut self) -> Option<String>;
     /// Does the frontmost app's bundle ship [`ELECTRON_FRAMEWORK`]?
     fn frontmost_has_electron(&mut self) -> bool {
+        false
+    }
+    /// Y6-C — is the focused element a secure (password) field RIGHT NOW?
+    /// Sampled at paste time, inside [`insert_traced`], never cached from the
+    /// hold (see [`secure_target`] for the live rule).
+    fn target_is_secure(&mut self) -> bool {
         false
     }
     /// `kAXSelectedText` on the focused element.
@@ -541,6 +593,54 @@ fn copy_card_with(
     }
 }
 
+/// Y6-C — park the take on the pill without typing it anywhere. `clipboard`
+/// decides whether the text ALSO goes on the clipboard (a moved target: yes,
+/// so a manual ⌘V works too; a password field: never).
+fn hold_with(
+    b: &mut dyn InsertBackend,
+    text: &str,
+    reason: CopyCardReason,
+    clipboard: bool,
+    detail: String,
+    message: &str,
+) -> PasteOutcome {
+    let copied = clipboard && b.copy(text).is_ok();
+    b.show_copy_card(CopyCard {
+        text: text.to_string(),
+        reason,
+        detail,
+        copied,
+        repair_service: repair_service_for(reason),
+        blocked_permissions: blocked_permissions_for(reason),
+        product: crate::perm_truth::product_name(),
+    });
+    PasteOutcome {
+        copied,
+        pasted: false,
+        message: message.into(),
+    }
+}
+
+/// Y6-C — one insertion at a time, process-wide. Two takes that finish close
+/// together (a quick second dictation, a "paste last" racing a take) each run
+/// their whole decision — target check, AX set, publish → ⌘V → receipt — under
+/// this lock, so the second cannot publish its promise or post its chord while
+/// the first is still waiting on its receipt.
+static INSERT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`insert_traced`] under [`INSERT_LOCK`] — the entry every live insertion
+/// uses. The target and secure-field checks run inside, i.e. at PASTE time.
+pub fn insert_serialized(
+    b: &mut dyn InsertBackend,
+    path: InsertPath,
+    text: &str,
+    want_paste: bool,
+    target: PasteTarget<'_>,
+) -> (PasteOutcome, InsertTrace) {
+    let _turn = INSERT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    insert_traced(b, path, text, want_paste, target)
+}
+
 /// [`insert_traced`] without the trace (the matrix's original entry point).
 pub fn insert_with(
     b: &mut dyn InsertBackend,
@@ -582,6 +682,28 @@ pub fn insert_traced(
             InsertPath::CopyCard => InsertFallback::NoPermission,
         },
     };
+    // Y6-C: a dictated take headed for a password field is refused BEFORE
+    // anything else — including the copy-only path (auto-paste off, a stale
+    // take), because the failure being prevented is the dictation sitting on
+    // the clipboard. Sampled now, at paste time.
+    if let PasteTarget::Dictated(dictated) = target {
+        if b.target_is_secure() {
+            trace.app = dictated.map(str::to_string);
+            trace.path = InsertPath::CopyCard;
+            trace.fallback = InsertFallback::SecureField;
+            return (
+                hold_with(
+                    b,
+                    text,
+                    CopyCardReason::SecureField,
+                    false,
+                    "the focused field is a secure text field".into(),
+                    SECURE_FIELD_MESSAGE,
+                ),
+                trace,
+            );
+        }
+    }
     if !want_paste {
         return (
             copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
@@ -612,22 +734,44 @@ pub fn insert_traced(
     // NSWorkspace bundle id, which needs no Accessibility grant, so the guard
     // runs on the PasteBridge path (AX denied) too.
     if let PasteTarget::Dictated(dictated) = target {
+        // Y6-C (PANEL 2026-09-12): HELD AND OFFERED — the take parks on the
+        // pill with one Insert button (and is in History); it is also on the
+        // clipboard, so a manual ⌘V works. Never dropped, never typed into an
+        // app that was not the hold target.
         if dictated.is_none() {
+            trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::UnknownTarget;
             return (
-                copy_only_with(
+                hold_with(
                     b,
                     text,
-                    "Copied — I couldn't tell which app you dictated into, so I didn't paste",
+                    CopyCardReason::TargetMoved,
+                    true,
+                    "the dictated app's identity was unreadable at record start".into(),
+                    UNKNOWN_TARGET_MESSAGE,
                 ),
                 trace,
             );
         }
+        // Sampled HERE, immediately before the insert — never at the hold. A
+        // twelve-minute take re-reads the frontmost app at paste time.
         let current = b.frontmost_app();
         if !is_same_paste_target(dictated, current.as_deref()) {
+            trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::WrongTarget;
             return (
-                copy_only_with(b, text, "Copied — you switched apps, so I didn't paste"),
+                hold_with(
+                    b,
+                    text,
+                    CopyCardReason::TargetMoved,
+                    true,
+                    format!(
+                        "dictated into {} — {} is in front now",
+                        dictated.unwrap_or("?"),
+                        current.as_deref().unwrap_or("no app")
+                    ),
+                    TARGET_MOVED_MESSAGE,
+                ),
                 trace,
             );
         }
@@ -810,6 +954,12 @@ impl InsertBackend for LiveInsert<'_> {
     fn frontmost_has_electron(&mut self) -> bool {
         crate::focus::frontmost_bundle_path().is_some_and(|p| bundle_has_electron_framework(&p))
     }
+    fn target_is_secure(&mut self) -> bool {
+        secure_target(
+            crate::focus::focused_is_secure(),
+            crate::secure_input::is_enabled_now(),
+        )
+    }
     fn ax_insert(&mut self, text: &str) -> AxInsert {
         ax_insert_from(crate::focus::insert_selected_text(text))
     }
@@ -891,25 +1041,28 @@ fn insert_take(
         log::warn!("{}", crate::smoke::PASTE_REFUSAL);
         return copy_only(app, text, crate::smoke::PASTE_REFUSAL);
     }
-    if !want_paste {
-        return copy_only(app, text, "Copied to clipboard (⌘V to paste)");
-    }
-    let probe = perm_probe::probe_all();
-    let path = choose_insert_path(&probe);
-    log::debug!(
-        "insert probe: ax={:?} post={:?}",
-        probe.accessibility.state,
-        probe.post_event.state
-    );
-    let mut live = LiveInsert {
-        app,
-        ax_granted: probe.accessibility.usable(),
+    // Copy-only takes (auto-paste off, a stale take) still go through the
+    // decision, so the Y6-C secure-field refusal covers them too; they need no
+    // permission probe because they never type.
+    let (path, ax_granted) = if want_paste {
+        let probe = perm_probe::probe_all();
+        log::debug!(
+            "insert probe: ax={:?} post={:?}",
+            probe.accessibility.state,
+            probe.post_event.state
+        );
+        (choose_insert_path(&probe), probe.accessibility.usable())
+    } else {
+        (InsertPath::PasteBridge, false)
     };
-    let (outcome, trace) = insert_traced(&mut live, path, text, true, target);
+    let mut live = LiveInsert { app, ax_granted };
+    let (outcome, trace) = insert_serialized(&mut live, path, text, want_paste, target);
     // yap-insert-bridge-2026-10-26: ONE line per take, written once the take
     // has ended, naming the path that finished it and why it was not the
     // default (a confirmed paste bridge).
-    log::info!("{}", insert_log_line(&trace));
+    if want_paste || trace.path == InsertPath::CopyCard {
+        log::info!("{}", insert_log_line(&trace));
+    }
     outcome
 }
 
@@ -931,6 +1084,7 @@ pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutco
         app,
         ax_granted: probe.accessibility.usable(),
     };
+    let _turn = INSERT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     delete_with(&mut live, choose_insert_path(&probe), source_app)
 }
 

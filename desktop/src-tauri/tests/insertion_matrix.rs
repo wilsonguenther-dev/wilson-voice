@@ -400,8 +400,12 @@ fn paste_bridge_no_receipt_falls_to_copy_card() {
     assert_eq!(f.cards[0].reason, CopyCardReason::PasteFailed);
 }
 
+/// Y6-C (PANEL 2026-09-12) changed this row from "copied only" to HELD AND
+/// OFFERED: still zero keystrokes into the app the user switched to, and the
+/// take now also waits on the pill (one Insert button) instead of living only
+/// behind a toast. tests/paste_target_e2e.rs owns the full case list.
 #[test]
-fn wrong_target_copies_only() {
+fn wrong_target_is_held_never_typed() {
     for path in [InsertPath::Ax, InsertPath::PasteBridge] {
         let mut f = Fake::new();
         f.frontmost = Some("Messages".into());
@@ -417,10 +421,11 @@ fn wrong_target_copies_only() {
             "{path:?}: no ⌘V into the app the user switched to"
         );
         assert_eq!(f.ax_calls, 0, "{path:?}: no AX insert there either");
-        assert!(f.cards.is_empty());
+        assert_eq!(f.cards.len(), 1, "{path:?}: the take is held on the pill");
+        assert_eq!(f.cards[0].reason, CopyCardReason::TargetMoved);
         assert_eq!(f.copies, vec![TAKE.to_string()]);
         assert!(!out.pasted);
-        assert!(out.message.contains("switched apps"));
+        assert_eq!(out.message, paste::TARGET_MOVED_MESSAGE);
 
         let del = paste::delete_with(&mut f, path, Some("Notes"));
         assert_eq!(f.posts, 0, "{path:?}: no Delete into the wrong app");
