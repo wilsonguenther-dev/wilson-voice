@@ -38,6 +38,19 @@ export default function Audio() {
                       volume comes back when you stop
                     </span>
                   </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.earcons ?? false}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, earcons: e.target.checked })
+                      }
+                    />
+                    <span>
+                      <strong>Sounds</strong> — a short chirp when you start, stop,
+                      paste and hit a word milestone. Silent during meetings
+                    </span>
+                  </label>
                   </div>
                 </section>
   );

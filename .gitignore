@@ -9,6 +9,9 @@ build/
 .venv/
 venv/
 *.wav
+# Y8-C — the four earcons are SOURCE, not recordings: embedded with include_bytes!
+# and bundled as resources, so a missing file must fail the build, not vanish from git.
+!desktop/src-tauri/assets/sounds/*.wav
 *.aiff
 # …except the committed ASR test fixtures: synthetic `say` speech (YV32's
 # headless E2E gate), never captured user audio.

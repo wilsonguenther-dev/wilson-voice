@@ -220,6 +220,12 @@ export interface AppSettings {
    * take, then restores the exact prior mute + volume on stop. Default on.
    */
   muteWhileDictating?: boolean;
+  /**
+   * Y8-C — four short Yappy sounds: start, stop, paste and achievement (a
+   * lifetime word milestone). Backend `earcons`; OFF by default. Never plays
+   * during a meeting recording. The start sound finishes before the mute.
+   */
+  earcons?: boolean;
   /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
   onboarded?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */

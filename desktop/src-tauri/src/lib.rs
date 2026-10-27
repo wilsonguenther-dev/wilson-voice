@@ -24,6 +24,10 @@ pub mod db;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
 pub mod dictation;
+// Y8-C — the four earcons and the ONE order they keep with YV28's auto-mute
+// (start earcon before the mute, stop earcon after the restore). Public so
+// `tests/earcons.rs` drives the same functions the take path calls.
+pub mod earcons;
 // YV120 — the diarization eval metrics (DER / JER / enrollment-EER) and the
 // `CosineDistance` / `CosineSimilarity` newtypes. In the LIBRARY rather than in
 // a test binary for two reasons the module header spells out: yap23's shipped
@@ -415,6 +419,11 @@ pub struct AppSettings {
     /// left muted even if this is toggled off mid-take.
     #[serde(default = "default_true")]
     pub mute_while_dictating: bool,
+    /// Y8-C — play the four earcons (start / stop / paste / achievement).
+    /// OFF by default: a store without the key loads as off, and so does a
+    /// fresh install. See `earcons` for the order they keep with the mute.
+    #[serde(default)]
+    pub earcons: bool,
     /// First-run onboarding completed (YV9). While false the UI shows the
     /// welcome → permissions → voice-calibration flow; set true on finish.
     #[serde(default)]
@@ -551,6 +560,7 @@ impl Default for AppSettings {
             signature_mode: "off".into(),
             denoise: true,
             mute_while_dictating: true,
+            earcons: false,
             onboarded: false,
             calibration_sample: None,
             native_model: default_native_model(),
@@ -1274,20 +1284,63 @@ fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
         .show();
 }
 
-/// Mute the Mac's whole system output for the duration of a take (YV28), gated
-/// by the `mute_while_dictating` setting. Snapshots the prior mute + volume into
-/// `state.saved_audio` so `restore_system_output` can put it back verbatim.
+/// A take starts (YV28 + Y8-C): the start earcon plays to completion, THEN the
+/// Mac's whole system output is muted (gated by `mute_while_dictating`).
+/// Snapshots the prior mute + volume into `state.saved_audio` so
+/// `end_take_audio` / `restore_system_output` can put it back verbatim.
+///
+/// The ORDER lives in `earcons::start_take`, not here: an earcon played after
+/// the mute lands on a silent device. `tests/earcons.rs` asserts that order and
+/// scans this file so the take path can reach the mute through nothing else.
 fn mute_system_output(state: &AppState) {
-    if !state.settings.lock().mute_while_dictating {
-        return;
-    }
+    let (earcons_on, mute_on) = {
+        let settings = state.settings.lock();
+        (settings.earcons, settings.mute_while_dictating)
+    };
     // YV91 finding #9: a dictation taken WHILE a meeting is recording must not
-    // mute the call the user is listening to. The context decides, not the
-    // caller — see `meeting::auto_mute_allowed`.
+    // mute the call the user is listening to — and (Y8-C) must not chirp onto
+    // the recording either. The context decides, not the caller.
     let context = meeting::take_context();
-    if let Some(saved) = sysaudio::mute_for_take(context, &sysaudio::SystemOutput) {
+    if let Some(saved) = earcons::start_take(
+        earcons_on,
+        mute_on,
+        context,
+        &earcons::SystemSink,
+        &sysaudio::SystemOutput,
+    ) {
         *state.saved_audio.lock() = Some(saved);
         log::info!("system output muted for dictation");
+    }
+}
+
+/// A take ends by stop or cancel (YV28 + Y8-C): restore the output FIRST, then
+/// play the stop earcon — through `earcons::end_take`, which owns that order.
+/// The restore is unconditional, whatever the settings say now.
+fn end_take_audio(state: &AppState) {
+    let saved = state.saved_audio.lock().take();
+    let earcons_on = state.settings.lock().earcons;
+    let restored = saved.is_some();
+    earcons::end_take(
+        earcons_on,
+        saved,
+        meeting::take_context(),
+        &earcons::SystemSink,
+        &sysaudio::SystemOutput,
+    );
+    if restored {
+        log::info!("system output restored after dictation");
+    }
+}
+
+/// Y8-C — after a dictated take lands: the achievement earcon when it crossed a
+/// lifetime word milestone, else the paste earcon when it was pasted. One sound
+/// per take at most, through the same setting + meeting gate as start/stop.
+fn play_take_earcon(state: &AppState, pasted: bool, words_before: i64, words_after: i64) {
+    if !state.settings.lock().earcons {
+        return;
+    }
+    if let Some(earcon) = earcons::after_take(pasted, words_before, words_after) {
+        earcons::play_event(true, meeting::take_context(), &earcons::SystemSink, earcon);
     }
 }
 
@@ -1295,6 +1348,9 @@ fn mute_system_output(state: &AppState) {
 /// by design — it always puts back whatever `mute_system_output` saved,
 /// regardless of the current setting, so the Mac is NEVER left muted (covers
 /// stop, cancel, every error path, and app exit). No-op if nothing was muted.
+///
+/// Y8-C: this is the EXIT path's restore and it plays nothing — a stop earcon
+/// belongs to a take ending (`end_take_audio`), not to the app quitting.
 fn restore_system_output(state: &AppState) {
     let saved = state.saved_audio.lock().take();
     if let Some(saved) = saved {
@@ -1980,8 +2036,9 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     // YV49: a cancelled command press must not leave its selection armed for
     // the next, ordinary take.
     *state.command_selection.lock() = None;
-    // YV28: un-mute the Mac the moment the take ends (cancel path).
-    restore_system_output(state);
+    // YV28: un-mute the Mac the moment the take ends (cancel path) — then, and
+    // only then, the stop earcon (Y8-C).
+    end_take_audio(state);
     let _ = app.emit("recording", false);
     let mut recoverable = None;
     if let Some(active) = state.recorder.lock().take() {
@@ -2402,7 +2459,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     float_pill::set_dictating(false);
     // YV28: un-mute the Mac immediately on release — restore the exact prior
     // mute + volume BEFORE the (async) transcription so audio comes right back.
-    restore_system_output(&state);
+    // Y8-C: the stop earcon plays after that restore, never before it.
+    end_take_audio(&state);
     let _ = app.emit("recording", false);
 
     let active = state.recorder.lock().take();
@@ -3003,6 +3061,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     let _ = app2.emit(POLISH_SKIPPED_EVENT, reason);
                 }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
+                // Y8-C — one earcon for the landed take: achievement when it
+                // crossed a lifetime word milestone, else paste when pasted.
+                let words_after = db.total_words();
+                play_take_earcon(
+                    &state2,
+                    outcome.pasted,
+                    words_after - entry.word_count,
+                    words_after,
+                );
                 // YV74 — we tried to paste and got no receipt. Say so with an
                 // action instead of a dead sentence: the toast offers "Copy
                 // again" for this row, so the text is one click away even when
