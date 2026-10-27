@@ -374,6 +374,7 @@ fn first_word(s: &str) -> String {
     s.split_whitespace()
         .next()
         .unwrap_or("")
+        .replace('\u{2019}', "'")
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
         .to_lowercase()
 }
@@ -453,50 +454,129 @@ const NARRATIVE_SUBJECTS: &[&str] = &[
     "i", "we", "you", "he", "she", "they", "it", "there", "i'm", "i've", "i'd", "we're", "we've",
     "we'd", "you're", "he's", "she's", "they're", "it's", "there's",
 ];
+/// A determiner or possessive right after a bare "then" opens a noun phrase
+/// that is the subject of a story ("Then my wife called", "Then the meeting
+/// ran long"), not a step — but only after a complete list none of whose
+/// items is a noun phrase. A list still forming takes it as a step ("First,
+/// call the bank. Then the dentist."), and so does a list that already has
+/// one ("First, the venue. Then the invites. Then the menu. Then the band.").
+const NARRATIVE_DETERMINERS: &[&str] = &["my", "the", "our", "his", "her", "their", "a", "an"];
 /// Words after a bare "finally"/"lastly" that make it mean "at last" ("Finally
 /// home after a long day", "Finally done", "Finally there") — a state, not a
 /// step.
 const AT_LAST_WORDS: &[&str] = &[
     "home", "here", "there", "done", "over", "finished", "free", "back", "ready", "safe", "gone",
-    "awake", "asleep", "alone", "together", "now", "at", "time", "peace", "quiet",
+    "awake", "asleep", "alone", "together", "now", "time", "peace", "quiet",
 ];
+/// "at" after "finally" means "at last" only with one of these: "Finally at
+/// home", "Finally at peace". "Finally at checkout, pay." is a step.
+const AT_LAST_AFTER_AT: &[&str] = &["home", "peace", "last", "rest", "ease"];
+/// Dictated names whose casing is the name: capitalising a list item never
+/// touches them. Names shaped like "iPhone" / "eBay" (lowercase then
+/// uppercase) are kept by rule and need no entry here.
+const NEVER_RECASE: &[&str] = &["macOS", "watchOS", "tvOS", "visionOS", "npm", "pnpm"];
 
 /// PR #217 re-review: a continuation cue that matched BARE (not set off) is
 /// still prose when the rest is not a plausible list item, and his words are
-/// kept: "Then again, maybe not." (idiom), "Then I drove home." after a list
-/// of steps (narration), "Finally home after a long day." ("at last").
+/// kept: "Then again, maybe not." (idiom), "Then I drove home." / "Then my
+/// wife called." after a list of steps (narration), "Finally home after a
+/// long day." / "Finally I'm home." ("at last").
 /// `items` is the sequence so far, its first item at index 0.
 fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]) -> bool {
     let next = first_word(rest);
+    let next = next.as_str();
     let set_off = sentence
         .split_whitespace()
         .next()
         .is_some_and(|t| t.ends_with([',', ':']));
+    let first_item = items.first().map(|f| first_word(f)).unwrap_or_default();
+    let list_subject = subject_stem(&first_item);
+    let complete = items.len() >= MIN_LIST_ITEMS;
     match cue {
         "then" => {
-            if THEN_IDIOM_WORDS.contains(&next.as_str()) {
+            if THEN_IDIOM_WORDS.contains(&next) {
                 return true;
             }
-            // A subject after "then" continues a list only when the list
-            // itself is told that way ("First, we packed. Then we drove.")
-            // and is not already complete.
             !set_off
-                && NARRATIVE_SUBJECTS.contains(&next.as_str())
-                && (items.len() >= MIN_LIST_ITEMS
-                    || !items
-                        .first()
-                        .is_some_and(|f| NARRATIVE_SUBJECTS.contains(&first_word(f).as_str())))
+                && (subject_is_narration(next, list_subject, complete)
+                    || (NARRATIVE_DETERMINERS.contains(&next)
+                        && complete
+                        && !items
+                            .iter()
+                            .any(|i| NARRATIVE_DETERMINERS.contains(&first_word(i).as_str()))))
         }
-        "finally" | "lastly" => !set_off && AT_LAST_WORDS.contains(&next.as_str()),
+        "finally" | "lastly" => {
+            let at_last = AT_LAST_WORDS.contains(&next)
+                || (next == "at"
+                    && lead_words(rest, 2)
+                        .get(1)
+                        .is_some_and(|w| AT_LAST_AFTER_AT.contains(&w.as_str())));
+            // "Finally I'm home": a subject contraction is a state reached —
+            // unless its pronoun is the subject the list is told with
+            // ("First, we design it. ... Finally we're going to ship it.",
+            // "First, I'll check email. ... Finally I'm going to write the
+            // report."), which keeps leading its steps. Even then, "at last"
+            // wins when an at-last word follows ("Finally we're home").
+            let contraction = next.contains('\'')
+                && NARRATIVE_SUBJECTS.contains(&next)
+                && (list_subject != subject_stem(next)
+                    || lead_words(rest, 2)
+                        .get(1)
+                        .is_some_and(|w| AT_LAST_WORDS.contains(&w.as_str())));
+            !set_off
+                && (at_last || contraction || subject_is_narration(next, list_subject, complete))
+        }
         _ => false,
     }
+}
+
+/// The pronoun a lowercase lead word is told with: "we're" and "we" are both
+/// "we", "i'll" and "i'm" are both "i". `None` when the word is not a subject
+/// pronoun (an imperative or noun-phrase item).
+fn subject_stem(word: &str) -> Option<&str> {
+    let stem = word.split('\'').next().unwrap_or(word);
+    NARRATIVE_SUBJECTS.contains(&stem).then_some(stem)
+}
+
+/// A subject right after a bare continuation cue: narration, or a step of a
+/// list told that way? `list_subject` is the pronoun the list's first item
+/// leads with ([`subject_stem`]), `None` for an imperative list.
+fn subject_is_narration(next: &str, list_subject: Option<&str>, complete: bool) -> bool {
+    if !NARRATIVE_SUBJECTS.contains(&next) {
+        return false;
+    }
+    if let Some(subject) = list_subject {
+        // A list told with a subject ("First, we design it. Then we build
+        // it.") takes any subject until it is a list, then runs on for as
+        // long as THAT subject leads, contracted or not: "Then we ship it." /
+        // "Then we're shipping it." is step four, "Then I went home." is the
+        // story after it.
+        return complete && subject_stem(next) != Some(subject);
+    }
+    // An imperative list: "Then you tap General." is a step addressed to the
+    // reader; any other subject ("Then I drove home.") is narration.
+    next != "you"
 }
 
 fn is_continue_cue(c: &str) -> bool {
     !START_CUES.contains(&c) && !HEADING_CUES.contains(&c) && c != BULLET_CUE
 }
 
+/// Capitalise a list item's first letter — unless its first word is a name
+/// whose casing is the name: "iPhone", "eBay" (lowercase then uppercase) or
+/// one of [`NEVER_RECASE`] ("macOS"). Those stay exactly as dictated.
 fn capitalize(s: &str) -> String {
+    let word = s
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(|c: char| !c.is_alphanumeric());
+    let mut lead = word.chars();
+    if matches!((lead.next(), lead.next()), (Some(a), Some(b)) if a.is_lowercase() && b.is_uppercase())
+        || NEVER_RECASE.contains(&word)
+    {
+        return s.to_string();
+    }
     let mut chars = s.chars();
     match chars.next() {
         Some(f) => f.to_uppercase().chain(chars).collect(),
@@ -1188,6 +1268,240 @@ mod tests {
         // "Finally!" as an exclamation stays prose.
         let s = "First, we packed. Then we drove. Finally!";
         assert_eq!(structure_text(s, &[], md), s);
+    }
+
+    /// yap-structure-followups (PR #217 re-review advisories): one case per
+    /// advisory, the exact input and the exact output, and every input word
+    /// kept. The guards after each fix are the lists the fix must not break.
+    #[test]
+    fn structure_followups_keep_every_word_and_finish_every_list() {
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            // 1. Narration after a list keeps "Then": a determiner or a
+            //    possessive after a bare "Then" is a story, not a step.
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then my wife called and we talked for an hour.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen my wife called and we talked for an hour.",
+            ),
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then the meeting ran long.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen the meeting ran long.",
+            ),
+            // Guard: a list whose items are told with a determiner still forms.
+            (
+                "First, the venue. Then the invites. Finally, the menu.",
+                "1. The venue.\n2. The invites.\n3. The menu.",
+            ),
+            // 2. "Finally" + a pronoun contraction is "at last", not a step.
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Finally I'm home.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nFinally I'm home.",
+            ),
+            (
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
+            ),
+            // 3. A list told with one subject runs as long as that subject
+            //    keeps leading a cued sentence: four steps, one list.
+            (
+                "First, we design it. Then we build it. Then we test it. Then we ship it.",
+                "1. We design it.\n2. We build it.\n3. We test it.\n4. We ship it.",
+            ),
+            // Guard: a different subject after the list is still narration.
+            (
+                "First, we design it. Then we build it. Then we ship it. Then I went home and slept.",
+                "1. We design it.\n2. We build it.\n3. We ship it.\nThen I went home and slept.",
+            ),
+            // 4. An imperative step told to "you" inside a list is a step.
+            (
+                "First, open Settings. Then you tap General. Finally, tap Reset.",
+                "1. Open Settings.\n2. You tap General.\n3. Tap Reset.",
+            ),
+            // 5. "Finally at checkout" is a step; only "at home" / "at last" /
+            //    "at peace" mean "at last".
+            (
+                "First, add the shoes to your cart. Then enter your address. Finally at checkout, pay with your card.",
+                "1. Add the shoes to your cart.\n2. Enter your address.\n3. At checkout, pay with your card.",
+            ),
+            (
+                "First, we packed. Then we drove ten hours. Finally at home, we slept.",
+                "First, we packed. Then we drove ten hours. Finally at home, we slept.",
+            ),
+            // 6. Product names keep their dictated casing; an ordinary
+            //    lowercase first letter is still capitalised.
+            (
+                "First, iPhone. Second, eBay. Third, macOS.",
+                "1. iPhone.\n2. eBay.\n3. macOS.",
+            ),
+            (
+                "Bullet, iPhone cases. Bullet, eBay listings. Bullet, macOS updates. Bullet, laptop stands.",
+                "- iPhone cases.\n- eBay listings.\n- macOS updates.\n- Laptop stands.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
+        let out = structure_text(
+            "First, iPhone. Second, eBay. Third, macOS.",
+            &[],
+            StructureFormat::PlainBullets,
+        );
+        for name in ["iPhone", "eBay", "macOS"] {
+            assert!(out.contains(name), "{name} recased:\n{out}");
+        }
+    }
+
+    /// PR #273 review (BLOCKING): a determiner after a bare "Then" is
+    /// narration only once a complete list has had no determiner-led item.
+    /// Noun-phrase lists ("Then the dentist.") keep forming and keep running
+    /// past three items.
+    #[test]
+    fn structure_then_determiner_noun_phrase_lists_still_form() {
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, call the bank. Then the dentist. Finally, the vet.",
+                "1. Call the bank.\n2. The dentist.\n3. The vet.",
+            ),
+            (
+                "First, check the logs. Then the database. Then the cache.",
+                "1. Check the logs.\n2. The database.\n3. The cache.",
+            ),
+            (
+                "First, buy milk. Then a loaf of bread. Then eggs.",
+                "1. Buy milk.\n2. A loaf of bread.\n3. Eggs.",
+            ),
+            (
+                "First, the venue. Then the invites. Then the menu. Then the band.",
+                "1. The venue.\n2. The invites.\n3. The menu.\n4. The band.",
+            ),
+            (
+                "First, check the logs. Then the database. Then the cache. Then the queue.",
+                "1. Check the logs.\n2. The database.\n3. The cache.\n4. The queue.",
+            ),
+            // Guard: narration after a complete imperative list keeps "Then".
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then the meeting ran long.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen the meeting ran long.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
+    }
+
+    /// PR #273 re-review: "Finally" + a subject contraction is "at last" only
+    /// when the contraction is NOT the subject the list is told with. A list
+    /// told with "I'm" / "we're" / "you're" keeps its "Finally" step.
+    #[test]
+    fn structure_finally_contraction_matching_list_subject_is_a_step() {
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, I'm going to check email. Then I'm going to call Bob. Finally I'm going to write the report.",
+                "1. I'm going to check email.\n2. I'm going to call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, we're going to design it. Then we're going to build it. Finally we're going to ship it.",
+                "1. We're going to design it.\n2. We're going to build it.\n3. We're going to ship it.",
+            ),
+            (
+                "First, you're going to open it. Then you're going to read it. Finally you're going to sign it.",
+                "1. You're going to open it.\n2. You're going to read it.\n3. You're going to sign it.",
+            ),
+            (
+                "First, I'm checking email. Second, I'm calling Bob. Finally I'm writing the report.",
+                "1. I'm checking email.\n2. I'm calling Bob.\n3. I'm writing the report.",
+            ),
+            (
+                "First, we're going to design it. Then we're going to build it. Then we're going to test it. Finally we're going to ship it.",
+                "1. We're going to design it.\n2. We're going to build it.\n3. We're going to test it.\n4. We're going to ship it.",
+            ),
+            // Guards: a contraction that is not the list's subject is still
+            // "at last", after an imperative list and after a "we" story.
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Finally I'm home.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nFinally I'm home.",
+            ),
+            (
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
+    }
+
+    #[test]
+    fn structure_finally_contraction_of_the_list_pronoun_is_a_step() {
+        // needs-human sweep, #273 round 3: the list's pronoun and its
+        // contraction are one subject ("we" / "we're", "I'll" / "I'm"), so a
+        // planning list keeps its Finally step exactly as main did.
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, we design it. Then we build it. Finally we're going to ship it.",
+                "1. We design it.\n2. We build it.\n3. We're going to ship it.",
+            ),
+            (
+                "First, I need to check email. Then I need to call Bob. Finally I'm going to write the report.",
+                "1. I need to check email.\n2. I need to call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, I'll check email. Then I'll call Bob. Finally I'm going to write the report.",
+                "1. I'll check email.\n2. I'll call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, you open it. Then you read it. Finally you're going to sign it.",
+                "1. You open it.\n2. You read it.\n3. You're going to sign it.",
+            ),
+            (
+                "First, I check email. Then I'm calling Bob. Finally I'm writing the report.",
+                "1. I check email.\n2. I'm calling Bob.\n3. I'm writing the report.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally we're going to ship it.",
+                "1. We design it.\n2. We build it.\n3. We test it.\n4. We're going to ship it.",
+            ),
+            // Guards: "at last" still wins when an at-last word follows the
+            // list's own pronoun, and a different pronoun is still the story.
+            (
+                "First, we pack. Then we drive. Then we unload. Finally we're home.",
+                "1. We pack.\n2. We drive.\n3. We unload.\nFinally we're home.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally I'm done.",
+                "1. We design it.\n2. We build it.\n3. We test it.\nFinally I'm done.",
+            ),
+            (
+                "First, we design it. Then we build it. Then we test it. Finally I'm going to sleep.",
+                "1. We design it.\n2. We build it.\n3. We test it.\nFinally I'm going to sleep.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
     }
 
     #[test]
