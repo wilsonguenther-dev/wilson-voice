@@ -3157,9 +3157,21 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // YV79 — terminal marker, last of this arm's emits so the
                 // `transcript` above has already handed the text over before any
                 // listener clears its busy state on this.
+                //
+                // Y6-A fix round 2 — `pasted` is THIS take's own paste receipt
+                // (`outcome.pasted`, the same bit `mark_dictation_proven` keys
+                // on). A take whose paste was never attempted (`want_paste`
+                // false: focus not a text input, stale generation) sends no
+                // `paste_failed`, so without this the onboarding try-it step
+                // could only judge the field — and a transcript the user pasted
+                // by hand from the clipboard read as a proven dictation.
                 let _ = app2.emit(
                     TAKE_DONE_EVENT,
-                    serde_json::json!({ "ok": true, "message": serde_json::Value::Null }),
+                    serde_json::json!({
+                        "ok": true,
+                        "message": serde_json::Value::Null,
+                        "pasted": outcome.pasted,
+                    }),
                 );
                 let preview = if entry.text.chars().count() > 100 {
                     let s: String = entry.text.chars().take(100).collect();
@@ -12358,6 +12370,35 @@ mod tests {
             );
             cursor = start + head.len();
         }
+    }
+
+    /// Y6-A fix round 2 — onboarding's try-it step proves a dictation only on
+    /// the backend's own paste receipt. The `Dictated` arm's terminal
+    /// `take_done` must carry `outcome.pasted`; without it a copy-only take
+    /// (`want_paste` false, so no `paste_failed`) plus a manual ⌘V by the user
+    /// read as "It works" and saved `dictationProven: true` forever.
+    #[test]
+    fn dictated_take_done_carries_this_takes_paste_receipt() {
+        const LIB: &str = include_str!("lib.rs");
+        let arm = LIB
+            .split_once("            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {")
+            .expect("the take-result match must still have its `Dictated` arm")
+            .1
+            .split_once("            Ok(TakeOutcome::Cancelled) => {")
+            .expect("`Cancelled` must follow `Dictated`")
+            .0;
+        let done = arm
+            .split_once("TAKE_DONE_EVENT,")
+            .expect("the `Dictated` arm must emit TAKE_DONE_EVENT")
+            .1
+            .split_once(");")
+            .expect("the TAKE_DONE_EVENT emit must close")
+            .0;
+        assert!(
+            done.contains("\"pasted\": outcome.pasted"),
+            "the `Dictated` arm's take_done payload must carry `pasted: outcome.pasted` — \
+             onboarding's try-it success requires it; got: {done}"
+        );
     }
 }
 

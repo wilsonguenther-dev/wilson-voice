@@ -8,6 +8,7 @@ import {
   nextStep,
   progressStep,
   tryItLanded,
+  tryItSucceeded,
   unprovenLine,
   type Outcome,
   type Step,
@@ -177,5 +178,28 @@ describe("Y6-A onboarding step machine", () => {
   it("the reminder stays down while the user's auto-paste setting is off", () => {
     expect(unprovenLine({ onboarded: true, dictationProven: false, autoPaste: false })).toBeNull();
     expect(unprovenLine({ onboarded: true, dictationProven: false, autoPaste: true })).toMatch(/hasn't pasted/);
+  });
+
+  // Fix round 2 (independent BLOCKING 1): success needs the backend's OWN paste
+  // receipt for this take. A copy-only take (want_paste false, so no
+  // paste_failed) followed by a manual Cmd-V puts the transcript in the field —
+  // that must never read as a proven dictation.
+  it("a transcript the user pasted by hand is never a proven dictation", () => {
+    const take = { doneOk: true, pasted: false, pasteFailed: false, transcript: "Hello there" };
+    expect(tryItSucceeded(take, true, "Hello there", "")).toBe(false);
+  });
+
+  it("a take succeeds only with a receipt AND the text in the field", () => {
+    const ok = { doneOk: true, pasted: true, pasteFailed: false, transcript: "Hello there" };
+    expect(tryItSucceeded(ok, true, "Hello there", "")).toBe(true);
+    // Receipt but the text never reached THIS field (pasted somewhere else).
+    expect(tryItSucceeded(ok, true, "", "")).toBe(false);
+    // Each other gate still fails closed.
+    expect(tryItSucceeded({ ...ok, doneOk: false }, true, "Hello there", "")).toBe(false);
+    expect(tryItSucceeded({ ...ok, pasteFailed: true }, true, "Hello there", "")).toBe(false);
+    expect(tryItSucceeded({ ...ok, transcript: null }, true, "Hello there", "")).toBe(false);
+    expect(tryItSucceeded(ok, false, "Hello there", "")).toBe(false);
+    // A payload from an older backend with no `pasted` field fails closed.
+    expect(tryItSucceeded({ ...ok, pasted: undefined }, true, "Hello there", "")).toBe(false);
   });
 });

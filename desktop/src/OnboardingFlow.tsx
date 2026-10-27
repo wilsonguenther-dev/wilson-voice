@@ -29,7 +29,7 @@ import {
   completionFor,
   nextStep,
   progressStep,
-  tryItLanded,
+  tryItSucceeded,
   type Outcome,
   type Step,
 } from "./onboarding";
@@ -207,6 +207,8 @@ export default function Onboarding({
    * is what the field held when the take started (text already there proves
    * nothing); `transcript` is null until this take produced words;
    * `pasteFailed` is the backend's own "no receipt" (`paste_failed`);
+   * `pasted` is the backend's own paste receipt for this take, carried on
+   * `take_done` (fix round 2) — a hand ⌘V of the clipboard never sets it;
    * `doneOk` is its terminal `take_done{ok:true}`, which arrives AFTER
    * `transcript` and `paste_failed`, so success is decided only once the
    * backend has said everything it will say about the paste; `settled` stops
@@ -216,9 +218,17 @@ export default function Onboarding({
     baseline: string;
     transcript: string | null;
     pasteFailed: boolean;
+    pasted: boolean;
     doneOk: boolean;
     settled: boolean;
-  }>({ baseline: "", transcript: null, pasteFailed: false, doneOk: false, settled: false });
+  }>({
+    baseline: "",
+    transcript: null,
+    pasteFailed: false,
+    pasted: false,
+    doneOk: false,
+    settled: false,
+  });
   const landTimerRef = useRef(0);
   // YV54 — silent setup: this overlay is the surface that starts the
   // recommended download, on mount, without asking. Nothing here blocks on it
@@ -329,10 +339,14 @@ export default function Onboarding({
     // mic permission / the wrong input device hits the loudest of them: the
     // no-speech gate, which only ever spoke on the toast channel behind this
     // overlay. Busy now clears for EVERY take, with the backend's own reason.
-    listen<{ ok: boolean; message: string | null }>("take_done", (e) => {
+    listen<{ ok: boolean; message: string | null; pasted?: boolean }>("take_done", (e) => {
       setBusy(false);
       if (stepRef.current === "try-it") {
-        tryItRef.current.onDone(!!e.payload?.ok, e.payload?.message || null);
+        tryItRef.current.onDone(
+          !!e.payload?.ok,
+          e.payload?.message || null,
+          e.payload?.pasted === true,
+        );
         return;
       }
       if (!e.payload?.ok) {
@@ -452,6 +466,7 @@ export default function Onboarding({
       baseline: fieldRef.current?.value ?? "",
       transcript: null,
       pasteFailed: false,
+      pasted: false,
       doneOk: false,
       settled: false,
     };
@@ -461,14 +476,15 @@ export default function Onboarding({
 
   /**
    * Did THIS take's transcript arrive in the field? Settles success only when
-   * the backend has finished the take (`take_done{ok:true}`), sent no
+   * the backend has finished the take (`take_done{ok:true}`) WITH its own
+   * paste receipt (`pasted`, fix round 2), sent no
    * `paste_failed`, auto-paste is on, and the transcript occurs in the field
    * more often than it did when the take started.
    */
   function checkLanded(value: string): boolean {
     const take = takeRef.current;
-    if (take.settled || !take.doneOk || take.pasteFailed || !autoPaste) return false;
-    if (!take.transcript || !tryItLanded(value, take.transcript, take.baseline)) return false;
+    if (take.settled) return false;
+    if (!tryItSucceeded(take, autoPaste, value, take.baseline)) return false;
     take.settled = true;
     clearLandTimer();
     setBusy(false);
@@ -531,7 +547,7 @@ export default function Onboarding({
    * dictation (no speech, cancel, rejected, silent) — fail with its reason.
    * Ok: give the webview PASTE_LAND_MS to apply the ⌘V, then judge.
    */
-  function onTryItDone(ok: boolean, message: string | null) {
+  function onTryItDone(ok: boolean, message: string | null, pasted: boolean) {
     const take = takeRef.current;
     if (take.settled) return;
     if (!ok) {
@@ -539,7 +555,11 @@ export default function Onboarding({
       return;
     }
     take.doneOk = true;
-    if (!autoPaste || !take.transcript) {
+    take.pasted = pasted;
+    // Fix round 2 — no paste receipt for this take (the paste was never
+    // attempted, or it got no receipt): nothing the field shows from here on
+    // can be this take's paste, only the user's own ⌘V. Fail now, closed.
+    if (!autoPaste || !take.transcript || !pasted) {
       // Copy-only by the user's own setting (or a take with nothing to
       // paste): no paste can be proven, so name the cause now.
       failTryIt(null);

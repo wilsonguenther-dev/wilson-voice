@@ -193,6 +193,30 @@ export function tryItLanded(fieldValue: string, transcript: string, baseline: st
 }
 
 /**
+ * Fix round 2 — the whole try-it success rule, in one pure place. A take is a
+ * proven dictation only when ALL of these hold:
+ *   * the backend finished it (`take_done{ok:true}` → `doneOk`);
+ *   * the backend's OWN paste receipt for this take says it pasted
+ *     (`take_done.pasted`, which is `outcome.pasted`). Missing or false fails
+ *     closed: a copy-only take sends no `paste_failed`, so without this a
+ *     transcript the user pasted by hand with ⌘V read as "It works";
+ *   * no `paste_failed` arrived;
+ *   * the user's auto-paste setting is on;
+ *   * the transcript is in the try-it field more often than before the take
+ *     (`tryItLanded`) — the receipt alone could be for another app.
+ */
+export function tryItSucceeded(
+  take: { doneOk: boolean; pasted?: boolean; pasteFailed: boolean; transcript: string | null },
+  autoPaste: boolean,
+  fieldValue: string,
+  baseline: string,
+): boolean {
+  if (!take.doneOk || take.pasted !== true || take.pasteFailed || !autoPaste) return false;
+  if (!take.transcript) return false;
+  return tryItLanded(fieldValue, take.transcript, baseline);
+}
+
+/**
  * The main window's reminder after an unproven finish. `null` once a take has
  * pasted (or while onboarding itself is still on screen).
  *
