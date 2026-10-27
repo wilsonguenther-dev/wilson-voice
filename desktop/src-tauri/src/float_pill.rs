@@ -420,7 +420,15 @@ fn apply_panel_hud(_app: &AppHandle) -> Result<(), String> {
 /// Create the float webview once, convert to NSPanel, park bottom-center.
 pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("float").is_none() {
-        let url = WebviewUrl::App("float.html".into());
+        // Y7-B — a `--smoke` dev run may pin the pill to one phase/dock for
+        // scripts/smoke-windowed.sh; always "" in a shipped build (lib.rs).
+        let url = WebviewUrl::App(
+            format!(
+                "float.html{}",
+                crate::smoke_forced_float_query().unwrap_or_default()
+            )
+            .into(),
+        );
         let mut builder = WebviewWindowBuilder::new(app, "float", url)
             .title("")
             .inner_size(PILL_W, PILL_H)

@@ -27,7 +27,7 @@
  * that bundle and that viewport, not of the native shell.
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { TAURI_SHIM, evaluate, openChrome as openHeadlessChrome, sleep } from "./headless-chrome.mjs";
 
@@ -85,6 +85,13 @@ const CHECK_ONLY = args.has("--check-only");
 const SELF_TEST = args.has("--self-test-must-fail");
 const URL_BASE = process.env.YAP_SMOKE_URL || "http://127.0.0.1:5273";
 const SHOTS_ROOT = process.env.YAP_SMOKE_SHOTS || "docs/smoke-shots";
+/* Y7-B — one smoke invocation is ONE run directory holding TWO fixture states
+   (seeded and empty) plus the pill matrix. The shell names the run and the
+   state; run on its own, the driver keeps Y0-E's single-state layout. */
+const RUN_NAME = process.env.YAP_SMOKE_RUN || new Date().toISOString().replace(/[:.]/g, "-");
+const STATE = (process.env.YAP_SMOKE_STATE || "").trim();
+const PREFIX = STATE ? STATE + "-" : "";
+const RESULT_FILE = STATE ? "result-" + STATE + ".json" : "result.json";
 const CHROME =
   process.env.YAP_SMOKE_CHROME ||
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -240,6 +247,44 @@ const CFG = () => `{ emptyAttr: ${JSON.stringify(EMPTY_STATE_ATTR)}, spinnerMs: 
 
 /* ── --check-only ───────────────────────────────────────────────────────── */
 
+/* The records --check-only re-asserts: every fixture state's result file, plus
+   the pill matrix's, plus one synthetic "missing-shot" finding per PNG a record
+   names that is no longer on disk (a capture whose evidence is gone is not a
+   capture). Pure over the run directory, so --self-test-must-fail can feed it a
+   deliberately broken record and prove it is not blind. */
+function loadRun(dir) {
+  const views = [];
+  const files = readdirSync(dir).filter((f) => /^result(-[a-z0-9-]+)?\.json$/.test(f)).sort();
+  for (const f of files) {
+    const r = JSON.parse(readFileSync(join(dir, f), "utf8"));
+    for (const v of r.views || []) views.push({ ...v, state: v.state || r.state || "-" });
+  }
+  const pillPath = join(dir, "pill", "result.json");
+  if (existsSync(pillPath)) {
+    const r = JSON.parse(readFileSync(pillPath, "utf8"));
+    for (const c of r.captures_ || [])
+      views.push({
+        state: "pill",
+        view: "pill:" + (c.phase || c.id || "?") + "/" + (c.dock || "?") + "/" + (c.character || c.pill || "?"),
+        size: r.window,
+        findings: c.findings || [],
+        shot: c.file || c.shot || null,
+      });
+  }
+  for (const v of views)
+    if (v.shot && !existsSync(v.shot))
+      v.findings = [...v.findings, { id: "missing-shot", detail: "result names " + v.shot + " but it is not on disk" }];
+  return { files, views, pill: existsSync(pillPath) };
+}
+
+function assertViews(views) {
+  const bad = views.filter((v) => v.findings.length);
+  for (const v of bad)
+    for (const f of v.findings)
+      console.log("  FAIL " + v.state + "/" + v.view + "@" + v.size + "  " + f.id + " — " + f.detail);
+  return bad.length;
+}
+
 function checkOnly() {
   const pointer = join(SHOTS_ROOT, "LATEST");
   if (!existsSync(pointer)) {
@@ -251,19 +296,42 @@ function checkOnly() {
     return 3;
   }
   const run = readFileSync(pointer, "utf8").trim();
-  const resultPath = join(SHOTS_ROOT, run, "result.json");
-  if (!existsSync(resultPath)) {
-    console.error("check-only: pointer names run '" + run + "' but " + resultPath + " is missing.");
+  const dir = join(SHOTS_ROOT, run);
+  if (!existsSync(dir)) {
+    console.error("check-only: pointer names run '" + run + "' but " + dir + " is missing.");
     return 3;
   }
-  const result = JSON.parse(readFileSync(resultPath, "utf8"));
-  const bad = result.views.filter((v) => v.findings.length);
-  console.log("check-only: re-asserting run " + run + " (" + result.views.length + " view/size captures)");
-  for (const v of bad)
-    for (const f of v.findings)
-      console.log("  FAIL " + v.view + "@" + v.size + "  " + f.id + " — " + f.detail);
-  if (bad.length) {
-    console.error("check-only: " + bad.length + " capture(s) carry findings. See " + resultPath);
+  const loaded = loadRun(dir);
+  if (!loaded.files.length) {
+    console.error("check-only: run '" + run + "' has no result*.json in " + dir + ".");
+    return 3;
+  }
+  const { views } = loaded;
+  if (SELF_TEST) {
+    /* The re-assertion's own non-vacuity proof: append one record that carries
+       every structural finding id and require the SAME assertViews to count it. */
+    const ids = ["no-text", "spinner-stuck", "doc-hscroll", "out-of-bounds", "silent-empty"];
+    const synthetic = {
+      state: "self-test", view: "__synthetic-broken__", size: SIZES[0].w + "x" + SIZES[0].h,
+      findings: ids.map((id) => ({ id, detail: "synthetic — injected by --check-only --self-test-must-fail" })),
+    };
+    const before = views.filter((v) => v.findings.length).length;
+    console.log("check-only self-test: re-asserting run " + run + " (" + views.length + " captures) plus one synthetic broken record");
+    const after = assertViews([...views, synthetic]);
+    if (after !== before + 1) {
+      console.error("SELF-TEST VACUOUS — the re-assertion did not count the synthetic broken record.");
+      console.log("SELF_TEST=vacuous");
+      return 9;
+    }
+    console.error("check-only --self-test-must-fail: the synthetic break was reported, so this exits non-zero BY DESIGN.");
+    console.log("SELF_TEST=satisfied");
+    return 1;
+  }
+  console.log("check-only: re-asserting run " + run + " (" + views.length + " captures across " +
+    loaded.files.join(", ") + (loaded.pill ? " + pill/result.json" : "") + ")");
+  const bad = assertViews(views);
+  if (bad) {
+    console.error("check-only: " + bad + " capture(s) carry findings. See " + dir);
     return 1;
   }
   console.log("check-only: last run was clean.");
@@ -343,7 +411,7 @@ async function captureOnboarding(cdp, s, label, outDir, views) {
     n++;
     const name = ONBOARDING + "-" + n;
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
-    const file = join(outDir, name + "-" + label + ".png");
+    const file = join(outDir, PREFIX + name + "-" + label + ".png");
     writeFileSync(file, Buffer.from(shot.data, "base64"));
     const pageErrors = (cdp.errors.get(s) || []).slice(0, 6);
     views.push({ view: name, size: label, heading, findings: res.findings, rows: res.rows, chars: res.chars, shot: file, nav: "overlay", pageErrors });
@@ -360,10 +428,64 @@ async function captureOnboarding(cdp, s, label, outDir, views) {
   return n;
 }
 
+/* ── the eight SettingsTabs ─────────────────────────────────────────────── */
+
+async function judgeAfterSpinner(cdp, s) {
+  const deadline = Date.now() + SPINNER_BUDGET_MS;
+  let res;
+  for (;;) {
+    await evaluate(cdp, s, DETECTORS + ";'loaded'");
+    res = await evaluate(cdp, s, `__yapDetect(${CFG()})`);
+    const stuck = res.findings.some((f) => f.id === "spinner-stuck");
+    if (!stuck || Date.now() > deadline) break;
+    await sleep(400);
+  }
+  return res;
+}
+
+async function captureSettingsTabs(cdp, s, label, outDir, views) {
+  const tabs = await evaluate(
+    cdp,
+    s,
+    `[...document.querySelectorAll('.settings-subnav [role="tab"]')].map(b => (b.innerText || "").trim())`
+  );
+  if (!tabs.length) {
+    views.push({ view: "settings-tabs", size: label, findings: [{ id: "no-settings-tabs", detail: "Settings rendered no [role=tab] in .settings-subnav" }], rows: 0, chars: 0, shot: null, nav: "none", pageErrors: [] });
+    console.log("FAIL settings-tabs  " + label + " no SettingsTab buttons found");
+    return;
+  }
+  for (let i = 0; i < tabs.length; i++) {
+    const slug = tabs[i].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tab" + i;
+    const name = "settings-" + slug;
+    const clicked = await evaluate(
+      cdp,
+      s,
+      `(() => { const b = document.querySelectorAll('.settings-subnav [role="tab"]')[${i}]; if (!b) return false; b.click(); return true; })()`
+    );
+    await sleep(300);
+    const res = await judgeAfterSpinner(cdp, s);
+    if (!clicked) res.findings.push({ id: "no-nav-button", detail: "SettingsTab #" + i + " (" + tabs[i] + ") vanished before it could be clicked" });
+    const selected = await evaluate(
+      cdp,
+      s,
+      `((document.querySelectorAll('.settings-subnav [role="tab"]')[${i}] || {}).getAttribute || (() => null)).call(document.querySelectorAll('.settings-subnav [role="tab"]')[${i}], "aria-selected")`
+    );
+    if (selected !== "true") res.findings.push({ id: "tab-not-selected", detail: "clicked SettingsTab '" + tabs[i] + "' but aria-selected=" + selected });
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
+    const file = join(outDir, PREFIX + name + "-" + label + ".png");
+    writeFileSync(file, Buffer.from(shot.data, "base64"));
+    const pageErrors = (cdp.errors.get(s) || []).slice(0, 6);
+    views.push({ view: name, size: label, findings: res.findings, rows: res.rows, chars: res.chars, shot: file, nav: "settings-tab", pageErrors });
+    const tag = res.findings.length ? "FAIL" : "ok  ";
+    console.log(tag + " " + name.padEnd(20) + label.padEnd(9) + "rows=" + String(res.rows).padEnd(4) + "chars=" + String(res.chars).padEnd(6) + file);
+    for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
+  }
+}
+
 /* ── the capture walk ───────────────────────────────────────────────────── */
 
 async function capture() {
-  const run = new Date().toISOString().replace(/[:.]/g, "-");
+  const run = RUN_NAME;
   const outDir = join(SHOTS_ROOT, run);
   mkdirSync(outDir, { recursive: true });
 
@@ -424,15 +546,7 @@ async function capture() {
         );
         /* Condition 2 is a DEADLINE, not a sample: poll until the spinner is
            gone or the budget is spent, then judge. */
-        const deadline = Date.now() + SPINNER_BUDGET_MS;
-        let res;
-        for (;;) {
-          await evaluate(cdp, s, DETECTORS + ";'loaded'");
-          res = await evaluate(cdp, s, `__yapDetect(${CFG()})`);
-          const stuck = res.findings.some((f) => f.id === "spinner-stuck");
-          if (!stuck || Date.now() > deadline) break;
-          await sleep(400);
-        }
+        const res = await judgeAfterSpinner(cdp, s);
         /* A stale fixture is an INSTRUMENT failure, not a UI defect, and it
            produces a wall of convincing-looking structural findings. Name it. */
         if (res.bootError) {
@@ -447,7 +561,7 @@ async function capture() {
           res.findings.push({ id: "no-nav-button", detail: "no nav button whose label starts with '" + view + "'" });
 
         const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
-        const file = join(outDir, view + "-" + label + ".png");
+        const file = join(outDir, PREFIX + view + "-" + label + ".png");
         writeFileSync(file, Buffer.from(shot.data, "base64"));
 
         const pageErrors = (cdp.errors.get(s) || []).slice(0, 6);
@@ -456,6 +570,12 @@ async function capture() {
         console.log(tag + " " + view.padEnd(12) + label.padEnd(9) + "rows=" + String(res.rows).padEnd(4) + "chars=" + String(res.chars).padEnd(6) + file);
         for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
         for (const e of pageErrors) console.log("       page: " + e.split("\n")[0]);
+
+        /* Y7-B — Settings is eight panels behind one Nav entry. Walk every
+           SettingsTab (the segmented sub-nav's role=tab buttons, so a tab a
+           later item adds is captured with no edit here) and judge each one
+           with the same detectors. Zero tabs is a finding, never a skip. */
+        if (view === "settings" && nav === "clicked") await captureSettingsTabs(cdp, s, label, outDir, views);
       }
       await cdp.send("Page.close", {}, s).catch(() => {});
     }
@@ -465,8 +585,10 @@ async function capture() {
   }
 
   const failed = views.filter((v) => v.findings.length);
+  for (const v of views) v.state = STATE || "-";
   const result = {
     run,
+    state: STATE || null,
     url: URL_BASE,
     fixtures: FIXTURES_PATH,
     selected: SELECTED,
@@ -477,16 +599,18 @@ async function capture() {
     failing: failed.length,
     views,
   };
-  writeFileSync(join(outDir, "result.json"), JSON.stringify(result, null, 2));
+  writeFileSync(join(outDir, RESULT_FILE), JSON.stringify(result, null, 2));
   writeFileSync(join(SHOTS_ROOT, "LATEST"), run + "\n");
 
   console.log("");
   console.log("run " + run + " — " + views.length + " captures, " + failed.length + " carrying findings");
-  console.log("shots + result.json: " + outDir);
+  console.log("shots + " + RESULT_FILE + ": " + outDir);
   return failed.length ? 1 : 0;
 }
 
 /* ── main ───────────────────────────────────────────────────────────────── */
 
+/* --check-only wins over --self-test-must-fail: together they self-test the
+   RE-ASSERTION (no browser), which is what the pre-flight runs. */
 const code = CHECK_ONLY ? checkOnly() : SELF_TEST ? await selfTest() : await capture();
 process.exit(code);

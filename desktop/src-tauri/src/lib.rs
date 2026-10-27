@@ -264,6 +264,122 @@ pub mod app_paths;
 /// Y0-D — `--smoke`: the launch mode that registers no hotkey and never pastes.
 pub mod smoke;
 
+// ── Y7-B — the forced-pill-phase debug handle ───────────────────────────────
+//
+// `scripts/smoke-windowed.sh` must photograph the float pill in EVERY LivePhase
+// at every `pill_position`, and a real phase only happens when the pipeline
+// emits the right events in order. For a run of the REAL app (not the headless
+// matrix), this hands the float window float-main's dev-only query handle
+// (`src/pill/forced.ts`: `float.html?phase=&dock=`), read from
+// `YAP_SMOKE_FORCE_PHASE` / `YAP_SMOKE_FORCE_DOCK`.
+//
+// IT CANNOT BE REACHED IN A SHIPPED BUILD, twice over:
+//   1. COMPILE TIME — the shipped configuration is `tauri build`: the
+//      `custom-protocol` feature AND the release profile. Under
+//      `cfg(all(feature = "custom-protocol", not(debug_assertions)))` the reader
+//      below is compiled OUT and `smoke_forced_float_query` is a constant None;
+//      `SMOKE_FORCE_PHASE_COMPILED` records which side was built and
+//      `shipped_build_has_no_forced_phase` asserts it on the shipped cfg.
+//   2. RUN TIME — even in a dev/debug build it answers only in a `--smoke`
+//      process (`smoke::is_armed`, which itself refuses the real data dir) AND
+//      only when the env var is set.
+// And the frontend half (`import.meta.env.DEV || __YAP_PILL_MATRIX__`) is
+// rolled out of a release bundle, so a query string alone moves nothing.
+
+/// True when this binary carries the forced-phase reader (a dev or debug
+/// build); false in the shipped `custom-protocol` + release configuration.
+pub const SMOKE_FORCE_PHASE_COMPILED: bool =
+    cfg!(not(all(feature = "custom-protocol", not(debug_assertions))));
+/// The env var naming the phase to force (variant `model-loading` or id `model_loading`).
+pub const SMOKE_FORCE_PHASE_ENV: &str = "YAP_SMOKE_FORCE_PHASE";
+/// The env var naming the dock to force (`bottom` / `left` / `right`).
+pub const SMOKE_FORCE_DOCK_ENV: &str = "YAP_SMOKE_FORCE_DOCK";
+
+/// The query string float.html is opened with in a `--smoke` dev run that asks
+/// for a forced phase, or None. Always None in a shipped build.
+pub fn smoke_forced_float_query() -> Option<String> {
+    #[cfg(all(feature = "custom-protocol", not(debug_assertions)))]
+    {
+        None
+    }
+    #[cfg(not(all(feature = "custom-protocol", not(debug_assertions))))]
+    {
+        if !smoke::is_armed() {
+            return None;
+        }
+        forced_float_query(
+            std::env::var(SMOKE_FORCE_PHASE_ENV).ok().as_deref(),
+            std::env::var(SMOKE_FORCE_DOCK_ENV).ok().as_deref(),
+        )
+    }
+}
+
+/// Pure half of [`smoke_forced_float_query`]: validates and encodes. A phase is
+/// lowercase letters, `-` and `_` only (forced.ts resolves the name; anything
+/// it does not know leaves the pill unforced); a dock is one of the three.
+#[cfg(not(all(feature = "custom-protocol", not(debug_assertions))))]
+fn forced_float_query(phase: Option<&str>, dock: Option<&str>) -> Option<String> {
+    let phase = phase.map(str::trim).filter(|p| {
+        !p.is_empty()
+            && p.len() <= 32
+            && p.chars()
+                .all(|c| c.is_ascii_lowercase() || c == '-' || c == '_')
+    })?;
+    let mut q = format!("?phase={phase}");
+    if let Some(d) = dock
+        .map(str::trim)
+        .filter(|d| matches!(*d, "bottom" | "left" | "right"))
+    {
+        q.push_str("&dock=");
+        q.push_str(d);
+    }
+    Some(q)
+}
+
+#[cfg(test)]
+mod smoke_force_phase_tests {
+    use super::*;
+
+    #[cfg(not(all(feature = "custom-protocol", not(debug_assertions))))]
+    #[test]
+    fn forced_float_query_validates_and_encodes() {
+        const { assert!(SMOKE_FORCE_PHASE_COMPILED) };
+        assert_eq!(forced_float_query(None, Some("left")), None);
+        assert_eq!(forced_float_query(Some(""), None), None);
+        assert_eq!(forced_float_query(Some("x&dock=evil"), None), None);
+        assert_eq!(forced_float_query(Some("Recording"), None), None);
+        assert_eq!(
+            forced_float_query(Some("recording"), None).as_deref(),
+            Some("?phase=recording")
+        );
+        assert_eq!(
+            forced_float_query(Some("model_loading"), Some("right")).as_deref(),
+            Some("?phase=model_loading&dock=right")
+        );
+        assert_eq!(
+            forced_float_query(Some("transcribing"), Some("top")).as_deref(),
+            Some("?phase=transcribing")
+        );
+    }
+
+    #[test]
+    fn forced_phase_is_inert_outside_a_smoke_process() {
+        // `cargo test` is never a `--smoke` process, so even a dev build with
+        // the env var set must answer None.
+        assert!(!smoke::is_armed());
+        assert_eq!(smoke_forced_float_query(), None);
+    }
+
+    /// Runs under `cargo test --release --features custom-protocol` — the
+    /// shipped configuration — and proves the reader was compiled out.
+    #[cfg(all(feature = "custom-protocol", not(debug_assertions)))]
+    #[test]
+    fn shipped_build_has_no_forced_phase() {
+        const { assert!(!SMOKE_FORCE_PHASE_COMPILED) };
+        assert_eq!(smoke_forced_float_query(), None);
+    }
+}
+
 // YV91 finding #27: the two counters `tests/meeting_no_model_resident.rs` reads
 // to prove a meeting capture never brings an ASR model resident and never
 // defeats the idle sweepers. Re-exported (rather than making the whole module

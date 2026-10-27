@@ -97,7 +97,7 @@ export default function LicensePanel({
       </h2>
 
       {/* ── The state of this Mac, in one card ── */}
-      <div className={`panel license-card license-${status.state}`}>
+      <div className={`panel license-card license-${status.state}`} data-row="license">
         <div className="license-card-body">
           <span className="license-eyebrow">{copy.eyebrow}</span>
           <h3>{copy.headline}</h3>

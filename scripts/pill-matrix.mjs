@@ -341,7 +341,11 @@ async function contactSheet(cdp, rows, outDir) {
 async function run() {
   const work = mkdtempSync(join(tmpdir(), "yap-pill-matrix-"));
   const outDir = resolve(ARGS.out || mkdtempSync(join(tmpdir(), "yap-pill-shots-")));
-  if (outDir === ROOT || outDir.startsWith(ROOT + "/")) {
+  /* Y7-B — the one in-repo exception is docs/smoke-shots/, which .gitignore
+     excludes: smoke-windowed.sh files the pill matrix beside the view captures
+     of the same run, and none of it can reach a commit. */
+  const SMOKE_SHOTS = join(ROOT, "docs", "smoke-shots") + "/";
+  if ((outDir === ROOT || outDir.startsWith(ROOT + "/")) && !outDir.startsWith(SMOKE_SHOTS)) {
     console.error("pill-matrix: --out " + outDir + " is inside the repo. The PNGs are PR evidence, never a commit — use a scratch dir.");
     return 2;
   }
