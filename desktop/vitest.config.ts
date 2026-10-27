@@ -45,6 +45,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "meetings/systemAudio.ts": { lines: 100, branches: 86, functions: 100, statements: 94 },
   "meetings/transcript.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/copyCardModel.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
