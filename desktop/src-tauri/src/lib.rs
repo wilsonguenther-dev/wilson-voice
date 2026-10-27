@@ -9787,7 +9787,9 @@ pub fn run() {
                 let s = state.settings.lock();
                 (s.show_floating_pill, s.onboarded)
             };
-            if float_pill::launch_pill_visible(show_setting, onboarded) && idle_pill_on(&state) {
+            // Y6-B's hide-for-an-hour is in-memory only, so it is never active at
+            // launch: the Y6-D gate alone decides the first show.
+            if float_pill::launch_pill_visible(show_setting, onboarded) {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
