@@ -921,8 +921,8 @@ const RUN_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { command: { type: 'string' }, exit: { type: 'number' } },
-        required: ['command', 'exit'],
+        properties: { command: { type: 'string' }, exit: { type: 'number' }, stdout: { type: 'string' } },
+        required: ['command', 'exit', 'stdout'],
       },
     },
     allZero: { type: 'boolean' },
@@ -950,6 +950,66 @@ const runText = (r) => {
     return [exits, String(r.output || '')].filter(Boolean).join('\n\n').slice(0, 6000)
   }
   return asText(r).slice(0, 6000)
+}
+/**
+ * DEPENDENCY HOLD MARKER (walk D7, 2026-10-26). True ONLY when an EXECUTED command's captured stdout
+ * (exits[i].stdout — the raw text the command printed) carries a LINE that starts
+ * "DEPENDENCY-NOT-ON-MAIN:". Never the echoed command string (exits[i].command), never the seat's
+ * own prose (output / firstFailure), never anywhere else in the runner's JSON. On main 3569ce4 the
+ * old test (the marker regex against asText(pre), the WHOLE result) skipped yap-p0-perm-repair as
+ * "dependency not on main" because the marker text sat in exits[0].command (a then-literal echo) and
+ * in output ("No DEPENDENCY-NOT-ON-MAIN message printed") — run wf_9ac3986e, 2026-10-19T02:54Z.
+ * Pure: no I/O, no globals; review-gate.test.mjs lifts it out of this file and runs it.
+ */
+const dependencyMarkerPrinted = (pre) => {
+  let r = pre
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r)
+    } catch {
+      return false
+    }
+  }
+  if (!r || typeof r !== 'object' || !Array.isArray(r.exits)) return false
+  return r.exits.some((e) => !!e && typeof e.stdout === 'string' && /^DEPENDENCY-NOT-ON-MAIN:/m.test(e.stdout))
+}
+/**
+ * DEPENDENCY HOLD, FAIL-CLOSED (PR #266 fix round 1, independent review BLOCKING 1). A hold EXITS 0 by
+ * design, so when dependencyMarkerPrinted(pre) is false the next branch in runBuild would rule the item
+ * ALREADY-DONE — a terminal success that reflection closes on the board. That is only safe when the
+ * evidence PROVES the marker was not printed. True (= do NOT rule already-done) when the item's
+ * preflight carries a hold (it assembles "DEPENDENCY-NOT-ON-$(printf MAIN)") AND the runner's return
+ * cannot rule the marker out:
+ *   - the return is not parseable into an object with a non-empty exits array (incl. a non-JSON string);
+ *   - any exits[i].stdout is missing or not a string (a seat that omitted stdout — the pre-#266 shape);
+ *   - any stdout carries the marker anywhere but at column 0 (indent, prompt prefix, "+ " trace);
+ *   - the printed form "DEPENDENCY-NOT-ON-MAIN:" appears in any field OTHER than exits[i].command
+ *     (e.g. output's raw tail while stdout came back "").
+ * The 3569ce4 false hold stays fixed: there the marker sat in exits[0].command (excluded) and in prose
+ * as "No DEPENDENCY-NOT-ON-MAIN message printed" (no colon), so a return with stdout "" is clear.
+ * An item with no hold in its preflight is never inconclusive. Pure: no I/O, no globals;
+ * dependency-marker.test.mjs lifts it out of this file and runs it.
+ */
+const dependencyHoldInconclusive = (pre, preflight) => {
+  if (typeof preflight !== 'string' || !preflight.includes('DEPENDENCY-NOT-ON-')) return false
+  let r = pre
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r)
+    } catch {
+      return true
+    }
+  }
+  if (!r || typeof r !== 'object' || !Array.isArray(r.exits) || r.exits.length === 0) return true
+  if (r.exits.some((e) => !e || typeof e !== 'object' || typeof e.stdout !== 'string')) return true
+  if (r.exits.some((e) => e.stdout.includes('DEPENDENCY-NOT-ON-MAIN'))) return true
+  let rest
+  try {
+    rest = JSON.stringify({ ...r, exits: r.exits.map((e) => ({ ...e, command: '' })) })
+  } catch {
+    return true
+  }
+  return rest.includes('DEPENDENCY-NOT-ON-MAIN:')
 }
 
 /**
@@ -988,7 +1048,9 @@ false green exactly that way. There is no 'timeout' binary on macOS. A command t
 reassuring text and exits non-zero FAILED; a command that prints nothing and exits 0 PASSED.
 
 RETURN the schema exactly: {kind: "${kind}", itemId: "${item.id}", dir: "${dir}", headSha: "<sha>",
-exits: [{command, exit}, ...] — ONE ENTRY PER COMMAND, IN ORDER, allZero: <true only if every exit
+exits: [{command, exit, stdout}, ...] — ONE ENTRY PER COMMAND, IN ORDER, where stdout is the raw text
+THAT command printed, pasted verbatim (its last ~40 lines; "" if it printed nothing) and NEVER your
+own words — the loop reads stdout and nothing else for the dependency marker, allZero: <true only if every exit
 is 0>, firstFailure: "<the first command that did not exit 0, or empty>", output: "<the raw tail of
 each command's output, pasted, at most ~80 lines total>"}
 allZero IS THE FIELD THE LOOP BRANCHES ON. Getting it wrong is the worst thing you can do here.
@@ -1038,10 +1100,17 @@ async function runBuild(item, lane) {
   // top of a missing dependency only produces a conflicting PR. Such an item is SKIPPED with its own
   // status, never recorded as already-done; the next build pass (after a review pass lands the
   // dependency) builds it. Item files assemble the marker at run time, e.g. "DEPENDENCY-NOT-ON-$(printf
-  // MAIN)", so a seat echoing the command text cannot trip this.
-  if (runPassed(pre) && /DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))) {
+  // MAIN)", so a seat echoing the command text cannot trip this. The hold reads ONLY the executed
+  // commands' captured stdout, as a line starting "DEPENDENCY-NOT-ON-MAIN:" — see dependencyMarkerPrinted.
+  if (runPassed(pre) && dependencyMarkerPrinted(pre)) {
     log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
     return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
+  }
+  // FAIL CLOSED: a passing preflight whose item carries a hold is already-done ONLY when the runner's
+  // stdout proves the marker was not printed. Anything less is a non-terminal skip, never a win.
+  if (runPassed(pre) && dependencyHoldInconclusive(pre, item.preflight)) {
+    log(`${p} (lane ${tag}): skipped: dependency hold inconclusive — the pre-flight exited 0 but its per-command stdout cannot rule out the DEPENDENCY-NOT-ON-MAIN marker (stdout missing, prefixed, or the marker only elsewhere in the return); NOT ruled already-done, no builder dispatched. The next build pass re-runs it`)
+    return { itemId: item.id, status: 'skipped: dependency hold inconclusive', lane: tag, preflight: pre }
   }
   if (runPassed(pre)) {
     log(`${p} (lane ${tag}): already-done — EXECUTED pre-flight passed on unmodified origin/main; no builder dispatched, no branch, no PR`)
@@ -5442,7 +5511,7 @@ ITEMS.push({
   id: 'loop-dependency-marker-stdout-only', prompt: 'loop-dependency-marker-stdout-only', branch: 'loop/harness-dependency-marker-executed-output-only', gated: null,
   title: 'The harness\'s dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat\'s JSON',
   preflight: `
-    grep -q 'dependencyMarkerPrinted' scripts/loop/template.mjs && grep -q 'dependencyMarkerPrinted' scripts/loop/review-gate.test.mjs
+    grep -q 'dependencyMarkerPrinted' scripts/loop/template.mjs && grep -q 'dependencyMarkerPrinted' scripts/loop/dependency-marker.test.mjs
   `,
   spec: `
     Panel: not required — FIX (walk D7, harness).
@@ -6205,6 +6274,7 @@ return {
     failedAcceptance: results.filter((r) => r && r.status === 'failed-acceptance').length,
     awaitingPanel: results.filter((r) => r && r.status === 'skipped: awaiting Senior Panel').length,
     awaitingDependency: results.filter((r) => r && r.status === 'skipped: dependency not on main').length,
+    holdInconclusive: results.filter((r) => r && r.status === 'skipped: dependency hold inconclusive').length,
     errored: errored.length,
     merged: results.filter((r) => r && r.status === 'merged').length,
     ciPending: results.filter((r) => r && r.status === 'ci-pending').length,
