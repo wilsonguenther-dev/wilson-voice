@@ -5736,7 +5736,7 @@ fn last_transcript_text(state: &AppState, what: &str) -> Option<String> {
 /// open paste transaction FIRST, so the copy is always the last write and wins.
 /// Runs off-main via `spawn_blocking` because the hop waits on the main thread,
 /// and this is called from the main-thread menu callback. No history row is
-/// inserted.
+/// inserted. Also backs the Y8-A ⌃⌘C chord (one copy path, not two).
 fn copy_last_transcript(app: &AppHandle, state: &AppState) {
     let Some(text) = last_transcript_text(state, "copy last transcript") else {
         return;
@@ -5766,38 +5766,6 @@ fn paste_last_transcript(app: &AppHandle, state: &AppState) {
         let o = paste::copy_and_maybe_paste(&app, &text, true, None);
         if !o.copied {
             log::warn!("paste last transcript failed: {}", o.message);
-        }
-    });
-}
-
-/// Y8-A — copy the newest transcript to the clipboard and STOP there: the
-/// ⌃⌘C chord, for when the cursor is not yet where the text should go. Same
-/// read as [`paste_last_transcript`], `want_paste: false`, off the main thread
-/// like every clipboard hop; no history row is written.
-fn copy_last_transcript(app: &AppHandle, state: &AppState) {
-    let text = match state.db.list_transcripts(1, None) {
-        Ok(entries) => match entries.into_iter().next() {
-            Some(e) => e.text,
-            None => {
-                log::info!("copy last transcript: history is empty");
-                return;
-            }
-        },
-        Err(err) => {
-            log::warn!("copy last transcript: db read failed: {err}");
-            return;
-        }
-    };
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let o = paste::copy_and_maybe_paste(&app, &text, false, None);
-        if o.copied {
-            log::info!(
-                "copy last transcript: {} chars on the clipboard",
-                text.chars().count()
-            );
-        } else {
-            log::warn!("copy last transcript failed: {}", o.message);
         }
     });
 }
