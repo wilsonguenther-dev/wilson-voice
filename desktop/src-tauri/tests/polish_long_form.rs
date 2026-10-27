@@ -33,6 +33,7 @@ fn on() -> PolishConfig {
         model: "qwen2.5-1.5b-instruct-q4_k_m".to_string(),
         deadline_ms: 1200,
         style: Style::Default,
+        ..PolishConfig::default()
     }
 }
 
@@ -640,6 +641,7 @@ fn skipped_with_a_named_reason_when_the_weights_are_absent() {
         // pays a GGUF page-in on its first chunk (BUDGETS.md: 7 765 ms cold).
         deadline_ms: 5000,
         style: Style::Default,
+        ..PolishConfig::default()
     };
     // YV75: a COLD child answers `unavailable` rather than blocking a take, so
     // the first request is a warm-up, not a measurement. Wait for the handshake

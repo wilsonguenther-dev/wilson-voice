@@ -46,10 +46,13 @@ use serde::{Deserialize, Serialize};
 /// 5 = YV126's `meeting_segments.cluster_index` — which speaker cluster a
 ///     transcript segment was attributed to, `NULL` for every row no clusterer
 ///     has ever looked at.
+/// 6 = the meeting's ASR model id (`meetings.asr_model`).
+/// 7 = Y9-B's `user_context` table (`db::MIGRATION_7_USER_CONTEXT`): the
+///     user's writing samples and custom rules for the local style profile.
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.

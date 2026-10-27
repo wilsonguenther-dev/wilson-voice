@@ -22,7 +22,8 @@ use support::{open_db, temp_dir};
 /// column the diarization branch reads. 5 = YV126's
 /// `meeting_segments.cluster_index`, which is where the branch's ANSWER lands.
 /// 6 = yap24-NT2's `meetings.asr_model`, the model that transcribed the row.
-const EXPECTED_VERSION: i64 = 6;
+/// 7 = Y9-B's `user_context` table (writing samples + custom rules).
+const EXPECTED_VERSION: i64 = 7;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -34,6 +35,9 @@ const EXPECTED_VERSION: i64 = 6;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 7 {
+        sql.push_str("DROP TABLE user_context;\n");
+    }
     if version < 6 {
         sql.push_str("ALTER TABLE meetings DROP COLUMN asr_model;\n");
     }
@@ -664,4 +668,39 @@ fn a_database_from_every_rung_climbs_to_five() {
             .cluster_index
             .is_none());
     }
+}
+
+// ── Y9-B · migration 7 ───────────────────────────────────────────────────────
+
+/// A version-6 database (every meeting column, no `user_context`) gains the
+/// table on open, keeps its rows, and the table takes a writing sample.
+#[test]
+fn migration_seven_adds_user_context_without_touching_existing_rows() {
+    let dir = temp_dir("m7");
+    let path = dir.join("wilson_voice.db");
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before Y9-B", &["hello there"]);
+        drop(db);
+        rewind_to(&path, 6);
+        id
+    };
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_context'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "the rewind really removed the table");
+    }
+    let db = wilson_voice_lib::db::Database::open(path).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert_eq!(db.get_meeting(&id).unwrap().unwrap().segment_count, 1);
+    let sample = "word ".repeat(25);
+    db.add_writing_sample(&sample)
+        .expect("the new table takes a sample");
+    assert_eq!(db.user_context().unwrap().writing_samples.len(), 1);
 }
