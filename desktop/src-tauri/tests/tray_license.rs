@@ -18,7 +18,8 @@
 //! shortcut table and is untouched by this item.
 
 use wilson_voice_lib::license::{
-    tray_line, tray_offers_purchase, Entitlement, LicenseStatus, PILL_SHOW_DAYS, PILL_URGENT_DAYS,
+    tray_line, tray_offers_purchase, Entitlement, LicenseStatus, PILL_QUIET_FROM_DAYS,
+    PILL_SHOW_DAYS, PILL_URGENT_DAYS,
 };
 
 const RUST_SRC: &str = include_str!("../src/license.rs");
@@ -82,6 +83,7 @@ fn trial(days_left: i64) -> LicenseStatus {
         trial_expires_at_ms: 0,
         revocation_checked_at_ms: None,
         revoked_count: 0,
+        purchase_open: false,
     }
 }
 
@@ -99,6 +101,7 @@ fn licensed() -> LicenseStatus {
         trial_expires_at_ms: 0,
         revocation_checked_at_ms: None,
         revoked_count: 0,
+        purchase_open: false,
     }
 }
 
@@ -114,6 +117,7 @@ fn required(reason: &str) -> LicenseStatus {
         trial_expires_at_ms: 0,
         revocation_checked_at_ms: None,
         revoked_count: 0,
+        purchase_open: false,
     }
 }
 
@@ -276,4 +280,30 @@ fn the_upgrade_item_is_absent_early_in_the_trial() {
     assert!(!tray_offers_purchase(&trial(PILL_SHOW_DAYS + 1)));
     assert!(tray_offers_purchase(&trial(PILL_SHOW_DAYS)));
     assert!(tray_offers_purchase(&required("trial_expired")));
+}
+
+/// yap24-PILL1 — the quiet threshold is a THIRD shared number, held across the
+/// language boundary like the other two, and it never moves the tray: the
+/// upgrade item still keys off `PILL_SHOW_DAYS` alone.
+#[test]
+fn the_quiet_threshold_is_twinned_and_leaves_the_tray_alone() {
+    assert_eq!(
+        declared_number(RUST_SRC, "pub const PILL_QUIET_FROM_DAYS", "license.rs"),
+        PILL_QUIET_FROM_DAYS
+    );
+    assert_eq!(
+        declared_number(
+            TS_SRC,
+            "export const PILL_QUIET_FROM_DAYS",
+            "pill/license.ts"
+        ),
+        PILL_QUIET_FROM_DAYS
+    );
+    // Days 8..14 are pill-quiet, NOT a tray purchase offer.
+    for days in (PILL_SHOW_DAYS + 1)..=PILL_QUIET_FROM_DAYS {
+        assert!(
+            !tray_offers_purchase(&trial(days)),
+            "tray offered a purchase on day {days}"
+        );
+    }
 }

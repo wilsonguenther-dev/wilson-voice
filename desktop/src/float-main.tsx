@@ -53,7 +53,7 @@ import {
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
-import { forcedPill, matrixPhases, type ForcedPill } from "./pill/forced";
+import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import "./tokens.css";
 import "./float.css";
@@ -164,7 +164,7 @@ const FORCED: ForcedPill | null =
 if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
-  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = matrixPhases();
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [...matrixPhases(), ...matrixLicenseScenes()];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
 
@@ -407,7 +407,9 @@ function Float() {
   // Y2-A — the POLICY is decided once, here, above both capsules. Y2-B/C/D
   // render `lic`; neither pill re-decides whether the trial is worth
   // mentioning.
-  const lic = pillLicense(license);
+  // yap24-PILL1 — a forced matrix scene (dev-only, see FORCED) stands in for
+  // the backend payload; a release build has FORCED === null.
+  const lic = pillLicense(FORCED?.license ?? license);
   // The tone rides on <html> the same way the dock edge does (and for the same
   // reason: it drives CSS and must not remount the pill). It is also what makes
   // this wiring observable in a running app before any capsule draws a chip.

@@ -240,6 +240,7 @@ describe("trial_days.json — Rust and TypeScript count the same fortnight", () 
       trial_expires_at_ms: trialDays.expires_at_ms,
       revocation_checked_at_ms: null,
       revoked_count: 0,
+      purchase_open: false,
     };
     return row.expired
       ? { state: "license_required", reason: "trial_expired", ...shared }

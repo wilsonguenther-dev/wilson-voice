@@ -24,7 +24,7 @@ import {
   type TranscribeProgress,
 } from "./live";
 import {
-  GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute,
+  GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute, splitValue,
   type PillLicense,
 } from "./license";
 // Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
@@ -193,6 +193,18 @@ export default function YappyPill(
   // parking is only safe if something un-parks it when the meeting ends.
   const meetingRef = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
+  // Y2-B (8d85cdf) — the draw loop is mounted ONCE, so the license reaches it
+  // through a ref. What the canvas takes from it is a POSTURE: on the last day
+  // (and once the trial has ended, or a key is in trouble) Yappy's head tufts
+  // fold down and his blinks come further apart. `trial` and `trial-quiet`
+  // keep him upright — a running trial is not news.
+  const droopRef = useRef(false);
+  const droop = license?.show === true && license.tone !== "trial" && license.tone !== "trial-quiet";
+  useEffect(() => {
+    droopRef.current = droop;
+    // A settled scene has PARKED its rAF (YV81); wake it so the pose is painted.
+    wakeRef.current();
+  }, [droop]);
   useEffect(() => {
     const recording = meeting.recording === true;
     const was = meetingRef.current;
@@ -220,7 +232,7 @@ export default function YappyPill(
     const ell = (cx: number, cy: number, rx: number, ry: number, col: string) => { octx.fillStyle = col; for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) { const t = (y + .5 - cy) / ry; if (Math.abs(t) > 1) continue; const hw = rx * Math.sqrt(1 - t * t); octx.fillRect(Math.round(cx - hw), y, Math.max(1, Math.round(2 * hw)), 1); } };
     const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
 
     // the chick — front wing holds a pencil when noting / at the desk
     function drawChick(cx: number, feetY: number, A: SP) {
@@ -228,7 +240,11 @@ export default function YappyPill(
       ell(cx + rx - 1, cy + 2, 4, 3, C.outline); ell(cx + rx - 1, cy + 2, 3, 2, C.dark);              // tail
       ell(cx + rx - 2, cy + 1 - A.flap, 3, 4, C.outline); ell(cx + rx - 2, cy + 1 - A.flap, 2, 3, C.dark); // back wing
       ell(cx, cy, rx + 1, ry + 1, C.outline); ell(cx, cy, rx, ry, C.body); ell(cx - 3, cy - 4, rx - 4, ry - 5, C.light); ell(cx, cy + 5, rx - 5, ry - 5, C.belly);
-      const sw = Math.round(A.sway); rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout);
+      const sw = Math.round(A.sway);
+      // Y2-B — the tufts are his ears: upright at rest, folded flat once the
+      // trial is out. A POSE (different pixels, same frame), never an animation.
+      if (A.droop) { rct(cx - 3 + sw, cy - ry, 2, 1, C.sprout); rct(cx + 1 + sw, cy - ry - 1, 2, 1, C.sprout); }
+      else { rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout); }
       const wy = cy + 1 - A.flap;
       ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
       if (A.pencil) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
@@ -432,7 +448,7 @@ export default function YappyPill(
       const dt = Math.min(mode === "ambient" ? .12 : .05, wallDt); tPrev = ts; elapsed += dt; idleFor += dt;
       if (phase === "idle" && idleFor > 12) setPhase("sleepy");
       if (blinkT < 0) { nextBlink -= dt; if (nextBlink <= 0) blinkT = 0; }
-      let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
+      let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = (2 + Math.random() * 4) * (droopRef.current ? 1.6 : 1); } }
       const active = phase === "listening" || phase === "thinking" || phase === "done";
       openV = R.open.update(dt, active ? 1 : 0); openV = Math.max(0, Math.min(1, openV));
       // live escalation WHILE talking — the pure machine decides the tier, the
@@ -470,7 +486,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
@@ -653,6 +669,26 @@ export default function YappyPill(
         >
           <span className="kami-progress-track" aria-hidden><i /></span>
           <span className="kami-progress-count" aria-hidden>{progressNumeral(progress)}</span>
+        </div>
+      ) : null}
+      {/* Y2-B (8d85cdf) + yap24-PILL1 — the trial numeral, held in Yappy's
+          wing, for the WHOLE trial (14…8 in the quiet tone). DOM, not canvas,
+          so it survives every frame policy including reduced motion. Inert: a
+          purchase route (when checkout opens) is the gated capsule's job.
+          Only the value is here; the sentence is the title. */}
+      {license?.show && !gated && !blocked ? (
+        <div className={`kami-license kami-license-${license.tone}`} title={license.title} role="note" aria-label={license.title}>
+          {(() => {
+            const sp = splitValue(license.value);
+            return sp ? (
+              <>
+                <span className="kami-license-num">{sp.numeral}</span>
+                {sp.unit ? <span className="kami-license-unit">{sp.unit}</span> : null}
+              </>
+            ) : (
+              <span className="kami-license-glyph" aria-hidden>{license.glyph}</span>
+            );
+          })()}
         </div>
       ) : null}
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />

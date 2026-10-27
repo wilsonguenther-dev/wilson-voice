@@ -36,6 +36,7 @@ const base = {
   has_stored_license: false,
   revocation_checked_at_ms: EXPIRES,
   revoked_count: 0,
+  purchase_open: false,
 } as const;
 
 const MOCKS: Record<string, LicenseStatus> = {

@@ -178,6 +178,18 @@ pub const GRACE_DEFAULT_DAYS: i64 = TRIAL_DAYS;
 /// open, which is the honest state of the world and not a bug in Yap.
 pub const PAYMENT_LINK_URL: &str = "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602";
 
+/// yap24-PILL1 — is checkout actually open? The ONE switch every in-app
+/// purchase CHIP on the pill reads, surfaced on [`LicenseStatus::purchase_open`]
+/// and consumed by `pillLicense` in `desktop/src/pill/license.ts`.
+///
+/// `false` until launch day, and that is the honest value: the link above is
+/// `active: false` on Stripe and the issuer does not answer, so a Buy action on
+/// the pill would dead-end. While it is false the pill still COUNTS DOWN (the
+/// trial is never silent) but carries no purchase action at all. Wilson flips
+/// this in the same release that opens checkout. It governs the pill only; the
+/// Settings → License panel and the tray keep their own copy.
+pub const PURCHASE_OPEN: bool = false;
+
 /// Filename under `data_dir()`.
 pub const LICENSE_FILE: &str = "license.json";
 
@@ -827,6 +839,9 @@ pub struct LicenseStatus {
     pub trial_expires_at_ms: i64,
     pub revocation_checked_at_ms: Option<i64>,
     pub revoked_count: usize,
+    /// yap24-PILL1 — [`PURCHASE_OPEN`], on the payload, so the pill decides
+    /// from what the backend says rather than from a TS copy of the switch.
+    pub purchase_open: bool,
 }
 
 impl LicenseStatus {
@@ -875,6 +890,19 @@ pub const PILL_SHOW_DAYS: i64 = 7;
 /// `1` the honest number to write down: on the day the counter reads "1d" there
 /// is still a day in it, so that day is not yet urgent.
 pub const PILL_URGENT_DAYS: i64 = 1;
+
+/// yap24-PILL1 — how many whole days out the pill starts counting down at all,
+/// in its QUIET style (tone `trial-quiet`: the numeral at reduced contrast, no
+/// purchase action). Mirrored in TS as `PILL_QUIET_FROM_DAYS`. The rule is
+/// `PILL_SHOW_DAYS < days_left <= PILL_QUIET_FROM_DAYS`.
+///
+/// It is a SEPARATE constant on purpose and `PILL_SHOW_DAYS` is not touched:
+/// `PILL_SHOW_DAYS` also decides when the tray offers to sell
+/// ([`tray_offers_purchase`]), so widening it would move the menu bar's
+/// purchase offer, not just the pill. It must be at least [`TRIAL_DAYS`] —
+/// below that the first days of a fresh trial are silent again, which is the
+/// bug this constant exists to close; a unit test holds it there.
+pub const PILL_QUIET_FROM_DAYS: i64 = 14;
 
 /// The Rust twin of TS `trialCountdown` — the same three phrases, so the tray
 /// header and the Settings chip read alike.
@@ -1072,6 +1100,11 @@ impl LicenseManager {
     /// Open (or create) the license state under `dir`, with `store` as the
     /// corroborating second home for the trial timestamps.
     pub fn new(dir: &Path, store: Arc<dyn LicenseStore>) -> Self {
+        // yap24-PILL1 — one line per launch so a support bundle says which pill
+        // policy this build shipped with (no path, no key material).
+        log::info!(
+            "license pill_policy purchase_open={PURCHASE_OPEN} quiet_from_days={PILL_QUIET_FROM_DAYS} show_days={PILL_SHOW_DAYS} urgent_days={PILL_URGENT_DAYS}"
+        );
         Self::with_clock(dir, store, Box::new(wall_now_ms))
     }
 
@@ -1243,6 +1276,7 @@ impl LicenseManager {
             trial_expires_at_ms: trial.expires_at_ms,
             revocation_checked_at_ms,
             revoked_count,
+            purchase_open: PURCHASE_OPEN,
         }
     }
 
@@ -1480,6 +1514,58 @@ pub fn launch_init(
 
 #[cfg(test)]
 mod tests {
+    // ── yap24-PILL1 — the quiet threshold and the purchase switch ──────────
+
+    /// The TS twin of `PILL_QUIET_FROM_DAYS`, read off disk with comment lines
+    /// stripped so a doc comment quoting the declaration cannot satisfy it.
+    fn ts_declared(name: &str) -> String {
+        let ts = include_str!("../../src/pill/license.ts");
+        let line = ts
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| !(l.starts_with("//") || l.starts_with("/*") || l.starts_with('*')))
+            .find(|l| l.starts_with(&format!("export const {name} ")))
+            .unwrap_or_else(|| panic!("pill/license.ts: no `export const {name}` declaration"));
+        line.split('=')
+            .nth(1)
+            .unwrap_or_else(|| panic!("pill/license.ts: `{name}` has no right-hand side"))
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn license_pill_quiet_from_days_matches_its_ts_twin() {
+        assert_eq!(
+            ts_declared("PILL_QUIET_FROM_DAYS"),
+            PILL_QUIET_FROM_DAYS.to_string(),
+            "license.rs and pill/license.ts disagree on PILL_QUIET_FROM_DAYS"
+        );
+        // The neighbour it must NOT have been folded into.
+        assert_eq!(ts_declared("PILL_SHOW_DAYS"), PILL_SHOW_DAYS.to_string());
+    }
+
+    #[test]
+    fn license_pill_quiet_window_covers_the_whole_trial_without_moving_the_tray() {
+        // Every day of a fresh trial is mentioned: no silent first week.
+        const { assert!(PILL_QUIET_FROM_DAYS >= TRIAL_DAYS) };
+        // The quiet window sits ABOVE the loud one…
+        const { assert!(PILL_QUIET_FROM_DAYS > PILL_SHOW_DAYS) };
+        // …and the tray's purchase threshold is unchanged by this item.
+        assert_eq!(PILL_SHOW_DAYS, 7);
+    }
+
+    #[test]
+    fn license_status_payload_carries_purchase_open() {
+        let (dir, store) = temp_env("pill-purchase-open");
+        let mgr = LicenseManager::new(dir.path(), store);
+        let status = mgr.status();
+        assert_eq!(status.purchase_open, PURCHASE_OPEN);
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["purchase_open"], serde_json::json!(PURCHASE_OPEN));
+    }
+
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
 
