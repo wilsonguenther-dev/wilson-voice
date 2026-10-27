@@ -1104,6 +1104,14 @@ export function useAppShell() {
     });
   }
 
+  // YV54 — the model picker's one home: Settings → Advanced. Every "get / manage
+  // a speech model" affordance in the app lands here now that onboarding no
+  // longer asks the question. (Kept for Meetings' "waiting for model" link, #246.)
+  function openModelSettings() {
+    setNav("settings");
+    setSettingsTab("advanced");
+  }
+
   // "Replay onboarding" — clear the gate so the flow shows again.
   async function replayOnboarding() {
     if (!settings) return;
@@ -1300,7 +1308,7 @@ export function useAppShell() {
     meetingKind, meetingKinds, meetingQuery, meetingStatus, meetings, modelIsReady,
     modelSetup, monthlySeries, monthlyView, nav, needsPerms, newExpansion,
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
-    openMeeting, openMeetingDetail, pasteText, perms, pillClass,
+    openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
     refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
