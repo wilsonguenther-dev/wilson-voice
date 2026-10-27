@@ -13,7 +13,7 @@ import {
 // few-shot context for the LOCAL polish model, so its rewrite sounds like
 // them. Stored in the `user_context` table; never sent anywhere else.
 export default function WritingStyle() {
-  const { toast } = useAppCtx();
+  const { toast, toastError } = useAppCtx();
   const [view, setView] = useState<UserContextView | null>(null);
   const [draft, setDraft] = useState("");
   const [rulesDraft, setRulesDraft] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export default function WritingStyle() {
       .then((v) => {
         if (live && v && Array.isArray(v.writingSamples)) setView(v);
       })
-      .catch((e) => toast(String(e)));
+      .catch((e) => toastError(e));
     return () => {
       live = false;
     };
@@ -45,14 +45,14 @@ export default function WritingStyle() {
       setDraft("");
       toast("Writing sample saved");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function removeSample(id: string) {
     try {
       setView(await invoke<UserContextView>("delete_writing_sample", { id }));
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
   async function saveRules() {
@@ -62,7 +62,7 @@ export default function WritingStyle() {
       setRulesDraft(null);
       toast("Custom rules saved");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
     }
   }
 

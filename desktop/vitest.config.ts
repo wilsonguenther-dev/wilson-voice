@@ -65,6 +65,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "toast.ts": { lines: 84, branches: 82, functions: 69, statements: 81 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
+  "writingSamples.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
 };
 
 /**
