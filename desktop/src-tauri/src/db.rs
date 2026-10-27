@@ -815,6 +815,26 @@ impl Database {
             "ALTER TABLE failed_dictations ADD COLUMN attempt_text TEXT",
             [],
         );
+        // yap-recovery-followups (a)/(c): the idempotency key of a recovered
+        // take, persisted WITH the history row so it survives a restart (an
+        // in-memory claim alone would not). It is the failed row's `take_id`,
+        // else the failed row's own id (`recovery_key`). Nullable and additive:
+        // every live dictation that never had a recovery row stays NULL, and
+        // the partial UNIQUE index only ever compares non-NULL keys, so one take
+        // can own at most ONE history row however many saves race for it.
+        let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN take_key TEXT", []);
+        // yap-recovery-followups (c), fix round 2: the text an entry held
+        // BEFORE the user's first hand edit (`record_correction`). Non-NULL
+        // marks the entry as hand-edited, which a recovered save must never
+        // replace; it also tells the merge what the live decode actually said,
+        // so a deletion-only edit is not undone by a save of the same words.
+        // Nullable and additive: older builds never read it.
+        let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN pre_edit_text TEXT", []);
+        let _ = conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_transcripts_take_key
+               ON transcripts(take_key) WHERE take_key IS NOT NULL",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1058,6 +1078,40 @@ impl Database {
         created_at: DateTime<Utc>,
         raw_text: Option<String>,
     ) -> Result<TranscriptEntry, String> {
+        self.insert_transcript_for_take(
+            text,
+            backend,
+            asr_seconds,
+            speech_seconds,
+            pipeline_ms,
+            source_app,
+            created_at,
+            raw_text,
+            None,
+        )
+    }
+
+    /// `insert_transcript_at`, carrying the recovery key of a take that ALSO
+    /// left a failed-dictation row behind (a degraded live take: the user got
+    /// its words AND a Retry row for the windows that did not decode).
+    ///
+    /// yap-recovery-followups (c): with the key on the live row, a later Retry
+    /// or "Keep what was transcribed" of that take MERGES into this entry
+    /// (`convert_failed_dictation`) instead of adding a second one beside it.
+    /// `None` is every ordinary dictation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_transcript_for_take(
+        &self,
+        text: String,
+        backend: String,
+        asr_seconds: f64,
+        speech_seconds: f64,
+        pipeline_ms: i64,
+        source_app: Option<String>,
+        created_at: DateTime<Utc>,
+        raw_text: Option<String>,
+        take_key: Option<&str>,
+    ) -> Result<TranscriptEntry, String> {
         let entry = new_transcript_entry(
             text,
             backend,
@@ -1077,6 +1131,13 @@ impl Database {
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             let _ = self.learn_from_transcript_tx(&tx, &entry.text);
             self.insert_transcript_row_tx(&tx, &entry)?;
+            if let Some(key) = take_key {
+                tx.execute(
+                    "UPDATE transcripts SET take_key = ?2 WHERE id = ?1",
+                    params![entry.id, key],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             tx.commit().map_err(|e| e.to_string())?;
         }
         // Source-of-truth rollup (never trust incremental counters alone).
@@ -2704,6 +2765,20 @@ impl Database {
     /// both lists. The recovered entry keeps the ORIGINAL take's timestamp,
     /// speech seconds and source app, so it lands in history where the user
     /// expects it instead of at the moment they pressed Retry.
+    ///
+    /// yap-recovery-followups — ONE history row per take, enforced here and by
+    /// the `take_key` UNIQUE index, not by the UI:
+    ///   (a) Two concurrent saves of one take: the second finds, under the same
+    ///       lock and transaction the first inserted in, that the failed row is
+    ///       already gone and its key already has a row — it writes nothing and
+    ///       returns THAT entry.
+    ///   (c) A take whose live decode already saved an entry (a degraded live
+    ///       take, keyed by `insert_transcript_for_take`) MERGES into it: its
+    ///       text, raw text, backend and word count are updated in place and the
+    ///       failed row goes. The merge is decided by WORDS, never by word
+    ///       count (see [`merge_take_texts`]): the take's audio is deleted the
+    ///       moment this commits, so a word in either text that the merged row
+    ///       does not hold is a word gone for good.
     pub fn convert_failed_dictation(
         &self,
         id: &str,
@@ -2715,6 +2790,7 @@ impl Database {
         let row = self
             .get_failed_dictation(id)?
             .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+        let key = recovery_key(&row);
         let entry = new_transcript_entry(
             text,
             backend,
@@ -2725,24 +2801,97 @@ impl Database {
             row.created_at,
             raw_text,
         );
-        {
+        let saved = {
             // YV68 — history gains the row in the SAME transaction the failed
             // list loses it, so the doc comment above is now enforced rather
             // than hoped for: two autocommits could leave the take in both
             // lists (delete failed) or, on a rollup error, in neither.
             let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let _ = self.learn_from_transcript_tx(&tx, &entry.text);
-            self.insert_transcript_row_tx(&tx, &entry)?;
+            let still_pending: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM failed_dictations WHERE id = ?1)",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let existing = tx
+                .query_row(
+                    &format!("SELECT {TRANSCRIPT_COLUMNS} FROM transcripts WHERE take_key = ?1"),
+                    params![key],
+                    map_transcript,
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let saved = match (still_pending, existing) {
+                // (a) Another save of this take won the race: a no-op that
+                // returns the entry it wrote (the transaction rolls back on drop).
+                (false, Some(first)) => return Ok(first),
+                (false, None) => return Err("That recovery clip is no longer in the list".into()),
+                // (c) Merge into the entry the live take already saved.
+                (true, Some(live)) => {
+                    let pre_edit: Option<String> = tx
+                        .query_row(
+                            "SELECT pre_edit_text FROM transcripts WHERE id = ?1",
+                            params![live.id],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let merged = merge_take_texts(&live, pre_edit.as_deref(), &entry);
+                    if let Some(m) = merged {
+                        tx.execute(
+                            "UPDATE transcripts
+                             SET text = ?2, raw_text = ?3, backend = ?4,
+                                 asr_seconds = ?5, word_count = ?6
+                             WHERE id = ?1",
+                            params![
+                                live.id,
+                                m.text,
+                                m.raw_text,
+                                m.backend,
+                                m.asr_seconds,
+                                m.word_count,
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        m
+                    } else {
+                        live
+                    }
+                }
+                (true, None) => {
+                    let _ = self.learn_from_transcript_tx(&tx, &entry.text);
+                    self.insert_transcript_row_tx(&tx, &entry)?;
+                    tx.execute(
+                        "UPDATE transcripts SET take_key = ?2 WHERE id = ?1",
+                        params![entry.id, key],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    entry
+                }
+            };
             tx.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
-        }
+            saved
+        };
         // Only once the swap is committed is the WAV the caller's to unlink.
         if let Err(e) = self.recompute_daily_stats() {
             log::warn!("daily rollup: {e}");
         }
-        Ok(entry)
+        Ok(saved)
+    }
+
+    /// yap-recovery-followups (a)/(c) — how many history rows carry this
+    /// take's recovery key. The invariant is "at most one"; tests read it.
+    pub fn transcripts_for_take(&self, key: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM transcripts WHERE take_key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn list_dictionary(&self) -> Result<Vec<DictEntry>, String> {
@@ -2919,8 +3068,10 @@ impl Database {
                 return Ok(Vec::new());
             }
             conn.execute(
-                "UPDATE transcripts SET text = ?2, word_count = ?3 WHERE id = ?1",
-                params![transcript_id, corrected, word_count(corrected)],
+                "UPDATE transcripts SET text = ?2, word_count = ?3,
+                        pre_edit_text = COALESCE(pre_edit_text, ?4)
+                 WHERE id = ?1",
+                params![transcript_id, corrected, word_count(corrected), original],
             )
             .map_err(|e| e.to_string())?;
 
@@ -3685,6 +3836,108 @@ fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegme
         // one speaker by mechanism rather than by clustering.
         cluster_index: row.get(8)?,
     })
+}
+
+/// The columns [`map_transcript`] reads, in its order.
+const TRANSCRIPT_COLUMNS: &str = "id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
+     COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
+     stages_that_ran, polish_skip_reason, feedback";
+
+/// A word as the merge compares it: lowercase letters and digits only, so
+/// punctuation and casing the cleanup pass changes never count as a new word.
+fn merge_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Every token of `inner` appears in `outer`, in order.
+fn tokens_cover(outer: &[String], inner: &[String]) -> bool {
+    let mut it = outer.iter();
+    inner.iter().all(|w| it.any(|o| o == w))
+}
+
+/// yap-recovery-followups (c), fix round 1 — how a recovered save merges into
+/// the history entry a degraded live take already wrote. Never by word count:
+/// the live decode and the save can each be missing DIFFERENT windows (live
+/// lost window 7, the Finish attempt that Keep saves lost window 3), and the
+/// take's audio is deleted as soon as the merge commits.
+///
+/// Fix round 2: a hand edit is never reverted. `pre_edit` is the entry's
+/// text before the user's first hand edit (`transcripts.pre_edit_text`, set by
+/// `record_correction`); `Some` means the entry was hand-edited. Checked in
+/// this order:
+///
+/// * The entry already holds every word of the save: `None`, the entry stays
+///   exactly as it is. Checked FIRST, so equal words (a casing-only or
+///   punctuation-only hand edit) keep the entry, never the save's spelling.
+/// * Hand-edited, and the save holds no word beyond what the live decode said
+///   before the edit: `None`, the edit stands (a deletion-only edit is not
+///   undone by a save of the same audio).
+/// * Not hand-edited, and the save holds every word of the entry, in order:
+///   it replaces the entry (a clean Retry of the same audio — nothing in the
+///   entry is dropped). A hand-edited entry is NEVER replaced.
+/// * Otherwise (different windows missing, or a hand-edited entry the save
+///   adds new words to): the entry keeps its text verbatim and the save is
+///   APPENDED after a blank line. Some words may then appear twice; none is
+///   ever lost, and the user's edit is never rewritten.
+fn merge_take_texts(
+    live: &TranscriptEntry,
+    pre_edit: Option<&str>,
+    save: &TranscriptEntry,
+) -> Option<TranscriptEntry> {
+    let live_tokens = merge_tokens(&live.text);
+    let save_tokens = merge_tokens(&save.text);
+    if tokens_cover(&live_tokens, &save_tokens) {
+        return None;
+    }
+    match pre_edit {
+        Some(original) => {
+            if tokens_cover(&merge_tokens(original), &save_tokens) {
+                return None;
+            }
+        }
+        None => {
+            if tokens_cover(&save_tokens, &live_tokens) {
+                return Some(TranscriptEntry {
+                    text: save.text.clone(),
+                    raw_text: save.raw_text.clone(),
+                    backend: save.backend.clone(),
+                    asr_seconds: save.asr_seconds,
+                    word_count: save.word_count,
+                    ..live.clone()
+                });
+            }
+        }
+    }
+    let text = format!("{}\n\n{}", live.text.trim_end(), save.text.trim_start());
+    let raw_text = match (live.raw_text.as_deref(), save.raw_text.as_deref()) {
+        (None, None) => None,
+        (l, s) => Some(format!(
+            "{}\n\n{}",
+            l.unwrap_or(&live.text).trim_end(),
+            s.unwrap_or(&save.text).trim_start()
+        )),
+    };
+    Some(TranscriptEntry {
+        word_count: word_count(&text),
+        text,
+        raw_text,
+        ..live.clone()
+    })
+}
+
+/// yap-recovery-followups (a) — the idempotency key of a failed/recovered
+/// take: the id its audio carries on disk when it has one, else the failed
+/// row's own id (a take that failed live). Persisted as `transcripts.take_key`.
+pub fn recovery_key(row: &FailedDictation) -> String {
+    row.take_id.clone().unwrap_or_else(|| row.id.clone())
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {

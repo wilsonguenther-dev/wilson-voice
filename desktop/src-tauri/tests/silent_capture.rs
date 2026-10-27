@@ -110,7 +110,9 @@ fn silent_capture_never_reaches_the_paste_path() {
     // transcribe_native(`, which only ever matched the RETRY path's call; DB-B
     // reshaped that call around its resume, so it now names the line it means.)
     let asr = line_of("let asr = match transcribe_native(");
-    let insert = line_of("db.insert_transcript_at(");
+    // yap-recovery-followups: the live save is `insert_transcript_for_take`
+    // (it carries a degraded take's recovery key); same row, same position.
+    let insert = line_of("db.insert_transcript_for_take(");
 
     assert!(
         gate < no_speech,

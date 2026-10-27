@@ -2607,6 +2607,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // to throw away: some window of it never decoded, so the recovery
             // row (YV52/YV66's Recover path) is what lets them retry the same
             // audio instead of re-speaking eleven minutes of it.
+            // yap-recovery-followups (c): the recovery row of a DEGRADED take
+            // and the history entry this take is about to save are one take.
+            // The row's key goes on the entry, so a later Retry or Keep merges
+            // into it instead of adding a second entry beside it.
+            let mut live_take_key: Option<String> = None;
             if asr.degraded {
                 let reason = asr
                     .degraded_reason
@@ -2622,6 +2627,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                             src,
                             &reason,
                         );
+                        live_take_key = kept.as_ref().map(db::recovery_key);
                         log::warn!(
                             "degraded take ({}/{} windows failed) — clip preserved for retry: {}",
                             asr.chunks_failed,
@@ -2884,7 +2890,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // still has a transcript row to write.
             hygiene::log_snapshot_async(data_dir());
             // Store BOTH the polished text and the raw ASR transcript (YV10).
-            let mut entry = db.insert_transcript_at(
+            let mut entry = db.insert_transcript_for_take(
                 text,
                 asr.backend,
                 asr.seconds,
@@ -2893,6 +2899,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 source_app,
                 chrono::Utc::now(),
                 Some(raw_text),
+                live_take_key.as_deref(),
             )?;
             // Y4-G — attribute this take's shape to the stages that made it.
             // AFTER the insert on purpose: the row is durable and the text is
@@ -4205,7 +4212,28 @@ fn correct_transcript(
 #[tauri::command]
 fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
     purge_expired_failed_takes(&state.db);
-    state.db.list_failed_dictations()
+    Ok(state
+        .db
+        .list_failed_dictations()?
+        .into_iter()
+        .map(failed_row_for_display)
+        .collect())
+}
+
+/// yap-recovery-followups (f) — the row as History shows it. "Already
+/// transcribed" (`partial_text`) is the GATED recovered words, the same text
+/// the retry, the invariant and "Keep what was transcribed" work from
+/// ([`saved_words`], shown as "Transcribed so far") — never the raw loop the
+/// live decode persisted. Recovered words that are ALL loop show nothing (the
+/// retry decodes that take whole, see [`decode_failed_take`]). Display only:
+/// the retry re-reads the row, so the resume state is untouched.
+fn failed_row_for_display(mut row: FailedDictation) -> FailedDictation {
+    row.partial_text = row
+        .partial_text
+        .as_deref()
+        .map(gated_words)
+        .filter(|t| !t.is_empty());
+    row
 }
 
 /// DB-B — what a recovered take decodes on "Finish transcribing", and the
@@ -4336,10 +4364,15 @@ fn extends(new: &str, old: &str) -> bool {
 /// (`dictation::degenerate_cutoff`), whatever is left before it. The words
 /// recovered from the live decode were never gated, and a loop in them must
 /// neither inflate the "not shorter" baseline nor be converted or kept.
+///
+/// It is [`retry_gate`] itself, so a short loop followed by clean words
+/// (yap-recovery-followups (g)) is collapsed here exactly as it is everywhere
+/// else on the retry path.
 fn gated_words(t: &str) -> String {
-    match dictation::degenerate_cutoff(t) {
-        Some(cutoff) => t[..cutoff].trim().to_string(),
-        None => t.trim().to_string(),
+    let mut text = t.trim().to_string();
+    match retry_gate(&mut text) {
+        Ok(_) => text.trim().to_string(),
+        Err(_) => String::new(),
     }
 }
 
@@ -4475,20 +4508,37 @@ fn next_attempt_text(
 /// `Ok(true)`: a degenerate tail was cut; `Ok(false)`: nothing to cut; `Err`:
 /// degenerate from the first token, nothing to keep.
 fn retry_gate(raw_text: &mut String) -> Result<bool, String> {
-    match dictation::degenerate_cutoff(raw_text) {
+    if dictation::degenerate_cutoff(raw_text).is_none() {
+        return Ok(false);
+    }
+    // yap-recovery-followups (g): the live gate drops EVERY word after a
+    // loop. On a retry that is the only copy of the words, so a SHORT loop
+    // that clean speech resumes after is collapsed to one occurrence first
+    // ([`collapse_short_loops`]) and only what is still degenerate is cut.
+    let collapsed = collapse_short_loops(raw_text);
+    match dictation::degenerate_cutoff(&collapsed) {
+        None => {
+            log::info!(
+                "retry hallucination gate: collapsed a short loop (kept {} of {} chars)",
+                collapsed.chars().count(),
+                raw_text.chars().count()
+            );
+            *raw_text = collapsed;
+            Ok(true)
+        }
         Some(cutoff)
-            if raw_text[..cutoff].split_whitespace().count()
+            if collapsed[..cutoff].split_whitespace().count()
                 >= dictation::DEGEN_MIN_KEEP_TOKENS =>
         {
             // YV20/M2: count only, never log the transcript body.
             let before = raw_text.chars().count();
-            raw_text.truncate(cutoff);
-            let kept = raw_text.chars().count();
+            let kept = collapsed[..cutoff].to_string();
             log::info!(
                 "retry hallucination gate: truncated degenerate tail (kept {} chars, dropped {} chars)",
-                kept,
-                before - kept
+                kept.chars().count(),
+                before.saturating_sub(kept.chars().count())
             );
+            *raw_text = kept;
             Ok(true)
         }
         Some(_) => {
@@ -4501,8 +4551,79 @@ fn retry_gate(raw_text: &mut String) -> Result<bool, String> {
             );
             Err("Yap couldn't make sense of that clip — try dictating it again".into())
         }
-        None => Ok(false),
     }
+}
+
+/// yap-recovery-followups (g) — N: the longest run of one repeated token the
+/// retry gate treats as a SHORT loop it may collapse. Longer runs are cut as
+/// before.
+const RETRY_SHORT_LOOP_MAX_TOKENS: usize = 12;
+/// yap-recovery-followups (g) — M: how many DISTINCT tokens must follow a
+/// short loop (up to the next loop) before it counts as speech that resumed.
+const RETRY_RESUME_MIN_DISTINCT_TOKENS: usize = 20;
+/// The shortest run that is a loop at all: the live gate's own floor
+/// (rule 1 on a short take). Shorter runs ("very very") are never touched.
+const RETRY_LOOP_MIN_RUN: usize = 4;
+
+fn loop_token(t: &str) -> String {
+    t.trim_matches(|c: char| c.is_ascii_punctuation())
+        .to_lowercase()
+}
+
+/// Length of the run of one repeated token starting at `tokens[0]`.
+fn run_len(tokens: &[&str]) -> usize {
+    let Some(first) = tokens.first().map(|t| loop_token(t)) else {
+        return 0;
+    };
+    if first.is_empty() {
+        return 1;
+    }
+    tokens.iter().take_while(|t| loop_token(t) == first).count()
+}
+
+/// Every short loop (a run of [`RETRY_LOOP_MIN_RUN`]..=[`RETRY_SHORT_LOOP_MAX_TOKENS`]
+/// copies of one token) that is followed by at least
+/// [`RETRY_RESUME_MIN_DISTINCT_TOKENS`] distinct tokens before the next loop
+/// collapses to ONE copy; everything else is left as it was. Only ever called
+/// on text the gate already found degenerate, so clean emphatic speech
+/// ("no no no no") in a clean take is never rewritten.
+fn collapse_short_loops(text: &str) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let run = run_len(&tokens[i..]).max(1);
+        let short_loop = (RETRY_LOOP_MIN_RUN..=RETRY_SHORT_LOOP_MAX_TOKENS).contains(&run);
+        if short_loop && distinct_until_next_loop(&tokens[i + run..]) >= RETRY_RESUME_MIN_DISTINCT_TOKENS
+        {
+            out.push(tokens[i]);
+        } else {
+            out.extend_from_slice(&tokens[i..i + run]);
+        }
+        i += run;
+    }
+    out.join(" ")
+}
+
+/// Distinct tokens in `tokens` before the next run of [`RETRY_LOOP_MIN_RUN`]
+/// copies of one token.
+fn distinct_until_next_loop(tokens: &[&str]) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let run = run_len(&tokens[i..]).max(1);
+        if run >= RETRY_LOOP_MIN_RUN {
+            break;
+        }
+        for t in &tokens[i..i + run] {
+            let t = loop_token(t);
+            if !t.is_empty() {
+                seen.insert(t);
+            }
+        }
+        i += run;
+    }
+    seen.len()
 }
 
 /// DB-B / YV52 — the decode half of a retry, lifted out of the command so a
@@ -4534,9 +4655,15 @@ fn decode_failed_take(
             gate_cut.set(true);
         }
     };
+    // yap-recovery-followups (e): a cut in the recovered words only matters
+    // when the retry RESUMES after them — then the audio under the loop is in
+    // no text. When they are all loop (gated to nothing) or the resume point
+    // cannot be read, `finish_recovered_decode` re-decodes the whole clip from
+    // the start, so nothing is lost and a clean full decode converts on its own.
+    let resumes = matches!(&resume_sample, Ok(n) if *n > 0);
     let partial_text = partial_text.map(|t| {
         let gated = gated_words(&t);
-        if gated != t.trim() {
+        if resumes && !gated.is_empty() && word_count(Some(&gated)) < word_count(Some(&t)) {
             gate_cut.set(true);
         }
         gated
@@ -4587,6 +4714,205 @@ fn convert_and_drop_clip(
     Ok(entry)
 }
 
+/// yap-recovery-followups (b) — what the BACKEND refuses on a recovered take,
+/// whatever the UI asked or did not ask first. Typed so a caller (and a test)
+/// matches the reason, not a sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryRefusal {
+    /// "Keep what was transcribed" deletes the take's audio, so the caller
+    /// must pass `confirm: true`. Absent or `false` refuses — an old caller
+    /// that never asked the user cannot bypass the question.
+    ConfirmRequired,
+    /// A Finish/Retry of this take is decoding right now (or another save of
+    /// it is running). Keeping now would race it for the same history row and
+    /// delete the audio it is reading.
+    RetryInFlight,
+}
+
+impl std::fmt::Display for RecoveryRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ConfirmRequired => {
+                "Keeping what was transcribed deletes this take's audio, so Yap needs you to confirm it first."
+            }
+            Self::RetryInFlight => {
+                "Yap is still working on this take. Wait for it to finish, then try again."
+            }
+        })
+    }
+}
+
+/// A recovered-take save that did not happen: refused up front (nothing read,
+/// nothing written), or tried and failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryError {
+    Refused(RecoveryRefusal),
+    Failed(String),
+}
+
+impl std::fmt::Display for RecoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(r) => r.fmt(f),
+            Self::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<String> for RecoveryError {
+    fn from(e: String) -> Self {
+        Self::Failed(e)
+    }
+}
+
+/// yap-recovery-followups (b) — which failed rows have a Finish/Retry or a
+/// Keep running right now. One claim per row id; the claim is released when
+/// its guard drops, on every path out of the command. This is the in-memory
+/// half; the persisted half is `transcripts.take_key` (UNIQUE), which still
+/// holds after a restart.
+pub struct RecoveryClaims {
+    ids: std::sync::Mutex<Vec<String>>,
+}
+
+impl Default for RecoveryClaims {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecoveryClaims {
+    pub const fn new() -> Self {
+        Self {
+            ids: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Claim row `id`, or `None` while something else holds it.
+    pub fn claim(&self, id: &str) -> Option<RecoveryClaim<'_>> {
+        let mut ids = self.ids.lock().unwrap_or_else(|e| e.into_inner());
+        if ids.iter().any(|held| held == id) {
+            return None;
+        }
+        ids.push(id.to_string());
+        Some(RecoveryClaim {
+            owner: self,
+            id: id.to_string(),
+        })
+    }
+}
+
+/// Holds one row's claim; dropping it releases the row.
+pub struct RecoveryClaim<'a> {
+    owner: &'a RecoveryClaims,
+    id: String,
+}
+
+impl Drop for RecoveryClaim<'_> {
+    fn drop(&mut self) {
+        let mut ids = self.owner.ids.lock().unwrap_or_else(|e| e.into_inner());
+        ids.retain(|held| held != &self.id);
+    }
+}
+
+/// The app's one claim table — every Finish/Retry/Keep goes through it.
+static RECOVERY_CLAIMS: RecoveryClaims = RecoveryClaims::new();
+
+/// yap-recovery-followups (b) — the backend half of Keep's confirmation:
+/// `confirm` must be exactly `Some(true)`, and no Finish/Retry of the row may
+/// be in flight. Checked BEFORE anything is read or written.
+pub fn authorize_keep<'a>(
+    claims: &'a RecoveryClaims,
+    id: &str,
+    confirm: Option<bool>,
+) -> Result<RecoveryClaim<'a>, RecoveryRefusal> {
+    if confirm != Some(true) {
+        return Err(RecoveryRefusal::ConfirmRequired);
+    }
+    claims.claim(id).ok_or(RecoveryRefusal::RetryInFlight)
+}
+
+/// PR #216 re-review, "Keep what was transcribed": the user chose to accept
+/// the words a failed attempt DID get instead of trying again. No decode runs;
+/// the row converts on its saved words ([`saved_words`], gated by
+/// [`retry_gate`]) and the clip is deleted. `finish` is the cleanup pipeline
+/// (the command passes the same one a live take runs).
+///
+/// yap-recovery-followups: (b) refused without `confirm: true` or while a
+/// retry of the row is in flight — nothing read, nothing written; (c) a take
+/// whose live decode already saved an entry merges into it; (a) a second,
+/// racing save is a no-op returning the first entry.
+pub fn keep_what_was_transcribed(
+    db: &Database,
+    claims: &RecoveryClaims,
+    id: &str,
+    confirm: Option<bool>,
+    finish: impl FnOnce(&FailedDictation, &str) -> String,
+) -> Result<TranscriptEntry, RecoveryError> {
+    let _claim = authorize_keep(claims, id, confirm).map_err(RecoveryError::Refused)?;
+    let row = db
+        .get_failed_dictation(id)?
+        .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+    // The same saved words the invariant judged: gated, and never less than
+    // the gated recovered words.
+    let mut kept = saved_words(&row)
+        .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
+    retry_gate(&mut kept)?;
+    if kept.trim().is_empty() {
+        return Err("There is nothing left to transcribe in this take".to_string().into());
+    }
+    let text = finish(&row, &kept);
+    let wav = PathBuf::from(&row.wav_path);
+    Ok(convert_and_drop_clip(
+        db,
+        &row,
+        &wav,
+        text,
+        recovered_only_output(),
+        Some(kept),
+    )?)
+}
+
+/// What a failed Finish says when the take's audio is gone but words were
+/// saved: those words stay, and Keep is the way to save them.
+const AUDIO_GONE_WORDS_KEPT: &str = "The audio for this take is gone, but the words transcribed so far are safe — keep what was transcribed, or discard the take.";
+const NO_MODEL_INSTALLED: &str =
+    "No speech model installed — open Settings → Models and download one.";
+
+/// yap-recovery-followups (h) — what Finish/Retry checks before it decodes,
+/// lifted out so a test drives it with no model and with no audio.
+///
+/// * The audio is gone: a row with saved words keeps them (and gets them as
+///   its "Transcribed so far", so Keep is offered); only a row with NO words
+///   is dropped, since it has nothing left to finish or keep.
+/// * No model is installed: the row stays and its saved words are written as
+///   "Transcribed so far", so Keep is offered — the user can save the words
+///   now instead of waiting on a download.
+fn finish_preconditions<M>(
+    db: &Database,
+    row: &FailedDictation,
+    wav_exists: bool,
+    model: Option<M>,
+) -> Result<M, String> {
+    let saved = saved_words(row);
+    if !wav_exists {
+        if saved.is_some() {
+            let _ = db.note_failed_retry(&row.id, AUDIO_GONE_WORDS_KEPT, saved.as_deref());
+            return Err(AUDIO_GONE_WORDS_KEPT.into());
+        }
+        // No words and no audio — drop the row rather than leaving a Retry
+        // button that can only ever fail.
+        let _ = db.delete_failed_dictation(&row.id);
+        return Err("The audio for this take is no longer on disk".into());
+    }
+    match model {
+        Some(model) => Ok(model),
+        None => {
+            let _ = db.note_failed_retry(&row.id, NO_MODEL_INSTALLED, saved.as_deref());
+            Err(NO_MODEL_INSTALLED.into())
+        }
+    }
+}
+
 /// YV52 — re-run ASR on a failed take's preserved clip. The common cause of the
 /// original failure is transient (no model downloaded yet, an engine that has
 /// since reloaded), so this is a real second chance rather than a replay.
@@ -4596,53 +4922,83 @@ fn convert_and_drop_clip(
 /// the clipboard — it is never auto-pasted, because the user is in Yap now, not
 /// in the app they dictated into.
 ///
-/// `keep_partial` (PR #216 re-review, "Keep what was transcribed"): the user
-/// chose to accept the words a failed attempt DID get (`attempt_text`) instead
-/// of trying again. No decode runs; the row converts on those words and the
-/// clip is deleted — the UI confirms that loss first. Without it, a window that
-/// fails the same way on every try would leave only Discard.
+/// `keep_partial` + `confirm` ("Keep what was transcribed"): see
+/// [`keep_what_was_transcribed`]. The backend requires `confirm: true` there in
+/// ADDITION to the UI's confirm dialog (yap-recovery-followups (b)).
 #[tauri::command]
 fn retry_failed_dictation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
     keep_partial: Option<bool>,
+    confirm: Option<bool>,
 ) -> Result<TranscriptEntry, String> {
     let keep_partial = keep_partial.unwrap_or(false);
-    // One closure, so every early `return Err` below lands in the label update.
-    let result = (|| -> Result<TranscriptEntry, String> {
-        let row = state
-            .db
-            .get_failed_dictation(&id)?
-            .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-        let wav = PathBuf::from(&row.wav_path);
-        if !wav.exists() && !keep_partial {
-            // The audio is gone (purged, or cleaned up outside the app) — drop the
-            // row rather than leaving a Retry button that can only ever fail.
-            // ("Keep what was transcribed" needs no audio, so it still converts.)
-            let _ = state.db.delete_failed_dictation(&id);
-            return Err("The audio for this take is no longer on disk".into());
+    let settings = state.settings.lock().clone();
+    // Same cleanup pipeline as a live take, minus the caret context: the retry
+    // happens in Yap, so there is no cursor to join onto.
+    let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
+        let mode = dictation::resolve_mode(
+            &settings.dictation_mode,
+            row.source_app.as_deref().unwrap_or_default(),
+        );
+        let polish_config = polish::PolishConfig::from_settings(&settings, mode);
+        // A retry has no live paste target (the row stores the app's title, not
+        // its bundle id), so it gets the conservative unknown-target format.
+        let structure_format = dictation::structure_format_for_take(
+            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+            &settings.structure_app_overrides,
+            "",
+            mode,
+        );
+        let (text, _) = dictation::run_cleanup_structured_traced(
+            raw_text,
+            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+            mode,
+            structure_format,
+            polish_config.style,
+            &[],
+            |t| {
+                state
+                    .db
+                    .apply_dictionary(t)
+                    .unwrap_or_else(|_| t.to_string())
+            },
+            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+        );
+        text
+    };
+    let result = if keep_partial {
+        match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
+            Ok(entry) => Ok(entry),
+            // A refusal is not a failure of the take: the row's reason stays.
+            Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
+            Err(RecoveryError::Failed(e)) => Err(e),
         }
-        let settings = state.settings.lock().clone();
-        let (raw_text, asr) = if keep_partial {
-            // The same saved words the invariant judged: gated, and never less
-            // than the gated recovered words.
-            let mut kept = saved_words(&row)
-                .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
-            retry_gate(&mut kept)?;
-            (kept, recovered_only_output())
-        } else {
+    } else {
+        // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
+        let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
+            return Err(RecoveryRefusal::RetryInFlight.to_string());
+        };
+        // One closure, so every early `return Err` below lands in the label update.
+        (|| -> Result<TranscriptEntry, String> {
+            let row = state
+                .db
+                .get_failed_dictation(&id)?
+                .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+            let wav = PathBuf::from(&row.wav_path);
+            let (model_id, model_path) = finish_preconditions(
+                &state.db,
+                &row,
+                wav.exists(),
+                native_model_ready(&settings.native_model),
+            )?;
             let samples = record::read_wav_16k_mono(&wav)?;
             // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
             // recovered mid-decode already has words in `take_chunks` and an
             // `end_sample` saying how far into its audio they go, so decode the
             // REMAINDER and keep what exists (`finish_recovered_decode`, called by
             // `decode_failed_take`).
-            let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
-                return Err(
-                    "No speech model installed — open Settings → Models and download one.".into(),
-                );
-            };
             let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
                 Ok(terms) => asr_engine::build_bias_prompt(&terms),
                 Err(e) => {
@@ -4663,7 +5019,7 @@ fn retry_failed_dictation(
                 ),
                 None => (None, Ok(0)),
             };
-            decode_failed_take(
+            let (raw_text, asr) = decode_failed_take(
                 &state.db,
                 &row,
                 partial_text,
@@ -4683,58 +5039,35 @@ fn retry_failed_dictation(
                         &mut transcribe_progress::NoObserver,
                     )
                 },
-            )?
-        };
-        if raw_text.trim().is_empty() {
-            return Err("There is nothing left to transcribe in this take".into());
+            )?;
+            if raw_text.trim().is_empty() {
+                return Err("There is nothing left to transcribe in this take".into());
+            }
+            let text = cleanup(&row, &raw_text);
+            convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
+        })()
+    };
+    match result {
+        Ok(entry) => {
+            // The entry's text: on a merge that kept a longer live entry, that
+            // is what history holds, so that is what goes on the clipboard.
+            let text = entry.text.clone();
+            let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+            log::info!(
+                "YV52 recovery: retry succeeded words={} ({})",
+                entry.word_count,
+                outcome.message
+            );
+            let _ = app.emit("transcript", &entry);
+            Ok(entry)
         }
-        // Same cleanup pipeline as a live take, minus the caret context: the retry
-        // happens in Yap, so there is no cursor to join onto.
-        let mode = dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        );
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode);
-        // A retry has no live paste target (the row stores the app's title, not
-        // its bundle id), so it gets the conservative unknown-target format.
-        let structure_format = dictation::structure_format_for_take(
-            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-            &settings.structure_app_overrides,
-            "",
-            mode,
-        );
-        let (text, _) = dictation::run_cleanup_structured_traced(
-            &raw_text,
-            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-            mode,
-            structure_format,
-            polish_config.style,
-            &[],
-            |t| {
-                state
-                    .db
-                    .apply_dictionary(t)
-                    .unwrap_or_else(|_| t.to_string())
-            },
-            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-        );
-        let entry =
-            convert_and_drop_clip(&state.db, &row, &wav, text.clone(), asr, Some(raw_text))?;
-        let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-        log::info!(
-            "YV52 recovery: retry succeeded words={} ({})",
-            entry.word_count,
-            outcome.message
-        );
-        let _ = app.emit("transcript", &entry);
-        Ok(entry)
-    })();
-    if let Err(e) = &result {
-        // The row's reason is the CURRENT failure, not the original one (a no-op
-        // when the row was converted or dropped).
-        let _ = state.db.note_failed_retry(&id, e, None);
+        Err(e) => {
+            // The row's reason is the CURRENT failure, not the original one (a
+            // no-op when the row was converted or dropped).
+            let _ = state.db.note_failed_retry(&id, &e, None);
+            Err(e)
+        }
     }
-    result
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
@@ -10685,7 +11018,17 @@ mod tests {
             .split_once("\n}\n")
             .unwrap()
             .0;
-        assert!(body.contains("retry_gate(&mut kept)"), "Keep is gated too");
+        // yap-recovery-followups (b): Keep moved into its own backend function
+        // (it now enforces the confirm flag); the command still routes to it.
+        assert!(body.contains("keep_what_was_transcribed("), "Keep goes through the backend check");
+        let keep = LIB
+            .split_once("pub fn keep_what_was_transcribed(")
+            .expect("the Keep path must exist")
+            .1
+            .split_once("\n}\n")
+            .unwrap()
+            .0;
+        assert!(keep.contains("retry_gate(&mut kept)"), "Keep is gated too");
         assert!(
             gate.contains("dictation::degenerate_cutoff("),
             "the retry path must gate on the cutoff, not on a whole-take verdict"
@@ -10799,5 +11142,636 @@ mod tests {
             );
             cursor = start + head.len();
         }
+    }
+}
+
+/// yap-recovery-followups — the re-review advisories on PR #216, one test (or
+/// two) each. Every name starts `db_b_` so the item's pre-flight and its
+/// acceptance (`cargo test --lib db_b_`) find them.
+#[cfg(test)]
+mod db_b_recovery_followups {
+    use super::*;
+
+    fn fresh(tag: &str) -> (PathBuf, Database) {
+        let dir = std::env::temp_dir().join(format!(
+            "yap-dbb-followups-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(dir.join("wilson_voice.db")).unwrap();
+        (dir, db)
+    }
+
+    fn words(prefix: &str, n: usize) -> String {
+        (0..n)
+            .map(|i| format!("{prefix}{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn clean_asr(text: &str) -> transcription::AsrOutput {
+        transcription::AsrOutput {
+            text: text.to_string(),
+            backend: "stub".into(),
+            seconds: 0.1,
+            load_ms: 0,
+            decode_ms: 0,
+            degraded: false,
+            chunks: 1,
+            chunks_failed: 0,
+            degraded_reason: None,
+        }
+    }
+
+    /// A row recovered off disk with `recovered` as its persisted chunk text.
+    fn recovered_row(db: &Database, dir: &Path, take: &str, recovered: &str) -> FailedDictation {
+        db.record_take_chunk(take, 0, recovered, 16_000).unwrap();
+        db.record_failed_dictation_for_take(
+            &dir.join(format!("{take}.wav")),
+            30.0,
+            "Yap quit",
+            None,
+            Some(take.to_string()),
+        )
+        .unwrap()
+    }
+
+    fn identity(_: &FailedDictation, raw: &str) -> String {
+        raw.to_string()
+    }
+
+    // (a) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_two_concurrent_saves_yield_one_row() {
+        let (dir, db) = fresh("a");
+        // Many rounds: a race that loses one time in five still fails here.
+        for round in 0..16 {
+            let take = format!("take-race-{round}");
+            let row = db
+                .record_failed_dictation_for_take(
+                    &dir.join(format!("{take}.wav")),
+                    3.0,
+                    "x",
+                    None,
+                    Some(take.clone()),
+                )
+                .unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            let results: Vec<Result<TranscriptEntry, String>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..2)
+                    .map(|_| {
+                        s.spawn(|| {
+                            barrier.wait();
+                            db.convert_failed_dictation(
+                                &row.id,
+                                "the same take saved twice".into(),
+                                "stub".into(),
+                                0.1,
+                                None,
+                            )
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert_eq!(
+                db.transcripts_for_take(&take).unwrap(),
+                1,
+                "round {round}: exactly one history row for the take ({results:?})"
+            );
+            let ids: Vec<&str> = results
+                .iter()
+                .filter_map(|r| r.as_ref().ok())
+                .map(|e| e.id.as_str())
+                .collect();
+            assert!(!ids.is_empty(), "round {round}: one save landed");
+            assert!(
+                ids.windows(2).all(|w| w[0] == w[1]),
+                "round {round}: the second save returns the FIRST entry, not a new one"
+            );
+            assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
+        }
+        // Every round together: still one row per take, never two.
+        assert_eq!(db.list_transcripts(1000, None).unwrap().len(), 16);
+    }
+
+    // (b) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_keep_without_confirm_is_refused() {
+        let (dir, db) = fresh("b-confirm");
+        let claims = RecoveryClaims::new();
+        let row = recovered_row(&db, &dir, "take-confirm", &words("w", 20));
+        for confirm in [None, Some(false)] {
+            assert_eq!(
+                keep_what_was_transcribed(&db, &claims, &row.id, confirm, identity).unwrap_err(),
+                RecoveryError::Refused(RecoveryRefusal::ConfirmRequired),
+                "confirm={confirm:?} must be refused"
+            );
+            // Nothing written: the row, its words and the history are untouched.
+            let now = db.get_failed_dictation(&row.id).unwrap().expect("row stays");
+            assert_eq!(now.error, row.error);
+            assert_eq!(now.attempt_text, None);
+            assert_eq!(now.partial_text, row.partial_text);
+            assert_eq!(db.transcripts_for_take("take-confirm").unwrap(), 0);
+            assert!(db.list_transcripts(10, None).unwrap().is_empty());
+        }
+        // With the flag it saves.
+        let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+            .expect("confirmed Keep saves");
+        assert_eq!(entry.text, words("w", 20));
+        assert_eq!(db.transcripts_for_take("take-confirm").unwrap(), 1);
+        assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn db_b_keep_while_retry_in_flight_is_refused() {
+        let (dir, db) = fresh("b-inflight");
+        let claims = RecoveryClaims::new();
+        let row = recovered_row(&db, &dir, "take-inflight", &words("w", 20));
+        let retry = claims.claim(&row.id).expect("the retry claims the row");
+        assert_eq!(
+            keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity).unwrap_err(),
+            RecoveryError::Refused(RecoveryRefusal::RetryInFlight)
+        );
+        assert!(db.get_failed_dictation(&row.id).unwrap().is_some());
+        assert_eq!(db.transcripts_for_take("take-inflight").unwrap(), 0);
+        // A second Finish of the same row is refused the same way.
+        assert!(claims.claim(&row.id).is_none());
+        drop(retry);
+        // The retry is over: Keep goes through.
+        keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+            .expect("Keep after the retry ends");
+        assert_eq!(db.transcripts_for_take("take-inflight").unwrap(), 1);
+        // And the command routes Keep through this check and claims every retry.
+        const LIB: &str = include_str!("lib.rs");
+        let body = LIB
+            .split_once("fn retry_failed_dictation(")
+            .unwrap()
+            .1
+            .split_once("/// YV52 — throw a failed take away")
+            .unwrap()
+            .0;
+        assert!(body.contains("keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm"));
+        assert!(body.contains("RECOVERY_CLAIMS.claim(&id)"));
+    }
+
+    // (c) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_retry_and_keep_after_live_partial_leave_one_row() {
+        // Retry: the live take saved its partial words AND left a Retry row.
+        {
+            let (dir, db) = fresh("c-retry");
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "1 of 4 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    words("live", 10),
+                    "native".into(),
+                    1.0,
+                    20.0,
+                    900,
+                    Some("Notes".into()),
+                    chrono::Utc::now(),
+                    None,
+                    Some(&key),
+                )
+                .unwrap();
+            // A clean Retry of the same audio decodes every window the live
+            // take did, plus the ones it lost: it holds every live word.
+            let full = format!("{} {}", words("live", 10), words("full", 20));
+            let (text, asr) = decode_failed_take(&db, &row, None, Ok(0), &[0.1; 1600], |_| {
+                Ok(clean_asr(&full))
+            })
+            .expect("a clean retry converts");
+            let entry = convert_and_drop_clip(
+                &db,
+                &row,
+                &dir.join("live.wav"),
+                text.clone(),
+                asr,
+                Some(text),
+            )
+            .unwrap();
+            assert_eq!(entry.id, live.id, "Retry merged into the live entry");
+            assert_eq!(entry.text, full);
+            assert_eq!(entry.source_app.as_deref(), Some("Notes"));
+            assert_eq!(db.transcripts_for_take(&key).unwrap(), 1);
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "exactly one history row for the take");
+            assert_eq!(all[0].text, full);
+            assert_eq!(all[0].word_count, 30);
+        }
+        // Keep: same live take, but the retry failed and Keep saved its words.
+        {
+            let (dir, db) = fresh("c-keep");
+            let claims = RecoveryClaims::new();
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "1 of 4 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    words("live", 10),
+                    "native".into(),
+                    1.0,
+                    20.0,
+                    900,
+                    None,
+                    chrono::Utc::now(),
+                    None,
+                    Some(&key),
+                )
+                .unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&words("kept", 25)))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert_eq!(entry.id, live.id, "Keep merged into the live entry");
+            // fix round 1, BLOCKING 1: the Keep words do not cover the live
+            // words (different windows), so the live words stay and the Keep
+            // words are appended — the audio is gone, so dropping either
+            // side would lose words for good.
+            assert_eq!(entry.text, format!("{}\n\n{}", words("live", 10), words("kept", 25)));
+            assert_eq!(entry.word_count, 35);
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "exactly one history row for the take");
+            assert_eq!(all[0].text, entry.text);
+            assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
+        }
+    }
+
+    /// fix round 1, BLOCKING 1 — a merge must never lose a word. The live
+    /// decode lost window 7, the Finish attempt Keep saves lost window 3; the
+    /// one history row must hold every window, in both directions, because
+    /// the WAV is deleted the moment the merge commits.
+    #[test]
+    fn db_b_merge_never_loses_words_either_direction() {
+        let w = |skip: usize| {
+            (0..10)
+                .filter(|i| *i != skip)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        // (live missing w7, Keep missing w3) and the `<` branch: a Keep with
+        // FEWER words than the live entry, carrying a window the live lacks.
+        for (live_text, kept_text) in [
+            (w(7), w(3)),
+            (w(7), "w7 w8".to_string()),
+            ("w7 w8".to_string(), w(7)),
+        ] {
+            let (dir, db) = fresh("c-noloss");
+            let claims = RecoveryClaims::new();
+            let wav = dir.join("live.wav");
+            std::fs::write(&wav, b"riff").unwrap();
+            let row = db
+                .record_failed_dictation(&wav, 20.0, "1 of 10 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            db.insert_transcript_for_take(
+                live_text.clone(),
+                "native".into(),
+                1.0,
+                20.0,
+                900,
+                None,
+                chrono::Utc::now(),
+                None,
+                Some(&key),
+            )
+            .unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&kept_text))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert!(!wav.exists(), "Keep deleted the audio");
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "exactly one history row for the take");
+            for word in live_text.split_whitespace().chain(kept_text.split_whitespace()) {
+                assert!(
+                    all[0].text.split_whitespace().any(|t| t == word),
+                    "word {word} lost: live={live_text:?} kept={kept_text:?} saved={:?}",
+                    all[0].text
+                );
+            }
+            assert_eq!(entry.text, all[0].text);
+            assert_eq!(all[0].word_count, db_word_count(&all[0].text));
+        }
+        // A save whose words are all already in the entry changes nothing,
+        // and a save that holds every live word plus more replaces it cleanly.
+        for (live_text, saved, expect) in [
+            (w(99), w(3), w(99)),
+            (w(3), w(99), w(99)),
+        ] {
+            let (dir, db) = fresh("c-subset");
+            let claims = RecoveryClaims::new();
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "x", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            db.insert_transcript_for_take(
+                live_text, "native".into(), 1.0, 20.0, 900, None, chrono::Utc::now(), None, Some(&key),
+            )
+            .unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&saved)).unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert_eq!(entry.text, expect, "no duplicated words when one side covers the other");
+        }
+        // A user's hand edit of the live entry survives a later, longer save.
+        {
+            let (dir, db) = fresh("c-edit");
+            let claims = RecoveryClaims::new();
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "x", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    "alpha beta gamma delta".into(), "native".into(), 1.0, 20.0, 900, None,
+                    chrono::Utc::now(), None, Some(&key),
+                )
+                .unwrap();
+            db.record_correction(&live.id, "alpha beta GAMMA-FIXED delta").unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some("alpha beta gamma delta epsilon zeta"))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert!(entry.text.contains("GAMMA-FIXED"), "the user's edit was overwritten: {:?}", entry.text);
+            assert!(entry.text.contains("zeta"));
+        }
+    }
+
+    /// fix round 2, BLOCKING 1 — a later Retry or Keep must never revert a
+    /// hand edit of the live entry. A deletion-only, casing-only or
+    /// punctuation-only edit leaves the edited entry's words a subset of (or
+    /// equal to) the save's, which the round-1 merge read as "the save covers
+    /// the entry" and REPLACED it with the save — undoing the edit, with the
+    /// audio deleted so the take could not be redone.
+    #[test]
+    fn db_b_merge_never_reverts_a_hand_edit() {
+        // (case, live decode, the user's edit, the recovered save, expected entry)
+        for (case, live_text, edited, saved, expect) in [
+            (
+                "deletion-only edit",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.".to_string(),
+            ),
+            (
+                "casing-only edit",
+                "we met with jon smith at acme",
+                "We met with Jon Smith at Acme.",
+                "we met with jon smith at acme",
+                "We met with Jon Smith at Acme.".to_string(),
+            ),
+            (
+                "punctuation-only edit",
+                "ok so the plan is ship it",
+                "OK, so: the plan is -- ship it!",
+                "ok so the plan is ship it",
+                "OK, so: the plan is -- ship it!".to_string(),
+            ),
+            (
+                "deletion edit, then a save that also recovers a lost window",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.",
+                "Ship it Friday. Also tell Jim he is fired. Book the venue.",
+                "Ship it Friday.\n\nShip it Friday. Also tell Jim he is fired. Book the venue."
+                    .to_string(),
+            ),
+        ] {
+            let (dir, db) = fresh("c-edit-kept");
+            let claims = RecoveryClaims::new();
+            let wav = dir.join("live.wav");
+            std::fs::write(&wav, b"riff").unwrap();
+            let row = db
+                .record_failed_dictation(&wav, 20.0, "1 of 10 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    live_text.into(),
+                    "native".into(),
+                    1.0,
+                    20.0,
+                    900,
+                    None,
+                    chrono::Utc::now(),
+                    None,
+                    Some(&key),
+                )
+                .unwrap();
+            db.record_correction(&live.id, edited).unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(saved))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "{case}: exactly one history row for the take");
+            assert_eq!(all[0].text, expect, "{case}: the hand edit was reverted");
+            assert_eq!(entry.text, all[0].text, "{case}");
+            assert!(
+                all[0].text.starts_with(edited),
+                "{case}: the edited text must stand verbatim: {:?}",
+                all[0].text
+            );
+            assert_eq!(all[0].word_count, db_word_count(&all[0].text), "{case}");
+        }
+    }
+
+    fn db_word_count(text: &str) -> i64 {
+        text.split_whitespace().count() as i64
+    }
+
+    // (e) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_all_loop_or_unreadable_resume_converts_without_keep() {
+        let samples = vec![0.1f32; 48_000];
+        let full = words("clip", 40);
+        // 1. The recovered words are ALL loop: the retry decodes the whole clip.
+        {
+            let (dir, db) = fresh("e-loop");
+            let row = recovered_row(&db, &dir, "take-all-loop", &["the"; 30].join(" "));
+            let mut decoded_len = 0;
+            let out = decode_failed_take(
+                &db,
+                &row,
+                row.partial_text.clone(),
+                db.take_resume_sample("take-all-loop"),
+                &samples,
+                |rest| {
+                    decoded_len = rest.len();
+                    Ok(clean_asr(&full))
+                },
+            );
+            let (text, _) = out.expect("an all-loop recovery converts on a clean full decode");
+            assert_eq!(decoded_len, samples.len(), "decoded from the start");
+            assert_eq!(text, full);
+        }
+        // 2. The resume point cannot be read: same, even with a loop inside
+        //    the recovered words (gated words non-empty and shorter than raw).
+        {
+            let (dir, db) = fresh("e-unreadable");
+            let recovered = format!("{} {}", words("w", 15), ["the"; 30].join(" "));
+            let row = recovered_row(&db, &dir, "take-unreadable", &recovered);
+            let mut decoded_len = 0;
+            let out = decode_failed_take(
+                &db,
+                &row,
+                row.partial_text.clone(),
+                Err("database is locked".into()),
+                &samples,
+                |rest| {
+                    decoded_len = rest.len();
+                    Ok(clean_asr(&full))
+                },
+            );
+            let (text, _) = out.expect("an unreadable resume converts on a clean full decode");
+            assert_eq!(decoded_len, samples.len());
+            assert_eq!(text, full);
+        }
+        // Control: a RESUMED take whose recovered words were cut still keeps
+        // the row (the audio under the loop is in no text).
+        {
+            let (dir, db) = fresh("e-control");
+            let recovered = format!("{} {}", words("w", 15), ["the"; 30].join(" "));
+            let row = recovered_row(&db, &dir, "take-resumed", &recovered);
+            let out = decode_failed_take(
+                &db,
+                &row,
+                row.partial_text.clone(),
+                Ok(16_000),
+                &samples,
+                |_| Ok(clean_asr(&words("tail", 10))),
+            );
+            assert!(out.is_err(), "a resumed cut is still flagged");
+        }
+    }
+
+    // (f) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_already_transcribed_shows_gated_words() {
+        let (dir, db) = fresh("f");
+        let clean = words("w", 15);
+        let raw = format!("{clean} {}", ["the"; 30].join(" "));
+        let row = recovered_row(&db, &dir, "take-shown", &raw);
+        assert_eq!(row.partial_text.as_deref(), Some(raw.as_str()), "raw loop on disk");
+        // "Already transcribed" before any attempt: the gated words.
+        let shown = failed_row_for_display(row.clone());
+        assert_eq!(shown.partial_text.as_deref(), Some(clean.as_str()));
+        assert_eq!(shown.partial_text, saved_words(&row), "same text as Keep/Transcribed so far");
+        // A failed Finish: "Transcribed so far" is the same gated text.
+        let failed = decode_failed_take(
+            &db,
+            &row,
+            row.partial_text.clone(),
+            Ok(16_000),
+            &[0.1; 48_000],
+            |_| Err("engine fell over".into()),
+        );
+        assert!(failed.is_err(), "the decode failed");
+        let after = db.get_failed_dictation(&row.id).unwrap().unwrap();
+        let shown = failed_row_for_display(after.clone());
+        assert_eq!(shown.partial_text.as_deref(), Some(clean.as_str()));
+        assert_eq!(shown.attempt_text.as_deref(), Some(clean.as_str()));
+        for line in [shown.partial_text.unwrap(), shown.attempt_text.unwrap()] {
+            assert!(!line.contains("the the"), "never the raw loop: {line}");
+        }
+    }
+
+    // (g) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_short_loop_then_clean_words_kept_on_retry() {
+        let clean = words("clean", 40);
+        let input = format!("{} {clean}", ["the"; 8].join(" "));
+        // The live gate throws all of it away: the loop is at token 0.
+        assert_eq!(dictation::degenerate_cutoff(&input), Some(0));
+        // The retry gate keeps all 40 clean words.
+        let gated = gated_words(&input);
+        for w in clean.split_whitespace() {
+            assert!(gated.split_whitespace().any(|g| g == w), "{w} kept");
+        }
+        assert_eq!(gated, format!("the {clean}"));
+        // …and so does "Keep what was transcribed" on a recovered take.
+        let (dir, db) = fresh("g");
+        let row = recovered_row(&db, &dir, "take-short-loop", &input);
+        let entry = keep_what_was_transcribed(&db, &RecoveryClaims::new(), &row.id, Some(true), identity)
+            .expect("Keep saves the clean words");
+        assert_eq!(
+            entry.text.split_whitespace().filter(|w| w.starts_with("clean")).count(),
+            40
+        );
+        // Bounded: a LONG loop (> N) is still cut, words after it and all.
+        let long = format!(
+            "{} {} {clean}",
+            words("w", 15),
+            ["the"; RETRY_SHORT_LOOP_MAX_TOKENS + 1].join(" ")
+        );
+        assert_eq!(gated_words(&long), words("w", 15));
+        // And a short loop followed by too FEW distinct words (< M) is cut too.
+        let few = format!(
+            "{} {} {}",
+            words("w", 15),
+            ["the"; 8].join(" "),
+            words("x", RETRY_RESUME_MIN_DISTINCT_TOKENS - 1)
+        );
+        assert_eq!(gated_words(&few), words("w", 15));
+    }
+
+    // (h) ------------------------------------------------------------------
+
+    #[test]
+    fn db_b_no_model_still_offers_keep() {
+        let (dir, db) = fresh("h-model");
+        let row = recovered_row(&db, &dir, "take-no-model", &words("w", 20));
+        assert_eq!(row.attempt_text, None, "no Keep before the attempt");
+        let err = finish_preconditions::<()>(&db, &row, true, None).unwrap_err();
+        assert_eq!(err, NO_MODEL_INSTALLED);
+        let after = db.get_failed_dictation(&row.id).unwrap().expect("row stays");
+        // Home.tsx offers Keep exactly when `attemptText` is set.
+        assert_eq!(after.attempt_text.as_deref(), Some(words("w", 20).as_str()));
+        assert_eq!(after.error, NO_MODEL_INSTALLED);
+        keep_what_was_transcribed(&db, &RecoveryClaims::new(), &row.id, Some(true), identity)
+            .expect("Keep works with no model installed");
+    }
+
+    #[test]
+    fn db_b_missing_audio_keeps_recovered_words() {
+        let (dir, db) = fresh("h-audio");
+        let row = recovered_row(&db, &dir, "take-no-audio", &words("w", 20));
+        assert!(!Path::new(&row.wav_path).exists(), "the audio is gone");
+        let err = finish_preconditions(&db, &row, false, Some(())).unwrap_err();
+        assert_eq!(err, AUDIO_GONE_WORDS_KEPT);
+        let after = db
+            .get_failed_dictation(&row.id)
+            .unwrap()
+            .expect("the row with words is NOT deleted");
+        assert_eq!(after.partial_text.as_deref(), Some(words("w", 20).as_str()));
+        assert_eq!(after.attempt_text.as_deref(), Some(words("w", 20).as_str()));
+        assert_eq!(
+            db.take_partial_text("take-no-audio").unwrap().as_deref(),
+            Some(words("w", 20).as_str()),
+            "the recovered words are still on disk"
+        );
+        // A row with NO words and no audio has nothing to keep: it goes.
+        let empty = db
+            .record_failed_dictation(&dir.join("gone.wav"), 1.0, "x", None)
+            .unwrap();
+        assert!(finish_preconditions(&db, &empty, false, Some(())).is_err());
+        assert!(db.get_failed_dictation(&empty.id).unwrap().is_none());
     }
 }
