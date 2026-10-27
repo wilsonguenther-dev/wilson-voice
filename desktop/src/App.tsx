@@ -33,7 +33,7 @@ export default function App() {
     history, installUpdateNow, installedVersion, installing, 
     licenseChip, meetings, modelSetup, nav, needsPerms, openLicenseTab,
     perms, pillClass, refreshAll, refreshPerms, replayOnboarding, retryFailed, retrying,
-    scratch, sendSupportBundle, setBuyPrompt, setNav, setSettingsTab,
+    saveSettings, scratch, sendSupportBundle, setBuyPrompt, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
     userName, insights, query,
@@ -114,6 +114,8 @@ export default function App() {
       <Onboarding
         onFinish={(sample, proven) => finishOnboarding(sample, proven)}
         onSkip={() => finishOnboarding(null, false)}
+        autoPaste={settings.autoPaste}
+        onEnableAutoPaste={() => saveSettings({ ...settings, autoPaste: true }, { quiet: true })}
       />
     );
   }

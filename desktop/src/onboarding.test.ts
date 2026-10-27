@@ -68,6 +68,8 @@ describe("Y6-A onboarding step machine", () => {
     ["no-accessibility", "try-it-no-accessibility"],
     ["no-model", "try-it-no-model"],
     ["paste-refused", "try-it-paste-refused"],
+    ["no-speech", "try-it-no-speech"],
+    ["auto-paste-off", "try-it-auto-paste-off"],
   ] as const)("failure %s routes to its own screen %s", (failure, screen) => {
     expect(nextStep("try-it", fail(failure))).toBe(screen);
     expect(FAILURE_STEP[failure]).toBe(screen);
@@ -79,8 +81,8 @@ describe("Y6-A onboarding step machine", () => {
     expect(nextStep(screen, SUCCESS)).toBe("done");
   });
 
-  it("the four failure screens are four distinct screens", () => {
-    expect(new Set(Object.values(FAILURE_STEP)).size).toBe(4);
+  it("the six failure screens are six distinct screens", () => {
+    expect(new Set(Object.values(FAILURE_STEP)).size).toBe(6);
   });
 
   it("skip ends onboarding from any step", () => {
@@ -113,18 +115,54 @@ describe("Y6-A onboarding step machine", () => {
   });
 
   it("classifies the earliest broken stage first", () => {
-    const ok = { micAuthorized: true, modelReady: true, accessibility: true };
+    const ok = { micAuthorized: true, modelReady: true, heardText: true, autoPaste: true, accessibility: true };
     expect(classifyTryItFailure({ ...ok, micAuthorized: false, modelReady: false, accessibility: false })).toBe("no-mic");
     expect(classifyTryItFailure({ ...ok, modelReady: false, accessibility: false })).toBe("no-model");
     expect(classifyTryItFailure({ ...ok, accessibility: false })).toBe("no-accessibility");
     expect(classifyTryItFailure(ok)).toBe("paste-refused");
   });
 
+  // Fix round 1 (primary BLOCKING 2): a take with NO words never reached the
+  // paste stage — a no-speech gate drop, a cancel, a rejected/silent capture,
+  // an ASR error — so it must not land on "The text didn't land".
+  it("a take that produced no text is never blamed on the paste", () => {
+    const ok = { micAuthorized: true, modelReady: true, heardText: true, autoPaste: true, accessibility: true };
+    expect(classifyTryItFailure({ ...ok, heardText: false })).toBe("no-speech");
+    expect(classifyTryItFailure({ ...ok, heardText: false, accessibility: false })).toBe("no-speech");
+    expect(classifyTryItFailure({ ...ok, heardText: false, autoPaste: false })).toBe("no-speech");
+    // Earlier stages still win over it.
+    expect(classifyTryItFailure({ ...ok, heardText: false, micAuthorized: false })).toBe("no-mic");
+    expect(classifyTryItFailure({ ...ok, heardText: false, modelReady: false })).toBe("no-model");
+  });
+
+  // Fix round 1 (primary BLOCKING 1): auto-paste OFF is the user's setting,
+  // not a refused paste — name it, ahead of the Accessibility grant.
+  it("auto-paste off is named as the cause, not the cursor", () => {
+    const ok = { micAuthorized: true, modelReady: true, heardText: true, autoPaste: true, accessibility: true };
+    expect(classifyTryItFailure({ ...ok, autoPaste: false })).toBe("auto-paste-off");
+    expect(classifyTryItFailure({ ...ok, autoPaste: false, accessibility: false })).toBe("auto-paste-off");
+  });
+
   it("a take lands only when the field holds the transcript", () => {
-    expect(tryItLanded("Hello  there, Yap.", "hello there, yap.")).toBe(true);
-    expect(tryItLanded("I typed this", "Hello there")).toBe(false);
-    expect(tryItLanded("", "Hello")).toBe(false);
-    expect(tryItLanded("anything", "   ")).toBe(false);
+    expect(tryItLanded("Hello  there, Yap.", "hello there, yap.", "")).toBe(true);
+    expect(tryItLanded("I typed this", "Hello there", "")).toBe(false);
+    expect(tryItLanded("", "Hello", "")).toBe(false);
+    expect(tryItLanded("anything", "   ", "")).toBe(false);
+  });
+
+  // Fix round 1 (independent BLOCKING 1): text that was ALREADY in the field
+  // when the take started proves nothing about this take.
+  it("text already in the field before the take does not count as landed", () => {
+    // The reviewer's three probes, now with the field's pre-take content.
+    expect(tryItLanded("Testing one two three.", "Testing one two three.", "Testing one two three.")).toBe(false);
+    expect(tryItLanded("I typed this myself", "I", "I typed this myself")).toBe(false);
+    expect(tryItLanded("thank you so much", "Thank you", "thank you so much")).toBe(false);
+    // A real paste on top of the hand-pasted copy is a new occurrence: lands.
+    expect(
+      tryItLanded("Testing one two three. Testing one two three.", "Testing one two three.", "Testing one two three."),
+    ).toBe(true);
+    // A paste into an empty field still lands.
+    expect(tryItLanded("thank you", "Thank you", "")).toBe(true);
   });
 
   it("an unproven finish raises the reminder until a take pastes", () => {
@@ -132,5 +170,12 @@ describe("Y6-A onboarding step machine", () => {
     expect(unprovenLine({ onboarded: true, dictationProven: true })).toBeNull();
     expect(unprovenLine({ onboarded: false, dictationProven: false })).toBeNull();
     expect(unprovenLine(null)).toBeNull();
+  });
+
+  // Fix round 1 (primary BLOCKING 1): with auto-paste OFF no take can paste
+  // (paste::should_paste requires auto_paste), so the reminder would never clear.
+  it("the reminder stays down while the user's auto-paste setting is off", () => {
+    expect(unprovenLine({ onboarded: true, dictationProven: false, autoPaste: false })).toBeNull();
+    expect(unprovenLine({ onboarded: true, dictationProven: false, autoPaste: true })).toMatch(/hasn't pasted/);
   });
 });

@@ -159,6 +159,8 @@ function PolishOffer({ speechModelReady }: { speechModelReady: boolean }) {
 export default function Onboarding({
   onFinish,
   onSkip,
+  autoPaste,
+  onEnableAutoPaste,
 }: {
   /**
    * Finish onboarding; sample is the captured calibration phrase (or null).
@@ -169,6 +171,14 @@ export default function Onboarding({
   onFinish: (sample: string | null, proven: boolean) => void;
   /** "Skip for now" on the welcome screen — finishes unproven. */
   onSkip: () => void;
+  /**
+   * Fix round 1 — the user's "Paste my words automatically" setting. Off, no
+   * take can paste (backend `paste::should_paste`), so try-it names the
+   * setting instead of blaming the cursor, and never declares success.
+   */
+  autoPaste: boolean;
+  /** Turn auto-paste on from the try-it screen that names it as the cause. */
+  onEnableAutoPaste: () => Promise<void> | void;
 }) {
   const [step, setStep] = useState<Step>("welcome");
   const [perms, setPerms] = useState<PermissionReport | null>(null);
@@ -192,8 +202,23 @@ export default function Onboarding({
   const [tryError, setTryError] = useState<string | null>(null);
   const [proven, setProven] = useState(false);
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
-  /** The transcript the backend announced and we are waiting to see land. */
-  const awaitingRef = useRef<string | null>(null);
+  /**
+   * Fix round 1 — everything known about the CURRENT try-it take. `baseline`
+   * is what the field held when the take started (text already there proves
+   * nothing); `transcript` is null until this take produced words;
+   * `pasteFailed` is the backend's own "no receipt" (`paste_failed`);
+   * `doneOk` is its terminal `take_done{ok:true}`, which arrives AFTER
+   * `transcript` and `paste_failed`, so success is decided only once the
+   * backend has said everything it will say about the paste; `settled` stops
+   * a take being judged twice.
+   */
+  const takeRef = useRef<{
+    baseline: string;
+    transcript: string | null;
+    pasteFailed: boolean;
+    doneOk: boolean;
+    settled: boolean;
+  }>({ baseline: "", transcript: null, pasteFailed: false, doneOk: false, settled: false });
   const landTimerRef = useRef(0);
   // YV54 — silent setup: this overlay is the surface that starts the
   // recommended download, on mount, without asking. Nothing here blocks on it
@@ -265,6 +290,9 @@ export default function Onboarding({
     const unsubs: Array<() => void> = [];
     listen<boolean>("recording", (e) => {
       setRecording(e.payload);
+      // Fix round 1 — a new try-it take starts: snapshot the field and forget
+      // the previous take's words, so nothing stale is shown or judged.
+      if (e.payload && stepRef.current === "try-it") tryItRef.current.onStart();
       // Y6-A — a try-it take is driven by the hotkey, not a button here, so
       // the end of the recording is what arms the "waiting for it" state.
       if (!e.payload && stepRef.current === "try-it") setBusy(true);
@@ -283,7 +311,7 @@ export default function Onboarding({
     // the very last stage, and the field will never fill. Name it now rather
     // than waiting out PASTE_LAND_MS.
     listen<string>("paste_failed", () => {
-      if (stepRef.current === "try-it") tryItRef.current.onFail(null);
+      if (stepRef.current === "try-it") tryItRef.current.onPasteFailed();
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — the other half of "busy": the backend emits this whenever a take
     // fails to produce a transcript, so the failure clears the spinner and shows
@@ -303,8 +331,8 @@ export default function Onboarding({
     // overlay. Busy now clears for EVERY take, with the backend's own reason.
     listen<{ ok: boolean; message: string | null }>("take_done", (e) => {
       setBusy(false);
-      if (!e.payload?.ok && stepRef.current === "try-it") {
-        tryItRef.current.onFail(e.payload?.message || null);
+      if (stepRef.current === "try-it") {
+        tryItRef.current.onDone(!!e.payload?.ok, e.payload?.message || null);
         return;
       }
       if (!e.payload?.ok) {
@@ -417,12 +445,32 @@ export default function Onboarding({
     }
   }
 
-  /** Did the announced transcript arrive in the field? Settles success if so. */
-  function checkLanded(value: string): boolean {
-    const want = awaitingRef.current;
-    if (!want || !tryItLanded(value, want)) return false;
+  /** Fix round 1 — a fresh take: snapshot the field, forget the last take. */
+  function startTake() {
     clearLandTimer();
-    awaitingRef.current = null;
+    takeRef.current = {
+      baseline: fieldRef.current?.value ?? "",
+      transcript: null,
+      pasteFailed: false,
+      doneOk: false,
+      settled: false,
+    };
+    setHeard(null);
+    setTryError(null);
+  }
+
+  /**
+   * Did THIS take's transcript arrive in the field? Settles success only when
+   * the backend has finished the take (`take_done{ok:true}`), sent no
+   * `paste_failed`, auto-paste is on, and the transcript occurs in the field
+   * more often than it did when the take started.
+   */
+  function checkLanded(value: string): boolean {
+    const take = takeRef.current;
+    if (take.settled || !take.doneOk || take.pasteFailed || !autoPaste) return false;
+    if (!take.transcript || !tryItLanded(value, take.transcript, take.baseline)) return false;
+    take.settled = true;
+    clearLandTimer();
     setBusy(false);
     setTryError(null);
     go(SUCCESS);
@@ -434,8 +482,10 @@ export default function Onboarding({
    * grant rows can have moved since the checklist), then route to its screen.
    */
   async function failTryIt(message: string | null) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    take.settled = true;
     clearLandTimer();
-    awaitingRef.current = null;
     setBusy(false);
     let report = perms;
     try {
@@ -455,14 +505,46 @@ export default function Onboarding({
       failure: classifyTryItFailure({
         micAuthorized: mic === "authorized",
         modelReady: modelSetup.ready,
+        heardText: !!take.transcript,
+        autoPaste,
         accessibility: !!report?.accessibility,
       }),
     });
   }
 
+  /** The take produced words. Recorded only; `take_done` decides the outcome. */
   function onTryItTranscript(text: string) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    take.transcript = text;
     setHeard(text);
-    awaitingRef.current = text;
+  }
+
+  /** The backend sent ⌘V and got no receipt: the paste stage failed. */
+  function onTryItPasteFailed() {
+    takeRef.current.pasteFailed = true;
+    failTryIt(null);
+  }
+
+  /**
+   * The backend's terminal marker for the take. Not ok: the take produced no
+   * dictation (no speech, cancel, rejected, silent) — fail with its reason.
+   * Ok: give the webview PASTE_LAND_MS to apply the ⌘V, then judge.
+   */
+  function onTryItDone(ok: boolean, message: string | null) {
+    const take = takeRef.current;
+    if (take.settled) return;
+    if (!ok) {
+      failTryIt(message);
+      return;
+    }
+    take.doneOk = true;
+    if (!autoPaste || !take.transcript) {
+      // Copy-only by the user's own setting (or a take with nothing to
+      // paste): no paste can be proven, so name the cause now.
+      failTryIt(null);
+      return;
+    }
     if (checkLanded(fieldRef.current?.value ?? "")) return;
     clearLandTimer();
     landTimerRef.current = window.setTimeout(() => {
@@ -472,15 +554,31 @@ export default function Onboarding({
   }
 
   // The event listeners are registered once; they reach the CURRENT handlers
-  // (fresh perms, fresh model state) through this ref.
-  const tryItRef = useRef({ onTranscript: onTryItTranscript, onFail: failTryIt });
-  tryItRef.current = { onTranscript: onTryItTranscript, onFail: failTryIt };
+  // (fresh perms, fresh model state, fresh autoPaste) through this ref.
+  const tryItRef = useRef({
+    onStart: startTake,
+    onTranscript: onTryItTranscript,
+    onPasteFailed: onTryItPasteFailed,
+    onDone: onTryItDone,
+    onFail: failTryIt,
+  });
+  tryItRef.current = {
+    onStart: startTake,
+    onTranscript: onTryItTranscript,
+    onPasteFailed: onTryItPasteFailed,
+    onDone: onTryItDone,
+    onFail: failTryIt,
+  };
 
   useEffect(() => () => clearLandTimer(), []);
 
-  // Land in the field on arrival, so the take has somewhere to paste.
+  // Land in the field on arrival, so the take has somewhere to paste. Fix
+  // round 1: arriving (or retrying) also opens a fresh take, so a take that
+  // never announced its start is still judged against the field as it is now.
   useEffect(() => {
-    if (step === "try-it") fieldRef.current?.focus();
+    if (step !== "try-it") return;
+    fieldRef.current?.focus();
+    tryItRef.current.onStart();
   }, [step]);
 
   /**
@@ -494,6 +592,15 @@ export default function Onboarding({
       await invoke("manual_toggle");
     } catch (e) {
       failTryIt(errorText(e));
+    }
+  }
+
+  async function enableAutoPaste() {
+    try {
+      await onEnableAutoPaste();
+      go(RETRY);
+    } catch (e) {
+      setNote(errorText(e));
     }
   }
 
@@ -808,6 +915,7 @@ export default function Onboarding({
               value={tryText}
               onChange={(e) => {
                 setTryText(e.target.value);
+                // Only ever settles once the backend has finished this take.
                 checkLanded(e.target.value);
               }}
             />
@@ -951,6 +1059,52 @@ export default function Onboarding({
               </button>
               <button className="ghost" onClick={() => go(SKIP)}>
                 Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-no-speech" && (
+          <div className="onboard-step" data-try-it-failure="no-speech">
+            <h1>Yap didn’t catch any words</h1>
+            <p className="onboard-lede">
+              That take ended without any text, so there was nothing to paste.
+              Hold the hotkey a moment longer and speak clearly, then let go.
+            </p>
+            {tryError && <p className="onboard-error">{tryError}</p>}
+            <div className="onboard-actions">
+              <button className="primary" onClick={() => go(RETRY)}>
+                Try again
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "try-it-auto-paste-off" && (
+          <div className="onboard-step" data-try-it-failure="auto-paste-off">
+            <h1>Automatic paste is turned off</h1>
+            <p className="onboard-lede">
+              Yap heard you and copied your words, but “Paste my words
+              automatically” is off in Settings, so it did not paste them.
+              Turn it on to have Yap paste for you, or keep it off and paste
+              with ⌘V yourself.
+            </p>
+            {heard && (
+              <div className="onboard-sample">
+                <span className="muted tiny">Heard:</span>
+                <p>{heard}</p>
+              </div>
+            )}
+            {note && <p className="muted tiny">{note}</p>}
+            <div className="onboard-actions">
+              <button className="primary" onClick={enableAutoPaste}>
+                Turn on automatic paste
+              </button>
+              <button className="ghost" onClick={() => go(SKIP)}>
+                Keep it off
               </button>
             </div>
           </div>
