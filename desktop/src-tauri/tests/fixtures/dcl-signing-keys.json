@@ -1,0 +1,13 @@
+{
+  "_source": "drivia-consulting supabase/migrations/20260924002500_licensing_api.sql:258 (insert into licensing.signing_keys), copied by hand for yap-lic-01; read by license_v2::tests::embedded_key_matches_server_seed with no network",
+  "keys": [
+    {
+      "kid": "dcl-2026-09-24",
+      "alg": "EdDSA",
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "NTXQamoM4o9K1MkQrZ_bWPRL7659nEDHaIssiCWodHs",
+      "use": "sig"
+    }
+  ]
+}

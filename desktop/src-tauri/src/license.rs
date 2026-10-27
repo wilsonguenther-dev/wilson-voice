@@ -68,6 +68,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::license_v2::{self, TokenClaims, TokenError};
+
 // ─── Pinned issuer identity ──────────────────────────────────────────
 //
 // The public half of the Ed25519 signing key that the deployed issuer holds at
@@ -199,6 +201,10 @@ pub const DB_KEY_CLOCK_FLOOR: &str = "license.max_seen_wall_ms";
 /// Spent grace-claim ids, mirrored into the corroborating store (a JSON array
 /// of strings) so deleting `license.json` does not reset the single-use guard.
 pub const DB_KEY_GRACE_KIDS: &str = "license.grace_kids";
+/// yap-lic-01 — the highest license-token `iat` (seconds) this install has
+/// accepted, mirrored from `license.json` so deleting the file does not reopen
+/// the door to replaying an older token (`license_v2::check_iat`).
+pub const DB_KEY_MAX_TOKEN_IAT: &str = "license.max_token_iat";
 
 // ─── Base64url ───────────────────────────────────────────────────────
 
@@ -287,6 +293,9 @@ pub enum VerifyError {
     GraceRevoked,
     /// A signed grace claim past its `grace_expires_at_ms`.
     GraceExpired,
+    /// yap-lic-01 — a pasted drivia.consulting license TOKEN (three segments)
+    /// that `license_v2` refused. Carries the token's own stable code.
+    Token(TokenError),
 }
 
 impl VerifyError {
@@ -301,6 +310,7 @@ impl VerifyError {
             VerifyError::GraceAlreadyUsed => "grace_already_used",
             VerifyError::GraceRevoked => "grace_revoked",
             VerifyError::GraceExpired => "grace_expired",
+            VerifyError::Token(e) => e.code(),
         }
     }
 
@@ -331,6 +341,7 @@ impl VerifyError {
             VerifyError::GraceExpired => {
                 "That grace key has expired. Reply to the email it came in and we will issue a fresh one."
             }
+            VerifyError::Token(e) => e.message(),
         }
     }
 }
@@ -534,6 +545,15 @@ pub struct LicenseFile {
     pub revoked_kids: Vec<String>,
     #[serde(default)]
     pub revoked_checked_at_ms: Option<i64>,
+    /// yap-lic-01 — the drivia.consulting license token (compact JWS), verbatim.
+    /// Re-verified on every read against `license_v2::EMBEDDED_KEYS` only, like
+    /// `license_key`; nothing decoded from it is cached here.
+    #[serde(default)]
+    pub license_token: Option<String>,
+    /// yap-lic-01 — highest token `iat` (seconds) ever accepted on this install.
+    /// Mirrored into `DB_KEY_MAX_TOKEN_IAT`; only ever raised, never cleared.
+    #[serde(default)]
+    pub max_token_iat: Option<i64>,
 }
 
 // ─── Trial arithmetic (pure) ─────────────────────────────────────────
@@ -995,6 +1015,8 @@ pub const UPGRADE_TRAY_LABEL: &str = "Upgrade Yap — $29 once";
 
 type NowFn = Box<dyn Fn() -> i64 + Send + Sync>;
 type VerifyFn = Box<dyn Fn(&str) -> Result<Claims, VerifyError> + Send + Sync>;
+/// `license_v2::verify_token` in the app; a throwaway-key verifier in tests.
+type TokenVerifyFn = Box<dyn Fn(&str, i64) -> Result<TokenClaims, TokenError> + Send + Sync>;
 
 /// Owns `license.json`, the corroborating rows, and the cached revocation list.
 ///
@@ -1015,6 +1037,12 @@ pub struct LicenseManager {
     /// the storage / revocation / gate paths with a throwaway signing key —
     /// the production private key is root-only on the Forge box.
     verify: VerifyFn,
+    /// yap-lic-01 — always `license_v2::verify_token` (EMBEDDED_KEYS only) in
+    /// the app; injected only so `#[cfg(test)]` code can sign with a throwaway key.
+    verify_token: TokenVerifyFn,
+    /// The last stored-token verdict logged, so `status()` (on the press path)
+    /// logs a CHANGE once instead of a line per dictation.
+    last_token_code: Mutex<Option<&'static str>>,
     /// Throttle for the hotkey toast, so leaning on the key is not a
     /// notification storm.
     last_notice: Mutex<Option<Instant>>,
@@ -1113,6 +1141,28 @@ impl LicenseManager {
     }
 
     fn build(dir: &Path, store: Arc<dyn LicenseStore>, now: NowFn, verify: VerifyFn) -> Self {
+        Self::build_full(dir, store, now, verify, Box::new(license_v2::verify_token))
+    }
+
+    /// The production manager with token verification against a throwaway
+    /// key. Test-only: shipping code has exactly one token verifier.
+    #[cfg(test)]
+    pub(crate) fn with_token_verifier(
+        dir: &Path,
+        store: Arc<dyn LicenseStore>,
+        now: NowFn,
+        verify_token: TokenVerifyFn,
+    ) -> Self {
+        Self::build_full(dir, store, now, Box::new(verify_license), verify_token)
+    }
+
+    fn build_full(
+        dir: &Path,
+        store: Arc<dyn LicenseStore>,
+        now: NowFn,
+        verify: VerifyFn,
+        verify_token: TokenVerifyFn,
+    ) -> Self {
         let path = dir.join(LICENSE_FILE);
         let file = read_license_file(&path);
         let anchor_wall_ms = now();
@@ -1124,6 +1174,8 @@ impl LicenseManager {
             anchor_continuous_ms: continuous_clock_ms(),
             now,
             verify,
+            verify_token,
+            last_token_code: Mutex::new(None),
             last_notice: Mutex::new(None),
         };
         // Repair the spent-grace guard from whichever store survived, exactly
@@ -1149,6 +1201,44 @@ impl LicenseManager {
                 .saturating_add(now.saturating_sub(anchor).max(0)),
             _ => (self.now)(),
         }
+    }
+
+    /// The trial ratchet's inputs, read from both stores. Shared by `status()`
+    /// and `install_token()` so a token is judged on the SAME
+    /// `max(wall, monotonic, floor)` clock as the trial — one ratchet, not two.
+    fn trial_inputs(&self, file: &LicenseFile) -> TrialInputs {
+        TrialInputs {
+            file_started_at_ms: file.trial_started_at_ms,
+            db_started_at_ms: parse_ms(self.store.get(DB_KEY_TRIAL_STARTED)),
+            file_floor_ms: file.max_seen_wall_ms,
+            db_floor_ms: parse_ms(self.store.get(DB_KEY_CLOCK_FLOOR)),
+            wall_now_ms: (self.now)(),
+            monotonic_now_ms: self.monotonic_now_ms(),
+        }
+    }
+
+    /// The highest accepted token `iat` across `license.json` and SQLite.
+    fn max_token_iat(&self, file: &LicenseFile) -> Option<i64> {
+        let db = parse_ms(self.store.get(DB_KEY_MAX_TOKEN_IAT));
+        match (file.max_token_iat, db) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Raise the token-`iat` ratchet in BOTH stores to at least `iat`. Returns
+    /// whether `file` changed (the caller writes it). Never lowers either one.
+    fn raise_token_iat(&self, file: &mut LicenseFile, iat: i64) -> bool {
+        let mut dirty = false;
+        if file.max_token_iat.is_none_or(|m| m < iat) {
+            file.max_token_iat = Some(iat);
+            dirty = true;
+        }
+        if parse_ms(self.store.get(DB_KEY_MAX_TOKEN_IAT)).is_none_or(|m| m < iat) {
+            self.store.set(DB_KEY_MAX_TOKEN_IAT, &iat.to_string());
+            log::info!("license_v2 iat_ratchet advanced max_iat={iat}");
+        }
+        dirty
     }
 
     /// The union of spent grace ids in BOTH stores, written back to whichever
@@ -1182,16 +1272,10 @@ impl LicenseManager {
     pub fn status(&self) -> LicenseStatus {
         let mut file = self.file.lock();
 
-        let db_started_at_ms = parse_ms(self.store.get(DB_KEY_TRIAL_STARTED));
-        let db_floor_ms = parse_ms(self.store.get(DB_KEY_CLOCK_FLOOR));
-        let trial = evaluate_trial(TrialInputs {
-            file_started_at_ms: file.trial_started_at_ms,
-            db_started_at_ms,
-            file_floor_ms: file.max_seen_wall_ms,
-            db_floor_ms,
-            wall_now_ms: (self.now)(),
-            monotonic_now_ms: self.monotonic_now_ms(),
-        });
+        let inputs = self.trial_inputs(&file);
+        let db_started_at_ms = inputs.db_started_at_ms;
+        let db_floor_ms = inputs.db_floor_ms;
+        let trial = evaluate_trial(inputs);
 
         // Persist the trial's start and the new clock floor to BOTH stores —
         // but only when the value has genuinely moved.
@@ -1251,14 +1335,58 @@ impl LicenseManager {
         // Re-verify the stored key from scratch, every time. There is no cached
         // answer to go stale, and no boolean anywhere that says "licensed".
         let stored = file.license_key.clone();
+        let stored_token = file.license_token.clone().filter(|t| !t.trim().is_empty());
         let has_stored_license = stored
             .as_deref()
             .map(str::trim)
-            .is_some_and(|s| !s.is_empty());
-        let (entitlement, problem) =
+            .is_some_and(|s| !s.is_empty())
+            || stored_token.is_some();
+        // yap-lic-01 — the v2 path: a stored drivia.consulting token, judged on
+        // the ratchet's clock and against the iat ratchet, EMBEDDED_KEYS only.
+        let max_iat = self.max_token_iat(&file);
+        let token_verdict = stored_token.as_deref().map(|t| {
+            (self.verify_token)(t, trial.effective_now_ms).and_then(|c| {
+                license_v2::check_iat(&c, max_iat)?;
+                Ok(c)
+            })
+        });
+        if let Some(Ok(c)) = &token_verdict {
+            // Also repairs a store that lost its copy of the ratchet.
+            if self.raise_token_iat(&mut file, c.iat.max(max_iat.unwrap_or(c.iat))) {
+                dirty = true;
+            }
+        }
+        self.log_token_verdict(token_verdict.as_ref());
+        let (v1_entitlement, v1_problem) =
             decide_entitlement(stored.as_deref(), &file.revoked_kids, &trial, |k| {
                 (self.verify)(k)
             });
+        let (entitlement, problem) = match token_verdict {
+            Some(Ok(c)) => (
+                Entitlement::Licensed {
+                    plan: c.plan,
+                    // A token is one activation on one device.
+                    seats: 1,
+                    kid: c.sub,
+                },
+                None,
+            ),
+            // A valid v1 license still wins over a refused token.
+            Some(Err(_)) if matches!(v1_entitlement, Entitlement::Licensed { .. }) => {
+                (v1_entitlement, v1_problem)
+            }
+            // Otherwise the token's refusal is the problem a human is shown.
+            Some(Err(e)) => (
+                match v1_entitlement {
+                    Entitlement::LicenseRequired { .. } => Entitlement::LicenseRequired {
+                        reason: e.code().to_string(),
+                    },
+                    other => other,
+                },
+                Some((e.code().to_string(), e.message().to_string())),
+            ),
+            None => (v1_entitlement, v1_problem),
+        };
 
         if dirty {
             write_license_file(&self.path, &file);
@@ -1305,6 +1433,11 @@ impl LicenseManager {
     /// never written to disk, so a bad paste cannot leave the app in a state
     /// where it looks licensed to a later, sloppier reader.
     pub fn activate(&self, license_key: &str) -> Result<LicenseStatus, VerifyError> {
+        // yap-lic-01 — a three-segment paste is a drivia.consulting token: the
+        // v2 path. A v1 key has two segments and continues below unchanged.
+        if license_v2::looks_like_token(license_key) {
+            return self.install_token(license_key).map_err(VerifyError::Token);
+        }
         let claims = (self.verify)(license_key)?;
         // A grace claim arrives through the same box the license does — support
         // emails a key, the customer pastes it where keys go. No second command,
@@ -1322,6 +1455,78 @@ impl LicenseManager {
             write_license_file(&self.path, &file);
         }
         Ok(self.status())
+    }
+
+    /// yap-lic-01 — store a drivia.consulting license token, but only after it
+    /// verifies against `license_v2::EMBEDDED_KEYS` on the trial ratchet's
+    /// clock AND its `iat` is not below the highest one already accepted. The
+    /// iat ratchet is raised in BOTH stores. yap-lic-02's client core is the
+    /// next caller (activation / refresh responses land here).
+    pub fn install_token(&self, token: &str) -> Result<LicenseStatus, TokenError> {
+        let started = Instant::now();
+        log::info!("license_v2 install start len={}", token.trim().len());
+        let verdict = {
+            let mut file = self.file.lock();
+            let now = evaluate_trial(self.trial_inputs(&file)).effective_now_ms;
+            let max_iat = self.max_token_iat(&file);
+            let verdict = (self.verify_token)(token, now).and_then(|c| {
+                license_v2::check_iat(&c, max_iat)?;
+                Ok(c)
+            });
+            if let Ok(c) = &verdict {
+                file.license_token = Some(token.trim().to_string());
+                file.activated_at_ms = Some((self.now)());
+                self.raise_token_iat(&mut file, c.iat);
+                write_license_file(&self.path, &file);
+            }
+            verdict
+        };
+        let dur_us = started.elapsed().as_micros();
+        match verdict {
+            Ok(c) => {
+                log::info!(
+                    "license_v2 install ok kid={} plan={} iat={} exp={} dur_us={dur_us}",
+                    c.kid,
+                    c.plan,
+                    c.iat,
+                    c.exp
+                );
+                Ok(self.status())
+            }
+            Err(e) => {
+                log::warn!(
+                    "license_v2 install refused code={} dur_us={dur_us}",
+                    e.code()
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Log the stored token's verdict when it CHANGES (status() runs on every
+    /// dictation start, so one line per press would be noise).
+    fn log_token_verdict(&self, verdict: Option<&Result<TokenClaims, TokenError>>) {
+        let code = verdict.map(|v| match v {
+            Ok(_) => "ok",
+            Err(e) => e.code(),
+        });
+        let mut last = self.last_token_code.lock();
+        if *last == code {
+            return;
+        }
+        match verdict {
+            Some(Ok(c)) => log::info!(
+                "license_v2 stored_token verdict=ok kid={} exp={}",
+                c.kid,
+                c.exp
+            ),
+            Some(Err(e)) => {
+                log::warn!("license_v2 stored_token verdict=refused code={}", e.code())
+            }
+            None if last.is_some() => log::info!("license_v2 stored_token verdict=none"),
+            None => {}
+        }
+        *last = code;
     }
 
     /// Spend a signed grace claim: clear the recorded clock floor in BOTH
@@ -1385,6 +1590,8 @@ impl LicenseManager {
     pub fn deactivate(&self) {
         let mut file = self.file.lock();
         file.license_key = None;
+        // The token goes too; `max_token_iat` stays (it is a ratchet).
+        file.license_token = None;
         file.activated_at_ms = None;
         write_license_file(&self.path, &file);
     }
