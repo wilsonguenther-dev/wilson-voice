@@ -294,7 +294,127 @@ signs anything they are expected to accept.
    late re-stage only delays private-window updates; it never hides a GitHub
    release from anyone.
 
-## Manual release (local, when CI can't sign)
+## Local release script (UPD-B — the normal path while Actions is off)
+
+`.github/workflows/release.yml` is the only other producer of `latest.json` and
+the minisign `.sig`, and Actions is disabled account-wide. So a release is cut on
+the Mac that holds the Developer ID certificate with one script:
+
+```bash
+# the updater key: the CONTENTS (or the path) of ~/.tauri/wilson-voice-v2.key, never committed
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/wilson-voice-v2.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.tauri/wilson-voice-v2.key.password)"
+export APPLE_ID=… APPLE_PASSWORD=… APPLE_TEAM_ID=…   # or APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH
+scripts/release-local.sh v0.9.3 --stage "$STAGE" --deploy
+```
+
+In order, it refuses to start unless the tree is clean, the tag equals the
+version in `tauri.conf.json` **and** `package.json`, `site/dist/index.html`
+already links `/downloads/Yap-<version>-arm64.dmg`, both keys and the
+notarization credentials are exported, and `scripts/sign-local.sh --identity`
+resolves the RELEASE profile (Developer ID — the SEC-A identity). Then it:
+
+1. stages the build the host serves **now** as the rollback (and refuses a
+   version that is not strictly newer — the app would never install it);
+2. runs `npm run desktop:build -- --bundles app dmg` (`app` is what yields the
+   updater triple — `createUpdaterArtifacts` makes `Yap.app.tar.gz` + `.sig`
+   only when the app bundle is a target; `dmg updater` deletes the `.app` and
+   makes no tarball; signs with that
+   identity; tauri notarizes and staples the `.app` because the Apple variables
+   are set; ends in the mandatory release smoke), and checks the `.app` is stapled;
+3. notarizes, staples, validates and Gatekeeper-assesses the DMG, and runs the
+   release smoke again on the stapled DMG;
+4. writes `latest.json` from the real `Yap.app.tar.gz.sig`, with its `url` on the
+   site host, and stages the DMG + `Yap.app.tar.gz` + `.sig` + `latest.json`
+   (`docs/DEPLOY-SITE.md`), then verifies the staged tree offline against
+   `plugins.updater.pubkey`;
+5. with `--deploy`: deploys per `docs/DEPLOY-SITE.md` and runs
+   `--verify-endpoint-or-name-the-reason --expect-version <v> --require-rollback`
+   against the live host. Without `--deploy` it stops after staging and prints
+   that command.
+
+The live check is also usable on its own, any time:
+
+```bash
+scripts/release-local.sh --verify-endpoint-or-name-the-reason
+```
+
+It verifies the minisign signature (key id, the Ed25519 signature over the
+BLAKE2b-prehashed tarball, and the trusted-comment signature) in pure Python,
+with no `minisign` install needed. Offline it prints `SKIP: offline — <reason>`
+and exits 0 — a named skip, never a quiet pass — but only in the bare form: with
+`--expect-version` or `--require-rollback` an offline run exits 1, because an
+assertion nothing checked is a failure. The script does **not** create a
+GitHub release; the GitHub endpoint is the fallback, and the app takes the
+newest version across both endpoints, so a GitHub release that lags only matters
+while the site host is down.
+
+**Updater state shipped with UPD-B: ENABLED.** A manifest *is* published on the
+primary (`https://yap-lemon.vercel.app/updates/latest.json`, v0.9.2, signature
+verified against the committed pubkey by the command above), so the check stays
+pointed at it. If that endpoint ever stops serving a verifiable manifest, the
+updater check must ship disabled rather than pointed at a 404.
+
+## Rollback
+
+The host always keeps **one** previous known-good build next to the current one,
+staged by every release (`scripts/release-local.sh` stages it itself; the GitHub
+path runs `--stage-rollback`):
+
+```
+downloads/Yap-<current>-arm64.dmg        downloads/Yap-<previous>-arm64.dmg   <- the rollback DMG
+updates/latest.json (+ tarball + .sig)   updates/rollback/latest.json (+ Yap.app.tar.gz + .sig)
+```
+
+The rollback manifest's `url` points at `updates/rollback/Yap.app.tar.gz`, and
+its signature was verified against `plugins.updater.pubkey` before it was
+staged, so it is a complete, servable updater triple for the previous version.
+
+**The updater never downgrades.** It installs a version only when it is strictly
+greater than the running one. So a rollback has two halves:
+
+1. **Stop the bad build spreading** (copies still on the previous version must
+   not take it). Re-point the live manifest at the known-good build — the
+   fastest way is Vercel's own rollback to the previous production deployment,
+   which restores the previous `latest.json` and tarball byte for byte:
+
+   ```bash
+   set -a; . ~/.config/drivia/drivia-accounts.env; set +a
+   vercel ls yap --yes --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
+   vercel rollback <previous-production-url> --yes --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
+   ```
+
+   Or, without Vercel's history, stage a fresh directory whose `updates/` is a
+   copy of `updates/rollback/` (`latest.json`, `Yap.app.tar.gz`, `.sig` — rewrite
+   the manifest `url` back to `/updates/Yap.app.tar.gz`), point the three
+   Download `href`s at the previous DMG, and deploy it.
+
+   **The primary is not the only endpoint.** The app asks every
+   `plugins.updater.endpoints` entry and installs the **newest** offer
+   (`lib.rs` `check_every_endpoint` -> `pick_newest_offer`), so if the bad
+   version is also on the GitHub fallback (`releases/latest/download/latest.json`),
+   pull it there too — delete that release's `latest.json` asset, or mark the
+   previous release as latest — or the bad build keeps spreading. Then confirm:
+   `scripts/release-local.sh --verify-endpoint-or-name-the-reason --expect-version <previous>`.
+   With `--expect-version` that check fails unless the newest version offered
+   across **all** endpoints is `<previous>`, and fails if any endpoint did not
+   answer — including when none answered — or a fallback errored with anything
+   other than a definite HTTP 404 (the effective offer is then unknown).
+
+2. **Downgrade a Mac that already took the bad build.** No in-app path exists,
+   by design. On that Mac: quit Yap, download
+   `https://yap-lemon.vercel.app/downloads/Yap-<previous>-arm64.dmg`, open it and
+   drag Yap onto Applications, replacing the newer copy. Same bundle id and same
+   Developer ID signature, so Microphone / Accessibility / Input Monitoring grants
+   survive and the history database is untouched (the data directory never
+   changes). The next update check offers nothing until a newer version ships.
+
+3. **Fix forward.** Cut the fix as a **new, higher** version from the known-good
+   commit (or the fix) and release it normally — that is the only way to move
+   every installed copy off the bad build automatically. Never re-use or lower a
+   version number.
+
+## Manual release (by hand, when the script cannot be used)
 
 Used when notarizing from the Mac that holds the Developer ID cert. Build
 through `npm run desktop:build` — never a bare `npx tauri build` — because that

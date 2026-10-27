@@ -80,6 +80,36 @@ CLI applies it to the uploaded directory too. Files must therefore sit at
 `$STAGE` and the build fails (or serves nothing) because `site/dist` does not
 exist in the upload.
 
+Every deploy stages **four release files**, never just the DMG: the DMG under
+`downloads/`, and `Yap.app.tar.gz`, `Yap.app.tar.gz.sig` and `latest.json`
+under `updates/`. The installed app updates from the tarball + `.sig` that
+`latest.json` names — not from the DMG — so a deploy that ships the DMG alone
+leaves every installed copy reporting "up to date" forever. Every deploy also
+stages the build the host is serving **now** as the rollback
+(`updates/rollback/` + its DMG under `downloads/`, see `docs/RELEASE.md` →
+*Rollback*).
+
+**Local release (UPD-B — the path while Actions is off).** One command builds,
+signs, notarizes, staples, writes `latest.json` from the real `.sig`, and stages
+all four plus the rollback, then verifies the staged tree against
+`plugins.updater.pubkey`:
+
+```bash
+TAG=v0.9.3; VER=${TAG#v}                       # the tag you are shipping
+STAGE=$(mktemp -d)/yap-site
+OUT="$STAGE/site/dist"
+scripts/release-local.sh "$TAG" --stage "$STAGE"   # add --deploy to also run the Deploy step + live verify
+# what it staged — the same four files, copied from desktop's bundle dir (B):
+#   cp site/dist/{*.html,*.css,*.woff2,DepartureMono-LICENSE.txt,vercel.json} "$OUT/"
+#   cp "$B/dmg/Yap_${VER}_aarch64.dmg"   "$OUT/downloads/Yap-$VER-arm64.dmg"
+#   cp "$B/macos/Yap.app.tar.gz"          "$OUT/updates/Yap.app.tar.gz"
+#   cp "$B/macos/Yap.app.tar.gz.sig"      "$OUT/updates/Yap.app.tar.gz.sig"
+#   latest.json -> "$OUT/updates/latest.json"   (url = https://yap-lemon.vercel.app/updates/Yap.app.tar.gz)
+#   the live build -> "$OUT/updates/rollback/" + "$OUT/downloads/Yap-<previous>-arm64.dmg"
+```
+
+**From a GitHub release** (a tag built by `release.yml`, when Actions runs):
+
 ```bash
 TAG=v0.9.1; VER=${TAG#v}                       # the tag you are shipping
 STAGE=$(mktemp -d)/yap-site
@@ -88,8 +118,21 @@ mkdir -p "$OUT/downloads"
 cp site/dist/*.html site/dist/*.css site/dist/*.woff2 \
    site/dist/DepartureMono-LICENSE.txt site/dist/vercel.json "$OUT/"
 gh release download "$TAG" --repo wilsonguenther-dev/wilson-voice \
-  --pattern "Yap-$VER-arm64.dmg" --dir "$OUT/downloads"
-scripts/stage-updater-manifest.sh "$TAG" "$OUT"   # writes $OUT/updates/
+  --pattern "Yap-$VER-arm64.dmg" --dir "$OUT/downloads"          # 1. the DMG
+scripts/stage-updater-manifest.sh "$TAG" "$OUT"   # 2-4. updates/latest.json + Yap.app.tar.gz + Yap.app.tar.gz.sig
+scripts/release-local.sh --stage-rollback "$OUT"  # the live build -> updates/rollback/ + its DMG
+scripts/release-local.sh --verify-staged "$OUT" "$VER"   # all four + rollback, against the pubkey
+```
+
+After **either** deploy, verify the live endpoint over the network — it fetches
+`latest.json` from every `plugins.updater.endpoints` entry, downloads the tarball
+each one names, and verifies the signature against the pubkey committed in
+`tauri.conf.json`, exactly as the installed app does. Offline, the bare form exits
+0 with a `SKIP: offline — <reason>` line, never silently; with `--expect-version`
+or `--require-rollback` (as below) offline is a FAIL, exit 1:
+
+```bash
+scripts/release-local.sh --verify-endpoint-or-name-the-reason --expect-version "$VER" --require-rollback
 ```
 
 Verify the asset you just staged is the asset that was notarized, before it goes
