@@ -1164,7 +1164,7 @@ html[data-dock="right"] .phase-strip {
   cursor: pointer;
 }
 .nudge-close:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
-.nudge-close:focus-visible { outline: 2px solid #9db6ff; outline-offset: 1px; }
+/* Y5-J — .nudge-close focus ring: drawn once, globally, by src/a11y/focus.css. */
 /* Side docks: the same row, flush to the edge the window is parked against. */
 html[data-dock="left"] .nudge-row { left: 10px; right: auto; transform: none; }
 html[data-dock="right"] .nudge-row { left: auto; right: 10px; transform: none; }
@@ -1281,8 +1281,8 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   width: 12px;
   height: 12px;
 }
-.slot:hover,
-.slot:focus-visible {
+/* Y5-J: keyboard focus is the global ring (a11y/focus.css); hover tints. */
+.slot:hover {
   background: rgba(255, 255, 255, 0.18);
 }
 .slot.readout {

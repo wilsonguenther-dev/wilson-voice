@@ -355,7 +355,9 @@ export function FlowBarSlots(
               role="img"
               aria-label={tip}
               style={style}
-              onClick={(e) => e.stopPropagation()}
+              // A readout is not an action (Y5-J): it only keeps a click on it
+              // from reaching the capsule, which would start a dictation.
+              onClickCapture={(e) => e.stopPropagation()}
             >
               {slot.glyph(ctx)}
               {tipEl}
