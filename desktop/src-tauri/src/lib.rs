@@ -7203,6 +7203,21 @@ pub fn run() {
                     )),
                 ))
             }),
+            // The warm Silero session loaded at startup (YV36). Read at JOB
+            // time, not here: the model downloads in the background, so a
+            // meeting that finishes before it is ready plans on the fixed
+            // clock and says so, rather than the pipeline waiting on it.
+            vad: {
+                let vad_state = state.clone();
+                Arc::new(move || {
+                    vad_state
+                        .vad
+                        .lock()
+                        .clone()
+                        .map(|v| v as Arc<dyn meeting_asr::VoiceActivity + Send + Sync>)
+                        .ok_or_else(|| "the Silero VAD is not loaded".to_string())
+                })
+            },
             demand: Arc::new(state.transcription.clone()),
             quit: Arc::new(|| false),
             sink: Arc::new(|event: &meeting_pipeline::MeetingProgressEvent| {

@@ -108,6 +108,7 @@ fn deps(
     PipelineDeps {
         db,
         progress_dir: dir.to_path_buf(),
+        vad: Arc::new(|| Err("no VAD in this test".to_string())),
         asr: Arc::new(move || {
             Ok(MeetingEngine::new(
                 "stub-asr",
