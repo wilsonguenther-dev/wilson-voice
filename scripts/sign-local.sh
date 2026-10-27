@@ -52,8 +52,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DESKTOP="$ROOT/desktop"
 SRC="$DESKTOP/src-tauri"
 ENT="$SRC/Entitlements.plist"
-# yap24-OS4 — every bundled sidecar is signed on its own with its OWN
-# entitlements (never the app's microphone grant), before the bundle itself.
+# yap24-OS4 — in this script's default SIGN mode, every bundled sidecar is
+# signed on its own with its OWN entitlements (no microphone grant), before the
+# bundle itself. SCOPE: that is the only path that reads entitlements/*.plist.
+# `tauri build` (--tauri-build below, desktop:build, release.yml tauri-action,
+# scripts/test-build.sh) has tauri-bundler sign every externalBin with the APP's
+# Entitlements.plist, so a Tauri-built / DMG sidecar carries the app's
+# entitlements, device.audio-input included. verify_bundle reports which.
 SIDECAR_ENT_DIR="$SRC/entitlements"
 SIDECARS=(yap-polish yap-diarize)
 # The hardened runtime is ON for every signature this script makes. Without
@@ -160,13 +165,22 @@ verify_bundle() {
   fi
   # yap24-OS4: the hardened runtime must actually be ON — the flag, read back.
   grep -q 'flags=0x10000(runtime)' <<<"$info" || die "signature does not carry flags=0x10000(runtime) — the hardened runtime is off, so notarization fails and every cs.* entitlement is inert."
-  local s bin sinfo
+  local s bin sinfo sents
   for s in "${SIDECARS[@]}"; do
     bin="$app/Contents/MacOS/$s"
     [[ -f "$bin" ]] || die "sidecar $s missing from $app/Contents/MacOS (bundle.externalBin declares it)."
     sinfo="$(codesign -dv --verbose=4 "$bin" 2>&1)"
     grep -q 'Signature=adhoc' <<<"$sinfo" && die "sidecar $s is AD-HOC signed."
     grep -q 'flags=0x10000(runtime)' <<<"$sinfo" || die "sidecar $s does not carry flags=0x10000(runtime)."
+    sents="$(codesign -d --entitlements :- --xml "$bin" 2>/dev/null || true)"
+    if grep -q 'com.apple.security.device.audio-input' <<<"$sents"; then
+      # Sign mode signed this sidecar with its own (empty) file a moment ago,
+      # so the microphone grant here means that step did not take.
+      [[ "$MODE" == "sign" ]] && die "sidecar $s carries device.audio-input after sign mode signed it with $SIDECAR_ENT_DIR/$s.plist."
+      echo "sidecar $s: carries the app's Entitlements.plist (device.audio-input) — tauri-bundler signs every externalBin with the app's file; entitlements/$s.plist applies only to sign mode"
+    else
+      echo "sidecar $s: no device.audio-input"
+    fi
     echo "sidecar $s: runtime on, $(grep -c '^Authority=' <<<"$sinfo") authorities"
   done
   echo "verify: OK — ${PROFILE} profile, ${IDENTITY_CLASS}, not adhoc, sandbox off, hardened runtime on"
@@ -211,6 +225,8 @@ if [[ "$MODE" == "sign" ]]; then
   # Inside-out, never deep signing (yap24-OS4): deep signing stamps the APP's
   # entitlements onto every nested binary, so each sidecar would inherit the
   # microphone grant. Each sidecar gets its own file, then the bundle seals them.
+  # A bundle without both sidecars is refused here (the app spawns them from
+  # Contents/MacOS); scripts/rebuild_app.sh copies them in before calling this.
   for s in "${SIDECARS[@]}"; do
     [[ -f "$APP/Contents/MacOS/$s" ]] || die "sidecar $s missing from $APP/Contents/MacOS"
     [[ -f "$SIDECAR_ENT_DIR/$s.plist" ]] || die "no entitlements file for sidecar $s at $SIDECAR_ENT_DIR/$s.plist"

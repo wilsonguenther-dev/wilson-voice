@@ -78,7 +78,9 @@ unsigned app). After signing it verifies with `codesign -dv --verbose=4` and
 carries no `Authority=` chain, shows `com.apple.security.app-sandbox` as true, or
 is missing `flags=0x10000(runtime)` on the app or either sidecar (see
 [Entitlement audit](#entitlement-audit)).
-`scripts/rebuild_app.sh` calls it rather than repeating the incantation.
+`scripts/rebuild_app.sh` calls it rather than repeating the incantation, and
+copies both staged sidecars (`desktop/src-tauri/binaries/<name>-<triple>`) into
+the bundle first; it checks they are staged before it touches the installed app.
 
 **Never enable the App Sandbox.** It silently kills the CGEvent tap, the
 synthesized Cmd-V and `AXIsProcessTrusted`, and the failure looks exactly like a
@@ -100,15 +102,30 @@ entitlements are inert when the runtime is off, so an audit run on a
 runtime-off signature passes every removal vacuously — which is exactly what
 the first draft of this item would have measured.
 
-Signing is **inside-out, never deep**. Deep signing stamps the APP's
-entitlements (including the microphone grant) onto every nested binary. Each
-sidecar is signed first with its own file, then the bundle seals them:
+**Which file signs which binary depends on the path.** `scripts/sign-local.sh`'s
+default sign mode (re-signing an existing bundle, and what `scripts/rebuild_app.sh`
+calls) is **inside-out, never deep**: deep signing stamps the APP's entitlements
+(including the microphone grant) onto every nested binary, so each sidecar is
+signed first with its own file, then the bundle seals them. Every `tauri build`
+path (`npm run desktop:build` = `sign-local.sh --tauri-build`, `release.yml` →
+`tauri-action`, `scripts/test-build.sh`) is different: tauri-bundler signs the
+app **and every `externalBin`** with `Entitlements.plist` and never reads
+`entitlements/*.plist`. **So the shipped DMG's sidecars carry the app's
+entitlements, `device.audio-input` included** (read back from an installed
+Tauri-built `/Applications/Yap.app` in the PR #262 review). This item does not
+change that; `verify_bundle` prints, per sidecar, whether it carries
+`device.audio-input`, and fails in sign mode if it does.
 
-| binary | entitlements file | grants |
+| binary | `sign-local.sh` sign mode: file → grants | `tauri build` / DMG: file → grants |
 |---|---|---|
-| `wilson-voice` (the app) | `desktop/src-tauri/Entitlements.plist` | `device.audio-input`, `app-sandbox` = false |
-| `yap-polish` (llama.cpp + Metal) | `desktop/src-tauri/entitlements/yap-polish.plist` | nothing |
-| `yap-diarize` (sherpa-onnx, CPU) | `desktop/src-tauri/entitlements/yap-diarize.plist` | nothing |
+| `wilson-voice` (the app) | `Entitlements.plist` → `device.audio-input`, `app-sandbox` = false | `Entitlements.plist` → same |
+| `yap-polish` (llama.cpp + Metal) | `entitlements/yap-polish.plist` → nothing | `Entitlements.plist` → `device.audio-input`, `app-sandbox` = false |
+| `yap-diarize` (sherpa-onnx, CPU) | `entitlements/yap-diarize.plist` → nothing | `Entitlements.plist` → `device.audio-input`, `app-sandbox` = false |
+
+Because the Tauri path stamps `Entitlements.plist` onto the sidecars, removing
+the two JIT keys from it removes them from the DMG sidecars too; the sidecar
+rows of the experiment below (signed with empty files, a strict subset) cover
+that.
 
 `app-sandbox` stays present and false (Wilson's rule: utility apps are never
 sandboxed). The dylib-injection pair (`cs.disable-library-validation`,

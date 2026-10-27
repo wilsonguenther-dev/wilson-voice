@@ -6,10 +6,15 @@
 	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!-- The APP binary only (scripts/sign-local.sh signs inside-out, no deep
-	     signing; the yap-polish / yap-diarize sidecars carry their own files
-	     under entitlements/). The hardened runtime is ON for every signed build
-	     (codesign options runtime, flags=0x10000(runtime)).
+	<!-- WHO GETS THIS FILE. Under `tauri build` (desktop:build via
+	     scripts/sign-local.sh tauri-build mode, release.yml tauri-action,
+	     scripts/test-build.sh) tauri-bundler signs the app AND every
+	     bundle.externalBin with this file, so the shipped DMG's yap-polish and
+	     yap-diarize sidecars carry these same entitlements, device.audio-input
+	     included. Only scripts/sign-local.sh's default sign mode (re-signing an
+	     existing bundle, inside-out, no deep signing) gives the sidecars their
+	     own files under entitlements/. The hardened runtime is ON on both paths
+	     (flags=0x10000(runtime), read back by sign-local's verify step).
 
 	     yap24-OS4: cs.allow-jit and cs.allow-unsigned-executable-memory are NOT
 	     granted. scripts/qa/entitlement-diet.sh signs one variant per removed

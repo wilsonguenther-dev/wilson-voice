@@ -186,9 +186,13 @@ fn jit_entitlements_are_absent_from_the_app() {
     }
 }
 
-/// yap24-OS4 — each sidecar carries its OWN entitlements and is signed on its
-/// own (no deep signing), so neither inherits the app's microphone grant nor any
-/// runtime-weakening key.
+/// yap24-OS4 — the sidecar entitlement files stay empty. SCOPE: these files are
+/// read only by `scripts/sign-local.sh`'s default sign mode, which signs each
+/// sidecar on its own (no deep signing) so it carries no microphone grant and no
+/// runtime-weakening key. `tauri build` (desktop:build, release.yml,
+/// test-build.sh) ignores them: tauri-bundler signs every externalBin with the
+/// app's Entitlements.plist, so the DMG sidecars carry the app's entitlements.
+/// This test asserts the files, not the shipped DMG.
 #[test]
 fn sidecars_have_their_own_minimal_entitlements() {
     for sidecar in ["yap-polish", "yap-diarize"] {
@@ -242,4 +246,35 @@ fn sign_local_uses_the_hardened_runtime_and_never_deep_signs() {
     }
     assert!(script.contains("RUNTIME_FLAGS=(--options runtime --timestamp)"));
     assert!(script.contains("flags=0x10000(runtime)"));
+}
+
+/// yap24-OS4 (PR #262 review, BLOCKING 1) — `scripts/rebuild_app.sh` hand-builds
+/// a bundle and hands it to `sign-local.sh`'s sign mode, which refuses a bundle
+/// without both sidecars. The script must therefore copy both staged sidecars
+/// into Contents/MacOS before signing, and must check they are staged BEFORE it
+/// deletes the installed app (otherwise a failed sign leaves /Applications with
+/// an app carrying only the linker's ad-hoc signature).
+#[test]
+fn rebuild_app_bundles_both_sidecars_before_signing() {
+    let path = src_tauri().join("../../scripts/rebuild_app.sh");
+    let script = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let pos = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("rebuild_app.sh is missing `{needle}`"))
+    };
+    let sidecar_list = pos("SIDECARS=(yap-polish yap-diarize)");
+    let staged_check = pos(r#"[[ -x "$SRC/binaries/$s-$TRIPLE" ]]"#);
+    let destructive_rm = pos(r#"rm -rf "$HOME/Desktop/Wilson Voice.app""#);
+    let copy_in = pos(r#"cp -f "$SRC/binaries/$s-$TRIPLE" "$APP_SRC/Contents/MacOS/$s""#);
+    let sign = pos(r#""$SIGN" "$APP_DST""#);
+    assert!(
+        sidecar_list < staged_check && staged_check < destructive_rm,
+        "the staged-sidecar check must run before the installed app is deleted"
+    );
+    assert!(
+        copy_in < sign,
+        "both sidecars must be copied into the bundle before sign-local.sh signs it"
+    );
 }
