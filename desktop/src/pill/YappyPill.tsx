@@ -66,6 +66,9 @@ export const YAPPY_PHASE_ART: PhaseArtTable = {
   gated: { sprite: "face-locked", motion: "still" },
   waiting: { sprite: "face-ear", motion: "breathe" },
   blocked: { sprite: "face-deaf", motion: "still" },
+  // yap24-PILL3 — fn cannot reach Yappy, but Yappy is fine: the ear face,
+  // held still, not the deaf one `blocked` (the MIC) wears.
+  blind: { sprite: "face-ear", motion: "still" },
 };
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
@@ -327,6 +330,8 @@ export default function YappyPill(
       // cancelled take is not a failure, so it deliberately does not borrow the
       // red `error` accent it would be easiest to reach for.
       cancelled: "230 20% 60%",
+      // yap24-PILL3 — the calm slate: fn is blocked, dictation is not.
+      blind: "230 20% 60%",
     };
     // listening → prop comes from the live state machine (escalates with actual
     // speech); thinking/done → keyed off the transcript word count

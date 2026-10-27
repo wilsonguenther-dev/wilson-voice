@@ -11,6 +11,15 @@
       "left": { "width": 8, "height": 40 },
       "right": { "width": 8, "height": 40 }
     },
+    "blind": {
+      "wispr": null,
+      "orientation": "banner",
+      "yap_only": true,
+      "why": "yap24-PILL3: the resting bar with the fn key blocked by Secure Input. Idle's 40x8 box, but a BANNER at every dock: its phase-strip sentence (holder + chord) wraps to three lines and has to sit ABOVE the capsule. Beside a column it overlapped any capsule wider than the 8 px column (caught by the pill matrix).",
+      "bottom": { "width": 40, "height": 8 },
+      "left": { "width": 40, "height": 8 },
+      "right": { "width": 40, "height": 8 }
+    },
     "sleepy": {
       "wispr": "resting",
       "orientation": "strip",

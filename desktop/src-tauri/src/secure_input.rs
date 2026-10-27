@@ -152,6 +152,31 @@ impl SecureInputStatus {
     }
 }
 
+/// yap24-PILL3 — the holder macOS reports at the LOCK SCREEN. Wilson's logs
+/// show `loginwindow` as the most frequent Secure Input owner by far, and it
+/// only holds it while the screen is locked — when the pill is not visible
+/// and there is no fn press to rescue. Reporting it painted the pill and the
+/// tray with a warning nobody could act on and wrote most of the 100+ WARN
+/// lines, so a `loginwindow` hold is logged at INFO and never reported.
+pub const IGNORED_HOLDER: &str = "loginwindow";
+
+/// The app name inside a [`SecureInputStatus::culprit`] string
+/// (`"Google Chrome (pid 431)"` -> `"Google Chrome"`). The pill names the APP,
+/// never a pid: "fn is blocked by Google Chrome's secure field".
+pub fn holder_app(culprit: &str) -> &str {
+    match culprit.rfind(" (pid ") {
+        Some(i) if culprit.ends_with(')') => &culprit[..i],
+        _ => culprit,
+    }
+}
+
+/// yap24-PILL3 dwell rule — is an engaged hold worth SHOWING? Every holder is
+/// except [`IGNORED_HOLDER`]. An unknown holder (`None`) is reported: macOS
+/// often hides the pid, and the fn tap is just as blind either way.
+pub fn reportable_holder(culprit: Option<&str>) -> bool {
+    culprit.is_none_or(|c| holder_app(c) != IGNORED_HOLDER)
+}
+
 #[cfg(target_os = "macos")]
 mod sys {
     use std::process::Command;
@@ -253,20 +278,34 @@ where
                 let status = match transition {
                     Transition::Engaged => {
                         let culprit = sys::culprit();
-                        match &culprit {
-                            Some(c) => log::warn!(
-                                "Secure Input ENABLED by {c} — the fn PTT event tap is blind; \
-                                 fn / fn⌃ cannot start a take until it is released"
-                            ),
-                            None => log::warn!(
-                                "Secure Input ENABLED (holder not exposed by macOS) — the fn PTT \
-                                 event tap is blind; fn / fn⌃ cannot start a take until it is \
-                                 released"
-                            ),
-                        }
-                        SecureInputStatus {
-                            blocked: watchdog.blocked(),
-                            culprit,
+                        if !reportable_holder(culprit.as_deref()) {
+                            // yap24-PILL3: the lock screen. Logged once per hold,
+                            // never shown; the watchdog stays Blocked, so this
+                            // does not re-fire until a released sample clears it.
+                            log::info!(
+                                "secure_input engaged owner={IGNORED_HOLDER} reported=false \
+                                 reason=lock_screen"
+                            );
+                            SecureInputStatus {
+                                blocked: false,
+                                culprit: None,
+                            }
+                        } else {
+                            match &culprit {
+                                Some(c) => log::warn!(
+                                    "Secure Input ENABLED by {c} — the fn PTT event tap is blind; \
+                                     fn / fn⌃ cannot start a take until it is released"
+                                ),
+                                None => log::warn!(
+                                    "Secure Input ENABLED (holder not exposed by macOS) — the fn \
+                                     PTT event tap is blind; fn / fn⌃ cannot start a take until \
+                                     it is released"
+                                ),
+                            }
+                            SecureInputStatus {
+                                blocked: watchdog.blocked(),
+                                culprit,
+                            }
                         }
                     }
                     Transition::Cleared => {
@@ -291,7 +330,49 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{SecureInputStatus, Transition, Watchdog, BLOCKED_MESSAGE, SUSTAIN_SAMPLES};
+    use super::{
+        holder_app, reportable_holder, SecureInputStatus, Transition, Watchdog, BLOCKED_MESSAGE,
+        POLL_INTERVAL, SUSTAIN_SAMPLES,
+    };
+
+    /// yap24-PILL3 — the lock screen's hold is never shown; every other
+    /// holder, and an unknown one, is.
+    #[test]
+    fn loginwindow_is_never_reported_and_every_other_holder_is() {
+        assert!(!reportable_holder(Some("loginwindow (pid 152)")));
+        assert!(!reportable_holder(Some("loginwindow")));
+        assert!(reportable_holder(Some("Google Chrome (pid 431)")));
+        assert!(reportable_holder(Some("Terminal (pid 9)")));
+        assert!(reportable_holder(None));
+    }
+
+    #[test]
+    fn holder_app_drops_the_pid_and_keeps_names_with_parentheses() {
+        assert_eq!(holder_app("Google Chrome (pid 431)"), "Google Chrome");
+        assert_eq!(holder_app("1Password 7"), "1Password 7");
+        assert_eq!(holder_app("Foo (Beta) (pid 2)"), "Foo (Beta)");
+    }
+
+    /// yap24-PILL3 dwell rule: a Secure Input blip shorter than one poll
+    /// (a Chrome password field focused for 500 ms) is at most ONE positive
+    /// sample, and one sample never engages — so the pill cannot flicker.
+    /// Engaging needs SUSTAIN_SAMPLES consecutive samples, i.e. a hold of at
+    /// least one full POLL_INTERVAL (>= 1 s).
+    #[test]
+    fn a_half_second_blip_never_engages_and_a_sustained_hold_needs_a_full_poll() {
+        assert!(POLL_INTERVAL.as_millis() * u128::from(SUSTAIN_SAMPLES - 1) >= 1_000);
+        let mut w = Watchdog::new();
+        assert_eq!(w.observe(true), None, "500 ms blip: one positive sample");
+        assert_eq!(w.observe(false), None);
+        assert!(!w.blocked());
+        assert_eq!(w.observe(true), None);
+        assert_eq!(w.observe(true), Some(Transition::Engaged));
+        assert_eq!(
+            w.observe(false),
+            Some(Transition::Cleared),
+            "clears on the first released sample"
+        );
+    }
 
     /// The whole point of the sustain window: a password field that takes focus
     /// between two polls must never put a banner on screen.

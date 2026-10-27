@@ -794,6 +794,17 @@ pub struct AppStatus {
     /// The holder + workaround line for the banner. `None` when not blocked.
     #[serde(default)]
     pub secure_input_detail: Option<String>,
+    /// yap24-PILL3 — the holding APP's name alone (`"Google Chrome"`, no pid),
+    /// for the pill's one-line blind state: "fn is blocked by <app>'s secure
+    /// field — <chord> still works". `None` when not blocked or not exposed.
+    #[serde(default)]
+    pub secure_input_app: Option<String>,
+    /// yap24-PILL3 — the Carbon dictate chord is REALLY registered, so the
+    /// pill may say "<dictate_toggle_label> still works" under Secure Input
+    /// (hotkeys.rs: Carbon hotkeys are delivered while Secure Input is on).
+    /// False means the pill must not promise the chord.
+    #[serde(default)]
+    pub dictate_chord_registered: bool,
     /// YV80 — the ASR engine is being loaded right now. Since the load is lazy
     /// by default this is true for the first take of a session, between the
     /// user releasing their key and the decode starting, and the UI SAYS so
@@ -1259,6 +1270,7 @@ fn build_status(state: &AppState) -> AppStatus {
     hotkeys_now.fn_tap =
         hotkeys::effective_fn_tap(&hotkeys_now.fn_tap, secure.blocked, secure.culprit.as_deref());
     let (_, dictate_toggle_label) = hotkeys::active_dictate();
+    let dictate_chord_registered = matches!(hotkeys_now.carbon, hotkeys::CarbonStatus::Registered);
     let probe = OsPermissionProbe;
     let hotkey_degraded = hotkeys::degraded_line(
         &hotkeys_now.carbon,
@@ -1287,6 +1299,12 @@ fn build_status(state: &AppState) -> AppStatus {
         model_ready: ready,
         secure_input_blocked: secure.blocked,
         secure_input_detail: secure.blocked.then(|| secure.detail()),
+        secure_input_app: secure
+            .culprit
+            .as_deref()
+            .filter(|_| secure.blocked)
+            .map(|c| secure_input::holder_app(c).to_string()),
+        dictate_chord_registered,
         engine_loading,
         tap_health_message,
         still_recording,

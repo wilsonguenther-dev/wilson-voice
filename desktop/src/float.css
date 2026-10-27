@@ -966,7 +966,18 @@ html[data-phase="pasting"] .phase-strip,
 html[data-phase="thinking"] .phase-strip,
 html[data-phase="empty"] .phase-strip,
 html[data-phase="cancelled"] .phase-strip,
-html[data-phase="error"] .phase-strip { opacity: 1; }
+html[data-phase="error"] .phase-strip,
+html[data-phase="blind"] .phase-strip { opacity: 1; }
+/* yap24-PILL3 — the blind sentence names an app AND a chord, so it is the one
+   strip line allowed to WRAP (up to three lines inside the strip's width)
+   rather than be cut by the ellipsis: "fn is blocked by Google Chrome's secure
+   field — ⌃⌥⌘Space still works" truncated to "fn is blocked by Goo…" would hide
+   the only part the user can act on. */
+html[data-phase="blind"] .phase-strip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: rgba(253, 230, 138, 0.9);
+}
 /* yap-hotkey-stop DO 4 — the still-recording prompt is only ever set during a
    live take, i.e. in the `listening` phase, which the list above deliberately
    keeps silent. Without this rule the prompt is written into an invisible

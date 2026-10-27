@@ -26,8 +26,11 @@ import {
   acceptProgress,
   errorSentence,
   phaseCopy,
+  blindFromStatus,
+  blindLine,
   reduceGatePhase,
   reduceTakePhase,
+  withBlind,
   stripLine,
   FN_HINT_EVENT,
   FN_HINT_SHOW_MS,
@@ -39,6 +42,8 @@ import {
   GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
+  type BlindState,
+  type BlindStatusSlice,
   type LivePhase,
   type TakeStatus,
   type TranscribeProgress,
@@ -126,7 +131,7 @@ interface ProgressNotice { chunk?: number; of?: number; words_so_far?: number }
  * field already exists on the event the pill has always listened to; the phase
  * is DERIVED from them, never announced by a new one.
  */
-interface BackendStatus {
+interface BackendStatus extends BlindStatusSlice {
   recording?: boolean;
   busy?: boolean;
   /**
@@ -195,6 +200,11 @@ function Float() {
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
   // says so (throttled) and the strip shows it for FN_HINT_SHOW_MS.
   const [fnHint, setFnHint] = useState<string | null>(null);
+  // yap24-PILL3 — the fn key cannot hear the user (Secure Input). Derived from
+  // the status payload alone (secure_input.rs's 2 s poll owns the dwell and the
+  // loginwindow rule), so it clears the moment the status does; ranked
+  // against the take once, below, by `withBlind` (rest only, never a take).
+  const [blind, setBlind] = useState<BlindState | null>(null);
   useEffect(() => {
     let dead = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -324,6 +334,13 @@ function Float() {
       if (!st) return;
       setLastErrorCode(st.lastError ? st.lastErrorCode ?? "take_failed" : null);
       setStillRecording(!!st.recording && !!st.stillRecording);
+      const nextBlind = blindFromStatus(st);
+      // Keep the same object while nothing changed: every status emit (HUD
+      // cadence while recording) would otherwise re-render the shell.
+      setBlind((prev) =>
+        prev === null || nextBlind === null
+          ? nextBlind
+          : prev.app === nextBlind.app && prev.chord === nextBlind.chord ? prev : nextBlind);
       const status: TakeStatus = {
         recording: !!st.recording,
         busy: !!st.busy,
@@ -399,7 +416,8 @@ function Float() {
   // a press did nothing.
   // yap24-UI3 — a forced phase (dev-only, see FORCED) replaces the derived one
   // wholesale; every consumer below reads `phase`, so nothing else changes.
-  const phase = FORCED ? FORCED.phase : winningPhase(gate, take);
+  const phase = FORCED ? FORCED.phase : withBlind(winningPhase(gate, take), blind);
+  const blindNow = FORCED ? FORCED.blind : blind;
   const chatTone = toChatTone(tone);
   useEffect(() => {
     // The phase rides on <html> beside the dock and the license, for the same
@@ -466,7 +484,9 @@ function Float() {
   //
   // `error` is the one phase whose line is not a preset: it says WHAT went
   // wrong, in one line — the catalogue's line for the take's error code.
+  // yap24-PILL3 — `blind` names the holder and the user's real chord.
   const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+    ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? phaseCopy(phase, chatTone);
   return (
     <>

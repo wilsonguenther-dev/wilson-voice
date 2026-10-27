@@ -63,6 +63,9 @@ export const CLASSIC_PHASE_ART: PhaseArtTable = {
   gated: { sprite: "lock", motion: "still" },
   waiting: { sprite: "mic-off", motion: "breathe" },
   blocked: { sprite: "mic-off", motion: "still" },
+  // yap24-PILL3 — the resting seed, held still: Yap is ready (a click or the
+  // chord works), only the fn key is deaf. The strip carries the sentence.
+  blind: { sprite: "seed", motion: "still" },
 };
 
 interface AppStatus {
