@@ -374,6 +374,7 @@ fn banner_and_onboarding_share_one_probe() {
         GrantState::Unknown,
         true,
         "ok".into(),
+        "Yap",
     );
     // The banner reads `report.probe`; onboarding reads `report.grants` and
     // `report.accessibility` — all from ONE probe value.
@@ -469,6 +470,7 @@ fn working_tap_under_accessibility_is_not_a_listen_event_repair() {
             GrantState::Unknown,
             true,
             "ok".into(),
+            "Yap",
         );
         let im_row = report
             .grants
@@ -528,6 +530,7 @@ fn listen_event_banner_agrees_with_grant_row_for_every_input() {
                             GrantState::Unknown,
                             true,
                             "ok".into(),
+                            "Yap",
                         );
                         let row = report
                             .grants
@@ -605,7 +608,7 @@ fn post_event_no_under_a_live_accessibility_grant_keeps_its_own_row() {
             microphone: MicAuth::Authorized,
         };
         let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
-        permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into())
+        permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into(), "Yap")
     };
     let post_bit = 1u8 << Service::ALL.iter().position(|s| *s == Service::PostEvent).unwrap();
     let granted = report(true, false);
@@ -635,7 +638,14 @@ fn flipping_the_probe_is_a_transition_and_clears_the_banner_rows() {
             microphone: MicAuth::Authorized,
         };
         let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
-        let r = permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into());
+        let r = permissions::report_from_probe(
+            probe,
+            true,
+            GrantState::Unknown,
+            true,
+            "ok".into(),
+            "Yap",
+        );
         permissions::GrantSnapshot::from_report(&r)
     };
     let mut gate = permissions::TransitionGate::new();
@@ -677,8 +687,14 @@ fn report_lines_name_the_test_product() {
         microphone: MicAuth::Denied,
     };
     let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
-    let mut r = permissions::report_from_probe(probe, false, GrantState::Unknown, true, "ok".into());
-    permissions::name_product_in_report(&mut r, "Yap Test");
+    let r = permissions::report_from_probe(
+        probe,
+        false,
+        GrantState::Unknown,
+        true,
+        "ok".into(),
+        "Yap Test",
+    );
     assert_eq!(r.product_name, "Yap Test");
     let all: Vec<&str> = r.grants.iter().map(|g| g.detail.as_str()).collect();
     assert!(all.iter().any(|d| d.contains("Yap Test")), "{all:?}");
@@ -706,7 +722,7 @@ fn naming_the_product_never_doubles_a_line_already_named() {
     assert_eq!(once, "switch Yap Test on; Yap Test is listed");
     assert_eq!(name_product(&once, "Yap Test"), once, "idempotent");
 
-    // Through the report: a grant detail already named at the source survives.
+    // Through the report: built with the product, no line doubles it.
     let raw = RawProbes {
         accessibility: true,
         listen_event_cg: true,
@@ -715,11 +731,15 @@ fn naming_the_product_never_doubles_a_line_already_named() {
         microphone: MicAuth::Authorized,
     };
     let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
-    let mut r = permissions::report_from_probe(probe, true, GrantState::Unknown, true, "ok".into());
-    r.grants[0].detail = named.to_string();
-    permissions::name_product_in_report(&mut r, "Yap Test");
-    permissions::name_product_in_report(&mut r, "Yap Test");
-    assert_eq!(r.grants[0].detail, named);
+    let r = permissions::report_from_probe(
+        probe,
+        true,
+        GrantState::Unknown,
+        true,
+        "ok".into(),
+        "Yap Test",
+    );
+    assert!(!r.summary.contains("Yap Test Test"), "{}", r.summary);
     for g in &r.grants {
         assert!(!g.detail.contains("Yap Test Test"), "{}", g.detail);
     }

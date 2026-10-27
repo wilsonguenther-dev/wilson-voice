@@ -262,6 +262,7 @@ fn failing_conditions_name_the_os_call_and_its_answer() {
         GrantState::Unknown,
         true,
         String::new(),
+        "Yap",
     );
     report.checked_bundle_path = YAP.into();
     report.failing_conditions = both;

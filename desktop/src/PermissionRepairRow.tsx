@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   IDLE,
   REPAIR_EVENT,
+  nameProduct,
   offersRelaunch,
   reduceRepair,
   relaunchApp,
@@ -60,7 +61,7 @@ export function PermissionRepair({
         await invoke("request_microphone").catch((e) => console.error(e));
       }
     } catch (e) {
-      apply(service, { kind: "error", message: adviceFor(e, "Yap could not repair that permission — open System Settings and toggle Yap off and on.").line });
+      apply(service, { kind: "error", message: adviceFor(e, nameProduct("Yap could not repair that permission — open System Settings and toggle Yap off and on.", productName)).line });
     }
   }
 
@@ -87,7 +88,7 @@ export function PermissionRepair({
               {copy && view.phase === "idle" && (
                 <span className="perm-health-note">{copy.body}</span>
               )}
-              {view.line && <span className="perm-health-line">{view.line}</span>}
+              {view.line && <span className="perm-health-line">{nameProduct(view.line, productName)}</span>}
               {view.detail && <span className="perm-health-note">{view.detail}</span>}
             </div>
             {offersRelaunch(service, view) ? (
