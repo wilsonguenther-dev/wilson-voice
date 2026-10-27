@@ -186,6 +186,8 @@ def check_manifest(path, expect):
             m = json.load(f)
         except ValueError as e:
             fail(f"{path} is not JSON ({e}) — an SPA catch-all or an error page, not a manifest")
+    if not isinstance(m, dict):
+        fail(f"{path} is a JSON {type(m).__name__}, not a manifest object")
     v = str(m.get("version", ""))
     if v.startswith("v") or semver(v) is None:
         fail(f"version {v!r} is not plain semver (no leading v)")
@@ -195,12 +197,19 @@ def check_manifest(path, expect):
         datetime.fromisoformat(str(m.get("pub_date", "")).replace("Z", "+00:00"))
     except ValueError:
         fail(f"pub_date {m.get('pub_date')!r} is not RFC 3339 — the app's parse fails")
-    plats = m.get("platforms") or {}
+    plats = m.get("platforms")
+    if not isinstance(plats, dict):
+        fail(f"platforms is {type(plats).__name__}, not an object — the app cannot deserialize this manifest")
     if "darwin-aarch64" not in plats:
         fail("no darwin-aarch64 entry — every Apple-silicon client sees 'no update'")
     for name, e in plats.items():
-        if not e.get("signature") or not e.get("url"):
-            fail(f"{name}: signature and url are both required")
+        if not isinstance(e, dict):
+            fail(f"{name}: entry is {type(e).__name__}, not an object with url + signature — the app cannot deserialize this manifest")
+        for k in ("signature", "url"):
+            if not isinstance(e.get(k), str) or not e[k].strip():
+                fail(f"{name}: {k} must be a non-empty string")
+        if any(c.isspace() for c in e["url"]):
+            fail(f"{name}: url {e['url']!r} contains whitespace")
     return m
 
 cmd, args = sys.argv[1], sys.argv[2:]
@@ -244,6 +253,12 @@ elif cmd == "newer":                     # a b: exit 0 iff a > b
     if a is None or b is None:
         fail(f"cannot compare {args[0]!r} and {args[1]!r}")
     sys.exit(0 if a > b else 1)
+elif cmd == "newest":                    # versions...: print the greatest
+    vs = [(semver(v), v) for v in args]
+    bad = [v for s_, v in vs if s_ is None]
+    if bad or not vs:
+        fail(f"cannot compare versions {bad or args!r}")
+    print(max(vs)[1])
 elif cmd == "write":                     # out version notes-file sig-file url
     out, ver, notes_file, sig_file, url = args
     notes = open(notes_file).read().strip() if notes_file != "-" else f"Yap {ver}"
@@ -296,13 +311,23 @@ fetch() {
 is_offline_rc() { [[ "$1" == 6 || "$1" == 7 || "$1" == 28 ]]; }
 
 # Download the manifest's tarball(s) and verify each against the pubkey.
+# Fails CLOSED: the manifest check's exit status is read (never thrown away by a
+# process substitution), and a manifest that yields no platform line fails.
 verify_manifest_bytes() {
-  local manifest="$1" dir="$2" plat url rc
+  local manifest="$1" dir="$2" plat url rc urls n=0
+  if ! urls="$(py urls "$manifest" 2>&1)"; then
+    echo "${urls:-FAIL: $manifest: the manifest check exited non-zero}"
+    echo "FAIL: $manifest is not a manifest the app can use — nothing was verified"
+    return 1
+  fi
   while read -r plat url; do
+    [[ -n "$plat" ]] || continue
+    n=$((n + 1))
     rc="$(fetch "$url" "$dir/$plat.tar.gz")"
     [[ "$rc" == 0 ]] || { echo "FAIL: $plat: $url did not download (curl $rc: $(cat "$TMPROOT/fetch.err"))"; return 1; }
     py verify "$manifest" "$plat" "$dir/$plat.tar.gz" || return 1
-  done < <(py urls "$manifest")
+  done <<< "$urls"
+  [[ $n -gt 0 ]] || { echo "FAIL: $manifest names no platform — nothing was verified"; return 1; }
 }
 
 # ── --verify-endpoint-or-name-the-reason ────────────────────────────────────────
@@ -362,6 +387,27 @@ verify_endpoint() {
   fi
   if [[ ${#versions[@]} -ge 2 && "${versions[0]}" != "${versions[1]}" ]] && py newer "${versions[1]}" "${versions[0]}" >/dev/null; then
     echo "WARN: the fallback announces v${versions[1]}, newer than the primary's v${versions[0]} — re-stage the primary (docs/DEPLOY-SITE.md)"
+  fi
+  # The app asks EVERY endpoint and installs the NEWEST offer (lib.rs
+  # check_every_endpoint -> pick_newest_offer), so --expect-version is checked
+  # against that effective offer, not the primary alone — a rollback that leaves
+  # a newer build on the fallback has not stopped it spreading.
+  if [[ -n "$expect" ]]; then
+    if [[ ${#offline_reasons[@]} -gt 0 ]]; then
+      echo "FAIL: --expect-version v$expect: endpoint(s) did not answer, so the version the app is offered is unknown: ${offline_reasons[*]}"
+      failures=$((failures + 1))
+    fi
+    if [[ ${#versions[@]} -gt 0 ]]; then
+      local offered
+      if ! offered="$(py newest "${versions[@]}")"; then
+        echo "$offered"; failures=$((failures + 1))
+      elif [[ "$offered" != "$expect" ]]; then
+        echo "FAIL: the app is offered v$offered (the newest across all endpoints: ${versions[*]}), expected v$expect — every endpoint must stop offering a newer build (docs/RELEASE.md Rollback)"
+        failures=$((failures + 1))
+      else
+        echo "effective offer: v$offered (newest across all verified endpoints) == expected"
+      fi
+    fi
   fi
   # Rollback: the previous build kept on the primary host (docs/RELEASE.md).
   if [[ ${#only[@]} -eq 0 && $primary_ok -eq 1 ]]; then

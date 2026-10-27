@@ -382,8 +382,18 @@ greater than the running one. So a rollback has two halves:
    Or, without Vercel's history, stage a fresh directory whose `updates/` is a
    copy of `updates/rollback/` (`latest.json`, `Yap.app.tar.gz`, `.sig` — rewrite
    the manifest `url` back to `/updates/Yap.app.tar.gz`), point the three
-   Download `href`s at the previous DMG, and deploy it. Then confirm:
+   Download `href`s at the previous DMG, and deploy it.
+
+   **The primary is not the only endpoint.** The app asks every
+   `plugins.updater.endpoints` entry and installs the **newest** offer
+   (`lib.rs` `check_every_endpoint` -> `pick_newest_offer`), so if the bad
+   version is also on the GitHub fallback (`releases/latest/download/latest.json`),
+   pull it there too — delete that release's `latest.json` asset, or mark the
+   previous release as latest — or the bad build keeps spreading. Then confirm:
    `scripts/release-local.sh --verify-endpoint-or-name-the-reason --expect-version <previous>`.
+   With `--expect-version` that check fails unless the newest version offered
+   across **all** endpoints is `<previous>`, and fails if any endpoint did not
+   answer (the effective offer is then unknown).
 
 2. **Downgrade a Mac that already took the bad build.** No in-app path exists,
    by design. On that Mac: quit Yap, download
