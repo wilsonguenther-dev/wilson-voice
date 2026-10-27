@@ -169,6 +169,14 @@ function __pillDetect(want) {
   const empty = [...document.querySelectorAll(SLOTS)].filter((el) => shown(el) && !(el.innerText || "").trim());
   if (empty.length) out.push({ id: "empty-text", detail: empty.slice(0, 4).map(name).join(", ") + " on screen with no text" });
 
+  const visuallyHidden = (el) => {
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (/^rect\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\)$/.test(cs.clip) || cs.clipPath === "inset(50%)") return true;
+    }
+    return false;
+  };
+
   /* 2 — clipped-text: every visible run of text, measured by its own glyph
      extent (a Range), must fit its overflow box and the window. */
   const clippedTxt = [];
@@ -177,6 +185,9 @@ function __pillDetect(want) {
     if (!t.nodeValue.trim()) continue;
     const el = t.parentElement;
     if (!el || !shown(el)) continue;
+    // Visually-hidden text (the .sr-only accessible names, Y5-J) is clipped to
+    // 1x1 ON PURPOSE: a screen reader reads it, nobody sees it. Not a finding.
+    if (visuallyHidden(el)) continue;
     const range = document.createRange();
     range.selectNodeContents(t);
     const r = range.getBoundingClientRect();

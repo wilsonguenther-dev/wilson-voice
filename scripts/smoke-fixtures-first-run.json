@@ -173,5 +173,10 @@
     "captureAvailable": true,
     "unavailableReason": null
   },
-  "save_settings": null
+  "save_settings": null,
+  "meeting_detect_settings": {
+    "offerDetected": true,
+    "useCalendar": false,
+    "calendarAccess": "not_determined"
+  }
 }
