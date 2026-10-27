@@ -48,9 +48,10 @@ impl CalendarAccess {
                 "Calendar access is on, but this Mac has no calendars yet. Add an account in System Settings → Internet Accounts.".to_string(),
             ),
             "full_access" => None,
-            "denied" | "write_only" => Some(
-                "Yap can't read your calendars. Turn on Full Access for Yap in System Settings → Privacy & Security → Calendars.".to_string(),
-            ),
+            // yap-test-channel-product-name: the Calendars row is the bundle's own.
+            "denied" | "write_only" => Some(crate::permissions::named(
+                "Yap can't read your calendars. Turn on Full Access for Yap in System Settings → Privacy & Security → Calendars.",
+            )),
             "restricted" => Some(
                 "Calendar access is restricted on this Mac (a device policy decides it).".to_string(),
             ),

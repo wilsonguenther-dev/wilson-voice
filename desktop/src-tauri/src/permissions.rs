@@ -136,16 +136,21 @@ pub struct PermissionReport {
 /// nothing at all. Each status now gets the one next step that actually works.
 pub fn microphone_probe() -> (bool, String) {
     let status = crate::mic_auth::authorization_status();
-    (status == MicAuth::Authorized, microphone_detail(status))
+    (
+        status == MicAuth::Authorized,
+        microphone_detail(status, &crate::perm_truth::product_name()),
+    )
 }
 
 /// Prose per status. Pure, so `tests/mic_auth_status.rs` can read it without a
-/// microphone, a grant, or a window server.
-pub fn microphone_detail(status: MicAuth) -> String {
+/// microphone, a grant, or a window server. `product` is the name System
+/// Settings lists the grant under (`perm_truth::product_name`, "Yap Test" on the
+/// test channel) — the row the user has to find.
+pub fn microphone_detail(status: MicAuth, product: &str) -> String {
     match status {
         MicAuth::Authorized => {
             if crate::mic_auth::input_device_present() {
-                "Microphone authorized for Yap.".into()
+                format!("Microphone authorized for {product}.")
             } else {
                 "Microphone authorized, but no input device is attached — plug one in or pick one in System Settings → Sound.".into()
             }
@@ -154,10 +159,10 @@ pub fn microphone_detail(status: MicAuth) -> String {
             "macOS has not been asked for the microphone yet — click Request Microphone to show the system prompt.".into()
         }
         MicAuth::Denied => {
-            "Microphone is DENIED for Yap. macOS will not ask again — turn Yap on in System Settings → Privacy & Security → Microphone.".into()
+            format!("Microphone is DENIED for {product}. macOS will not ask again — turn {product} on in System Settings → Privacy & Security → Microphone.")
         }
         MicAuth::Restricted => {
-            "Microphone is restricted by a device policy (Screen Time or MDM). Yap cannot request it; an administrator has to allow it.".into()
+            format!("Microphone is restricted by a device policy (Screen Time or MDM). {product} cannot request it; an administrator has to allow it.")
         }
     }
 }
@@ -188,19 +193,22 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     // hotkey degraded line all read this same value.
     let probe = crate::perm_probe::probe_all();
     let (asr_ok, asr_detail) = asr_probe(native_ready);
+    // yap-test-channel-product-name: every line is BUILT with the running
+    // product's name (the TCC row System Settings lists), never written as
+    // "Yap" and renamed afterwards.
+    let product = crate::perm_truth::product_name();
+    log_product_name_once(&product);
     let mut report = report_from_probe(
         probe,
         tap_is_delivering(),
         audio_capture_state(),
         asr_ok,
         asr_detail,
+        &product,
     );
     // yap-perm-truth: WHICH binary was asked, and what exactly it was told.
     let me = crate::perm_truth::running_identity();
     report.checked_bundle_path = me.bundle_path.clone();
-    report.product_name = crate::perm_truth::product_name();
-    let product = report.product_name.clone();
-    name_product_in_report(&mut report, &product);
     report.signing_authority = me.signature.authority.clone();
     report.failing_conditions =
         crate::perm_truth::failing_conditions(report.accessibility, report.input_monitoring);
@@ -213,17 +221,18 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     report
 }
 
-/// fix-ax-probe-refresh — every user-facing permission line says the running
-/// product ("Yap Test" on the test channel), not "Yap". Pure; a no-op for "Yap".
-pub fn name_product_in_report(report: &mut PermissionReport, product: &str) {
-    report.product_name = product.to_string();
-    if product.trim().is_empty() || product == "Yap" {
-        return;
-    }
-    report.summary = name_product(&report.summary, product);
-    for g in report.grants.iter_mut() {
-        g.detail = name_product(&g.detail, product);
-    }
+/// yap-test-channel-product-name — one INFO line per process naming the
+/// product every permission line is built with. `report()` runs on a 5 s poll
+/// while the banner is up, so this logs the first time only. The product is the
+/// bundle's file stem, never a full path.
+fn log_product_name_once(product: &str) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        log::info!(
+            "permissions product_name product={product:?} source=bundle_stem test_channel={}",
+            product != "Yap"
+        );
+    });
 }
 
 /// [`name_product`] for THIS process: the one way a permission sentence built
@@ -279,6 +288,7 @@ pub fn report_from_probe(
     audio_capture: GrantState,
     asr_ok: bool,
     asr_detail: String,
+    product: &str,
 ) -> PermissionReport {
     // yap-dev-perm-probe-attribution: `usable()` — a host-attributed answer still
     // drives what the process can DO; the UI reads the state to say whose it is.
@@ -292,7 +302,7 @@ pub fn report_from_probe(
     };
     let input_monitoring = input_monitoring_state(listen_hid, accessibility, tap_delivering);
     let mut probe = probe;
-    reconcile_listen_event(&mut probe.listen_event, input_monitoring);
+    reconcile_listen_event(&mut probe.listen_event, input_monitoring, product);
     let mut report = build_report_with_grants(
         accessibility,
         probe.microphone_auth,
@@ -300,6 +310,7 @@ pub fn report_from_probe(
         audio_capture,
         asr_ok,
         asr_detail,
+        product,
     );
     report.probe = probe;
     report
@@ -318,6 +329,7 @@ pub fn report_from_probe(
 pub fn reconcile_listen_event(
     listen: &mut crate::perm_probe::ServiceProbe,
     input_monitoring: GrantState,
+    product: &str,
 ) {
     use crate::perm_probe::ProbeState;
     // yap-dev-perm-probe-attribution: a host-attributed row stays host-attributed;
@@ -329,18 +341,18 @@ pub fn reconcile_listen_event(
     let (state, why) = match input_monitoring {
         GrantState::Authorized if listen.state != ProbeState::Granted => (
             ProbeState::Granted,
-            "the fn tap is delivering, so Input Monitoring is not blocking Yap",
+            format!("the fn tap is delivering, so Input Monitoring is not blocking {product}"),
         ),
         GrantState::Unknown if repairable => (
             ProbeState::Unknown,
-            "Accessibility is on, which is enough for the listen-only fn tap",
+            "Accessibility is on, which is enough for the listen-only fn tap".to_string(),
         ),
         _ => return,
     };
     listen.state = state;
     listen.note = Some(match listen.note.take() {
         Some(n) => format!("{n}; {why}"),
-        None => why.to_string(),
+        None => why,
     });
 }
 
@@ -349,7 +361,8 @@ pub fn reconcile_listen_event(
 /// Kept as the 4-argument shape the existing call sites and `mic_auth_status.rs`
 /// use. Both PERM-E grants default to [`GrantState::Unknown`], which is the
 /// honest answer when nobody asked the OS: Unknown never nags, so a caller that
-/// does not know cannot manufacture a warning.
+/// does not know cannot manufacture a warning. A pure report describes no
+/// process, so it is worded for the shipped product, "Yap".
 pub fn build_report(
     accessibility: bool,
     status: MicAuth,
@@ -363,12 +376,14 @@ pub fn build_report(
         GrantState::Unknown,
         asr_ok,
         asr_detail,
+        "Yap",
     )
 }
 
 /// The whole report, pure, so every branch is testable on a machine with no
 /// microphone, no grant and no window server — the exact machine on which the
-/// old bool-only report was wrong.
+/// old bool-only report was wrong. `product` names the TCC row in every line
+/// (`perm_truth::product_name`: "Yap Test" for `/Applications/Yap Test.app`).
 pub fn build_report_with_grants(
     accessibility: bool,
     status: MicAuth,
@@ -376,10 +391,11 @@ pub fn build_report_with_grants(
     audio_capture: GrantState,
     asr_ok: bool,
     asr_detail: String,
+    product: &str,
 ) -> PermissionReport {
     // Authorization is TCC's answer; readiness additionally needs hardware.
     let microphone = status == MicAuth::Authorized && crate::mic_auth::input_device_present();
-    let mic_detail = microphone_detail(status);
+    let mic_detail = microphone_detail(status, product);
 
     let grants = vec![
         GrantRow {
@@ -398,44 +414,39 @@ pub fn build_report_with_grants(
                 GrantState::Denied
             },
             pane: "Accessibility",
-            detail: if accessibility {
-                "Accessibility is on — Yap can paste what it hears.".into()
-            } else {
-                ACCESSIBILITY_OFF_DETAIL.to_string()
-            },
+            detail: accessibility_detail(accessibility, product),
         },
         GrantRow {
             key: GRANT_INPUT_MONITORING,
             label: "Input Monitoring",
             status: input_monitoring,
             pane: "InputMonitoring",
-            detail: input_monitoring_row_detail(input_monitoring),
+            detail: input_monitoring_row_detail(input_monitoring, product),
         },
         GrantRow {
             key: GRANT_AUDIO_CAPTURE,
             label: "System Audio Recording",
             status: audio_capture,
             pane: SYSTEM_AUDIO_PANE,
-            detail: audio_capture_detail(audio_capture),
+            detail: audio_capture_detail(audio_capture, product),
         },
     ];
 
     let mut parts: Vec<String> = Vec::new();
     if !accessibility {
-        parts.push(
-            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Yap)"
-                .into(),
-        );
+        parts.push(format!(
+            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → {product})"
+        ));
     }
     if status != MicAuth::Authorized {
         parts.push(mic_detail.clone());
     }
     // Only a DENIAL speaks. An Unknown grant is silent by construction.
     if input_monitoring.nags() {
-        parts.push(input_monitoring_detail(input_monitoring));
+        parts.push(input_monitoring_detail(input_monitoring, product));
     }
     if audio_capture.nags() {
-        parts.push(audio_capture_detail(audio_capture));
+        parts.push(audio_capture_detail(audio_capture, product));
     }
     if !asr_ok {
         parts.push("Speech model needed".into());
@@ -450,7 +461,7 @@ pub fn build_report_with_grants(
     // so `all_critical_ok` was partly a function of a fiction.
     let all_critical_ok = status == MicAuth::Authorized && microphone && asr_ok;
     let summary = if all_critical_ok && parts.is_empty() {
-        "All critical permissions look good for Yap.".to_string()
+        format!("All critical permissions look good for {product}.")
     } else if parts.is_empty() {
         mic_detail.clone()
     } else {
@@ -476,7 +487,7 @@ pub fn build_report_with_grants(
         stale_grants: Vec::new(),
         duplicate_bundles: Vec::new(),
         probe: unprobed(accessibility, status, input_monitoring),
-        product_name: "Yap".to_string(),
+        product_name: product.to_string(),
     }
 }
 
@@ -514,10 +525,23 @@ pub fn mic_grant_state(status: MicAuth) -> GrantState {
 }
 
 /// The sentence a missing Accessibility grant gets, and the only place it is
-/// written. Named so the paste path can reuse the exact words.
-pub const ACCESSIBILITY_OFF_DETAIL: &str =
-    "Accessibility is off for Yap, so the transcript is copied but never pasted. \
-     Turn Yap on in System Settings → Privacy & Security → Accessibility.";
+/// written. A function so the paste path reuses the exact words, naming the
+/// same TCC row (`product`).
+pub fn accessibility_off_detail(product: &str) -> String {
+    format!(
+        "Accessibility is off for {product}, so the transcript is copied but never pasted. \
+         Turn {product} on in System Settings → Privacy & Security → Accessibility."
+    )
+}
+
+/// The Accessibility grant row's line, either way.
+pub fn accessibility_detail(on: bool, product: &str) -> String {
+    if on {
+        format!("Accessibility is on — {product} can paste what it hears.")
+    } else {
+        accessibility_off_detail(product)
+    }
+}
 
 // ── Input Monitoring ───────────────────────────────────────────────────────
 
@@ -574,36 +598,37 @@ pub fn input_monitoring_state(
 /// `perm_truth::product_name`), and a TCC row that says "allowed" while the live
 /// check says otherwise is called out as a stale grant with the remove + re-add
 /// fix — it never reads as a plain "off".
-pub fn input_monitoring_row_detail(state: GrantState) -> String {
-    let product = crate::perm_truth::product_name();
+pub fn input_monitoring_row_detail(state: GrantState, product: &str) -> String {
     let row =
         crate::hotkey_table::tcc_listen_event_row(&crate::perm_truth::running_identity().bundle_id);
     let granted = state == GrantState::Authorized;
     let stale = row == crate::hotkey_table::TccRow::Allowed && !granted;
     let detail = if stale || product != "Yap" {
-        crate::hotkey_table::input_monitoring_detail_for(granted, stale, &product)
+        crate::hotkey_table::input_monitoring_detail_for(granted, stale, product)
     } else {
-        input_monitoring_detail(state)
+        input_monitoring_detail(state, product)
     };
     // yap-hotkeys-advisories-r1 #4/#5: no Full Disk Access, or a failed TCC
     // query, cannot rule out a stale grant — say so, with the fix.
-    match crate::hotkey_table::input_monitoring_unverified_hint(granted, &row, &product) {
+    match crate::hotkey_table::input_monitoring_unverified_hint(granted, &row, product) {
         Some(hint) => format!("{detail} {hint}"),
         None => detail,
     }
 }
 
-pub fn input_monitoring_detail(state: GrantState) -> String {
+pub fn input_monitoring_detail(state: GrantState, product: &str) -> String {
     match state {
-        GrantState::Authorized => "Input Monitoring is on — the fn hold reaches Yap.".to_string(),
-        GrantState::Denied => "Input Monitoring is off for Yap, so holding fn does nothing. \
-             Turn Yap on in System Settings → Privacy & Security → Input Monitoring."
-            .to_string(),
-        GrantState::Unknown => {
-            "Input Monitoring has not been answered for Yap. The fn hold still works while \
-             Accessibility is on."
-                .to_string()
+        GrantState::Authorized => {
+            format!("Input Monitoring is on — the fn hold reaches {product}.")
         }
+        GrantState::Denied => format!(
+            "Input Monitoring is off for {product}, so holding fn does nothing. \
+             Turn {product} on in System Settings → Privacy & Security → Input Monitoring."
+        ),
+        GrantState::Unknown => format!(
+            "Input Monitoring has not been answered for {product}. The fn hold still works while \
+             Accessibility is on."
+        ),
     }
 }
 
@@ -667,15 +692,16 @@ pub fn audio_capture_state() -> GrantState {
     })
 }
 
-pub fn audio_capture_detail(state: GrantState) -> String {
+pub fn audio_capture_detail(state: GrantState, product: &str) -> String {
     match state {
         GrantState::Authorized => {
-            "Yap is receiving system audio — macOS shows a purple dot while it records.".to_string()
+            format!("{product} is receiving system audio — macOS shows a purple dot while it records.")
         }
-        GrantState::Denied => "No system audio reached Yap in the last 2 meetings while other apps \
-             were playing sound. macOS will not ask again — check System Audio Recording for Yap in \
+        GrantState::Denied => format!(
+            "No system audio reached {product} in the last 2 meetings while other apps \
+             were playing sound. macOS will not ask again — check System Audio Recording for {product} in \
              System Settings, then start a new meeting."
-            .to_string(),
+        ),
         GrantState::Unknown => {
             "System audio recording has not been tried yet. Run the meeting setup step when you \
              want it; macOS asks once, and only then."
@@ -983,7 +1009,7 @@ pub fn paste_failure_detail(accessibility_trusted: bool, fallback: &str) -> Stri
     if accessibility_trusted {
         fallback.to_string()
     } else {
-        named(ACCESSIBILITY_OFF_DETAIL)
+        accessibility_off_detail(&crate::perm_truth::product_name())
     }
 }
 
@@ -1093,7 +1119,6 @@ mod product_name_tests {
             ("record NO_SAMPLES_ERR", crate::record::NO_SAMPLES_ERR),
             ("record NO_AUDIO_ERR", crate::record::NO_AUDIO_ERR),
             ("ptt_macos TAP_BLOCKED_REASON", crate::ptt_macos::TAP_BLOCKED_REASON),
-            ("permissions ACCESSIBILITY_OFF_DETAIL", super::ACCESSIBILITY_OFF_DETAIL),
             ("record too-short", "Audio too short (120 ms) — hold longer, or allow Microphone for Yap."),
             ("record timeout", "Microphone open timed out after 3000ms — check Yap's Microphone permission under System Settings → Privacy."),
             ("record config", "Mic config failed (x). Enable Microphone for Yap (not Python) in System Settings."),
@@ -1125,6 +1150,94 @@ mod product_name_tests {
                 "{name}: changed in the Yap build"
             );
         }
+    }
+
+    /// yap-test-channel-product-name — every permission line the report BUILDS
+    /// takes its product from `perm_truth` (the TCC row System Settings lists):
+    /// for `/Applications/Yap Test.app`, "Yap Test" appears and a bare "Yap "
+    /// never does, across every grant state and the summary.
+    #[test]
+    fn permission_copy_uses_product_name() {
+        use super::{
+            accessibility_detail, accessibility_off_detail, audio_capture_detail,
+            build_report_with_grants, input_monitoring_detail, microphone_detail, GrantState,
+            MicAuth,
+        };
+        let product =
+            crate::perm_truth::product_name_from_bundle_path("/Applications/Yap Test.app");
+        assert_eq!(product, "Yap Test");
+        let grants = [
+            GrantState::Authorized,
+            GrantState::Denied,
+            GrantState::Unknown,
+        ];
+        let mics = [
+            MicAuth::Authorized,
+            MicAuth::NotDetermined,
+            MicAuth::Denied,
+            MicAuth::Restricted,
+        ];
+        let mut lines: Vec<String> = Vec::new();
+        for m in mics {
+            lines.push(microphone_detail(m, &product));
+        }
+        for on in [true, false] {
+            lines.push(accessibility_detail(on, &product));
+        }
+        for g in grants {
+            lines.push(input_monitoring_detail(g, &product));
+            lines.push(audio_capture_detail(g, &product));
+        }
+        lines.push(crate::perm_truth::stale_grant_message(
+            "Accessibility",
+            "0.9.2",
+            "/Applications/Yap Test.app",
+        ));
+        for ax in [true, false] {
+            for m in mics {
+                for im in grants {
+                    for ac in grants {
+                        let r = build_report_with_grants(
+                            ax,
+                            m,
+                            im,
+                            ac,
+                            false,
+                            "no model".into(),
+                            &product,
+                        );
+                        assert_eq!(r.product_name, "Yap Test");
+                        lines.push(r.summary.clone());
+                        lines.extend(r.grants.iter().map(|g| g.detail.clone()));
+                    }
+                }
+            }
+        }
+        assert!(lines.iter().any(|l| l.contains("Yap Test")));
+        for l in &lines {
+            assert!(
+                !l.replace("Yap Test", "").contains("Yap "),
+                "a bare \"Yap \" names the wrong TCC row: {l:?}"
+            );
+            assert!(!bare_yap_left(l), "bare Yap left in {l:?}");
+            assert!(!l.contains("Yap Test Test"), "doubled product in {l:?}");
+        }
+        // Every DENIED line names the row to fix.
+        for l in [
+            microphone_detail(MicAuth::Denied, &product),
+            accessibility_off_detail(&product),
+            input_monitoring_detail(GrantState::Denied, &product),
+            audio_capture_detail(GrantState::Denied, &product),
+        ] {
+            assert!(l.contains("Yap Test"), "{l:?}");
+        }
+        // The shipped bundle keeps its words.
+        let shipped = crate::perm_truth::product_name_from_bundle_path("/Applications/Yap.app");
+        assert_eq!(
+            accessibility_off_detail(&shipped),
+            "Accessibility is off for Yap, so the transcript is copied but never pasted. \
+             Turn Yap on in System Settings → Privacy & Security → Accessibility."
+        );
     }
 
     /// Fix round 2 — a wiring guard, not a fixture: every non-comment line of

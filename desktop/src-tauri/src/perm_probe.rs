@@ -1059,7 +1059,7 @@ mod running_as_bundle_tests {
     fn running_as_bundle_reconcile_keeps_host_attribution() {
         let mut r = report(true, true);
         attribute_to_host(&mut r);
-        crate::permissions::reconcile_listen_event(&mut r.listen_event, GrantState::Authorized);
+        crate::permissions::reconcile_listen_event(&mut r.listen_event, GrantState::Authorized, "Yap");
         assert_eq!(r.listen_event.state, ProbeState::DevHostAttributed);
     }
 

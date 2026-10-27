@@ -58,6 +58,13 @@ fn mic_auth_discriminants_match_avfoundation() {
 /// is the doc comments + attributes + signature that precede the opening brace.
 fn functions(src: &str) -> Vec<(String, String)> {
     let bytes: Vec<char> = src.chars().collect();
+    // `bytes` is indexed by CHAR; `src` is sliced by BYTE. Map one onto the
+    // other, or the first multi-byte char ('—') before a slice point panics.
+    let idx: Vec<usize> = src
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(src.len()))
+        .collect();
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -68,9 +75,9 @@ fn functions(src: &str) -> Vec<(String, String)> {
             && (i == 0 || !bytes[i - 1].is_alphanumeric() && bytes[i - 1] != '_')
         {
             // Header: back up over the signature and the doc block above it.
-            let mut start = src[..i].rfind("\n\n").map(|p| p + 2).unwrap_or(0);
+            let mut start = src[..idx[i]].rfind("\n\n").map(|p| p + 2).unwrap_or(0);
             // Never swallow a preceding function body.
-            if let Some(prev) = src[..i].rfind('}') {
+            if let Some(prev) = src[..idx[i]].rfind('}') {
                 if prev + 1 > start {
                     start = prev + 1;
                 }
@@ -95,7 +102,7 @@ fn functions(src: &str) -> Vec<(String, String)> {
                 i += 2;
                 continue;
             }
-            let header: String = src[start..j].to_string();
+            let header: String = src[start..idx[j]].to_string();
             // Body: brace matching from j.
             let mut depth = 0i32;
             let mut k = j;
@@ -112,7 +119,7 @@ fn functions(src: &str) -> Vec<(String, String)> {
                 }
                 k += 1;
             }
-            let body: String = src[j..(k + 1).min(src.len())].to_string();
+            let body: String = src[idx[j]..idx[(k + 1).min(bytes.len())]].to_string();
             out.push((header, body));
             i = j + 1;
             continue;
@@ -267,7 +274,7 @@ fn report_requires_authorized_for_all_critical_ok() {
         MicAuth::Denied,
         MicAuth::Authorized,
     ] {
-        let detail = permissions::microphone_detail(status);
+        let detail = permissions::microphone_detail(status, "Yap");
         assert!(
             !detail.contains("click Dictate once"),
             "the pre-PERM-A advice survived for {}",

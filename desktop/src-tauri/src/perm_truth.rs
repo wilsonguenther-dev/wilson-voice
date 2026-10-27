@@ -109,15 +109,18 @@ pub fn failing_conditions(
 }
 
 /// The stale-grant sentence. `label` is the System Settings list it lives in.
+/// yap-test-channel-product-name: the row it names is the bundle's own
+/// ([`product_name_from_bundle_path`] of the path it tells the user to choose).
 pub fn stale_grant_message(label: &str, previous_version: &str, bundle_path: &str) -> String {
+    let product = product_name_from_bundle_path(bundle_path);
     let who = if previous_version.is_empty() {
-        "an earlier Yap".to_string()
+        format!("an earlier {product}")
     } else {
-        format!("Yap {previous_version}")
+        format!("{product} {previous_version}")
     };
     format!(
-        "macOS still lists Yap as allowed in {label}, but that permission was given to {who}, \
-         signed differently. In System Settings → Privacy & Security → {label}, select Yap, \
+        "macOS still lists {product} as allowed in {label}, but that permission was given to {who}, \
+         signed differently. In System Settings → Privacy & Security → {label}, select {product}, \
          click the minus button, then click plus and choose {bundle_path}."
     )
 }

@@ -20,6 +20,7 @@ fn report_with(
         audio_capture,
         true,
         "model ready".into(),
+        "Yap",
     )
 }
 
@@ -88,7 +89,7 @@ fn audio_capture_is_unknown_by_construction_never_probed() {
     );
 
     // And the row a fresh install renders says so without accusing anyone.
-    let detail = permissions::audio_capture_detail(GrantState::Unknown);
+    let detail = permissions::audio_capture_detail(GrantState::Unknown, "Yap");
     assert!(
         detail.contains("has not been tried"),
         "unknown must read as 'not tried', not as a failure: {detail}"
