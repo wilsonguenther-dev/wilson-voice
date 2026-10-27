@@ -122,11 +122,49 @@ function sendHitbox(x: number, y: number, w: number, h: number): void {
 /** The capsule's latest rect, kept while a held rect overrides it. */
 let capsuleRect: [number, number, number, number] | null = null;
 let held = false;
+/**
+ * yap24-NT7 fix — a control that floats OUTSIDE the capsule's own rect (Yappy's
+ * meeting badge: the canvas capsule sits mid-window, the badge is pinned to the
+ * window's bottom edge) must still receive clicks through the click-through
+ * panel. The backend takes ONE rect, so the capsule and this extra rect are
+ * sent as their bounding union. `null` = no extra; the capsule alone.
+ */
+let extraRect: [number, number, number, number] | null = null;
+
+type Rect4 = [number, number, number, number];
+
+/** Bounding union of two x/y/w/h rects; an empty (w or h <= 0) side is ignored. */
+export function unionHitbox(a: Rect4 | null, b: Rect4 | null): Rect4 | null {
+  const live = (r: Rect4 | null): r is Rect4 => !!r && r[2] > 0 && r[3] > 0;
+  if (!live(a)) return live(b) ? b : a;
+  if (!live(b)) return a;
+  const x = Math.min(a[0], b[0]);
+  const y = Math.min(a[1], b[1]);
+  const r = Math.max(a[0] + a[2], b[0] + b[2]);
+  const btm = Math.max(a[1] + a[3], b[1] + b[3]);
+  return [x, y, r - x, btm - y];
+}
+
+function sendCapsule(): void {
+  const r = unionHitbox(capsuleRect, extraRect);
+  if (r) sendHitbox(...r);
+}
 
 export function reportPillHitbox(x: number, y: number, w: number, h: number): void {
   capsuleRect = [x, y, w, h];
   if (held) return;
-  sendHitbox(x, y, w, h);
+  sendCapsule();
+}
+
+/**
+ * yap24-NT7 fix — add (or, with `null`, remove) a rect the hitbox must cover IN
+ * ADDITION to the capsule. Unlike `holdPillHitbox` this never replaces the
+ * capsule: the pill stays grabbable while the extra control is clickable.
+ */
+export function extendPillHitbox(rect: { x: number; y: number; w: number; h: number } | null): void {
+  extraRect = rect ? [rect.x, rect.y, rect.w, rect.h] : null;
+  if (held) return;
+  sendCapsule();
 }
 
 /**
@@ -141,7 +179,7 @@ export function holdPillHitbox(rect: { x: number; y: number; w: number; h: numbe
     return;
   }
   held = false;
-  if (capsuleRect) sendHitbox(...capsuleRect);
+  sendCapsule();
 }
 
 /**

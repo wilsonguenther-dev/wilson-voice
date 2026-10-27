@@ -148,6 +148,11 @@ struct Pending {
 pub struct MeetingPipeline {
     tx: Arc<Mutex<mpsc::Sender<String>>>,
     pending: Arc<(Mutex<Pending>, Condvar)>,
+    /// yap24-NT7 — the same sink the worker reports through, so a QUEUED
+    /// meeting is announced the moment it is handed over: the pill goes from
+    /// the recording clock straight to "Transcribing 0%" instead of going
+    /// quiet while the ASR model loads for the first window.
+    sink: ProgressSink,
 }
 
 impl MeetingPipeline {
@@ -169,6 +174,7 @@ impl MeetingPipeline {
             log::warn!("meeting pipeline: worker is gone, {id} stays queued for next launch");
         } else {
             log::info!("meeting pipeline: queued {id}");
+            (self.sink)(&queued_event(id));
         }
     }
 
@@ -183,6 +189,20 @@ impl MeetingPipeline {
             Ok((p, _)) => p.in_flight == 0,
             Err(_) => false,
         }
+    }
+}
+
+/// yap24-NT7 — the event a meeting gets the moment it is queued: transcribing,
+/// nothing processed yet. Consumers fold percent with `max` for the same id, so
+/// a resumed job that was at 60% is not shown going backwards.
+pub fn queued_event(id: &str) -> MeetingProgressEvent {
+    MeetingProgressEvent {
+        id: id.to_string(),
+        state: MeetingState::Transcribing.as_str().to_string(),
+        percent: 0,
+        processed_through_seconds: 0.0,
+        duration_seconds: 0.0,
+        error: None,
     }
 }
 
@@ -225,6 +245,7 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
         Condvar::new(),
     ));
     let worker_pending = Arc::clone(&pending);
+    let sink = Arc::clone(&deps.sink);
     let spawned = std::thread::Builder::new()
         .name("wv-meeting-pipeline".into())
         .spawn(move || {
@@ -267,6 +288,7 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
         pending,
+        sink,
     }
 }
 

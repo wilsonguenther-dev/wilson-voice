@@ -10,10 +10,23 @@ import {
   elapsedLabel,
   formatElapsed,
   IDLE_MEETING,
+  MEETING_FAILED_FALLBACK,
+  MEETING_PILL_IDLE,
+  MEETING_PROGRESS_EVENT,
+  MEETING_RESULT_HOLD_MS,
+  meetingAfterView,
+  meetingNavPayload,
+  meetingPillHoldMs,
+  parseNavigate,
   recordLabel,
+  reduceMeetingPill,
   systemAudioBadge,
+  type MeetingPillInput,
+  type MeetingPillPhase,
+  type MeetingProgressEvent,
   type MeetingStatus,
 } from "./meeting";
+import { MEETING_PROGRESS_EVENT as DECLARED_PROGRESS_EVENT } from "../meetings/progress";
 
 const recording = (over: Partial<MeetingStatus> = {}): MeetingStatus => ({
   recording: true,
@@ -118,5 +131,166 @@ describe("the system-audio badge", () => {
     ).toBeNull();
     expect(systemAudioBadge(null)).toBeNull();
     expect(systemAudioBadge(undefined)).toBeNull();
+  });
+});
+
+/**
+ * yap24-NT7 — the pill follows the meeting after stop. The reducer is driven by
+ * the two events the backend already emits (`meeting` status and the NT2
+ * pipeline's `meeting:progress`), in the order the backend emits them.
+ */
+describe("the pill after a meeting stops (yap24-NT7)", () => {
+  const progress = (over: Partial<MeetingProgressEvent> = {}): MeetingPillInput => ({
+    type: "progress",
+    event: {
+      id: "m1",
+      state: "transcribing",
+      percent: 0,
+      processedThroughSeconds: 0,
+      durationSeconds: 3725,
+      error: null,
+      ...over,
+    },
+  });
+  const status = (s: MeetingStatus): MeetingPillInput => ({ type: "status", status: s });
+  const run = (inputs: MeetingPillInput[], from: MeetingPillPhase = MEETING_PILL_IDLE) => {
+    const seen: MeetingPillPhase[] = [];
+    let p = from;
+    for (const i of inputs) {
+      p = reduceMeetingPill(p, i);
+      seen.push(p);
+    }
+    return seen;
+  };
+
+  it("listens to the ONE progress event the pipeline emits, never a re-typed copy", () => {
+    expect(MEETING_PROGRESS_EVENT).toBe(DECLARED_PROGRESS_EVENT);
+    expect(MEETING_PROGRESS_EVENT).toBe("meeting:progress");
+  });
+
+  it("walks recording -> processing 0..100 -> notes-ready", () => {
+    const seen = run([
+      status(recording()),
+      status({ ...IDLE_MEETING, captureAvailable: true }), // stop
+      progress({ percent: 0 }), // enqueue
+      progress({ percent: 42 }),
+      progress({ percent: 100 }),
+      progress({ state: "complete", percent: 100 }),
+    ]);
+    expect(seen.map((p) => p.kind)).toEqual([
+      "recording",
+      "idle",
+      "processing",
+      "processing",
+      "processing",
+      "notes-ready",
+    ]);
+    expect(seen.slice(2, 5).map((p) => (p.kind === "processing" ? p.percent : -1))).toEqual([0, 42, 100]);
+    const views = seen.map((p) => meetingAfterView(p, "idle")?.label ?? null);
+    expect(views).toEqual([
+      null,
+      null,
+      "Transcribing 0%",
+      "Transcribing 42%",
+      // 100% of the windows is not notes yet: the label holds at 99 until the
+      // pipeline says `complete`, exactly like the Meetings row.
+      "Transcribing 99%",
+      "Notes ready — Open",
+    ]);
+    const ready = meetingAfterView(seen[5], "idle");
+    expect(ready?.opens).toBe(true);
+    expect(ready?.id).toBe("m1");
+  });
+
+  it("says 'Writing notes' while the summary model runs, then notes-ready again", () => {
+    const seen = run([
+      progress({ state: "complete", percent: 100 }),
+      progress({ state: "summarizing", percent: 100 }),
+      progress({ state: "complete", percent: 100 }),
+    ]);
+    expect(seen.map((p) => meetingAfterView(p, "idle")?.label)).toEqual([
+      "Notes ready — Open",
+      "Writing notes",
+      "Notes ready — Open",
+    ]);
+  });
+
+  it("treats a partial transcript as notes-ready (the page says which part failed)", () => {
+    expect(run([progress({ state: "partial", percent: 100 })])[0].kind).toBe("notes-ready");
+  });
+
+  it("failure path: shows the pipeline's own sentence, and opens the meeting to Retry", () => {
+    const why = "Yap could not transcribe this meeting — speech recognition failed on all of its audio. Press Retry.";
+    const [p1, p2] = run([progress({ percent: 30 }), progress({ state: "failed", percent: 30, error: why })]);
+    expect(p1.kind).toBe("processing");
+    expect(p2).toEqual({ kind: "failed", id: "m1", sentence: why });
+    const view = meetingAfterView(p2, "idle");
+    expect(view?.label).toBe(why);
+    expect(view?.opens).toBe(true);
+    // A failure the backend did not explain is still a sentence, never blank.
+    const [blank] = run([progress({ state: "failed", error: null })]);
+    expect(blank.kind === "failed" && blank.sentence).toBe(MEETING_FAILED_FALLBACK);
+  });
+
+  it("a dictation during processing still shows the dictation phases (dictation outranks the badge)", () => {
+    const [processing] = run([progress({ percent: 42 })]);
+    for (const take of ["listening", "thinking", "transcribing", "polishing", "pasting", "done", "error", "empty", "cancelled", "model-loading", "blocked", "waiting", "gated"] as const) {
+      expect(meetingAfterView(processing, take)).toBeNull();
+    }
+    // …and the badge comes back the moment the take is over — the phase itself
+    // was never touched by the dictation.
+    expect(meetingAfterView(processing, "idle")?.label).toBe("Transcribing 42%");
+    expect(meetingAfterView(processing, "sleepy")?.label).toBe("Transcribing 42%");
+    const [ready] = run([progress({ state: "complete", percent: 100 })]);
+    expect(meetingAfterView(ready, "listening")).toBeNull();
+  });
+
+  it("the 1 Hz idle status broadcast never wipes processing or notes-ready", () => {
+    const idle = status({ ...IDLE_MEETING, captureAvailable: true });
+    const [p] = run([progress({ percent: 42 })]);
+    expect(reduceMeetingPill(p, idle)).toBe(p);
+    const [r] = run([progress({ state: "complete" })]);
+    expect(reduceMeetingPill(r, idle)).toBe(r);
+  });
+
+  it("percent never runs backwards for the same meeting", () => {
+    const seen = run([progress({ percent: 60 }), progress({ percent: 0 }), progress({ percent: 61 })]);
+    expect(seen.map((p) => (p.kind === "processing" ? p.percent : -1))).toEqual([60, 60, 61]);
+  });
+
+  it("a live recording outranks any background job's progress, and replaces an unclicked result", () => {
+    const [rec] = run([status(recording())]);
+    expect(reduceMeetingPill(rec, progress({ id: "older", percent: 10 }))).toBe(rec);
+    const [ready] = run([progress({ state: "complete" })]);
+    expect(reduceMeetingPill(ready, status(recording())).kind).toBe("recording");
+  });
+
+  it("notes-ready and failed hold for 10 s; nothing else holds", () => {
+    expect(MEETING_RESULT_HOLD_MS).toBe(10_000);
+    expect(meetingPillHoldMs({ kind: "notes-ready", id: "m1" })).toBe(10_000);
+    expect(meetingPillHoldMs({ kind: "failed", id: "m1", sentence: "x" })).toBe(10_000);
+    expect(meetingPillHoldMs({ kind: "processing", id: "m1", percent: 3, step: "transcribing" })).toBeNull();
+    expect(meetingPillHoldMs(MEETING_PILL_IDLE)).toBeNull();
+  });
+
+  it("dismiss (click or hold) is scoped to its meeting: a stale timer cannot clear a newer result", () => {
+    const [ready] = run([progress({ state: "complete" })]);
+    expect(reduceMeetingPill(ready, { type: "dismiss", id: "m1" })).toBe(MEETING_PILL_IDLE);
+    expect(reduceMeetingPill(ready, { type: "dismiss", id: "other" })).toBe(ready);
+    const [proc] = run([progress({ percent: 5 })]);
+    expect(reduceMeetingPill(proc, { type: "dismiss", id: "m1" })).toBe(proc);
+  });
+
+  it("ignores a malformed event instead of drawing a phase for no meeting", () => {
+    expect(reduceMeetingPill(MEETING_PILL_IDLE, progress({ id: "" }))).toBe(MEETING_PILL_IDLE);
+    expect(reduceMeetingPill(MEETING_PILL_IDLE, progress({ state: "recording" }))).toBe(MEETING_PILL_IDLE);
+  });
+
+  it("clicking notes-ready navigates to THAT meeting in the Meetings view", () => {
+    // lib.rs `meeting_notes_nav_payload` builds the same string for the tray.
+    expect(meetingNavPayload("abc-123")).toBe("meetings:abc-123");
+    expect(parseNavigate("meetings:abc-123")).toEqual({ nav: "meetings", meetingId: "abc-123" });
+    expect(parseNavigate("settings")).toEqual({ nav: "settings", meetingId: null });
+    expect(parseNavigate("meetings")).toEqual({ nav: "meetings", meetingId: null });
   });
 });
