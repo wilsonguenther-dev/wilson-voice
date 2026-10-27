@@ -19,6 +19,19 @@ pub fn copy_text(app: &AppHandle, text: &str) -> Result<(), String> {
         .map_err(|e| format!("clipboard write: {e}"))
 }
 
+/// Y6-B — a clipboard write that cannot race a paste (YV39).
+///
+/// A receipt-sequenced paste leaves a transaction holding the pasteboard until
+/// the target reads it, and then RESTORES the user's prior clipboard. A bare
+/// [`copy_text`] landing inside that window is either clobbered by the restore
+/// or races its ownership check. This settles any open transaction first and
+/// writes after it, on the main thread every settle runs on, so the copy is
+/// always the last write. Must NOT be called from the main thread (it waits on
+/// it); the tray's "Copy Last Transcript" calls it from `spawn_blocking`.
+pub fn copy_text_sequenced(app: &AppHandle, text: &str) -> Result<(), String> {
+    paste_tx::copy_sequenced(app, text)
+}
+
 #[derive(Debug)]
 pub struct PasteOutcome {
     pub copied: bool,

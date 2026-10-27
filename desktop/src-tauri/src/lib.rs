@@ -245,6 +245,8 @@ pub mod syscapture;
 /// Y3-C — the only thing allowed to state progress through a running decode.
 pub mod transcribe_progress;
 pub mod transcription;
+/// Y6-B — the menu bar's one table: items, layout, dispatch, pill hide.
+pub mod tray_menu;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.
 pub mod vad;
@@ -687,6 +689,13 @@ struct AppState {
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
     /// YV51 — the "Undo AI Edit" item; its enabled state follows `undo_available`.
     tray_paste_raw: PLMutex<Option<MenuItem<Wry>>>,
+    /// Y6-B — "Hide Pill for 1 Hour" / "Show Pill Now"; `sync_tray` flips their
+    /// enabled state from `tray_menu::pill_menu_state`.
+    tray_hide_pill: PLMutex<Option<MenuItem<Wry>>>,
+    tray_show_pill: PLMutex<Option<MenuItem<Wry>>>,
+    /// Y6-B — the temporary, in-memory-only hide of the idle pill. Never
+    /// persisted: a restart shows the pill again (see `tray_menu::PillHide`).
+    pill_hide: tray_menu::PillHide,
     /// YV95 — the "Record a meeting" / "Stop meeting" item. Its label follows
     /// the meeting controller, and it is DISABLED when no capture engine is
     /// installed, because a Record button that does nothing is worse than one
@@ -905,7 +914,7 @@ fn toggle_meeting(
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         meeting_detect::clear(app, None);
-        if state.settings.lock().show_floating_pill {
+        if idle_pill_on(state) {
             float_pill::show_for_recording(app);
         }
         notify(
@@ -917,7 +926,7 @@ fn toggle_meeting(
     } else if !status.recording && was_recording {
         // Never yank the pill out from under a dictation that is still running.
         if !*state.recording.lock() {
-            float_pill::after_recording(app, state.settings.lock().show_floating_pill);
+            float_pill::after_recording(app, idle_pill_on(state));
         }
     }
     Ok(status)
@@ -1147,6 +1156,13 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let hf_item = state.tray_hands_free.lock().clone();
     let raw_item = state.tray_paste_raw.lock().clone();
     let undo_available = *state.undo_available.lock();
+    // Y6-B — which of the two pill items can act right now.
+    let pill_menu = tray_menu::pill_menu_state(
+        state.settings.lock().show_floating_pill,
+        state.pill_hide.is_hidden(std::time::Instant::now()),
+    );
+    let hide_pill_item = state.tray_hide_pill.lock().clone();
+    let show_pill_item = state.tray_show_pill.lock().clone();
     let tray = state.tray.lock().clone();
     // Y2-E — the license state, from the SAME two functions the pill's
     // `pillLicense` mirrors. `LicenseManager::status()` re-derives entitlement
@@ -1179,6 +1195,14 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
         // silently does nothing is worse than a disabled one.
         if let Some(item) = raw_item {
             let _ = item.set_enabled(undo_available);
+        }
+        // Y6-B — "Hide Pill for 1 Hour" only when there is an always-on pill
+        // to hide; "Show Pill Now" only while a hide is running.
+        if let Some(item) = hide_pill_item {
+            let _ = item.set_enabled(pill_menu.hide_enabled);
+        }
+        if let Some(item) = show_pill_item {
+            let _ = item.set_enabled(pill_menu.show_now_enabled);
         }
         if let Some(item) = dictation {
             let _ = item.set_text(if recording {
@@ -1251,6 +1275,104 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
             }
         }
     });
+}
+
+/// Y6-B — what each menu-bar command DOES. Exhaustive over
+/// `tray_menu::TrayCommand` with no wildcard arm: a command added to the
+/// registry without a handler here does not compile. The tray's
+/// `on_menu_event` resolves the clicked id with `tray_menu::command_for` and
+/// calls this and nothing else.
+fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::TrayCommand) {
+    use tray_menu::TrayCommand;
+    match command {
+        TrayCommand::Quit => {
+            // yap-lifecycle — the SAME quit as Cmd-Q and the Dock's Quit:
+            // app.exit(0) reaches RunEvent::Exit, whose quit_teardown orders
+            // the pill out first and then stops a live meeting (YV95), drains
+            // the ASR engine (ABANDONED_FOR_EXIT, YV93), waits for the take in
+            // flight and checkpoints the WAL, every step bounded. Never
+            // `std::process::exit`, which would kill a take mid-write.
+            app.exit(0);
+        }
+        TrayCommand::OpenYap => {
+            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
+        }
+        TrayCommand::OpenHistory => {
+            // Y6-B — the transcript history lives on the Home view.
+            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
+            let _ = app.emit("navigate", tray_menu::HISTORY_NAV);
+        }
+        TrayCommand::OpenSettings => {
+            // Open the app AND jump it to the Settings view.
+            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
+            let _ = app.emit("navigate", "settings");
+        }
+        TrayCommand::PasteLastTranscript => {
+            paste_last_transcript(app, state);
+        }
+        TrayCommand::CopyLastTranscript => {
+            copy_last_transcript(app, state);
+        }
+        TrayCommand::HidePillForAnHour => {
+            hide_for_an_hour(app, state);
+        }
+        TrayCommand::ShowPillNow => {
+            show_pill_now(app, state);
+        }
+        // Y2-E — the upgrade path, from the menu bar. The item is only ever IN
+        // the menu when `license::tray_offers_purchase` said so, so this arm
+        // cannot fire for a licensed Mac or a stored-key holder.
+        TrayCommand::Upgrade => {
+            reveal_purchase_prompt(app.clone());
+        }
+        // YV95 — start/stop a meeting from the menu bar. The picker is skipped
+        // on this path: `unknown`.
+        TrayCommand::ToggleMeeting => {
+            toggle_meeting_off_thread(app, state, "the tray item", meetings::MeetingKind::Unknown);
+        }
+        // yap24-NT7 — open the finished meeting's notes.
+        TrayCommand::OpenMeetingNotes => {
+            let id = state.notes_ready_meeting.lock().clone();
+            if let Some(id) = id {
+                open_meeting_notes_now(app, &id);
+            }
+        }
+        // YV125 — the same start, with the kind the user chose.
+        TrayCommand::RecordMeetingAs(kind) => {
+            toggle_meeting_off_thread(app, state, "the tray kind picker", kind);
+        }
+        TrayCommand::PasteRawLastTranscript => {
+            paste_raw_last_transcript(app, state);
+        }
+        TrayCommand::OpenShortcuts => {
+            // Open Settings and hint the Shortcut sub-tab.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("navigate", "settings");
+            let _ = app.emit("settings-tab", "shortcut");
+        }
+        TrayCommand::SendFeedback => {
+            // Open the repo's new-issue page in the default browser.
+            let _ = std::process::Command::new("open")
+                .arg("https://github.com/wilsonguenther-dev/wilson-voice/issues/new")
+                .spawn();
+        }
+        TrayCommand::ToggleHandsFree => {
+            // Y8-A: one toggle for the tray item and the ⌃⌘H chord.
+            toggle_hands_free(app, state, StopOrigin::MenuBar);
+        }
+        TrayCommand::ToggleDictation => {
+            if *state.recording.lock() {
+                // Tray Stop also exits hands-free (see manual_toggle) — clear
+                // both the app-side and PTT tap-side latches.
+                stop_take(app, state, StopOrigin::MenuBar);
+            } else {
+                start_recording(app, state);
+            }
+        }
+    }
 }
 
 /// Y2-D — the ONE way the pill (and the menu bar) asks for the purchase SHEET.
@@ -2095,7 +2217,7 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
         serde_json::json!({ "ok": false, "message": CANCELLED_TAKE_MESSAGE }),
     );
     emit_status(app, state);
-    float_pill::after_recording(app, state.settings.lock().show_floating_pill);
+    float_pill::after_recording(app, idle_pill_on(state));
     // The bare literal is load-bearing and must stay intact: `vocab`'s
     // redaction corpus is LITERALS ONLY, so a word survives a packed support
     // log only if Yap compiled that exact literal into itself. Folding the new
@@ -3355,7 +3477,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // where one would eventually be forgotten.
         unregister_cancel_shortcut(&app2);
         // Keep island on all Spaces if always-on; else hide after take
-        float_pill::after_recording(&app2, state2.settings.lock().show_floating_pill);
+        float_pill::after_recording(&app2, idle_pill_on(&state2));
         emit_status(&app2, &state2);
         // Reached the normal end — no soft-lock, disarm the panic guard.
         busy_guard.armed = false;
@@ -3955,7 +4077,7 @@ fn pending_copy_card() -> Option<paste::CopyCard> {
 /// `show_floating_pill`.
 #[tauri::command]
 fn dismiss_copy_card(app: AppHandle, state: State<'_, Arc<AppState>>) {
-    let show = state.settings.lock().show_floating_pill;
+    let show = idle_pill_on(&state);
     // A take recording or still processing keeps its pill, whatever the setting.
     let in_flight = *state.recording.lock() || *state.busy.lock();
     float_pill::release_copy_card(&app, show, in_flight);
@@ -4215,7 +4337,10 @@ fn save_settings(
     // where the pill stays up without a show call.
     float_pill::set_position(float_pill::PillPosition::from_settings(&next.pill_position));
     float_pill::reposition(&app);
-    if next.show_floating_pill {
+    if tray_menu::idle_pill_visible(
+        next.show_floating_pill,
+        state.pill_hide.is_hidden(std::time::Instant::now()),
+    ) {
         float_pill::show_float(&app)?;
     } else if !*state.recording.lock() {
         float_pill::hide_float(&app);
@@ -5513,6 +5638,116 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
     paste::copy_text(&app, &text)
 }
 
+/// Y6-B — should the IDLE pill be on screen right now? The persistent
+/// `show_floating_pill` setting AND not inside a "Hide Pill for 1 Hour". Every
+/// pill-visibility decision reads this instead of the raw setting, so a hide
+/// cannot be undone by the next take ending.
+fn idle_pill_on(state: &AppState) -> bool {
+    tray_menu::idle_pill_visible(
+        state.settings.lock().show_floating_pill,
+        state.pill_hide.is_hidden(std::time::Instant::now()),
+    )
+}
+
+/// Y6-B — "Hide Pill for 1 Hour". Takes the idle pill off screen for
+/// `tray_menu::PILL_HIDE_FOR` and arms a one-shot timer that puts it back.
+///
+/// The deadline is in-memory only (`tray_menu::PillHide`): it is not written to
+/// settings, the database or any file, so a restart during the hour shows the
+/// pill again — the correct and forgiving behaviour. A take or a meeting that is
+/// recording keeps its pill: the hide applies once it settles, through
+/// [`idle_pill_on`].
+fn hide_for_an_hour(app: &AppHandle, state: &Arc<AppState>) {
+    let ticket = state.pill_hide.hide_for_an_hour(std::time::Instant::now());
+    let in_flight = *state.recording.lock() || *state.busy.lock();
+    if !in_flight && !float_pill::meeting_recording() {
+        float_pill::after_recording(app, false);
+    }
+    log::info!("pill: hidden for an hour (until restart or Show Pill Now)");
+    sync_tray(app, state);
+    let timer_app = app.clone();
+    let timer_state = state.clone();
+    let spawned = std::thread::Builder::new()
+        .name("wv-pill-unhide".into())
+        .spawn(move || {
+            let wait = ticket
+                .until
+                .saturating_duration_since(std::time::Instant::now());
+            std::thread::sleep(wait);
+            // A newer hide, or "Show Pill Now", superseded this ticket: the
+            // pill is someone else's business now.
+            let (app, state) = (timer_app, timer_state);
+            if state.pill_hide.expire(ticket, std::time::Instant::now()) {
+                log::info!("pill: the hour is up — showing it again");
+                let in_flight = *state.recording.lock() || *state.busy.lock();
+                float_pill::after_recording(&app, idle_pill_on(&state) || in_flight);
+                sync_tray(&app, &state);
+            }
+        });
+    if let Err(e) = spawned {
+        // No timer means the hide would never end on its own: undo it rather
+        // than strand the pill until a restart.
+        log::warn!("pill: could not arm the unhide timer ({e}) — not hiding");
+        state.pill_hide.show_now();
+        float_pill::after_recording(app, idle_pill_on(state));
+        sync_tray(app, state);
+    }
+}
+
+/// Y6-B — "Show Pill Now": end a running hide early. The pill comes back only
+/// if the persistent setting wants it.
+fn show_pill_now(app: &AppHandle, state: &AppState) {
+    if state.pill_hide.show_now() {
+        log::info!("pill: hide ended early");
+    }
+    let in_flight = *state.recording.lock() || *state.busy.lock();
+    float_pill::after_recording(app, idle_pill_on(state) || in_flight);
+    sync_tray(app, state);
+}
+
+/// The newest transcript's text, or `None` (logged) when history is empty or
+/// unreadable. Shared by the tray's paste and copy so the two can never pick
+/// different rows.
+fn last_transcript_text(state: &AppState, what: &str) -> Option<String> {
+    match state.db.list_transcripts(1, None) {
+        Ok(entries) => match entries.into_iter().next() {
+            Some(e) => Some(e.text),
+            None => {
+                log::info!("{what}: history is empty");
+                None
+            }
+        },
+        Err(err) => {
+            log::warn!("{what}: db read failed: {err}");
+            None
+        }
+    }
+}
+
+/// Y6-B — "Copy Last Transcript": the clipboard sibling of
+/// [`paste_last_transcript`]. Puts the newest transcript on the clipboard and
+/// posts no keystroke.
+///
+/// It goes through `paste::copy_text_sequenced`, NOT a bare clipboard write,
+/// because a paste may still be holding the pasteboard (YV39: the receipt
+/// waiter restores the user's prior clipboard after the target reads). A bare
+/// write racing that restore would be clobbered by it. The sequenced copy runs
+/// on the main thread — the thread every YV39 settle runs on — and settles any
+/// open paste transaction FIRST, so the copy is always the last write and wins.
+/// Runs off-main via `spawn_blocking` because the hop waits on the main thread,
+/// and this is called from the main-thread menu callback. No history row is
+/// inserted.
+fn copy_last_transcript(app: &AppHandle, state: &AppState) {
+    let Some(text) = last_transcript_text(state, "copy last transcript") else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || match paste::copy_text_sequenced(&app, &text) {
+        Ok(()) => log::info!("copy last transcript: on the clipboard"),
+        Err(e) => log::warn!("copy last transcript failed: {e}"),
+    });
+}
+
 /// Re-paste the most recent transcript — backs the tray "Paste Last Transcript"
 /// item and the global ⌃⌘V shortcut (Wispr-parity). Reads the newest row
 /// (`list_transcripts` is `ORDER BY created_at DESC`) and pastes it into the
@@ -5521,18 +5756,8 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
 /// it directly from a main-thread menu/shortcut callback would deadlock. This
 /// only copies+pastes; it does NOT insert a new history row (no duplicate).
 fn paste_last_transcript(app: &AppHandle, state: &AppState) {
-    let text = match state.db.list_transcripts(1, None) {
-        Ok(entries) => match entries.into_iter().next() {
-            Some(e) => e.text,
-            None => {
-                log::info!("paste last transcript: history is empty");
-                return;
-            }
-        },
-        Err(err) => {
-            log::warn!("paste last transcript: db read failed: {err}");
-            return;
-        }
+    let Some(text) = last_transcript_text(state, "paste last transcript") else {
+        return;
     };
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -6255,7 +6480,7 @@ fn emit_notes_status(state: &AppState, st: &summary_jobs::NotesStatus) {
 /// yap24-NT7 — the tray line that opens a finished meeting's notes.
 const MEETING_NOTES_TRAY_LABEL: &str = "Meeting notes ready — Open";
 /// yap24-NT7 — its menu id.
-const MEETING_NOTES_TRAY_ID: &str = "meeting_notes_open";
+const MEETING_NOTES_TRAY_ID: &str = tray_menu::ID_NOTES_READY;
 
 /// yap24-NT7 — the `navigate` payload that opens ONE meeting in the Meetings
 /// view. The frontend builds the same string (`meetingNavPayload` in
@@ -6860,7 +7085,7 @@ fn begin_meeting(
     let status = controller.status();
     // A recording started: whatever offer the pill was holding is answered.
     meeting_detect::clear(app, None);
-    if st.settings.lock().show_floating_pill {
+    if idle_pill_on(st) {
         float_pill::show_for_recording(app);
     }
     Ok(status)
@@ -6973,7 +7198,7 @@ fn stop_meeting(
     }
     controller.stop("user stopped")?;
     if !*state.recording.lock() {
-        float_pill::after_recording(&app, state.settings.lock().show_floating_pill);
+        float_pill::after_recording(&app, idle_pill_on(&state));
     }
     Ok(controller.status())
 }
@@ -7427,7 +7652,7 @@ fn show_fn_hint(app: &AppHandle, st: &Arc<AppState>) {
     let st = st.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(FN_HINT_VISIBLE_MS));
-        let show = st.settings.lock().show_floating_pill;
+        let show = idle_pill_on(&st);
         let in_flight = *st.recording.lock() || *st.busy.lock();
         let keep = show || in_flight || float_pill::dictating() || float_pill::meeting_recording();
         float_pill::after_recording(&h, keep);
@@ -8561,6 +8786,9 @@ pub fn run() {
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
         tray_paste_raw: PLMutex::new(None),
+        tray_hide_pill: PLMutex::new(None),
+        tray_show_pill: PLMutex::new(None),
+        pill_hide: tray_menu::PillHide::new(),
         tray_meeting: PLMutex::new(None),
         tray_meeting_kind: PLMutex::new(None),
         tray_notes_ready: PLMutex::new(None),
@@ -9225,7 +9453,7 @@ pub fn run() {
                         if !*meet_state.recording.lock() {
                             float_pill::after_recording(
                                 &meet_app,
-                                meet_state.settings.lock().show_floating_pill,
+                                idle_pill_on(&meet_state),
                             );
                         }
                     };
@@ -9269,44 +9497,54 @@ pub fn run() {
                 .and_then(|e| e.into_iter().next())
                 .map(|e| dictation::undo_ai_edit_text(&e.text, e.raw_text.as_deref()).is_some())
                 .unwrap_or(false);
+            use tray_menu as tm;
             let dictation_i = MenuItem::with_id(
                 app,
-                "toggle",
+                tm::ID_TOGGLE,
                 if recording_now {
                     "Stop Dictation"
                 } else {
-                    "Start Dictation"
+                    tm::label(tm::ID_TOGGLE)
                 },
                 true,
                 None::<&str>,
             )?;
             let hands_free_i = CheckMenuItem::with_id(
                 app,
-                "hands_free",
-                "Hands-free",
+                tm::ID_HANDS_FREE,
+                tm::label(tm::ID_HANDS_FREE),
                 true,
                 *state.hands_free.lock(),
                 None::<&str>,
             )?;
             // "Paste Last Transcript" (⌃⌘V) — re-injects the newest transcript,
             // the marquee Wispr-parity action. The accelerator is also registered
-            // globally below so it fires anywhere, not just when the menu is open.
+            // globally (shortcuts::PASTE_LAST) so it fires anywhere, not just
+            // when the menu is open.
             let paste_last_i = MenuItem::with_id(
                 app,
-                "paste_last",
-                "Paste Last Transcript",
+                tm::ID_PASTE_LAST,
+                tm::label(tm::ID_PASTE_LAST),
                 true,
-                Some("Ctrl+Cmd+V"),
+                Some(shortcuts::PASTE_LAST.accelerator),
+            )?;
+            // Y6-B — "Copy Last Transcript": the clipboard sibling, no keystroke.
+            let copy_last_i = MenuItem::with_id(
+                app,
+                tm::ID_COPY_LAST,
+                tm::label(tm::ID_COPY_LAST),
+                true,
+                None::<&str>,
             )?;
             // YV51 "Undo AI Edit" (⌃⌘Z) — re-pastes the RAW take over the
             // polished one. Starts disabled and is enabled by `sync_tray` only
             // when the newest take's raw actually differs from what was pasted.
             let paste_raw_i = MenuItem::with_id(
                 app,
-                "paste_raw",
-                "Undo AI Edit (Paste Raw)",
+                tm::ID_PASTE_RAW,
+                tm::label(tm::ID_PASTE_RAW),
                 *state.undo_available.lock(),
-                Some("Ctrl+Cmd+Z"),
+                Some(shortcuts::UNDO_AI_EDIT.accelerator),
             )?;
             // YV95 — the meeting entry point, one item above the dictation
             // controls' separator so it reads as its own mode rather than as a
@@ -9317,7 +9555,7 @@ pub fn run() {
             let meeting_available = meeting_control::capture_available();
             let meeting_i = MenuItem::with_id(
                 app,
-                "meeting_toggle",
+                tm::ID_MEETING_TOGGLE,
                 if meeting_available {
                     MEETING_TRAY_START_LABEL.to_string()
                 } else {
@@ -9344,8 +9582,8 @@ pub fn run() {
                 .collect::<Result<Vec<_>, _>>()?;
             let meeting_kind_i = Submenu::with_id_and_items(
                 app,
-                "meeting_kind",
-                "Record a meeting as…",
+                tm::ID_MEETING_KIND,
+                tm::label(tm::ID_MEETING_KIND),
                 // No meeting can be running at setup, so this matches the plain
                 // item's enabled state; the status sink flips both on the
                 // recording edge.
@@ -9355,24 +9593,26 @@ pub fn run() {
                     .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
                     .collect::<Vec<_>>(),
             )?;
-            let sep1 = PredefinedMenuItem::separator(app)?;
-            let sep2 = PredefinedMenuItem::separator(app)?;
-            let sep_meeting = PredefinedMenuItem::separator(app)?;
             // Y2-E — the license header, seeded from the same decision
             // `sync_tray` refreshes it with, so the menu bar is already correct
             // the first time it is opened rather than after the first state
             // transition. DISABLED because it is a label, not an action.
             let (license_line_now, _) = license::tray_line(&state.license.status());
-            let license_i =
-                MenuItem::with_id(app, "license_header", license_line_now, false, None::<&str>)?;
-            let sep_license = PredefinedMenuItem::separator(app)?;
+            let license_i = MenuItem::with_id(
+                app,
+                tm::ID_LICENSE_HEADER,
+                license_line_now,
+                false,
+                None::<&str>,
+            )?;
             // Y2-E — the upgrade line. Built unconditionally so `sync_tray`
             // owns a handle to it, but NOT placed in the menu below: it is
-            // inserted only while `license::tray_offers_purchase` is true.
+            // inserted only while `license::tray_offers_purchase` is true
+            // (`tray_menu::INSERTED_ITEMS`).
             let upgrade_i = MenuItem::with_id(
                 app,
-                "upgrade",
-                license::UPGRADE_TRAY_LABEL,
+                tm::ID_UPGRADE,
+                tm::label(tm::ID_UPGRADE),
                 true,
                 None::<&str>,
             )?;
@@ -9384,44 +9624,115 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
-            let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let shortcuts_i =
-                MenuItem::with_id(app, "shortcuts", "Keyboard Shortcuts…", true, None::<&str>)?;
-            let sep3 = PredefinedMenuItem::separator(app)?;
+            let show_i =
+                MenuItem::with_id(app, tm::ID_SHOW, tm::label(tm::ID_SHOW), true, None::<&str>)?;
+            // Y6-B — the transcript history (the Home view).
+            let history_i = MenuItem::with_id(
+                app,
+                tm::ID_HISTORY,
+                tm::label(tm::ID_HISTORY),
+                true,
+                None::<&str>,
+            )?;
+            let settings_i = MenuItem::with_id(
+                app,
+                tm::ID_SETTINGS,
+                tm::label(tm::ID_SETTINGS),
+                true,
+                None::<&str>,
+            )?;
+            let shortcuts_i = MenuItem::with_id(
+                app,
+                tm::ID_SHORTCUTS,
+                tm::label(tm::ID_SHORTCUTS),
+                true,
+                None::<&str>,
+            )?;
+            // Y6-B — the temporary pill hide. Enabled state is seeded here and
+            // refreshed by `sync_tray` from `tray_menu::pill_menu_state`.
+            let pill_menu_now = tm::pill_menu_state(
+                state.settings.lock().show_floating_pill,
+                state.pill_hide.is_hidden(std::time::Instant::now()),
+            );
+            let hide_pill_i = MenuItem::with_id(
+                app,
+                tm::ID_HIDE_PILL,
+                tm::label(tm::ID_HIDE_PILL),
+                pill_menu_now.hide_enabled,
+                None::<&str>,
+            )?;
+            let show_pill_i = MenuItem::with_id(
+                app,
+                tm::ID_SHOW_PILL,
+                tm::label(tm::ID_SHOW_PILL),
+                pill_menu_now.show_now_enabled,
+                None::<&str>,
+            )?;
             // Feedback/report affordance (Wispr's "Share feedback" / "Talk to
             // support") — opens the repo's new-issue page in the browser.
-            let feedback_i =
-                MenuItem::with_id(app, "feedback", "Send Feedback…", true, None::<&str>)?;
-            let sep4 = PredefinedMenuItem::separator(app)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit Yap", true, None::<&str>)?;
-            let menu = Menu::with_items(
+            let feedback_i = MenuItem::with_id(
                 app,
-                &[
-                    &license_i,
-                    &sep_license,
-                    &dictation_i,
-                    &paste_last_i,
-                    &paste_raw_i,
-                    &sep_meeting,
-                    &meeting_i,
-                    &meeting_kind_i,
-                    &sep1,
-                    &hands_free_i,
-                    &sep2,
-                    &show_i,
-                    &settings_i,
-                    &shortcuts_i,
-                    &sep3,
-                    &feedback_i,
-                    &sep4,
-                    &quit_i,
-                ],
+                tm::ID_FEEDBACK,
+                tm::label(tm::ID_FEEDBACK),
+                true,
+                None::<&str>,
             )?;
+            let quit_i =
+                MenuItem::with_id(app, tm::ID_QUIT, tm::label(tm::ID_QUIT), true, None::<&str>)?;
+            // Y6-B — the menu is assembled FROM `tray_menu::MENU_LAYOUT`, so
+            // the order lives in one place and `tests/tray_menu.rs` can prove
+            // every item has a slot. An id in the layout with no built item
+            // fails setup loudly rather than rendering a menu with a hole.
+            let built: [(&str, &dyn tauri::menu::IsMenuItem<Wry>); 15] = [
+                (tm::ID_LICENSE_HEADER, &license_i),
+                (tm::ID_TOGGLE, &dictation_i),
+                (tm::ID_PASTE_LAST, &paste_last_i),
+                (tm::ID_COPY_LAST, &copy_last_i),
+                (tm::ID_PASTE_RAW, &paste_raw_i),
+                (tm::ID_MEETING_TOGGLE, &meeting_i),
+                (tm::ID_MEETING_KIND, &meeting_kind_i),
+                (tm::ID_HANDS_FREE, &hands_free_i),
+                (tm::ID_SHOW, &show_i),
+                (tm::ID_HISTORY, &history_i),
+                (tm::ID_SETTINGS, &settings_i),
+                (tm::ID_SHORTCUTS, &shortcuts_i),
+                (tm::ID_HIDE_PILL, &hide_pill_i),
+                (tm::ID_SHOW_PILL, &show_pill_i),
+                (tm::ID_FEEDBACK, &feedback_i),
+            ];
+            let separators = tm::MENU_LAYOUT
+                .iter()
+                .filter(|s| matches!(s, tm::Slot::Separator))
+                .map(|_| PredefinedMenuItem::separator(app))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut separators_left = separators.iter();
+            let mut slots: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = Vec::new();
+            for slot in tm::MENU_LAYOUT.iter() {
+                match slot {
+                    tm::Slot::Separator => {
+                        let sep = separators_left
+                            .next()
+                            .ok_or("tray: separator count drifted from the layout")?;
+                        slots.push(sep);
+                    }
+                    tm::Slot::Item(id) if *id == tm::ID_QUIT => slots.push(&quit_i),
+                    tm::Slot::Item(id) => {
+                        let item = built
+                            .iter()
+                            .find(|(b, _)| b == id)
+                            .map(|(_, item)| *item)
+                            .ok_or_else(|| format!("tray: layout names {id:?} but it was not built"))?;
+                        slots.push(item);
+                    }
+                }
+            }
+            let menu = Menu::with_items(app, &slots)?;
             // Keep handles so state transitions can reflect into the dropdown.
             *state.tray_dictation.lock() = Some(dictation_i);
             *state.tray_hands_free.lock() = Some(hands_free_i);
             *state.tray_paste_raw.lock() = Some(paste_raw_i);
+            *state.tray_hide_pill.lock() = Some(hide_pill_i);
+            *state.tray_show_pill.lock() = Some(show_pill_i);
             *state.tray_meeting.lock() = Some(meeting_i);
             *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
@@ -9448,88 +9759,11 @@ pub fn run() {
                 .tooltip("Yap — hold fn to dictate")
                 .on_menu_event({
                     let state = state.clone();
-                    move |app, event| match event.id.as_ref() {
-                        "quit" => {
-                            // yap-lifecycle — the SAME quit as Cmd-Q and the
-                            // Dock's Quit: app.exit(0) reaches RunEvent::Exit,
-                            // whose quit_teardown orders the pill out first and
-                            // then stops a live meeting (YV95) and checkpoints
-                            // the WAL, every step bounded.
-                            app.exit(0);
-                        }
-                        "show" => {
-                            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
-                        }
-                        "settings" => {
-                            // Open the app AND jump it to the Settings view.
-                            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
-                            let _ = app.emit("navigate", "settings");
-                        }
-                        "paste_last" => {
-                            paste_last_transcript(app, &state);
-                        }
-                        // Y2-E — the upgrade path, from the menu bar. The item
-                        // is only ever IN the menu when
-                        // `license::tray_offers_purchase` said so, so this arm
-                        // cannot fire for a licensed Mac or a stored-key holder.
-                        "upgrade" => {
-                            reveal_purchase_prompt(app.clone());
-                        }
-                        // YV95 — start/stop a meeting from the menu bar. The
-                        // picker is skipped on this path: `unknown`.
-                        "meeting_toggle" => {
-                            toggle_meeting_off_thread(
-                                app,
-                                &state,
-                                "the tray item",
-                                meetings::MeetingKind::Unknown,
-                            );
-                        }
-                        // yap24-NT7 — open the finished meeting's notes.
-                        MEETING_NOTES_TRAY_ID => {
-                            let id = state.notes_ready_meeting.lock().clone();
-                            if let Some(id) = id {
-                                open_meeting_notes_now(app, &id);
-                            }
-                        }
-                        // YV125 — the same start, with the kind the user chose.
-                        id if meeting_control::kind_for_menu_id(id).is_some() => {
-                            let kind = meeting_control::kind_for_menu_id(id)
-                                .expect("the guard above matched this id");
-                            toggle_meeting_off_thread(app, &state, "the tray kind picker", kind);
-                        }
-                        "paste_raw" => {
-                            paste_raw_last_transcript(app, &state);
-                        }
-                        "shortcuts" => {
-                            // Open Settings and hint the Shortcut sub-tab.
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                            let _ = app.emit("navigate", "settings");
-                            let _ = app.emit("settings-tab", "shortcut");
-                        }
-                        "feedback" => {
-                            // Open the repo's new-issue page in the default browser.
-                            let _ = std::process::Command::new("open")
-                                .arg("https://github.com/wilsonguenther-dev/wilson-voice/issues/new")
-                                .spawn();
-                        }
-                        "hands_free" => {
-                            // Y8-A: one toggle for the tray item and the ⌃⌘H chord.
-                            toggle_hands_free(app, &state, StopOrigin::MenuBar);
-                        }
-                        "toggle" => {
-                            if *state.recording.lock() {
-                                // Tray Stop also exits hands-free (see manual_toggle) —
-                                // clear both the app-side and PTT tap-side latches.
-                                stop_take(app, &state, StopOrigin::MenuBar);
-                            } else {
-                                start_recording(app, &state);
-                            }
-                        }
-                        _ => {}
+                    // Y6-B — every click goes through the ONE registry. An id
+                    // with no command is logged, not silently dropped.
+                    move |app, event| match tray_menu::command_for(event.id.as_ref()) {
+                        Some(command) => run_tray_command(app, &state, command),
+                        None => log::warn!("tray: no command for menu id {:?}", event.id.as_ref()),
                     }
                 })
                 .build(app)?;
@@ -9553,7 +9787,7 @@ pub fn run() {
                 let s = state.settings.lock();
                 (s.show_floating_pill, s.onboarded)
             };
-            if float_pill::launch_pill_visible(show_setting, onboarded) {
+            if float_pill::launch_pill_visible(show_setting, onboarded) && idle_pill_on(&state) {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
@@ -11213,6 +11447,9 @@ mod tests {
             tray_dictation: super::PLMutex::new(None),
             tray_hands_free: super::PLMutex::new(None),
             tray_paste_raw: super::PLMutex::new(None),
+            tray_hide_pill: super::PLMutex::new(None),
+            tray_show_pill: super::PLMutex::new(None),
+            pill_hide: crate::tray_menu::PillHide::new(),
             tray_meeting: super::PLMutex::new(None),
             tray_meeting_kind: super::PLMutex::new(None),
             tray_notes_ready: super::PLMutex::new(None),
