@@ -488,6 +488,10 @@ stage_weak_link() {
   ./scripts/assert-weak-linked-14_4-symbols.sh "$bin"
 }
 
+# Y7-C — the fast half reads docs/loop/MUTATIONS.md and the item files; no cargo.
+stage_non_vacuous()     { "$REPO_ROOT/scripts/assert-tests-are-non-vacuous.sh"; }
+stage_mutation_sweep()  { "$REPO_ROOT/scripts/assert-tests-are-non-vacuous.sh" --execute; }
+
 # The structural windowed smoke (Y0-E, extended by Y7-B) — scripts/smoke-windowed.sh.
 # It runs LAST, after the build-from-nothing verdict is already in, so a red UI
 # judge can never hide whether the tree builds. Y7-B: it runs WHENEVER A DISPLAY
@@ -524,6 +528,17 @@ stage "cargo clippy -D warnings (app + both sidecars)"    stage_clippy
 stage "cargo test --features custom-protocol"             stage_cargo_test
 stage "cargo build --release --features custom-protocol"  stage_cargo_release
 stage "assert weak-linked 14.4 CoreAudio symbols"         stage_weak_link
+stage "mutation ledger + scopeless greps (Y7-C, fast)"     stage_non_vacuous
+
+# Y7-C — the FULL mutation sweep (one cargo rebuild per row, ~150 rows) runs once
+# per part, behind a flag, so the per-item gate stays fast:
+#     YAP_SMOKE_MUTATIONS=1 ./scripts/loop-smoke.sh
+if [ "${YAP_SMOKE_MUTATIONS:-0}" = "1" ]; then
+  MUTATION_MODE="RUN (YAP_SMOKE_MUTATIONS=1) — every row observed red"
+  stage "full mutation sweep (Y7-C, YAP_SMOKE_MUTATIONS=1)" stage_mutation_sweep
+else
+  MUTATION_MODE="NOT RUN — set YAP_SMOKE_MUTATIONS=1 for the full sweep (the fast ledger check above did run)"
+fi
 
 if [ "${YAP_SMOKE_WINDOWED:-}" = "0" ]; then
   WINDOWED_MODE="NOT RUN — YAP_SMOKE_WINDOWED=0 opted out"
@@ -543,4 +558,5 @@ printf 'loop-smoke: PASS — %d/%d stages green.\n' "$STAGE_NO" "$STAGE_NO"
 printf 'sherpa-onnx mode used: %s\n' "$SHERPA_MODE"
 printf 'model weights: none downloaded by this script; state root mode: %s\n' "$STATE_MODE"
 printf 'structural windowed smoke (Y0-E): %s\n' "$WINDOWED_MODE"
+printf 'mutation sweep (Y7-C): %s\n' "$MUTATION_MODE"
 printf '════════════════════════════════════════════════════════════\n'

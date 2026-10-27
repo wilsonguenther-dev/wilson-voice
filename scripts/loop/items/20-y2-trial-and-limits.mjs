@@ -451,7 +451,7 @@ ITEMS.push({
       desktop/src/license/status.ts:70      DEFAULT_SEATS = 3
       desktop/src/license/status.test.ts:162  "This license was refunded or
                                            charged back."
-      grep -rn 'storedKeyProblem|has_stored_license|license_problem_message'
+      grep -rn 'storedKeyProblem|has_stored_license|license_problem_message' scripts/loop/items
         over all item files -> no functional hit
     Y2-A's pillLicense policy enumerates exactly three inputs — licensed, trial
     with days, license_required — so a revoked, unreadable, clock-broken or
