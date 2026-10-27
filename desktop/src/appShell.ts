@@ -1142,7 +1142,7 @@ export function useAppShell() {
       setFailed([]);
       toast("All recordings deleted — your transcripts are kept");
     } catch (e) {
-      toast(String(e));
+      toastError(e);
       await loadFailed().catch(() => {});
       return;
     } finally {
