@@ -11345,7 +11345,9 @@ mod db_b_recovery_followups {
                     Some(&key),
                 )
                 .unwrap();
-            let full = words("full", 30);
+            // A clean Retry of the same audio decodes every window the live
+            // take did, plus the ones it lost: it holds every live word.
+            let full = format!("{} {}", words("live", 10), words("full", 20));
             let (text, asr) = decode_failed_take(&db, &row, None, Ok(0), &[0.1; 1600], |_| {
                 Ok(clean_asr(&full))
             })
@@ -11394,11 +11396,123 @@ mod db_b_recovery_followups {
             let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
                 .expect("Keep saves");
             assert_eq!(entry.id, live.id, "Keep merged into the live entry");
-            assert_eq!(entry.text, words("kept", 25));
+            // fix round 1, BLOCKING 1: the Keep words do not cover the live
+            // words (different windows), so the live words stay and the Keep
+            // words are appended — the audio is gone, so dropping either
+            // side would lose words for good.
+            assert_eq!(entry.text, format!("{}\n\n{}", words("live", 10), words("kept", 25)));
+            assert_eq!(entry.word_count, 35);
             let all = db.list_transcripts(10, None).unwrap();
             assert_eq!(all.len(), 1, "exactly one history row for the take");
+            assert_eq!(all[0].text, entry.text);
             assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
         }
+    }
+
+    /// fix round 1, BLOCKING 1 — a merge must never lose a word. The live
+    /// decode lost window 7, the Finish attempt Keep saves lost window 3; the
+    /// one history row must hold every window, in both directions, because
+    /// the WAV is deleted the moment the merge commits.
+    #[test]
+    fn db_b_merge_never_loses_words_either_direction() {
+        let w = |skip: usize| {
+            (0..10)
+                .filter(|i| *i != skip)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        // (live missing w7, Keep missing w3) and the `<` branch: a Keep with
+        // FEWER words than the live entry, carrying a window the live lacks.
+        for (live_text, kept_text) in [
+            (w(7), w(3)),
+            (w(7), "w7 w8".to_string()),
+            ("w7 w8".to_string(), w(7)),
+        ] {
+            let (dir, db) = fresh("c-noloss");
+            let claims = RecoveryClaims::new();
+            let wav = dir.join("live.wav");
+            std::fs::write(&wav, b"riff").unwrap();
+            let row = db
+                .record_failed_dictation(&wav, 20.0, "1 of 10 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            db.insert_transcript_for_take(
+                live_text.clone(),
+                "native".into(),
+                1.0,
+                20.0,
+                900,
+                None,
+                chrono::Utc::now(),
+                None,
+                Some(&key),
+            )
+            .unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&kept_text))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert!(!wav.exists(), "Keep deleted the audio");
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "exactly one history row for the take");
+            for word in live_text.split_whitespace().chain(kept_text.split_whitespace()) {
+                assert!(
+                    all[0].text.split_whitespace().any(|t| t == word),
+                    "word {word} lost: live={live_text:?} kept={kept_text:?} saved={:?}",
+                    all[0].text
+                );
+            }
+            assert_eq!(entry.text, all[0].text);
+            assert_eq!(all[0].word_count, db_word_count(&all[0].text));
+        }
+        // A save whose words are all already in the entry changes nothing,
+        // and a save that holds every live word plus more replaces it cleanly.
+        for (live_text, saved, expect) in [
+            (w(99), w(3), w(99)),
+            (w(3), w(99), w(99)),
+        ] {
+            let (dir, db) = fresh("c-subset");
+            let claims = RecoveryClaims::new();
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "x", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            db.insert_transcript_for_take(
+                live_text, "native".into(), 1.0, 20.0, 900, None, chrono::Utc::now(), None, Some(&key),
+            )
+            .unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&saved)).unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert_eq!(entry.text, expect, "no duplicated words when one side covers the other");
+        }
+        // A user's hand edit of the live entry survives a later, longer save.
+        {
+            let (dir, db) = fresh("c-edit");
+            let claims = RecoveryClaims::new();
+            let row = db
+                .record_failed_dictation(&dir.join("live.wav"), 20.0, "x", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    "alpha beta gamma delta".into(), "native".into(), 1.0, 20.0, 900, None,
+                    chrono::Utc::now(), None, Some(&key),
+                )
+                .unwrap();
+            db.record_correction(&live.id, "alpha beta GAMMA-FIXED delta").unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some("alpha beta gamma delta epsilon zeta"))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            assert!(entry.text.contains("GAMMA-FIXED"), "the user's edit was overwritten: {:?}", entry.text);
+            assert!(entry.text.contains("zeta"));
+        }
+    }
+
+    fn db_word_count(text: &str) -> i64 {
+        text.split_whitespace().count() as i64
     }
 
     // (e) ------------------------------------------------------------------

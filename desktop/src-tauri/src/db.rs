@@ -2768,8 +2768,10 @@ impl Database {
     ///   (c) A take whose live decode already saved an entry (a degraded live
     ///       take, keyed by `insert_transcript_for_take`) MERGES into it: its
     ///       text, raw text, backend and word count are updated in place and the
-    ///       failed row goes. A save with FEWER words than the entry already
-    ///       holds leaves the entry's words alone — merging never loses words.
+    ///       failed row goes. The merge is decided by WORDS, never by word
+    ///       count (see [`merge_take_texts`]): the take's audio is deleted the
+    ///       moment this commits, so a word in either text that the merged row
+    ///       does not hold is a word gone for good.
     pub fn convert_failed_dictation(
         &self,
         id: &str,
@@ -2821,7 +2823,8 @@ impl Database {
                 (false, None) => return Err("That recovery clip is no longer in the list".into()),
                 // (c) Merge into the entry the live take already saved.
                 (true, Some(live)) => {
-                    if entry.word_count >= live.word_count {
+                    let merged = merge_take_texts(&live, &entry);
+                    if let Some(m) = merged {
                         tx.execute(
                             "UPDATE transcripts
                              SET text = ?2, raw_text = ?3, backend = ?4,
@@ -2829,22 +2832,15 @@ impl Database {
                              WHERE id = ?1",
                             params![
                                 live.id,
-                                entry.text,
-                                entry.raw_text,
-                                entry.backend,
-                                entry.asr_seconds,
-                                entry.word_count,
+                                m.text,
+                                m.raw_text,
+                                m.backend,
+                                m.asr_seconds,
+                                m.word_count,
                             ],
                         )
                         .map_err(|e| e.to_string())?;
-                        TranscriptEntry {
-                            text: entry.text,
-                            raw_text: entry.raw_text,
-                            backend: entry.backend,
-                            asr_seconds: entry.asr_seconds,
-                            word_count: entry.word_count,
-                            ..live
-                        }
+                        m
                     } else {
                         live
                     }
@@ -3830,6 +3826,72 @@ fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegme
 const TRANSCRIPT_COLUMNS: &str = "id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
      COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
      stages_that_ran, polish_skip_reason, feedback";
+
+/// A word as the merge compares it: lowercase letters and digits only, so
+/// punctuation and casing the cleanup pass changes never count as a new word.
+fn merge_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Every token of `inner` appears in `outer`, in order.
+fn tokens_cover(outer: &[String], inner: &[String]) -> bool {
+    let mut it = outer.iter();
+    inner.iter().all(|w| it.any(|o| o == w))
+}
+
+/// yap-recovery-followups (c), fix round 1 — how a recovered save merges into
+/// the history entry a degraded live take already wrote. Never by word count:
+/// the live decode and the save can each be missing DIFFERENT windows (live
+/// lost window 7, the Finish attempt that Keep saves lost window 3), and the
+/// take's audio is deleted as soon as the merge commits.
+///
+/// * The save holds every word of the entry, in order: it replaces the entry
+///   (a clean Retry of the same audio — nothing in the entry is dropped).
+/// * The entry already holds every word of the save: `None`, the entry stays
+///   exactly as it is (including any hand edit the user made to it).
+/// * Neither covers the other (different windows missing, or the user edited
+///   the entry): the entry keeps its text and the save is APPENDED after a
+///   blank line. Some words may then appear twice; none is ever lost.
+fn merge_take_texts(live: &TranscriptEntry, save: &TranscriptEntry) -> Option<TranscriptEntry> {
+    let live_tokens = merge_tokens(&live.text);
+    let save_tokens = merge_tokens(&save.text);
+    if tokens_cover(&save_tokens, &live_tokens) {
+        return Some(TranscriptEntry {
+            text: save.text.clone(),
+            raw_text: save.raw_text.clone(),
+            backend: save.backend.clone(),
+            asr_seconds: save.asr_seconds,
+            word_count: save.word_count,
+            ..live.clone()
+        });
+    }
+    if tokens_cover(&live_tokens, &save_tokens) {
+        return None;
+    }
+    let text = format!("{}\n\n{}", live.text.trim_end(), save.text.trim_start());
+    let raw_text = match (live.raw_text.as_deref(), save.raw_text.as_deref()) {
+        (None, None) => None,
+        (l, s) => Some(format!(
+            "{}\n\n{}",
+            l.unwrap_or(&live.text).trim_end(),
+            s.unwrap_or(&save.text).trim_start()
+        )),
+    };
+    Some(TranscriptEntry {
+        word_count: word_count(&text),
+        text,
+        raw_text,
+        ..live.clone()
+    })
+}
 
 /// yap-recovery-followups (a) — the idempotency key of a failed/recovered
 /// take: the id its audio carries on disk when it has one, else the failed
