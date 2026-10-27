@@ -747,8 +747,20 @@ pub fn clear_copy_card_for_new_take(app: &AppHandle) {
     }
 }
 
+/// What keeps the pill on screen after a take, whatever `show_floating_pill`
+/// says: the caller's own reason, a parked Copy card, or a pending "Record
+/// this meeting?" offer (#272 — `meeting_detect::raise` put the pill up for
+/// it, so a dictation ending under it must not hide a card nobody answered).
+pub fn pill_keeps_up(keep_visible: bool, copy_card_held: bool, offer_pending: bool) -> bool {
+    keep_visible || copy_card_held || offer_pending
+}
+
 pub fn after_recording(app: &AppHandle, keep_visible: bool) {
-    let keep_visible = keep_visible || copy_card_held();
+    let keep_visible = pill_keeps_up(
+        keep_visible,
+        copy_card_held(),
+        crate::meeting_detect::pending().is_some(),
+    );
     dispatch_main(app, move |a| {
         if keep_visible {
             let _ = show_float(a);

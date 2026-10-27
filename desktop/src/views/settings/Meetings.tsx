@@ -35,36 +35,36 @@ export default function Meetings() {
   if (!view) return null;
   const calendarReady = view.calendarAccess === "full_access";
   return (
-    <section className="settings-panel">
-      <h2 className="settings-section">
-        Meetings
-        <span className="sub">
+    <section className="settings-panel" data-settings-pane="meetings">
+      <div className="panel" data-row>
+        <h3>Meeting detection</h3>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={view.offerDetected}
+            onChange={(e) => void save({ offerDetected: e.target.checked })}
+          />
+          <span>Offer to record detected meetings</span>
+        </label>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={view.useCalendar}
+            disabled={!view.useCalendar && !calendarReady}
+            onChange={(e) => void save({ useCalendar: e.target.checked })}
+          />
+          <span>
+            Use my calendar
+            {!calendarReady && !view.useCalendar && (
+              <> — connect your calendar from the Meetings setup card first</>
+            )}
+          </span>
+        </label>
+        <p className="settings-hint">
           Yap can notice a meeting and ask if you want to record it. It never
           starts recording on its own.
-        </span>
-      </h2>
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={view.offerDetected}
-          onChange={(e) => void save({ offerDetected: e.target.checked })}
-        />
-        <span>Offer to record detected meetings</span>
-      </label>
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={view.useCalendar}
-          disabled={!view.useCalendar && !calendarReady}
-          onChange={(e) => void save({ useCalendar: e.target.checked })}
-        />
-        <span>
-          Use my calendar
-          {!calendarReady && !view.useCalendar && (
-            <> — connect your calendar from the Meetings setup card first</>
-          )}
-        </span>
-      </label>
+        </p>
+      </div>
     </section>
   );
 }

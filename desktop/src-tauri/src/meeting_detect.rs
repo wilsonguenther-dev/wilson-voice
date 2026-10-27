@@ -348,6 +348,10 @@ pub fn clear(app: &AppHandle, only: Option<OfferSource>) -> bool {
     };
     if cleared {
         emit_clear(app);
+        // #272: `raise` put the pill up for this offer; with the offer gone
+        // (window passed, setting off, meeting started) the pill follows
+        // `show_floating_pill` again unless a take, meeting or Copy card holds it.
+        crate::release_offer_pill(app);
     }
     cleared
 }
@@ -630,6 +634,36 @@ mod sys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #272 fix round 1 — a pending offer holds the pill the way a Copy card
+    /// does: `after_recording` ORs `pending().is_some()` into its keep-visible.
+    #[test]
+    fn pending_offer_keeps_the_pill_up_after_a_take() {
+        use crate::float_pill::pill_keeps_up;
+        assert!(
+            !pill_keeps_up(false, false, false),
+            "nothing holds it: hide"
+        );
+        assert!(
+            pill_keeps_up(false, false, true),
+            "a pending offer holds it"
+        );
+        assert!(pill_keeps_up(false, true, false), "a Copy card holds it");
+        let src = include_str!("float_pill.rs");
+        let body = &src[src.find("pub fn after_recording(").unwrap()..];
+        let body = &body[..body.find("dispatch_main(").unwrap()];
+        assert!(
+            body.contains("crate::meeting_detect::pending().is_some()"),
+            "after_recording must consult the pending offer before it hides the pill"
+        );
+        let clear_src = include_str!("meeting_detect.rs");
+        let clear_body = &clear_src[clear_src.find("pub fn clear(").unwrap()..];
+        let clear_body = &clear_body[..clear_body.find("\n}\n").unwrap()];
+        assert!(
+            clear_body.contains("crate::release_offer_pill(app)"),
+            "clearing an offer must hand the pill back to show_floating_pill"
+        );
+    }
 
     fn tmp_db(tag: &str) -> (std::path::PathBuf, Database) {
         let dir = std::env::temp_dir().join(format!(

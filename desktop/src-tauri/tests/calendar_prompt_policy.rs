@@ -195,3 +195,34 @@ fn a_blank_title_is_no_title() {
     let o = calendar_offer(&[ev], NOW, &Snoozes::default()).unwrap();
     assert_eq!(o.title, None);
 }
+
+/// #272 fix round 1 (BLOCKING, failure polarity) — Record must START before it
+/// clears or snoozes the offer. Clearing first unmounted the card, so a failed
+/// start (no engine, mic error, "still starting up") was swallowed and the
+/// occurrence was snoozed for good.
+#[test]
+fn record_answer_starts_before_it_clears_or_snoozes_the_offer() {
+    let src = include_str!("../src/lib.rs");
+    let body = &src[src.find("fn meeting_offer_respond(").unwrap()..];
+    let body = &body[..body.find("\n}\n").unwrap()];
+    let head = &body[..body.find("match choice").unwrap()];
+    assert!(
+        !head.contains("meeting_detect::respond(") && !head.contains("meeting_detect::emit_clear("),
+        "nothing may snooze or clear the offer before the answer is acted on"
+    );
+    let rec = &body[body.find("OfferChoice::Record =>").unwrap()
+        ..body.find("OfferChoice::Snooze =>").unwrap()];
+    let start = rec.find("begin_meeting(").expect("Record starts a meeting");
+    let start_err = rec[start..]
+        .find(")?;")
+        .expect("a failed start returns its error first");
+    for later in ["meeting_detect::respond(", "meeting_detect::emit_clear("] {
+        let at = rec
+            .find(later)
+            .unwrap_or_else(|| panic!("Record arm calls {later}"));
+        assert!(
+            at > start + start_err,
+            "{later} must come after begin_meeting(...)?"
+        );
+    }
+}

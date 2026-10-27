@@ -5760,31 +5760,46 @@ fn meeting_offer_respond(
 ) -> Result<Option<meeting_control::MeetingStatus>, String> {
     let choice = meeting_detect::OfferChoice::parse(&choice)
         .ok_or_else(|| format!("unknown offer choice: {choice}"))?;
-    let offer = meeting_detect::respond(&key);
-    meeting_detect::emit_clear(&app);
     let st = state.inner().clone();
     match choice {
         meeting_detect::OfferChoice::Record => {
-            let title = offer.and_then(|o| o.title);
-            begin_meeting(&app, &st, title, meetings::MeetingKind::Virtual).map(Some)
+            // #272 fix round 1: START FIRST. A failed start returns its error
+            // to the card while the offer is still pending and the card still
+            // drawn, so the user sees why and can retry or say Not now; the
+            // occurrence is snoozed only once a recording really began.
+            let title = meeting_detect::pending()
+                .filter(|o| o.key == key)
+                .and_then(|o| o.title);
+            let status = begin_meeting(&app, &st, title, meetings::MeetingKind::Virtual)?;
+            meeting_detect::respond(&key);
+            meeting_detect::emit_clear(&app);
+            release_offer_pill(&app);
+            Ok(Some(status))
         }
         meeting_detect::OfferChoice::Snooze => {
-            // The offer held the pill up; it goes back to following the
-            // setting unless a take or a meeting is in flight.
-            let in_flight = *st.recording.lock()
-                || *st.busy.lock()
-                || float_pill::dictating()
-                || float_pill::meeting_recording();
-            float_pill::after_recording(
-                &app,
-                float_pill::pill_visible_after_card(
-                    st.settings.lock().show_floating_pill,
-                    in_flight,
-                ),
-            );
+            meeting_detect::respond(&key);
+            meeting_detect::emit_clear(&app);
+            release_offer_pill(&app);
             Ok(None)
         }
     }
+}
+
+/// yap-notetaker-detect (#272) — the pending offer went away (answered,
+/// expired, the setting turned off, a meeting started). The offer had put the
+/// pill up, so the pill goes back to following `show_floating_pill` — unless a
+/// take or a meeting is in flight, or a Copy card still holds it
+/// (`float_pill::after_recording` ORs that in). Safe from any thread.
+pub(crate) fn release_offer_pill(app: &AppHandle) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let in_flight = *st.recording.lock()
+        || *st.busy.lock()
+        || float_pill::dictating()
+        || float_pill::meeting_recording();
+    let show = st.settings.lock().show_floating_pill;
+    float_pill::after_recording(app, float_pill::pill_visible_after_card(show, in_flight));
 }
 
 /// Settings › Meetings — both toggles and where calendar access stands.

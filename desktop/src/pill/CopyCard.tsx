@@ -61,12 +61,12 @@ export default function CopyCard() {
     const el = ref.current;
     if (el) {
       const r = el.getBoundingClientRect();
-      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height });
+      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "copy-card");
     }
     const t = setTimeout(dismiss, COPY_CARD_TTL_MS);
     return () => {
       clearTimeout(t);
-      holdPillHitbox(null);
+      holdPillHitbox(null, "copy-card");
     };
   }, [card, dismiss]);
 

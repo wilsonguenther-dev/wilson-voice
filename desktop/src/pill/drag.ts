@@ -121,7 +121,12 @@ function sendHitbox(x: number, y: number, w: number, h: number): void {
 
 /** The capsule's latest rect, kept while a held rect overrides it. */
 let capsuleRect: [number, number, number, number] | null = null;
-let held = false;
+/**
+ * Held rects by owner. The Copy card and the meeting offer can both be up at
+ * once (#272), so one card releasing its hold must never hand the hitbox back
+ * to the capsule while the other card is still drawn.
+ */
+const holds = new Map<string, [number, number, number, number]>();
 /**
  * yap24-NT7 fix — a control that floats OUTSIDE the capsule's own rect (Yappy's
  * meeting badge: the canvas capsule sits mid-window, the badge is pinned to the
@@ -152,7 +157,7 @@ function sendCapsule(): void {
 
 export function reportPillHitbox(x: number, y: number, w: number, h: number): void {
   capsuleRect = [x, y, w, h];
-  if (held) return;
+  if (holds.size) return;
   sendCapsule();
 }
 
@@ -163,23 +168,30 @@ export function reportPillHitbox(x: number, y: number, w: number, h: number): vo
  */
 export function extendPillHitbox(rect: { x: number; y: number; w: number; h: number } | null): void {
   extraRect = rect ? [rect.x, rect.y, rect.w, rect.h] : null;
-  if (held) return;
+  if (holds.size) return;
   sendCapsule();
 }
 
 /**
- * yap-p0-insertion-bridge-fallback — the Copy card takes the hitbox while it is
- * up (so its buttons receive clicks through the click-through panel); `null`
- * hands it back to the capsule's last reported rect.
+ * yap-p0-insertion-bridge-fallback — a card (the Copy card, the meeting offer)
+ * takes the hitbox while it is up, so its buttons receive clicks through the
+ * click-through panel. Each card holds under its own `owner`; while any hold is
+ * live the hitbox is the union of the held rects. `null` releases only that
+ * owner's hold, and the last release hands the hitbox back to the capsule.
  */
-export function holdPillHitbox(rect: { x: number; y: number; w: number; h: number } | null): void {
-  if (rect) {
-    held = true;
-    sendHitbox(rect.x, rect.y, rect.w, rect.h);
+export function holdPillHitbox(
+  rect: { x: number; y: number; w: number; h: number } | null,
+  owner: string,
+): void {
+  if (rect) holds.set(owner, [rect.x, rect.y, rect.w, rect.h]);
+  else holds.delete(owner);
+  if (!holds.size) {
+    sendCapsule();
     return;
   }
-  held = false;
-  sendCapsule();
+  let u: Rect4 | null = null;
+  for (const h of holds.values()) u = unionHitbox(u, h);
+  if (u) sendHitbox(...u);
 }
 
 /**

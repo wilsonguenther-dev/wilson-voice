@@ -93,9 +93,10 @@ export default function MeetingOfferCard() {
     const el = ref.current;
     if (el) {
       const r = el.getBoundingClientRect();
-      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height });
+      holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "meeting-offer");
     }
-    return () => holdPillHitbox(null);
+    // Releases ONLY this card's hold: a Copy card still up keeps its own.
+    return () => holdPillHitbox(null, "meeting-offer");
   }, [offer]);
 
   if (!offer) return null;
