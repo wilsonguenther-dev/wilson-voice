@@ -8,6 +8,7 @@ import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type Meeti
 import TranscriptList from "../meetings/TranscriptList";
 import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
 import "../meetings/meetings.css";
+import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -121,6 +122,9 @@ export default function Meetings() {
     <>
       {!openMeeting && (
             <>
+              {/* yap-notetaker-onboard — the Set up Notetaker card: top of the
+                  Meetings view until every step is done or it is closed. */}
+              <NotetakerSetupCard onImported={() => void loadMeetings(meetingQuery)} />
               {/* YV95 — the live recording banner. Present ONLY while a meeting
                   is running, and it carries the same clock the pill shows,
                   rendered once in Rust and emitted at 1 Hz. */}

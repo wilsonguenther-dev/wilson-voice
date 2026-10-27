@@ -1384,3 +1384,30 @@ mod tests {
         assert_eq!(MeetingState::parse("done"), None);
     }
 }
+
+// ── yap-notetaker-onboard · the Set up Notetaker card's own row ─────────────
+
+/// The `settings_kv` key the card's progress lives under. Versioned so a future
+/// card with different steps starts clean instead of misreading this one.
+pub const NOTETAKER_SETUP_KEY: &str = "notetaker_setup_v1";
+
+/// Which of the card's three working steps are done, and whether the user
+/// closed the card. The fourth row (Set up MCP) is "Coming" and has no state.
+///
+/// Stored as JSON. A missing or unreadable row reads as the default (nothing
+/// done, not dismissed) — a card that fails to load must show itself, not hide.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotetakerSetup {
+    pub tour: bool,
+    pub calendar: bool,
+    pub import: bool,
+    pub dismissed: bool,
+}
+
+impl NotetakerSetup {
+    pub fn from_row(row: Option<String>) -> Self {
+        row.and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+}

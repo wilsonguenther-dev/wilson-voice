@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:04,500
+First line is fine.
+
+2
+not a timestamp line
+Second cue is broken.

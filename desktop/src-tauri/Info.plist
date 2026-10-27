@@ -14,5 +14,9 @@
 	<string>Yap pastes transcribed text into the app you're typing in.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Yap uses the microphone when you start dictation or record a meeting, and transcribes on this Mac.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Yap reads your calendars on this Mac — including Google or Exchange accounts already added to macOS Calendar — to name and prepare your meetings. Read-only; nothing leaves your Mac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Yap reads your calendars on this Mac — including Google or Exchange accounts already added to macOS Calendar — to name and prepare your meetings. Read-only; nothing leaves your Mac.</string>
 </dict>
 </plist>

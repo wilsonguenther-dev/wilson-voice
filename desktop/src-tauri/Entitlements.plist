@@ -6,6 +6,13 @@
 	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- yap-notetaker-onboard: Connect calendar (src/calendar.rs) asks EventKit
+	     for full READ access. Under the hardened runtime tccd refuses
+	     kTCCServiceCalendar with no prompt unless the signature carries this
+	     key; the Info.plist usage string alone is not enough. Nothing in src/
+	     writes to a calendar (tests/calendar_permission_readonly.rs). -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 	<!-- WHO GETS THIS FILE. Under `tauri build` (desktop:build via
 	     scripts/sign-local.sh tauri-build mode, release.yml tauri-action,
 	     scripts/test-build.sh) tauri-bundler signs the app AND every
