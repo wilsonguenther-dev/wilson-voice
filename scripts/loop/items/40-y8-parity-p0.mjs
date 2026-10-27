@@ -34,7 +34,7 @@ ITEMS.push({
     MEASURED at 4e8c9adf: \`shortcuts.rs:143 ALL\` contains four bindings —
     PASTE_LAST (:86), UNDO_AI_EDIT (:98), DICTATION_TOGGLE_LEGACY (:110),
     MEETING_TOGGLE (:129). \`git grep "hands_free_binding\\|cancel_binding\\|
-    copy_last"\` finds no hands-free hotkey, no cancel hotkey and no
+    copy_last" -- desktop\` finds no hands-free hotkey, no cancel hotkey and no
     copy-last command. §2.1 of the teardown scores hands-free 🟡 "tray toggle
     only, no dedicated hotkey", cancel ❌, copy-last ❌, paste-last ❌ "hotkey +
     menu item" (the command exists at lib.rs:2714; the MENU item is Y6-B).
