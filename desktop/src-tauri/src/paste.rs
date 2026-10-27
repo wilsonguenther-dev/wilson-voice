@@ -190,9 +190,9 @@ pub enum InsertPath {
 /// StaleIdentity and Unknown all mean "this grant will not work right now".
 /// PostEvent granted → the paste bridge, regardless of Accessibility.
 pub fn choose_insert_path(probe: &perm_probe::ProbeReport) -> InsertPath {
-    if probe.post_event.state == perm_probe::ProbeState::Granted {
+    if probe.post_event.usable() {
         InsertPath::PasteBridge
-    } else if probe.accessibility.state == perm_probe::ProbeState::Granted {
+    } else if probe.accessibility.usable() {
         InsertPath::Ax
     } else {
         InsertPath::CopyCard
@@ -903,7 +903,7 @@ fn insert_take(
     );
     let mut live = LiveInsert {
         app,
-        ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
+        ax_granted: probe.accessibility.usable(),
     };
     let (outcome, trace) = insert_traced(&mut live, path, text, true, target);
     // yap-insert-bridge-2026-10-26: ONE line per take, written once the take
@@ -929,7 +929,7 @@ pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutco
     let probe = perm_probe::probe_all();
     let mut live = LiveInsert {
         app,
-        ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
+        ax_granted: probe.accessibility.usable(),
     };
     delete_with(&mut live, choose_insert_path(&probe), source_app)
 }

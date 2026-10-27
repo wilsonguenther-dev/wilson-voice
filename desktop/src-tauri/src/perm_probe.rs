@@ -156,6 +156,107 @@ pub enum ProbeState {
     /// is pinned to the old signature and does nothing for this one.
     StaleIdentity,
     Unknown,
+    /// yap-dev-perm-probe-attribution — this process is NOT running as its own
+    /// signed app bundle (an unbundled, ad-hoc signed dev binary from
+    /// `npm run desktop:dev`). TCC attributes such a process to its RESPONSIBLE
+    /// process — the terminal that launched it — so every live API answers
+    /// with the terminal's grants, not Yap's. The answer is kept in `raw` (the
+    /// process really can or cannot do the thing), but no row may present it
+    /// as Yap's grant and no Repair may run: `tccutil reset` would target an
+    /// identity that is not the one macOS consulted.
+    DevHostAttributed,
+}
+
+impl ServiceProbe {
+    /// Can this process actually use the service right now? `Granted`, or a
+    /// host-attributed answer whose raw call said yes (a dev build really can
+    /// post events under its terminal's grant). For DECISIONS (the insert
+    /// path, hotkey wiring) — never for a row that says whose grant it is.
+    pub fn usable(&self) -> bool {
+        match self.state {
+            ProbeState::Granted => true,
+            ProbeState::DevHostAttributed => self.raw == RawAnswer::Granted,
+            _ => false,
+        }
+    }
+}
+
+// ── Who macOS is answering about ───────────────────────────────────────────
+
+/// The words every surface uses for a host-attributed probe.
+pub const DEV_HOST_LINE: &str = "dev build: permissions are the host terminal's";
+
+/// Is `exe_path` the main executable of an `.app` bundle
+/// (`<Name>.app/Contents/MacOS/<exe>`)? Pure, path-shape only.
+pub fn exe_inside_app_bundle(exe_path: &str) -> bool {
+    let mut parts = std::path::Path::new(exe_path).components().rev();
+    let _exe = parts.next();
+    let macos = parts.next().and_then(|c| c.as_os_str().to_str());
+    let contents = parts.next().and_then(|c| c.as_os_str().to_str());
+    let app = parts.next().and_then(|c| c.as_os_str().to_str());
+    macos == Some("MacOS")
+        && contents == Some("Contents")
+        && app.is_some_and(|a| a.len() > ".app".len() && a.ends_with(".app"))
+}
+
+/// yap-dev-perm-probe-attribution — does macOS attribute this process's TCC
+/// grants to Yap ITSELF? Pure.
+///
+/// True only when all three hold:
+/// - `exe_path` is the main executable inside an `.app` bundle;
+/// - `NSBundle.mainBundle` has a bundle id (a Tauri dev binary may carry an
+///   embedded Info.plist and so an id, which is why the id alone proves
+///   nothing — the path is checked too);
+/// - the code signature carries a certificate with a team id (Developer ID or
+///   Apple Development). An ad-hoc or unsigned binary has no designated
+///   requirement TCC can pin a grant to, and launched from a shell it is
+///   attributed to the responsible process: the terminal.
+///
+/// `/Applications/Yap.app/Contents/MacOS/wilson-voice` under Developer ID →
+/// true; `desktop/target/debug/wilson-voice` ad hoc → false.
+pub fn running_as_bundle(
+    exe_path: &str,
+    bundle_id_of_main_bundle: Option<&str>,
+    code_signature: &SigningSignature,
+) -> bool {
+    exe_inside_app_bundle(exe_path)
+        && bundle_id_of_main_bundle.is_some_and(|id| !id.trim().is_empty())
+        && team_of(&code_signature.authority).is_some()
+}
+
+/// [`running_as_bundle`] for this process. Computed once: it cannot change
+/// under a running process.
+pub fn this_process_runs_as_bundle() -> bool {
+    static AS_BUNDLE: OnceLock<bool> = OnceLock::new();
+    *AS_BUNDLE.get_or_init(|| {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let id = crate::perm_truth::main_bundle_id();
+        let me = crate::perm_truth::running_identity();
+        let as_bundle = running_as_bundle(&exe, id.as_deref(), &me.signature);
+        if !as_bundle {
+            log::warn!(
+                "perm-probe: {DEV_HOST_LINE} (exe={exe}, bundle id={id:?}, authority={:?})",
+                me.signature.authority
+            );
+        }
+        as_bundle
+    })
+}
+
+/// Mark every service [`ProbeState::DevHostAttributed`]. Pure. The raw answers
+/// are left as the live APIs gave them.
+pub fn attribute_to_host(report: &mut ProbeReport) {
+    for p in [
+        &mut report.accessibility,
+        &mut report.listen_event,
+        &mut report.post_event,
+        &mut report.microphone,
+    ] {
+        p.state = ProbeState::DevHostAttributed;
+    }
+    report.dev_host_attributed = true;
 }
 
 /// The team id in a Developer ID / Apple Development leaf summary:
@@ -268,6 +369,9 @@ pub struct ProbeReport {
     pub listen_event_disagree: bool,
     /// The last launch ran under a different authority / team.
     pub signature_changed: bool,
+    /// yap-dev-perm-probe-attribution — every state is DevHostAttributed: this
+    /// process is not its own signed bundle, so the answers are its host's.
+    pub dev_host_attributed: bool,
     /// The raw AVFoundation answer (Restricted is not representable above).
     #[serde(skip)]
     pub microphone_auth: MicAuth,
@@ -348,6 +452,7 @@ pub fn build_probe_report(
         listen_event_hid: raw.listen_event_hid,
         listen_event_disagree: listen_note.is_some(),
         signature_changed: last_run.is_some_and(|l| identity_changed(l, running)),
+        dev_host_attributed: false,
         microphone_auth: raw.microphone,
     }
 }
@@ -497,14 +602,23 @@ pub fn raw_probes() -> RawProbes {
 }
 
 /// THE probe. Live API calls, the `perm_truth` ledger, the last-run signature.
+///
+/// yap-dev-perm-probe-attribution: when this process is not running as its own
+/// signed bundle ([`this_process_runs_as_bundle`]), every service is marked
+/// [`ProbeState::DevHostAttributed`] — the answers are the launching
+/// terminal's grants, not Yap's. The installed build is unchanged.
 pub fn probe_all() -> ProbeReport {
     let me = crate::perm_truth::running_identity();
-    build_probe_report(
+    let mut report = build_probe_report(
         raw_probes(),
         &crate::perm_truth::ledger_snapshot(),
         previous_run_signature(),
         &me.signature,
-    )
+    );
+    if !this_process_runs_as_bundle() {
+        attribute_to_host(&mut report);
+    }
+    report
 }
 
 /// One service's state, freshly probed (the re-probe loop's reader).
@@ -667,6 +781,13 @@ pub fn repair(service: Service) -> RepairOutcome {
         summary: repair_summary(service, &product),
         product: product.clone(),
     };
+    // yap-dev-perm-probe-attribution: a host-attributed process's grants are
+    // its terminal's. A tccutil reset here would clear an identity macOS never
+    // consulted for this process, so Repair refuses outright.
+    if !this_process_runs_as_bundle() {
+        outcome.stderr = format!("{DEV_HOST_LINE} — Repair would reset the wrong identity.");
+        return outcome;
+    }
     // NEVER fall back to the shipped id: an unbundled dev binary resetting the
     // installed app's grants would be repairing somebody else.
     let Some(bundle_id) = crate::perm_truth::main_bundle_id() else {
@@ -816,4 +937,138 @@ where
     }
     emit(RepairPhase::TimedOut);
     RepairPhase::TimedOut
+}
+
+#[cfg(test)]
+mod running_as_bundle_tests {
+    use super::*;
+
+    fn sig(authority: &str) -> SigningSignature {
+        SigningSignature {
+            authority: authority.into(),
+            cdhash: "ab12".into(),
+            version: "0.9.3".into(),
+        }
+    }
+    const DEV_ID: &str = "Developer ID Application: Wilson Guenther (VHYV8C2JNU)";
+    const BUNDLE_ID: &str = "com.wilsonguenther.wilson-voice";
+
+    #[test]
+    fn running_as_bundle_installed_developer_id_is_true() {
+        assert!(running_as_bundle(
+            "/Applications/Yap.app/Contents/MacOS/wilson-voice",
+            Some(BUNDLE_ID),
+            &sig(DEV_ID),
+        ));
+    }
+
+    #[test]
+    fn running_as_bundle_test_channel_apple_development_is_true() {
+        assert!(running_as_bundle(
+            "/Applications/Yap Test.app/Contents/MacOS/wilson-voice",
+            Some("com.wilsonguenther.wilson-voice.test"),
+            &sig("Apple Development: Wilson Guenther (ABCDE12345)"),
+        ));
+    }
+
+    #[test]
+    fn running_as_bundle_dev_binary_ad_hoc_is_false() {
+        assert!(!running_as_bundle(
+            "/Users/w/code/wilson-voice/desktop/target/debug/wilson-voice",
+            None,
+            &sig("ad-hoc"),
+        ));
+        // A Tauri dev binary can carry an embedded Info.plist, so NSBundle may
+        // report the shipped id: still not a bundle.
+        assert!(!running_as_bundle(
+            "desktop/target/debug/wilson-voice",
+            Some(BUNDLE_ID),
+            &sig("ad-hoc"),
+        ));
+    }
+
+    #[test]
+    fn running_as_bundle_needs_all_three() {
+        let app = "/Applications/Yap.app/Contents/MacOS/wilson-voice";
+        // ad-hoc / unsigned bundle: no team, no designated requirement
+        assert!(!running_as_bundle(app, Some(BUNDLE_ID), &sig("ad-hoc")));
+        assert!(!running_as_bundle(app, Some(BUNDLE_ID), &sig("unsigned")));
+        // no bundle id
+        assert!(!running_as_bundle(app, None, &sig(DEV_ID)));
+        assert!(!running_as_bundle(app, Some("  "), &sig(DEV_ID)));
+        // Developer ID signed, but not inside Contents/MacOS of an .app
+        for path in [
+            "/usr/local/bin/wilson-voice",
+            "/x/Yap.app/wilson-voice",
+            "/x/.app/Contents/MacOS/wilson-voice",
+            "/x/Yap/Contents/MacOS/wilson-voice",
+        ] {
+            assert!(
+                !running_as_bundle(path, Some(BUNDLE_ID), &sig(DEV_ID)),
+                "{path}"
+            );
+        }
+    }
+
+    fn report(ax: bool, post: bool) -> ProbeReport {
+        build_probe_report(
+            RawProbes {
+                accessibility: ax,
+                listen_event_cg: true,
+                listen_event_hid: GrantState::Authorized,
+                post_event: post,
+                microphone: MicAuth::Authorized,
+            },
+            &TrustLedger::default(),
+            None,
+            &sig("ad-hoc"),
+        )
+    }
+
+    #[test]
+    fn running_as_bundle_false_marks_every_service_dev_host_attributed() {
+        let mut r = report(true, false);
+        assert!(!r.dev_host_attributed);
+        attribute_to_host(&mut r);
+        assert!(r.dev_host_attributed);
+        for s in Service::ALL {
+            assert_eq!(r.get(s).state, ProbeState::DevHostAttributed, "{s:?}");
+        }
+        // The raw answers survive: the process really can (or cannot) act.
+        assert_eq!(r.accessibility.raw, RawAnswer::Granted);
+        assert_eq!(r.post_event.raw, RawAnswer::Denied);
+        assert!(r.accessibility.usable());
+        assert!(!r.post_event.usable());
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["accessibility"]["state"], "dev_host_attributed");
+        assert_eq!(json["devHostAttributed"], true);
+    }
+
+    #[test]
+    fn running_as_bundle_repair_refuses_in_a_host_attributed_process() {
+        // The unit-test binary is itself an unbundled, ad hoc signed binary:
+        // exactly the dev-build case. Repair must refuse before any tccutil.
+        assert!(!this_process_runs_as_bundle());
+        let out = repair(Service::Accessibility);
+        assert!(!out.ok);
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
+        assert!(out.stderr.starts_with(DEV_HOST_LINE), "{}", out.stderr);
+    }
+
+    #[test]
+    fn running_as_bundle_reconcile_keeps_host_attribution() {
+        let mut r = report(true, true);
+        attribute_to_host(&mut r);
+        crate::permissions::reconcile_listen_event(&mut r.listen_event, GrantState::Authorized);
+        assert_eq!(r.listen_event.state, ProbeState::DevHostAttributed);
+    }
+
+    #[test]
+    fn running_as_bundle_true_keeps_states_and_usable_is_granted_only() {
+        let r = report(true, false);
+        assert_eq!(r.accessibility.state, ProbeState::Granted);
+        assert!(r.accessibility.usable());
+        assert_eq!(r.post_event.state, ProbeState::Denied);
+        assert!(!r.post_event.usable());
+    }
 }

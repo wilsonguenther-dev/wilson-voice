@@ -13,7 +13,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { nameProduct } from "./permission";
 
 /** `perm_probe::ProbeState`, verbatim off the wire. */
-export type ProbeState = "granted" | "denied" | "not_determined" | "stale_identity" | "unknown";
+export type ProbeState =
+  | "granted"
+  | "denied"
+  | "not_determined"
+  | "stale_identity"
+  | "unknown"
+  /** yap-dev-perm-probe-attribution — an unbundled, ad hoc signed dev build: TCC
+   *  answered with the launching terminal's grants, not Yap's. */
+  | "dev_host_attributed";
 
 /** `perm_probe::Service` — `repair_permission`'s argument. */
 export type RepairService = "accessibility" | "listen_event" | "post_event" | "microphone";
@@ -37,6 +45,23 @@ export interface ProbeReport {
   listenEventHid: string;
   listenEventDisagree: boolean;
   signatureChanged: boolean;
+  /** yap-dev-perm-probe-attribution — every state is `dev_host_attributed`. */
+  devHostAttributed?: boolean;
+}
+
+/**
+ * yap-dev-perm-probe-attribution — the ONE line a dev build's Permissions
+ * screen shows. `perm_probe::DEV_HOST_LINE`, verbatim.
+ */
+export const DEV_HOST_LINE = "dev build: permissions are the host terminal's";
+
+/** Is this probe answering with the host terminal's grants (a dev build)? */
+export function isDevHostAttributed(probe: ProbeReport | null | undefined): boolean {
+  if (!probe) return false;
+  if (probe.devHostAttributed) return true;
+  return [probe.accessibility, probe.listenEvent, probe.postEvent, probe.microphone].every(
+    (p) => p?.state === "dev_host_attributed",
+  );
 }
 
 // fix-ax-probe-refresh — the one renaming function lives in the pure
