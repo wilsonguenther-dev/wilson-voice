@@ -488,6 +488,55 @@ impl OpenErr {
     }
 }
 
+/// Y9-B — the local style profile's storage: `user_context(writing_samples,
+/// custom_rules)`, one row per entry. `kind = 'writing_sample'` rows are the
+/// samples the user pasted (oldest first by `created_at_ms`, then rowid);
+/// at most one `kind = 'custom_rules'` row holds the free-text rules.
+///
+/// Idempotent (`IF NOT EXISTS`) so a step that is retried after a crash
+/// between the CREATE and the `user_version` write cannot fail on its own
+/// table. This is USER TEXT: it is excluded from the support bundle and from
+/// every log, it is sent only to the local polish sidecar, and it is named in
+/// PRIVACY.md.
+pub const MIGRATION_7_USER_CONTEXT: &str = r#"
+CREATE TABLE IF NOT EXISTS user_context (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('writing_sample', 'custom_rules')),
+  body TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_context_one_rules
+  ON user_context(kind) WHERE kind = 'custom_rules';
+"#;
+
+/// Y9-B — one writing sample, as Settings lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WritingSample {
+    pub id: String,
+    pub body: String,
+    pub words: usize,
+    pub created_at: DateTime<Utc>,
+    /// Whether the budget lets this sample into the prompt right now. The
+    /// save-time guards keep this true for every row the app wrote; it is
+    /// shown so a dropped sample is never dropped silently.
+    pub in_use: bool,
+}
+
+/// Y9-B — the whole Settings → Dictation → Writing style surface in one
+/// payload, so every mutation hands the UI back the state it now has.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextView {
+    /// Oldest first — the order they are sent in.
+    pub writing_samples: Vec<WritingSample>,
+    pub custom_rules: String,
+    pub max_samples: usize,
+    pub min_sample_words: usize,
+    pub max_sample_words_total: usize,
+    pub max_rules_words: usize,
+}
+
 /// YV94 — walk `PRAGMA user_version` up to [`SCHEMA_VERSION`], one transaction
 /// per step.
 ///
@@ -524,6 +573,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             4 => meetings::MIGRATION_4_MEETING_KIND,
             5 => meetings::MIGRATION_5_CLUSTER_INDEX,
             6 => meetings::MIGRATION_6_ASR_MODEL,
+            7 => MIGRATION_7_USER_CONTEXT,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1624,8 +1674,8 @@ impl Database {
     /// `attempt_text`, which IS nulled above (its other words live in
     /// `take_chunks`, which IS cleared above), and its clips are
     /// the user's only copy of a take that was never transcribed;
-    /// `dict_candidates` and `snippets` are text the user typed, with their own
-    /// delete paths; `crash_events` is built from an allowlist of structured
+    /// `dict_candidates`, `snippets` and `user_context` (Y9-B writing samples)
+    /// are text the user typed, with their own delete paths; `crash_events` is built from an allowlist of structured
     /// fields.
     ///
     /// `scratchpad` — DB-C's DELIBERATE choice: KEPT. Scratchpad notes are
@@ -3582,6 +3632,183 @@ impl Database {
             Err(e) => {
                 log::warn!("voice_preferences read failed ({e}); polishing without rules");
                 Vec::new()
+            }
+        }
+    }
+
+    // ── Y9-B writing samples → local style profile ───────────────────────────
+
+    /// Writing samples, oldest first, as stored.
+    fn writing_sample_rows(&self) -> Result<Vec<(String, String, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, body, created_at_ms FROM user_context
+                 WHERE kind = 'writing_sample'
+                 ORDER BY created_at_ms ASC, rowid ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// The free-text custom rules, `""` when unset.
+    pub fn custom_rules(&self) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT body FROM user_context WHERE kind = 'custom_rules'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map(Option::unwrap_or_default)
+        .map_err(|e| e.to_string())
+    }
+
+    /// Everything Settings shows for the style profile.
+    pub fn user_context(&self) -> Result<UserContextView, String> {
+        use crate::polish_protocol as pp;
+        let rows = self.writing_sample_rows()?;
+        let bodies: Vec<String> = rows.iter().map(|(_, b, _)| b.clone()).collect();
+        // `fit_style_samples` keeps a suffix (the newest) of the non-blank
+        // samples, so "in use" is "among the last `kept` of them".
+        let kept = pp::fit_style_samples(&bodies).len();
+        let first_in_use = rows.len().saturating_sub(kept);
+        let writing_samples = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, body, ms))| WritingSample {
+                words: body.split_whitespace().count(),
+                id,
+                body,
+                created_at: DateTime::<Utc>::from_timestamp_millis(ms).unwrap_or_default(),
+                in_use: i >= first_in_use,
+            })
+            .collect();
+        Ok(UserContextView {
+            writing_samples,
+            custom_rules: self.custom_rules()?,
+            max_samples: pp::MAX_STYLE_SAMPLES,
+            min_sample_words: pp::MIN_STYLE_SAMPLE_WORDS,
+            max_sample_words_total: pp::MAX_STYLE_SAMPLE_WORDS_TOTAL,
+            max_rules_words: pp::MAX_CUSTOM_RULES_WORDS,
+        })
+    }
+
+    /// Save one pasted writing sample. Refused — with a sentence the UI shows
+    /// as-is — when it is under [`crate::polish_protocol::MIN_STYLE_SAMPLE_WORDS`]
+    /// (noise, not a voice), when it would not fit the total budget beside
+    /// the samples already saved, or when [`crate::polish_protocol::MAX_STYLE_SAMPLES`]
+    /// are already saved. Refusing here is what keeps the prompt-time
+    /// truncation a second lock that never fires for app-written rows.
+    pub fn add_writing_sample(&self, body: &str) -> Result<WritingSample, String> {
+        use crate::polish_protocol as pp;
+        let body = body.trim();
+        let words = body.split_whitespace().count();
+        if words < pp::MIN_STYLE_SAMPLE_WORDS {
+            return Err(format!(
+                "A writing sample needs at least {} words — paste a whole email or message you wrote.",
+                pp::MIN_STYLE_SAMPLE_WORDS
+            ));
+        }
+        let existing = self.writing_sample_rows()?;
+        if existing.len() >= pp::MAX_STYLE_SAMPLES {
+            return Err(format!(
+                "You already have {} writing samples. Remove one to add another.",
+                pp::MAX_STYLE_SAMPLES
+            ));
+        }
+        let used: usize = existing
+            .iter()
+            .map(|(_, b, _)| b.split_whitespace().count())
+            .sum();
+        if used + words > pp::MAX_STYLE_SAMPLE_WORDS_TOTAL {
+            return Err(format!(
+                "That sample is {words} words; {} more fit. Writing samples share a {}-word budget.",
+                pp::MAX_STYLE_SAMPLE_WORDS_TOTAL.saturating_sub(used),
+                pp::MAX_STYLE_SAMPLE_WORDS_TOTAL
+            ));
+        }
+        let now = Utc::now();
+        let id = Uuid::new_v4().to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO user_context (id, kind, body, created_at_ms)
+             VALUES (?1, 'writing_sample', ?2, ?3)",
+            params![id, body, now.timestamp_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        // Counts only: a sample is user text and never reaches a log line.
+        log::info!("style profile: writing sample saved ({words} words)");
+        Ok(WritingSample {
+            id,
+            body: body.to_string(),
+            words,
+            created_at: now,
+            in_use: true,
+        })
+    }
+
+    pub fn delete_writing_sample(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM user_context WHERE id = ?1 AND kind = 'writing_sample'",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Replace the custom rules. Empty clears them; past
+    /// [`crate::polish_protocol::MAX_CUSTOM_RULES_WORDS`] is refused.
+    pub fn set_custom_rules(&self, rules: &str) -> Result<(), String> {
+        use crate::polish_protocol as pp;
+        let rules = rules.trim();
+        let words = rules.split_whitespace().count();
+        if words > pp::MAX_CUSTOM_RULES_WORDS {
+            return Err(format!(
+                "Custom rules are {words} words; keep them under {}.",
+                pp::MAX_CUSTOM_RULES_WORDS
+            ));
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM user_context WHERE kind = 'custom_rules'", [])
+            .map_err(|e| e.to_string())?;
+        if !rules.is_empty() {
+            conn.execute(
+                "INSERT INTO user_context (id, kind, body, created_at_ms)
+                 VALUES (?1, 'custom_rules', ?2, ?3)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    rules,
+                    Utc::now().timestamp_millis()
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// The style profile for one take, fitted to its budget. Never fails: a
+    /// read error is logged (without text) and the take runs with no profile,
+    /// which is exactly today's prompt — the profile must never block a paste.
+    pub fn style_profile(&self) -> crate::polish::StyleProfile {
+        let samples = self.writing_sample_rows().map(|rows| {
+            rows.into_iter()
+                .map(|(_, body, _)| body)
+                .collect::<Vec<_>>()
+        });
+        match (samples, self.custom_rules()) {
+            (Ok(samples), Ok(rules)) => crate::polish::StyleProfile::new(&samples, &rules),
+            _ => {
+                log::warn!("style profile: could not read user_context; polishing without it");
+                crate::polish::StyleProfile::default()
             }
         }
     }

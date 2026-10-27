@@ -295,6 +295,10 @@ pub struct PolishConfig {
     /// the state of every take before the user applies a rule — sends the
     /// byte-identical request Yap sent before Y9-C.
     pub preferences: Vec<String>,
+    /// Y9-B — the user's local style profile (writing samples + custom
+    /// rules). Empty by default, and empty means the request is byte-identical
+    /// to the pre-Y9-B one.
+    pub profile: StyleProfile,
 }
 
 impl Default for PolishConfig {
@@ -304,7 +308,68 @@ impl Default for PolishConfig {
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
             style: Style::Default,
             preferences: Vec::new(),
+            profile: StyleProfile::default(),
         }
+    }
+}
+
+/// Y9-B — the local style profile: writing samples the user pasted in
+/// Settings, plus their free-text custom rules, as they go on the wire.
+///
+/// Built ONLY through [`StyleProfile::new`], which applies the budget, so a
+/// profile that exists is a profile that fits. It goes to the local polish
+/// sidecar and nowhere else: never a log line (only counts are logged), never
+/// the support bundle, never a crash report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyleProfile {
+    samples: Vec<String>,
+    rules: Option<String>,
+}
+
+impl StyleProfile {
+    /// Fit stored samples (OLDEST FIRST) and the rules text to the prompt
+    /// budget. Truncation is deterministic and drops the OLDEST samples first
+    /// ([`crate::polish_protocol::fit_style_samples`]); rules longer than
+    /// [`crate::polish_protocol::MAX_CUSTOM_RULES_WORDS`] are dropped whole
+    /// rather than cut mid-sentence, because half a rule is a different rule.
+    /// Either drop is logged as a count — never as text.
+    pub fn new(samples_oldest_first: &[String], rules: &str) -> Self {
+        use crate::polish_protocol::{fit_style_samples, MAX_CUSTOM_RULES_WORDS};
+        let samples = fit_style_samples(samples_oldest_first);
+        let offered = samples_oldest_first
+            .iter()
+            .filter(|s| !s.trim().is_empty())
+            .count();
+        if samples.len() < offered {
+            log::warn!(
+                "style profile: {} of {offered} writing samples over budget, oldest dropped",
+                offered - samples.len()
+            );
+        }
+        let rules = rules.trim();
+        let rules = if rules.is_empty() {
+            None
+        } else if rules.split_whitespace().count() > MAX_CUSTOM_RULES_WORDS {
+            log::warn!("style profile: custom rules over the word cap, not sent");
+            None
+        } else {
+            Some(rules.to_string())
+        };
+        Self { samples, rules }
+    }
+
+    /// The samples that will be sent, oldest first.
+    pub fn samples(&self) -> &[String] {
+        &self.samples
+    }
+
+    /// The custom rules that will be sent, if any.
+    pub fn rules(&self) -> Option<&str> {
+        self.rules.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty() && self.rules.is_none()
     }
 }
 
@@ -317,7 +382,15 @@ impl PolishConfig {
             deadline_ms: clamp_polish_deadline_ms(settings.polish_deadline_ms),
             style: style_for_mode(settings, mode),
             preferences: Vec::new(),
+            profile: StyleProfile::default(),
         }
+    }
+
+    /// Attach the user's style profile (Y9-B). The live take and the retry
+    /// path both call this with `Database::style_profile()`.
+    pub fn with_profile(mut self, profile: StyleProfile) -> Self {
+        self.profile = profile;
+        self
     }
 
     /// Y9-C: attach the take's matching spoken rules. Bounded here, at the one
@@ -407,6 +480,10 @@ pub fn build_chunk_request(
     // Y9-C: only rules that passed the filter allowlist AND matched this take
     // are on the config; bound again so a hand-built config cannot overrun.
     req.preferences = crate::polish_protocol::bound_preferences(&cfg.preferences);
+    // Y9-B — the style profile, already fitted to its budget. Empty ⇒ both
+    // fields stay off the wire and the request is byte-identical to before.
+    req.samples = cfg.profile.samples.clone();
+    req.rules = cfg.profile.rules.clone();
     Some(req)
 }
 
@@ -1873,6 +1950,7 @@ mod polish_fallback_tests {
             model: "qwen2.5-0.5b-instruct-q4_k_m".to_string(),
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
             style: Style::Default,
+            ..PolishConfig::default()
         }
     }
 

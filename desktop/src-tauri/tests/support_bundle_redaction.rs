@@ -491,3 +491,45 @@ fn the_bundle_is_still_worth_sending() {
 fn show_the_redacted_log() {
     println!("{}", packed_logs()[0].text);
 }
+
+/// Y9-B — writing samples are user text, like transcripts. Nothing in the app
+/// logs one (only counts), but if a line ever echoed a sample — bare, quoted,
+/// or inside a serialized polish request with its `samples` array — the packer
+/// must drop it exactly as it drops a transcript. Synthetic text, and outside
+/// `src/` on purpose (see the module doc).
+#[test]
+fn writing_samples_do_not_survive_the_bundle() {
+    let sample = "Morning Ottoline, the Halvorsen renewal slipped to next quarter so \
+                  please hold the invoice until I confirm with procurement. Thanks, Bram";
+    let request = format!(
+        r#"{{"id":4,"kind":"polish","mode":"email","style":"default","max_out":60,"deadline_ms":1200,"text":"ship it","topic":null,"samples":["{sample}"],"rules":"Sign off as Bram"}}"#
+    );
+    let log = format!(
+        "[2026-10-27T12:00:00Z DEBUG wilson_voice_lib::polish] {sample}\n\
+         [2026-10-27T12:00:00Z DEBUG wilson_voice_lib::polish] sample \"{sample}\"\n\
+         [2026-10-27T12:00:01Z DEBUG wilson_voice_lib::polish] {request}\n"
+    );
+    let entries = support::build_entries(&BundleInputs {
+        logs: vec![("yap.log".into(), log)],
+        username: USERNAME.into(),
+        generated_at: at(),
+        ..Default::default()
+    });
+    let packed = entries
+        .iter()
+        .find(|e| e.name == "logs/yap.log")
+        .expect("the log is packed");
+    for needle in [
+        "Ottoline",
+        "Halvorsen",
+        "procurement",
+        "Bram",
+        "renewal slipped",
+    ] {
+        assert!(
+            !packed.text.contains(needle),
+            "writing-sample text {needle:?} survived:\n{}",
+            packed.text
+        );
+    }
+}

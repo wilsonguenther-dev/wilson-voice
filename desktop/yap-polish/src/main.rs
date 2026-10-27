@@ -62,7 +62,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
 use polish_protocol::{
-    fit_to_budget, max_out_for, sampler_plan, PolishReady, PolishRequest, PolishResponse,
+    fit_to_budget, max_out_for, sampler_plan, style_block, PolishReady, PolishRequest, PolishResponse,
     bound_preferences, SamplerPlan, KIND_COUNT_TOKENS, KIND_DERIVE_PREFERENCE, KIND_POLISH,
     KIND_SUMMARIZE, PREFERENCE_DERIVE_MAX_OUT, SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE,
     SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
@@ -254,11 +254,22 @@ fn summarize_prompt(stage: &str) -> Option<String> {
 
 /// The system turn for any request kind, or `None` when the request names
 /// something this sidecar refuses to run (`code` mode, an unknown stage).
+///
+/// Y9-B: a rewrite carrying a style profile gets it appended AFTER the base
+/// rules ([`style_block`]). The profile is constant across a user's takes, so
+/// the prefix cache still holds the whole system turn; with no profile the
+/// turn is byte-identical to [`system_prompt`]. A summary never carries one.
 fn system_for(req: &PolishRequest) -> Option<String> {
     match req.kind.as_str() {
         KIND_SUMMARIZE => summarize_prompt(&req.mode),
         KIND_DERIVE_PREFERENCE => Some(DERIVE_PREFERENCE_SYSTEM.to_string()),
-        _ => system_prompt_with_preferences(&req.mode, &req.style, &req.preferences),
+        _ => {
+            let mut prompt = system_prompt_with_preferences(&req.mode, &req.style, &req.preferences)?;
+            if let Some(block) = style_block(&req.samples, req.rules.as_deref()) {
+                prompt.push_str(&block);
+            }
+            Some(prompt)
+        }
     }
 }
 
@@ -826,6 +837,27 @@ mod tests {
         let derive = PolishRequest::derive_preference(2, 5000, "never use exclamation marks in email".to_string(), None);
         assert_eq!(system_for(&derive).unwrap(), DERIVE_PREFERENCE_SYSTEM);
         assert_eq!(default_max_out(&derive), PREFERENCE_DERIVE_MAX_OUT);
+    }
+
+    /// Y9-B — the style profile reaches the system turn the model sees, after
+    /// the base rules; without one the turn is exactly the pre-Y9-B bytes.
+    #[test]
+    fn writing_samples_reach_the_system_turn_and_only_when_present() {
+        let mut req =
+            PolishRequest::polish(1, "email", "default", 0, 1200, "ship the build".to_string());
+        let plain = system_for(&req).expect("email is a supported mode");
+        assert_eq!(plain, system_prompt("email", "default").unwrap());
+        req.samples = vec!["Hey Sam, quick one before standup. Cheers, W".to_string()];
+        req.rules = Some("Never use exclamation marks.".to_string());
+        let styled = system_for(&req).expect("email is a supported mode");
+        assert!(styled.starts_with(&plain), "the base rules stay first");
+        assert!(styled.contains("Hey Sam, quick one before standup. Cheers, W"));
+        assert!(styled.contains("Never use exclamation marks."));
+        // A summary never carries a style profile, even if a caller sets one.
+        let mut map =
+            PolishRequest::summarize(2, SUMMARIZE_MAP, 0, 1200, "seg_0001: hi".into(), None);
+        map.samples = req.samples.clone();
+        assert!(!system_for(&map).unwrap().contains("Hey Sam"));
     }
 
     #[test]

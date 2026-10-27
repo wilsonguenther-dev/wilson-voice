@@ -2878,7 +2878,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     mode: dictation_mode,
                     bundle_id: source_bundle_id.as_deref().unwrap_or_default(),
                     language: &settings.language,
-                }));
+                }))
+                // Y9-B: the user's local style profile rides along — fitted to its
+                // budget, empty (and so a byte-identical request) when unset.
+                .with_profile(db.style_profile());
             let t_cleanup = std::time::Instant::now();
             // yap-format-structure: list syntax for THIS paste target, from the
             // Structure switch and the per-app override list. A user-picked
@@ -5104,6 +5107,8 @@ fn retry_failed_dictation(
 ) -> Result<TranscriptEntry, String> {
     let keep_partial = keep_partial.unwrap_or(false);
     let settings = state.settings.lock().clone();
+    // Y9-B: read once per retry, same as a live take reads it once per take.
+    let style_profile = state.db.style_profile();
     // Same cleanup pipeline as a live take, minus the caret context: the retry
     // happens in Yap, so there is no cursor to join onto.
     let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
@@ -5119,7 +5124,8 @@ fn retry_failed_dictation(
                 bundle_id: "",
                 language: &settings.language,
             }),
-        );
+        )
+        .with_profile(style_profile.clone());
         // A retry has no live paste target (the row stores the app's title, not
         // its bundle id), so it gets the conservative unknown-target format.
         let structure_format = dictation::structure_format_for_take(
@@ -5273,6 +5279,41 @@ fn promote_dict_candidate(
 #[tauri::command]
 fn dismiss_dict_candidate(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
     state.db.dismiss_dict_candidate(&id)
+}
+
+/// Y9-B — the local style profile (Settings → Dictation → Writing style).
+/// Every command hands back the whole view so the UI never drifts from the DB.
+/// Samples are user text: none of these log a body, only counts.
+#[tauri::command]
+fn get_user_context(state: State<'_, Arc<AppState>>) -> Result<db::UserContextView, String> {
+    state.db.user_context()
+}
+
+#[tauri::command]
+fn add_writing_sample(
+    state: State<'_, Arc<AppState>>,
+    body: String,
+) -> Result<db::UserContextView, String> {
+    state.db.add_writing_sample(&body)?;
+    state.db.user_context()
+}
+
+#[tauri::command]
+fn delete_writing_sample(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<db::UserContextView, String> {
+    state.db.delete_writing_sample(&id)?;
+    state.db.user_context()
+}
+
+#[tauri::command]
+fn set_custom_rules(
+    state: State<'_, Arc<AppState>>,
+    rules: String,
+) -> Result<db::UserContextView, String> {
+    state.db.set_custom_rules(&rules)?;
+    state.db.user_context()
 }
 
 /// YV48 — saved `trigger phrase → expansion` snippets (Settings → Snippets).
@@ -8685,6 +8726,10 @@ pub fn run() {
             list_dict_candidates,
             promote_dict_candidate,
             dismiss_dict_candidate,
+            get_user_context,
+            add_writing_sample,
+            delete_writing_sample,
+            set_custom_rules,
             list_snippets,
             // Y9-C spoken preference rules — derive, Apply, Retract, history.
             derive_voice_preference,

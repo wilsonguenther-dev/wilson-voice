@@ -272,6 +272,7 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         meetings::MIGRATION_4_MEETING_KIND,
         meetings::MIGRATION_5_CLUSTER_INDEX,
         meetings::MIGRATION_6_ASR_MODEL,
+        wilson_voice_lib::db::MIGRATION_7_USER_CONTEXT,
     ];
     let mentions = ladder
         .iter()

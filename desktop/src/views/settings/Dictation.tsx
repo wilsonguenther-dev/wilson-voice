@@ -1,4 +1,5 @@
 import { levelNeedsPolishModel, selectedSpeed } from "../../formatting";
+import WritingStyle from "../../WritingStyle";
 import { useAppCtx } from "../../appShell";
 import { useState } from "react";
 import VoicePreferencesPanel from "../../VoicePreferencesPanel";
@@ -414,6 +415,8 @@ export default function Dictation() {
                   </div>
                   {/* Y9-C — spoken preference rules, with an explicit Apply step. */}
                   <VoicePreferencesPanel />
+                  {/* Y9-B — writing samples → the local style profile. */}
+                  <WritingStyle />
                 </section>
   );
 }

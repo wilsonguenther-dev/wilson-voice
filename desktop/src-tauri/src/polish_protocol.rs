@@ -211,6 +211,20 @@ pub struct PolishRequest {
     /// matching rule sends the byte-identical line it sent before Y9-C.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preferences: Vec<String>,
+    /// Y9-B — the user's own writing samples, OLDEST FIRST, already fitted to
+    /// the budget by [`fit_style_samples`]. The sidecar appends them to the
+    /// system turn as few-shot style context ([`style_block`]); they never
+    /// leave this machine — the only reader of this line is the local sidecar.
+    ///
+    /// `skip_serializing_if` is the regression guard: with zero samples the
+    /// serialized request is byte-identical to the pre-Y9-B line, so every
+    /// existing formatting fixture sees exactly the prompt it always saw.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<String>,
+    /// Y9-B — the user's free-text custom rules, already capped at
+    /// [`MAX_CUSTOM_RULES_WORDS`]. Absent (and so not on the wire) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
 }
 
 impl PolishRequest {
@@ -234,6 +248,8 @@ impl PolishRequest {
             topic: None,
             grammar: None,
             preferences: Vec::new(),
+            samples: Vec::new(),
+            rules: None,
         }
     }
 
@@ -258,6 +274,8 @@ impl PolishRequest {
             topic: None,
             grammar,
             preferences: Vec::new(),
+            samples: Vec::new(),
+            rules: None,
         }
     }
 
@@ -274,6 +292,8 @@ impl PolishRequest {
             topic: None,
             grammar: None,
             preferences: Vec::new(),
+            samples: Vec::new(),
+            rules: None,
         }
     }
 
@@ -292,6 +312,8 @@ impl PolishRequest {
             topic: None,
             grammar,
             preferences: Vec::new(),
+            samples: Vec::new(),
+            rules: None,
         }
     }
 
@@ -526,6 +548,105 @@ pub fn max_out_for(text: &str) -> u32 {
     let words = text.split_whitespace().count() as f32;
     let in_tokens = (words * 1.3).ceil();
     (in_tokens * 1.4).ceil() as u32 + 24
+}
+
+// ── Y9-B · the local style profile ─────────────────────────────────────────
+//
+// Writing samples the user pasted, sent ONLY to the local sidecar as few-shot
+// style context. The budget is accounted the same way [`max_out_for`] accounts
+// a rewrite: words as the token proxy at 1.3 tokens/word. Worst case the
+// profile adds `(MAX_STYLE_SAMPLE_WORDS_TOTAL + MAX_CUSTOM_RULES_WORDS) × 1.3`
+// ≈ 520 tokens to a system turn, against the sidecar's 4096-token context
+// minus a chunk of at most `POLISH_CHUNK_WORDS` (160) words in and
+// `max_out_for(160 words)` out — `tests/style_profile.rs` asserts it fits.
+// The sidecar still measures the real prompt with its own tokenizer and
+// refuses a rewrite that does not fit (`too_long` → rules text kept), so this
+// estimate can never silently cut the prompt — it only keeps that refusal from
+// ever being the common case.
+
+/// At most this many writing samples are stored and sent.
+pub const MAX_STYLE_SAMPLES: usize = 3;
+/// A sample shorter than this is refused at save time: a two-word "sample" is
+/// noise in a few-shot prompt, not a voice (the same guard Wispr applies).
+pub const MIN_STYLE_SAMPLE_WORDS: usize = 20;
+/// Every sample that is sent, together, fits in this many words.
+pub const MAX_STYLE_SAMPLE_WORDS_TOTAL: usize = 320;
+/// The custom-rules text is refused past this many words.
+pub const MAX_CUSTOM_RULES_WORDS: usize = 80;
+
+/// Fit stored samples (OLDEST FIRST) to the budget. Deterministic, and the
+/// OLDEST ARE DROPPED: walking newest → oldest, a sample is kept while both
+/// [`MAX_STYLE_SAMPLES`] and [`MAX_STYLE_SAMPLE_WORDS_TOTAL`] still hold, and
+/// the walk STOPS at the first one that does not fit — so everything older
+/// than it is dropped too, never a newer one skipped for an older one. Blank
+/// samples are ignored. The result is oldest first, the order sent.
+///
+/// The save-time guards (count, per-sample length) mean this only drops
+/// anything when the table was written by something other than the app; it is
+/// the second lock, not the first.
+pub fn fit_style_samples(samples_oldest_first: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut words = 0usize;
+    for sample in samples_oldest_first.iter().rev() {
+        let body = sample.trim();
+        if body.is_empty() {
+            continue;
+        }
+        let n = body.split_whitespace().count();
+        if kept.len() >= MAX_STYLE_SAMPLES || words + n > MAX_STYLE_SAMPLE_WORDS_TOTAL {
+            break;
+        }
+        words += n;
+        kept.push(body.to_string());
+    }
+    kept.reverse();
+    kept
+}
+
+/// Estimated tokens the style profile adds to a system turn, on the same
+/// words × 1.3 proxy [`max_out_for`] uses.
+pub fn style_profile_tokens(samples: &[String], rules: Option<&str>) -> u32 {
+    let words = samples
+        .iter()
+        .map(|s| s.split_whitespace().count())
+        .sum::<usize>()
+        + rules.map_or(0, |r| r.split_whitespace().count());
+    (words as f32 * 1.3).ceil() as u32
+}
+
+/// The text the sidecar appends to the rewrite's system turn, or `None` when
+/// there is no profile — in which case the system turn is byte-identical to
+/// the pre-Y9-B one. Samples come after the base rules, and the framing tells
+/// the model they are a VOICE to match, never content to copy.
+pub fn style_block(samples: &[String], rules: Option<&str>) -> Option<String> {
+    let samples: Vec<&str> = samples
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let rules = rules.map(str::trim).filter(|r| !r.is_empty());
+    if samples.is_empty() && rules.is_none() {
+        return None;
+    }
+    let mut out = String::new();
+    if !samples.is_empty() {
+        out.push_str(
+            "\n\nWRITING SAMPLES\nThe speaker wrote these themselves. Match their voice: \
+             word choice, capitalization, punctuation, greetings and sign-offs. Never copy a \
+             sample's content into the output and never add a fact from one.",
+        );
+        for sample in samples {
+            out.push_str("\n<sample>\n");
+            out.push_str(sample);
+            out.push_str("\n</sample>");
+        }
+    }
+    if let Some(rules) = rules {
+        out.push_str("\n\nSPEAKER PREFERENCES\n");
+        out.push_str(rules);
+        out.push_str("\nThe RULES above always win over these.");
+    }
+    Some(out)
 }
 
 /// The truncation marker appended to text that had to be cut to fit a budget.
