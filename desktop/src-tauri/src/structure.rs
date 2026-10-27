@@ -510,8 +510,13 @@ fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]
                     && lead_words(rest, 2)
                         .get(1)
                         .is_some_and(|w| AT_LAST_AFTER_AT.contains(&w.as_str())));
-            // "Finally I'm home": a subject contraction is a state reached.
-            let contraction = next.contains('\'') && NARRATIVE_SUBJECTS.contains(&next);
+            // "Finally I'm home": a subject contraction is a state reached —
+            // unless it is the subject the list is told with ("First, I'm
+            // going to check email. ... Finally I'm going to write the
+            // report."), which keeps leading its steps.
+            let contraction = next.contains('\'')
+                && NARRATIVE_SUBJECTS.contains(&next)
+                && !(NARRATIVE_SUBJECTS.contains(&first_item.as_str()) && next == first_item);
             !set_off
                 && (at_last || contraction || subject_is_narration(next, &first_item, complete))
         }
@@ -1368,6 +1373,54 @@ mod tests {
             (
                 "First, book the venue. Second, send the invites. Third, pick the menu. Then the meeting ran long.",
                 "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen the meeting ran long.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_words_kept(s, &out, s);
+            if out != want {
+                wrong.push(format!("IN:   {s}\nGOT:  {out:?}\nWANT: {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n\n"));
+    }
+
+    /// PR #273 re-review: "Finally" + a subject contraction is "at last" only
+    /// when the contraction is NOT the subject the list is told with. A list
+    /// told with "I'm" / "we're" / "you're" keeps its "Finally" step.
+    #[test]
+    fn structure_finally_contraction_matching_list_subject_is_a_step() {
+        let md = StructureFormat::Markdown;
+        let mut wrong = Vec::new();
+        for (s, want) in [
+            (
+                "First, I'm going to check email. Then I'm going to call Bob. Finally I'm going to write the report.",
+                "1. I'm going to check email.\n2. I'm going to call Bob.\n3. I'm going to write the report.",
+            ),
+            (
+                "First, we're going to design it. Then we're going to build it. Finally we're going to ship it.",
+                "1. We're going to design it.\n2. We're going to build it.\n3. We're going to ship it.",
+            ),
+            (
+                "First, you're going to open it. Then you're going to read it. Finally you're going to sign it.",
+                "1. You're going to open it.\n2. You're going to read it.\n3. You're going to sign it.",
+            ),
+            (
+                "First, I'm checking email. Second, I'm calling Bob. Finally I'm writing the report.",
+                "1. I'm checking email.\n2. I'm calling Bob.\n3. I'm writing the report.",
+            ),
+            (
+                "First, we're going to design it. Then we're going to build it. Then we're going to test it. Finally we're going to ship it.",
+                "1. We're going to design it.\n2. We're going to build it.\n3. We're going to test it.\n4. We're going to ship it.",
+            ),
+            // Guards: a contraction that is not the list's subject is still
+            // "at last", after an imperative list and after a "we" story.
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Finally I'm home.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nFinally I'm home.",
+            ),
+            (
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
+                "First, we packed. Then we drove ten hours. Finally I'm home.",
             ),
         ] {
             let out = structure_text(s, &[], md);
