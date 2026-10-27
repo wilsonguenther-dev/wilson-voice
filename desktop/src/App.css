@@ -3119,8 +3119,8 @@ button.primary.big {
   font-size: 0.68rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #1a1200;
-  background: #ffc940;
+  color: var(--text-on-test-channel);
+  background: var(--surface-test-channel);
   pointer-events: none;
   white-space: nowrap;
 }
