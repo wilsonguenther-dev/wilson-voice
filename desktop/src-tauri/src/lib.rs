@@ -2572,7 +2572,7 @@ const DEVICE_FAILED_MESSAGE: &str =
 /// `(catalog id, on-disk path)`. `None` means nothing has been fetched yet, so
 /// no take can be transcribed at all (YV34 — there is no sidecar to fall back
 /// to any more).
-fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
+pub(crate) fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
     let model = models::catalog_model(native_model)?;
     if !models::is_downloaded(model) {
         return None;
@@ -7011,7 +7011,7 @@ async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resul
 static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
 /// focus-2026-10-19 — is this polish-catalog model's GGUF on disk?
-fn summary_model_on_disk(id: &str) -> bool {
+pub(crate) fn summary_model_on_disk(id: &str) -> bool {
     models::polish_model(id).map(models::is_polish_downloaded).unwrap_or(false)
 }
 
@@ -7425,9 +7425,23 @@ fn summarize_meeting_blocking(
     id: &str,
     cancel: &summary_jobs::CancelToken,
 ) -> Result<String, summary_jobs::NotesError> {
+    let chosen = state.settings.lock().polish_model.clone();
+    summarize_meeting_with(&state.db, &chosen, id, cancel)
+}
+
+/// yap24-NT9 — the notes pass itself, over any `Database` and a chosen notes
+/// model id. The app calls it through [`summarize_meeting_blocking`] (its DB,
+/// the user's `polish_model`); the headless `--transcribe-meeting` proof calls
+/// it directly against a scratch root, so the CLI writes notes through the
+/// exact code the Meetings card does, never a copy of it.
+pub(crate) fn summarize_meeting_with(
+    db: &Database,
+    chosen: &str,
+    id: &str,
+    cancel: &summary_jobs::CancelToken,
+) -> Result<String, summary_jobs::NotesError> {
     use summary_jobs::NotesError;
-    let meeting = state
-        .db
+    let meeting = db
         .get_meeting(id)
         .map_err(NotesError::Summary)?
         .ok_or_else(|| NotesError::Summary("that meeting is no longer here".to_string()))?;
@@ -7436,13 +7450,12 @@ fn summarize_meeting_blocking(
     if !summary_jobs::transcript_settled(&meeting.state) {
         return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
     }
-    let segments = state.db.list_meeting_segments(id).map_err(NotesError::Summary)?;
+    let segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
     if segments.is_empty() {
         return Err(NotesError::Summary("that meeting has no transcript to summarize".to_string()));
     }
     // focus-2026-10-19: the resolved notes model, never "none".
-    let chosen = state.settings.lock().polish_model.clone();
-    let model = match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
+    let model = match summarize::plan_summary_model(chosen, &summary_model_on_disk) {
         summarize::SummaryModelPlan::Use(m) => m,
         summarize::SummaryModelPlan::Download(_) => {
             return Err(NotesError::Summary("the notes model isn't on this Mac yet.".into()))
@@ -7506,17 +7519,15 @@ fn summarize_meeting_blocking(
     // read is still the meeting's transcript. A Retry that deleted and rebuilt
     // it mid-summary makes these notes stale; the transcription hook's
     // `submit_new_transcript` writes fresh ones over the finished transcript.
-    let now = state.db.get_meeting(id).map_err(NotesError::Summary)?;
-    let now_segments = state.db.list_meeting_segments(id).map_err(NotesError::Summary)?;
+    let now = db.get_meeting(id).map_err(NotesError::Summary)?;
+    let now_segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
     if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
         || !summary_jobs::same_transcript(&segments, &now_segments)
     {
         log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
         return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
     }
-    state
-        .db
-        .set_meeting_summary(id, &summary.markdown, Some(&summary.model))
+    db.set_meeting_summary(id, &summary.markdown, Some(&summary.model))
         .map_err(NotesError::Summary)?;
     log::info!(
         "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s), truncated={}",
@@ -7556,9 +7567,16 @@ fn export_meeting_markdown(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<ExportResult, String> {
+    write_meeting_markdown(&state.db, &id)
+}
+
+/// yap24-NT9 — the export itself, shared by the `export_meeting_markdown`
+/// command and the headless `--transcribe-meeting` proof, so the file the CLI
+/// asserts on is byte-for-byte the file the Meetings view writes.
+pub(crate) fn write_meeting_markdown(db: &Database, id: &str) -> Result<ExportResult, String> {
     use std::io::Write;
 
-    let (meeting, markdown) = state.db.meeting_markdown(&id)?;
+    let (meeting, markdown) = db.meeting_markdown(id)?;
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = meetings::export_file_stem(&meeting.title, meeting.started_at);
