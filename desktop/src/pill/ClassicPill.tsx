@@ -456,20 +456,33 @@ export default function ClassicPill(
             handler and no tab stop on it: passing the cursor over the pill
             must not pull focus off what the person is typing into. The gated capsule is ITSELF the button, so the mark
             stands down there (and under a permission block, which outranks). */}
-        {licenseRoute !== null && license && !blocked && !gated ? (
-          <button
-            type="button"
-            className={`pill-upgrade lic-${license.tone}`}
-            title={license.title}
-            aria-label={license.title}
-            tabIndex={-1}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); openLicenseSurface(); }}
-          >
-            <i className="pill-upgrade-glyph" aria-hidden>{license.glyph}</i>
-            {license.value ? <span className="pill-upgrade-value">{license.value}</span> : null}
-          </button>
-        ) : null}
+        {/* yap24-PILL1 — the countdown is shown for the WHOLE trial, whether or
+            not it has a route. With checkout closed (`purchase_open` false) the
+            trial tones carry action `none`: the numeral is an inert <span> with
+            its title, never a button to a Buy that dead-ends. `trial-quiet`
+            (days 14…8) drops the hourglass and keeps only the numeral, at
+            reduced contrast. */}
+        {license?.show && !blocked && !gated ? (() => {
+          const glyph = license.tone === "trial-quiet" ? null : <i className="pill-upgrade-glyph" aria-hidden>{license.glyph}</i>;
+          const value = license.value ? <span className="pill-upgrade-value">{license.value}</span> : null;
+          return licenseRoute !== null ? (
+            <button
+              type="button"
+              className={`pill-upgrade lic-${license.tone}`}
+              title={license.title}
+              aria-label={license.title}
+              tabIndex={-1}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); openLicenseSurface(); }}
+            >
+              {glyph}{value}
+            </button>
+          ) : (
+            <span className={`pill-upgrade pill-upgrade-info lic-${license.tone}`} title={license.title} aria-label={license.title} role="note">
+              {glyph}{value}
+            </span>
+          );
+        })() : null}
         {/* Y10-A · the language picker slot. At rest only: mid-take the
             language is already decided, and a blocked/gated pill has one job. */}
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}

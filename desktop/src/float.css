@@ -805,6 +805,78 @@ button.meeting-after:hover {
 .pill-upgrade.lic-urgent,
 .pill-upgrade.lic-ended { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
 .pill-upgrade.lic-problem { color: rgba(248, 113, 113, 0.92); background: rgba(248, 113, 113, 0.14); }
+/* yap24-PILL1 — a countdown with no route (checkout closed) is information, not
+   a control: no pointer, no hover lift, and a press falls through to nothing. */
+.pill-upgrade.pill-upgrade-info { cursor: default; }
+.pill-upgrade.pill-upgrade-info:hover { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.62); }
+/* Days 14…8: the numeral at reduced contrast, no glyph, no motion. Quiet, not
+   silent — 0.5 white on the dark glass still clears 4.5:1 at this size. */
+.pill-upgrade.lic-trial-quiet,
+.pill-upgrade.pill-upgrade-info.lic-trial-quiet:hover { color: rgba(255, 255, 255, 0.5); background: rgba(255, 255, 255, 0.05); }
+
+/* Classic, side docks — at rest the capsule is a ~10px column flush against
+   the screen edge, so a chip laid out beside it in the row runs OFF the window
+   on the right dock (pill-matrix caught it: 2px past 300). On a side dock the
+   chip sits on the SCREEN-WARD side of the column, vertically centred. */
+html[data-dock="left"] .pill .pill-upgrade,
+html[data-dock="right"] .pill .pill-upgrade {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+  white-space: nowrap;
+}
+html[data-dock="left"] .pill .pill-upgrade { left: calc(100% + 4px); }
+html[data-dock="right"] .pill .pill-upgrade { right: calc(100% + 4px); }
+/* Bottom dock — the resting capsule is an ~8px seed, shorter than the
+   numeral, so an in-row chip overprints its outline (matrix PNG, 14d). The
+   chip rides just ABOVE the seed instead, centred on it. */
+html:not([data-dock="left"]):not([data-dock="right"]) .pill .pill-upgrade {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* Y2-B (8d85cdf, carried by yap24-PILL1) — Yappy shows the same numeral as a
+   small glass chip just above his capsule. DOM, not canvas: it survives the
+   reduced-motion frame policy that stops the draw loop. NOTHING here moves;
+   tone shifts hue only. The capsule rests centred on the bottom dock and at
+   x≈46 / x≈254 (of the 300px float window) on the side docks — measured off
+   the yap24-UI3 pill matrix, which re-photographs it on every PILL item. */
+.kami-license {
+  --lic-x: 50%;
+  position: absolute;
+  left: var(--lic-x);
+  top: 46px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.72);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.78);
+  pointer-events: none;   /* Yappy's capsule stays draggable through it */
+  z-index: 3;
+  white-space: nowrap;
+}
+html[data-dock="left"] .kami-license { --lic-x: 46px; }
+html[data-dock="right"] .kami-license { --lic-x: 254px; }
+.kami-license-num {
+  font-family: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.kami-license-unit { font-size: 8px; opacity: 0.78; }
+.kami-license-glyph { font-size: 10px; line-height: 1; }
+.kami-license-trial-quiet { color: rgba(255, 255, 255, 0.5); background: rgba(20, 20, 24, 0.55); }
+.kami-license-urgent,
+.kami-license-ended { color: rgba(251, 191, 36, 0.92); }
+.kami-license-problem { color: rgba(248, 113, 113, 0.92); }
 
 /* Yappy's capsule is canvas, so its refusal is a DOM overlay on top of it. */
 .kami-blocked {

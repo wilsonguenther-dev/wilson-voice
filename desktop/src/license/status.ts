@@ -50,6 +50,12 @@ export type LicenseStatus = Entitlement & {
   trial_expires_at_ms: number;
   revocation_checked_at_ms: number | null;
   revoked_count: number;
+  /**
+   * yap24-PILL1 — `license::PURCHASE_OPEN`, as the backend reports it. While
+   * false, the pill carries no purchase action at all (checkout is closed until
+   * launch day). Read by `pillLicense`; never re-derived in the webview.
+   */
+  purchase_open: boolean;
 };
 
 // ─── Pricing ─────────────────────────────────────────────────────────

@@ -201,11 +201,18 @@ fn pill_upgrade_is_inert_when_licensed() {
         "only the `purchase` action may reach the purchase sheet:\n{route}"
     );
 
-    // The capsule renders the mark only behind a non-null route, and both
-    // faces send a press to the sheet only on `reveal_purchase`.
+    // The capsule renders the mark only when the policy SHOWS (a licensed
+    // install never does), and the mark is a BUTTON only behind a non-null
+    // route — yap24-PILL1: with checkout closed the countdown is an inert note,
+    // never a press. Both faces send a press to the sheet only on
+    // `reveal_purchase`.
     assert!(
-        CLASSIC_PILL_TSX.contains("licenseRoute !== null && license"),
-        "ClassicPill no longer guards the upgrade mark on the policy's route"
+        CLASSIC_PILL_TSX.contains("license?.show && !blocked && !gated"),
+        "ClassicPill no longer guards the upgrade mark on the policy's `show`"
+    );
+    assert!(
+        CLASSIC_PILL_TSX.contains("return licenseRoute !== null ? ("),
+        "ClassicPill no longer guards the upgrade BUTTON on the policy's route"
     );
     for (name, src) in [
         ("ClassicPill", CLASSIC_PILL_TSX),

@@ -8,7 +8,13 @@
 import { describe, expect, it } from "vitest";
 import { type LicenseStatus } from "../license/status";
 import {
+  PILL_QUIET_FROM_DAYS,
   PILL_SHOW_DAYS,
+  PILL_VALUE_MAX_CHARS,
+  TRIAL_ENDS_TODAY,
+  freeTrialTitle,
+  splitValue,
+  valueFitsSideDock,
   PILL_URGENT_DAYS,
   REVEAL_PURCHASE_COMMAND,
   offersPurchase,
@@ -31,6 +37,7 @@ function trial(days: number, over: Partial<LicenseStatus> = {}): LicenseStatus {
     trial_expires_at_ms: EXPIRES,
     revocation_checked_at_ms: null,
     revoked_count: 0,
+    purchase_open: false,
     ...over,
   } as LicenseStatus;
 }
@@ -48,6 +55,7 @@ function licensed(over: Partial<LicenseStatus> = {}): LicenseStatus {
     trial_expires_at_ms: EXPIRES,
     revocation_checked_at_ms: EXPIRES,
     revoked_count: 0,
+    purchase_open: false,
     ...over,
   } as LicenseStatus;
 }
@@ -63,19 +71,20 @@ function required(reason = "trial_expired", over: Partial<LicenseStatus> = {}): 
     trial_expires_at_ms: EXPIRES,
     revocation_checked_at_ms: null,
     revoked_count: 0,
+    purchase_open: false,
     ...over,
   } as LicenseStatus;
 }
 
 /** day → the exact answer the pill must give. 14 down to 0, nothing skipped. */
 const FORTNIGHT: Array<[number, Pick<PillLicense, "show" | "tone" | "value">]> = [
-  [14, { show: false, tone: "trial", value: null }],
-  [13, { show: false, tone: "trial", value: null }],
-  [12, { show: false, tone: "trial", value: null }],
-  [11, { show: false, tone: "trial", value: null }],
-  [10, { show: false, tone: "trial", value: null }],
-  [9, { show: false, tone: "trial", value: null }],
-  [8, { show: false, tone: "trial", value: null }],
+  [14, { show: true, tone: "trial-quiet", value: "14d" }],
+  [13, { show: true, tone: "trial-quiet", value: "13d" }],
+  [12, { show: true, tone: "trial-quiet", value: "12d" }],
+  [11, { show: true, tone: "trial-quiet", value: "11d" }],
+  [10, { show: true, tone: "trial-quiet", value: "10d" }],
+  [9, { show: true, tone: "trial-quiet", value: "9d" }],
+  [8, { show: true, tone: "trial-quiet", value: "8d" }],
   [7, { show: true, tone: "trial", value: "7d" }],
   [6, { show: true, tone: "trial", value: "6d" }],
   [5, { show: true, tone: "trial", value: "5d" }],
@@ -96,10 +105,21 @@ describe("pillLicense — the trial fortnight", () => {
     });
   }
 
-  it("goes quiet above the pill's own window, which is wider than the toast's", () => {
-    expect(PILL_SHOW_DAYS).toBe(7);
-    expect(pillLicense(trial(PILL_SHOW_DAYS + 1)).show).toBe(false);
-    expect(pillLicense(trial(PILL_SHOW_DAYS)).show).toBe(true);
+  it("yap24-PILL1: is never silent during a trial — quiet above PILL_SHOW_DAYS, not absent", () => {
+    expect(PILL_SHOW_DAYS).toBe(7); // NOT repurposed: the tray's purchase threshold
+    expect(PILL_QUIET_FROM_DAYS).toBe(14);
+    expect(pillLicense(trial(PILL_SHOW_DAYS + 1)).show).toBe(true);
+    expect(pillLicense(trial(PILL_SHOW_DAYS + 1)).tone).toBe("trial-quiet");
+    expect(pillLicense(trial(PILL_SHOW_DAYS)).tone).toBe("trial");
+    expect(pillLicense(trial(PILL_QUIET_FROM_DAYS)).tone).toBe("trial-quiet");
+    expect(pillLicense(trial(PILL_QUIET_FROM_DAYS + 1)).show).toBe(false);
+  });
+
+  it("uses the backend's days_left (rollback floor included), never the expiry clock", () => {
+    // trial_expires_at_ms is the same far-future instant for every row; only
+    // days_left differs, and only days_left moves the numeral.
+    const a = pillLicense(trial(10, { trial_expires_at_ms: 1, expires_at_ms: 1 } as Partial<LicenseStatus>));
+    expect(a.value).toBe("10d");
   });
 
   // Y2-E — the urgency threshold is now a named constant shared with the menu
@@ -128,9 +148,11 @@ describe("pillLicense — the trial fortnight", () => {
 
 describe("Y2-D — where a press on the pill goes", () => {
   it("routes the unpaid tones to the purchase SHEET, never to a URL", () => {
-    expect(pillLicenseRoute(pillLicense(trial(0)))).toBe("reveal_purchase"); // urgent
-    expect(pillLicenseRoute(pillLicense(required()))).toBe("reveal_purchase"); // ended
-    expect(pillLicenseRoute(pillLicense(trial(5)))).toBe("reveal_purchase"); // counting down
+    const open = { purchase_open: true };
+    expect(pillLicenseRoute(pillLicense(trial(0, open)))).toBe("reveal_purchase"); // urgent
+    expect(pillLicenseRoute(pillLicense(required("trial_expired", open)))).toBe("reveal_purchase"); // ended
+    expect(pillLicenseRoute(pillLicense(trial(5, open)))).toBe("reveal_purchase"); // counting down
+    expect(pillLicenseRoute(pillLicense(trial(10, open)))).toBe("reveal_purchase"); // quiet
     expect(REVEAL_PURCHASE_COMMAND).toBe("reveal_purchase_prompt");
   });
 
@@ -144,7 +166,7 @@ describe("Y2-D — where a press on the pill goes", () => {
   it("is inert before any license payload arrives, and for a silent trial", () => {
     expect(pillLicenseRoute(null)).toBeNull();
     expect(pillLicenseRoute(undefined)).toBeNull();
-    expect(pillLicenseRoute(pillLicense(trial(PILL_SHOW_DAYS + 1)))).toBeNull();
+    expect(pillLicenseRoute(pillLicense(trial(PILL_QUIET_FROM_DAYS + 1)))).toBeNull();
   });
 
   it("never sends a stored-key holder to a checkout (Y2-F)", () => {
@@ -350,10 +372,131 @@ describe("Y2-F — a stored key that grants nothing", () => {
     expect(p.show).toBe(false);
   });
 
-  it("a lapsed trial with NO stored key is untouched — still `ended`, still sells", () => {
-    const p = pillLicense(required("trial_expired"));
+  it("a lapsed trial with NO stored key is untouched — still `ended`, still sells once checkout is open", () => {
+    const p = pillLicense(required("trial_expired", { purchase_open: true }));
     expect(p.tone).toBe("ended");
     expect(p.action).toBe("purchase");
     expect(offersPurchase(p)).toBe(true);
+  });
+});
+
+/**
+ * yap24-PILL1 — the Buy chip is truthful. Checkout is CLOSED until launch day
+ * (Rust `PURCHASE_OPEN = false`), so while the backend says so, no tone the pill
+ * can produce carries a purchase action, and the copy promises nothing.
+ */
+describe("yap24-PILL1 — no purchase action while checkout is closed", () => {
+  it("every day 14..0 counts down with action none", () => {
+    for (let days = 14; days >= 0; days--) {
+      const p = pillLicense(trial(days));
+      expect(p.show).toBe(true);
+      expect(p.action).toBe("none");
+      expect(offersPurchase(p)).toBe(false);
+      expect(pillLicenseRoute(p)).toBeNull();
+    }
+  });
+
+  it("an ended trial routes to the License panel, never to a Buy that dead-ends", () => {
+    const p = pillLicense(required());
+    expect(p.action).toBe("license");
+    expect(pillLicenseRoute(p)).toBe("license_tab");
+  });
+
+  it("an absent purchase_open (older payload) reads as closed", () => {
+    const p = pillLicense(trial(5, { purchase_open: undefined } as unknown as Partial<LicenseStatus>));
+    expect(p.action).toBe("none");
+  });
+
+  it("problem and licensed are unchanged by the switch", () => {
+    for (const purchase_open of [true, false]) {
+      const prob = pillLicense(trial(5, { has_stored_license: true, purchase_open }));
+      expect(prob.tone).toBe("problem");
+      expect(prob.action).toBe("license");
+      expect(pillLicense(licensed({ purchase_open })).show).toBe(false);
+    }
+  });
+});
+
+/** yap24-PILL1 — the accessible title, one per tone, written down. */
+describe("yap24-PILL1 — accessible title per tone", () => {
+  it("matches the snapshot", () => {
+    const titles = {
+      "trial-quiet": pillLicense(trial(10)).title,
+      "trial-quiet@14": pillLicense(trial(14)).title,
+      trial: pillLicense(trial(5)).title,
+      "trial@1": pillLicense(trial(1)).title,
+      urgent: pillLicense(trial(0)).title,
+      ended: pillLicense(required()).title,
+      problem: pillLicense(trial(5, { has_stored_license: true, license_problem: "revoked", license_problem_message: "This license key was revoked." })).title,
+    };
+    expect(titles).toMatchInlineSnapshot(`
+      {
+        "ended": "Dictation is paused",
+        "problem": "This license key was revoked.",
+        "trial": "Free trial — 5 days left",
+        "trial-quiet": "Free trial — 10 days left",
+        "trial-quiet@14": "Free trial — 14 days left",
+        "trial@1": "Free trial — 1 day left",
+        "urgent": "Trial ends today",
+      }
+    `);
+    expect(titles.urgent).toBe(TRIAL_ENDS_TODAY);
+    expect(titles["trial-quiet"]).toBe(freeTrialTitle(10));
+  });
+
+  it("never carries a price or a purchase verb", () => {
+    for (let days = 14; days >= 0; days--) {
+      for (const purchase_open of [true, false]) {
+        const t = pillLicense(trial(days, { purchase_open })).title;
+        expect(t).not.toMatch(/\$|buy|purchase|upgrade/i);
+      }
+    }
+  });
+});
+
+/** Y2-B (8d85cdf) — the geometry policy, carried and re-based onto 14 days. */
+describe("pillLicense — value_is_never_wider_than_the_side_dock", () => {
+  it("value_is_never_wider_than_the_side_dock, for every day 0..14", () => {
+    for (let days = 0; days <= 14; days++) {
+      const { value } = pillLicense(trial(days));
+      expect(valueFitsSideDock(value)).toBe(true);
+      expect(value === null || value.length <= PILL_VALUE_MAX_CHARS).toBe(true);
+    }
+  });
+
+  it("holds past the ends of the fortnight too — a clock rollback is not an excuse", () => {
+    for (const days of [-30, -3, -1, 15, 60, 3650]) {
+      expect(valueFitsSideDock(pillLicense(trial(days)).value)).toBe(true);
+    }
+  });
+
+  it("rejects anything that would not fit, so the check is not vacuous", () => {
+    expect(valueFitsSideDock("14 days")).toBe(false);
+    expect(valueFitsSideDock("14d")).toBe(true); // exactly the budget
+    expect(valueFitsSideDock("100d")).toBe(false);
+    expect(PILL_VALUE_MAX_CHARS).toBe(3);
+  });
+});
+
+describe("splitValue — the numeral and its unit are set in different faces", () => {
+  it("splits every value this policy can produce", () => {
+    for (let days = 0; days <= PILL_QUIET_FROM_DAYS; days++) {
+      const { value } = pillLicense(trial(days));
+      const split = splitValue(value);
+      expect(split).not.toBe(null);
+      expect(split!.numeral).toMatch(/^\d+$/);
+      expect(split!.unit).toBe("d");
+      expect(split!.numeral + split!.unit).toBe(value);
+    }
+  });
+
+  it("is null when there is no numeral, which is the cue to draw the glyph", () => {
+    expect(splitValue(pillLicense(required()).value)).toBe(null);
+    expect(splitValue(null)).toBe(null);
+    expect(splitValue("")).toBe(null);
+  });
+
+  it("does not lose a value it cannot parse", () => {
+    expect(splitValue("soon")).toEqual({ numeral: "soon", unit: "" });
   });
 });

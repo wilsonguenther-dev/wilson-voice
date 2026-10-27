@@ -9,10 +9,15 @@
  * (the purchase surface) RENDER this result; none of them re-decides it, and
  * none of them reaches for `days_left` on its own.
  *
- * TWO DIFFERENT NUMBERS, BOTH DELIBERATE:
- *   - `PILL_SHOW_DAYS = 7` — the pill starts showing a countdown a full week
- *     out. It is ambient and cheap to glance at; a quiet "5d" in the corner
- *     costs nothing and is read in passing.
+ * THREE DIFFERENT NUMBERS, ALL DELIBERATE:
+ *   - `PILL_QUIET_FROM_DAYS = 14` (yap24-PILL1) — the pill counts down for the
+ *     WHOLE trial. Days 14…8 wear the quiet tone (`trial-quiet`: the numeral at
+ *     reduced contrast, no glyph, no purchase action). Before this, the first
+ *     week of a trial said nothing at all, which a person reads as "there is no
+ *     trial" — the panel may keep a quiet style, it may not keep silence.
+ *   - `PILL_SHOW_DAYS = 7` — the last week wears the full `trial` treatment.
+ *     It is ambient and cheap to glance at; a "5d" in the corner costs nothing
+ *     and is read in passing.
  *   - `TRIAL_WARN_DAYS = 3` (in `../license/status`) — the ONE-SHOT toast. That
  *     one interrupts, so it fires later and exactly once. It is untouched by
  *     this file.
@@ -59,6 +64,16 @@ import {
 export const PILL_SHOW_DAYS = 7;
 
 /**
+ * yap24-PILL1 — how many days out the pill starts counting down at all, in the
+ * QUIET tone. Days `PILL_SHOW_DAYS < d <= PILL_QUIET_FROM_DAYS` are
+ * `trial-quiet`. A SEPARATE constant, never a repurposed `PILL_SHOW_DAYS`:
+ * that one also decides when the menu bar offers to sell. Twinned with
+ * `license::PILL_QUIET_FROM_DAYS` in Rust; `license.rs`'s lib tests and
+ * `src-tauri/tests/tray_license.rs` both parse this line and fail on drift.
+ */
+export const PILL_QUIET_FROM_DAYS = 14;
+
+/**
  * How few days must remain before the countdown turns URGENT. The rule below is
  * `days < PILL_URGENT_DAYS`, i.e. the last day — `daysLeft` floors at zero, so
  * this is the day on which no whole day is left. Strictly-less is what makes
@@ -82,7 +97,7 @@ export const PILL_URGENT_DAYS = 1;
  * the two is the single most expensive sentence this app can say: it asks a
  * paying customer to buy the thing they already bought.
  */
-export type PillLicenseTone = "trial" | "urgent" | "ended" | "problem";
+export type PillLicenseTone = "trial-quiet" | "trial" | "urgent" | "ended" | "problem";
 
 /**
  * Where a press on the pill's license mark goes. This is the machine-checkable
@@ -178,11 +193,22 @@ const PROBLEM_FALLBACK =
  *
  *   licensed                  → nothing, ever, whatever the trial fields say
  *   stored key, not licensed  → tone `problem` — Y2-F, see below
- *   trial, more than 7 days   → nothing (ambient silence)
+ *   trial, 14…8 days          → "14d"…"8d", tone `trial-quiet` (yap24-PILL1)
  *   trial, 7…1 days           → "7d"…"1d", tone `trial`
  *   trial, last day (0)       → "1d", tone `urgent` — there is still today,
  *                               so "0d" would be a lie told to hurry someone
+ *   trial, more than 14 days  → nothing (a fresh trial never gets here; a
+ *                               support grace key is at most 14 too)
  *   license_required          → tone `ended`, no numeral
+ *
+ * THE PURCHASE ACTION IS TRUTHFUL (yap24-PILL1). `action: "purchase"` only
+ * when the backend reports `purchase_open` (Rust `PURCHASE_OPEN`). While
+ * checkout is closed the trial tones carry NO action (`"none"`: an inert
+ * numeral with a title) and `ended` routes to the License panel, where a key
+ * can be entered — never to a Buy that dead-ends.
+ *
+ * TITLES: "Free trial — N days left" for both running tones, "Trial ends today"
+ * on the last day. No price, ever (Y2-D).
  *
  * `null` (nothing has arrived from the backend yet) is silence, not an
  * assumption: the pill must not flash a countdown during boot.
@@ -215,32 +241,36 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
     };
   }
 
+  // yap24-PILL1 — the backend's switch, never a webview guess. Absent (an
+  // older payload) reads as closed.
+  const purchaseOpen = status.purchase_open === true;
+
   if (status.state === "trial") {
-    // Borrowed, not recomputed: the backend's day count, floored at zero.
+    // Borrowed, not recomputed: the backend's day count (rollback floor
+    // included), floored at zero.
     const days = daysLeft(status);
-    if (days > PILL_SHOW_DAYS) return PILL_LICENSE_SILENT;
+    if (days > PILL_QUIET_FROM_DAYS) return PILL_LICENSE_SILENT;
+    const action: PillLicenseAction = purchaseOpen ? "purchase" : "none";
     if (days < PILL_URGENT_DAYS) {
       return {
         show: true,
         tone: "urgent",
         glyph: GLYPH_TRIAL,
         value: "1d",
-        title: `${trialCountdown(0)} of your Yap trial.`,
-        action: "purchase",
+        title: TRIAL_ENDS_TODAY,
+        action,
       };
     }
-    // `chipFor` already renders the numeral and the sentence for a running
-    // trial; the pill shows the SAME string the Settings chip does. Only the
-    // tone is the pill's own, because the pill's urgency threshold is not the
-    // chip's.
-    const chip = chipFor(status);
+    // `chipFor` renders the numeral ("5d") for a running trial, so the pill and
+    // the Settings chip set the same value. The tone and the sentence are the
+    // pill's own: its thresholds are not the chip's.
     return {
       show: true,
-      tone: "trial",
+      tone: days > PILL_SHOW_DAYS ? "trial-quiet" : "trial",
       glyph: GLYPH_TRIAL,
-      value: chip.value,
-      title: chip.title,
-      action: "purchase",
+      value: chipFor(status).value,
+      title: freeTrialTitle(days),
+      action,
     };
   }
 
@@ -252,8 +282,16 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
     glyph: GLYPH_ENDED,
     value: null,
     title: statusCopy(status).headline,
-    action: "purchase",
+    action: purchaseOpen ? "purchase" : "license",
   };
+}
+
+/** The last-day sentence. No price, no Buy. */
+export const TRIAL_ENDS_TODAY = "Trial ends today";
+
+/** "Free trial — 10 days left" / "Free trial — 1 day left". No price, no Buy. */
+export function freeTrialTitle(days: number): string {
+  return `Free trial — ${trialCountdown(days)}`;
 }
 
 /**
@@ -280,6 +318,7 @@ const ENDED_FOR_COPY: LicenseStatus = {
   trial_expires_at_ms: 0,
   revocation_checked_at_ms: null,
   revoked_count: 0,
+  purchase_open: false,
 };
 
 /** "Dictation is paused" — the headline the capsule wears. */
@@ -292,3 +331,38 @@ const GATED_BODY = statusCopy(ENDED_FOR_COPY).body;
 export const GATED_TITLE = `${GATED_HEADLINE} ${GATED_BODY}`;
 /** The mark a gated capsule wears — the same ⊘ the ended chip already uses. */
 export const GATED_GLYPH = GLYPH_ENDED;
+
+/* ───────────────────────── Y2-B — the geometry policy ─────────────────────────
+ *
+ * Carried from loop/y2-b-pill-trial-countdown-in-both-styles @ 8d85cdf (PR #186,
+ * closed) by yap24-PILL1, re-based onto the 14-day policy.
+ *
+ * THE SIDE DOCK IS THE CONSTRAINT, AND IT IS THE NARROW ONE. On a `left` /
+ * `right` dock the capsule sits in a ~30px strip, so the pill shows the VALUE
+ * and nothing else — "14d" fits, "14 days left" does not — and the sentence
+ * lives in `title`, which a tooltip can make as wide as it likes.
+ *
+ * Three characters is the budget, and yap24-PILL1 spends all of it: the widest
+ * value this policy can now produce is "14d" (`PILL_QUIET_FROM_DAYS`). It is
+ * asserted over the whole fortnight in `license.test.ts` rather than left as a
+ * comment, because the failure mode is a chip that silently overflows the strip
+ * on one dock out of three.
+ */
+export const PILL_VALUE_MAX_CHARS = 3;
+
+/** Does this value fit the 30px side dock? `null` (no numeral) trivially does. */
+export function valueFitsSideDock(value: string | null): boolean {
+  return value === null || value.length <= PILL_VALUE_MAX_CHARS;
+}
+
+/**
+ * Split "5d" into the numeral the eye lands on and its unit, so a pill can set
+ * them in two faces: the numeral in Departure Mono, the unit in the body face.
+ * `null` when there is no numeral at all (`ended`, `problem`), which is the
+ * caller's cue to draw the glyph instead.
+ */
+export function splitValue(value: string | null): { numeral: string; unit: string } | null {
+  if (!value) return null;
+  const m = /^(\d+)(.*)$/.exec(value);
+  return m ? { numeral: m[1], unit: m[2] } : { numeral: value, unit: "" };
+}
