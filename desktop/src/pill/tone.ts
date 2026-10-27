@@ -10,6 +10,9 @@
  * cursing lines for clean ones.
  */
 
+import type { ChatTone } from "./live";
+import type { NudgeId } from "./nudge";
+
 export type Tone = "rude" | "friendly" | "rose" | "off";
 
 export interface ToneConfig {
@@ -93,4 +96,37 @@ export function reactiveLine(words: number, cfg: ToneConfig, nonce = 0): string 
   if (options.length === 0) return "";
   const idx = ((nonce % options.length) + options.length) % options.length;
   return options[idx];
+}
+
+// ── Y8-D — coaching nudges, in the same voice ───────────────────────────────
+//
+// The nudge engine (`nudge.ts`) decides WHETHER to teach; this table is WHAT
+// Yappy says, so there is one voice system and not two. Rules every line obeys
+// (and `nudge.test.ts` checks): a line per tone, no money and no upgrade, no
+// key named (every chord is rebindable, and the default is fn⌃, not fn), and
+// short enough for the side-dock strip.
+//
+// A nudge is a LESSON, so `off` does not silence it: the shell maps `off` to
+// `friendly` (`toChatTone`) exactly as it does for every phase line.
+export const NUDGE_LINES: Record<NudgeId, Record<ChatTone, string>> = {
+  "no-text-field": {
+    rude: "click a text box first, genius.",
+    friendly: "click a text box, then talk!",
+    rose: "click a text box for me 🌹",
+  },
+  "code-editor": {
+    rude: "editor. i won't touch caps.",
+    friendly: "in editors i keep it literal.",
+    rose: "your code, untouched 🌹",
+  },
+  meetings: {
+    rude: "i do meetings too. use me.",
+    friendly: "psst — i take meeting notes!",
+    rose: "i'd take your meeting notes 🌹",
+  },
+};
+
+/** The nudge line for `id` in `tone`. */
+export function nudgeLine(id: NudgeId, tone: ChatTone): string {
+  return NUDGE_LINES[id][tone];
 }
