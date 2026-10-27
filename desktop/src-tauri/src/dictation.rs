@@ -34,15 +34,15 @@ pub const DEFAULT_MODE: DictationMode = DictationMode::Plain;
 
 /// Browsers, matched before every other family.
 ///
-/// LIMITATION (deliberate, Y4-F): a browser is ambiguous — Gmail in Chrome is an
-/// email surface, Google Docs in Chrome is a document, and a GitHub comment box
-/// is chat. Resolving that needs the tab URL or the focused `AXSelectedText`
-/// element, which is P1 #11 in the Wispr parity backlog and is explicitly OUT of
-/// scope here. Until it exists, a browser resolves to [`DEFAULT_MODE`], so the
-/// wrong guess is cheap: the user gets their words with punctuation and nothing
-/// else. `resolve_mode_with_context` still upgrades a browser to `Email` when the
-/// text already before the caret is an email greeting, which is the one signal we
-/// can read today without a new permission.
+/// A browser is ambiguous — Gmail in Chrome is an email surface, Google Docs in
+/// Chrome is a document, and a Slack tab is chat — so the app name alone
+/// resolves to [`DEFAULT_MODE`]. PERM-F closes the Y4-F limitation: for Chrome,
+/// Safari and Firefox `focus::read_ax_context` reads the focused page's URL
+/// in-process and hands [`resolve_mode_with_context`] only the MODE
+/// [`mode_for_browser_url`] derives from it (the URL itself is dropped inside
+/// `focus`). With no URL signal, an email greeting before the caret still
+/// upgrades a browser to `Email`, and otherwise the cheap wrong guess stands:
+/// the user gets their words with punctuation and nothing else.
 const BROWSER_KEYS: &[&str] = &[
     "chrome",
     "chromium",
@@ -167,7 +167,7 @@ pub fn should_format(mode: DictationMode) -> bool {
 // dictated text is joined onto it (Wispr Flow parity).
 //
 // The pipeline reads at most `focus::CONTEXT_CHAR_LIMIT` characters before the
-// caret via Accessibility (`focus::text_before_cursor`) and hands them here as a
+// caret via Accessibility (`focus::read_ax_context`) and hands them here as a
 // borrowed `&str`. Three decisions come out of it:
 //   1. casing  — continuing a sentence lowercases the lead word; a fresh
 //                sentence (after . ? ! / a new line) or an empty field
@@ -387,15 +387,18 @@ pub fn mode_hint_from_context(context: Option<&str>) -> Option<DictationMode> {
     None
 }
 
-/// [`resolve_mode`] plus the YV50 context hint.
+/// [`resolve_mode`] plus the YV50 context hint and the PERM-F browser-page mode.
 ///
 /// Precedence is deliberate and narrow: a user-picked fixed mode always wins,
-/// then the app match, and the context hint only fills the gap left when `auto`
-/// detection found nothing (`Plain`). Context steers; it never overrides.
+/// then the app match. Only when `auto` detection found nothing (`Plain`) do the
+/// context signals fill the gap — first the page mode (`browser_mode`, honoured
+/// only when `app_name` really is a browser), then the pre-caret greeting hint.
+/// Context steers; it never overrides.
 pub fn resolve_mode_with_context(
     setting: &str,
     app_name: &str,
     context: Option<&str>,
+    browser_mode: Option<DictationMode>,
 ) -> DictationMode {
     let mode = resolve_mode(setting, app_name);
     let user_picked = matches!(
@@ -403,11 +406,146 @@ pub fn resolve_mode_with_context(
         "plain" | "list" | "email" | "code" | "notes"
     );
     if mode == DictationMode::Plain && !user_picked {
+        let lower = app_name.to_lowercase();
+        if BROWSER_KEYS.iter().any(|kw| lower.contains(kw)) {
+            if let Some(page) = browser_mode {
+                return page;
+            }
+        }
         if let Some(hint) = mode_hint_from_context(context) {
             return hint;
         }
     }
     mode
+}
+
+/// PERM-F — browser pages by the mode their host implies. Hosts only (never a
+/// scheme), matched exactly or as a parent domain of the page's host.
+const EMAIL_HOSTS: &[&str] = &[
+    "mail.google.com",
+    "outlook.live.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+    "mail.yahoo.com",
+    "app.fastmail.com",
+    "mail.proton.me",
+    "mail.zoho.com",
+];
+const DOCUMENT_HOSTS: &[&str] = &[
+    "notion.so",
+    "notion.site",
+    "coda.io",
+    "quip.com",
+    "paper.dropbox.com",
+    "word.cloud.microsoft",
+    "word-edit.officeapps.live.com",
+];
+const CHAT_HOSTS: &[&str] = &[
+    "app.slack.com",
+    "discord.com",
+    "web.whatsapp.com",
+    "web.telegram.org",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "messenger.com",
+    "chat.google.com",
+];
+
+/// PERM-F — the dictation mode a browser page's URL implies: Gmail and the
+/// other webmail hosts → `Email`, a Google Doc / Notion / Word online →
+/// `Document`, Slack / Discord / Teams web → `Chat`. `None` for anything else
+/// (and for any non-http(s) URL), which leaves the browser on today's path.
+///
+/// PRIVACY: pure, borrows the URL, returns only a mode. The caller
+/// (`focus::context_from_reads`) drops the URL as soon as this returns.
+pub fn mode_for_browser_url(url: &str) -> Option<DictationMode> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let on = |domain: &str| {
+        host == domain
+            || (host.len() > domain.len()
+                && host.ends_with(domain)
+                && host.as_bytes()[host.len() - domain.len() - 1] == b'.')
+    };
+    if EMAIL_HOSTS.iter().any(|d| on(d)) {
+        return Some(DictationMode::Email);
+    }
+    // docs.google.com also serves Sheets, Slides and Forms: only a Doc is prose.
+    if on("docs.google.com") {
+        return path
+            .starts_with("/document/")
+            .then_some(DictationMode::Document);
+    }
+    if DOCUMENT_HOSTS.iter().any(|d| on(d)) {
+        return Some(DictationMode::Document);
+    }
+    if CHAT_HOSTS.iter().any(|d| on(d)) {
+        return Some(DictationMode::Chat);
+    }
+    None
+}
+
+/// PERM-F — join the END of the take onto the text AFTER the caret (or after
+/// the selection the take replaces), the mirror of [`join_for_mode`]:
+///
+/// 1. spacing — the caret glued to a word (`after` starts with a letter or a
+///    digit) gets one space so the take and that word do not fuse;
+/// 2. mid-sentence — prose modes drop the take's single trailing `.` when the
+///    sentence visibly continues after the caret (the next non-blank character
+///    is a lowercase letter or `, ; : )`), and when the take REPLACES a
+///    selection that itself had no sentence-final punctuation and text follows
+///    on the same line (replacing "Tuesday" in "on Tuesday, then" must not
+///    leave "Wednesday., then"). `Code` gets the spacing and nothing else.
+///
+/// `after == None` (no Accessibility, a secure field, no caret) or an empty
+/// `after` returns `text` UNCHANGED — the pre-PERM-F behaviour, byte for byte.
+/// Purely additive apart from that one period, and never empties the take.
+pub fn join_after(
+    text: &str,
+    after: Option<&str>,
+    selection: Option<&str>,
+    mode: DictationMode,
+) -> String {
+    let Some(after) = after.filter(|a| !a.is_empty()) else {
+        return text.to_string();
+    };
+    if text.trim().is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    let continues_line = after.trim_start_matches([' ', '\t']);
+    let next = continues_line.chars().next();
+    if mode != DictationMode::Code && !out.contains('\n') {
+        let mid_sentence =
+            matches!(next, Some(c) if c.is_lowercase() || matches!(c, ',' | ';' | ':' | ')'));
+        let replacing_a_phrase = selection
+            .is_some_and(|sel| !sel.trim_end().ends_with(SENTENCE_ENDERS))
+            && next.is_some_and(|c| c != '\n' && c != '\r');
+        let single_period = out.ends_with('.') && !out.ends_with("..");
+        let rest_has_content = out
+            .trim_end_matches('.')
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric());
+        if single_period && rest_has_content && (mid_sentence || replacing_a_phrase) {
+            out.pop();
+        }
+    }
+    if after.chars().next().is_some_and(char::is_alphanumeric)
+        && !out.ends_with(char::is_whitespace)
+    {
+        out.push(' ');
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -4184,22 +4322,22 @@ mod tests {
 
         // The hint only fills the gap an unrecognised app leaves.
         assert_eq!(
-            resolve_mode_with_context("auto", "Arc", Some(greeting)),
+            resolve_mode_with_context("auto", "Arc", Some(greeting), None),
             DictationMode::Email
         );
         // A recognised app still wins over the hint…
         assert_eq!(
-            resolve_mode_with_context("auto", "Visual Studio Code", Some(greeting)),
+            resolve_mode_with_context("auto", "Visual Studio Code", Some(greeting), None),
             DictationMode::Code
         );
         // …and a user-picked mode wins over everything.
         assert_eq!(
-            resolve_mode_with_context("plain", "Arc", Some(greeting)),
+            resolve_mode_with_context("plain", "Arc", Some(greeting), None),
             DictationMode::Plain
         );
         // No context = exactly the pre-YV50 behaviour.
         assert_eq!(
-            resolve_mode_with_context("auto", "Arc", None),
+            resolve_mode_with_context("auto", "Arc", None, None),
             resolve_mode("auto", "Arc")
         );
     }

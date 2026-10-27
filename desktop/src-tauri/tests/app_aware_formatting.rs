@@ -511,16 +511,26 @@ fn a_browser_is_ambiguous_so_it_gets_the_conservative_mode() {
         let mode = dictation::resolve_mode("auto", browser);
         assert_eq!(
             mode, DEFAULT_MODE,
-            "{browser:?} resolved to {mode:?}; browser ambiguity is unresolved (P1 #11), \
-             so it must take the cheap guess"
+            "{browser:?} resolved to {mode:?}; the app NAME alone cannot disambiguate a \
+             browser (PERM-F does it from the page URL), so it must take the cheap guess"
         );
     }
-    // The one browser signal we CAN read today without a new permission: an
-    // email greeting already typed before the caret upgrades the surface.
+    // With no page signal, an email greeting already typed before the caret
+    // still upgrades the surface.
     assert_eq!(
-        dictation::resolve_mode_with_context("auto", "Google Chrome", Some("Hi Sarah,\n")),
+        dictation::resolve_mode_with_context("auto", "Google Chrome", Some("Hi Sarah,\n"), None),
         DictationMode::Email,
-        "the caret context is the only browser disambiguation this item ships"
+        "the caret context disambiguates a browser when the URL gave nothing"
+    );
+    // PERM-F: the page URL's mode (Gmail / a Google Doc) disambiguates it.
+    assert_eq!(
+        dictation::resolve_mode_with_context(
+            "auto",
+            "Google Chrome",
+            None,
+            dictation::mode_for_browser_url("https://docs.google.com/document/d/1/edit"),
+        ),
+        DictationMode::Document,
     );
 }
 

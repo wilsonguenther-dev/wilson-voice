@@ -54,7 +54,7 @@ pub mod diarize_protocol;
 // `tests/pill_idle_tick_during_recording.rs` drives it directly rather than
 // trying to infer a sleep duration from the outside.
 pub mod float_pill;
-mod focus;
+pub mod focus;
 /// Y4-H — the formatting screen's copy, derived from the pipeline's own
 /// `runs_*` predicates so it cannot drift from what the pipeline does.
 pub mod formatting_options;
@@ -2479,21 +2479,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let (capture_stop, (source_app, source_bundle_id, cursor_context)) = record::end_at_stop_edge(
         move || record::end_capture(active),
         || {
-            (
-                // Capture focused app *before* we steal focus with notifications / main window.
-                focus::frontmost_app_name(),
-                // yap-format-structure: the paste target's bundle id picks the list
-                // syntax (Markdown / plain bullets / off). Captured with
-                // `source_app`, before Yap can take focus.
-                focus::frontmost_bundle_id(),
-                // YV50 context awareness — the text just before the caret while the
-                // user's app is still the focused one. Bounded to
-                // `focus::CONTEXT_CHAR_LIMIT` chars; `None` on AX denial or a secure
-                // field. PRIVACY: this string only ever steers the formatting
-                // decisions below — it is never logged, stored, or emitted (see the
-                // `cursor_context_is_never_logged_or_persisted` test).
-                focus::text_before_cursor(),
-            )
+            // Capture focused app *before* we steal focus with notifications / main window.
+            let app_name = focus::frontmost_app_name();
+            // yap-format-structure: the paste target's bundle id picks the list
+            // syntax (Markdown / plain bullets / off). Captured with
+            // `source_app`, before Yap can take focus.
+            let bundle_id = focus::frontmost_bundle_id();
+            // YV50 + PERM-F context awareness, read while the user's app is still
+            // the focused one: the text before the caret, the selection, the text
+            // after the caret (each cut to its `focus::*_CHAR_LIMIT` budget) and,
+            // for Chrome/Safari/Firefox, the MODE the page URL implies — the URL
+            // itself never leaves `focus`. All `None` on AX denial, which is the
+            // pre-PERM-F path. PRIVACY: only ever steers the formatting decisions
+            // below — never logged, stored, or emitted (see the
+            // `cursor_context_is_never_logged_or_persisted` test).
+            let ax_context = focus::read_ax_context(bundle_id.as_deref());
+            (app_name, bundle_id, ax_context)
         },
     );
 
@@ -2856,7 +2857,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let dictation_mode = dictation::resolve_mode_with_context(
                 &settings.dictation_mode,
                 source_app.as_deref().unwrap_or_default(),
-                cursor_context.as_deref(),
+                cursor_context.before_caret.as_deref(),
+                cursor_context.browser_mode,
             );
             // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
             // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
@@ -2912,7 +2914,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // Y4-F: mode-aware. Every prose mode gets the R5 casing rule; `Code`
             // gets the spacing and nothing else, because a caret after `let x = 5. `
             // is not the end of a sentence and `foo` must not become `Foo`.
-            let text = dictation::join_for_mode(&text, cursor_context.as_deref(), dictation_mode);
+            let text = dictation::join_for_mode(
+                &text,
+                cursor_context.before_caret.as_deref(),
+                dictation_mode,
+            );
+            // PERM-F: and onto the text AFTER the caret (or after the selection
+            // this take replaces) — a space when the caret is glued to a word, no
+            // stray period mid-sentence. `None` = unchanged text.
+            let text = dictation::join_after(
+                &text,
+                cursor_context.after_caret.as_deref(),
+                cursor_context.selection.as_deref(),
+                dictation_mode,
+            );
             // YV48 snippets: expand saved trigger phrases AFTER cleanup and
             // before the clipboard. Its own stage — never inside the dictionary
             // closure above, and never on the history command paths — so only a
