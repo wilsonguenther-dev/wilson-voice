@@ -90,6 +90,10 @@ pub mod meeting_matrix;
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
+// yap-notetaker-onboard — Set up Notetaker: Apple Calendar (read-only) and
+// Otter file import.
+pub mod calendar;
+pub mod meeting_import;
 // YV95 — the manual start/stop control plane (finding #6's "no way to start a
 // meeting"), and the OS-12 instrumentation it writes into the meeting row.
 // Public because "a user can start and stop a meeting" is the item's acceptance
@@ -5222,6 +5226,135 @@ fn system_audio_setup(state: State<'_, Arc<AppState>>) -> meetings::SystemAudioS
     state.db.system_audio_setup()
 }
 
+// ── yap-notetaker-onboard · the Set up Notetaker card ──────────────────────
+
+/// The card's progress (`settings_kv` `notetaker_setup_v1`). Never fails.
+#[tauri::command]
+fn notetaker_setup_state(state: State<'_, Arc<AppState>>) -> meetings::NotetakerSetup {
+    state.db.notetaker_setup()
+}
+
+/// Persist the card's progress (a step finished, or the X was clicked).
+#[tauri::command]
+fn save_notetaker_setup(
+    state: State<'_, Arc<AppState>>,
+    setup: meetings::NotetakerSetup,
+) -> Result<meetings::NotetakerSetup, String> {
+    state.db.set_notetaker_setup(&setup)
+}
+
+/// The card's Connect calendar button — the ONE place Yap ever asks macOS for
+/// Calendars access (see `calendar.rs`, rule 2). Read-only. On success the
+/// card's calendar step is marked done in the same call, so the dot cannot
+/// disagree with the grant.
+#[tauri::command]
+async fn connect_calendar(
+    state: State<'_, Arc<AppState>>,
+) -> Result<calendar::CalendarAccess, String> {
+    let access = tauri::async_runtime::spawn_blocking(calendar::request_access)
+        .await
+        .map_err(|e| e.to_string())?;
+    if access.connected {
+        let mut setup = state.db.notetaker_setup();
+        if !setup.calendar {
+            setup.calendar = true;
+            state.db.set_notetaker_setup(&setup)?;
+        }
+    }
+    Ok(access)
+}
+
+/// One file the user picked on the card, as the webview read it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportFileIn {
+    name: String,
+    content: String,
+    /// The file's modified time (ms since epoch) — the best "when" a transcript
+    /// export carries, since Otter's .txt/.srt hold no date.
+    #[serde(default)]
+    modified_ms: Option<i64>,
+}
+
+/// What happened to one picked file.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportOutcome {
+    name: String,
+    meeting_id: Option<String>,
+    segments: usize,
+    error: Option<String>,
+}
+
+/// The card's Import button. Files only — the webview hands over the TEXT of
+/// what the user picked; nothing here opens a path or a socket. Each file is
+/// parsed fully before anything is written, and written in one transaction,
+/// so a malformed file leaves no row (`meeting_import.rs`).
+#[tauri::command]
+fn import_meetings(
+    state: State<'_, Arc<AppState>>,
+    files: Vec<ImportFileIn>,
+) -> Result<Vec<ImportOutcome>, String> {
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let started_at = f
+            .modified_ms
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+            .unwrap_or_else(chrono::Utc::now);
+        let outcome = match meeting_import::parse(&f.name, &f.content) {
+            Ok(parsed) => match state.db.import_meeting(&parsed, started_at) {
+                Ok(m) => ImportOutcome {
+                    name: f.name,
+                    meeting_id: Some(m.id),
+                    segments: parsed.segments.len(),
+                    error: None,
+                },
+                Err(e) => ImportOutcome {
+                    name: f.name,
+                    meeting_id: None,
+                    segments: 0,
+                    error: Some(e),
+                },
+            },
+            Err(e) => ImportOutcome {
+                name: f.name,
+                meeting_id: None,
+                segments: 0,
+                error: Some(e.to_string()),
+            },
+        };
+        out.push(outcome);
+    }
+    if out.iter().any(|o| o.meeting_id.is_some()) {
+        let mut setup = state.db.notetaker_setup();
+        if !setup.import {
+            setup.import = true;
+            state.db.set_notetaker_setup(&setup)?;
+        }
+    }
+    Ok(out)
+}
+
+/// The menu id of Help → Set up Notetaker.
+const NOTETAKER_SETUP_MENU_ID: &str = "notetaker_setup";
+
+/// Help → Set up Notetaker: un-dismiss the card, then show it. The row is
+/// written BEFORE the navigation so a Meetings view that mounts in response
+/// reads "not dismissed" on its first load.
+fn reopen_notetaker_setup(app: &AppHandle) {
+    let state = app.state::<Arc<AppState>>();
+    let mut setup = state.db.notetaker_setup();
+    setup.dismissed = false;
+    if let Err(e) = state.db.set_notetaker_setup(&setup) {
+        log::warn!("notetaker setup: could not reopen the card: {e}");
+    }
+    // The app menu is not the tray, but TrayOpen is the activation that means
+    // "the user asked for the window from a menu", which is what this is.
+    present_main_window(app, lifecycle::ActivationSource::TrayOpen);
+    let _ = app.emit("navigate", "meetings");
+    let _ = app.emit("notetaker-setup", &setup);
+}
+
 /// YV102 — **the "Set up meeting recording" step.** Provokes the TCC alert on
 /// purpose, from Settings, with the explanation already on screen.
 ///
@@ -7446,6 +7579,11 @@ pub fn run() {
             acknowledge_meeting_consent,
             system_audio_setup,
             run_system_audio_setup,
+            // yap-notetaker-onboard — the Set up Notetaker card.
+            notetaker_setup_state,
+            save_notetaker_setup,
+            connect_calendar,
+            import_meetings,
             // YV95 — the entry point finding #6 says the phase cannot merge
             // without.
             meeting_status,
@@ -7477,6 +7615,39 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // yap-notetaker-onboard — Help → "Set up Notetaker". Appended to the
+            // Help submenu of Tauri's default macOS app menu (the app sets no
+            // menu of its own), so the card can always be brought back after
+            // its X.
+            if let Some(menu) = app.menu() {
+                match menu.get(tauri::menu::HELP_SUBMENU_ID) {
+                    Some(tauri::menu::MenuItemKind::Submenu(help)) => {
+                        match MenuItem::with_id(
+                            app,
+                            NOTETAKER_SETUP_MENU_ID,
+                            "Set up Notetaker",
+                            true,
+                            None::<&str>,
+                        ) {
+                            Ok(item) => {
+                                if let Err(e) = help.append(&item) {
+                                    log::warn!("help menu: could not add Set up Notetaker: {e}");
+                                }
+                            }
+                            Err(e) => log::warn!("help menu: could not build Set up Notetaker: {e}"),
+                        }
+                    }
+                    _ => log::warn!("help menu: no Help submenu in the app menu"),
+                }
+            } else {
+                log::warn!("help menu: the app has no menu; Set up Notetaker is not reachable from Help");
+            }
+            app.on_menu_event(|app, event| {
+                if event.id.as_ref() == NOTETAKER_SETUP_MENU_ID {
+                    reopen_notetaker_setup(app);
+                }
+            });
 
             // YV95 — build the meeting controller first: the tray item below
             // reads `capture_available()` for its enabled state, and every entry

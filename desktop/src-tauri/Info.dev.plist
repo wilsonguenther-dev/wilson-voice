@@ -22,5 +22,9 @@
 	<string>Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Yap pastes transcribed text into the app you're typing in.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Yap reads your calendars on this Mac — including Google or Exchange accounts already added to macOS Calendar — to name and prepare your meetings. Read-only; nothing leaves your Mac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Yap reads your calendars on this Mac — including Google or Exchange accounts already added to macOS Calendar — to name and prepare your meetings. Read-only; nothing leaves your Mac.</string>
 </dict>
 </plist>

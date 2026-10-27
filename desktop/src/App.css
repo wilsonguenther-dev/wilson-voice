@@ -3187,3 +3187,130 @@ button.primary.big {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* yap-notetaker-onboard — the Set up Notetaker card. Contained panel (surface +
+   border via .panel), pinned footer, existing tokens only. */
+.nt-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+  max-height: 420px;
+}
+.nt-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nt-setup-head strong {
+  flex: 1;
+}
+.nt-setup-x {
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 8px;
+}
+.nt-setup-rows,
+.nt-setup-body {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+.nt-setup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.nt-setup-row:first-child {
+  border-top: 0;
+}
+.nt-setup-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+.nt-setup-dot.done {
+  background: var(--accent-done);
+  border-color: var(--accent-done);
+}
+.nt-setup-dot[data-dot="none"] {
+  border-style: dashed;
+  opacity: 0.5;
+}
+.nt-setup-copy {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.nt-setup-title {
+  font-weight: 600;
+}
+.nt-setup-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.nt-setup-coming {
+  flex: none;
+  color: var(--muted);
+}
+.nt-setup-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--muted);
+}
+.nt-setup-foot-gap {
+  flex: 1;
+}
+.nt-tour-title {
+  margin: 0 0 4px;
+  font-size: var(--text-md);
+}
+.nt-tour-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.nt-tour-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nt-tour-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 22px;
+}
+.nt-tour-bars span {
+  width: 6px;
+  border-radius: 2px;
+  background: var(--accent-meeting);
+}
+.nt-tour-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.nt-tour-export {
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}

@@ -1484,6 +1484,23 @@ impl Database {
         Ok(self.meeting_consent())
     }
 
+    // ── yap-notetaker-onboard · the Set up Notetaker card ──────────────────
+
+    /// The card's progress. Never fails: see [`meetings::NotetakerSetup::from_row`].
+    pub fn notetaker_setup(&self) -> meetings::NotetakerSetup {
+        meetings::NotetakerSetup::from_row(self.setting_get(meetings::NOTETAKER_SETUP_KEY))
+    }
+
+    /// Overwrite the card's progress with `setup` and return what was stored.
+    pub fn set_notetaker_setup(
+        &self,
+        setup: &meetings::NotetakerSetup,
+    ) -> Result<meetings::NotetakerSetup, String> {
+        let json = serde_json::to_string(setup).map_err(|e| e.to_string())?;
+        self.setting_set(meetings::NOTETAKER_SETUP_KEY, &json)?;
+        Ok(self.notetaker_setup())
+    }
+
     // ── YV102 · the system-audio setup step's own row ──────────────────────
 
     /// What Yap currently believes about system-audio permission on this Mac.
@@ -1772,6 +1789,76 @@ impl Database {
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+    }
+
+    /// yap-notetaker-onboard — write one imported meeting (an Otter export the
+    /// user picked) as a COMPLETE meeting: the `meetings` row and every segment
+    /// in ONE transaction, so a failure anywhere leaves no row at all — never a
+    /// meeting with half its words. The segments go through the same INSERT the
+    /// recorder uses, so the `meeting_segments_ai` trigger indexes them into
+    /// `meeting_segments_fts` and they are searchable like any meeting.
+    ///
+    /// No audio: `audio_kept = 0` and both WAV paths NULL, so the retention
+    /// sweep and the transcription recovery have nothing to touch. `kind` is
+    /// `unknown` — Yap did not hear the room, so it does not claim to know it.
+    pub fn import_meeting(
+        &self,
+        parsed: &crate::meeting_import::ParsedMeeting,
+        started_at: chrono::DateTime<Utc>,
+    ) -> Result<Meeting, String> {
+        if parsed.segments.is_empty() {
+            return Err("an imported meeting needs at least one segment".into());
+        }
+        let now = Utc::now();
+        let ended_at = started_at
+            + chrono::Duration::milliseconds((parsed.duration_seconds * 1000.0).round() as i64);
+        let id = Uuid::new_v4().to_string();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO meetings
+             (id, title, source, kind, started_at, ended_at, duration_seconds, state,
+              processed_through_seconds, audio_kept, mic_wav_path, summary, summary_model,
+              created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?7, 0, NULL, ?9, ?10, ?11)",
+            params![
+                id,
+                parsed.title,
+                parsed.source.as_source(),
+                meetings::MeetingKind::Unknown.as_str(),
+                started_at.to_rfc3339(),
+                ended_at.to_rfc3339(),
+                parsed.duration_seconds,
+                meetings::MeetingState::Complete.as_str(),
+                parsed.summary,
+                parsed.summary.as_ref().map(|_| parsed.source.as_source()),
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let stamp = now.to_rfc3339();
+        for seg in &parsed.segments {
+            tx.execute(
+                "INSERT INTO meeting_segments
+                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at, track)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    seg.start_seconds,
+                    seg.end_seconds,
+                    seg.text,
+                    seg.confidence,
+                    stamp,
+                    seg.track,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn);
+        self.get_meeting(&id)?
+            .ok_or_else(|| "the imported meeting was not found after commit".to_string())
     }
 
     /// Append transcript segments. ONE transaction for the whole batch: YV93
