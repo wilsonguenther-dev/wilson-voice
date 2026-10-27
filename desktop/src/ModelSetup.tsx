@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { errorText } from "./errors";
 
 // YV54 — silent model setup. Yap cannot transcribe without a GGUF model on
 // disk, but "which model?" is not a question a first-run user has any way to
@@ -62,8 +63,15 @@ export interface ModelSetup {
   ready: boolean;
   /** Catalog id currently downloading, or null. */
   downloading: string | null;
+  /**
+   * The model silent setup is fetching (or will fetch): the in-flight one, else
+   * the catalog's auto-pick. Null until the catalog has been read. Surfaces use
+   * it to say HOW BIG the download is before a byte has arrived.
+   */
+  target: ModelEntry | null;
   /** Live percentage for the current download (0 while sizing up). */
   pct: number;
+  /** The last failure — a download that failed, or a catalog read that did. */
   error: string | null;
   /**
    * The one line every surface shows while the engine is still being prepared,
@@ -75,6 +83,50 @@ export interface ModelSetup {
   download: (id: string) => Promise<void>;
   select: (id: string) => Promise<void>;
   retry: () => void;
+}
+
+/** Everything `ribbonLine` reads — the hook's state, flattened so it is testable. */
+export interface RibbonInput {
+  loaded: boolean;
+  ready: boolean;
+  /** The model being fetched or about to be, for its name and size. */
+  target: ModelEntry | null;
+  downloading: string | null;
+  progress: { downloaded: number; total: number } | null;
+  /** A failed `download_model` / `select_model`. Survives a catalog refresh. */
+  downloadError: string | null;
+  /** A failed `list_models`. */
+  catalogError: string | null;
+}
+
+/**
+ * yap-uiux-2026-10-16-O1 — the ribbon says WHAT is downloading, HOW BIG it is
+ * and HOW FAR it got, and a failure says so (with the Retry the ribbon renders)
+ * instead of sitting on "Preparing your speech engine…" forever.
+ */
+export function ribbonLine(s: RibbonInput): string | null {
+  if (!s.loaded || s.ready) return null;
+  const size = s.target ? fmtSize(s.target.sizeBytes) : null;
+  if (s.downloadError) {
+    return size
+      ? `Speech model download failed (${size}) — ${s.downloadError}`
+      : `Speech model download failed — ${s.downloadError}`;
+  }
+  if (s.catalogError) {
+    return `Couldn't read the speech model list — ${s.catalogError}`;
+  }
+  if (s.downloading && s.progress && s.progress.total > 0) {
+    const pct = Math.min(100, Math.round((s.progress.downloaded / s.progress.total) * 100));
+    return `Downloading speech model · ${fmtSize(s.progress.downloaded)} of ${fmtSize(s.progress.total)} · ${pct}%`;
+  }
+  if (s.downloading) {
+    return size
+      ? `Downloading speech model · ${size} · starting…`
+      : "Downloading speech model · starting…";
+  }
+  return size
+    ? `Speech model needed · ${size} download`
+    : "Speech model needed";
 }
 
 /**
@@ -94,7 +146,12 @@ export function useModelSetup({
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Two errors, not one: the walk (O1) caught a failed download being wiped by
+  // the catalog refresh that follows it, which left the ribbon on "Preparing…"
+  // with no Retry. A good `list_models` read clears only its own error.
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const lastAttempt = useRef<string | null>(null);
   // Has the catalog been read at least once? Until it has, "no model" is not a
   // fact yet — the ribbon stays quiet rather than flashing on a ready install.
   const [loaded, setLoaded] = useState(false);
@@ -102,9 +159,9 @@ export function useModelSetup({
   const refresh = useCallback(async () => {
     try {
       setModels(await invoke<ModelEntry[]>("list_models"));
-      setError(null);
+      setCatalogError(null);
     } catch (e) {
-      setError(String(e));
+      setCatalogError(errorText(e));
     }
     setLoaded(true);
   }, []);
@@ -114,14 +171,15 @@ export function useModelSetup({
   // fully there. Selecting after it lands is what makes the engine load it.
   const download = useCallback(
     async (id: string) => {
+      lastAttempt.current = id;
       setDownloading(id);
       setProgress({ model_id: id, downloaded: 0, total: 0 });
-      setError(null);
+      setDownloadError(null);
       try {
         await invoke("download_model", { id });
         await invoke("select_model", { id });
       } catch (e) {
-        setError(String(e));
+        setDownloadError(errorText(e));
       }
       setDownloading(null);
       setProgress(null);
@@ -134,8 +192,9 @@ export function useModelSetup({
     async (id: string) => {
       try {
         await invoke("select_model", { id });
+        setDownloadError(null);
       } catch (e) {
-        setError(String(e));
+        setDownloadError(errorText(e));
       }
       await refresh();
     },
@@ -163,6 +222,10 @@ export function useModelSetup({
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
       : 0;
+  const target =
+    models.find((m) => m.id === (downloading ?? lastAttempt.current)) ??
+    autoPick(models) ??
+    null;
 
   // One attempt per mount: a download that fails leaves the ribbon in its error
   // state with a retry rather than hammering the mirror in a loop.
@@ -176,26 +239,37 @@ export function useModelSetup({
     void download(pick.id);
   }, [autoDownload, ready, models, downloading, download]);
 
+  // Retry re-runs exactly what failed: the download that was attempted, or —
+  // when nothing was attempted (the catalog read failed) — the catalog read,
+  // after which the auto-download effect picks up again.
   const retry = useCallback(() => {
-    startedRef.current = false;
-    setError(null);
-    void refresh();
-  }, [refresh]);
+    const id = lastAttempt.current;
+    setDownloadError(null);
+    setCatalogError(null);
+    if (id) {
+      void download(id);
+    } else {
+      startedRef.current = false;
+      void refresh();
+    }
+  }, [download, refresh]);
 
-  const ribbon = !loaded || ready
-    ? null
-    : error
-      ? `Couldn't prepare your speech engine — ${error}`
-      : downloading
-        ? progress && progress.total > 0
-          ? `Preparing your speech engine… ${pct}%`
-          : "Preparing your speech engine…"
-        : "Preparing your speech engine…";
+  const error = downloadError ?? catalogError;
+  const ribbon = ribbonLine({
+    loaded,
+    ready,
+    target,
+    downloading,
+    progress,
+    downloadError,
+    catalogError,
+  });
 
   return {
     models,
     ready,
     downloading,
+    target,
     pct,
     error,
     ribbon,
@@ -209,7 +283,9 @@ export function useModelSetup({
 /**
  * The slim, unobtrusive status ribbon — the ONLY thing silent setup shows.
  * No buttons while it is working: there is nothing to decide. It disappears the
- * moment the engine is ready.
+ * moment the engine is ready. It is mounted ONCE per surface: the onboarding
+ * card's foot during first run, and the sidebar foot of the main shell after it
+ * (yap-uiux-2026-10-16-O2 — never inside a view's content area).
  */
 export function ModelRibbon({ setup }: { setup: ModelSetup }) {
   if (!setup.ribbon) return null;
