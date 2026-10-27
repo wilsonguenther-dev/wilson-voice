@@ -7856,6 +7856,15 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
     let deps = PipelineDeps {
         db: Arc::clone(&db),
         progress_dir: scratch.clone(),
+        // yap-audit-vad-boundaries (rebase onto NT2's eval arm): the shipped
+        // pipeline now hands MeetingAsr the warm Silero session, so this arm
+        // loads the same model; without it the job plans on the fixed clock.
+        vad: Arc::new(|| {
+            let model = silero_model().ok_or_else(|| "silero VAD model not downloaded".to_string())?;
+            WarmVad::load(&model)
+                .map(|v| Arc::new(v) as Arc<dyn VoiceActivity + Send + Sync>)
+                .map_err(|e| e.to_string())
+        }),
         asr: Arc::new(move || {
             Ok(MeetingEngine::new(
                 model_id.clone(),

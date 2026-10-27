@@ -60,7 +60,7 @@ use crate::db::Database;
 use crate::meeting::{MIC_TRACK as MIC_TRACK_INDEX, SYSTEM_TRACK as SYSTEM_TRACK_INDEX};
 use crate::meeting_asr::{
     ChunkAsr, ChunkOutcome, ChunkStatus, EngineDemand, JsonProgressStore, MeetingAsr,
-    MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows, WavWindows,
+    MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows, VoiceActivity, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
 
@@ -224,6 +224,12 @@ pub fn resolve_meeting_model(
 /// downloaded since launch), and because a test hands in a stub.
 pub type AsrFactory = Arc<dyn Fn() -> Result<MeetingEngine, AsrUnavailable> + Send + Sync>;
 pub type ProgressSink = Arc<dyn Fn(&MeetingProgressEvent) + Send + Sync>;
+/// The silence map the chunker cuts on, asked for once per job. `Err` (the
+/// Silero model is not downloaded yet, or its session failed to load) is never
+/// fatal: the job logs one warn line and plans on the fixed clock, as it did
+/// before the VAD was wired.
+pub type VadFactory =
+    Arc<dyn Fn() -> Result<Arc<dyn VoiceActivity + Send + Sync>, String> + Send + Sync>;
 /// Called once a meeting reaches `complete`/`partial` with a transcript —
 /// production runs the local summary model here when one is installed.
 pub type AfterTranscript = Arc<dyn Fn(&str) + Send + Sync>;
@@ -235,6 +241,9 @@ pub struct PipelineDeps {
     /// Where the per-track resume ledgers live (`<id>.tN.asr-progress.json`).
     pub progress_dir: PathBuf,
     pub asr: AsrFactory,
+    /// The warm Silero session the app already holds (`AppState::vad`), handed
+    /// to [`MeetingAsr`] so boundaries land in pauses, not on a 30 s clock.
+    pub vad: VadFactory,
     pub demand: Arc<dyn EngineDemand + Send + Sync>,
     pub quit: Arc<dyn Fn() -> bool + Send + Sync>,
     pub sink: ProgressSink,
@@ -906,6 +915,16 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     db.set_meeting_asr_model(id, &asr_model)?;
     let asr = engine.asr;
 
+    // One VAD lookup per job. A failure keeps the fixed-clock plan and says so
+    // once; it never fails a meeting.
+    let vad: Option<Arc<dyn VoiceActivity + Send + Sync>> = match (deps.vad)() {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::warn!("meeting {id}: no VAD ({e}) — chunking on the fixed clock");
+            None
+        }
+    };
+
     let mut done_before = 0.0f64;
     let mut decoded = 0usize;
     let mut failed = 0usize;
@@ -930,7 +949,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         let quit = || (deps.quit)() || quitting();
         let transcript = MeetingAsr {
             audio,
-            vad: None,
+            vad: vad.as_ref().map(|v| &**v as &dyn VoiceActivity),
             asr: &*asr,
             demand: &*deps.demand,
             store: &mut store,
