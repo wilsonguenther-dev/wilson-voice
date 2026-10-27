@@ -2253,7 +2253,17 @@ fn transcribe_native(
     // per-call wall. A short take is the exact same single `transcribe` call
     // this line used to be; a long one decodes in windows under a PER-CHUNK
     // budget and comes back partial rather than empty if a window dies.
-    let take = manager.transcribe_take_observed(samples, language, bias_prompt, observer)?;
+    // yap24-NT2 fix round 2: pinned to `model_id`, so a meeting job that swaps
+    // its own pinned model into the shared slot mid-take can never have a
+    // dictation window decoded on it — the window reloads the user's model.
+    let take = manager.transcribe_take_observed_on(
+        model_id,
+        model_path,
+        samples,
+        language,
+        bias_prompt,
+        observer,
+    )?;
     let decode_ms = decode_started.elapsed().as_millis() as i64;
     if take.windowed {
         log::info!(
