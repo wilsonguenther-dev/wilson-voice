@@ -51,7 +51,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-const APP_SETTINGS_FIELD_COUNT: usize = 37;
+// Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of main's 37.
+const APP_SETTINGS_FIELD_COUNT: usize = 40;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -84,6 +85,25 @@ fn fully_populated() -> AppSettings {
         }),
         cancel_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
             code: "F6".into(),
+            ..Default::default()
+        }),
+        // Y8-A — the three new hotkey rebinds, each non-default.
+        hands_free_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
+            code: "KeyF".into(),
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        }),
+        copy_last_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
+            code: "KeyY".into(),
+            ctrl: true,
+            cmd: true,
+            ..Default::default()
+        }),
+        scratchpad_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
+            code: "KeyP".into(),
+            alt: true,
+            cmd: true,
             ..Default::default()
         }),
         dictate_toggle: Some(wilson_voice_lib::hotkeys::ChordSetting {

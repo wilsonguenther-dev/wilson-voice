@@ -651,7 +651,8 @@ mod tests {
                 assert!(r.is_err(), "{} has no ⌃/⌥/⌘ and must be refused anyway", b.id);
             }
         }
-        // ⌃⌘V, ⌃⌘Z, ⌘⇧V, ⌃⌘M (Escape is refused for having no ⌃/⌥/⌘).
-        assert_eq!(refused, 4);
+        // ⌃⌘V, ⌃⌘Z, ⌘⇧V, ⌃⌘M, and Y8-A's ⌃⌘H, ⌃⌘C, ⌃⌘J (Escape is refused
+        // for having no ⌃/⌥/⌘).
+        assert_eq!(refused, 7);
     }
 }

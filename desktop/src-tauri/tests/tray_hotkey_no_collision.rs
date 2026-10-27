@@ -8,7 +8,8 @@
 //! one table.
 
 use wilson_voice_lib::shortcuts::{
-    self, Binding, DICTATION_TOGGLE_LEGACY, MEETING_TOGGLE, PASTE_LAST, UNDO_AI_EDIT,
+    self, Binding, CANCEL, COPY_LAST, DICTATE_TOGGLE, DICTATION_TOGGLE_LEGACY, HANDS_FREE,
+    MEETING_TOGGLE, OPEN_SCRATCHPAD, PASTE_LAST, UNDO_AI_EDIT,
 };
 
 /// The item's own line: the meeting toggle is not the dictation binding.
@@ -150,5 +151,49 @@ fn every_global_chord_has_a_modifier_and_a_key() {
             "{} could be produced by the dictation hold",
             b.id
         );
+    }
+}
+
+/// Y8-A — the table grew three chords (hands-free toggle, copy last, open
+/// Scratchpad). Every one of them is in `ALL` (so the uniqueness test above
+/// covers it), every pair of the now-nine chords is distinct by name, and each
+/// new one is held while idle WITH a modifier — none may be a bare key.
+#[test]
+fn the_y8a_chords_are_in_the_table_and_collide_with_nothing() {
+    let named = [
+        DICTATE_TOGGLE,
+        PASTE_LAST,
+        UNDO_AI_EDIT,
+        DICTATION_TOGGLE_LEGACY,
+        MEETING_TOGGLE,
+        CANCEL,
+        HANDS_FREE,
+        COPY_LAST,
+        OPEN_SCRATCHPAD,
+    ];
+    assert_eq!(
+        shortcuts::ALL.len(),
+        named.len(),
+        "a chord was added to or dropped from shortcuts::ALL without this list"
+    );
+    for b in &named {
+        assert!(
+            shortcuts::ALL.contains(b),
+            "{} is not in shortcuts::ALL",
+            b.id
+        );
+    }
+    for (i, a) in named.iter().enumerate() {
+        for b in &named[i + 1..] {
+            assert!(!a.collides_with(b), "{} collides with {}", a.id, b.id);
+        }
+    }
+    let idle: Vec<&str> = shortcuts::registered_while_idle()
+        .iter()
+        .map(|b| b.id)
+        .collect();
+    for b in [HANDS_FREE, COPY_LAST, OPEN_SCRATCHPAD] {
+        assert!(idle.contains(&b.id), "{} must be held from launch", b.id);
+        assert!(b.ctrl || b.cmd || b.alt, "{} has no ⌃/⌥/⌘", b.id);
     }
 }

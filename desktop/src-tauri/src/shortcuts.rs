@@ -227,6 +227,57 @@ pub const CANCEL: Binding = Binding {
     scope: Scope::WhileTakeActive,
 };
 
+/// ⌃⌘H — Y8-A hands-free toggle: start a take already latched hands-free
+/// (keys up, still recording), or finish the hands-free take in flight. The
+/// Carbon twin of the tray's Hands-free item and of the double-tap on the fn
+/// hold — and, unlike the double-tap, it needs no Input Monitoring grant.
+/// Rebindable in Settings → Hotkeys (`hands_free_chord`).
+pub const HANDS_FREE: Binding = Binding {
+    id: "hands_free_toggle",
+    label: "⌃⌘H",
+    accelerator: "Ctrl+Cmd+H",
+    ctrl: true,
+    cmd: true,
+    shift: false,
+    alt: false,
+    code: Code::KeyH,
+    scope: Scope::AlwaysGlobal,
+};
+
+/// ⌃⌘C — Y8-A copy the newest transcript to the clipboard WITHOUT pasting it:
+/// the half of ⌃⌘V for when the cursor is not where the text should go yet.
+/// Same family as ⌃⌘V (C beside V). Rebindable (`copy_last_chord`).
+pub const COPY_LAST: Binding = Binding {
+    id: "copy_last",
+    label: "⌃⌘C",
+    accelerator: "Ctrl+Cmd+C",
+    ctrl: true,
+    cmd: true,
+    shift: false,
+    alt: false,
+    code: Code::KeyC,
+    scope: Scope::AlwaysGlobal,
+};
+
+/// ⌃⌘J — Y8-A bring Yap forward on the Scratchpad. J ("jot"), not S: Finder
+/// binds ⌃⌘S to Hide Sidebar, and a system-wide Carbon chord would take it
+/// from Finder. Rebindable (`scratchpad_chord`).
+///
+/// Per-transform shortcuts are deliberately NOT in this table: the transform
+/// library is Y9-A, and a shortcut for a transform that does not exist yet is
+/// dead config. They join this table, and [`validate`], when it lands.
+pub const OPEN_SCRATCHPAD: Binding = Binding {
+    id: "open_scratchpad",
+    label: "⌃⌘J",
+    accelerator: "Ctrl+Cmd+J",
+    ctrl: true,
+    cmd: true,
+    shift: false,
+    alt: false,
+    code: Code::KeyJ,
+    scope: Scope::AlwaysGlobal,
+};
+
 /// Every chord this app can register. Registration is conditional for one of
 /// them (`DICTATION_TOGGLE_LEGACY` is settings-gated) but the CONFLICT question
 /// is not: a chord that is only sometimes registered still cannot be re-used.
@@ -237,6 +288,9 @@ pub const ALL: &[Binding] = &[
     DICTATION_TOGGLE_LEGACY,
     MEETING_TOGGLE,
     CANCEL,
+    HANDS_FREE,
+    COPY_LAST,
+    OPEN_SCRATCHPAD,
 ];
 
 /// Every chord Yap holds system-wide while NOTHING is being dictated.
@@ -297,4 +351,346 @@ pub fn collides_with_dictation_hold(
     // check rather than `false` so this stops compiling-as-correct the moment
     // the type gains a key-less variant.
     matches!(binding.code, Code::Unidentified)
+}
+
+/// Y8-A — Wispr's four shortcut rules, as pure functions over a key list.
+///
+/// A chord here is the list of PHYSICAL keys held, which — unlike [`Binding`] —
+/// can name `fn` and can tell left ⌘ from right ⌘. That is what lets the same
+/// rules judge a Carbon chord (⌃⌘M) and the fn-tap hold (fn, fn⌃), which is
+/// where the one overlap a Yap user will actually meet lives: `fn` vs `fn⌃`,
+/// Yap's own default pair (`ptt_binding: "fn_control"`).
+///
+/// Each rule is its own function and its own test (`tests/shortcut_validation.rs`):
+///
+/// 1. [`at_most_three_keys`] — a chord is at most three keys.
+/// 2. [`a_modifier_is_required`] — fn, ⌃, ⌥ or ⌘ is required. ⇧ alone does
+///    not count: ⇧+letter is how a capital letter is typed, so a global ⇧A
+///    breaks typing exactly like a bare A would.
+/// 3. [`left_and_right_variants_are_one_key`] — left ⌘ + right ⌘ is not two
+///    keys; it is one modifier pressed twice and is refused.
+/// 4. [`overlap_with_ptt`] — a chord that contains, or is contained by, the
+///    push-to-talk chord WARNS (it does not refuse): holding fn⌃ also holds fn.
+///
+/// Where they run: `hotkey_table::chord_for_action` applies rules 1–3 to every
+/// Settings rebind of a Carbon action (Cancel is exempt from rule 2 — it is
+/// registered only while a take runs, see [`CANCEL`]), and the hotkey table
+/// raises rule 4 on the Dictate (hold) row when the configured hold keys
+/// overlap. The dictate toggle's shipped default ⌃⌥⌘Space is four keys and is
+/// NOT run through rule 1: it was picked to sit beside, not on, macOS's
+/// ⌃⌘Space / ⌘⌥Space (see [`DICTATE_TOGGLE`]), and its rebind keeps its own
+/// path (`hotkeys::chord_from_setting`).
+pub mod validate {
+    use tauri_plugin_global_shortcut::Code;
+
+    /// Which physical copy of a modifier. `Either` is the settings-level
+    /// "⌘", which matches both.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Side {
+        Left,
+        Right,
+        Either,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Modifier {
+        Fn,
+        Control,
+        Option,
+        Shift,
+        Command,
+    }
+
+    impl Modifier {
+        pub fn glyph(self) -> &'static str {
+            match self {
+                Modifier::Fn => "fn",
+                Modifier::Control => "⌃",
+                Modifier::Option => "⌥",
+                Modifier::Shift => "⇧",
+                Modifier::Command => "⌘",
+            }
+        }
+    }
+
+    /// One physical key in a chord.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Key {
+        Mod(Modifier, Side),
+        Key(Code),
+    }
+
+    /// Shorthand constructors for the common shapes.
+    pub fn m(modifier: Modifier) -> Key {
+        Key::Mod(modifier, Side::Either)
+    }
+    pub fn left(modifier: Modifier) -> Key {
+        Key::Mod(modifier, Side::Left)
+    }
+    pub fn right(modifier: Modifier) -> Key {
+        Key::Mod(modifier, Side::Right)
+    }
+    pub fn key(code: Code) -> Key {
+        Key::Key(code)
+    }
+
+    /// The most keys a chord may hold.
+    pub const MAX_KEYS: usize = 3;
+
+    /// Why a chord is refused.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Violation {
+        TooManyKeys { label: String, count: usize },
+        NoModifier { label: String },
+        LeftRightDuplicate { label: String, modifier: Modifier },
+        Empty,
+    }
+
+    impl std::fmt::Display for Violation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Violation::TooManyKeys { label, count } => write!(
+                    f,
+                    "{label} is {count} keys — a shortcut is at most {MAX_KEYS}"
+                ),
+                Violation::NoModifier { label } => write!(
+                    f,
+                    "{label} needs fn, ⌃, ⌥ or ⌘ — without one it would swallow typing in every app"
+                ),
+                Violation::LeftRightDuplicate { label, modifier } => write!(
+                    f,
+                    "{label} holds left and right {} — they are one key, not two",
+                    modifier.glyph()
+                ),
+                Violation::Empty => write!(f, "no keys pressed"),
+            }
+        }
+    }
+
+    /// How a chord overlaps the push-to-talk chord.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OverlapKind {
+        /// The same keys.
+        Same,
+        /// The candidate holds every PTT key plus more (fn⌃ over fn).
+        ContainsPtt,
+        /// The PTT chord holds every candidate key plus more (fn under fn⌃).
+        InsidePtt,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Overlap {
+        pub kind: OverlapKind,
+        pub candidate: String,
+        pub ptt: String,
+    }
+
+    impl Overlap {
+        /// The warning sentence a row shows.
+        pub fn warning(&self) -> String {
+            match self.kind {
+                OverlapKind::Same => format!(
+                    "{} is the push-to-talk key itself — both would fire on one press",
+                    self.candidate
+                ),
+                OverlapKind::ContainsPtt => format!(
+                    "{} overlaps {}: holding {} also holds {}, so the {} hold arms first",
+                    self.candidate, self.ptt, self.candidate, self.ptt, self.ptt
+                ),
+                OverlapKind::InsidePtt => format!(
+                    "{} overlaps {}: every {} hold starts as a {} hold",
+                    self.candidate, self.ptt, self.ptt, self.candidate
+                ),
+            }
+        }
+    }
+
+    /// The glyph label of a key list: modifiers in ⌃⌥⇧⌘ order after fn, then
+    /// the key. Left/right copies are shown once per copy so a duplicate is
+    /// visible in its own error message.
+    pub fn label(keys: &[Key]) -> String {
+        let order = [
+            Modifier::Fn,
+            Modifier::Control,
+            Modifier::Option,
+            Modifier::Shift,
+            Modifier::Command,
+        ];
+        let mut out = String::new();
+        for want in order {
+            for k in keys {
+                if let Key::Mod(m, _) = k {
+                    if *m == want {
+                        out.push_str(m.glyph());
+                    }
+                }
+            }
+        }
+        for k in keys {
+            if let Key::Key(code) = k {
+                let name = format!("{code:?}");
+                let name = name
+                    .strip_prefix("Key")
+                    .or_else(|| name.strip_prefix("Digit"))
+                    .unwrap_or(&name)
+                    .to_string();
+                out.push_str(&name);
+            }
+        }
+        out
+    }
+
+    /// Rule 1 — at most [`MAX_KEYS`] keys.
+    pub fn at_most_three_keys(keys: &[Key]) -> Result<(), Violation> {
+        if keys.is_empty() {
+            return Err(Violation::Empty);
+        }
+        if keys.len() > MAX_KEYS {
+            return Err(Violation::TooManyKeys {
+                label: label(keys),
+                count: keys.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Rule 2 — fn, ⌃, ⌥ or ⌘ is required (⇧ alone is not a modifier for
+    /// this purpose: ⇧+letter types a capital).
+    pub fn a_modifier_is_required(keys: &[Key]) -> Result<(), Violation> {
+        let has = keys.iter().any(|k| {
+            matches!(
+                k,
+                Key::Mod(
+                    Modifier::Fn | Modifier::Control | Modifier::Option | Modifier::Command,
+                    _
+                )
+            )
+        });
+        if has {
+            Ok(())
+        } else {
+            Err(Violation::NoModifier { label: label(keys) })
+        }
+    }
+
+    /// Rule 3 — left and right copies of one modifier are one key: a chord
+    /// that holds the same modifier twice is refused.
+    pub fn left_and_right_variants_are_one_key(keys: &[Key]) -> Result<(), Violation> {
+        for (i, a) in keys.iter().enumerate() {
+            if let Key::Mod(ma, _) = a {
+                if keys[i + 1..]
+                    .iter()
+                    .any(|b| matches!(b, Key::Mod(mb, _) if mb == ma))
+                {
+                    return Err(Violation::LeftRightDuplicate {
+                        label: label(keys),
+                        modifier: *ma,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A key with its side erased — what "the same key" means for overlap.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Norm {
+        Mod(Modifier),
+        Key(Code),
+    }
+
+    fn norm(keys: &[Key]) -> Vec<Norm> {
+        let mut out: Vec<Norm> = Vec::new();
+        for k in keys {
+            let n = match k {
+                Key::Mod(m, _) => Norm::Mod(*m),
+                Key::Key(c) => Norm::Key(*c),
+            };
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+
+    /// Rule 4 — does `candidate` overlap the push-to-talk chord `ptt`? Same
+    /// keys, or one a strict superset of the other, ignoring left/right.
+    /// `None` when they share no containment (⌃⌘M vs fn).
+    pub fn overlap_with_ptt(candidate: &[Key], ptt: &[Key]) -> Option<Overlap> {
+        let (c, p) = (norm(candidate), norm(ptt));
+        if c.is_empty() || p.is_empty() {
+            return None;
+        }
+        let c_in_p = c.iter().all(|k| p.contains(k));
+        let p_in_c = p.iter().all(|k| c.contains(k));
+        let kind = match (c_in_p, p_in_c) {
+            (true, true) => OverlapKind::Same,
+            (false, true) => OverlapKind::ContainsPtt,
+            (true, false) => OverlapKind::InsidePtt,
+            (false, false) => return None,
+        };
+        Some(Overlap {
+            kind,
+            candidate: label(candidate),
+            ptt: label(ptt),
+        })
+    }
+
+    /// The hold chords a `ptt_binding` setting arms (the fn tap): "fn" → fn,
+    /// "fn_control" → fn⌃, "both" / "fn_or_fn_control" → fn and fn⌃. Unknown
+    /// values read as the shipped default, fn⌃.
+    pub fn ptt_chords(ptt_binding: &str) -> Vec<Vec<Key>> {
+        let fn_only = vec![m(Modifier::Fn)];
+        let fn_ctrl = vec![m(Modifier::Fn), m(Modifier::Control)];
+        match ptt_binding {
+            "fn" => vec![fn_only],
+            "both" | "fn_or_fn_control" => vec![fn_only, fn_ctrl],
+            _ => vec![fn_ctrl],
+        }
+    }
+
+    /// The overlap warning for the hold keys a `ptt_binding` arms against
+    /// EACH OTHER — "both" arms fn and fn⌃, which is exactly the pair rule 4
+    /// exists for. `None` for a single hold key.
+    pub fn ptt_self_overlap(ptt_binding: &str) -> Option<String> {
+        let chords = ptt_chords(ptt_binding);
+        for (i, a) in chords.iter().enumerate() {
+            for b in &chords[i + 1..] {
+                if let Some(o) = overlap_with_ptt(b, a) {
+                    return Some(o.warning());
+                }
+            }
+        }
+        None
+    }
+
+    /// The key list of a Carbon chord (settings-level modifiers, no sides).
+    pub fn keys_of_chord(ctrl: bool, alt: bool, shift: bool, cmd: bool, code: Code) -> Vec<Key> {
+        let mut keys = Vec::new();
+        if ctrl {
+            keys.push(m(Modifier::Control));
+        }
+        if alt {
+            keys.push(m(Modifier::Option));
+        }
+        if shift {
+            keys.push(m(Modifier::Shift));
+        }
+        if cmd {
+            keys.push(m(Modifier::Command));
+        }
+        keys.push(key(code));
+        keys
+    }
+
+    /// Rules 1–3 for a Carbon rebind, first refusal wins. `allow_bare` skips
+    /// rule 2 (the Cancel key, live only during a take).
+    pub fn refuse(keys: &[Key], allow_bare: bool) -> Result<(), Violation> {
+        at_most_three_keys(keys)?;
+        if !allow_bare {
+            a_modifier_is_required(keys)?;
+        }
+        left_and_right_variants_are_one_key(keys)?;
+        Ok(())
+    }
 }

@@ -116,6 +116,12 @@ export interface AppSettings {
   meetingChord?: ChordSetting | null;
   /** focus-2026-10-19 — Cancel take key rebind; null/absent = Escape. */
   cancelChord?: ChordSetting | null;
+  /** Y8-A — Hands-free (toggle) chord rebind; null/absent = ⌃⌘H. */
+  handsFreeChord?: ChordSetting | null;
+  /** Y8-A — Copy last transcript chord rebind; null/absent = ⌃⌘C. */
+  copyLastChord?: ChordSetting | null;
+  /** Y8-A — Open Scratchpad chord rebind; null/absent = ⌃⌘J. */
+  scratchpadChord?: ChordSetting | null;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
   /**

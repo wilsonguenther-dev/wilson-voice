@@ -27,6 +27,7 @@ use std::sync::mpsc;
 
 use tauri_plugin_global_shortcut::Shortcut;
 
+use crate::hotkey_table::BindingAction;
 use crate::hotkeys::HotkeyEdge;
 use crate::shortcuts;
 
@@ -44,6 +45,12 @@ pub enum ShortcutJob {
     PasteLast,
     /// YV51 ⌃⌘Z — re-paste the raw take (key-down only).
     UndoAiEdit,
+    /// Y8-A ⌃⌘H — start a hands-free take / finish it (key-down only).
+    HandsFreeToggle,
+    /// Y8-A ⌃⌘C — copy the newest transcript, no paste (key-down only).
+    CopyLast,
+    /// Y8-A ⌃⌘J — open Yap on the Scratchpad (key-down only).
+    OpenScratchpad,
 }
 
 /// Map one shortcut event to its job. Pure — no app state, no plugin API — so
@@ -69,6 +76,18 @@ pub fn route(
     }
     if shortcut == &crate::hotkey_table::active_cancel().0 {
         return on_press(ShortcutJob::Cancel);
+    }
+    // Y8-A — the rebindable always-global chords, matched on their LIVE value
+    // (a rebind moves them), and before the ⌘⇧V fallthrough below, which
+    // would otherwise turn an unrouted chord into a dictation edge.
+    for (action, job) in [
+        (BindingAction::HandsFreeToggle, ShortcutJob::HandsFreeToggle),
+        (BindingAction::CopyLast, ShortcutJob::CopyLast),
+        (BindingAction::OpenScratchpad, ShortcutJob::OpenScratchpad),
+    ] {
+        if shortcut == &crate::hotkey_table::active_chord(action).0 {
+            return on_press(job);
+        }
     }
     if shortcut == &shortcuts::PASTE_LAST.shortcut() {
         return on_press(ShortcutJob::PasteLast);
@@ -251,6 +270,9 @@ mod tests {
             (&shortcuts::CANCEL, ShortcutJob::Cancel),
             (&shortcuts::PASTE_LAST, ShortcutJob::PasteLast),
             (&shortcuts::UNDO_AI_EDIT, ShortcutJob::UndoAiEdit),
+            (&shortcuts::HANDS_FREE, ShortcutJob::HandsFreeToggle),
+            (&shortcuts::COPY_LAST, ShortcutJob::CopyLast),
+            (&shortcuts::OPEN_SCRATCHPAD, ShortcutJob::OpenScratchpad),
         ] {
             assert_eq!(r(&b.shortcut(), true, true), Some(job), "{}", b.label);
             assert_eq!(r(&b.shortcut(), false, true), None, "{} release", b.label);

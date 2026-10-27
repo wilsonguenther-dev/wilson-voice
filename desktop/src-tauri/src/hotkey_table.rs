@@ -38,16 +38,50 @@ pub enum BindingAction {
     Cancel,
     /// Start / stop a meeting recording (⌃⌘M by default).
     RecordMeeting,
+    /// Y8-A — the Carbon hands-free toggle (⌃⌘H by default).
+    HandsFreeToggle,
+    /// Y8-A — copy the newest transcript, no paste (⌃⌘C by default).
+    CopyLast,
+    /// Y8-A — bring Yap forward on the Scratchpad (⌃⌘J by default).
+    OpenScratchpad,
 }
 
 impl BindingAction {
-    pub const ALL: [BindingAction; 5] = [
+    pub const ALL: [BindingAction; 8] = [
         BindingAction::DictateHold,
         BindingAction::HandsFree,
         BindingAction::DictateToggle,
         BindingAction::Cancel,
         BindingAction::RecordMeeting,
+        BindingAction::HandsFreeToggle,
+        BindingAction::CopyLast,
+        BindingAction::OpenScratchpad,
     ];
+
+    /// The rebindable chords Yap holds system-wide from launch to quit (every
+    /// rebindable Carbon action but the dictate toggle, which has its own
+    /// path, and Cancel, which is live only during a take). `save_settings`
+    /// swaps each of these the same way.
+    pub const ALWAYS_GLOBAL_REBINDABLE: [BindingAction; 4] = [
+        BindingAction::RecordMeeting,
+        BindingAction::HandsFreeToggle,
+        BindingAction::CopyLast,
+        BindingAction::OpenScratchpad,
+    ];
+
+    /// The table binding that is this action's built-in default, for the
+    /// Carbon actions that have one.
+    pub fn default_binding(self) -> Option<&'static shortcuts::Binding> {
+        match self {
+            Self::DictateToggle => Some(&shortcuts::DICTATE_TOGGLE),
+            Self::Cancel => Some(&shortcuts::CANCEL),
+            Self::RecordMeeting => Some(&shortcuts::MEETING_TOGGLE),
+            Self::HandsFreeToggle => Some(&shortcuts::HANDS_FREE),
+            Self::CopyLast => Some(&shortcuts::COPY_LAST),
+            Self::OpenScratchpad => Some(&shortcuts::OPEN_SCRATCHPAD),
+            Self::DictateHold | Self::HandsFree => None,
+        }
+    }
 
     pub fn title(self) -> &'static str {
         match self {
@@ -56,6 +90,9 @@ impl BindingAction {
             Self::DictateToggle => "Dictate (toggle)",
             Self::Cancel => "Cancel take",
             Self::RecordMeeting => "Record meeting",
+            Self::HandsFreeToggle => "Hands-free (toggle)",
+            Self::CopyLast => "Copy last transcript",
+            Self::OpenScratchpad => "Open Scratchpad",
         }
     }
 }
@@ -170,6 +207,9 @@ pub struct TableInputs {
     pub toggle_label: String,
     pub cancel_label: String,
     pub meeting_label: String,
+    /// Y8-A — the always-global chords beyond Record meeting: each action's
+    /// live label and its register result.
+    pub extra_chords: Vec<(BindingAction, String, CarbonStatus)>,
     /// Stored chords launch re-validation refused, with the reason
     /// ([`stored_chord_refusal`]); shown on that action's row.
     pub refusals: Vec<(BindingAction, String)>,
@@ -278,6 +318,26 @@ pub fn binding_table(i: &TableInputs) -> Vec<BindingRow> {
                     let s = carbon_status(&i.meeting_carbon);
                     let live = s.usable().then(|| i.meeting_label.clone());
                     (i.meeting_label.clone(), s, (live, false))
+                }
+                BindingAction::HandsFreeToggle
+                | BindingAction::CopyLast
+                | BindingAction::OpenScratchpad => {
+                    let (label, s) = i
+                        .extra_chords
+                        .iter()
+                        .find(|(a, ..)| *a == action)
+                        .map(|(_, l, c)| (l.clone(), carbon_status(c)))
+                        .unwrap_or_else(|| {
+                            (
+                                action
+                                    .default_binding()
+                                    .map(|b| b.label.to_string())
+                                    .unwrap_or_default(),
+                                BindingStatus::NotStarted,
+                            )
+                        });
+                    let live = s.usable().then(|| label.clone());
+                    (label, s, (live, false))
                 }
             };
             BindingRow {
@@ -497,21 +557,39 @@ pub fn chord_for_action(
         return Err("the chord needs a non-modifier key".into());
     }
     let own_id = match action {
-        BindingAction::RecordMeeting => shortcuts::MEETING_TOGGLE.id,
-        BindingAction::Cancel => shortcuts::CANCEL.id,
-        _ => return Err("only Record meeting and Cancel take are rebound here".into()),
+        BindingAction::RecordMeeting
+        | BindingAction::Cancel
+        | BindingAction::HandsFreeToggle
+        | BindingAction::CopyLast
+        | BindingAction::OpenScratchpad => action.default_binding().map(|b| b.id),
+        _ => None,
     };
+    let Some(own_id) = own_id else {
+        return Err("the hold keys and the dictate toggle are not rebound here".into());
+    };
+    // A macOS chord is named first — "⌃⇧⌘3 is macOS's screenshot" says more
+    // than "4 keys".
     if let Some(why) = reserved_chord_reason(c, action == BindingAction::Cancel) {
         return Err(why);
     }
+    // Y8-A — then Wispr's rules (at most 3 keys, a modifier, no left/right
+    // duplicate); the Cancel key alone may be bare.
+    shortcuts::validate::refuse(
+        &shortcuts::validate::keys_of_chord(c.ctrl, c.alt, c.shift, c.cmd, code),
+        action == BindingAction::Cancel,
+    )
+    .map_err(|v| v.to_string())?;
     // fix-249 advisory (d): only the FIXED Yap chords block here. The three
     // rebindable ones (dictate toggle, Record meeting, Cancel) are checked
     // against each other's NEW values by [`check_distinct`], so ⌃⌘M is free
     // for Cancel once Record meeting moved off it.
-    const REBINDABLE: [&str; 3] = [
+    const REBINDABLE: [&str; 6] = [
         shortcuts::DICTATE_TOGGLE.id,
         shortcuts::MEETING_TOGGLE.id,
         shortcuts::CANCEL.id,
+        shortcuts::HANDS_FREE.id,
+        shortcuts::COPY_LAST.id,
+        shortcuts::OPEN_SCRATCHPAD.id,
     ];
     let _ = own_id;
     let chord = (c.ctrl, c.cmd, c.shift, c.alt, code);
@@ -663,6 +741,66 @@ pub fn set_meeting_status(s: CarbonStatus) {
     *MEETING_STATUS.lock() = s;
 }
 
+/// Y8-A — the live chord + register status of the always-global actions
+/// beyond Record meeting (hands-free toggle, copy last, open Scratchpad).
+type ActiveChord = (BindingAction, (Shortcut, String), CarbonStatus);
+static ACTIVE_EXTRA: Mutex<Vec<ActiveChord>> = Mutex::new(Vec::new());
+
+/// The chord `action` holds right now (its default until launch resolves it).
+/// Record meeting and Cancel read their own slots.
+pub fn active_chord(action: BindingAction) -> (Shortcut, String) {
+    match action {
+        BindingAction::RecordMeeting => active_meeting(),
+        BindingAction::Cancel => active_cancel(),
+        _ => ACTIVE_EXTRA
+            .lock()
+            .iter()
+            .find(|(a, ..)| *a == action)
+            .map(|(_, v, _)| v.clone())
+            .unwrap_or_else(|| resolve(action, None)),
+    }
+}
+
+pub fn set_active_chord(action: BindingAction, v: (Shortcut, String)) {
+    match action {
+        BindingAction::RecordMeeting => set_active_meeting(v),
+        BindingAction::Cancel => set_active_cancel(v),
+        _ => {
+            let mut slots = ACTIVE_EXTRA.lock();
+            match slots.iter_mut().find(|(a, ..)| *a == action) {
+                Some(slot) => slot.1 = v,
+                None => slots.push((action, v, CarbonStatus::NotAttempted)),
+            }
+        }
+    }
+}
+
+pub fn chord_status(action: BindingAction) -> CarbonStatus {
+    match action {
+        BindingAction::RecordMeeting => meeting_status(),
+        _ => ACTIVE_EXTRA
+            .lock()
+            .iter()
+            .find(|(a, ..)| *a == action)
+            .map(|(.., s)| s.clone())
+            .unwrap_or(CarbonStatus::NotAttempted),
+    }
+}
+
+pub fn set_chord_status(action: BindingAction, s: CarbonStatus) {
+    match action {
+        BindingAction::RecordMeeting => set_meeting_status(s),
+        _ => {
+            let fallback = resolve(action, None);
+            let mut slots = ACTIVE_EXTRA.lock();
+            match slots.iter_mut().find(|(a, ..)| *a == action) {
+                Some(slot) => slot.2 = s,
+                None => slots.push((action, fallback, s)),
+            }
+        }
+    }
+}
+
 /// The chord a setting resolves to for `action`, or the built-in default when
 /// it is unset or invalid (logged).
 pub fn resolve(action: BindingAction, setting: Option<&ChordSetting>) -> (Shortcut, String) {
@@ -675,16 +813,10 @@ pub fn resolve(action: BindingAction, setting: Option<&ChordSetting>) -> (Shortc
             ),
         }
     }
-    match action {
-        BindingAction::Cancel => (
-            shortcuts::CANCEL.shortcut(),
-            shortcuts::CANCEL.label.to_string(),
-        ),
-        _ => (
-            shortcuts::MEETING_TOGGLE.shortcut(),
-            shortcuts::MEETING_TOGGLE.label.to_string(),
-        ),
-    }
+    let b = action
+        .default_binding()
+        .unwrap_or(&shortcuts::MEETING_TOGGLE);
+    (b.shortcut(), b.label.to_string())
 }
 
 /// fix-249 advisory 2 — why the STORED chord for `action` is not the one Yap
@@ -709,6 +841,12 @@ pub fn stored_chord_refusal(
             shortcuts::MEETING_TOGGLE.label,
         ),
         BindingAction::Cancel => (chord_for_action(action, c).err()?, shortcuts::CANCEL.label),
+        BindingAction::HandsFreeToggle
+        | BindingAction::CopyLast
+        | BindingAction::OpenScratchpad => (
+            chord_for_action(action, c).err()?,
+            action.default_binding()?.label,
+        ),
         BindingAction::DictateHold | BindingAction::HandsFree => return None,
     };
     Some(format!(
@@ -874,6 +1012,7 @@ mod tests {
             toggle_label: "⌃⌥⌘Space".into(),
             cancel_label: "esc".into(),
             meeting_label: "⌃⌘M".into(),
+            extra_chords: Vec::new(),
             refusals: vec![],
         }
     }
@@ -1233,7 +1372,11 @@ mod tests {
         assert!(chord_for_action(BindingAction::Cancel, &ch("Escape", false, false, true, false)).is_err());
         assert!(chord_for_action(BindingAction::RecordMeeting, &ch("F13", false, false, false, false)).is_err());
         // Ordinary chords pass.
-        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, true, false, true)).is_ok());
+        // Y8-A: ⌃⌥⌘R is four keys — refused by the at-most-3 rule; ⌃⌥R passes.
+        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, true, false, true))
+            .unwrap_err()
+            .contains("at most 3"));
+        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, true, false, false)).is_ok());
         assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, false, false, true)).is_ok());
         assert!(chord_for_action(BindingAction::Cancel, &ch("Period", true, false, false, true)).is_ok());
         assert_eq!(
@@ -1315,14 +1458,14 @@ mod tests {
     #[test]
     fn tray_and_notification_name_the_live_meeting_chord() {
         assert_eq!(meeting_accelerator(None), shortcuts::MEETING_TOGGLE.accelerator);
+        // Y8-A: three keys — a four-key ⌃⌥⌘R is now refused (at most 3).
         let r = ChordSetting {
             code: "KeyR".into(),
             ctrl: true,
             alt: true,
-            cmd: true,
             ..Default::default()
         };
-        assert_eq!(meeting_accelerator(Some(&r)), "Ctrl+Alt+Cmd+KeyR");
+        assert_eq!(meeting_accelerator(Some(&r)), "Ctrl+Alt+KeyR");
         // A refused setting falls back to the default, exactly like `resolve`.
         let q = ChordSetting {
             code: "KeyQ".into(),

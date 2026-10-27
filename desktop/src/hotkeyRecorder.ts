@@ -113,7 +113,15 @@ export function recorderStep(e: KeyLike, mode: "chord" | "hold", allowBare = fal
 
 /** One row of the backend's hotkey table (`hotkey_bindings`). */
 export interface BindingRow {
-  action: "dictate_hold" | "hands_free" | "dictate_toggle" | "cancel" | "record_meeting";
+  action:
+    | "dictate_hold"
+    | "hands_free"
+    | "dictate_toggle"
+    | "cancel"
+    | "record_meeting"
+    | "hands_free_toggle"
+    | "copy_last"
+    | "open_scratchpad";
   title: string;
   key: string;
   status: { state: string; detail?: string };
