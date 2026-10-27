@@ -533,3 +533,118 @@ fn writing_samples_do_not_survive_the_bundle() {
         );
     }
 }
+
+// ── PRIV-A: the crash half of the bundle ────────────────────────────────────
+//
+// The log entries above go through `support::redact`. `crash-summary.txt` does
+// NOT — it is `crash::summary_text` verbatim — so its completeness rests on
+// `crash.rs` alone. A crash report must never carry transcript text, a file
+// path inside the user's home beyond the app's data dir, or a license key.
+// This synthesizes crash evidence holding all three, in every place a real
+// crash puts free text: a native report's `asi` abort message, thread names
+// and process path, and the panic hook's line — including a panic whose head
+// is not a location at all, and one inside a dependency, whose location is an
+// absolute path into `~/.cargo`. Then it packs a bundle and looks for them.
+
+const CRASH_TRANSCRIPT: &str = "tell the landlord we are moving out at the end of march";
+/// License-key SHAPED: a base64url claims blob and signature. Not a real key.
+const CRASH_LICENSE_KEY: &str = "eyJ2IjoxLCJsaWQiOiJsaWNfc3ludGhldGljX3ByaXZfYSJ9.c3ludGhldGljLXNpZ25hdHVyZS1mb3ItcHJpdi1hLW5vdC1yZWFs";
+const CRASH_HOME_PATH: &str = "/Users/wilsonguenther/Documents/Clients/acme-merger-notes.txt";
+
+fn crash_evidence() -> (String, String) {
+    let ips = format!(
+        "{{\"app_name\":\"wilson-voice\",\"timestamp\":\"2026-10-27 10:15:00.00 -0500\",\
+          \"app_version\":\"0.9.3\",\"bug_type\":\"309\",\"os_version\":\"macOS 26.5.2 (25F84)\"}}\n\
+         {{\"procName\":\"wilson-voice\",\
+           \"procPath\":\"{CRASH_HOME_PATH}/../Yap.app/Contents/MacOS/wilson-voice\",\
+           \"asi\":{{\"libsystem_c.dylib\":[\"abort() called\",\"{CRASH_TRANSCRIPT} {CRASH_LICENSE_KEY}\"]}},\
+           \"threads\":[{{\"name\":\"{CRASH_TRANSCRIPT}\",\"queue\":\"{CRASH_HOME_PATH}\"}}],\
+           \"usedImages\":[{{\"path\":\"{CRASH_HOME_PATH}\"}}],\
+           \"exception\":{{\"type\":\"EXC_CRASH\",\"signal\":\"SIGABRT\"}},\
+           \"termination\":{{\"namespace\":\"SIGNAL\",\"indicator\":\"Abort trap: 6\"}},\
+           \"faultingThread\":0}}"
+    );
+    let log = format!(
+        "[2026-10-27T15:16:00Z ERROR wilson_voice_lib::logging] PANIC at {CRASH_TRANSCRIPT} key {CRASH_LICENSE_KEY}\n\
+         [2026-10-27T15:17:00Z ERROR wilson_voice_lib::logging] PANIC at /Users/{USERNAME}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hound-3.5.1/src/write.rs:212:9: wrote {CRASH_HOME_PATH} with {CRASH_LICENSE_KEY}: {CRASH_TRANSCRIPT}\n\
+         [2026-10-27T15:18:00Z ERROR wilson_voice_lib::logging] PANIC at {CRASH_HOME_PATH}:12:5: {CRASH_TRANSCRIPT}\n\
+         [2026-10-27T15:19:00Z ERROR wilson_voice_lib::logging] PANIC at src/dictation.rs:120:5: {CRASH_TRANSCRIPT}\n"
+    );
+    (ips, log)
+}
+
+fn crash_summary_bundle() -> Vec<BundleEntry> {
+    let (ips, log) = crash_evidence();
+    let mut events = vec![wilson_voice_lib::crash::parse_report(
+        &ips,
+        "wilson-voice-2026-10-27-101500.ips",
+        at(),
+    )
+    .expect("the synthesized report is ours and becomes a row")];
+    for line in log.lines() {
+        events.extend(wilson_voice_lib::crash::parse_panic_line(line, "yap.log"));
+    }
+    assert_eq!(
+        events.len(),
+        5,
+        "every crash in the evidence must become a row"
+    );
+    support::build_entries(&BundleInputs {
+        crash_summary: wilson_voice_lib::crash::summary_text(&events),
+        username: USERNAME.into(),
+        generated_at: at(),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn a_crash_report_with_a_transcript_a_home_path_and_a_license_key_keeps_none_of_them() {
+    // Non-vacuous: the evidence really holds all three.
+    let (ips, log) = crash_evidence();
+    for needle in [CRASH_TRANSCRIPT, CRASH_LICENSE_KEY, CRASH_HOME_PATH] {
+        assert!(ips.contains(needle) && log.contains(needle), "{needle}");
+    }
+
+    let entries = crash_summary_bundle();
+    let summary = entries
+        .iter()
+        .find(|e| e.name == "crash-summary.txt")
+        .expect("the bundle carries the crash summary");
+    let home_prefix = format!("/Users/{USERNAME}");
+    for e in &entries {
+        for (label, needle) in [
+            ("transcript", CRASH_TRANSCRIPT),
+            ("transcript word", "landlord"),
+            ("license key", CRASH_LICENSE_KEY),
+            ("license key fragment", &CRASH_LICENSE_KEY[..24]),
+            ("home path", CRASH_HOME_PATH),
+            ("home dir", home_prefix.as_str()),
+            ("any user home", "/Users/"),
+            ("home-relative", "~/"),
+            ("account name", USERNAME),
+            ("client file dir", "Documents/Clients"),
+        ] {
+            assert!(
+                !e.text.contains(needle),
+                "{label} survived into {}:\n{}",
+                e.name,
+                e.text
+            );
+        }
+    }
+
+    // And the summary is still worth reading: five crashes, where they were.
+    for keep in [
+        "5 recorded crash(es)",
+        "EXC_CRASH (SIGABRT)",
+        "write.rs:212:9",
+        "src/dictation.rs:120:5",
+        "panic at unknown",
+    ] {
+        assert!(
+            summary.text.contains(keep),
+            "lost {keep:?}:\n{}",
+            summary.text
+        );
+    }
+}
