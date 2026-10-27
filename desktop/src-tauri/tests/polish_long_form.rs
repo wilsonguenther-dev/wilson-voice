@@ -29,6 +29,7 @@ use wilson_voice_lib::polish_protocol::PolishRequest;
 /// The stage ON, with the shipped per-request deadline.
 fn on() -> PolishConfig {
     PolishConfig {
+        preferences: Vec::new(),
         model: "qwen2.5-1.5b-instruct-q4_k_m".to_string(),
         deadline_ms: 1200,
         style: Style::Default,
@@ -633,6 +634,7 @@ fn skipped_with_a_named_reason_when_the_weights_are_absent() {
     println!("polish_long_form: running against {model} via {sidecar:?}");
 
     let cfg = PolishConfig {
+        preferences: Vec::new(),
         model,
         // The per-request ceiling, not the per-request default: a cold child
         // pays a GGUF page-in on its first chunk (BUDGETS.md: 7 765 ms cold).

@@ -242,6 +242,8 @@ pub mod vocab;
 /// file, because `build.rs` `include!`s it to run the extraction at build time
 /// — one implementation, compiled on both sides of the wall.
 pub mod vocab_extract;
+// Y9-C — spoken preference rules, with an explicit Apply step.
+pub mod voice_prefs;
 
 /// Y0-D — the ONE place the app's state root is decided (`YAP_DATA_DIR`).
 pub mod app_paths;
@@ -2756,7 +2758,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // missed deadline, a crashed sidecar or a rewrite that fails
             // `validate_polish` all return `None`, and `run_cleanup` keeps the
             // rules text byte for byte.
-            let polish_config = polish::PolishConfig::from_settings(&settings, dictation_mode);
+            // Y9-C: the user's APPLIED spoken rules whose filter matches THIS
+            // take (mode / paste target / language). None applied ⇒ an empty
+            // list ⇒ the byte-identical request of a take before Y9-C.
+            let polish_config = polish::PolishConfig::from_settings(&settings, dictation_mode)
+                .with_preferences(db.matching_voice_preferences(&voice_prefs::TakeContext {
+                    mode: dictation_mode,
+                    bundle_id: source_bundle_id.as_deref().unwrap_or_default(),
+                    language: &settings.language,
+                }));
             let t_cleanup = std::time::Instant::now();
             // yap-format-structure: list syntax for THIS paste target, from the
             // Structure switch and the per-app override list. A user-picked
@@ -4943,7 +4953,15 @@ fn retry_failed_dictation(
             &settings.dictation_mode,
             row.source_app.as_deref().unwrap_or_default(),
         );
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode);
+        // Y9-C: a retry matches rules by mode and language; its row stores no
+        // bundle id, so `app:` rules cannot match it (they never guess).
+        let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
+            state.db.matching_voice_preferences(&voice_prefs::TakeContext {
+                mode,
+                bundle_id: "",
+                language: &settings.language,
+            }),
+        );
         // A retry has no live paste target (the row stores the app's title, not
         // its bundle id), so it gets the conservative unknown-target format.
         let structure_format = dictation::structure_format_for_take(
@@ -5100,6 +5118,51 @@ fn dismiss_dict_candidate(state: State<'_, Arc<AppState>>, id: String) -> Result
 }
 
 /// YV48 — saved `trigger phrase → expansion` snippets (Settings → Snippets).
+/// Y9-C — derive a rule from one spoken sentence, LOCALLY on the polish
+/// sidecar, and store it PENDING. It changes nothing until
+/// [`apply_voice_preference`]; an unparseable answer or a filter outside the
+/// allowlist is returned as an error and nothing is stored. Off the main thread:
+/// a cold sidecar can take seconds to load.
+#[tauri::command]
+async fn derive_voice_preference(
+    state: State<'_, Arc<AppState>>,
+    spoken: String,
+) -> Result<voice_prefs::VoicePreference, String> {
+    let state = state.inner().clone();
+    let model_id = state.settings.lock().polish_model.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        voice_prefs::propose_installed(&state.db, &model_id, &spoken).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Y9-C — the explicit Apply step: a pending rule takes effect.
+#[tauri::command]
+fn apply_voice_preference(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<voice_prefs::VoicePreference, String> {
+    state.db.apply_voice_preference(&id).map_err(|e| e.to_string())
+}
+
+/// Y9-C — retract (or discard a pending) rule. The row stays: append-only.
+#[tauri::command]
+fn retract_voice_preference(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<voice_prefs::VoicePreference, String> {
+    state.db.retract_voice_preference(&id).map_err(|e| e.to_string())
+}
+
+/// Y9-C — the whole append-only history, newest first.
+#[tauri::command]
+fn list_voice_preferences(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<voice_prefs::VoicePreference>, String> {
+    state.db.list_voice_preferences()
+}
+
 #[tauri::command]
 fn list_snippets(state: State<'_, Arc<AppState>>) -> Result<Vec<Snippet>, String> {
     state.db.list_snippets()
@@ -8264,6 +8327,11 @@ pub fn run() {
             promote_dict_candidate,
             dismiss_dict_candidate,
             list_snippets,
+            // Y9-C spoken preference rules — derive, Apply, Retract, history.
+            derive_voice_preference,
+            apply_voice_preference,
+            retract_voice_preference,
+            list_voice_preferences,
             add_snippet,
             update_snippet,
             set_snippet_enabled,

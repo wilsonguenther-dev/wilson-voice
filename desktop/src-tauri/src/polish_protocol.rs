@@ -67,6 +67,52 @@ pub const KIND_SUMMARIZE: &str = "summarize";
 /// (proper nouns, disfluencies), and the sidecar is the only process that holds
 /// the actual vocabulary.
 pub const KIND_COUNT_TOKENS: &str = "count_tokens";
+/// Y9-C: turn ONE spoken preference sentence ("never use exclamation marks in
+/// email") into a structured `{"filter": …, "rule": …}` object. The sidecar runs
+/// its own dedicated system turn for it; the parent validates the answer
+/// against the filter allowlist (`voice_prefs.rs`) and stores nothing it cannot
+/// parse. Nothing derived here changes a dictation until the user presses Apply.
+pub const KIND_DERIVE_PREFERENCE: &str = "derive_preference";
+/// Output budget for a derivation: one short JSON object, never prose.
+pub const PREFERENCE_DERIVE_MAX_OUT: u32 = 96;
+
+/// Y9-C token budget for the user's spoken rules on ONE polish request. A rule
+/// set is bounded three ways so a long history can never crowd the dictation
+/// out of the context window: at most [`MAX_PREFERENCE_RULES`] rules, each at
+/// most [`MAX_PREFERENCE_RULE_CHARS`] chars, all together at most
+/// [`MAX_PREFERENCE_TOTAL_CHARS`] chars (~160 tokens at ~4 chars/token).
+pub const MAX_PREFERENCE_RULES: usize = 8;
+/// Longest single rule that may reach a prompt.
+pub const MAX_PREFERENCE_RULE_CHARS: usize = 160;
+/// Total characters of rule text one request may carry.
+pub const MAX_PREFERENCE_TOTAL_CHARS: usize = 640;
+
+/// Apply the Y9-C budget: trim, drop empty / over-long / multi-line / duplicate
+/// rules, then keep rules IN ORDER until the count or the total budget is spent.
+/// Both ends of the wire call it — the app when it shapes the request, the
+/// sidecar before it writes the system turn — so a hand-built request cannot
+/// smuggle an unbounded rule set past either one.
+pub fn bound_preferences(rules: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for rule in rules {
+        let rule = rule.trim();
+        let chars = rule.chars().count();
+        if chars == 0
+            || chars > MAX_PREFERENCE_RULE_CHARS
+            || rule.chars().any(char::is_control)
+            || out.iter().any(|kept| kept.eq_ignore_ascii_case(rule))
+        {
+            continue;
+        }
+        if out.len() == MAX_PREFERENCE_RULES || total + chars > MAX_PREFERENCE_TOTAL_CHARS {
+            break;
+        }
+        total += chars;
+        out.push(rule.to_string());
+    }
+    out
+}
 
 /// MAP stage of a summarize request.
 pub const SUMMARIZE_MAP: &str = "map";
@@ -159,6 +205,12 @@ pub struct PolishRequest {
     /// what turns provenance from a model behaviour into a mechanical one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grammar: Option<String>,
+    /// Y9-C: the user's APPLIED spoken rules whose filter matched this take
+    /// (`mode:email`, `app:<bundle-id>`, `lang:<code>`, `*`), already bounded by
+    /// [`bound_preferences`]. Skipped on the wire when empty, so a take with no
+    /// matching rule sends the byte-identical line it sent before Y9-C.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferences: Vec<String>,
 }
 
 impl PolishRequest {
@@ -181,6 +233,7 @@ impl PolishRequest {
             text,
             topic: None,
             grammar: None,
+            preferences: Vec::new(),
         }
     }
 
@@ -204,6 +257,7 @@ impl PolishRequest {
             text,
             topic: None,
             grammar,
+            preferences: Vec::new(),
         }
     }
 
@@ -219,6 +273,25 @@ impl PolishRequest {
             text,
             topic: None,
             grammar: None,
+            preferences: Vec::new(),
+        }
+    }
+
+    /// Y9-C: derive `{filter, rule}` from one spoken preference sentence.
+    /// `grammar` pins the answer to the JSON shape (or the explicit
+    /// `{"error":"unclear"}` refusal); the parent still validates every byte.
+    pub fn derive_preference(id: u64, deadline_ms: u64, spoken: String, grammar: Option<String>) -> Self {
+        Self {
+            id,
+            kind: KIND_DERIVE_PREFERENCE.to_string(),
+            mode: String::new(),
+            style: "default".to_string(),
+            max_out: PREFERENCE_DERIVE_MAX_OUT,
+            deadline_ms,
+            text: spoken,
+            topic: None,
+            grammar,
+            preferences: Vec::new(),
         }
     }
 

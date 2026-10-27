@@ -710,6 +710,38 @@ impl Database {
               created_at TEXT NOT NULL
             );
 
+            -- Y9-C spoken preference rules. APPEND-ONLY: a row is what the user
+            -- said and what Yap derived from it, and it is never deleted or
+            -- rewritten — the triggers below refuse both at the SQL level. The
+            -- only writes after INSERT are Apply (active=1, applied_at) and
+            -- Retract (active=0, retracted_at), each stamped exactly once, and a
+            -- retracted rule can never be switched back on.
+            CREATE TABLE IF NOT EXISTS voice_preferences (
+              id TEXT PRIMARY KEY,
+              spoken TEXT NOT NULL,
+              filter TEXT NOT NULL,
+              rule TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+              applied_at TEXT,
+              retracted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_voice_preferences_created
+              ON voice_preferences(created_at);
+            CREATE TRIGGER IF NOT EXISTS voice_preferences_no_delete
+              BEFORE DELETE ON voice_preferences BEGIN
+              SELECT RAISE(ABORT, 'voice_preferences is append-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS voice_preferences_frozen
+              BEFORE UPDATE OF id, spoken, filter, rule, created_at ON voice_preferences BEGIN
+              SELECT RAISE(ABORT, 'voice_preferences is append-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS voice_preferences_stays_retracted
+              BEFORE UPDATE ON voice_preferences
+              WHEN old.retracted_at IS NOT NULL BEGIN
+              SELECT RAISE(ABORT, 'a retracted voice preference stays retracted');
+            END;
+
             CREATE TABLE IF NOT EXISTS scratchpad (
               id TEXT PRIMARY KEY,
               title TEXT NOT NULL DEFAULT 'Note',
@@ -3219,6 +3251,144 @@ impl Database {
             }
         }
         Ok(out)
+    }
+
+    // ── Y9-C spoken preference rules (append-only) ──────────────────────────
+
+    /// Store a derived rule PENDING: `active = 0`, no `applied_at`. It changes
+    /// nothing until [`Self::apply_voice_preference`]. The filter goes through
+    /// the allowlist again here, so no caller can store a filter the derivation
+    /// gate would have refused.
+    pub fn add_voice_preference(
+        &self,
+        spoken: &str,
+        derived: &crate::voice_prefs::DerivedPreference,
+    ) -> Result<crate::voice_prefs::VoicePreference, crate::voice_prefs::PreferenceError> {
+        use crate::voice_prefs::{PreferenceError, PreferenceFilter, VoicePreference};
+        let filter = PreferenceFilter::parse(&derived.filter)?.canonical();
+        let rule = derived.rule.trim().to_string();
+        let spoken = spoken.trim().to_string();
+        if spoken.is_empty() {
+            return Err(PreferenceError::Empty);
+        }
+        if rule.is_empty() {
+            return Err(PreferenceError::Unparseable(spoken));
+        }
+        let row = VoicePreference {
+            id: Uuid::new_v4().to_string(),
+            spoken,
+            filter,
+            rule,
+            created_at: Utc::now(),
+            active: false,
+            applied_at: None,
+            retracted_at: None,
+        };
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO voice_preferences (id, spoken, filter, rule, created_at, active)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![row.id, row.spoken, row.filter, row.rule, row.created_at.to_rfc3339()],
+        )
+        .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        Ok(row)
+    }
+
+    /// The explicit Apply step: a PENDING rule (never applied, never retracted)
+    /// takes effect from the next take on.
+    pub fn apply_voice_preference(
+        &self,
+        id: &str,
+    ) -> Result<crate::voice_prefs::VoicePreference, crate::voice_prefs::PreferenceError> {
+        self.stamp_voice_preference(
+            id,
+            "UPDATE voice_preferences SET active = 1, applied_at = ?2
+             WHERE id = ?1 AND applied_at IS NULL AND retracted_at IS NULL",
+        )
+    }
+
+    /// Retract (or discard, when still pending) a rule: it stops taking effect.
+    /// The row stays — append-only means the history of what was said survives.
+    pub fn retract_voice_preference(
+        &self,
+        id: &str,
+    ) -> Result<crate::voice_prefs::VoicePreference, crate::voice_prefs::PreferenceError> {
+        self.stamp_voice_preference(
+            id,
+            "UPDATE voice_preferences SET active = 0, retracted_at = ?2
+             WHERE id = ?1 AND retracted_at IS NULL",
+        )
+    }
+
+    fn stamp_voice_preference(
+        &self,
+        id: &str,
+        sql: &str,
+    ) -> Result<crate::voice_prefs::VoicePreference, crate::voice_prefs::PreferenceError> {
+        use crate::voice_prefs::PreferenceError;
+        let changed = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+            conn.execute(sql, params![id, Utc::now().to_rfc3339()])
+                .map_err(|e| PreferenceError::Storage(e.to_string()))?
+        };
+        if changed == 0 {
+            return Err(PreferenceError::NotFound);
+        }
+        self.list_voice_preferences()
+            .map_err(PreferenceError::Storage)?
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or(PreferenceError::NotFound)
+    }
+
+    /// The whole append-only history, newest first — pending, active and
+    /// retracted alike.
+    pub fn list_voice_preferences(&self) -> Result<Vec<crate::voice_prefs::VoicePreference>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, spoken, filter, rule, created_at, active, applied_at, retracted_at
+                 FROM voice_preferences ORDER BY created_at DESC, rowid DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::voice_prefs::VoicePreference {
+                    id: row.get(0)?,
+                    spoken: row.get(1)?,
+                    filter: row.get(2)?,
+                    rule: row.get(3)?,
+                    created_at: parse_dt(row.get::<_, String>(4)?),
+                    active: row.get::<_, i64>(5)? != 0,
+                    applied_at: row.get::<_, Option<String>>(6)?.map(parse_dt),
+                    retracted_at: row.get::<_, Option<String>>(7)?.map(parse_dt),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// The bounded rule texts for one take — what [`crate::polish::PolishConfig::with_preferences`]
+    /// receives. A read failure degrades to no rules: a preference must never
+    /// cost the user their dictation.
+    pub fn matching_voice_preferences(&self, take: &crate::voice_prefs::TakeContext<'_>) -> Vec<String> {
+        match self.list_voice_preferences() {
+            Ok(rows) => crate::voice_prefs::matching_rules(&rows, take),
+            Err(e) => {
+                log::warn!("voice_preferences read failed ({e}); polishing without rules");
+                Vec::new()
+            }
+        }
     }
 
     // ── YV48 snippets ────────────────────────────────────────────────────────

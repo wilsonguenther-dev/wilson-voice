@@ -63,8 +63,9 @@ use llama_cpp_2::token::LlamaToken;
 
 use polish_protocol::{
     fit_to_budget, max_out_for, sampler_plan, PolishReady, PolishRequest, PolishResponse,
-    SamplerPlan, KIND_COUNT_TOKENS, KIND_POLISH, KIND_SUMMARIZE, SUMMARIZE_HEADLINE, SUMMARIZE_MAP,
-    SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
+    bound_preferences, SamplerPlan, KIND_COUNT_TOKENS, KIND_DERIVE_PREFERENCE, KIND_POLISH,
+    KIND_SUMMARIZE, PREFERENCE_DERIVE_MAX_OUT, SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE,
+    SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
 };
 
 /// Static base prompt — byte-identical for every request so its KV survives
@@ -126,6 +127,52 @@ fn system_prompt(mode: &str, style: &str) -> Option<String> {
     }
     Some(prompt)
 }
+
+/// Y9-C: the system turn for a rewrite that carries the user's APPLIED spoken
+/// rules. With no rules it is [`system_prompt`] byte for byte — a take with no
+/// matching rule keeps its prefix-cache hit and its exact prompt. The rules are
+/// bounded again here ([`bound_preferences`]), so a hand-built request cannot
+/// spend more of the context than the app would have allowed.
+fn system_prompt_with_preferences(mode: &str, style: &str, preferences: &[String]) -> Option<String> {
+    let mut prompt = system_prompt(mode, style)?;
+    let rules = bound_preferences(preferences);
+    if !rules.is_empty() {
+        prompt.push_str(
+            "\n\nThe speaker's standing preferences. Apply them too, and keep every rule above \
+             (never drop, add or reword content):",
+        );
+        for rule in &rules {
+            prompt.push_str("\n- ");
+            prompt.push_str(rule);
+        }
+    }
+    Some(prompt)
+}
+
+/// Y9-C: the derivation turn. One spoken preference sentence in, one JSON
+/// object out. The app sends a grammar pinning the shape and re-validates the
+/// filter against its allowlist, so this prompt only has to get the CONTENT
+/// right.
+const DERIVE_PREFERENCE_SYSTEM: &str = "You turn ONE spoken writing preference into a rule for a dictation app.
+
+The input is what the speaker said, for example: never use exclamation marks in email
+
+Output ONLY one JSON object, nothing else:
+{\"filter\":\"<where>\",\"rule\":\"<what>\"}
+
+`filter` is exactly one of:
+- mode:email, mode:document, mode:notes, mode:chat, mode:plain or mode:list (a kind of writing).
+  email or emails means mode:email. texts, messages or chat means mode:chat.
+- app:<macOS bundle id> for one app, for example app:com.apple.mail (Mail),
+  app:com.tinyspeck.slackmacgap (Slack), app:com.apple.MobileSMS (Messages),
+  app:com.microsoft.Outlook (Outlook), app:com.apple.Notes (Notes).
+- lang:<two-letter language code> for one language, for example lang:de for German.
+- * when no place is named.
+
+`rule` is the instruction itself as one short imperative sentence, without the
+place, for example: Never use exclamation marks.
+
+If the input is not a writing preference, output exactly {\"error\":\"unclear\"}";
 
 // ── YV97 · the summarize prompts ────────────────────────────────────────────
 //
@@ -210,7 +257,8 @@ fn summarize_prompt(stage: &str) -> Option<String> {
 fn system_for(req: &PolishRequest) -> Option<String> {
     match req.kind.as_str() {
         KIND_SUMMARIZE => summarize_prompt(&req.mode),
-        _ => system_prompt(&req.mode, &req.style),
+        KIND_DERIVE_PREFERENCE => Some(DERIVE_PREFERENCE_SYSTEM.to_string()),
+        _ => system_prompt_with_preferences(&req.mode, &req.style, &req.preferences),
     }
 }
 
@@ -222,6 +270,7 @@ fn default_max_out(req: &PolishRequest) -> u32 {
         (KIND_SUMMARIZE, SUMMARIZE_MAP) => SUMMARY_MAP_MAX_OUT,
         (KIND_SUMMARIZE, SUMMARIZE_HEADLINE) => SUMMARY_HEADLINE_MAX_OUT,
         (KIND_SUMMARIZE, _) => SUMMARY_REDUCE_MAX_OUT,
+        (KIND_DERIVE_PREFERENCE, _) => PREFERENCE_DERIVE_MAX_OUT,
         _ => max_out_for(&req.text),
     }
 }
@@ -433,7 +482,7 @@ fn handle(
 
     match req.kind.as_str() {
         KIND_COUNT_TOKENS => return count_tokens(model, req),
-        KIND_POLISH | KIND_SUMMARIZE => {}
+        KIND_POLISH | KIND_SUMMARIZE | KIND_DERIVE_PREFERENCE => {}
         // An unknown kind is a version skew between the app and a stale staged
         // sidecar. Answer, so the caller stops waiting, and run nothing.
         _ => return PolishResponse::err(req.id, "unsupported_kind"),
@@ -752,6 +801,31 @@ mod tests {
             None,
             "code mode still never reaches a model"
         );
+    }
+
+    /// Y9-C — zero rules is the pre-Y9-C system turn byte for byte; rules are
+    /// appended, bounded, and the derivation kind gets its own turn and budget.
+    #[test]
+    fn preferences_extend_the_system_turn_only_when_present() {
+        let plain = system_prompt("email", "default").unwrap();
+        assert_eq!(system_prompt_with_preferences("email", "default", &[]).unwrap(), plain);
+        let mut req = PolishRequest::polish(1, "email", "default", 64, 1200, "hi sam".to_string());
+        assert_eq!(system_for(&req).unwrap(), plain);
+        req.preferences = vec!["Never use exclamation marks.".to_string()];
+        let with = system_for(&req).unwrap();
+        assert!(with.starts_with(&plain));
+        assert!(with.ends_with("\n- Never use exclamation marks."));
+        let many: Vec<String> = (0..40).map(|i| format!("Rule number {i} applies here.")).collect();
+        req.preferences = many;
+        let bounded = system_for(&req).unwrap();
+        assert_eq!(bounded.matches("\n- ").count(), polish_protocol::MAX_PREFERENCE_RULES);
+        // Code still never reaches a model, rules or not.
+        req.mode = "code".to_string();
+        assert!(system_for(&req).is_none());
+
+        let derive = PolishRequest::derive_preference(2, 5000, "never use exclamation marks in email".to_string(), None);
+        assert_eq!(system_for(&derive).unwrap(), DERIVE_PREFERENCE_SYSTEM);
+        assert_eq!(default_max_out(&derive), PREFERENCE_DERIVE_MAX_OUT);
     }
 
     #[test]
