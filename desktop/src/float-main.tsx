@@ -31,6 +31,8 @@ import {
   reduceGatePhase,
   reduceTakePhase,
   withBlind,
+  TAKE_STAGE_EVENT,
+  type TakeStageNotice,
   stripLine,
   FN_HINT_EVENT,
   FN_HINT_SHOW_MS,
@@ -321,8 +323,8 @@ function Float() {
     }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
-  // Y5-C — the take's phase, folded out of events the backend ALREADY emits.
-  // No new Rust and no new channel: `status` carries `recording`, `busy`,
+  // Y5-C — the take's phase, folded out of the backend's take events.
+  // yap24-PILL2 added `take_stage`, the backend's own stage report; the rest: `status` carries `recording`, `busy`,
   // `engine_loading` and `last_error` (build_status, lib.rs:873), `transcript`
   // fires only for a take that produced text (lib.rs:2509), and its ABSENCE is
   // what makes YV16's no-speech exit visible as `empty`.
@@ -358,6 +360,13 @@ function Float() {
       }))).then(push);
     listen<unknown>("transcribe_progress", () =>
       setTake((prev) => reduceTakePhase(prev, { type: "progress" }))).then(push);
+    // yap24-PILL2 — the backend names the stage (take_stage.rs), which is the
+    // only way the pill ever reaches `polishing` and `pasting`.
+    listen<TakeStageNotice>(TAKE_STAGE_EVENT, (e) => {
+      const st = e.payload;
+      if (!st?.stage) return;
+      setTake((prev) => reduceTakePhase(prev, { type: "stage", stage: st.stage, words: st.words }));
+    }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
   // Y5-C — the DURATION POLICY, armed here because a pure module owns no

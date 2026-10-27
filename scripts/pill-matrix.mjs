@@ -169,13 +169,20 @@ function __pillDetect(want) {
   const empty = [...document.querySelectorAll(SLOTS)].filter((el) => shown(el) && !(el.innerText || "").trim());
   if (empty.length) out.push({ id: "empty-text", detail: empty.slice(0, 4).map(name).join(", ") + " on screen with no text" });
 
-  const visuallyHidden = (el) => {
-    for (let e = el; e && e !== document.body; e = e.parentElement) {
-      const cs = getComputedStyle(e);
-      if (/^rect\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\)$/.test(cs.clip) || cs.clipPath === "inset(50%)") return true;
+  /* The visually-hidden pattern (.sr-only): the element or an ancestor is
+     clipped to nothing — clip: rect(0 0 0 0), clip-path: inset(50%), or a
+     <=1x1 box with overflow hidden. Narrow on purpose: an ordinary text box
+     that is merely too small is still a finding. */
+  function visuallyHidden(el) {
+    for (let p = el; p && p !== document.body; p = p.parentElement) {
+      const cs = getComputedStyle(p);
+      if (/^rect\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\)$/.test(cs.clip)) return true;
+      if (cs.clipPath === "inset(50%)") return true;
+      const r = p.getBoundingClientRect();
+      if (r.width <= 1 && r.height <= 1 && cs.overflow === "hidden") return true;
     }
     return false;
-  };
+  }
 
   /* 2 — clipped-text: every visible run of text, measured by its own glyph
      extent (a Range), must fit its overflow box and the window. */
@@ -185,8 +192,10 @@ function __pillDetect(want) {
     if (!t.nodeValue.trim()) continue;
     const el = t.parentElement;
     if (!el || !shown(el)) continue;
-    // Visually-hidden text (the .sr-only accessible names, Y5-J) is clipped to
-    // 1x1 ON PURPOSE: a screen reader reads it, nobody sees it. Not a finding.
+    // yap24-PILL2: screen-reader-only text (Y5-J's .sr-only accessible
+    // name) is clipped to a 1x1 box ON PURPOSE — it is never drawn, so it
+    // can never be "cut off". Without this every phase failed the matrix
+    // from the day Y5-J landed.
     if (visuallyHidden(el)) continue;
     const range = document.createRange();
     range.selectNodeContents(t);

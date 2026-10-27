@@ -1098,3 +1098,100 @@ describe("yap24-PILL3 — when fn cannot hear you, the pill says so", () => {
     expect(blindLine(SAMPLE_BLIND)).toContain("still works");
   });
 });
+
+// ── yap24-PILL2 — the backend's take_stage event ────────────────────────────
+import {
+  isLegalTransition as legal2, reduceTakePhase as reduce2, PHASE_HOLD_MS as HOLD2,
+  TAKE_STAGE_EVENT, type TakeEvent, type TakeStageName,
+} from "./live";
+import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
+
+describe("yap24-PILL2 take_stage", () => {
+  const status = (o: Partial<TakeStatus>): TakeEvent =>
+    ({ type: "status", status: { recording: false, busy: false, ...o } });
+  const stage = (s: TakeStageName, words?: number): TakeEvent => ({ type: "stage", stage: s, words });
+  /** Fold a take's events; every step must be a legal transition. */
+  const fold = (events: TakeEvent[], from: LivePhase = "listening"): LivePhase[] => {
+    const trace: LivePhase[] = [];
+    let ph = from;
+    for (const ev of events) {
+      const next = reduce2(ph, ev);
+      expect(legal2(ph, next), `${ph} -> ${next} on ${JSON.stringify(ev)}`).toBe(true);
+      ph = next;
+      trace.push(ph);
+    }
+    return trace;
+  };
+
+  it("names the same event lib.rs emits", () => {
+    const lib = readFileSync(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8") as string;
+    expect(lib).toContain(`pub const TAKE_STAGE_EVENT: &str = "${TAKE_STAGE_EVENT}";`);
+  });
+
+  it("a polish-on take finally says polishing, then pasting, then done", () => {
+    expect(fold([
+      status({ busy: true }),
+      stage("decoding"),
+      stage("polishing"),
+      status({ busy: true }),
+      stage("pasting"),
+      stage("paste_confirmed"),
+      stage("done", 12),
+      status({}),
+    ])).toEqual(["thinking", "thinking", "polishing", "polishing", "pasting", "pasting", "done", "done"]);
+  });
+
+  it("a polish-off take never says polishing", () => {
+    const trace = fold([
+      status({ busy: true }), stage("decoding"), stage("pasting"),
+      stage("paste_confirmed"), stage("done", 3), status({}),
+    ]);
+    expect(trace).not.toContain("polishing");
+    expect(trace).toEqual(["thinking", "thinking", "pasting", "pasting", "done", "done"]);
+  });
+
+  it("stage outranks an out-of-order status: a quiet status mid-polish/paste does not guess empty", () => {
+    // Before PILL2 a not-busy status with no transcript meant `empty`.
+    expect(reduce2("polishing", status({}))).toBe("polishing");
+    expect(reduce2("pasting", status({}))).toBe("pasting");
+    expect(fold([stage("polishing"), status({}), stage("pasting"), status({}), stage("done", 4)], "thinking"))
+      .toEqual(["polishing", "polishing", "pasting", "pasting", "done"]);
+    // A late busy status never downgrades a stage-driven phase either.
+    expect(reduce2("pasting", status({ busy: true }))).toBe("pasting");
+    // The real error still wins over the stage.
+    expect(reduce2("polishing", status({ lastError: "polish crashed" }))).toBe("error");
+  });
+
+  it("the hold policy still bounds every stage-driven phase", () => {
+    for (const p of ["polishing", "pasting"] as LivePhase[]) {
+      expect(HOLD2[p]).not.toBeNull();
+      expect(reduce2(p, { type: "hold_elapsed", phase: p })).toBe("error");
+    }
+    // The paste hold outlives the 1 500 ms receipt window it narrates.
+    expect(HOLD2.pasting!).toBeGreaterThan(1_500);
+  });
+
+  it("a not-confirmed paste hands off to the Copy card: no new phase, done settles it", () => {
+    expect(INSERT_COPY_CARD_EVENT).toBe("insert-copy-card");
+    expect(reduce2("pasting", stage("paste_not_confirmed"))).toBe("pasting");
+    expect(fold([stage("pasting"), stage("paste_not_confirmed"), stage("done", 9)], "thinking"))
+      .toEqual(["pasting", "pasting", "done"]);
+  });
+
+  it("terminal stages end a live take and never resurrect an ended one", () => {
+    expect(reduce2("thinking", stage("empty"))).toBe("empty");
+    expect(reduce2("polishing", stage("error"))).toBe("error");
+    expect(reduce2("transcribing", stage("cancelled"))).toBe("cancelled");
+    expect(reduce2("pasting", stage("done", 0))).toBe("empty");
+    for (const ended of ["idle", "done", "empty", "error", "cancelled", "sleepy"] as LivePhase[]) {
+      for (const s of ["decoding", "polishing", "pasting", "done", "empty", "error"] as TakeStageName[]) {
+        expect(reduce2(ended, stage(s, 2)), `${ended} on ${s}`).toBe(ended);
+      }
+    }
+  });
+
+  it("decoding never hides real chunk progress", () => {
+    expect(reduce2("transcribing", stage("decoding"))).toBe("transcribing");
+    expect(reduce2("model-loading", stage("decoding"))).toBe("thinking");
+  });
+});

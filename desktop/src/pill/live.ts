@@ -919,8 +919,13 @@ export const PHASE_HOLD_MS: Record<LivePhase, number | null> = {
   transcribing: 30_000,
   /** The sidecar gives up at [`POLISH_DEADLINE_MS`]; the pill outlives it. */
   polishing: POLISH_DEADLINE_MS + 600,
-  /** A receipt-sequenced paste (YV39) is fast or it has failed. */
-  pasting: 1_500,
+  /**
+   * A receipt-sequenced paste (YV39): the bridge waits up to 1 500 ms for an
+   * app to read the clipboard ("no app read the clipboard within 1500ms") and
+   * only THEN reports `paste_not_confirmed`, so the pill has to outlive that
+   * window or it paints an error over a paste that is still being judged.
+   */
+  pasting: 2_500,
   /** The undifferentiated legacy busy state, still the fallback. */
   thinking: 30_000,
   // ── bounded acknowledgements ─────────────────────────────────────────────
@@ -1163,9 +1168,45 @@ export interface TakeStatus {
   lastError?: string | null;
 }
 
-/** What can move a take's phase. Both are events the frontend already gets. */
+/**
+ * yap24-PILL2 — the backend's `take_stage` event (lib.rs `TAKE_STAGE_EVENT`,
+ * emitted only through take_stage.rs `TakeStages::emit`). It names the stage a
+ * take is in at the real pipeline boundaries, which is the ONLY source of the
+ * `polishing` and `pasting` phases.
+ */
+export const TAKE_STAGE_EVENT = "take_stage";
+
+/** take_stage.rs `TakeStage`, serialized snake_case. */
+export type TakeStageName =
+  | "decoding"
+  | "polishing"
+  | "pasting"
+  | "paste_confirmed"
+  | "paste_not_confirmed"
+  | "done"
+  | "empty"
+  | "error"
+  | "cancelled";
+
+/** take_stage.rs `TakeStagePayload`. */
+export interface TakeStageNotice {
+  stage: TakeStageName;
+  /** The take's clip stem; null only when capture never produced a clip. */
+  takeId: string | null;
+  /** Present on `done`: the take's word count. */
+  words?: number;
+}
+
+/** What can move a take's phase. */
 export type TakeEvent =
   | { type: "status"; status: TakeStatus }
+  /**
+   * The backend's own stage report. It OUTRANKS the inferred `status` path:
+   * once a take is `polishing` or `pasting`, a not-busy status no longer guesses
+   * `empty` — the terminal stage says how the take ended, and `PHASE_HOLD_MS`
+   * still bounds the wait if it never comes.
+   */
+  | { type: "stage"; stage: TakeStageName; words?: number }
   /** The `transcript` event — emitted ONLY on a take that produced text. */
   | { type: "transcript"; words: number }
   /** Y3-C's per-chunk progress: real chunks, so really `transcribing`. */
@@ -1214,6 +1255,8 @@ export function errorSentence(lastError?: string | null): string | null {
  */
 export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
   switch (ev.type) {
+    case "stage":
+      return reduceTakeStage(prev, ev.stage, ev.words);
     case "progress":
       // Real chunks came back, so this is really `transcribing` (Y3-C). It may
       // not resurrect a take that has already ended.
@@ -1249,6 +1292,11 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
       // The hold just ended and `busy` has not been set yet — the status
       // events race. Never `done` (see above), never `idle`.
       if (prev === "listening") return "thinking";
+      // yap24-PILL2 — `polishing` and `pasting` exist ONLY because the backend
+      // said so, and the backend also reports how the take ends; a quiet
+      // status racing ahead of that terminal stage must not overrule it. The
+      // phase's hold still bounds the wait if the terminal stage never comes.
+      if (prev === "polishing" || prev === "pasting") return prev;
       // Working, then quiet, with NO transcript event: that is YV16's
       // no-speech / hallucination-gate exit, which emits no `transcript` at
       // all (lib.rs:2026). Today the pill says nothing and the user
@@ -1257,6 +1305,46 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
       if (isWorking(prev)) return "empty";
       return prev;
     }
+  }
+}
+
+/**
+ * yap24-PILL2 — one `take_stage` event folded into the take's phase.
+ *
+ * A stage may move a take that is live (working, or `listening` in the race
+ * before the not-recording status lands) and NEVER resurrects one that has
+ * already ended — a late stage from the previous take must not repaint a new
+ * take's pill. `decoding` adds no new phase: a single-window decode has no
+ * progress to report (Y3-C), so it is the honest generic `thinking`, and real
+ * chunk progress still upgrades it to `transcribing`.
+ *
+ * `paste_confirmed` / `paste_not_confirmed` leave the phase where it is. A
+ * not-confirmed paste is the Copy card's to explain: paste.rs emits
+ * `insert-copy-card` on that path (yap-insert-bridge-2026-10-26) and the card
+ * owns the sentence, so the pill draws no extra line — the `done` stage that
+ * follows settles it.
+ */
+export function reduceTakeStage(prev: LivePhase, stage: TakeStageName, words?: number): LivePhase {
+  const live = isWorking(prev) || prev === "listening";
+  if (!live) return prev;
+  switch (stage) {
+    case "decoding":
+      return prev === "transcribing" ? prev : "thinking";
+    case "polishing":
+      return "polishing";
+    case "pasting":
+      return "pasting";
+    case "paste_confirmed":
+    case "paste_not_confirmed":
+      return prev;
+    case "done":
+      return words === 0 ? "empty" : "done";
+    case "empty":
+      return "empty";
+    case "error":
+      return "error";
+    case "cancelled":
+      return "cancelled";
   }
 }
 

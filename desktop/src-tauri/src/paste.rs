@@ -1108,7 +1108,7 @@ pub fn copy_and_maybe_paste(
         Some(s) => PasteTarget::Dictated(Some(s)),
         None => PasteTarget::Explicit,
     };
-    insert_take(app, text, want_paste, target)
+    insert_take(app, text, want_paste, target, None)
 }
 
 /// A dictation take. `target_bundle_id` is `focus::frontmost_bundle_id()`
@@ -1125,6 +1125,7 @@ pub fn insert_dictated_take(
         text,
         want_paste,
         PasteTarget::Dictated(target_bundle_id),
+        None,
     )
 }
 
@@ -1135,15 +1136,22 @@ pub fn insert_take_for(
     text: &str,
     want_paste: bool,
     target: PasteTarget<'_>,
+    stages: Option<&crate::take_stage::TakeStages<'_>>,
 ) -> PasteOutcome {
-    insert_take(app, text, want_paste, target)
+    insert_take(app, text, want_paste, target, stages)
 }
 
+/// The one insertion boundary every take goes through. yap24-PILL2: with a
+/// stage reporter, `pasting` is reported immediately before the insertion and
+/// `paste_confirmed` / `paste_not_confirmed` from its receipt — here and only
+/// here, so the pill's paste stages and the Copy card's `insert-copy-card`
+/// come from the same decision.
 fn insert_take(
     app: &AppHandle,
     text: &str,
     want_paste: bool,
     target: PasteTarget<'_>,
+    stages: Option<&crate::take_stage::TakeStages<'_>>,
 ) -> PasteOutcome {
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
     // happens to be frontmost on the developer's machine.
@@ -1166,7 +1174,11 @@ fn insert_take(
         (InsertPath::PasteBridge, false)
     };
     let mut live = LiveInsert { app, ax_granted };
-    let (outcome, trace) = insert_serialized(&mut live, path, text, want_paste, target);
+    let mut run = || insert_serialized(&mut live, path, text, want_paste, target);
+    let (outcome, trace) = match stages {
+        Some(stages) => stages.around_paste(want_paste, run, |(o, _)| o.pasted),
+        None => run(),
+    };
     // yap-insert-bridge-2026-10-26: ONE line per take, written once the take
     // has ended, naming the path that finished it and why it was not the
     // default (a confirmed paste bridge).
