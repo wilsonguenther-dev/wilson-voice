@@ -8,6 +8,7 @@ import Advanced from "./settings/Advanced";
 import Privacy from "./settings/Privacy";
 import Meetings from "./settings/Meetings";
 import License from "./settings/License";
+import Diagnostics from "./settings/Diagnostics";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -90,6 +91,9 @@ export default function Settings() {
 
               {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
               {settingsTab === "privacy" && <Privacy />}
+
+              {/* ── Diagnostics — health line, recent events, redacted export ── */}
+              {settingsTab === "diagnostics" && <Diagnostics />}
 
               {/* ── YP3 · License — trial, purchase, activation ── */}
               {settingsTab === "license" && <License />}

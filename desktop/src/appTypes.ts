@@ -28,6 +28,7 @@ export type SettingsTab =
   | "advanced"
   | "meetings"
   | "privacy"
+  | "diagnostics"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -43,6 +44,9 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },
   { id: "privacy", label: "Privacy" },
+  // yap-telemetry-diagnostics — the health line, recent events, and the
+  // redacted "Export diagnostics" bundle.
+  { id: "diagnostics", label: "Diagnostics" },
   // YP3 — last, because it is the tab you visit twice: once to see what is
   // left of the trial, once to paste the key.
   { id: "license", label: "License" },

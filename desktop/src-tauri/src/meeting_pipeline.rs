@@ -287,7 +287,7 @@ impl MeetingPipeline {
             .map(|tx| tx.send(id.to_string()).is_ok())
             .unwrap_or(false);
         if !sent {
-            log::warn!("meeting pipeline: worker is gone, {id} stays queued for next launch");
+            diag_warn!("meeting_pipeline", "meeting pipeline: worker is gone, {id} stays queued for next launch", id = id);
         } else {
             log::info!("meeting pipeline: queued {id}");
             (self.sink)(&queued_event(id));
@@ -344,7 +344,7 @@ pub fn enqueue(id: &str) -> bool {
             true
         }
         None => {
-            log::warn!("meeting pipeline: not installed, {id} waits for the next launch");
+            diag_warn!("meeting_pipeline", "meeting pipeline: not installed, {id} waits for the next launch", id = id);
             false
         }
     }
@@ -376,7 +376,17 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
             for id in rx {
                 // R2: the whole job body is panic-contained — one panic fails
                 // that row and the FIFO keeps going.
+                crate::diagnostics::set_state("meeting.state", "processing");
+                crate::diagnostics::meeting_stage("start");
+                let job_started = Instant::now();
                 let result = catch_unwind(AssertUnwindSafe(|| guarded_job(&deps, &id)));
+                crate::diagnostics::record_duration(
+                    "meeting",
+                    "job",
+                    job_started.elapsed().as_millis() as u64,
+                );
+                let failed = !matches!(&result, Ok(Ok(s)) if *s != MeetingState::Failed);
+                crate::diagnostics::set_state("meeting.state", if failed { "failed" } else { "idle" });
                 // Any in-process end of the job (including a caught panic)
                 // clears the crash marker: only a dead PROCESS leaves it.
                 clear_attempt_marker(&deps.progress_dir, &id);
@@ -385,7 +395,7 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
                     }
                     Ok(Err(e)) => {
-                        log::warn!("meeting pipeline: {id} failed: {e}");
+                        diag_warn!("meeting_pipeline", "meeting pipeline: {id} failed: {err}", id = id, err = e);
                         let msg = format!("Yap could not transcribe this meeting: {e}");
                         let _ = deps
                             .db
@@ -393,7 +403,7 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                         emit_final(&deps, &id, MeetingState::Failed, Some(msg));
                     }
                     Err(_) => {
-                        log::error!("meeting pipeline: job for {id} panicked — marked failed");
+                        diag_error!("meeting_pipeline", "meeting pipeline: job for {id} panicked — marked failed", id = id);
                         let msg = "Yap hit an internal error transcribing this meeting. \
                                    Press Retry."
                             .to_string();
@@ -412,7 +422,7 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
             }
         });
     if let Err(e) = spawned {
-        log::error!("meeting pipeline: worker thread failed to spawn: {e}");
+        diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
     }
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
@@ -576,7 +586,7 @@ pub fn read_capture_carry(dir: &Path, meeting_id: &str) -> Option<CaptureCarry> 
         Err(e) => {
             // Unreadable carry: assume the capture WAS partial — never let a
             // corrupt file promote a short capture to `complete`.
-            log::warn!("meeting {meeting_id}: unreadable capture carry ({e}) — treated as partial");
+            diag_warn!("meeting_pipeline", "meeting {id}: unreadable capture carry ({err}) — treated as partial", id = meeting_id, err = e);
             Some(CaptureCarry {
                 partial: true,
                 note: None,
@@ -621,10 +631,10 @@ fn write_attempt_marker(dir: &Path, meeting_id: &str, marker: AttemptMarker) {
     match serde_json::to_vec(&marker) {
         Ok(bytes) => {
             if let Err(e) = std::fs::write(&path, bytes) {
-                log::warn!("meeting pipeline: cannot write {}: {e}", path.display());
+                diag_warn!("meeting_pipeline", "meeting pipeline: cannot write {file}: {err}", file = crate::diagnostics::basename(&path), err = e);
             }
         }
-        Err(e) => log::warn!("meeting pipeline: cannot encode attempt marker: {e}"),
+        Err(e) => diag_warn!("meeting_pipeline", "meeting pipeline: cannot encode attempt marker: {err}", err = e),
     }
 }
 
@@ -659,9 +669,12 @@ pub fn guarded_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String
     let progress_now = ledger_progress(dir, id);
     let crashes = unprogressed_crashes(read_attempt_marker(dir, id), progress_now);
     if crashes >= MAX_UNPROGRESSED_ATTEMPTS {
-        log::error!(
+        diag_error!(
+            "meeting_pipeline",
             "meeting pipeline: {id} took Yap down {crashes} time(s) without progress — \
-             marked failed, not retried"
+             marked failed, not retried",
+            id = id,
+            crashes = crashes,
         );
         clear_attempt_marker(dir, id);
         deps.db
@@ -675,7 +688,7 @@ pub fn guarded_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String
         return Ok(MeetingState::Failed);
     }
     if crashes > 0 {
-        log::warn!("meeting pipeline: {id} — the last launch died mid-job ({crashes}/{MAX_UNPROGRESSED_ATTEMPTS})");
+        diag_warn!("meeting_pipeline", "meeting pipeline: {id} — the last launch died mid-job ({crashes}/{max})", id = id, crashes = crashes, max = MAX_UNPROGRESSED_ATTEMPTS);
     }
     write_attempt_marker(
         dir,
@@ -698,7 +711,7 @@ pub fn requeue_waiting_for_model(db: &Database, enqueue: &dyn Fn(&str)) -> usize
     let rows = match db.list_meetings(100_000, None) {
         Ok(rows) => rows,
         Err(e) => {
-            log::warn!("meeting pipeline: cannot list waiting meetings ({e})");
+            diag_warn!("meeting_pipeline", "meeting pipeline: cannot list waiting meetings ({err})", err = e);
             return 0;
         }
     };
@@ -799,7 +812,7 @@ pub fn sweep_meeting_audio(
         Err(e) => {
             // Rolled back: those rows still point at their audio, which stays
             // on disk and is retried on the next sweep.
-            log::warn!("retention: untranscribed meeting audio purge skipped: {e}");
+            diag_warn!("meeting_pipeline", "retention: untranscribed meeting audio purge skipped: {err}", err = e);
             Vec::new()
         }
     };
@@ -834,7 +847,7 @@ fn unlink_purged_meeting_audio(
             match std::fs::remove_file(&file) {
                 Ok(()) => removed.push(file),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => log::warn!("retention: {} not removed: {e}", file.display()),
+                Err(e) => diag_warn!("meeting_pipeline", "retention: {file} not removed: {err}", file = crate::diagnostics::basename(&file), err = e),
             }
         }
     }
@@ -994,7 +1007,20 @@ fn emit_final(deps: &PipelineDeps, id: &str, state: MeetingState, error: Option<
 /// Returns the state the row was left in. `transcribing` means the job was
 /// interrupted (quit, or a dictation that would not let go) and stays queued
 /// for the next launch's reconcile.
+/// yap-telemetry-diagnostics — one duration per pipeline stage
+/// (`meeting.stage_<name>_ms`), and the stage becomes the health line's last stage.
+fn stage_done(stage: &str, clock: &mut Instant) {
+    crate::diagnostics::record_duration(
+        "meeting",
+        &format!("stage_{stage}"),
+        clock.elapsed().as_millis() as u64,
+    );
+    crate::diagnostics::meeting_stage(stage);
+    *clock = Instant::now();
+}
+
 pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String> {
+    let mut stage_clock = Instant::now();
     let db = &*deps.db;
     let Some(meeting) = db.get_meeting(id)? else {
         log::info!("meeting pipeline: {id} was deleted before it was transcribed");
@@ -1045,7 +1071,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     for (track, path) in &tracks {
         match WavWindows::open(path) {
             Ok(w) => sources.push((*track, w)),
-            Err(e) => log::warn!("meeting {id}: track {track} unreadable ({e}) — skipped"),
+            Err(e) => diag_warn!("meeting_pipeline", "meeting {id}: track {track} unreadable ({err}) — skipped", id = id, track = track, err = e),
         }
     }
     if sources.is_empty() {
@@ -1055,6 +1081,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         return Ok(MeetingState::Failed);
     }
     let total_audio: f64 = sources.iter().map(|(_, w)| w.total_seconds()).sum();
+    stage_done("open_audio", &mut stage_clock);
 
     // Partial-ness is remembered in a local and restored at the end; the row
     // reads `transcribing` while the job runs so the UI can draw progress.
@@ -1113,8 +1140,12 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         }
     };
     if let Some(previous) = discard {
-        log::warn!(
-            "meeting {id}: was partly transcribed by {previous}, now decoding with {asr_model} — starting over"
+        diag_warn!(
+            "meeting_pipeline",
+            "meeting {id}: was partly transcribed by {previous}, now decoding with {model} — starting over",
+            id = id,
+            previous = previous,
+            model = asr_model,
         );
         for path in decode_ledger_paths(&deps.progress_dir, id) {
             let _ = std::fs::remove_file(path);
@@ -1125,16 +1156,18 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     }
     db.set_meeting_asr_model(id, &asr_model)?;
     let asr = engine.asr;
+    stage_done("load_engine", &mut stage_clock);
 
     // One VAD lookup per job. A failure keeps the fixed-clock plan and says so
     // once; it never fails a meeting.
     let vad: Option<Arc<dyn VoiceActivity + Send + Sync>> = match (deps.vad)() {
         Ok(v) => Some(v),
         Err(e) => {
-            log::warn!("meeting {id}: no VAD ({e}) — chunking on the fixed clock");
+            diag_warn!("meeting_pipeline", "meeting {id}: no VAD ({err}) — chunking on the fixed clock", id = id, err = e);
             None
         }
     };
+    stage_done("vad", &mut stage_clock);
 
     let mut done_before = 0.0f64;
     let mut decoded = 0usize;
@@ -1194,6 +1227,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             );
             return Ok(MeetingState::Transcribing);
         }
+        stage_done(&format!("transcribe_track{track}"), &mut stage_clock);
         decoded += transcript.chunks_decoded + transcript.chunks_resumed;
         failed += transcript.chunks_failed;
         done_before += audio.total_seconds();
@@ -1228,6 +1262,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         sources.len(),
         state.as_str()
     );
+    stage_done("finalize", &mut stage_clock);
     emit_final(deps, id, state, error);
     if matches!(state, MeetingState::Complete | MeetingState::Partial) {
         if let Some(after) = deps.after_transcript.as_ref() {

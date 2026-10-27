@@ -30,7 +30,7 @@ pub fn logs_dir(data_dir: &Path) -> PathBuf {
 pub fn init(data_dir: &Path) {
     let dir = logs_dir(data_dir);
     let tee = TeeWriter::new(&dir);
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .target(env_logger::Target::Pipe(Box::new(tee)))
         // YV44: tauri-plugin-updater logs a hard ERROR for ANY non-2xx from the
         // release endpoint, including the 404 GitHub returns while no release
@@ -39,9 +39,55 @@ pub fn init(data_dir: &Path) {
         // `check_for_update`: "nothing to update to" at DEBUG, real failures at
         // WARN and surfaced in the UI), so the plugin's own record is muted.
         .filter_module("tauri_plugin_updater", log::LevelFilter::Off)
-        .init();
+        .build();
+    install(logger);
     install_panic_hook();
     log::info!("file logging → {}", dir.join("yap.log").display());
+}
+
+/// yap-telemetry-diagnostics — the ONE logger, wrapped: every record the
+/// env_logger filter lets through is ALSO handed to the diagnostics ring
+/// (`diagnostics::record_from_log`, INFO and above), then written exactly as
+/// before. Not a second logger: same filter, same format, same sinks.
+struct DiagTee {
+    inner: env_logger::Logger,
+}
+
+impl log::Log for DiagTee {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.inner.matches(record) {
+            crate::diagnostics::record_from_log(record);
+        }
+        self.inner.log(record);
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
+fn install(logger: env_logger::Logger) {
+    let max = logger.filter();
+    if log::set_boxed_logger(Box::new(DiagTee { inner: logger })).is_ok() {
+        log::set_max_level(max);
+    }
+}
+
+/// Tests: the same tee over a discarding sink, installed once per process.
+#[cfg(test)]
+pub fn install_for_tests() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let logger = env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .target(env_logger::Target::Pipe(Box::new(io::sink())))
+            .build();
+        install(logger);
+    });
 }
 
 /// Install a global panic hook that writes the panic to the log (in addition to
