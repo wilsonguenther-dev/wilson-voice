@@ -19,6 +19,20 @@
 pub struct OutputAudioState {
     pub muted: bool,
     pub volume: Option<f32>,
+    /// The CoreAudio device the snapshot was taken from — the one Yap muted
+    /// (Y6-D). `None` only for a state that never came from a device (tests,
+    /// fakes). A restore writes HERE, not to whatever the default output is by
+    /// then: a swap mid-take (AirPods connect, headphones unplug) used to
+    /// unmute the NEW default and leave the muted device muted forever.
+    pub device: Option<u32>,
+}
+
+/// Which device a restore writes to (Y6-D). The device that was muted, always;
+/// the current default only when no device was recorded. Never the current
+/// default instead of a recorded device: Yap never touched it, so writing the
+/// saved mute + volume there would change a device the user did not lend us.
+pub fn restore_target(saved_device: Option<u32>, current_default: Option<u32>) -> Option<u32> {
+    saved_device.or(current_default)
 }
 
 /// The concrete CoreAudio values a restore writes back — pure, no FFI. Kept
@@ -228,7 +242,11 @@ mod imp {
         // guarantee a correct restore, so we leave the system untouched.
         let muted = read_u32(device, K_AUDIO_DEVICE_PROPERTY_MUTE)? != 0;
         let volume = read_f32(device, K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR);
-        let saved = OutputAudioState { muted, volume };
+        let saved = OutputAudioState {
+            muted,
+            volume,
+            device: Some(device),
+        };
         // Only touch the device if it isn't already muted.
         if !muted {
             write_u32(device, K_AUDIO_DEVICE_PROPERTY_MUTE, 1);
@@ -243,7 +261,9 @@ mod imp {
     /// saved state only when it succeeded).
     pub fn restore(saved: OutputAudioState) {
         let plan: RestorePlan = saved.restore_plan();
-        let Some(device) = default_output_device() else {
+        // Y6-D: the device that was MUTED, not the default as of now. If it was
+        // unplugged mid-take the writes below fail closed (`has_property`).
+        let Some(device) = super::restore_target(saved.device, default_output_device()) else {
             return;
         };
         write_u32(device, K_AUDIO_DEVICE_PROPERTY_MUTE, plan.mute);
@@ -322,6 +342,7 @@ mod tests {
         let unmuted = OutputAudioState {
             muted: false,
             volume: Some(0.7),
+            device: None,
         };
         let plan = unmuted.restore_plan();
         assert_eq!(plan.mute, 0);
@@ -332,6 +353,7 @@ mod tests {
         let muted = OutputAudioState {
             muted: true,
             volume: Some(0.25),
+            device: None,
         };
         let plan = muted.restore_plan();
         assert_eq!(plan.mute, 1);
@@ -342,6 +364,7 @@ mod tests {
         let no_volume = OutputAudioState {
             muted: false,
             volume: None,
+            device: None,
         };
         let plan = no_volume.restore_plan();
         assert_eq!(plan.mute, 0);

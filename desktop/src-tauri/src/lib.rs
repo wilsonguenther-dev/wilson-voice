@@ -8076,6 +8076,28 @@ pub fn run() {
         }
     }
 
+    // Y6-D — one process per data directory, decided BEFORE `history.db` is
+    // opened below. The socket probe above can come back inconclusive, and the
+    // single-instance plugin only runs inside the Tauri builder, after the
+    // database is already open; this lock is what guarantees a second copy
+    // never holds a second handle on the same SQLite WAL.
+    let instance_lock =
+        lifecycle::acquire_instance_lock(&lifecycle::instance_lock_path(&data_dir()));
+    if lifecycle::launch_decision(&instance_lock) == lifecycle::LaunchDecision::ExitAlreadyRunning {
+        log::warn!(
+            "second launch: data directory already in use — exiting before the database opens"
+        );
+        eprintln!("{}", lifecycle::ALREADY_RUNNING_MESSAGE);
+        std::process::exit(0);
+    }
+    match instance_lock {
+        lifecycle::InstanceLock::Acquired(file) => lifecycle::hold_instance_lock(file),
+        lifecycle::InstanceLock::Unavailable(e) => {
+            log::warn!("instance lock unavailable ({e}) — launching without it")
+        }
+        lifecycle::InstanceLock::HeldByAnother => {}
+    }
+
     // YV20/M3: sweep any stale voice WAVs left by a prior crash / hard-kill (the
     // happy path deletes its own clip, but a SIGKILL mid-transcribe can't). No
     // recording is in flight at startup, so every *.wav here is safe to remove.
@@ -9154,13 +9176,25 @@ pub fn run() {
             float_pill::set_position(float_pill::PillPosition::from_settings(
                 &state.settings.lock().pill_position,
             ));
-            if state.settings.lock().show_floating_pill {
+            // Y6-D: a cold launch (no settings file → not onboarded) lands on
+            // onboarding and does NOT put up an idle pill it cannot honour; the
+            // pill appears when onboarding saves settings (`save_settings`
+            // shows it) or when a calibration take shows it for recording.
+            let (show_setting, onboarded) = {
+                let s = state.settings.lock();
+                (s.show_floating_pill, s.onboarded)
+            };
+            if float_pill::launch_pill_visible(show_setting, onboarded) {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
-                float_pill::start_space_keeper(app.handle().clone());
             } else {
                 float_pill::hide_float(app.handle());
+            }
+            if show_setting {
+                // Idle while the pill is hidden (it reads `is_shown` first), so
+                // a pill shown after onboarding still gets re-parked.
+                float_pill::start_space_keeper(app.handle().clone());
             }
             // YV65 drag-to-dock: the capsule is only cursor-interactive while
             // the pointer is on it. Started unconditionally — the pill still

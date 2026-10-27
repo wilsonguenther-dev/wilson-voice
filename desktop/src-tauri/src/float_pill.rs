@@ -197,6 +197,74 @@ fn panel_origin(
     }
 }
 
+/// A monitor in Tauri's global physical-pixel space, with its scale factor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub scale: f64,
+}
+
+impl ScreenRect {
+    fn same_frame(&self, o: &ScreenRect) -> bool {
+        self.x == o.x && self.y == o.y && self.w == o.w && self.h == o.h
+    }
+}
+
+/// Pure (Y6-D): which screen the pill parks on, given the screens that exist
+/// NOW. The primary, when it is one of them; otherwise the first screen that
+/// exists. A screen that was unplugged is never in `screens`, so it can never
+/// be chosen — the classic floating-HUD bug is reusing a remembered origin on
+/// a display that is gone. `None` only when no screen at all is reported.
+pub fn pill_screen(screens: &[ScreenRect], primary: Option<ScreenRect>) -> Option<ScreenRect> {
+    match primary {
+        Some(p) if screens.is_empty() || screens.iter().any(|s| s.same_frame(&p)) => Some(p),
+        _ => screens.first().copied(),
+    }
+}
+
+/// Pure (Y6-D): keep a `win`-sized window whose top-left is `origin` inside
+/// `screen`. A window larger than the screen pins to the screen's origin.
+pub fn clamp_to_screen(origin: (i32, i32), win: (i32, i32), screen: ScreenRect) -> (i32, i32) {
+    let max_x = (screen.x + screen.w - win.0).max(screen.x);
+    let max_y = (screen.y + screen.h - win.1).max(screen.y);
+    (
+        origin.0.clamp(screen.x, max_x),
+        origin.1.clamp(screen.y, max_y),
+    )
+}
+
+/// Pure (Y6-D): the float window's top-left in physical px, on a screen that
+/// exists, for a window of `win_pt` logical points docked at `pos`.
+pub fn pill_origin_on_visible_screen(
+    screens: &[ScreenRect],
+    primary: Option<ScreenRect>,
+    win_pt: (f64, f64),
+    margin_pt: f64,
+    pos: PillPosition,
+) -> Option<(i32, i32)> {
+    let s = pill_screen(screens, primary)?;
+    let win = ((win_pt.0 * s.scale) as i32, (win_pt.1 * s.scale) as i32);
+    let margin = (margin_pt * s.scale) as i32;
+    let origin = panel_origin((s.x, s.y), (s.w, s.h), win, margin, pos);
+    Some(clamp_to_screen(origin, win, s))
+}
+
+/// The float window's size in logical points (the pill sits centred in it).
+pub fn float_window_size_pt() -> (f64, f64) {
+    (PILL_W, PILL_H)
+}
+
+/// Pure (Y6-D): does the pill come up at launch? Only once onboarding is done.
+/// A cold launch — no settings file, so `onboarded == false` — lands on
+/// onboarding with no model and no grants; an idle pill there would promise a
+/// dictation the app cannot take.
+pub fn launch_pill_visible(show_floating_pill: bool, onboarded: bool) -> bool {
+    show_floating_pill && onboarded
+}
+
 /// Pure snap math (YV65): which dock a drag release belongs to.
 ///
 /// `release` is the cursor point at mouse-up and `screen_frame` is the
@@ -261,30 +329,38 @@ fn park_pill(app: &AppHandle) {
     // Pin to the PRIMARY monitor (never the cursor's display) in Tauri's own
     // physical-pixel space. Fixes both the Retina points-vs-pixels mis-placement
     // and the cursor-driven cross-monitor teleport of the old CGDisplayBounds path.
-    let Some(mon) = w
+    // Y6-D: chosen from the monitors that exist NOW (re-read every keeper tick),
+    // and clamped inside the chosen one — an unplugged display can never hold it.
+    let rect = |m: &tauri::Monitor| ScreenRect {
+        x: m.position().x,
+        y: m.position().y,
+        w: m.size().width as i32,
+        h: m.size().height as i32,
+        scale: m.scale_factor(),
+    };
+    let screens: Vec<ScreenRect> = w
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(rect)
+        .collect();
+    let primary = w
         .primary_monitor()
         .ok()
         .flatten()
         .or_else(|| w.current_monitor().ok().flatten())
-    else {
-        return;
-    };
-    let pos = mon.position(); // physical px
-    let size = mon.size(); // physical px
-    let scale = mon.scale_factor();
-    // PILL_W/H and the margin are logical points → scale to physical for centering.
-    let pill_w = (PILL_W * scale) as i32;
-    let pill_h = (PILL_H * scale) as i32;
+        .map(|m| rect(&m));
     // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
     // taller window) then floats ~50pt up with shadow room below it.
-    let margin = (14.0 * scale) as i32;
-    let (x, y) = panel_origin(
-        (pos.x, pos.y),
-        (size.width as i32, size.height as i32),
-        (pill_w, pill_h),
-        margin,
+    let Some((x, y)) = pill_origin_on_visible_screen(
+        &screens,
+        primary,
+        float_window_size_pt(),
+        14.0,
         PillPosition::from_u8(POSITION.load(Ordering::SeqCst)),
-    );
+    ) else {
+        return;
+    };
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 

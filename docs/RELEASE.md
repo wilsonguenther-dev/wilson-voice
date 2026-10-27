@@ -551,3 +551,25 @@ the manifest contract above does not change, only who serves it.
 ## Test channel
 
 To run an unreviewed head next to the real Yap without touching its TCC grants, see [TEST-CHANNEL.md](TEST-CHANNEL.md) (`npm run test-build -- --pr N` → `/Applications/Yap Test.app`).
+
+## LIFECYCLE MANUAL CHECKLIST
+
+Y6-D. These are the lifecycle events a `cargo test` process cannot reach (no
+window-server session: it cannot sleep the Mac, unplug a monitor, enter a
+fullscreen Space, launch a second app copy or change a TCC grant). The decision
+behind each one is unit-tested in `desktop/src-tauri/tests/lifecycle_e2e.rs`;
+the EVENT is proven only by a person running the row on a real Mac and writing
+the date, the machine and what they saw. A blank result is an open gap, not a
+pass. Written 2026-10-27; authoring machine Mac16,8, macOS 26.6.2 — no row has
+been run yet.
+
+| Row | Steps | Expected | Date | Machine | Result |
+|---|---|---|---|---|---|
+| Cold launch with nothing installed | `YAP_DATA_DIR=$(mktemp -d)` launch of the build; no model, no grants | Main window on onboarding; no pill until onboarding is saved | — | — | not yet run |
+| Sleep the Mac mid-take | Hold to dictate, close the lid (or  → Sleep) mid-sentence, wake | No paste after wake; the take is in History as recoverable; Escape works in other apps | — | — | not yet run |
+| Unplug the monitor the pill is on | Make an external display primary, show the pill, unplug it | Pill reappears on the built-in within ~1.5 s, fully on screen | — | — | not yet run |
+| Pill floats over a FULLSCREEN app | Put Safari/Keynote in fullscreen, hold to dictate | Record whether the pill is visible over the fullscreen Space (ARCHITECTURE.md FULLSCREEN limitation) | — | — | not yet run |
+| Swap the output device mid-take | Mute-while-dictating ON; start a take on speakers, connect AirPods, stop | Speakers unmuted at their prior volume; AirPods volume untouched; then unplug-headphones-mid-take variant: re-plugged headphones are not muted | — | — | not yet run |
+| Launch Yap a second time | With Yap running, `open -n /Applications/Yap.app` | First copy's window comes forward; second process exits; `lsof <data dir>/history.db` shows one process | — | — | not yet run |
+| TCC grants survive a relaunch | Quit and relaunch with Microphone, Accessibility, Input Monitoring, Screen Recording granted | No permission prompt on launch; health rows all green | — | — | not yet run |
+
