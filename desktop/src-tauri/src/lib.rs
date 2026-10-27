@@ -11511,6 +11511,85 @@ mod db_b_recovery_followups {
         }
     }
 
+    /// fix round 2, BLOCKING 1 — a later Retry or Keep must never revert a
+    /// hand edit of the live entry. A deletion-only, casing-only or
+    /// punctuation-only edit leaves the edited entry's words a subset of (or
+    /// equal to) the save's, which the round-1 merge read as "the save covers
+    /// the entry" and REPLACED it with the save — undoing the edit, with the
+    /// audio deleted so the take could not be redone.
+    #[test]
+    fn db_b_merge_never_reverts_a_hand_edit() {
+        // (case, live decode, the user's edit, the recovered save, expected entry)
+        for (case, live_text, edited, saved, expect) in [
+            (
+                "deletion-only edit",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.".to_string(),
+            ),
+            (
+                "casing-only edit",
+                "we met with jon smith at acme",
+                "We met with Jon Smith at Acme.",
+                "we met with jon smith at acme",
+                "We met with Jon Smith at Acme.".to_string(),
+            ),
+            (
+                "punctuation-only edit",
+                "ok so the plan is ship it",
+                "OK, so: the plan is -- ship it!",
+                "ok so the plan is ship it",
+                "OK, so: the plan is -- ship it!".to_string(),
+            ),
+            (
+                "deletion edit, then a save that also recovers a lost window",
+                "Ship it Friday. Also tell Jim he is fired.",
+                "Ship it Friday.",
+                "Ship it Friday. Also tell Jim he is fired. Book the venue.",
+                "Ship it Friday.\n\nShip it Friday. Also tell Jim he is fired. Book the venue."
+                    .to_string(),
+            ),
+        ] {
+            let (dir, db) = fresh("c-edit-kept");
+            let claims = RecoveryClaims::new();
+            let wav = dir.join("live.wav");
+            std::fs::write(&wav, b"riff").unwrap();
+            let row = db
+                .record_failed_dictation(&wav, 20.0, "1 of 10 sections failed", None)
+                .unwrap();
+            let key = db::recovery_key(&row);
+            let live = db
+                .insert_transcript_for_take(
+                    live_text.into(),
+                    "native".into(),
+                    1.0,
+                    20.0,
+                    900,
+                    None,
+                    chrono::Utc::now(),
+                    None,
+                    Some(&key),
+                )
+                .unwrap();
+            db.record_correction(&live.id, edited).unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(saved))
+                .unwrap();
+            let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
+                .expect("Keep saves");
+            let all = db.list_transcripts(10, None).unwrap();
+            assert_eq!(all.len(), 1, "{case}: exactly one history row for the take");
+            assert_eq!(all[0].text, expect, "{case}: the hand edit was reverted");
+            assert_eq!(entry.text, all[0].text, "{case}");
+            assert!(
+                all[0].text.starts_with(edited),
+                "{case}: the edited text must stand verbatim: {:?}",
+                all[0].text
+            );
+            assert_eq!(all[0].word_count, db_word_count(&all[0].text), "{case}");
+        }
+    }
+
     fn db_word_count(text: &str) -> i64 {
         text.split_whitespace().count() as i64
     }

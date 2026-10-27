@@ -823,6 +823,13 @@ impl Database {
         // the partial UNIQUE index only ever compares non-NULL keys, so one take
         // can own at most ONE history row however many saves race for it.
         let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN take_key TEXT", []);
+        // yap-recovery-followups (c), fix round 2: the text an entry held
+        // BEFORE the user's first hand edit (`record_correction`). Non-NULL
+        // marks the entry as hand-edited, which a recovered save must never
+        // replace; it also tells the merge what the live decode actually said,
+        // so a deletion-only edit is not undone by a save of the same words.
+        // Nullable and additive: older builds never read it.
+        let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN pre_edit_text TEXT", []);
         let _ = conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_transcripts_take_key
                ON transcripts(take_key) WHERE take_key IS NOT NULL",
@@ -2823,7 +2830,14 @@ impl Database {
                 (false, None) => return Err("That recovery clip is no longer in the list".into()),
                 // (c) Merge into the entry the live take already saved.
                 (true, Some(live)) => {
-                    let merged = merge_take_texts(&live, &entry);
+                    let pre_edit: Option<String> = tx
+                        .query_row(
+                            "SELECT pre_edit_text FROM transcripts WHERE id = ?1",
+                            params![live.id],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let merged = merge_take_texts(&live, pre_edit.as_deref(), &entry);
                     if let Some(m) = merged {
                         tx.execute(
                             "UPDATE transcripts
@@ -3054,8 +3068,10 @@ impl Database {
                 return Ok(Vec::new());
             }
             conn.execute(
-                "UPDATE transcripts SET text = ?2, word_count = ?3 WHERE id = ?1",
-                params![transcript_id, corrected, word_count(corrected)],
+                "UPDATE transcripts SET text = ?2, word_count = ?3,
+                        pre_edit_text = COALESCE(pre_edit_text, ?4)
+                 WHERE id = ?1",
+                params![transcript_id, corrected, word_count(corrected), original],
             )
             .map_err(|e| e.to_string())?;
 
@@ -3853,28 +3869,52 @@ fn tokens_cover(outer: &[String], inner: &[String]) -> bool {
 /// lost window 7, the Finish attempt that Keep saves lost window 3), and the
 /// take's audio is deleted as soon as the merge commits.
 ///
-/// * The save holds every word of the entry, in order: it replaces the entry
-///   (a clean Retry of the same audio — nothing in the entry is dropped).
+/// Fix round 2: a hand edit is never reverted. `pre_edit` is the entry's
+/// text before the user's first hand edit (`transcripts.pre_edit_text`, set by
+/// `record_correction`); `Some` means the entry was hand-edited. Checked in
+/// this order:
+///
 /// * The entry already holds every word of the save: `None`, the entry stays
-///   exactly as it is (including any hand edit the user made to it).
-/// * Neither covers the other (different windows missing, or the user edited
-///   the entry): the entry keeps its text and the save is APPENDED after a
-///   blank line. Some words may then appear twice; none is ever lost.
-fn merge_take_texts(live: &TranscriptEntry, save: &TranscriptEntry) -> Option<TranscriptEntry> {
+///   exactly as it is. Checked FIRST, so equal words (a casing-only or
+///   punctuation-only hand edit) keep the entry, never the save's spelling.
+/// * Hand-edited, and the save holds no word beyond what the live decode said
+///   before the edit: `None`, the edit stands (a deletion-only edit is not
+///   undone by a save of the same audio).
+/// * Not hand-edited, and the save holds every word of the entry, in order:
+///   it replaces the entry (a clean Retry of the same audio — nothing in the
+///   entry is dropped). A hand-edited entry is NEVER replaced.
+/// * Otherwise (different windows missing, or a hand-edited entry the save
+///   adds new words to): the entry keeps its text verbatim and the save is
+///   APPENDED after a blank line. Some words may then appear twice; none is
+///   ever lost, and the user's edit is never rewritten.
+fn merge_take_texts(
+    live: &TranscriptEntry,
+    pre_edit: Option<&str>,
+    save: &TranscriptEntry,
+) -> Option<TranscriptEntry> {
     let live_tokens = merge_tokens(&live.text);
     let save_tokens = merge_tokens(&save.text);
-    if tokens_cover(&save_tokens, &live_tokens) {
-        return Some(TranscriptEntry {
-            text: save.text.clone(),
-            raw_text: save.raw_text.clone(),
-            backend: save.backend.clone(),
-            asr_seconds: save.asr_seconds,
-            word_count: save.word_count,
-            ..live.clone()
-        });
-    }
     if tokens_cover(&live_tokens, &save_tokens) {
         return None;
+    }
+    match pre_edit {
+        Some(original) => {
+            if tokens_cover(&merge_tokens(original), &save_tokens) {
+                return None;
+            }
+        }
+        None => {
+            if tokens_cover(&save_tokens, &live_tokens) {
+                return Some(TranscriptEntry {
+                    text: save.text.clone(),
+                    raw_text: save.raw_text.clone(),
+                    backend: save.backend.clone(),
+                    asr_seconds: save.asr_seconds,
+                    word_count: save.word_count,
+                    ..live.clone()
+                });
+            }
+        }
     }
     let text = format!("{}\n\n{}", live.text.trim_end(), save.text.trim_start());
     let raw_text = match (live.raw_text.as_deref(), save.raw_text.as_deref()) {
