@@ -6,16 +6,29 @@
 	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!-- Hardened runtime helpers for Tauri + cpal. NOTE: the two dylib-injection
-	     entitlements (library-validation off + dyld env vars) are deliberately
-	     NOT granted — they would let DYLD_INSERT_LIBRARIES load an attacker dylib
-	     into this non-sandboxed, Accessibility-trusted, keystroke-synthesizing
-	     process (a TCC-inheritance escalation). MLX/JIT runs in the separate
-	     Python child (its own signature); setting env vars for that child via
-	     Command.env() does not need the dyld entitlement. -->
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
+	<!-- WHO GETS THIS FILE. Under `tauri build` (desktop:build via
+	     scripts/sign-local.sh tauri-build mode, release.yml tauri-action,
+	     scripts/test-build.sh) tauri-bundler signs the app AND every
+	     bundle.externalBin with this file, so the shipped DMG's yap-polish and
+	     yap-diarize sidecars carry these same entitlements, device.audio-input
+	     included. Only scripts/sign-local.sh's default sign mode (re-signing an
+	     existing bundle, inside-out, no deep signing) gives the sidecars their
+	     own files under entitlements/. The hardened runtime is ON on both paths
+	     (flags=0x10000(runtime), read back by sign-local's verify step).
+
+	     yap24-OS4: cs.allow-jit and cs.allow-unsigned-executable-memory are NOT
+	     granted. scripts/qa/entitlement-diet.sh signs one variant per removed
+	     entitlement under the real identity with the runtime on and runs the
+	     signed binary's in-process Metal decode (transcribe-file); every
+	     variant passes without them (docs/RELEASE.md, Entitlement audit).
+	     ggml-Metal compiles its shaders through MTLDevice / MTLCompilerService,
+	     and WKWebView JITs in the separate WebContent XPC process, so neither
+	     needs writable-executable pages in this process.
+
+	     The two dylib-injection entitlements (library-validation off + dyld env
+	     vars) are deliberately NOT granted either: they would let
+	     DYLD_INSERT_LIBRARIES load an attacker dylib into this non-sandboxed,
+	     Accessibility-trusted, keystroke-synthesizing process (a TCC-inheritance
+	     escalation). -->
 </dict>
 </plist>

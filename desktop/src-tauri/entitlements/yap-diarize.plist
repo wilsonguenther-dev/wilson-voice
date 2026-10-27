@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- yap24-OS4: the yap-diarize sidecar's OWN entitlements. SCOPE: read ONLY by
+	     scripts/sign-local.sh's default sign mode, which signs the sidecar on its
+	     own with the hardened runtime on, BEFORE the app bundle (no deep signing).
+	     `tauri build` (desktop:build, release.yml, test-build.sh) never reads this
+	     file: tauri-bundler signs every externalBin with ../Entitlements.plist, so
+	     a Tauri-built / DMG sidecar DOES carry the app's microphone grant.
+	     sherpa-onnx speaker segmentation + embedding on the CPU. Audio arrives over stdin from the app, so it needs no microphone entitlement.
+	     Empty on purpose: scripts/qa/entitlement-diet.sh signs it with this file
+	     under the runtime and runs its protocol handshake. Add a key here only
+	     with a signed-runtime run that fails without it (docs/RELEASE.md,
+	     Entitlement audit). -->
+</dict>
+</plist>

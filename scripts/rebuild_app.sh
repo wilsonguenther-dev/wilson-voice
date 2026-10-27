@@ -16,6 +16,22 @@ APP_DST="/Applications/Wilson Voice.app"
 SIGN="$ROOT/scripts/sign-local.sh"
 "$SIGN" --identity
 
+# yap24-OS4: sign-local.sh signs each bundled sidecar on its own (inside-out, no
+# --deep) and refuses a bundle without them, and the app spawns them from
+# Contents/MacOS at runtime. bundle.externalBin also makes the staged copies a
+# precondition of the cargo build below. Resolve them HERE, before anything is
+# killed or deleted, so a missing sidecar fails with the installed app intact.
+TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
+[[ -n "$TRIPLE" ]] || { echo "FATAL: could not read the host triple from rustc -vV" >&2; exit 1; }
+SIDECARS=(yap-polish yap-diarize)
+for s in "${SIDECARS[@]}"; do
+  [[ -x "$SRC/binaries/$s-$TRIPLE" ]] || {
+    echo "FATAL: sidecar $SRC/binaries/$s-$TRIPLE is not staged. Build it first:" >&2
+    echo "       (cd $DESKTOP && npm run sidecar)" >&2
+    exit 1
+  }
+done
+
 killall wilson-voice 2>/dev/null || true
 sleep 1
 rm -rf "$HOME/Desktop/Wilson Voice.app" "$HOME/Applications/Wilson Voice.app" "$APP_DST"
@@ -59,6 +75,11 @@ fi
 # Bundle shell
 mkdir -p "$APP_SRC/Contents/MacOS" "$APP_SRC/Contents/Resources"
 cp -f "$BIN" "$APP_SRC/Contents/MacOS/wilson-voice"
+# The sidecars sit next to the app binary without the triple suffix, exactly
+# where tauri-bundler puts every externalBin.
+for s in "${SIDECARS[@]}"; do
+  cp -f "$SRC/binaries/$s-$TRIPLE" "$APP_SRC/Contents/MacOS/$s"
+done
 if [[ ! -f "$APP_SRC/Contents/Info.plist" ]]; then
   cat > "$APP_SRC/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
