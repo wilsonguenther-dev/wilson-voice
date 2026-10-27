@@ -431,6 +431,25 @@ pub fn ledger_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// #250 fix round 1 (independent B1) — whether this meeting's per-track resume
+/// ledgers record a window that failed to decode (`asr_failed`). That is the
+/// exact condition that ends a transcript `partial` with
+/// [`SOME_WINDOWS_FAILED_MESSAGE`], and unlike the row's `error` (which every
+/// shipped writer of `summarizing` cleared) the ledger stays beside the audio
+/// until a Retry, a purge or a delete. An absent or unreadable ledger is
+/// `false`: nothing is claimed that cannot be read.
+pub fn ledger_records_failed_window(dir: &Path, meeting_id: &str) -> bool {
+    let store = JsonProgressStore::new(dir);
+    [MIC_TRACK, SYSTEM_TRACK]
+        .iter()
+        .filter_map(|t| store.load(&ledger_key(meeting_id, *t)).ok())
+        .any(|p| {
+            p.chunks
+                .iter()
+                .any(|c| c.status == ChunkStatus::AsrFailed)
+        })
+}
+
 /// The per-track resume ledgers only — what a re-decode discards (never the
 /// R2 attempt marker or the R3 capture carry, which describe the job and the
 /// capture, not the decoded windows).

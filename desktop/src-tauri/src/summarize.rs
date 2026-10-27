@@ -78,15 +78,16 @@ use crate::meetings::{
     MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_MAP,
-    SUMMARIZE_REDUCE, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
+    SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
+    summary_map_max_out, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
 /// vocabulary.
 ///
 /// Sized against the sidecar's 4096-token context with room for the system turn,
-/// the chat template and [`SUMMARY_MAP_MAX_OUT`] of output. It is a budget for
+/// the chat template and up to [`SUMMARY_MAP_MAX_OUT_CEILING`](crate::polish_protocol::SUMMARY_MAP_MAX_OUT_CEILING) of output. It is a budget for
 /// the transcript body only — the sidecar re-checks the assembled prompt and
 /// truncates-and-warns if it still does not fit, so a wrong guess here degrades
 /// rather than fails.
@@ -169,6 +170,9 @@ pub enum SummaryError {
     /// different things to whoever is reading the log: `protocol` means the
     /// sidecar is broken, `empty` means it answered and had nothing to say.
     Empty,
+    /// The person pressed Cancel (#250 round 3, B2). Nothing is stored: a
+    /// cancelled run is never a partial summary passed off as the final one.
+    Cancelled,
 }
 
 impl SummaryError {
@@ -178,6 +182,7 @@ impl SummaryError {
             Self::Unavailable => "unavailable",
             Self::Protocol => "protocol",
             Self::Empty => "empty",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -638,11 +643,760 @@ pub fn parse_map_output(raw: &str, labels: &[String], source: &str) -> MapExtrac
     out
 }
 
+/// Which list an extracted line goes in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bucket {
+pub enum Bucket {
     Actions,
     Decisions,
     Questions,
+}
+
+// ── #250 round 2: the post-parse classifier ─────────────────────────────────
+
+/// Words that open an imperative action item ("Send the deck to Priya").
+const IMPERATIVE_VERBS: &[&str] = &[
+    "send", "book", "schedule", "email", "call", "share", "draft", "write", "update",
+    "review", "check", "prepare", "finish", "fix", "ship", "file", "create", "add",
+    "confirm", "ask", "invite", "circulate", "post", "follow", "set", "reach", "get",
+    "find", "look", "test", "submit", "sign", "order", "contact", "loop",
+];
+
+/// Owner-led commitments: `<owner> will …`, `<owner> to …`, `I'll …`.
+const COMMIT_AFTER_OWNER: &[&str] = &[
+    "will ", "to ", "should ", "must ", "needs to ", "has to ", "is going to ",
+    "agreed to ", "offered to ", "promised to ", "owns ", "can ", "is on ",
+];
+
+/// Settled things. Checked first: "we also decided to drop X" carries a
+/// `to <verb>` that would otherwise read as a commitment.
+const DECISION_MARKERS: &[&str] = &[
+    "decided", "decision", "we agreed", "agreed that", "agreed the", "settled",
+    "will remain", "will stay", "stays at", "remains at", "stay at", "remain at",
+    "going with", "go with", "approved", "signed off", "is final",
+];
+
+/// #250 round 3 (B4) — words that open a sentence capitalized only because
+/// they open it: interjections, sentence adverbs, adjectives of small talk
+/// ("Nice to meet you", "Happy to help", "Hard to say", "Honestly can we…").
+/// None of them is ever an owner, whatever follows.
+const NOT_A_NAME: &[&str] = &[
+    "nice", "happy", "thanks", "thank", "good", "great", "hard", "easy", "yes", "no", "yeah",
+    "yep", "nope", "honestly", "sure", "okay", "ok", "well", "glad", "fine", "right", "sorry",
+    "hopefully", "actually", "basically", "really", "maybe", "perhaps", "probably",
+    "definitely", "certainly", "clearly", "obviously", "please", "hi", "hello", "hey",
+    "welcome", "cool", "awesome", "fair", "true", "important", "worth", "free", "ready",
+    "next", "first", "last", "just", "now", "today", "tomorrow", "here", "excited", "safe",
+    "likely", "unlikely", "able", "quick", "back", "lovely", "fun", "interesting", "funny",
+    "weird", "strange", "sad", "tough", "impossible", "possible", "better", "best", "kind",
+    "time", "nothing", "everybody", "anybody", "anyone", "somebody", "you", "he", "she",
+    "his", "her", "their", "your", "let's", "lets", "oh", "um", "uh", "so", "and", "but",
+    "also", "then", "quite", "very", "too", "exactly", "absolutely", "totally", "agreed",
+];
+
+/// #250 round 4 (R2-B2) — common English words that open a sentence and are
+/// never a person: days, months, the indefinite pronouns, everyday nouns of
+/// small talk ("Everything will be fine", "Monday will be busy", "Coffee will
+/// help"). None of them is ever an owner, and none is ever a transcript name.
+const COMMON_WORDS: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december", "everything", "nothing", "something", "anything", "everywhere",
+    "somewhere", "nowhere", "coffee", "tea", "lunch", "dinner", "breakfast", "traffic",
+    "revenue", "sales", "budget", "money", "weather", "rain", "food", "water", "work",
+    "life", "team", "morning", "afternoon", "evening", "tonight", "weekend", "week", "month",
+    "year", "quarter", "noon", "midnight", "people", "things", "stuff", "nobody", "none",
+    "each", "every", "all", "both", "some", "most", "many", "much", "more", "less", "other",
+    "another", "such", "same", "which", "where", "while", "because", "although", "after",
+    "before", "since", "until", "during", "without", "with", "for", "from", "into", "onto",
+    "over", "under", "about", "again", "still", "even", "only", "never", "always", "often",
+    "sometimes", "usually", "soon", "later", "earlier", "otherwise", "instead", "anyway",
+    "meanwhile", "though", "however", "therefore", "plus", "or", "nor", "yet", "not",
+    // review-opus2 N1: the everyday nouns of a work meeting are not people.
+    "pricing", "price", "prices", "product", "design", "support", "finance", "legal",
+    "customer", "customers", "client", "clients", "launch", "release", "deadline", "meeting",
+    "call", "plan", "project", "demo", "deck", "doc", "report", "update", "marketing",
+    "engineering", "hiring", "onboarding", "billing", "growth", "progress", "nobody",
+];
+
+/// Is `lower` (already lowercased) one of [`COMMON_WORDS`]?
+fn is_common_word(lower: &str) -> bool {
+    COMMON_WORDS.contains(&lower)
+}
+
+/// A capitalized single word that is not a pronoun, a determiner, a
+/// small-talk opener or a common word — the only shape a NAME may have.
+fn is_name_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    let lower = w.to_lowercase();
+    let mut chars = w.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&lower.as_str())
+        && !is_common_word(&lower)
+        && !matches!(
+            lower.as_str(),
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "i" | "we" | "me" | "them" | "these" | "those"
+        )
+}
+
+/// #250 round 4 (R2-B2) — the names this transcript itself uses: its NAMED
+/// speakers (never `Me` / `Them` / `Speaker 2`), and every capitalized word
+/// that sits INSIDE a sentence at least twice and is not a common word. A
+/// sentence-initial word is no evidence of a name — every sentence starts
+/// with a capital — and one mid-sentence capital can be a product, a place
+/// or a typo. "Thanks Priya … ask Priya" names Priya; "Coffee will help"
+/// names nobody.
+pub fn transcript_names(lines: &[TranscriptLine]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let add = |names: &mut Vec<String>, n: &str| {
+        if !n.is_empty() && !names.iter().any(|k| k.eq_ignore_ascii_case(n)) {
+            names.push(n.to_string());
+        }
+    };
+    let mut mid: Vec<(String, usize)> = Vec::new();
+    for l in lines {
+        if let Some(sp) = &l.speaker {
+            if sp.is_named() {
+                add(&mut names, sp.label().trim());
+            }
+        }
+        let mut prev_ends_sentence = true;
+        for raw in l.text.split_whitespace() {
+            let w = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            let w = w.strip_suffix("'s").or(w.strip_suffix("'ll")).unwrap_or(w);
+            if !prev_ends_sentence && is_name_word(w) {
+                match mid.iter_mut().find(|(k, _)| k == w) {
+                    Some((_, n)) => *n += 1,
+                    None => mid.push((w.to_string(), 1)),
+                }
+            }
+            prev_ends_sentence = raw.ends_with(['.', '!', '?', ':']);
+        }
+    }
+    for (w, n) in mid {
+        if n >= 2 {
+            add(&mut names, &w);
+        }
+    }
+    names
+}
+
+fn is_owner_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    let lower = w.to_lowercase();
+    if matches!(lower.as_str(), "i" | "we") {
+        return true;
+    }
+    let mut chars = w.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&lower.as_str())
+        && !is_common_word(&lower)
+        && !matches!(
+            lower.as_str(),
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "also" | "and" | "so" | "then"
+        )
+}
+
+/// `<owner> will/to/…` at the front, or a contracted `I'll` / `We'll` /
+/// `Jeisil'll`. The owner + verb shape the action-item rule asks for.
+fn owner_commitment(text: &str) -> bool {
+    let t = text.trim();
+    let Some((first, rest)) = t.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let rest = rest.trim_start().to_lowercase();
+    let lower_first = first.to_lowercase();
+    if let Some(owner) = lower_first.strip_suffix("'ll").or(lower_first.strip_suffix("\u{2019}ll")) {
+        return !owner.is_empty();
+    }
+    if !is_owner_word(first) {
+        return false;
+    }
+    // "We agreed to keep the price" is a decision, not a task.
+    if lower_first == "we" && rest.starts_with("agreed") {
+        return false;
+    }
+    COMMIT_AFTER_OWNER.iter().any(|c| rest.starts_with(c))
+}
+
+/// #250 round 4 (R2-B2) — the backfill's owner rule, stricter than
+/// [`owner_commitment`] because a backfilled line is one the model did NOT
+/// pick. The owner must be a name from `names` ([`transcript_names`]: named
+/// speakers, and capitalized words said twice mid-sentence) followed by an
+/// explicit commitment verb. There is no unknown-word branch: without a real
+/// owner there is no backfilled action item at all. "Can", "owns", "is on", a
+/// bare adjective + "to" — none of them commits anyone.
+fn backfill_commitment(text: &str, names: &[String]) -> bool {
+    let t = text.trim();
+    let Some((first, rest)) = t.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let rest = rest.trim_start().to_lowercase();
+    let bare = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}');
+    let known = |w: &str| names.iter().any(|n| n.eq_ignore_ascii_case(w));
+    if let Some(owner) = bare.strip_suffix("'ll").or(bare.strip_suffix("\u{2019}ll")) {
+        return is_name_word(owner) && known(owner);
+    }
+    if !is_name_word(bare) {
+        return false;
+    }
+    const EXPLICIT: &[&str] = &[
+        "will ", "is going to ", "agreed to ", "offered to ", "promised to ", "needs to ",
+        "has to ", "should ",
+    ];
+    known(bare) && (EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to "))
+}
+
+/// #250 round 3 (A2) — a line ABOUT whether something was decided is an open
+/// question, not a decision: "Jeisil asked whether we decided", "Nobody
+/// decided whether to keep it". Checked before the decision markers.
+fn open_about_decision(lower: &str) -> bool {
+    [
+        "asked whether", "asked if", "decided whether", "decide whether", "nobody decided",
+        "no one decided", "not decided", "haven't decided", "hasn't decided", "didn't decide",
+        "did not decide", "not yet decided", "undecided", "still deciding",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
+fn starts_imperative(text: &str) -> bool {
+    let first = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    IMPERATIVE_VERBS.contains(&first.as_str())
+}
+
+fn is_strong_question(lower: &str) -> bool {
+    lower.trim_end().ends_with('?')
+        || lower.contains("open question")
+        || lower.contains("still open")
+        || lower.contains("unresolved")
+        || lower.contains("undecided")
+        || lower.contains("not yet decided")
+        || lower.contains("still unclear")
+}
+
+fn is_weak_question(lower: &str) -> bool {
+    [
+        "whether ", "should we ", "do we ", "does anyone ", "can we ", "are we ", "is it ",
+        "how do we ", "what if ",
+    ]
+    .iter()
+    .any(|q| lower.starts_with(q))
+        || lower.contains(" is whether ")
+        || lower.contains(" was whether ")
+        || lower.contains(" asked whether ")
+        || lower.contains(" asked if ")
+}
+
+fn generic_commitment(lower: &str) -> bool {
+    [
+        " will ", "'ll ", " need to ", " needs to ", " has to ", " have to ", " must ",
+        " should ", " to do", "follow up", "going to ", " by friday", " by monday",
+    ]
+    .iter()
+    .any(|c| format!(" {lower} ").contains(c))
+}
+
+/// Which list `text` belongs in, judged from its own words; `None` when it
+/// was offered as an action item and carries no commitment at all.
+///
+/// The 1.5B MAP model buckets by topic, not by speech act — the real run on
+/// PR #250 filed "The open question is whether annual billing gets a
+/// discount" and "We also decided to drop the free trial" under Action
+/// items. Grounding was right; the bucket was wrong. Order matters:
+///
+/// 1. a settled marker ("decided", "stays at", "will remain") → Decisions;
+/// 2. an explicit open marker ("?", "open question") → Open questions;
+/// 3. an owner + commitment ("Jeisil will send", "Wilson to book") or an
+///    imperative ("Send the deck") → Action items;
+/// 4. a softer question shape ("whether …", "should we …") → Open questions;
+/// 5. otherwise the model's bucket stands — except Action items, which must
+///    carry a commitment ("will", "need to", "follow up", …) or are dropped:
+///    an action item without one is a statement the narrative already holds.
+pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
+    let lower = text.trim().to_lowercase();
+    if open_about_decision(&lower) {
+        return Some(Bucket::Questions);
+    }
+    if (DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower))
+        && !owner_commits_strongly(text)
+    {
+        return Some(Bucket::Decisions);
+    }
+    if is_strong_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    // An imperative keeps an item the model already called an action; only an
+    // owner + commitment moves one IN ("Drop the free trial" filed as a
+    // decision is a decision).
+    // Fix round 3: small talk is nobody's task, decision or question, in
+    // any bucket ("Cheers everyone, see you all next week" is not an action
+    // item). Every marker above has had its say, and `is_pleasantry` needs
+    // EVERY clause to be a greeting, so a line with substance is kept.
+    if is_pleasantry(text) {
+        return None;
+    }
+    if owner_commitment(text) || (from == Bucket::Actions && starts_imperative(text)) {
+        return Some(Bucket::Actions);
+    }
+    if is_weak_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    match from {
+        // A statement ("The pricing review is complete") is not a task: its
+        // subject is a thing, and nothing in it commits anyone.
+        Bucket::Actions => {
+            let first = lower.split_whitespace().next().unwrap_or("");
+            let first = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            // B4: a small-talk opener ("Happy to help", "Honestly can we
+            // move on") is no more a task than a statement is.
+            let statement = matches!(
+                first,
+                "the" | "this" | "that" | "it" | "there" | "these" | "those" | "its" | "a" | "an"
+            ) || NOT_A_NAME.contains(&first);
+            // R2-B2: "Coffee will help", "Monday will be busy" — a common
+            // word for a subject is small talk, whatever verb follows.
+            if is_common_word(first) {
+                return None;
+            }
+            (!statement || generic_commitment(&lower)).then_some(Bucket::Actions)
+        }
+        // Fix round 1 (review BLOCKING): a line the model filed as a decision
+        // or a question that carries no marker of either is kept on the
+        // model's word — small talk ("Thanks Jeisil, …", "Nice to meet you
+        // all") was already dropped above.
+        other => Some(other),
+    }
+}
+
+/// Words that greet, thank or say goodbye. A clause made only of these, its
+/// addressees and filler is small talk.
+const GREETING_WORDS: &[&str] = &[
+    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
+    "goodbye", "nice", "great", "good", "glad", "happy", "welcome", "lovely", "cool", "awesome",
+    "sorry", "appreciate", "appreciated", "pleasure", "morning", "afternoon", "evening", "night",
+    "kudos",
+];
+
+/// Greeting words that start small talk outright; a capitalized word anywhere
+/// after them in the same clause is an addressee ("Thanks Jeisil and Wilson",
+/// "Hi everyone, hello Jeisil"). The ambiguous ones (good, great, morning,
+/// welcome) also start proper nouns ("Good Shepherd Health", "Great Lakes"),
+/// so a name after them counts only in the last slot after filler.
+const UNAMBIGUOUS_GREETINGS: &[&str] = &[
+    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
+    "goodbye", "kudos",
+];
+
+/// Gratitude openers whose clause may name a reason after `for` / `on`
+/// ("Thanks Wilson for pulling the numbers together", "Congrats on the
+/// launch"); `appreciate` takes any object ("Appreciate everyone making the
+/// time").
+const GRATITUDE_OPENERS: &[&str] =
+    &["thanks", "thank", "cheers", "congrats", "congratulations", "kudos", "appreciate", "appreciated"];
+
+/// Addressees and filler that carry no decision and no topic. Fix round 3
+/// (review BLOCKING): weekdays, "it", "is", "on", "board", "we're" are NOT
+/// here — "Great, Monday it is." and "Good, so we're on board." are
+/// decisions. A weekday counts only right after "happy" ("Happy Friday").
+const PLEASANTRY_FILLER: &[&str] = &[
+    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
+    "much", "very", "really", "too", "today", "here", "and", "to", "see", "meet", "have",
+    "having", "be", "being", "back", "us", "for", "joining", "coming", "the", "time", "call",
+    "chat", "day", "weekend", "week", "about", "late", "i", "i'm", "im", "a", "one",
+    "of", "both", "lot", "oh", "well", "ok", "okay", "also",
+];
+
+/// Fix round 6 (review-opus2 BLOCKING on b3d048c): the words a courtesy reason
+/// is made of. The reason after a thank-you is small talk only when EVERY word
+/// is here or in `REASON_FILLER` — anything else ("approving", "vendor",
+/// "dropping", "cancelling", a number, a name) keeps the line. Round 5 also
+/// accepted all of `PLEASANTRY_FILLER` here, and its schedule words (back,
+/// week, day, today, to, have) plus the two-sense verbs below were enough
+/// vocabulary to spell a decision ("Thanks for setting the launch back a
+/// week."). Those are now handled by `SCHEDULE_WORDS` and `TWO_SENSE_VERBS`.
+const COURTESY_REASON: &[&str] = &[
+    "it", "that", "this", "your", "everyone's", "everybody's", "my", "our", "me", "them",
+    "him", "her", "his", "their", "help", "helping", "hosting", "host", "together", "numbers",
+    "patience", "waiting", "flagging", "input", "feedback", "support", "effort", "efforts",
+    "work", "hard", "great", "good", "nice", "sharing", "listening", "attending", "dialing",
+    "dialling", "in", "showing", "up", "staying", "organizing", "organising", "update",
+    "updates", "notes", "launch", "win", "promotion", "birthday", "anniversary", "news",
+    "presentation", "demo", "thoughts", "questions", "everything", "invite", "invitation",
+    "intro", "introduction", "quick", "turnaround",
+];
+
+/// The non-schedule filler a courtesy reason may carry ("for joining",
+/// "for being here", "for all of your help"). Deliberately NOT all of
+/// `PLEASANTRY_FILLER`: see `SCHEDULE_WORDS`.
+const REASON_FILLER: &[&str] = &[
+    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
+    "much", "very", "really", "too", "here", "and", "us", "the", "a", "of", "both", "lot", "i",
+    "joining", "coming", "being", "be", "call", "chat", "also",
+];
+
+/// A schedule or time word in the reason means it can carry a decision
+/// ("…back a week", "…for today", "…to have the launch…"), so the line is
+/// kept. "time" is the one exception, and only as the object of a courtesy
+/// ("making the time", "your time", "taking the time").
+const SCHEDULE_WORDS: &[&str] = &[
+    "back", "week", "weeks", "day", "days", "today", "tonight", "tomorrow", "to", "have",
+    "having", "one", "late", "early", "earlier", "later", "weekend", "next", "until", "till",
+    "by", "before", "after", "month", "months", "quarter", "year", "date", "deadline",
+];
+
+/// Verbs with a courtesy sense AND a decision sense ("pulling the numbers
+/// together" vs "pulling the launch"). Each counts as courtesy only with its
+/// courtesy completion somewhere later in the reason, and never alongside an
+/// agenda noun from `AGENDA_NOUNS`.
+const TWO_SENSE_VERBS: &[(&str, &[&str])] = &[
+    ("pulling", &["together"]),
+    ("putting", &["together"]),
+    ("setting", &["up"]),
+    ("taking", &["notes", "time"]),
+    ("making", &["time"]),
+    ("make", &["time"]),
+];
+
+/// Things a two-sense verb can act on as a decision ("pulling the launch",
+/// "setting the demo for today").
+const AGENDA_NOUNS: &[&str] = &[
+    "launch", "demo", "presentation", "call", "meeting", "release", "pilot", "offsite",
+    "deal", "contract", "price", "plan", "budget", "date", "deadline",
+];
+
+/// Is the reason a gratitude opener gives (`words[from..]`) only courtesy?
+/// It is courtesy only when every word is lowercase (any capitalized word but
+/// "I" is a name, a month or a weekday), no word is a schedule word, every
+/// two-sense verb has its courtesy completion and no agenda noun, and every
+/// other word is on `COURTESY_REASON` or `REASON_FILLER`. So "Thanks for
+/// approving the budget increase", "Thanks for pulling the launch" and
+/// "Thanks for setting the launch back a week" are kept, while "Appreciate
+/// everyone making the time", "Thanks Wilson for pulling the numbers
+/// together" and "Thank you all for joining" are small talk.
+fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
+    let reason: Vec<&str> = lower[from.min(lower.len())..].iter().map(String::as_str).collect();
+    let has_agenda = reason.iter().any(|w| AGENDA_NOUNS.contains(w));
+    (from..lower.len()).enumerate().all(|(k, j)| {
+        let w = lower[j].as_str();
+        let capitalized = words[j].chars().next().is_some_and(char::is_uppercase)
+            && !matches!(w, "i" | "i'm" | "i've" | "i'll" | "i'd" | "im");
+        if capitalized {
+            return false;
+        }
+        if w == "time" {
+            return k > 0
+                && matches!(reason[k - 1], "the" | "your" | "making" | "taking" | "make" | "our");
+        }
+        if SCHEDULE_WORDS.contains(&w) {
+            return false;
+        }
+        if let Some((_, completions)) = TWO_SENSE_VERBS.iter().find(|(v, _)| *v == w) {
+            // "making the call" is a decision; "hosting the call" is not, so
+            // `call` is an agenda noun only next to a two-sense verb.
+            return !has_agenda && reason[k + 1..].iter().any(|r| completions.contains(r));
+        }
+        COURTESY_REASON.contains(&w) || REASON_FILLER.contains(&w)
+    })
+}
+
+/// Lead-ins that may come before a greeting inside a clause ("and thanks
+/// Wilson …", "oh hi").
+const CLAUSE_LEAD_INS: &[&str] = &["and", "so", "oh", "well", "ok", "okay", "also"];
+
+const WEEKDAYS: &[&str] =
+    &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+/// Is `text` small talk rather than a statement of substance?
+///
+/// Fix round 3 (both reviewers BLOCKING on 0baec25): the line is split into
+/// clauses at `, ; : . ! ?` and a spaced dash, and it is small talk only when
+/// EVERY clause is a greeting, thanks or goodbye and at least one clause
+/// carries a greeting word. So "Hey, the launch moves to May.", "Thanks
+/// everyone, the launch moves to May." and "The pilot moves to May, thanks
+/// for flagging it Jeisil." keep their substance clause and are kept, while
+/// "Thanks Jeisil, and thanks Wilson for pulling the numbers together." is
+/// dropped. Words are split on whitespace and `/` only, so "Hi-Fi Audio",
+/// "Thank-you cards" and "Bye-laws" are single non-greeting words. A causal
+/// "Thanks to <thing>" (not to an addressee) is not gratitude.
+fn is_pleasantry(text: &str) -> bool {
+    let normalized = text.replace(" - ", ",").replace(['\u{2014}', '\u{2013}'], ",");
+    let clauses: Vec<Vec<&str>> = normalized
+        .split([',', ';', ':', '.', '!', '?'])
+        .map(|c| {
+            c.split(|ch: char| ch.is_whitespace() || ch == '/')
+                .map(|w| w.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-'))
+                .map(|w| w.trim_matches('-'))
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<&str>>()
+        })
+        .filter(|c| !c.is_empty())
+        .collect();
+    if clauses.is_empty() {
+        return false;
+    }
+    let mut greeted = false;
+    for clause in &clauses {
+        match pleasantry_clause(clause) {
+            Some(has_greeting) => greeted |= has_greeting,
+            None => return false,
+        }
+    }
+    greeted
+}
+
+/// `Some(has_greeting_word)` when the clause is nothing but small talk,
+/// `None` when it carries anything else.
+fn pleasantry_clause(words: &[&str]) -> Option<bool> {
+    let lower: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
+    let is_name = |i: usize| {
+        words[i].chars().next().is_some_and(char::is_uppercase)
+            && !GREETING_WORDS.contains(&lower[i].as_str())
+            && !PLEASANTRY_FILLER.contains(&lower[i].as_str())
+    };
+    // A clause of one to three capitalized names is an addressee: the
+    // "Jeisil" in "Good morning, Jeisil."
+    if words.len() <= 3 && (0..words.len()).all(is_name) {
+        return Some(false);
+    }
+    let mut start = 0;
+    while start < lower.len() && CLAUSE_LEAD_INS.contains(&lower[start].as_str()) {
+        start += 1;
+    }
+    let first = lower.get(start).map(String::as_str)?;
+    let unambiguous = UNAMBIGUOUS_GREETINGS.contains(&first);
+
+    if GRATITUDE_OPENERS.contains(&first) {
+        // Fix round 4 (review BLOCKING on cb35adf): "appreciate" goes through
+        // the same addressee run and reason check as "thanks" — it no longer
+        // decides on the first word alone.
+        let appreciate = first.starts_with("appreciate");
+        let mut i = start + 1;
+        if first == "thank" {
+            if lower.get(i).map(String::as_str) != Some("you") {
+                return None; // "Thank the vendor …" is an instruction.
+            }
+            i += 1;
+        }
+        // "Thanks to everyone …" is gratitude; "Thanks to everyone's
+        // feedback, …" and "Thanks to the new template, …" are causal.
+        let causal_to = !appreciate && lower.get(i).map(String::as_str) == Some("to");
+        if causal_to {
+            i += 1;
+        }
+        let run_start = i;
+        while i < lower.len()
+            && (PLEASANTRY_FILLER.contains(&lower[i].as_str()) && !matches!(lower[i].as_str(), "for" | "the")
+                || is_name(i))
+        {
+            i += 1;
+        }
+        if causal_to && i == run_start {
+            return None;
+        }
+        // Fix round 4: reaching "for" / "on" is small talk only when the
+        // reason after it is courtesy, not a date, a name or a number.
+        let reason = match lower.get(i).map(String::as_str) {
+            None => return Some(true),
+            Some("for" | "on") => Some(i + 1),
+            // "Appreciate everyone making the time": the object is the reason.
+            Some(_) if appreciate => Some(i),
+            Some(_) => None,
+        };
+        if let Some(from) = reason {
+            return courtesy_reason(words, &lower, from).then_some(true);
+        }
+        if causal_to {
+            return None;
+        }
+    }
+
+    for i in start..lower.len() {
+        let w = lower[i].as_str();
+        if GREETING_WORDS.contains(&w) || PLEASANTRY_FILLER.contains(&w) {
+            continue;
+        }
+        if WEEKDAYS.contains(&w) && i > 0 && lower[i - 1] == "happy" {
+            continue;
+        }
+        // Fix round 4: "next" is not filler ("Good for next week" is a
+        // decision) — only inside a goodbye ("see you all next week").
+        if w == "next" && lower[start..i].windows(2).any(|p| p[0] == "see" && p[1] == "you") {
+            continue;
+        }
+        // An addressee's name: anywhere after an unambiguous greeting, or as
+        // the clause's last word after at least one filler word ("Good
+        // morning Jeisil" — never "Great Lakes" or "Good Shepherd Health").
+        if is_name(i) && (unambiguous || (i + 1 == lower.len() && i >= start + 2)) {
+            continue;
+        }
+        return None;
+    }
+    let see_you = lower[start..].windows(2).any(|p| p[0] == "see" && p[1] == "you");
+    Some(see_you || lower[start..].iter().any(|w| GREETING_WORDS.contains(&w.as_str())))
+}
+
+/// A named owner who will DO something outranks a decision word later in the
+/// line: "Jeisil will send the doc we decided on" is Jeisil's task.
+fn owner_commits_strongly(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or("");
+    let lower = first.to_lowercase();
+    owner_commitment(text) && lower != "we" && !lower.starts_with("we'")
+        && !text.to_lowercase().contains(" will remain")
+        && !text.to_lowercase().contains(" will stay")
+}
+
+/// "The free trial will be dropped" — a settled change in the passive voice,
+/// which has no owner and so is a decision, not a task.
+fn passive_settled(lower: &str) -> bool {
+    lower
+        .split(" will be ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
+}
+
+/// Function words that two unrelated lines share ("the", "will"); they say
+/// nothing about which line an item came from.
+const CITE_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you",
+    "has", "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
+];
+
+fn content_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 3 && !CITE_STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+fn overlap(item: &[String], line: &str) -> usize {
+    let line = content_words(line);
+    item.iter().filter(|w| line.contains(w)).count()
+}
+
+/// #250 round 2 — make one MAP extract's citations and coverage hold up.
+///
+/// The real 1.5B run cited the question's line for the "drop the free trial"
+/// decision and vice versa (so both timestamps were wrong), and with any
+/// prompt wording it skipped one of the plainly-said lines. Both are fixed
+/// mechanically, from the chunk's own lines, so nothing here can invent text:
+///
+/// * **re-cite** — an item whose cited line shares none of its content words
+///   moves to the chunk line that shares the most (two or more). The new id is
+///   still one of THIS chunk's ids, so the provenance guarantee is unchanged.
+/// * **backfill** — a line no item cites, whose own words are an unambiguous
+///   commitment by a NAMED owner ("Jeisil will send …"), an explicit decision
+///   ("we decided", "we agreed") or an explicit open question ("open
+///   question", "…?"), is added verbatim, through the same [`validate_item`].
+/// * each list is put back in meeting order.
+pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source: &str) {
+    ground_extract_with(extract, lines, source, &transcript_names(lines));
+}
+
+/// [`ground_extract`] with the meeting-wide name list (B4): the backfill's
+/// owner must be one of `names`, or a capitalized word followed by
+/// `will`/`should`/`is going to` that is not a small-talk opener.
+pub fn ground_extract_with(
+    extract: &mut MapExtract,
+    lines: &[TranscriptLine],
+    source: &str,
+    names: &[String],
+) {
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        for item in list.iter_mut() {
+            let words = content_words(&item.text);
+            let score = |l: &TranscriptLine| overlap(&words, &l.text);
+            let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
+            // Only a citation that shares NO content word with its item moves,
+            // and only to a line that clearly matches (two words or more): the
+            // model's id stands whenever it is plausible at all.
+            if cited > 0 {
+                continue;
+            }
+            if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
+                if score(best) >= 2 {
+                    item.segment = best.label.clone();
+                }
+            }
+        }
+    }
+    for line in lines {
+        let cited = [&extract.actions, &extract.decisions, &extract.questions]
+            .iter()
+            .any(|list| list.iter().any(|i| i.segment == line.label));
+        if cited {
+            continue;
+        }
+        let text = line.text.trim();
+        let lower = text.to_lowercase();
+        let first = text.split_whitespace().next().unwrap_or("").to_lowercase();
+        let bucket = if open_about_decision(&lower) {
+            Bucket::Questions
+        } else if ["decided", "we agreed", "agreed that", "agreed the"]
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            Bucket::Decisions
+        } else if is_strong_question(&lower) {
+            Bucket::Questions
+        } else if backfill_commitment(text, names)
+            && !matches!(first.as_str(), "i" | "we" | "i'll" | "we'll")
+        {
+            Bucket::Actions
+        } else {
+            continue;
+        };
+        let Some(text) = validate_item(source, text.trim_end_matches('.')) else {
+            continue;
+        };
+        let item = ExtractedItem { text, segment: line.label.clone() };
+        match bucket {
+            Bucket::Actions => extract.actions.push(item),
+            Bucket::Decisions => extract.decisions.push(item),
+            Bucket::Questions => extract.questions.push(item),
+        }
+    }
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        list.sort_by(|a, b| a.segment.cmp(&b.segment));
+        let mut kept: Vec<ExtractedItem> = Vec::with_capacity(list.len());
+        for item in list.drain(..) {
+            if !kept.iter().any(|k| same_item(&k.text, &item.text)) {
+                kept.push(item);
+            }
+        }
+        *list = kept;
+    }
+}
+
+/// Re-bucket one MAP extract with [`classify_item`]. Order inside each list is
+/// kept; a dropped action counts toward [`MapExtract::dropped`].
+pub fn classify_extract(extract: &mut MapExtract) {
+    let all = [
+        (Bucket::Actions, std::mem::take(&mut extract.actions)),
+        (Bucket::Decisions, std::mem::take(&mut extract.decisions)),
+        (Bucket::Questions, std::mem::take(&mut extract.questions)),
+    ];
+    for (from, items) in all {
+        for item in items {
+            match classify_item(from, &item.text) {
+                Some(Bucket::Actions) => extract.actions.push(item),
+                Some(Bucket::Decisions) => extract.decisions.push(item),
+                Some(Bucket::Questions) => extract.questions.push(item),
+                None => extract.dropped += 1,
+            }
+        }
+    }
 }
 
 /// Strip a markdown fence a model wrapped its JSON in. The grammar forbids one;
@@ -786,7 +1540,8 @@ pub fn validate_item(source: &str, item: &str) -> Option<String> {
 
 /// The same gate over the narrative, plus the summary-shaped length checks.
 pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
-    let narrative = narrative.trim();
+    let narrative = drop_unsaid_status(source, narrative.trim());
+    let narrative = narrative.as_str();
     if narrative.is_empty() {
         return reject("v1_empty");
     }
@@ -804,6 +1559,138 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
     Some(clamp_words(narrative, MAX_NARRATIVE_WORDS))
 }
 
+/// #250 round 3 (A5) — status words a summary may only use when the meeting
+/// did: "The pricing review … is complete" from a transcript that said "this
+/// is the pricing review" claims more than was said.
+const STATUS_CLAIMS: &[&str] = &[
+    "is complete", "is completed", "was completed", "is done", "was done", "is finished",
+    "was finished", "is final", "was finalized", "is finalized", "was a success",
+    "is resolved", "was resolved", "went well", "is wrapped up", "was wrapped up",
+];
+
+/// Word stems that say something is finished, as a person would say it:
+/// "we finished", "it's complete", "we're done with", "wrapped up", "resolved".
+const COMPLETION_STEMS: &[&str] = &["finish", "complet", "final", "resolv", "wrap", "success"];
+
+fn says_completion(lower_sentence: &str) -> bool {
+    lower_sentence.contains("went well")
+        || lower_sentence
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == "done" || COMPLETION_STEMS.iter().any(|s| w.starts_with(s)))
+}
+
+/// Same word, allowing a suffix ("migration" / "migrations", "import" /
+/// "imported") — a five-letter shared prefix when both are that long.
+fn same_stem(a: &str, b: &str) -> bool {
+    a == b || (a.len() >= 5 && b.len() >= 5 && a.as_bytes()[..5] == b.as_bytes()[..5])
+}
+
+/// #250 round 4 (R2-B3) — is a status claim in `sentence` something the
+/// meeting said? A sentence with no [`STATUS_CLAIMS`] claim always is. One
+/// with a claim is supported when SOME source sentence says a completion
+/// (stem match: finish / complete / done / final / resolve / wrap / success)
+/// about the same noun phrase — the content words before the claim ("The
+/// migration is finished" ← "We finished the migration yesterday").
+pub fn status_supported(source: &str, sentence: &str) -> bool {
+    let l = sentence.to_lowercase();
+    let Some(at) = STATUS_CLAIMS.iter().filter_map(|c| l.find(c)).min() else {
+        return true;
+    };
+    let mut np = content_words(&l[..at]);
+    if np.is_empty() {
+        np = content_words(&l)
+            .into_iter()
+            .filter(|w| !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str())))
+            .collect();
+    }
+    split_sentences(source).iter().any(|src| {
+        let src = src.to_lowercase();
+        if !says_completion(&src) {
+            return false;
+        }
+        let words = content_words(&src);
+        np.iter().all(|w| words.iter().any(|sw| same_stem(sw, w)))
+    })
+}
+
+/// Abbreviations whose period never ends a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "e.g", "i.e", "eg", "ie", "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "vs", "approx",
+    "cf", "ca", "mt",
+];
+
+/// #250 round 4 (R2-B3) — split prose at REAL sentence ends only: a `.`/`!`/`?`
+/// followed by whitespace or the end. Never between digits ("$49.99",
+/// "3.30pm", "v1.2"), never after an abbreviation ("e.g.", "Dr."), and never
+/// after "a.m." / "p.m." when the next word goes on in lower case.
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        cur.push(ch);
+        if !matches!(ch, '.' | '!' | '?') {
+            continue;
+        }
+        let next = chars.get(i + 1).copied();
+        if next.is_some_and(|c| !c.is_whitespace()) {
+            continue;
+        }
+        if ch == '.' {
+            let last = cur
+                .trim_end_matches('.')
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or("")
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
+            if ABBREVIATIONS.contains(&last.as_str()) {
+                continue;
+            }
+            let next_word = chars[i + 1..]
+                .iter()
+                .find(|c| !c.is_whitespace())
+                .copied();
+            if matches!(last.as_str(), "a.m" | "p.m")
+                && next_word.is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
+            {
+                continue;
+            }
+        }
+        let s = cur.trim().to_string();
+        if !s.is_empty() {
+            out.push(s);
+        }
+        cur.clear();
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+/// Remove each narrative sentence whose status claim the source does not
+/// support ([`status_supported`]). Whole sentences only — never a reworded
+/// half — split at real sentence ends ([`split_sentences`]) so "$49.99"
+/// stays "$49.99". R2-B3: never empties a summary — when every sentence would
+/// go, the narrative is returned as it was and the other gates decide.
+fn drop_unsaid_status(source: &str, narrative: &str) -> String {
+    let parts = split_sentences(narrative);
+    if parts.iter().all(|s| status_supported(source, s)) {
+        return narrative.to_string();
+    }
+    let kept: Vec<String> = parts
+        .into_iter()
+        .filter(|s| status_supported(source, s))
+        .collect();
+    if kept.is_empty() {
+        log::warn!("summary: every sentence claims a status the meeting never stated — kept as written");
+        return narrative.to_string();
+    }
+    kept.join(" ")
+}
+
 /// V3–V7, shared by both paths.
 fn common_gates(source: &str, output: &str) -> Option<()> {
     // V3 (inverted) — groundedness. The polish validator asks how much of the
@@ -813,6 +1700,12 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
     if grounded(source, output) < GROUNDEDNESS_FLOOR {
         return reject("v3_ungrounded").map(|_| ());
     }
+    content_gates(source, output)
+}
+
+/// V4–V7: the gates that hold for every piece of stored text, whatever its
+/// groundedness floor (an item's, the narrative's, or a title's).
+fn content_gates(source: &str, output: &str) -> Option<()> {
     // V4 — invented numbers, times, dates, prices.
     let known_digits = crate::polish::digit_runs(source);
     if crate::polish::digit_runs(output)
@@ -980,6 +1873,12 @@ pub trait SummaryClient: TokenCounter {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError>;
     /// A stable id for what produced the summary, stored beside it.
     fn model_id(&self) -> String;
+    /// Has this run been cancelled? Checked between stages so a cancel that
+    /// landed inside a pass whose error was swallowed (REDUCE, HEADLINE)
+    /// still stores nothing. A client with no cancel says `false`.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// One finished summary.
@@ -1090,6 +1989,7 @@ pub fn summarize_segments_with(
         return Err(SummaryError::NoSegments);
     }
     let chunks = plan_chunks(&lines, MAP_CHUNK_TOKENS, client)?;
+    let names = transcript_names(&lines);
     let full_text = lines
         .iter()
         .map(TranscriptLine::render)
@@ -1108,11 +2008,15 @@ pub fn summarize_segments_with(
         let Some(grammar) = map_grammar(&labels) else {
             continue;
         };
+        // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
+        // ran out on a six-line meeting), and the deadline grows with it so a
+        // bigger budget can never turn into a `deadline` failure instead.
+        let max_out = summary_map_max_out(chunk.tokens);
         let req = PolishRequest::summarize(
             next_id(),
             SUMMARIZE_MAP,
-            SUMMARY_MAP_MAX_OUT,
-            MAP_DEADLINE_MS,
+            max_out,
+            MAP_DEADLINE_MS.max(u64::from(max_out) * 80),
             source.clone(),
             Some(grammar),
         );
@@ -1122,6 +2026,10 @@ pub fn summarize_segments_with(
             Ok(answer) => {
                 truncated |= answer.truncated;
                 let mut extract = parse_map_output(&answer.text, &labels, &source);
+                // #250 round 2: the model's bucket is a suggestion; the line's
+                // own words decide (a question is never an action item).
+                classify_extract(&mut extract);
+                ground_extract_with(&mut extract, &chunk.lines, &source, &names);
                 // The chunk narrative goes through the same gate the items do.
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
@@ -1130,8 +2038,14 @@ pub fn summarize_segments_with(
                     validate_narrative(&source, &extract.narrative).unwrap_or_default();
                 extracts.push(extract);
             }
+            // B2: a cancel is not a failed chunk to skip past — the run stops
+            // and stores nothing.
+            Err(SummaryError::Cancelled) => return Err(SummaryError::Cancelled),
             Err(e) => log::warn!("summary: a MAP pass failed ({}) — continuing", e.tag()),
         }
+    }
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
     }
     // One failed chunk is survivable — the others still carry the meeting. ZERO
     // surviving chunks is not a thin summary, it is no summary: the narrative
@@ -1149,8 +2063,27 @@ pub fn summarize_segments_with(
     }
     let merged = merge_extracts(&extracts);
 
-    let (narrative, reduce_truncated) = reduce_narrative(&merged.narratives, &full_text, client);
-    truncated |= reduce_truncated;
+    // #250 round 4 (R2-B1): KEY POINTS FIRST, from the transcript, then the
+    // Summary paragraph written from them (same call). Only when that
+    // paragraph does not hold up does the MAP → REDUCE narrative stand in.
+    let mut headline = headline_pass(client, &lines, &names, &merged.narratives);
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
+    let narrative = if headline.summary.trim().is_empty() {
+        let (narrative, reduce_truncated) =
+            reduce_narrative(&merged.narratives, &full_text, client);
+        truncated |= reduce_truncated;
+        narrative
+    } else {
+        headline.summary.clone()
+    };
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
+    if headline.title.trim().is_empty() {
+        headline.title = fallback_title(&narrative);
+    }
     // The evidence table: for every citable id, the two facts about it that are
     // already known here — when it was said, and (YV133) who said it. Both are
     // looked up by the SAME key, the id the grammar constrained the model to
@@ -1185,7 +2118,9 @@ pub fn summarize_segments_with(
     let actions = resolve(&merged.actions);
     let decisions = resolve(&merged.decisions);
     let questions = resolve(&merged.questions);
-    let markdown = render_summary(
+    let markdown = render_notes(
+        &headline,
+        &names,
         &narrative,
         &actions,
         &decisions,
@@ -1444,6 +2379,482 @@ pub fn render_summary(
     out.trim_end().to_string()
 }
 
+// ── focus-2026-10-19: zero-setup notes — headline, owners, model plan, cancel ─
+
+/// The model a meeting summary uses when the user picked none: the catalog's
+/// rank-1 polish model (Qwen2.5 1.5B Instruct Q4_K_M, 1.04 GiB GGUF, run by
+/// the bundled llama.cpp sidecar). 0.5B was tried for the role and is too weak
+/// on multi-speaker extraction; the bigger choice stays in Settings.
+pub const DEFAULT_SUMMARY_MODEL: &str = "qwen2.5-1.5b-instruct-q4_k_m";
+
+/// What the summary must do about its model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryModelPlan {
+    /// This model is on disk — use it.
+    Use(String),
+    /// Nothing usable is on disk — fetch this one (managed, into the app's
+    /// own models dir, with a progress row), then use it.
+    Download(String),
+}
+
+/// PURE. The user's polish model wins when it is on disk; else the default
+/// when it is; else download the default. Never "no model".
+pub fn plan_summary_model(chosen: &str, on_disk: &dyn Fn(&str) -> bool) -> SummaryModelPlan {
+    let chosen = chosen.trim();
+    if !chosen.is_empty() && on_disk(chosen) {
+        return SummaryModelPlan::Use(chosen.to_string());
+    }
+    if on_disk(DEFAULT_SUMMARY_MODEL) {
+        return SummaryModelPlan::Use(DEFAULT_SUMMARY_MODEL.to_string());
+    }
+    SummaryModelPlan::Download(DEFAULT_SUMMARY_MODEL.to_string())
+}
+
+// #250 round 3 (B2, A4): the cancel is per job — a
+// `summary_jobs::CancelToken` handed to the client — never a process-global
+// flag that a new summary's start would wipe.
+
+/// A meeting's title, key points and — #250 round 4 (R2-B1) — the Summary
+/// paragraph written FROM those key points.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Headline {
+    pub title: String,
+    pub key_points: Vec<String>,
+    /// The paragraph the model wrote from its own key points, validated
+    /// against the transcript; empty when it wrote none that held up (the
+    /// MAP → REDUCE narrative is used then).
+    pub summary: String,
+}
+
+pub const MIN_KEY_POINTS: usize = 3;
+pub const MAX_KEY_POINTS: usize = 6;
+const MAX_TITLE_WORDS: usize = 10;
+
+/// #250 round 4 (R2-B1) — two key points whose content words overlap this
+/// much (shared ÷ the smaller set) are about the same thing; the later one
+/// goes. Overlap with the Summary, a decision or an action item is NOT
+/// checked: the Summary is written from the key points, so it is expected.
+pub const KEY_POINT_OVERLAP_MAX: f64 = 0.6;
+
+/// The HEADLINE grammar: exactly the JSON shape — the title, 3–6 key points,
+/// then the summary paragraph. Key points come BEFORE the summary on
+/// purpose: the model writes the facts first and the paragraph from them.
+pub const HEADLINE_GRAMMAR: &str = r#"root ::= "{" ws "\"title\":" ws str "," ws "\"key_points\":" ws "[" ws str ws "," ws str ws "," ws str (ws "," ws str)? (ws "," ws str)? (ws "," ws str)? ws "]" ws "," ws "\"summary\":" ws str ws "}"
+str ::= "\"" [^"\\\n]+ "\""
+ws ::= [ \t\n]*"#;
+
+#[derive(Deserialize)]
+struct RawHeadline {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    key_points: Vec<String>,
+    #[serde(default)]
+    summary: String,
+}
+
+/// Share of a TITLE's content words that must be in the notes. Lower than an
+/// item's [`GROUNDEDNESS_FLOOR`] on purpose: a title names the topic, so one
+/// abstracting word ("review", "sync") per grounded one is the job, not an
+/// invention — "Drivia consulting pricing review" over notes that say "reviewed
+/// pricing for the Drivia consulting tier" is 3 of 4. V4–V7 still apply in
+/// full: a title never carries a number, contact or template the notes lack.
+pub const TITLE_GROUNDEDNESS_FLOOR: f64 = 0.5;
+
+/// A title the notes support, or `None`.
+pub fn validate_title(source: &str, title: &str) -> Option<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return reject("v1_empty");
+    }
+    if title.split_whitespace().count() > MAX_TITLE_WORDS {
+        return reject("v2_runaway");
+    }
+    if grounded(source, title) < TITLE_GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded");
+    }
+    content_gates(source, title)?;
+    Some(title.to_string())
+}
+
+/// Our own section labels, which a 1.5B model sometimes echoes into a point.
+fn strip_section_label(p: &str) -> String {
+    ["Decisions:", "Action items:", "Key points:", "Summary:"]
+        .iter()
+        .find_map(|l| p.trim().strip_prefix(l))
+        .map_or(p.trim(), str::trim_start)
+        .to_string()
+}
+
+/// Parse + validate a HEADLINE answer against `source` (the transcript it
+/// was written from). `None` when nothing usable survived.
+pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
+    let cleaned = strip_fences(raw);
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    let parsed: RawHeadline = serde_json::from_str(cleaned.get(start..=end)?).ok()?;
+    let title = parsed
+        .title
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches('.')
+        .to_string();
+    let title_ok = validate_title(source, &title).is_some();
+    let valid: Vec<String> = parsed
+        .key_points
+        .iter()
+        .map(|p| strip_section_label(p))
+        // R2-B3: a key point is held to the same status rule as the Summary.
+        .filter(|p| status_supported(source, p))
+        .filter_map(|p| validate_item(source, &p))
+        .collect();
+    let mut key_points = dedupe_key_points(valid);
+    key_points.truncate(MAX_KEY_POINTS);
+    let summary = if parsed.summary.trim().is_empty() {
+        String::new()
+    } else {
+        validate_narrative(source, &parsed.summary).unwrap_or_default()
+    };
+    if !title_ok && key_points.is_empty() && summary.is_empty() {
+        return None;
+    }
+    Some(Headline {
+        title: if title_ok { title } else { String::new() },
+        key_points,
+        summary,
+    })
+}
+
+fn sentences(text: &str) -> Vec<String> {
+    split_sentences(text)
+        .into_iter()
+        .filter(|s| s.split_whitespace().count() >= 3)
+        .collect()
+}
+
+/// The mechanical title: the narrative's first sentence, cut to 8 words.
+pub fn fallback_title(narrative: &str) -> String {
+    sentences(narrative)
+        .first()
+        .map(|s| {
+            s.trim_end_matches(['.', '!', '?'])
+                .split_whitespace()
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|| "Meeting notes".to_string())
+}
+
+/// What the HEADLINE pass reads: the transcript itself as `Speaker: text`
+/// lines (no ids — a point never needs one), or, when the transcript does not
+/// fit one pass, the chunk narratives MAP already wrote from it.
+pub fn headline_source(
+    lines: &[TranscriptLine],
+    narratives: &[String],
+    counter: &dyn TokenCounter,
+) -> String {
+    let plain = lines
+        .iter()
+        .map(|l| match &l.speaker {
+            Some(sp) => format!("{}: {}", sp.label(), one_line(&l.text)),
+            None => one_line(&l.text),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    match counter.count_tokens(&plain) {
+        Ok(n) if n <= REDUCE_CHUNK_TOKENS => plain,
+        _ => {
+            let joined = narratives
+                .iter()
+                .filter(|n| !n.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if joined.trim().is_empty() {
+                clamp_words(&plain, MAX_NARRATIVE_WORDS * 3)
+            } else {
+                clamp_words(&joined, MAX_NARRATIVE_WORDS * 3)
+            }
+        }
+    }
+}
+
+/// The HEADLINE pass — KEY POINTS FIRST, from the transcript (R2-B1).
+///
+/// One grammar-shaped call returns the title, 3–6 key points and the summary
+/// paragraph written from those points. Points are validated against the
+/// transcript, deduped ONLY against each other ([`dedupe_key_points`]), and
+/// backfilled verbatim from the transcript's most informative sentences
+/// ([`backfill_key_points`]) when fewer than [`MIN_KEY_POINTS`] survive. A
+/// cancel or a failed call is the backfill alone (title and summary empty —
+/// the caller fills them from the narrative).
+pub fn headline_pass(
+    client: &dyn SummaryClient,
+    lines: &[TranscriptLine],
+    names: &[String],
+    narratives: &[String],
+) -> Headline {
+    let full_text = lines
+        .iter()
+        .map(TranscriptLine::render)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.is_empty() {
+        return Headline::default();
+    }
+    let source = headline_source(lines, narratives, client);
+    let req = PolishRequest::summarize(
+        next_id(),
+        SUMMARIZE_HEADLINE,
+        SUMMARY_HEADLINE_MAX_OUT,
+        REDUCE_DEADLINE_MS,
+        source,
+        Some(HEADLINE_GRAMMAR.to_string()),
+    );
+    let got = if client.cancelled() {
+        None
+    } else {
+        match client.generate(&req) {
+            Ok(answer) => parse_headline(&answer.text, &full_text),
+            Err(e) => {
+                log::warn!(
+                    "summary: headline pass failed ({}) — key points come from the transcript",
+                    e.tag()
+                );
+                None
+            }
+        }
+    };
+    let mut h = got.unwrap_or_default();
+    h.key_points = backfill_key_points(h.key_points, lines, names, &full_text);
+    h
+}
+
+/// Content-word overlap of two points: shared ÷ the smaller set. 1.0 when
+/// one point's facts are all in the other.
+pub fn point_overlap(a: &str, b: &str) -> f64 {
+    let set = |t: &str| {
+        let mut w = content_words(t);
+        w.sort();
+        w.dedup();
+        w
+    };
+    let (wa, wb) = (set(a), set(b));
+    let small = wa.len().min(wb.len());
+    if small == 0 {
+        return if wa.is_empty() && wb.is_empty() { 1.0 } else { 0.0 };
+    }
+    let shared = wa.iter().filter(|w| wb.contains(w)).count();
+    shared as f64 / small as f64
+}
+
+/// #250 round 4 (R2-B1) — key points that are each a different fact. A point
+/// is dropped ONLY when it is empty or overlaps an earlier KEY POINT by
+/// [`KEY_POINT_OVERLAP_MAX`] or more — never because the Summary, a decision
+/// or an action item says the same thing (the Summary is written from these).
+pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for p in points {
+        let p = strip_section_label(&p);
+        if content_words(&p).is_empty() {
+            continue;
+        }
+        if kept.iter().any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX) {
+            continue;
+        }
+        kept.push(p);
+    }
+    kept
+}
+
+/// Day, month and relative-date words: a sentence carrying one says WHEN.
+const DATE_WORDS: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "june", "july", "august", "september", "october",
+    "november", "december", "today", "tomorrow", "tonight", "week", "month", "quarter", "year",
+];
+
+/// Number words count as numbers ("forty nine dollars").
+const NUMBER_WORDS: &[&str] = &[
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "billion", "percent", "dollars", "dollar",
+];
+
+/// How much a transcript sentence says: numbers, names, dates, length.
+fn information_score(sentence: &str, names: &[String]) -> usize {
+    let lower = sentence.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '$')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let numbers = crate::polish::digit_runs(sentence).len()
+        + words.iter().filter(|w| NUMBER_WORDS.contains(w)).count().min(2);
+    let dates = words.iter().filter(|w| DATE_WORDS.contains(w)).count().min(2);
+    let named = names
+        .iter()
+        .filter(|n| sentence.split(|c: char| !c.is_alphanumeric()).any(|w| w == n.as_str()))
+        .count()
+        .min(2);
+    3 * numbers + 2 * dates + 2 * named + usize::from(content_words(sentence).len() >= 5)
+}
+
+/// R2-B1 — top `points` up to [`MIN_KEY_POINTS`] with the transcript's
+/// highest-information sentences (numbers, names, dates), VERBATIM, each one
+/// distinct from every point already kept. Never a Summary sentence, never
+/// a model rewording — only what was said, through [`validate_item`].
+pub fn backfill_key_points(
+    points: Vec<String>,
+    lines: &[TranscriptLine],
+    names: &[String],
+    source: &str,
+) -> Vec<String> {
+    let mut kept = dedupe_key_points(points);
+    if kept.len() >= MIN_KEY_POINTS {
+        return kept;
+    }
+    let mut candidates: Vec<(usize, usize, String)> = Vec::new();
+    for l in lines {
+        for s in sentences(&l.text) {
+            let s = s.trim().to_string();
+            let lower = s.to_lowercase();
+            if s.ends_with('?') || is_strong_question(&lower) {
+                continue;
+            }
+            if content_words(&s).len() < 3 {
+                continue;
+            }
+            let score = information_score(&s, names);
+            candidates.push((score, candidates.len(), s));
+        }
+    }
+    // Most informative first; the meeting's order breaks ties.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (_, _, s) in candidates {
+        if kept.len() >= MIN_KEY_POINTS {
+            break;
+        }
+        let Some(ok) = validate_item(source, &s) else { continue };
+        if kept.iter().any(|k| point_overlap(k, &ok) >= KEY_POINT_OVERLAP_MAX) {
+            continue;
+        }
+        kept.push(ok);
+    }
+    kept
+}
+
+/// "Owner" of an action item, ONLY when the item's own words name one at the
+/// front ("Jeisil will send …", "Wilson to book …") AND (R2-B2) that word is
+/// one of the transcript's `names` ([`transcript_names`]). Never inferred: a
+/// capitalized first word nobody in the meeting is called is not a bold owner.
+pub fn action_owner(text: &str, names: &[String]) -> Option<String> {
+    let mut words = text.split_whitespace();
+    let first = words.next()?.trim_matches(|c: char| !c.is_alphanumeric());
+    let second = words.next()?.to_lowercase();
+    let is_name = names.iter().any(|n| n == first)
+        && is_name_word(first)
+        && first.chars().next()?.is_uppercase()
+        && first.chars().skip(1).all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&first.to_lowercase().as_str())
+        && !matches!(
+            first,
+            "We" | "They"
+                | "The"
+                | "Someone"
+                | "Everyone"
+                | "I"
+                | "You"
+                | "He"
+                | "She"
+                | "It"
+                | "This"
+                | "That"
+        );
+    let commits = matches!(
+        second.as_str(),
+        "will" | "to" | "should" | "needs" | "is" | "owns" | "agreed"
+    );
+    (is_name && commits).then(|| first.to_string())
+}
+
+/// The stored notes: title, one-paragraph summary, key points, decisions,
+/// action items (owner when said), open questions. Markdown — what the card,
+/// Open transcript and Export Markdown all show.
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes(
+    headline: &Headline,
+    names: &[String],
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    truncated_chunks: usize,
+    chunks: usize,
+    truncated: bool,
+) -> String {
+    let body = render_summary(
+        narrative,
+        &[],
+        decisions,
+        questions,
+        truncated_chunks,
+        chunks,
+        truncated,
+    );
+    let mut out = String::new();
+    if !headline.title.trim().is_empty() {
+        out.push_str(&format!("## {}\n\n", headline.title.trim()));
+    }
+    let (summary_para, rest) = if narrative.trim().is_empty() {
+        (String::new(), body.as_str())
+    } else {
+        (
+            narrative.trim().to_string(),
+            body.strip_prefix(narrative.trim()).unwrap_or(&body),
+        )
+    };
+    if !summary_para.is_empty() {
+        out.push_str("### Summary\n\n");
+        out.push_str(&summary_para);
+        out.push_str("\n\n");
+    }
+    // review-opus2: one lone point is not a section — fewer than two and
+    // the Key points heading is left out.
+    if headline.key_points.len() >= 2 {
+        out.push_str("### Key points\n\n");
+        for p in &headline.key_points {
+            // #250 round 2: the HEADLINE input carries "Decisions:" /
+            // "Action items:" labels, and a 1.5B model sometimes echoes one
+            // into a point. The label is ours, never the meeting's.
+            out.push_str(&format!("- {}\n", strip_section_label(p)));
+        }
+        out.push('\n');
+    }
+    if !actions.is_empty() {
+        out.push_str("### Action items\n\n");
+        for item in actions {
+            let at = format_offset(item.start_seconds);
+            let owner = action_owner(&item.text, names)
+                .map(|o| format!("**{o}** — "))
+                .unwrap_or_default();
+            match &item.speaker {
+                Some(who) => out.push_str(&format!("- {owner}{} ({who}, {at})\n", item.text)),
+                None => out.push_str(&format!("- {owner}{} ({at})\n", item.text)),
+            }
+        }
+        out.push('\n');
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() && !rest.starts_with("_No summary could be produced") {
+        out.push_str(rest);
+    }
+    if out.trim().is_empty() {
+        return "_No summary could be produced for this meeting._".to_string();
+    }
+    out.trim_end().to_string()
+}
+
 // ── the sidecar session ─────────────────────────────────────────────────────
 
 /// Request ids for this process's summarize sessions.
@@ -1466,6 +2877,25 @@ fn next_id() -> u64 {
 ///   dictation after a summary would pay a full prefill.
 ///
 /// So the summarizer brings its own process, and takes it down when it is done.
+/// review-opus2 A7 — the pids of every live summary sidecar, so app quit can
+/// stop them explicitly rather than trust a Drop that a quit may never run.
+fn live_sidecars() -> &'static std::sync::Mutex<Vec<u32>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<Vec<u32>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+/// Stop every live summary sidecar (app quit). Returns how many were signalled.
+pub fn stop_all_sidecars() -> usize {
+    let pids: Vec<u32> = std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
+    for pid in &pids {
+        // SAFETY: plain kill(2) on a pid this process spawned and still owns.
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    pids.len()
+}
+
 pub struct SidecarSession {
     child: Child,
     stdin: ChildStdin,
@@ -1512,6 +2942,10 @@ impl SidecarSession {
                 );
             }
         });
+        live_sidecars()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(child.id());
         let session = Self {
             child,
             stdin,
@@ -1542,7 +2976,14 @@ impl SidecarSession {
         Self::spawn(&binary, &path, &model.id)
     }
 
-    fn exchange(&mut self, req: &PolishRequest) -> Result<PolishResponse, SummaryError> {
+    /// One request/response. review-opus2 A4: the wait polls `cancel` every
+    /// 100 ms and a cancel KILLS the sidecar, so Cancel ends a 60–90 s model
+    /// pass at once instead of after it.
+    fn exchange(
+        &mut self,
+        req: &PolishRequest,
+        cancel: &crate::summary_jobs::CancelToken,
+    ) -> Result<PolishResponse, SummaryError> {
         let line = serde_json::to_string(req).map_err(|_| SummaryError::Protocol)?;
         writeln!(self.stdin, "{line}").map_err(|_| SummaryError::Unavailable)?;
         self.stdin.flush().map_err(|_| SummaryError::Unavailable)?;
@@ -1551,12 +2992,17 @@ impl SidecarSession {
             let left = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or(SummaryError::Protocol)?;
-            match self.lines.recv_timeout(left) {
+            if cancel.is_cancelled() {
+                let _ = self.child.kill();
+                return Err(SummaryError::Cancelled);
+            }
+            match self.lines.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(line) => {
                     if let Some(response) = parse_response_for(&line, req.id) {
                         return Ok(response);
                     }
                 }
+                Err(RecvTimeoutError::Timeout) if left > Duration::from_millis(100) => {}
                 Err(RecvTimeoutError::Timeout) => return Err(SummaryError::Protocol),
                 Err(RecvTimeoutError::Disconnected) => return Err(SummaryError::Unavailable),
             }
@@ -1566,6 +3012,11 @@ impl SidecarSession {
 
 impl Drop for SidecarSession {
     fn drop(&mut self) {
+        let pid = self.child.id();
+        live_sidecars()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|p| *p != pid);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -1575,25 +3026,35 @@ impl Drop for SidecarSession {
 pub struct SidecarSummaryClient {
     session: std::sync::Mutex<SidecarSession>,
     model: String,
+    cancel: crate::summary_jobs::CancelToken,
 }
 
 impl SidecarSummaryClient {
     pub fn new(session: SidecarSession) -> Self {
+        Self::with_cancel(session, crate::summary_jobs::CancelToken::new())
+    }
+
+    /// The client a notes job uses: every model call checks `cancel` first.
+    pub fn with_cancel(session: SidecarSession, cancel: crate::summary_jobs::CancelToken) -> Self {
         let model = session.model.clone();
         Self {
             session: std::sync::Mutex::new(session),
             model,
+            cancel,
         }
     }
 
     fn call(&self, req: &PolishRequest) -> Result<PolishResponse, SummaryError> {
         let mut session = self.session.lock().map_err(|_| SummaryError::Protocol)?;
-        session.exchange(req)
+        session.exchange(req, &self.cancel)
     }
 }
 
 impl TokenCounter for SidecarSummaryClient {
     fn count_tokens(&self, text: &str) -> Result<usize, SummaryError> {
+        if self.cancel.is_cancelled() {
+            return Err(SummaryError::Cancelled);
+        }
         let req = PolishRequest::count_tokens(next_id(), COUNT_DEADLINE_MS, text.to_string());
         self.call(&req)?
             .token_count()
@@ -1604,10 +3065,21 @@ impl TokenCounter for SidecarSummaryClient {
 
 impl SummaryClient for SidecarSummaryClient {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError> {
+        // Cancel stops the summary at its next model call (B2: as Cancelled,
+        // which the pipeline turns into "store nothing", not a skipped chunk).
+        if self.cancel.is_cancelled() {
+            return Err(SummaryError::Cancelled);
+        }
         let response = self.call(req)?;
         let truncated = response.was_truncated();
         if truncated {
             log::warn!("summary: the sidecar truncated a pass to fit its context");
+        }
+        // #250 round 2: an answer that reached its output budget dropped none of
+        // the INPUT, so it is not `truncated` and earns no reader-facing note —
+        // the partial answer is parsed defensively and keeps every closed item.
+        if response.was_out_capped() {
+            log::warn!("summary: a pass reached its output budget; keeping the closed items");
         }
         response
             .into_text()
@@ -1617,6 +3089,10 @@ impl SummaryClient for SidecarSummaryClient {
 
     fn model_id(&self) -> String {
         self.model.clone()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }
 

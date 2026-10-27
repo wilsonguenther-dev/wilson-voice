@@ -30,7 +30,8 @@ pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "model_download_progress";
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Full passes over the URL list before giving up (the `.partial` file is kept
 /// so a later call resumes where this one died).
-const MAX_ATTEMPTS: u32 = 4;
+/// #250 round 4 (R2-B4): capped at 3 full passes (1 s, 2 s backoff between).
+const MAX_ATTEMPTS: u32 = 3;
 /// Progress events are throttled to one per this many bytes (plus the final one).
 const PROGRESS_EMIT_STEP: u64 = 1024 * 1024;
 
@@ -219,6 +220,29 @@ where
         model.file.size_bytes,
         &model.file.sha256,
         progress,
+    )
+    .await
+}
+
+/// [`download_polish_model_with`], stoppable between chunks (#250 round 3, B2).
+pub async fn download_polish_model_cancellable<F>(
+    id: &str,
+    progress: F,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    let model = polish_model(id).ok_or_else(|| format!("unknown polish model '{id}'"))?;
+    let urls = polish_download_urls(model);
+    let dest = polish_model_path(model);
+    download_file_cancellable(
+        &urls,
+        &dest,
+        model.file.size_bytes,
+        &model.file.sha256,
+        progress,
+        cancel,
     )
     .await
 }
@@ -883,6 +907,7 @@ pub fn sha256_hex(path: &Path) -> Result<String, String> {
 
 /// Verify a file's sha256 against the catalog's expected hex digest.
 pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
+    SHA_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let actual = sha256_hex(path)?;
     if actual.eq_ignore_ascii_case(expected_hex) {
         Ok(())
@@ -1004,16 +1029,160 @@ pub async fn download_file<F>(
     dest: &Path,
     size_bytes: u64,
     expected_sha256: &str,
-    mut progress: F,
+    progress: F,
 ) -> Result<PathBuf, String>
 where
     F: FnMut(u64, u64),
 {
-    // Already downloaded and intact — done (guards double-clicks and re-runs).
-    if dest.is_file() && verify_sha256(dest, expected_sha256).is_ok() {
+    download_file_cancellable(urls, dest, size_bytes, expected_sha256, progress, &|| false).await
+}
+
+/// How many full sha256 passes this process has run (R2-B4's test reads it:
+/// two callers of one download must cost ONE pass, not two).
+static SHA_PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn sha_passes() -> u64 {
+    SHA_PASSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// #250 round 4 (R2-B4) — one writer per destination, process-wide. The
+/// Settings "Download" button and the notes worker fetch the same model to
+/// the same `.partial`; both go through [`download_file_cancellable`], which
+/// takes this slot first. A second caller waits (mirroring the writer's
+/// progress to its own callback, so Settings shows the notes job's percent
+/// and the card shows Settings'), then gets the verified file without
+/// hashing it again.
+#[derive(Default)]
+struct DownloadSlot {
+    busy: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicU64,
+    total: std::sync::atomic::AtomicU64,
+}
+
+fn download_slot(dest: &Path) -> std::sync::Arc<DownloadSlot> {
+    static SLOTS: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<DownloadSlot>>>> =
+        OnceLock::new();
+    let mut map = SLOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    map.entry(dest.to_path_buf()).or_default().clone()
+}
+
+/// Releases the slot on every exit path, panics included.
+struct SlotGuard(std::sync::Arc<DownloadSlot>);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Files this process has already hashed and found intact, by (length,
+/// mtime) — so the caller that waited on a download does not re-hash 1.1 GB.
+fn verified_files() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime)>> {
+    static V: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime)>>> =
+        OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+fn file_stamp(p: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+fn mark_verified(p: &Path) {
+    if let Some(stamp) = file_stamp(p) {
+        verified_files()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(p.to_path_buf(), stamp);
+    }
+}
+
+fn known_verified(p: &Path) -> bool {
+    let Some(stamp) = file_stamp(p) else { return false };
+    verified_files()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(p)
+        .is_some_and(|s| *s == stamp)
+}
+
+/// Is a download to `dest` running in this process right now? `(done, total)`.
+pub fn download_in_progress(dest: &Path) -> Option<(u64, u64)> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let slot = download_slot(dest);
+    slot.busy
+        .load(SeqCst)
+        .then(|| (slot.done.load(SeqCst), slot.total.load(SeqCst)))
+}
+
+/// A4 — sleep `d`, waking every 50 ms to check `cancel`. `true` = cancelled.
+async fn sleep_or_cancel(d: Duration, cancel: &(dyn Fn() -> bool + Sync)) -> bool {
+    let deadline = tokio::time::Instant::now() + d;
+    loop {
+        if cancel() {
+            return true;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(50))).await;
+    }
+}
+
+/// #250 round 3 (B2) — the error a cancelled download returns. The `.partial`
+/// is kept, so the next attempt resumes where this one stopped.
+pub const DOWNLOAD_CANCELLED: &str = "download cancelled";
+
+/// [`download_file`], stoppable: `cancel` is checked before every attempt,
+/// between every chunk, during the backoff sleep and while a chunk is slow to
+/// arrive (A4, every 50 ms), and a cancel returns [`DOWNLOAD_CANCELLED`] at
+/// once — no retry. One writer per `dest` (R2-B4): see [`DownloadSlot`].
+pub async fn download_file_cancellable<F>(
+    urls: &[String],
+    dest: &Path,
+    size_bytes: u64,
+    expected_sha256: &str,
+    mut progress: F,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    use std::sync::atomic::Ordering::SeqCst;
+    // R2-B4: take the destination's slot, or wait for the writer that holds
+    // it — showing ITS progress — and then use what it verified.
+    let slot = download_slot(dest);
+    let _guard = loop {
+        if slot.busy.compare_exchange(false, true, SeqCst, SeqCst).is_ok() {
+            break SlotGuard(slot.clone());
+        }
+        if cancel() {
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
+        let (done, total) = (slot.done.load(SeqCst), slot.total.load(SeqCst));
+        if total > 0 {
+            progress(done, total);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    slot.done.store(0, SeqCst);
+    slot.total.store(size_bytes, SeqCst);
+    // Already downloaded and intact — done (guards double-clicks, re-runs and
+    // the caller that waited above, which never re-hashes what was verified).
+    if dest.is_file() && (known_verified(dest) || verify_sha256(dest, expected_sha256).is_ok()) {
+        mark_verified(dest);
         progress(size_bytes, size_bytes);
         return Ok(dest.to_path_buf());
     }
+    let mut progress = |done: u64, total: u64| {
+        slot.done.store(done, SeqCst);
+        slot.total.store(total, SeqCst);
+        progress(done, total);
+    };
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
@@ -1022,14 +1191,23 @@ where
     let mut last_err = "no download URLs configured".to_string();
 
     for attempt in 0..MAX_ATTEMPTS {
-        if attempt > 0 {
-            // 1s, 2s, 4s … between full passes over the URL list.
-            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+        if cancel() {
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
+        // 1s, 2s … between full passes over the URL list; a cancel wakes it.
+        if attempt > 0 && sleep_or_cancel(Duration::from_secs(1 << (attempt - 1)), cancel).await {
+            return Err(DOWNLOAD_CANCELLED.to_string());
         }
         for url in urls {
-            match download_attempt(&client, url, &partial, size_bytes, &mut progress).await {
+            if cancel() {
+                return Err(DOWNLOAD_CANCELLED.to_string());
+            }
+            match download_attempt(&client, url, &partial, size_bytes, &mut progress, cancel).await {
                 Ok(()) => match finalize_download(&partial, dest, expected_sha256) {
-                    Ok(()) => return Ok(dest.to_path_buf()),
+                    Ok(()) => {
+                        mark_verified(dest);
+                        return Ok(dest.to_path_buf());
+                    }
                     // Verification failure (finalize deleted the partial) counts as a
                     // failed attempt — fall back to the remaining URLs/attempts.
                     Err(e) => {
@@ -1037,6 +1215,7 @@ where
                         last_err = e;
                     }
                 },
+                Err(e) if e == DOWNLOAD_CANCELLED => return Err(e),
                 Err(e) => {
                     log::warn!("model download attempt failed ({url}): {e}");
                     last_err = e;
@@ -1057,6 +1236,7 @@ async fn download_attempt<F>(
     partial: &Path,
     total: u64,
     progress: &mut F,
+    cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), String>
 where
     F: FnMut(u64, u64),
@@ -1070,9 +1250,11 @@ where
         .await
         .map_err(|_| format!("request to {url} timed out"))?
         .map_err(|e| format!("request to {url} failed: {e}"))?;
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("{url} returned error status: {e}"))?;
+    // A3: the server's own status, spelled so the card can say it
+    // ("Download failed (HTTP 503)") rather than "offline".
+    if !resp.status().is_success() {
+        return Err(format!("{url} returned HTTP {}", resp.status().as_u16()));
+    }
 
     // Server honored the Range → append; anything else → restart from zero.
     let resuming = downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
@@ -1090,10 +1272,30 @@ where
     progress(downloaded, total);
     let mut resp = resp;
     loop {
-        let chunk = tokio::time::timeout(STALL_TIMEOUT, resp.chunk())
-            .await
-            .map_err(|_| format!("download from {url} stalled at {downloaded} bytes"))?
-            .map_err(|e| format!("read from {url} failed: {e}"))?;
+        // B2: between chunks, so a 1.1 GB fetch stops within one chunk.
+        if cancel() {
+            let _ = file.sync_all();
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
+        // A4: a slow chunk is waited on in 50 ms slices so a cancel lands
+        // within one slice, not after STALL_TIMEOUT.
+        let chunk = {
+            let mut fut = std::pin::pin!(resp.chunk());
+            let started = tokio::time::Instant::now();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(50), &mut fut).await {
+                    Ok(r) => break r.map_err(|e| format!("read from {url} failed: {e}"))?,
+                    Err(_) if cancel() => {
+                        let _ = file.sync_all();
+                        return Err(DOWNLOAD_CANCELLED.to_string());
+                    }
+                    Err(_) if started.elapsed() >= STALL_TIMEOUT => {
+                        return Err(format!("download from {url} stalled at {downloaded} bytes"));
+                    }
+                    Err(_) => {}
+                }
+            }
+        };
         let Some(bytes) = chunk else { break };
         file.write_all(&bytes)
             .map_err(|e| format!("write {}: {e}", partial.display()))?;

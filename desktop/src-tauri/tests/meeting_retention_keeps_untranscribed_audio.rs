@@ -87,7 +87,7 @@ fn reconcile_fails_a_row_whose_audio_is_gone_and_requeues_one_whose_audio_is_the
     let done = meeting(&db, &dir, "done", MeetingState::Complete, 1);
 
     let queued = Mutex::new(Vec::<String>::new());
-    let out = reconcile_stranded_meetings(&db, &|id| queued.lock().unwrap().push(id.to_string()));
+    let out = reconcile_stranded_meetings(&db, &dir, &|id| queued.lock().unwrap().push(id.to_string()));
     println!("reconciled: {out:?}");
 
     assert_eq!(

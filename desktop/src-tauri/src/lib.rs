@@ -204,6 +204,7 @@ pub mod structure;
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
 pub mod summarize;
+pub mod summary_jobs;
 // YV98 — the support bundle: build, redact, preview, compose. Deliberately NOT
 // in `crash.rs`, whose no-network test must stay green (see the module docs).
 pub mod support;
@@ -5802,68 +5803,70 @@ async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resul
     // The managed handle is cloned OUT of the borrow before the hop: the
     // closure must be `'static`, and `Arc<AppState>` is what makes that free.
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || summarize_meeting_blocking(&state, id))
-        .await
-        .map_err(|e| format!("summary task join failed: {e}"))?
+    // #250 round 3 (B3): through the notes worker's job lock, never a second
+    // sidecar beside it. A meeting already queued or running is waited on.
+    tauri::async_runtime::spawn_blocking(move || {
+        let jobs = SUMMARY_JOBS
+            .get()
+            .ok_or_else(|| "the notes worker is not running — restart Yap".to_string())?;
+        summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, false);
+        jobs.submit(&id);
+        let st = jobs
+            .wait_for(&id, std::time::Duration::from_secs(60 * 60))
+            .ok_or_else(|| "the notes for this meeting did not start".to_string())?;
+        match st.phase {
+            summary_jobs::NotesPhase::Ready => state
+                .db
+                .get_meeting(&id)?
+                .and_then(|m| m.summary)
+                .ok_or_else(|| "that meeting is no longer here".to_string()),
+            summary_jobs::NotesPhase::Cancelled => Err("the notes were cancelled".to_string()),
+            summary_jobs::NotesPhase::Failed => {
+                Err(st.reason.unwrap_or_else(|| "the notes failed".to_string()))
+            }
+            _ => Err("the notes are still being written".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("summary task join failed: {e}"))?
 }
 
 /// yap-meetings-fix (D) — the app handle the pipeline's progress events go out
 /// through. Set once in `setup`; before that there is no window to tell.
 static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
-/// yap-meetings-fix (D) — after a transcript lands, summarize it when a local
-/// summary model is installed. "No model" is a state, not an error: the
-/// transcript stands and the Meetings view says "Add a summary model in
-/// Settings".
-///
-/// yap24-NT7 — this is also the moment a meeting's notes are READY (with or
-/// without a summary), so it ends by announcing them: the tray's "Meeting notes
-/// ready — Open" line, and a macOS notification when Yap is in the background.
-fn auto_summarize_meeting(state: &AppState, id: &str) {
-    summarize_if_model_installed(state, id);
-    if let Some(app) = MEETING_APP.get() {
-        announce_meeting_notes(app, state, id);
-    }
+/// focus-2026-10-19 — is this polish-catalog model's GGUF on disk?
+fn summary_model_on_disk(id: &str) -> bool {
+    models::polish_model(id).map(models::is_polish_downloaded).unwrap_or(false)
 }
 
-fn summarize_if_model_installed(state: &AppState, id: &str) {
-    let model = state.settings.lock().polish_model.trim().to_string();
-    if model.is_empty() || summarize::SidecarSession::for_installed_model(&model).is_err() {
-        log::info!("summary skipped: no model (meeting {id})");
-        return;
-    }
-    // yap24-NT7 — say so while the local model writes the notes, on the same
-    // event: the pill reads "Writing notes", the Meetings row already maps
-    // `summarizing` to the same words (meetings/progress.ts).
-    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(id)) {
+/// focus-2026-10-19 — one progress event for a meeting row (the Meetings card
+/// reads these). #250 round 3: the notes phases come from the notes worker —
+/// `notes_queued`, `preparing_notes`, `summarizing`, `notes_ready`,
+/// `notes_failed` (with the plain reason in `error`), `notes_cancelled`.
+fn emit_notes_status(state: &AppState, st: &summary_jobs::NotesStatus) {
+    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(&st.id)) {
         let _ = app.emit(
             meeting_pipeline::MEETING_PROGRESS_EVENT,
             meeting_pipeline::MeetingProgressEvent {
-                id: id.to_string(),
-                state: "summarizing".to_string(),
-                percent: 100,
+                id: st.id.clone(),
+                state: st.phase.as_str().to_string(),
+                percent: st.percent,
                 processed_through_seconds: m.processed_through_seconds,
                 duration_seconds: m.duration_seconds,
-                error: None,
+                error: st.reason.clone(),
             },
         );
     }
-    match summarize_meeting_blocking(state, id.to_string()) {
-        Ok(_) => log::info!("summary: meeting {id} summarized automatically"),
-        Err(e) => log::warn!("summary: automatic summary of meeting {id} failed: {e}"),
-    }
-    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(id)) {
-        let _ = app.emit(
-            meeting_pipeline::MEETING_PROGRESS_EVENT,
-            meeting_pipeline::MeetingProgressEvent {
-                id: id.to_string(),
-                state: m.state.clone(),
-                percent: 100,
-                processed_through_seconds: m.processed_through_seconds,
-                duration_seconds: m.duration_seconds,
-                error: m.error.clone(),
-            },
-        );
+    // yap24-NT7 x #250 — a meeting's notes are settled (written, or failed with
+    // the transcript standing) the moment the notes worker says so, so the
+    // tray's "Meeting notes ready — Open" line and the background notification
+    // fire here now that notes run on their own worker instead of inside the
+    // transcript hook. A cancel is the user's own act and announces nothing.
+    if matches!(st.phase, summary_jobs::NotesPhase::Ready | summary_jobs::NotesPhase::Failed) {
+        if let Some(app) = MEETING_APP.get() {
+            announce_meeting_notes(app, state, &st.id);
+        }
     }
 }
 
@@ -5995,10 +5998,224 @@ mod nt7_tests {
     }
 }
 
+/// #250 round 3 (B3) — the ONE notes worker. Every trigger (the transcript
+/// hook, the launch resume, the card's Retry, the backlog banner, the manual
+/// re-summarize) goes through its per-meeting job lock.
+static SUMMARY_JOBS: std::sync::OnceLock<summary_jobs::SummaryJobs> = std::sync::OnceLock::new();
+
+/// `notes-jobs.json` in the app's data dir (A3's upgrade ledger).
+fn notes_ledger_path() -> std::path::PathBuf {
+    data_dir().join("notes-jobs.json")
+}
+
+/// The app's side of a notes job: the managed model fetch and the summary.
+struct AppNotes {
+    state: Arc<AppState>,
+}
+
+impl summary_jobs::NotesBackend for AppNotes {
+    fn model_ready(&self) -> bool {
+        let chosen = self.state.settings.lock().polish_model.clone();
+        matches!(
+            summarize::plan_summary_model(&chosen, &summary_model_on_disk),
+            summarize::SummaryModelPlan::Use(_)
+        )
+    }
+
+    /// Fetch the default notes model (managed: the app's own models dir,
+    /// sha256-verified, resumable) — never the machine's Python, never a model
+    /// "found" elsewhere on disk. Stops between chunks on Cancel (B2); every
+    /// failure comes back as a reason the card shows (B1).
+    fn fetch_model(
+        &self,
+        progress: &mut dyn FnMut(u8),
+        cancel: &summary_jobs::CancelToken,
+    ) -> Result<(), summary_jobs::NotesError> {
+        use summary_jobs::{classify_download_error, NotesError};
+        let chosen = self.state.settings.lock().polish_model.clone();
+        let m = match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
+            summarize::SummaryModelPlan::Use(_) => return Ok(()),
+            summarize::SummaryModelPlan::Download(m) => m,
+        };
+        let model = models::polish_model(&m)
+            .ok_or_else(|| NotesError::Summary(format!("Yap doesn't know the notes model {m}.")))?;
+        let dir = models::models_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| classify_download_error(&e.to_string()))?;
+        models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))
+            .map_err(NotesError::DiskFull)?;
+        log::info!("summary: fetching the default notes model {m}");
+        let token = cancel.clone();
+        let stop = move || token.is_cancelled();
+        tauri::async_runtime::block_on(models::download_polish_model_cancellable(
+            &m,
+            |done, total| {
+                let pct = if total == 0 { 0 } else { ((done.saturating_mul(100)) / total).min(100) as u8 };
+                progress(pct);
+            },
+            &stop,
+        ))
+        .map(|_| ())
+        .map_err(|e| {
+            log::warn!("summary: the notes model download stopped: {e}");
+            classify_download_error(&e)
+        })
+    }
+
+    fn summarize(
+        &self,
+        id: &str,
+        cancel: &summary_jobs::CancelToken,
+    ) -> Result<(), summary_jobs::NotesError> {
+        summarize_meeting_blocking(&self.state, id, cancel).map(|_| ())
+    }
+}
+
+/// Stop a meeting's notes — queued, downloading the model, or summarizing.
+/// The transcript is untouched and nothing partial is stored (B2).
+#[tauri::command]
+fn cancel_meeting_summary(id: String) -> bool {
+    let cancelled = SUMMARY_JOBS.get().is_some_and(|j| j.cancel(&id));
+    // review-opus2 A6: the cancel outlives a relaunch.
+    summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, true);
+    log::info!("summary: cancel requested for meeting {id} (in flight: {cancelled})");
+    cancelled
+}
+
+/// The card's Retry / "Write notes": queue the meeting's notes again.
+#[tauri::command]
+fn retry_meeting_summary(id: String) -> Result<bool, String> {
+    let jobs = SUMMARY_JOBS
+        .get()
+        .ok_or_else(|| "the notes worker is not running — restart Yap".to_string())?;
+    summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, false);
+    Ok(jobs.submit(&id))
+}
+
+/// Every notes job this run knows about, so a card opened after an event
+/// went by still shows where its notes are.
+#[tauri::command]
+fn list_notes_jobs() -> Vec<summary_jobs::NotesStatus> {
+    SUMMARY_JOBS.get().map(|j| j.statuses()).unwrap_or_default()
+}
+
+/// Meetings with a transcript and no notes.
+fn meetings_needing_notes(state: &AppState) -> Vec<summary_jobs::NeedsNotes> {
+    let Ok(rows) = state.db.list_meetings(500, None) else { return Vec::new() };
+    rows.into_iter()
+        .filter(|m| matches!(m.state.as_str(), "complete" | "partial" | "summarizing"))
+        .filter(|m| m.summary.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true))
+        .filter(|m| state.db.list_meeting_segments(&m.id).map(|s| !s.is_empty()).unwrap_or(false))
+        .map(|m| summary_jobs::NeedsNotes { id: m.id, started_at: m.started_at })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotesBacklog {
+    count: usize,
+    offer: bool,
+}
+
+/// A3 — "Summarize N past meetings?": the meetings recorded before automatic
+/// notes started on this install, which never start on their own.
+#[tauri::command]
+fn notes_backlog(state: State<'_, Arc<AppState>>) -> NotesBacklog {
+    let ledger = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
+    let (_, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(&state), &ledger);
+    let busy = |id: &String| {
+        SUMMARY_JOBS
+            .get()
+            .and_then(|j| j.status(id))
+            .is_some_and(|s| s.phase != summary_jobs::NotesPhase::Cancelled)
+    };
+    let count = backlog.iter().filter(|id| !busy(id)).count();
+    NotesBacklog {
+        count,
+        offer: count > 0 && ledger.backlog == summary_jobs::BacklogChoice::Pending,
+    }
+}
+
+/// A3 — the banner's "Summarize": queue the backlog (the model download, if
+/// any, starts now — the click is the consent) and remember the answer.
+#[tauri::command]
+fn summarize_notes_backlog(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    let path = notes_ledger_path();
+    let mut ledger = summary_jobs::NotesLedger::load_or_create(&path, chrono::Utc::now());
+    let (_, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(&state), &ledger);
+    ledger.backlog = summary_jobs::BacklogChoice::Accepted;
+    ledger.save(&path);
+    let jobs = SUMMARY_JOBS
+        .get()
+        .ok_or_else(|| "the notes worker is not running — restart Yap".to_string())?;
+    Ok(backlog.iter().filter(|id| jobs.submit(id)).count())
+}
+
+/// A3 — the banner's "Not now". Each old card keeps its own "Write notes".
+#[tauri::command]
+fn dismiss_notes_backlog() {
+    let path = notes_ledger_path();
+    let mut ledger = summary_jobs::NotesLedger::load_or_create(&path, chrono::Utc::now());
+    ledger.backlog = summary_jobs::BacklogChoice::Dismissed;
+    ledger.save(&path);
+}
+
+/// focus-2026-10-19 → #250 round 3 — notes a quit or a cancel interrupted
+/// resume on the next launch, through the same job lock as the live path (B3).
+/// Only meetings recorded since automatic notes started, unless the backlog
+/// banner was accepted (A3): an upgrade never starts a 1.1 GB fetch unasked.
+fn resume_pending_summaries(state: &AppState) {
+    // A5: nothing is summarizing at launch, so a row still marked
+    // `summarizing` is a crash's leftover (an older build wrote that state).
+    // Fix round 1 (B3) + #250 fix round 1 (independent B1): back to `partial`
+    // when its resume ledger records a failed window (or a note survived), so
+    // a partial transcript is never claimed complete and keeps its Retry.
+    if let Ok(rows) = state.db.list_meetings(500, None) {
+        let pairs: Vec<(String, String)> =
+            rows.iter().map(|m| (m.id.clone(), m.state.clone())).collect();
+        let active = |id: &str| {
+            SUMMARY_JOBS
+                .get()
+                .and_then(|j| j.status(id))
+                .is_some_and(|s| s.phase.is_active())
+        };
+        for id in summary_jobs::stale_summarizing(&pairs, &active) {
+            let error = rows.iter().find(|m| m.id == id).and_then(|m| m.error.clone());
+            // #250 fix round 1 (independent B1): shipped builds cleared `error`
+            // when they wrote `summarizing`, so the failed-window ledger beside
+            // the audio is what tells a partial transcript apart.
+            let (back, note) = summary_jobs::state_after_stale_summarizing(
+                error.as_deref(),
+                meeting_pipeline::ledger_records_failed_window(&meetings_dir(), &id),
+            );
+            if state.db.set_meeting_state(&id, back, note.as_deref()).is_ok()
+            {
+                log::info!("summary: meeting {id} was left 'summarizing' by a crash — reset for Retry");
+            }
+        }
+    }
+    let ledger = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
+    let (resume, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(state), &ledger);
+    if !backlog.is_empty() {
+        log::info!("summary: {} past meeting(s) wait for the backlog banner", backlog.len());
+    }
+    let Some(jobs) = SUMMARY_JOBS.get() else { return };
+    for id in resume {
+        if jobs.submit(&id) {
+            log::info!("summary: resuming the summary of meeting {id}");
+        }
+    }
+}
+
 /// yap-meetings-fix — Retry on a failed (or partial) meeting: forget what was
 /// decoded and run the whole pipeline again over the audio that is still kept.
 #[tauri::command]
 fn retry_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    // #250 fix round 4 (independent B1): Retry deletes every segment, and a
+    // queued or running notes job would summarize the half-rebuilt transcript.
+    // Refuse while one is active (the card hides Retry then too); fails closed.
+    if SUMMARY_JOBS.get().is_some_and(|j| j.is_busy(&id)) {
+        return Err(NOTES_BUSY_RETRY_REFUSAL.to_string());
+    }
     meeting_pipeline::reset_for_retry(&state.db, &meetings_dir(), &id)?;
     if !meeting_pipeline::enqueue(&id) {
         return Err("the meeting transcription worker is not running — restart Yap".to_string());
@@ -6006,26 +6223,57 @@ fn retry_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Stri
     Ok(())
 }
 
-/// The body of [`summarize_meeting`], off the main thread.
-fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, String> {
+/// What a transcript Retry says while that meeting's notes job is active.
+pub const NOTES_BUSY_RETRY_REFUSAL: &str =
+    "Notes are still being written for this meeting. Cancel them or let them finish, then retry the transcript.";
+
+/// What a notes job says when the transcript is being rebuilt under it.
+pub const TRANSCRIPT_REBUILDING: &str =
+    "the transcript is being rebuilt — notes will be written when it finishes";
+
+/// The body of a notes job, on the notes worker. Errors are plain words the
+/// card shows (B1); a cancel stores nothing (B2).
+fn summarize_meeting_blocking(
+    state: &AppState,
+    id: &str,
+    cancel: &summary_jobs::CancelToken,
+) -> Result<String, summary_jobs::NotesError> {
+    use summary_jobs::NotesError;
     let meeting = state
         .db
-        .get_meeting(&id)?
-        .ok_or_else(|| "that meeting is no longer here".to_string())?;
-    let segments = state.db.list_meeting_segments(&id)?;
-    if segments.is_empty() {
-        return Err("that meeting has no transcript to summarize".to_string());
+        .get_meeting(id)
+        .map_err(NotesError::Summary)?
+        .ok_or_else(|| NotesError::Summary("that meeting is no longer here".to_string()))?;
+    // Fix round 4 (independent B1): never summarize a transcript that is
+    // still being (re)built — a Retry deletes every segment first.
+    if !summary_jobs::transcript_settled(&meeting.state) {
+        return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
     }
-    let model = state.settings.lock().polish_model.trim().to_string();
-    let session = summarize::SidecarSession::for_installed_model(&model)
-        .map_err(|_| "no local summary model is installed".to_string())?;
-    let client = summarize::SidecarSummaryClient::new(session);
+    let segments = state.db.list_meeting_segments(id).map_err(NotesError::Summary)?;
+    if segments.is_empty() {
+        return Err(NotesError::Summary("that meeting has no transcript to summarize".to_string()));
+    }
+    // focus-2026-10-19: the resolved notes model, never "none".
+    let chosen = state.settings.lock().polish_model.clone();
+    let model = match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
+        summarize::SummaryModelPlan::Use(m) => m,
+        summarize::SummaryModelPlan::Download(_) => {
+            return Err(NotesError::Summary("the notes model isn't on this Mac yet.".into()))
+        }
+    };
+    if cancel.is_cancelled() {
+        return Err(NotesError::Cancelled);
+    }
+    let session =
+        summarize::SidecarSession::for_installed_model(&model).map_err(|_| NotesError::ModelStart)?;
+    let client = summarize::SidecarSummaryClient::with_cancel(session, cancel.clone());
 
-    let previous =
-        meetings::MeetingState::parse(&meeting.state).unwrap_or(meetings::MeetingState::Complete);
-    let _ = state
-        .db
-        .set_meeting_state(&id, meetings::MeetingState::Summarizing, None);
+    // Fix round 1 (B3): the notes job never writes over the meeting's
+    // TRANSCRIPT state. It used to park the row in `summarizing` and restore a
+    // remembered state afterwards — so a quit mid-summary lost that state and
+    // the next launch could only guess `complete`, hiding a partial
+    // transcript's Retry. "Writing notes" comes from the job's own phase
+    // (`NotesPhase::Summarizing`), which the card already shows.
     // YV133 — the summary is attributed with the SAME labelling the transcript
     // is rendered with: `TrackSpeakers::for_meeting` makes the two calls
     // `meetings::render_transcript` makes, off this meeting's stored `kind` and
@@ -6034,35 +6282,55 @@ fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, St
     // this source declines and the summary is exactly what YV97 produced.
     let speakers = summarize::TrackSpeakers::for_meeting(meeting.kind(), &segments);
     let summary = summarize::summarize_segments_with(&segments, &client, &speakers);
-    let _ = state.db.set_meeting_state(&id, previous, None);
 
     let summary = summary.map_err(|e| match e {
         // Said in the user's words rather than as a tag, because this is the one
-        // failure whose whole point is that NOTHING changed — a toast that only
-        // said "summary failed" would leave the reader wondering what happened to
-        // the summary they already had.
-        summarize::SummaryError::Empty => {
-            "the model had nothing to say about this meeting — the existing summary was kept"
-                .to_string()
-        }
-        other => format!("summary failed: {}", other.tag()),
-    })?;
-    // Belt and braces on the ONE write of `meetings.summary`. `summarize_segments`
-    // already refuses to return an empty summary, but the refusal that protects
-    // the user's data belongs next to the destructive act as well: a later caller
-    // that builds a `MeetingSummary` some other way (a resumed job, a partial
-    // re-summarize) must not be able to overwrite a good summary with nothing
-    // just by skipping the pipeline's guard.
-    if summary.is_empty() {
-        log::warn!("summary: refusing to overwrite meetings.summary with an empty result");
-        return Err(
+        // failure whose whole point is that NOTHING changed.
+        summarize::SummaryError::Empty => NotesError::Summary(
             "the model had nothing to say about this meeting — the existing summary was kept"
                 .to_string(),
-        );
+        ),
+        // B2: a cancelled run stores nothing; the row stays without notes, so
+        // the next launch (or Retry) redoes it.
+        summarize::SummaryError::Cancelled => NotesError::Cancelled,
+        summarize::SummaryError::Unavailable => NotesError::ModelStart,
+        summarize::SummaryError::NoSegments => {
+            NotesError::Summary("that meeting has no transcript to summarize".to_string())
+        }
+        summarize::SummaryError::Protocol => NotesError::Summary(
+            "the notes model gave answers Yap couldn't use.".to_string(),
+        ),
+    })?;
+    if cancel.is_cancelled() {
+        return Err(NotesError::Cancelled);
+    }
+    // Belt and braces on the ONE write of `meetings.summary`: a later caller
+    // that builds a `MeetingSummary` some other way must not be able to
+    // overwrite a good summary with nothing just by skipping the pipeline's
+    // guard.
+    if summary.is_empty() {
+        log::warn!("summary: refusing to overwrite meetings.summary with an empty result");
+        return Err(NotesError::Summary(
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string(),
+        ));
+    }
+    // Fix round 4 (independent B1): store only if the transcript this summary
+    // read is still the meeting's transcript. A Retry that deleted and rebuilt
+    // it mid-summary makes these notes stale; the transcription hook's
+    // `submit_new_transcript` writes fresh ones over the finished transcript.
+    let now = state.db.get_meeting(id).map_err(NotesError::Summary)?;
+    let now_segments = state.db.list_meeting_segments(id).map_err(NotesError::Summary)?;
+    if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
+        || !summary_jobs::same_transcript(&segments, &now_segments)
+    {
+        log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
+        return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
     }
     state
         .db
-        .set_meeting_summary(&id, &summary.markdown, Some(&summary.model))?;
+        .set_meeting_summary(id, &summary.markdown, Some(&summary.model))
+        .map_err(NotesError::Summary)?;
     log::info!(
         "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s), truncated={}",
         summary.chunks,
@@ -7043,6 +7311,10 @@ async fn download_polish_model(
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))?;
 
+    // R2-B4: the same code path — and the same per-destination download
+    // slot — as the notes worker's model fetch. If a notes job is already
+    // downloading this model, this call waits on it and its progress events
+    // carry that job's percent; it never starts a second writer.
     let path = models::download_polish_model(&app, &id).await?;
 
     // The gate. `verified_polish_selection` is the only producer of a non-empty
@@ -7687,7 +7959,31 @@ pub fn run() {
     // retention never sees a row whose fate is not decided yet.
     {
         let asr_state = state.clone();
-        let sum_state = state.clone();
+        let resume_state = state.clone();
+        // #250 round 3 (B3): the notes worker, its own thread, before anything
+        // can submit to it; and the upgrade ledger, stamped on first run (A3).
+        let report_state = state.clone();
+        // #250 fix round 1 (independent B2): a refused worker thread is logged,
+        // never a launch panic. Every caller already fails closed on a missing
+        // worker ("the notes worker is not running — restart Yap").
+        match summary_jobs::SummaryJobs::spawn(
+            Arc::new(AppNotes { state: state.clone() }),
+            Arc::new(move |st: &summary_jobs::NotesStatus| emit_notes_status(&report_state, st)),
+        ) {
+            Ok(jobs) => {
+                let _ = SUMMARY_JOBS.set(jobs);
+            }
+            Err(e) => log::error!("summary: {e} — meeting notes are off until Yap restarts"),
+        }
+        let _ = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
+        std::thread::Builder::new()
+            .name("wv-summary-resume".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                resume_pending_summaries(&resume_state);
+            })
+            .ok();
+        let hook_state = state.clone();
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
@@ -7729,8 +8025,36 @@ pub fn run() {
                     let _ = app.emit(meeting_pipeline::MEETING_PROGRESS_EVENT, event);
                 }
             }),
+            // B3: hand the meeting to the notes worker and return at once — the
+            // next queued meeting transcribes while this one's notes are made.
             after_transcript: Some(Arc::new(move |id: &str| {
-                auto_summarize_meeting(&sum_state, id)
+                // review-opus2 A6: the hook honours the upgrade ledger and a
+                // persisted cancel, exactly as the launch resume does.
+                let ledger = summary_jobs::NotesLedger::load_or_create(
+                    &notes_ledger_path(),
+                    chrono::Utc::now(),
+                );
+                let allowed = hook_state
+                    .db
+                    .get_meeting(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|m| ledger.allows_auto(id, m.started_at));
+                if !allowed {
+                    log::info!("summary: meeting {id} waits for the backlog banner or a Retry");
+                    // yap24-NT7: no notes job will run, so the transcript is
+                    // what is ready — announce it now, as main did.
+                    if let Some(app) = MEETING_APP.get() {
+                        announce_meeting_notes(app, &hook_state, id);
+                    }
+                    return;
+                }
+                // Fix round 4 (independent B1): a NEW transcript restarts a
+                // notes job still running over the old one, instead of being
+                // refused by the per-meeting lock and leaving stale notes.
+                if let Some(jobs) = SUMMARY_JOBS.get() {
+                    jobs.submit_new_transcript(id);
+                }
             })),
             config: meeting_asr::MeetingAsrConfig::default(),
             // yap24-NT2 R2: the launch-time requeue starts after the dictation
@@ -7738,9 +8062,10 @@ pub fn run() {
             start_delay: meeting_pipeline::QUEUE_START_DELAY,
         };
         meeting_pipeline::install(meeting_pipeline::spawn(deps));
-        let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &|id| {
-            meeting_pipeline::enqueue(id);
-        });
+        let reconciled =
+            meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
+                meeting_pipeline::enqueue(id);
+            });
         if !reconciled.is_empty() {
             log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
         }
@@ -7895,6 +8220,12 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             hotkey_bindings,
+            cancel_meeting_summary,
+            retry_meeting_summary,
+            list_notes_jobs,
+            notes_backlog,
+            summarize_notes_backlog,
+            dismiss_notes_backlog,
             // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
             cancel_transcription,
             user_display_name,
@@ -8767,6 +9098,11 @@ pub fn run() {
                 // into is torn down — first, ahead of the quit teardown.
                 if power::unregister_sleep_wake_observer() {
                     log::info!("exit: sleep/wake observer unregistered");
+                }
+                // review-opus2 A7: no summary sidecar outlives the app.
+                let stopped = summarize::stop_all_sidecars();
+                if stopped > 0 {
+                    log::info!("exit: stopped {stopped} notes sidecar(s)");
                 }
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let report = quit_teardown(app_handle, &state);

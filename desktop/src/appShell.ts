@@ -4,7 +4,10 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MEETING_PROGRESS_EVENT, foldProgress, type MeetingProgressEvent } from "./meetings/progress";
+import {
+  MEETING_PROGRESS_EVENT, foldProgress, notesStatusEvent, reloadsMeetings,
+  type MeetingProgressEvent, type NotesStatus,
+} from "./meetings/progress";
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
@@ -1295,7 +1298,7 @@ export function useAppShell() {
     let alive = true;
     listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) => {
       setMeetingProgress((m) => foldProgress(m, e.payload));
-      if (e.payload.state !== "transcribing") void loadMeetings(meetingQuery);
+      if (reloadsMeetings(e.payload.state)) void loadMeetings(meetingQuery);
     })
       .then((u) => {
         if (alive) off = u;
@@ -1307,6 +1310,15 @@ export function useAppShell() {
       off?.();
     };
   }, [loadMeetings, meetingQuery]);
+  // #250 round 3 — a card opened after an event went by still knows where
+  // its notes are.
+  useEffect(() => {
+    invoke<NotesStatus[]>("list_notes_jobs")
+      .then((jobs) =>
+        setMeetingProgress((m) => jobs.reduce((acc, j) => (acc[j.id] ? acc : foldProgress(acc, notesStatusEvent(j))), m)),
+      )
+      .catch((e) => console.error(e));
+  }, []);
   const retryMeeting = useCallback(
     async (id: string) => {
       await invoke("retry_meeting", { id });
@@ -1314,9 +1326,15 @@ export function useAppShell() {
     },
     [loadMeetings, meetingQuery],
   );
+  const retryNotes = useCallback(async (id: string) => {
+    await invoke("retry_meeting_summary", { id });
+  }, []);
+  const cancelNotes = useCallback(async (id: string) => {
+    await invoke("cancel_meeting_summary", { id });
+  }, []);
 
   return {
-    meetingProgress, retryMeeting,
+    meetingProgress, retryMeeting, retryNotes, cancelNotes,
     activeNoteId, applyBinding, booting, bootError, bootErrors, retryBoot, buyPrompt, buyYap, candidates,
     captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
     consent, consentOpen, consentRef, copyAgainId, copyText, crashToastShown,

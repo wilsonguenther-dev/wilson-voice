@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
 import {
-  canRetry, meetingStateLabel, summaryFirstLine, transcribedLabel, transcribePercent,
-  transcribeProgress,
+  canCancelNotes, canRetryNotes, canRetryTranscript, meetingStateLabel, notesLabel, retryNotesLabel,
+  summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
+import NotesView from "../meetings/NotesView";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -23,7 +25,7 @@ export default function Meetings() {
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting,
     toast,
   } = useAppCtx();
-  const { meetingProgress: progress, retryMeeting: retry } = useAppCtx();
+  const { meetingProgress: progress, retryMeeting: retry, retryNotes, cancelNotes } = useAppCtx();
   const retryMeeting = async (id: string) => {
     try {
       await retry(id);
@@ -31,6 +33,30 @@ export default function Meetings() {
       toast(errorText(e));
     }
   };
+  const notesAction = async (run: (id: string) => Promise<void>, id: string) => {
+    try {
+      await run(id);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  };
+  // #250 round 3 (A3) — past meetings are summarized only on this one click;
+  // an upgrade never starts the notes-model download on its own.
+  const [backlog, setBacklog] = useState<{ count: number; offer: boolean } | null>(null);
+  useEffect(() => {
+    invoke<{ count: number; offer: boolean }>("notes_backlog")
+      .then(setBacklog)
+      .catch(() => setBacklog(null));
+  }, [meetings.length]);
+  async function answerBacklog(accept: boolean) {
+    try {
+      if (accept) await invoke<number>("summarize_notes_backlog");
+      else await invoke("dismiss_notes_backlog");
+      setBacklog(null);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  }
   // Y5-B — a third `return null` blank page, and the worst of them: the read
   // that feeds it (loadMeetings) swallowed its own rejection, so a failed
   // meetings query rendered as "No meetings yet" — Yap telling a user their
@@ -290,16 +316,32 @@ export default function Meetings() {
                   )}
                 </div>
               ) : (
+                <>
+                {backlog?.offer && (
+                  <div className="card notes-backlog" role="region" aria-label="Notes for past meetings">
+                    <p className="meeting-title">
+                      Summarize {backlog.count} past meeting{backlog.count === 1 ? "" : "s"}?
+                    </p>
+                    <p className="tiny muted">
+                      Yap writes notes on this Mac, one meeting at a time. If the notes model isn't here yet, it
+                      downloads once first (about 1.1 GB).
+                    </p>
+                    <div className="actions">
+                      <button className="primary" onClick={() => void answerBacklog(true)}>Summarize</button>
+                      <button className="ghost" onClick={() => void answerBacklog(false)}>Not now</button>
+                    </div>
+                  </div>
+                )}
                 <ul className="meetings-list" data-meetings-list>
                   {meetings.map((m) => {
                     const tp = transcribeProgress(m, progress[m.id]);
                     const notes = summaryFirstLine(m.summary);
-                    const stateLabel =
-                      tp
-                        ? `Transcribing ${transcribePercent(tp)}%`
-                        : m.state === "complete" && !notes
-                          ? "Transcript ready"
-                          : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
+                    // #250: meetingStateLabel already says "Transcript ready" when no
+                    // notes job is known, and names every notes phase when one is.
+                    const stateLabel = tp
+                      ? `Transcribing ${transcribePercent(tp)}%`
+                      : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
+                    const notesJob = notesLabel(progress[m.id]);
                     return (
                       <li key={m.id} className="meeting-row" data-meeting-state={m.state}>
                         <div className="meeting-row-main">
@@ -342,6 +384,10 @@ export default function Meetings() {
                             <p className="meeting-row-detail" title={notes}>
                               <span>{notes}</span>
                             </p>
+                          ) : m.state === "complete" && notesJob && canCancelNotes(progress[m.id]) ? (
+                            <p className="meeting-row-detail">
+                              <span>{notesJob}</span>
+                            </p>
                           ) : m.state === "complete" ? (
                             <p className="meeting-row-detail">
                               <span>No notes yet — </span>
@@ -362,8 +408,20 @@ export default function Meetings() {
                           <button className="primary" onClick={() => openMeetingDetail(m.id)}>
                             Open
                           </button>
-                          {canRetry(m.state) && (
+                          {canRetryTranscript(m.state, progress[m.id]) && (
                             <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                          )}
+                          {canCancelNotes(progress[m.id]) && (
+                            <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
+                              Cancel notes
+                            </button>
+                          )}
+                          {canRetryNotes(m.state, progress[m.id], Boolean(m.summary)) && (
+                            <button onClick={() => void notesAction(retryNotes, m.id)}>
+                              {canRetryTranscript(m.state, progress[m.id]) && retryNotesLabel(progress[m.id]) === "Retry"
+                                ? "Retry notes"
+                                : retryNotesLabel(progress[m.id])}
+                            </button>
                           )}
                           <button
                             className="ghost"
@@ -390,6 +448,7 @@ export default function Meetings() {
                     );
                   })}
                 </ul>
+                </>
               )}
             </>
       )}
@@ -449,8 +508,8 @@ export default function Meetings() {
 
               {openMeeting.meeting.summary && (
                 <div className="panel">
-                  <h3>Summary</h3>
-                  <p>{openMeeting.meeting.summary}</p>
+                  <h3>Notes</h3>
+                  <NotesView markdown={openMeeting.meeting.summary} />
                 </div>
               )}
 
