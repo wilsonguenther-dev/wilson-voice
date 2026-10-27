@@ -182,15 +182,37 @@ export function holdPillHitbox(rect: { x: number; y: number; w: number; h: numbe
   sendCapsule();
 }
 
+/** A rect in window-logical points, as `watchPillHitbox` publishes it. */
+export interface HitRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PillHitboxWatch {
+  /** Re-measure and re-publish now (the hot area changed without a resize). */
+  refresh(): void;
+  /** Disconnect every observer. */
+  stop(): void;
+}
+
 /**
  * Track a DOM-laid-out capsule's rect and keep the backend current. Resizes come
  * from the capsule's own expand/collapse transition; the `data-dock` attribute
- * moves it sideways without resizing it, so watch that too. Returns a teardown.
+ * moves it sideways without resizing it, so watch that too.
+ *
+ * Y5-E — `shape` maps the measured capsule to the rect the panel must take the
+ * cursor over. ClassicPill passes `hotRect`, so while the pill is hover-expanded
+ * the published hitbox is the capsule PLUS the alpha margin float.css paints —
+ * the panel's ignore-mouse region and the painted hot area are one rect. When
+ * the hover phase flips without a resize, the caller calls `refresh()`.
  */
-export function watchPillHitbox(el: HTMLElement): () => void {
+export function watchPillHitbox(el: HTMLElement, shape: (capsule: HitRect) => HitRect = (r) => r): PillHitboxWatch {
   const push = () => {
-    const r = el.getBoundingClientRect();
-    reportPillHitbox(r.left, r.top, r.width, r.height);
+    const b = el.getBoundingClientRect();
+    const r = shape({ x: b.left, y: b.top, w: b.width, h: b.height });
+    reportPillHitbox(r.x, r.y, r.w, r.h);
   };
   push();
   const ro = new ResizeObserver(push);
@@ -198,9 +220,12 @@ export function watchPillHitbox(el: HTMLElement): () => void {
   const mo = new MutationObserver(push);
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-dock"] });
   window.addEventListener("resize", push);
-  return () => {
-    ro.disconnect();
-    mo.disconnect();
-    window.removeEventListener("resize", push);
+  return {
+    refresh: push,
+    stop: () => {
+      ro.disconnect();
+      mo.disconnect();
+      window.removeEventListener("resize", push);
+    },
   };
 }

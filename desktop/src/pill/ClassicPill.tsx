@@ -14,6 +14,10 @@ import {
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import {
+  collapseDueIn, hotRect, initialHover, stepHover, PILL_HOVER_OUT_EVENT,
+  type HoverInput, type HoverPhase, type HoverState, type Rect,
+} from "./hitbox";
+import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
@@ -92,6 +96,12 @@ export default function ClassicPill(
   const levelRef = useRef(0);
   const smoothRef = useRef(0);
   const pillRef = useRef<HTMLDivElement | null>(null);
+  // Y5-E — the hot area wraps the capsule: its layout box IS the capsule's
+  // (untransformed by the squash), and its `::before` paints the alpha margin
+  // while hover-expanded. Measured for both the hover reducer and the hitbox.
+  const hotElRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<HoverPhase>("collapsed");
+  const hoverRef = useRef<HoverState>(initialHover());
   const prevBusy = useRef(false);
   const doneTimer = useRef<number | null>(null);
   // Set by the rAF effect; called by the audio_level listener to re-arm the
@@ -117,9 +127,65 @@ export default function ClassicPill(
 
   // YV65 — publish the capsule's rect so the panel only takes the cursor over
   // the pill itself; the transparent shadow margin stays click-through.
+  // Y5-E — ...and while hover-expanded, the capsule PLUS the alpha margin
+  // float.css paints, through the same `hotRect` the reducer tests against. The
+  // hover machine: expand the moment the cursor is on the capsule, collapse only
+  // once it has been outside the EXPANDED hot rect for `HOVER.collapseAfterMs`.
   useEffect(() => {
-    const el = pillRef.current;
-    return el ? watchPillHitbox(el) : undefined;
+    const el = hotElRef.current;
+    if (!el) return undefined;
+    const viewport = (): Rect => ({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight });
+    const capsule = (): Rect => {
+      const b = el.getBoundingClientRect();
+      return { x: b.left, y: b.top, w: b.width, h: b.height };
+    };
+    const watch = watchPillHitbox(el, (r) => hotRect(r, hoverRef.current.phase, viewport()));
+    let timer: number | null = null;
+    let dead = false;
+    let unlisten: (() => void) | null = null;
+    const feed = (input: HoverInput) => {
+      if (dead) return;
+      const prev = hoverRef.current;
+      const next = stepHover(prev, input, capsule(), viewport());
+      hoverRef.current = next;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      // The debounce's clock: nothing else may arrive once the cursor is gone
+      // (the panel is click-through again), so the collapse is a timer, not a
+      // wait for the next pointer event.
+      const due = collapseDueIn(next, input.at);
+      if (due !== null) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          feed({ at: performance.now() });
+        }, due);
+      }
+      if (next.phase !== prev.phase) {
+        setHover(next.phase);
+        watch.refresh();
+      }
+    };
+    const onMove = (e: PointerEvent) => feed({ at: performance.now(), x: e.clientX, y: e.clientY });
+    const onGone = () => feed({ at: performance.now(), gone: true });
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerdown", onMove);
+    document.documentElement.addEventListener("pointerleave", onGone);
+    // The backend owns click-through: once the cursor leaves the published
+    // hitbox the webview stops getting pointer events, so it says so instead.
+    listen(PILL_HOVER_OUT_EVENT, onGone)
+      .then((u) => (dead ? u() : (unlisten = u)))
+      .catch(() => {});
+    return () => {
+      dead = true;
+      if (timer !== null) clearTimeout(timer);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerdown", onMove);
+      document.documentElement.removeEventListener("pointerleave", onGone);
+      unlisten?.();
+      watch.stop();
+    };
   }, []);
 
   useEffect(() => {
@@ -285,6 +351,7 @@ export default function ClassicPill(
 
   return (
     <div className="stage">
+      <div ref={hotElRef} className="pill-hot" data-hover={hover}>
       <div
         ref={pillRef}
         className={cls}
@@ -344,6 +411,7 @@ export default function ClassicPill(
             </div>
           </>
         )}
+      </div>
       </div>
     </div>
   );

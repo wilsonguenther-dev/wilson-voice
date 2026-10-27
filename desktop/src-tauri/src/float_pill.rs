@@ -917,8 +917,21 @@ fn update_interactive(app: &AppHandle) {
         || (w.is_visible().unwrap_or(false) && cursor_over_capsule(app, &w));
     if INTERACTIVE.swap(want, Ordering::SeqCst) != want {
         let _ = w.set_ignore_cursor_events(!want);
+        // Y5-E — once the panel is click-through again the webview gets no
+        // more pointer events, so a hover-expanded pill would never learn the
+        // cursor left. Tell it; its hover reducer starts the collapse debounce.
+        if !want {
+            if let Err(e) = app.emit(PILL_HOVER_OUT_EVENT, ()) {
+                log::warn!("emit {PILL_HOVER_OUT_EVENT}: {e}");
+            }
+        }
     }
 }
+
+/// Y5-E — the Tauri event `update_interactive` emits when it hands the panel
+/// back to click-through (the cursor left the published hitbox). The pill's
+/// hover reducer listens (desktop/src/pill/hitbox.ts `PILL_HOVER_OUT_EVENT`).
+pub const PILL_HOVER_OUT_EVENT: &str = "pill-hover-out";
 
 /// Recompute and publish the capsule's AppKit screen rect. Main thread only —
 /// `outer_position`/`primary_monitor` are window-server queries.
