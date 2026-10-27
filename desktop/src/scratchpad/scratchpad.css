@@ -36,16 +36,8 @@ body {
   padding: 6px 8px;
   min-width: 0;
 }
-.sp-search:focus-visible,
-.sp-title:focus-visible,
-.sp-text:focus-visible,
-.sp-item:focus-visible,
-.sp-btn:focus-visible,
-.sp-new:focus-visible,
-.sp-tab button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
+/* Y5-J — keyboard focus for the search, title, text, list, buttons and tabs
+ * is the ONE global ring in src/a11y/focus.css (imported by scratchpad-main). */
 .sp-new,
 .sp-btn {
   font: inherit;
