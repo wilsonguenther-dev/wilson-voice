@@ -921,6 +921,9 @@ const AGENT_STUB = new Proxy(
     advisory: [],
     prs: [],
     items: [],
+    // The recon baseline on main, all green: gateRedOnMain() reads it before triage and the builders,
+    // and a Proxy value would read as UNREADABLE (fail closed) and halt every dry run before review.
+    gateExits: { typecheck: 0, test: 0, build: 0, polish: 0, diarize: 0, stage: 0, polishtest: 0, diarizetest: 0, fmt: 0, clippy: 0, cargotest: 0 },
     text: '{"status":"merged","verdict":"PASS","blocking":[],"advisory":[],"exits":[0],"allZero":true}',
     output: '{"status":"merged","verdict":"PASS","blocking":[],"advisory":[]}',
     result: {},
