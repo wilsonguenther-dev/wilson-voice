@@ -82,4 +82,36 @@ describe("a11y — semantics (Y5-J)", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it("no inline style zeroes the outline either", () => {
+    // The CSS sweep above cannot see a React `style={{ ... }}` object, and an
+    // inline declaration beats `input:focus-visible` outright (fix round 1:
+    // views/Dictionary.tsx's search field shipped `outline: "none"` inline,
+    // so a keyboard user tabbing into it got no ring at all).
+    const ZEROED = [
+      /\boutline\s*:\s*(["'`])\s*(none|0(px)?|transparent)\b/g,
+      /\boutline\s*:\s*0\b/g,
+      /\boutlineStyle\s*:\s*(["'`])\s*(none|hidden)\b/g,
+      /\boutlineWidth\s*:\s*((["'`])\s*0(px)?\b|0\b)/g,
+      /\boutlineColor\s*:\s*(["'`])\s*transparent\b/g,
+      /style=\{?["'`][^"'`]*outline\s*:\s*(none|0)/g,
+    ];
+    // Each pattern is proven to match the shape it hunts.
+    const shapes = [
+      'outline: "none"', "outline: 0", 'outlineStyle: "none"', "outlineWidth: 0", 'outlineColor: "transparent"', 'style="outline:none"',
+    ];
+    ZEROED.forEach((re, i) => expect(shapes[i].match(re), shapes[i]).not.toBeNull());
+    // ...and does not trip on a colour that merely lives under an `outline` key.
+    expect(ZEROED.some((re) => 'outline: "#6b3a2e"'.match(re))).toBe(false);
+    const offenders: string[] = [];
+    for (const [file, raw] of Object.entries(TSX)) {
+      // Comments are blanked, not removed, so the reported line is the real one.
+      const blank = (c: string) => c.replace(/[^\n]/g, " ");
+      const src = raw.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/^\s*\/\/.*$/gm, blank);
+      for (const re of ZEROED) {
+        for (const m of src.matchAll(re)) offenders.push(`${file}:${lineOf(src, m.index ?? 0)} ${m[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });
