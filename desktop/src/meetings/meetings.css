@@ -1,0 +1,180 @@
+/* yap-uiux-2026-10-16-MEETINGS — the Meetings list.
+   M2: one compact, fixed-height row per meeting — title + state chip, then
+   one line of detail (the notes' first line, a transcribing meeting's
+   progress, or the failure) — so a 700 px window shows the list, not three
+   cards. Actions surface on hover/focus like every other list in the app. */
+
+.meetings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.meeting-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.meeting-row:last-child {
+  border-bottom: 0;
+}
+
+.meeting-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meeting-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.meeting-row-title {
+  font-weight: 590;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 590;
+  text-align: left;
+  cursor: pointer;
+}
+.meeting-row-title:hover {
+  text-decoration: underline;
+}
+.meeting-row-head .meeting-state {
+  flex: none;
+  white-space: nowrap;
+}
+.meeting-row-when {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.meeting-row-detail {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meeting-row-detail.bad {
+  color: var(--danger-ink);
+}
+.meeting-row-detail > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The transcribing bar — determinate, never a spinner. */
+.meeting-row-track {
+  flex: none;
+  width: 96px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  overflow: hidden;
+}
+.meeting-row-track > span {
+  display: block;
+  height: 100%;
+  background: var(--warn-ink);
+}
+
+/* Hidden, the actions sit out of flow so the duration/date stays flush right.
+   Revealed (hover or keyboard focus), they take the date's place IN FLOW: the
+   date leaves and the text column shrinks and ellipsizes before the buttons.
+   Nothing is painted over anything, so the row never depends on a mask —
+   --bg-card is translucent, and a gradient mask let the date show through
+   behind the transparent ghost buttons (PR #246 review). */
+.meeting-row .actions {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  flex: none;
+  flex-wrap: nowrap;
+  gap: 6px;
+  opacity: 0;
+  /* Hidden actions must not swallow a click meant for the date/duration
+     column underneath; they take pointer events only once revealed. */
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.meeting-row:hover .actions,
+.meeting-row:focus-within .actions {
+  position: static;
+  transform: none;
+  margin-left: 12px;
+  opacity: 1;
+  pointer-events: auto;
+}
+.meeting-row:hover .meeting-row-when,
+.meeting-row:focus-within .meeting-row-when {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .meeting-row .actions { transition: none; }
+}
+
+/* The needs-model state: a calm one-click row, not an error banner. */
+.meetings-engine {
+  display: flex;
+  text-align: left;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.meetings-engine-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.meeting-row-detail .link {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent-action);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.empty .meetings-engine {
+  width: min(100%, 520px);
+  margin: 16px auto 0;
+}

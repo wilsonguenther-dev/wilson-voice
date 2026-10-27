@@ -127,8 +127,7 @@ function Preview() {
           <div>
             <h1>Meetings</h1>
             <p className="lede">
-              Recorded meetings, searchable and exportable. Audio is kept for 7 days;
-              the transcript stays.
+              Every meeting you record, searchable and exportable.
             </p>
           </div>
           <div className="head-state">

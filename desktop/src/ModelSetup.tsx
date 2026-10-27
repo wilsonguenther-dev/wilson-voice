@@ -52,7 +52,7 @@ function byRecommendation(a: ModelEntry, b: ModelEntry) {
  * (nothing to fetch — selecting it is instantly "ready"), else the catalog's
  * top recommendation. Never a hardcoded id: the catalog is the source of truth.
  */
-function autoPick(models: ModelEntry[]): ModelEntry | undefined {
+export function autoPick(models: ModelEntry[]): ModelEntry | undefined {
   return models.find((m) => m.downloaded) ?? [...models].sort(byRecommendation)[0];
 }
 

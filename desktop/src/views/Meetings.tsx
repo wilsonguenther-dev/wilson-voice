@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { canRetry, meetingStateLabel } from "../meetings/progress";
+import {
+  canRetry, meetingStateLabel, summaryFirstLine, transcribedLabel, transcribePercent,
+  transcribeProgress,
+} from "../meetings/progress";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
+import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
+import "../meetings/meetings.css";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -12,8 +17,9 @@ export default function Meetings() {
   const {
     booting, confirmDeleteMeeting, insights, loadMeetings, meetingBusy, meetingKind, meetingKinds,
     meetingsError, meetingsLoading,
-    meetingQuery, meetingStatus, meetings, openMeeting, openMeetingDetail, setConfirmDeleteMeeting,
-    setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting, 
+    meetingQuery, meetingStatus, meetings, modelSetup, openMeeting, openMeetingDetail,
+    openModelSettings, setConfirmDeleteMeeting,
+    setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting,
     toast,
   } = useAppCtx();
   const { meetingProgress: progress, retryMeeting: retry } = useAppCtx();
@@ -148,7 +154,22 @@ export default function Meetings() {
                 </div>
               )}
 
+              {/* The toolbar exists once there is a list to search (or a
+                  search to clear). With zero meetings the empty state below
+                  carries the picker and the record button, so neither is
+                  shown twice. Record is the FIRST control (walk rule). */}
+              {(meetings.length > 0 || meetingQuery) && (
               <div className="toolbar">
+                {!meetingStatus.recording && (
+                  <button
+                    className="primary"
+                    disabled={meetingBusy || !!disabledReason(meetingStatus)}
+                    title={disabledReason(meetingStatus) || undefined}
+                    onClick={toggleMeetingRecording}
+                  >
+                    Record a meeting
+                  </button>
+                )}
                 <input
                   type="search"
                   value={meetingQuery}
@@ -190,19 +211,16 @@ export default function Meetings() {
                     ))}
                   </div>
                 )}
-                {/* Once there ARE meetings the CTA is a toolbar button; the
-                    big empty-state version below is for the first one. */}
-                {meetings.length > 0 && !meetingStatus.recording && (
-                  <button
-                    className="primary"
-                    disabled={meetingBusy || !!disabledReason(meetingStatus)}
-                    title={disabledReason(meetingStatus) || undefined}
-                    onClick={toggleMeetingRecording}
-                  >
-                    Record a meeting
-                  </button>
-                )}
               </div>
+              )}
+
+              {/* yap-uiux-2026-10-16-MEETINGS — the needs-model state: one
+                  click installs the speech engine; never an error. It sits
+                  AFTER the record control (record/stop is always the first
+                  control); with no meetings it lives inside the empty state. */}
+              {(meetings.length > 0 || meetingQuery) && (
+                <SpeechEngineNotice setup={modelSetup} />
+              )}
 
               {meetings.length === 0 ? (
                 <div className="empty" data-empty-state="meetings">
@@ -217,7 +235,10 @@ export default function Meetings() {
                   <p>
                     {meetingQuery
                       ? "Search covers meeting titles and every word transcribed inside them."
-                      : "Recorded meetings land here — searchable, exportable, and deletable in one click. Audio is kept for 7 days; the transcript is kept for good."}
+                      : `Recorded meetings land here — searchable and exportable. Audio is kept for ${
+                          // 0 is "no meetings yet" in Insights, never a real policy.
+                          insights?.meetings?.audioRetentionDays || 7
+                        } days; the transcript is kept for good.`}
                   </p>
                   {/* YV95 / finding #6 — the empty state IS the entry point.
                       Everything above this item shipped a feature with no way
@@ -260,64 +281,110 @@ export default function Meetings() {
                         {disabledReason(meetingStatus) ??
                           `Or press ⌃⌘M from anywhere, or pick “Record a meeting” in the menu bar. Everything stays on this Mac.`}
                       </p>
+                      <SpeechEngineNotice setup={modelSetup} />
                     </>
                   )}
                 </div>
               ) : (
-                <ul className="feed">
-                  {meetings.map((m) => (
-                    <li key={m.id} className="card">
-                      <div className="card-meta">
-                        <span>
-                          {formatTime(m.startedAt)} ·{" "}
-                          {formatMeetingDuration(m.durationSeconds)}
-                        </span>
-                        <span>
-                          {m.segmentCount}{" "}
-                          {m.segmentCount === 1 ? "segment" : "segments"}
-                          {m.audioKept ? "" : " · audio expired"}
-                        </span>
-                      </div>
-                      <p className="meeting-title">
-                        {m.title}
-                        <span className={`meeting-state ${m.state}`}>
-                          {meetingStateLabel(m.state, progress[m.id], Boolean(m.summary))}
-                        </span>
-                      </p>
-                      {m.error && <p className="tiny bad">{m.error}</p>}
-                      <div className="actions">
-                        {canRetry(m.state) && (
-                          <button onClick={() => void retryMeeting(m.id)}>Retry</button>
-                        )}
-                        <button
-                          className="primary"
-                          onClick={() => openMeetingDetail(m.id)}
-                        >
-                          Open transcript
-                        </button>
-                        <button
-                          className="ghost"
-                          disabled={meetingBusy}
-                          onClick={() => exportMeeting(m.id)}
-                        >
-                          Export Markdown
-                        </button>
-                        <button
-                          className="ghost danger"
-                          disabled={meetingBusy}
-                          onClick={() =>
-                            confirmDeleteMeeting === m.id
-                              ? removeMeeting(m.id)
-                              : setConfirmDeleteMeeting(m.id)
-                          }
-                        >
-                          {confirmDeleteMeeting === m.id
-                            ? "Delete for good?"
-                            : "Delete"}
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                <ul className="meetings-list" data-meetings-list>
+                  {meetings.map((m) => {
+                    const tp = transcribeProgress(m, progress[m.id]);
+                    const notes = summaryFirstLine(m.summary);
+                    const stateLabel =
+                      tp
+                        ? `Transcribing ${transcribePercent(tp)}%`
+                        : m.state === "complete" && !notes
+                          ? "Transcript ready"
+                          : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
+                    return (
+                      <li key={m.id} className="meeting-row" data-meeting-state={m.state}>
+                        <div className="meeting-row-main">
+                          <div className="meeting-row-head">
+                            <button
+                              type="button"
+                              className="meeting-row-title"
+                              title={m.title}
+                              onClick={() => openMeetingDetail(m.id)}
+                            >
+                              {m.title}
+                            </button>
+                            <span className={`meeting-state ${m.state}`}>{stateLabel}</span>
+                            <span className="meeting-row-when">
+                              {formatMeetingDuration(m.durationSeconds)} · {formatTime(m.startedAt)}
+                            </span>
+                          </div>
+                          {/* One line of detail, in priority order: the failure,
+                              the transcription's progress, the notes, or what to
+                              do about missing notes. */}
+                          {m.error ? (
+                            <p className="meeting-row-detail bad" title={m.error}>
+                              <span>{m.error}</span>
+                            </p>
+                          ) : tp ? (
+                            <p className="meeting-row-detail" data-meeting-progress>
+                              <span
+                                className="meeting-row-track"
+                                role="progressbar"
+                                aria-label={`${m.title} transcription`}
+                                aria-valuenow={transcribePercent(tp)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                              >
+                                <span style={{ width: `${transcribePercent(tp)}%` }} />
+                              </span>
+                              <span>{transcribedLabel(tp)}</span>
+                            </p>
+                          ) : notes ? (
+                            <p className="meeting-row-detail" title={notes}>
+                              <span>{notes}</span>
+                            </p>
+                          ) : m.state === "complete" ? (
+                            <p className="meeting-row-detail">
+                              <span>No notes yet — </span>
+                              <button type="button" className="link" onClick={openModelSettings}>
+                                add a notes model
+                              </button>
+                            </p>
+                          ) : (
+                            <p className="meeting-row-detail">
+                              <span>
+                                {m.segmentCount} {m.segmentCount === 1 ? "segment" : "segments"}
+                                {m.audioKept ? "" : " · audio expired"}
+                              </span>
+                            </p>
+                          )}
+                        </div>
+                        <div className="actions">
+                          <button className="primary" onClick={() => openMeetingDetail(m.id)}>
+                            Open
+                          </button>
+                          {canRetry(m.state) && (
+                            <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                          )}
+                          <button
+                            className="ghost"
+                            disabled={meetingBusy}
+                            onClick={() => exportMeeting(m.id)}
+                          >
+                            Export
+                          </button>
+                          <button
+                            className="ghost danger"
+                            disabled={meetingBusy}
+                            onClick={() =>
+                              confirmDeleteMeeting === m.id
+                                ? removeMeeting(m.id)
+                                : setConfirmDeleteMeeting(m.id)
+                            }
+                          >
+                            {confirmDeleteMeeting === m.id
+                              ? "Delete for good?"
+                              : "Delete"}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </>
