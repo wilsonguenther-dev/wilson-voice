@@ -30,6 +30,12 @@ pub mod diarize;
 /// zero model bytes.
 pub mod diarize_stub;
 
+/// yap-audit-eval-call-bleed — the call-bleed fixture's script and mix, and the
+/// pure metrics (echo duplicate rate, mid-sentence ends, median segment length,
+/// notes owner accuracy, summary verbatim ratio) that score a transcript of it.
+pub mod call_bleed;
+pub mod eval_metrics;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

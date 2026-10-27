@@ -7,7 +7,8 @@
     "device-change",
     "two-track-ordering",
     "room-3-near-field",
-    "classroom-6-far-field"
+    "classroom-6-far-field",
+    "call-bleed-2voice"
   ],
   "synthesis": {
     "tool": "macOS `say` -> `afconvert` (no network, no third-party asset)",
@@ -16,6 +17,26 @@
   },
   "note": "SYNTHETIC audio only — no real dictation, no meeting recording, and no third party's voice ever enters this corpus. `say` output is stable for a given macOS + voice build and NOT across them, so regenerating on another machine changes every hash below; re-run the writer and commit the diff.",
   "files": [
+    {
+      "path": "call-bleed-2voice/meta.json",
+      "bytes": 25817,
+      "sha256": "b1406e2fb1e358b3dbf03088c386c32286a756f4b4da19c343bd114665e37a12"
+    },
+    {
+      "path": "call-bleed-2voice/reference.txt",
+      "bytes": 4844,
+      "sha256": "76bca911a8e393f27e6d3a8d10709840a5952d92feb428c857fb3df9c55ddb69"
+    },
+    {
+      "path": "call-bleed-2voice/track0.wav",
+      "bytes": 8801992,
+      "sha256": "8848b99dfb9aabd2a6035de6be818e8bed050e4975d7050823217116e3b668cd"
+    },
+    {
+      "path": "call-bleed-2voice/track1.wav",
+      "bytes": 8801992,
+      "sha256": "80d5c9929d63a75316bd7c37c44bc8293eabb024b754292a93bf9ad8ce77a127"
+    },
     {
       "path": "classroom-6-far-field/audio.wav",
       "bytes": 2635182,

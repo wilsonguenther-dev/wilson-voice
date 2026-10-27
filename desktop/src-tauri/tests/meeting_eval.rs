@@ -125,6 +125,15 @@ use wilson_voice_lib::meetings::{
 };
 use wilson_voice_lib::rtring::CaptureAnchor;
 
+// yap-audit-eval-call-bleed: fixture (g)'s script/mix and the pure metrics.
+use support::call_bleed::{
+    bleed_of, gap_before, reference_blocks, CallBleedMeta, CallTurn, Plant, PlantedCommitment,
+    PlantedDecision, BLEED_DELAY_SECONDS, BLEED_GAIN_DB, BLEED_TAIL, SCRIPT,
+};
+use support::eval_metrics::{
+    echo_dup_rate, median_segment_seconds, mid_sentence_end_rate, TimedText,
+};
+
 // ---------------------------------------------------------------------------
 // Where things are
 // ---------------------------------------------------------------------------
@@ -155,15 +164,20 @@ const ROOM_3: &str = "room-3-near-field";
 /// simultaneous), so that "full N-way clustering cannot do this" is a
 /// measurement rather than an opinion.
 const CLASSROOM_6: &str = "classroom-6-far-field";
+/// yap-audit-eval-call-bleed fixture (g): a two-voice call whose far side leaks
+/// into the microphone, with commitments and decisions planted for the notes
+/// metrics. Two tracks, `track0.wav` (mic) and `track1.wav` (system).
+const CALL_BLEED: &str = "call-bleed-2voice";
 /// Every fixture the manifest must name. Fixture (c) is generated here but
 /// consumed by YV92 (anti-alias + input format change), not by this file's gates.
-const FIXTURE_IDS: [&str; 6] = [
+const FIXTURE_IDS: [&str; 7] = [
     LECTURE,
     SEAM_STRESS,
     DEVICE_CHANGE,
     TWO_TRACK,
     ROOM_3,
     CLASSROOM_6,
+    CALL_BLEED,
 ];
 
 /// MEASURED (YV93, Parakeet Unified EN 0.6B on Metal, no meeting tuning, clean
@@ -622,6 +636,10 @@ struct FixtureMeta {
     /// single-track fixture has no place for.
     #[serde(default)]
     two_track: Option<TwoTrackMeta>,
+    /// yap-audit-eval-call-bleed fixture (g): the script, the bleed settings and
+    /// the planted commitments and decisions the notes metrics score against.
+    #[serde(default)]
+    call_bleed: Option<CallBleedMeta>,
     /// YV120 fixtures (e)/(f): who is speaking when, as RTTM speaker turns.
     ///
     /// EXACT by construction, not annotated: the generator places one
@@ -5789,6 +5807,7 @@ fn meeting_eval_generate_corpus() {
     generate_two_track_ordering(&root);
     generate_room_3(&root);
     generate_classroom_6(&root);
+    generate_call_bleed(&root);
 
     write_manifest_from(&root);
 }
@@ -5830,6 +5849,7 @@ fn generate_lecture(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        call_bleed: None,
         two_track: None,
         rttm: Vec::new(),
         speakers: Vec::new(),
@@ -5956,6 +5976,7 @@ fn generate_seam_stress(root: &Path) {
         chunk_overlap_seconds: Some(CHUNK_OVERLAP_SECONDS),
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        call_bleed: None,
         two_track: None,
         rttm: Vec::new(),
         speakers: Vec::new(),
@@ -6009,6 +6030,7 @@ fn generate_device_change(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: Some(change_at),
         source_rates_hz: vec![48_000, 24_000],
+        call_bleed: None,
         two_track: None,
         rttm: Vec::new(),
         speakers: Vec::new(),
@@ -6248,6 +6270,7 @@ fn generate_two_track_ordering(root: &Path) {
         chunk_overlap_seconds: Some(CHUNK_OVERLAP_SECONDS),
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE, TARGET_RATE],
+        call_bleed: None,
         two_track: Some(TwoTrackMeta {
             wavs: vec!["track0.wav".into(), "track1.wav".into()],
             anchors: vec!["track0-anchors.json".into(), "track1-anchors.json".into()],
@@ -6596,6 +6619,7 @@ fn generate_room_3(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        call_bleed: None,
         two_track: None,
         rttm,
         speakers: ROOM_3_SPEAKERS
@@ -6690,6 +6714,7 @@ fn generate_classroom_6(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        call_bleed: None,
         two_track: None,
         rttm,
         speakers: CLASSROOM_6_SPEAKERS
@@ -6717,6 +6742,273 @@ fn meeting_eval_generate_diarization_fixtures() {
     generate_room_3(&root);
     generate_classroom_6(&root);
     write_manifest_from(&root);
+}
+
+/// Fixture (g): a call between two voices whose far side leaks into the mic.
+///
+/// `track1.wav` is the far side alone. `track0.wav` is the near side plus the
+/// far side at -12 dB, 60 ms late, through a short reverb tail, on a quiet room
+/// floor — a laptop's microphone hearing its own speakers. The script, the
+/// planted commitments and decisions and the mix are in
+/// `support/call_bleed.rs`; this function only renders and writes.
+///
+/// Asserted before anything is written, because a fixture whose facts drifted
+/// from its claims would score nothing and say so nowhere: every turn is 2-8 s,
+/// the second near-side voice holds the near side for roughly 30 s, there are
+/// exactly six commitments and two decisions.
+fn generate_call_bleed(root: &Path) {
+    let mut near: Vec<f32> = Vec::new();
+    let mut far: Vec<f32> = Vec::new();
+    let mut turns: Vec<CallTurn> = Vec::new();
+    let mut commitments: Vec<PlantedCommitment> = Vec::new();
+    let mut decisions: Vec<PlantedDecision> = Vec::new();
+
+    for (i, turn) in SCRIPT.iter().enumerate() {
+        let gap = (gap_before(i) * TARGET_RATE as f64) as usize;
+        near.extend(std::iter::repeat_n(0.0f32, gap));
+        far.extend(std::iter::repeat_n(0.0f32, gap));
+        let spoken =
+            trim_silence(&synthesize_with(turn.text, turn.who.voice(), TARGET_RATE)).to_vec();
+        let start = seconds(near.len());
+        let samples: Vec<f32> = spoken.iter().map(|s| *s as f32 / 32_768.0).collect();
+        let silence = vec![0.0f32; samples.len()];
+        if turn.who.is_near() {
+            near.extend(&samples);
+            far.extend(&silence);
+        } else {
+            near.extend(&silence);
+            far.extend(&samples);
+        }
+        let end = seconds(near.len());
+        assert!(
+            (2.0..=8.0).contains(&(end - start)),
+            "turn {i} is {:.2}s — turns are 2-8 s: {}",
+            end - start,
+            turn.text
+        );
+        turns.push(CallTurn {
+            speaker: turn.who.label().to_string(),
+            voice: turn.who.voice().to_string(),
+            track: if turn.who.is_near() {
+                "track0.wav"
+            } else {
+                "track1.wav"
+            }
+            .to_string(),
+            text: turn.text.to_string(),
+            start_seconds: start,
+            end_seconds: end,
+        });
+        match turn.plant {
+            Plant::Nothing => {}
+            Plant::Commitment(keywords) => commitments.push(PlantedCommitment {
+                text: turn.text.to_string(),
+                owner: turn.who.label().to_string(),
+                keywords: keywords.iter().map(|k| k.to_string()).collect(),
+                start_seconds: start,
+            }),
+            Plant::Decision(keywords) => decisions.push(PlantedDecision {
+                text: turn.text.to_string(),
+                keywords: keywords.iter().map(|k| k.to_string()).collect(),
+                start_seconds: start,
+            }),
+        }
+    }
+
+    // The second near-side voice: first to last turn it speaks.
+    let here: Vec<&CallTurn> = turns
+        .iter()
+        .filter(|t| t.speaker == "Someone here")
+        .collect();
+    let window = (
+        here.first().expect("a second voice speaks").start_seconds,
+        here.last().expect("a second voice speaks").end_seconds,
+    );
+    assert!(
+        (25.0..=40.0).contains(&(window.1 - window.0)),
+        "the second near-side voice holds the near side for {:.1}s, not ~30",
+        window.1 - window.0
+    );
+    assert_eq!(commitments.len(), 6, "six planted commitments");
+    assert_eq!(decisions.len(), 2, "two planted decisions");
+
+    // The mic hears the near side and, through the bleed, the far side.
+    let bleed = bleed_of(&far, TARGET_RATE);
+    let total = bleed.len().max(near.len()) + TARGET_RATE as usize;
+    let tone = room_tone(total, 0xB1EE_D001, ROOM_3_TONE);
+    let mut mic = vec![0.0f32; total];
+    for (i, m) in mic.iter_mut().enumerate() {
+        let n = near.get(i).copied().unwrap_or(0.0);
+        let b = bleed.get(i).copied().unwrap_or(0.0);
+        *m = (n + b + tone[i]).clamp(-1.0, 1.0);
+    }
+    let mut system = far.clone();
+    system.resize(total, 0.0);
+
+    let dir = root.join(CALL_BLEED);
+    fs::create_dir_all(&dir).expect("fixture dir");
+    write_wav_16k_mono(&dir.join("track0.wav"), &to_i16(&mic));
+    write_wav_16k_mono(&dir.join("track1.wav"), &to_i16(&system));
+    fs::write(dir.join("reference.txt"), reference_blocks(&turns)).expect("reference");
+
+    let tail_ms = BLEED_TAIL.iter().map(|(d, _)| *d).fold(0.0f64, f64::max) * 1000.0;
+    let meta = FixtureMeta {
+        id: CALL_BLEED.to_string(),
+        kind: "call_bleed_two_voice".to_string(),
+        sample_rate: TARGET_RATE,
+        duration_seconds: seconds(total),
+        utterances: turns
+            .iter()
+            .map(|t| Utterance {
+                text: format!("{}: {}", t.speaker, t.text),
+                start_seconds: t.start_seconds,
+                end_seconds: t.end_seconds,
+            })
+            .collect(),
+        boundary_seconds: Vec::new(),
+        seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
+        device_change_seconds: None,
+        source_rates_hz: vec![TARGET_RATE],
+        call_bleed: Some(CallBleedMeta {
+            tracks: vec!["track0.wav".to_string(), "track1.wav".to_string()],
+            bleed_gain_db: BLEED_GAIN_DB,
+            bleed_delay_ms: BLEED_DELAY_SECONDS * 1000.0,
+            bleed_tail_ms: tail_ms,
+            second_voice_window: window,
+            turns,
+            commitments,
+            decisions,
+        }),
+        two_track: None,
+        // No RTTM on purpose: fixtures with RTTM turns are the diarization
+        // fixtures, and the anti-alias EER arm scores every one of those. Who
+        // speaks when is in `call_bleed.turns`.
+        rttm: Vec::new(),
+        speakers: Vec::new(),
+    };
+    fs::write(
+        dir.join("meta.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&meta).expect("meta serialises")
+        ),
+    )
+    .expect("meta");
+    eprintln!(
+        "wrote {} — {:.1}s, {} turns, second voice {:.1}s–{:.1}s",
+        dir.display(),
+        meta.duration_seconds,
+        SCRIPT.len(),
+        window.0,
+        window.1
+    );
+}
+
+/// Regrow ONLY the call-bleed fixture, then re-hash. Rebuilding the 15-minute
+/// lecture beside it would change its hashes and invalidate a measured WER for
+/// no reason.
+#[test]
+#[ignore = "writer, not a check: renders the call-bleed fixture with `say`"]
+fn meeting_eval_generate_call_bleed() {
+    let root = corpus_root();
+    fs::create_dir_all(&root).expect("corpus root");
+    generate_call_bleed(&root);
+    write_manifest_from(&root);
+}
+
+/// Seconds of `samples` between `from` and `to`, as RMS.
+fn rms_between(samples: &[i16], from: f64, to: f64) -> f64 {
+    let a = (from * TARGET_RATE as f64) as usize;
+    let b = ((to * TARGET_RATE as f64) as usize).min(samples.len());
+    let slice = &samples[a.min(b)..b];
+    if slice.is_empty() {
+        return 0.0;
+    }
+    (slice.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / slice.len() as f64).sqrt()
+}
+
+/// Fixture (g) is what its meta says it is, checked against the SAMPLES: the
+/// mic track carries the far side about 12 dB under the system track while the
+/// far side speaks, and carries (almost) nothing of it while the near side does.
+/// Declared bleed settings are provenance, not evidence — the first diarization
+/// roster shipped six declared voices over one actual one.
+#[test]
+fn meeting_eval_call_bleed_fixture_has_the_bleed_it_declares() {
+    let Some(root) = corpus() else { return };
+    let meta = read_meta(&root, CALL_BLEED);
+    let cb = meta
+        .call_bleed
+        .as_ref()
+        .expect("fixture (g) carries its call-bleed truth");
+    assert_eq!(
+        cb.turns.len(),
+        SCRIPT.len(),
+        "the corpus predates the script — regrow it"
+    );
+    assert_eq!(cb.commitments.len(), 6);
+    assert_eq!(cb.decisions.len(), 2);
+    assert_eq!(cb.bleed_gain_db, BLEED_GAIN_DB);
+    assert_eq!(cb.bleed_delay_ms, BLEED_DELAY_SECONDS * 1000.0);
+    let (r0, mic) = read_wav_i16(&root.join(CALL_BLEED).join("track0.wav"));
+    let (r1, sys) = read_wav_i16(&root.join(CALL_BLEED).join("track1.wav"));
+    assert_eq!((r0, r1), (TARGET_RATE, TARGET_RATE));
+    assert_eq!(mic.len(), sys.len(), "the two tracks are the same length");
+    let mut ratios = Vec::new();
+    for turn in cb.turns.iter().filter(|t| t.speaker == "Them") {
+        let heard = rms_between(&mic, turn.start_seconds + 0.2, turn.end_seconds - 0.2);
+        let sent = rms_between(&sys, turn.start_seconds + 0.2, turn.end_seconds - 0.2);
+        ratios.push(20.0 * (heard / sent).log10());
+    }
+    ratios.sort_by(|a, b| a.total_cmp(b));
+    let median = ratios[ratios.len() / 2];
+    eprintln!("{CALL_BLEED}: far side in the mic is {median:.1} dB re the system track (declared {BLEED_GAIN_DB})");
+    assert!(
+        (median - BLEED_GAIN_DB).abs() <= 2.0,
+        "the bleed measures {median:.1} dB, not {BLEED_GAIN_DB} dB"
+    );
+}
+
+/// Print — never gate — the call-bleed metrics for the fixture as the shipped
+/// pipeline transcribes it today. These are the BASELINES the fixing items
+/// improve on: the fixed 30 s windows give a long median segment, mid-sentence
+/// ends and (because the mic track carries the far side) a high echo rate.
+/// Gates are added by the items that fix each one (NT11, utterance segments,
+/// NT4).
+#[test]
+fn meeting_eval_call_bleed_prints_the_metrics() {
+    let Some(root) = corpus() else { return };
+    let (_, mic) = read_wav_i16(&root.join(CALL_BLEED).join("track0.wav"));
+    let (_, sys) = read_wav_i16(&root.join(CALL_BLEED).join("track1.wav"));
+    let decoder = Decoder::new();
+    let to_segments = |decode: &ChunkedDecode, total: f64| -> Vec<TimedText> {
+        decode
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let end = decode
+                    .segments
+                    .get(i + 1)
+                    .map(|n| n.start_seconds)
+                    .unwrap_or(total);
+                TimedText::new(s.start_seconds, end, &s.text)
+            })
+            .collect()
+    };
+    let mic_decode = decoder.decode_chunked(&mic, "call-bleed-mic");
+    let sys_decode = decoder.decode_chunked(&sys, "call-bleed-system");
+    let total = mic.len() as f64 / TARGET_RATE as f64;
+    let mic_segments = to_segments(&mic_decode, total);
+    let call_segments = to_segments(&sys_decode, total);
+    println!(
+        "meeting_eval {CALL_BLEED} echo_dup_rate={:.4} mid_sentence_end_rate={:.4} median_segment_seconds={:.2}",
+        echo_dup_rate(&call_segments, &mic_segments),
+        mid_sentence_end_rate(&mic_segments),
+        median_segment_seconds(&mic_segments),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -6755,8 +7047,20 @@ fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
 }
 
 fn write_manifest_from(root: &Path) {
+    // Only the NAMED fixtures are hashed. The corpus root is a durable directory
+    // on one machine and may hold fixtures that are not (yet) part of the
+    // committed corpus; walking the whole root would hash them into the manifest.
     let mut files: Vec<PathBuf> = Vec::new();
-    walk(root, &mut files);
+    for id in FIXTURE_IDS {
+        let dir = root.join(id);
+        assert!(
+            dir.is_dir(),
+            "fixture {id} is missing from {}",
+            root.display()
+        );
+        walk(&dir, &mut files);
+    }
+    files.sort();
     assert!(!files.is_empty(), "nothing in {}", root.display());
 
     let entries: Vec<FileEntry> = files
