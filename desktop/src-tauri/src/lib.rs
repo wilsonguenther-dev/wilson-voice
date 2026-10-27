@@ -7150,7 +7150,8 @@ pub(crate) fn release_offer_pill(app: &AppHandle) {
         || *st.busy.lock()
         || float_pill::dictating()
         || float_pill::meeting_recording();
-    let show = st.settings.lock().show_floating_pill;
+    // Y6-B: the idle pill obeys an hour-hide too.
+    let show = idle_pill_on(&st);
     float_pill::after_recording(app, float_pill::pill_visible_after_card(show, in_flight));
 }
 
