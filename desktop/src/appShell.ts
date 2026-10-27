@@ -1098,11 +1098,15 @@ export function useAppShell() {
   // YV78 — this really does destroy the words (secure_delete + FTS rebuild +
   // VACUUM), so it can take a moment on a big history. Hold the button until
   // the command resolves rather than clearing the list optimistically.
+  //
+  // PRIV-B — Clear History is ONE erase over the whole product, so the confirm
+  // names everything it takes: the words, the clips kept for 7 days and their
+  // partial transcripts, and leftover meeting audio no meeting owns.
   async function clearAll() {
     if (clearing) return;
     if (
       !confirm(
-        "Clear all transcript history? This erases every dictation and its search index. Scratchpad notes and dictionary words you added are kept.",
+        "Clear all history? This erases every dictation, the clips kept for 7 days for retry and the words they had so far, and any leftover meeting audio. Meetings you can see in Meetings, Scratchpad notes and dictionary words you added are kept. This can't be undone.",
       )
     )
       return;
@@ -1110,13 +1114,41 @@ export function useAppShell() {
     try {
       await invoke("clear_history");
       setHistory([]);
+      setFailed([]);
+      toast("History cleared — the words and the audio are gone from this Mac");
     } catch (e) {
       toastError(e);
+      await loadFailed().catch(() => {});
       return;
     } finally {
       setClearing(false);
     }
     await refreshInsights();
+  }
+
+  // PRIV-B — the separate, explicit control: every recording Yap holds
+  // (clips kept for retry, and every meeting's audio). Words are kept.
+  async function deleteAllRecordings() {
+    if (clearing) return;
+    if (
+      !confirm(
+        "Delete all recordings? Every clip kept for retry and every meeting's audio is deleted from this Mac. Your transcripts and meeting notes stay. A meeting that hasn't finished transcribing can't be finished after this.",
+      )
+    )
+      return;
+    setClearing(true);
+    try {
+      await invoke("delete_all_recordings");
+      setFailed([]);
+      toast("All recordings deleted — your transcripts are kept");
+    } catch (e) {
+      toastError(e);
+      await loadFailed().catch(() => {});
+      return;
+    } finally {
+      setClearing(false);
+    }
+    await loadMeetings().catch(() => {});
   }
 
   // `quiet` — a save the user did not make as a settings change (finishing or
@@ -1405,7 +1437,7 @@ export function useAppShell() {
   return {
     meetingProgress, retryMeeting, retryNotes, cancelNotes,
     activeNoteId, applyBinding, booting, bootError, bootErrors, retryBoot, buyPrompt, buyYap, candidates,
-    captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
+    captureHint, capturing, clearAll, clearing, closeConsentNotice, deleteAllRecordings, confirmDeleteMeeting,
     consent, consentOpen, consentRef, copyText, crashToastShown,
     crashes, daily30, dailySeries, dictionary, diffId, editExpansion,
     editPreferred, editTerm, editTrigger, editingSnippetId, editingTermId, engine,

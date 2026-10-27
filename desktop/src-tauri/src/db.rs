@@ -1701,14 +1701,20 @@ impl Database {
     ///     "erase everything" that leaves a half-transcribed take behind has
     ///     not erased everything.
     ///
-    /// Deliberately NOT deleted: `failed_dictations` (YV52) stores a WAV path,
-    /// a take id and the engine's error string; its only transcript text is
-    /// `attempt_text`, which IS nulled above (its other words live in
-    /// `take_chunks`, which IS cleared above), and its clips are
-    /// the user's only copy of a take that was never transcribed;
-    /// `dict_candidates`, `snippets` and `user_context` (Y9-B writing samples)
-    /// are text the user typed, with their own delete paths; `crash_events` is built from an allowlist of structured
-    /// fields.
+    ///   * `failed_dictations` (YV52 / Y3-D / DB-B) — PRIV-B: every parked
+    ///     take goes, row AND clip. Until PRIV-B this table survived a clear
+    ///     (only `attempt_text` was nulled) so its clips could be retried, which
+    ///     meant a user who cancelled something regrettable and clicked Clear
+    ///     History still had the full audio on disk for a week. The rows'
+    ///     WAV paths are RETURNED so the caller unlinks them; the caller
+    ///     ([`crate::erase::clear_history_everywhere`]) then sweeps the whole
+    ///     recovery dir anyway, so a clip no row points at cannot survive either.
+    ///
+    /// Deliberately NOT deleted: `dict_candidates`, `snippets`, `scratchpad`
+    /// and `user_context` (Y9-B writing samples) are text the user typed, with their own delete paths;
+    /// `crash_events` is built from an allowlist of structured fields; meetings
+    /// are their own surface with their own delete (Clear History sweeps only
+    /// meeting audio NO meeting row owns — see `crate::erase`).
     ///
     /// `scratchpad` — DB-C's DELIBERATE choice: KEPT. Scratchpad notes are
     /// documents the user wrote and titled (db.rs classifies them as typed
@@ -1729,10 +1735,24 @@ impl Database {
     ///      existed. VACUUM cannot run inside a transaction, hence the order.
     ///   4. checkpoint again — VACUUM's clean image lands in the WAL, so
     ///      without this the stale pages survive in the .db until app exit.
-    pub fn clear_transcripts(&self) -> Result<(), String> {
+    pub fn clear_transcripts(&self) -> Result<Vec<PathBuf>, String> {
+        let parked: Vec<PathBuf>;
         {
             let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
+            parked = {
+                let mut stmt = tx
+                    .prepare("SELECT wav_path FROM failed_dictations")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                let mut v = Vec::new();
+                for r in rows {
+                    v.push(PathBuf::from(r.map_err(|e| e.to_string())?));
+                }
+                v
+            };
             tx.execute("DELETE FROM transcripts", [])
                 .map_err(|e| e.to_string())?;
             tx.execute(
@@ -1746,9 +1766,10 @@ impl Database {
             // DB-B — see the doc comment: this table holds transcript text.
             tx.execute("DELETE FROM take_chunks", [])
                 .map_err(|e| e.to_string())?;
-            // PR #216 re-review — a failed retry's words are transcript text
-            // too; the row and its clip stay (see the doc comment).
-            tx.execute("UPDATE failed_dictations SET attempt_text = NULL", [])
+            // PRIV-B — the parked takes go with the history: their error
+            // strings, their `attempt_text` and (via the returned paths) their
+            // audio. See the doc comment.
+            tx.execute("DELETE FROM failed_dictations", [])
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
 
@@ -1762,7 +1783,89 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        Ok(parked)
+    }
+
+    /// PRIV-B — every meeting WAV a meeting row still owns (both tracks). The
+    /// orphan sweep in `crate::erase` keeps exactly these and nothing else.
+    pub fn meeting_audio_paths(&self) -> Result<Vec<PathBuf>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT mic_wav_path, sys_wav_path FROM meetings")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (mic, sys) = r.map_err(|e| e.to_string())?;
+            out.extend(mic.map(PathBuf::from));
+            out.extend(sys.map(PathBuf::from));
+        }
+        Ok(out)
+    }
+
+    /// PRIV-B "Delete all recordings" — the DB half. In ONE transaction: every
+    /// parked take (row + its chunk text, which is only resume state for audio
+    /// that is about to stop existing) and every meeting's audio pointer
+    /// (`audio_kept = 0`, so the UI says "audio deleted" rather than offering a
+    /// play button that fails). Transcripts and meeting words are KEPT: this
+    /// control deletes recordings, Clear History deletes history.
+    ///
+    /// Returns every WAV path that was referenced so the caller unlinks them.
+    pub fn forget_all_recordings(&self) -> Result<Vec<PathBuf>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut paths = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare("SELECT wav_path FROM failed_dictations")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                paths.push(PathBuf::from(r.map_err(|e| e.to_string())?));
+            }
+            let mut stmt = tx
+                .prepare("SELECT mic_wav_path, sys_wav_path FROM meetings")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                let (mic, sys) = r.map_err(|e| e.to_string())?;
+                paths.extend(mic.map(PathBuf::from));
+                paths.extend(sys.map(PathBuf::from));
+            }
+        }
+        tx.execute("DELETE FROM failed_dictations", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM take_chunks", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE meetings SET mic_wav_path = NULL, sys_wav_path = NULL, audio_kept = 0
+             WHERE mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        // `secure_delete` zeroes the freed pages; the checkpoint folds the WAL
+        // so the deleted chunk text stops being readable there too.
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            log::warn!("delete all recordings: checkpoint failed: {e}");
+        }
+        Ok(paths)
     }
 
     // --- YV94: meetings ---------------------------------------------------

@@ -21,6 +21,7 @@ pub mod crash;
 // SQLite file, so `tests/db_migration_idempotent.rs`, `meeting_fts_search.rs`,
 // `meeting_delete_cascade.rs` and `meeting_stats_rollup.rs` open one and check.
 pub mod db;
+pub mod erase;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
 pub mod dictation;
@@ -4419,9 +4420,43 @@ fn get_history(
         .list_transcripts_page(limit.unwrap_or(200), query, before)
 }
 
+/// PRIV-B — an erase sweeps the very directories a live take spills into and
+/// a live meeting journals into, so it is refused while either is running
+/// rather than racing them. The user stops the take and clicks again.
+fn refuse_erase_while_live(state: &AppState) -> Result<(), String> {
+    if *state.recording.lock() || *state.busy.lock() {
+        return Err("Finish or cancel the current dictation first, then clear.".into());
+    }
+    if state.meeting().map(|m| m.is_recording()).unwrap_or(false) {
+        return Err("Stop the meeting recording first, then clear.".into());
+    }
+    Ok(())
+}
+
+/// PRIV-B — Clear History is ONE operation over the whole product: the SQLite
+/// rows (VACUUMed), every parked take and its audio, the recovery and scratch
+/// dirs, and meeting audio no meeting owns. See `erase::clear_history_everywhere`.
 #[tauri::command]
-fn clear_history(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.db.clear_transcripts()
+fn clear_history(state: State<'_, Arc<AppState>>) -> Result<erase::EraseReport, String> {
+    refuse_erase_while_live(&state)?;
+    let report = erase::clear_history_everywhere(&state.db, app_paths::paths())?;
+    match erase::failure_message(&report) {
+        Some(msg) => Err(msg),
+        None => Ok(report),
+    }
+}
+
+/// PRIV-B — the separate, explicit "Delete all recordings" control: every byte
+/// of audio Yap holds (parked takes, scratch, every meeting's audio).
+/// Transcripts and meeting words are kept.
+#[tauri::command]
+fn delete_all_recordings(state: State<'_, Arc<AppState>>) -> Result<erase::EraseReport, String> {
+    refuse_erase_while_live(&state)?;
+    let report = erase::delete_all_recordings(&state.db, app_paths::paths())?;
+    match erase::failure_message(&report) {
+        Some(msg) => Err(msg),
+        None => Ok(report),
+    }
 }
 
 #[tauri::command]
@@ -9027,6 +9062,7 @@ pub fn run() {
             pill_drag_end,
             get_history,
             clear_history,
+            delete_all_recordings,
             delete_entry,
             get_status,
             get_permissions,

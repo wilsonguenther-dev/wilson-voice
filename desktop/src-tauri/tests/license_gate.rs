@@ -114,6 +114,7 @@ const UNGATED_COMMANDS: &[&str] = &[
     "paste_entry",
     "delete_entry",
     "clear_history",
+    "delete_all_recordings",
     "list_snippets",
     "list_dictionary",
     "list_scratch",

@@ -188,3 +188,21 @@ Y6-D build ran headless and did not drive a fullscreen Space. Status:
 app" in `docs/RELEASE.md`; until that row carries a date, a machine and a
 result, nothing may claim fullscreen works.
 
+## Data retention and erasure (PRIV-B)
+
+Everything below lives under the state root (`~/Library/Application Support/WilsonVoice`, or `YAP_DATA_DIR` when set). Nothing leaves the Mac.
+
+| What | Where | Kept for | Removed by |
+|---|---|---|---|
+| Transcripts, FTS index, daily stats, harvested vocabulary | `wilson_voice.db` | Until deleted | Delete (one row), **Clear History** (all, then FTS rebuild + VACUUM + WAL truncate) |
+| Partial words of an unfinished long take (DB-B) | `take_chunks` table | 7 days (`FAILED_TAKE_RETENTION_DAYS`) | Finish / Discard, the startup purge, **Clear History**, **Delete all recordings** |
+| Failed, cancelled (Y3-D) and recovered takes: row + clip | `failed_dictations` table + `recovery/<id>.wav` | 7 days | Retry / Finish / Discard, the startup purge, the daily hygiene sweep, **Clear History**, **Delete all recordings** |
+| Live-take journals and spills (YV63 `.in_progress.json` + `.spill.pcm`, Y3-A `.capture.wav`) | `recovery/` | Only while the take runs; a crash turns them into a recovered take above | **Clear History**, **Delete all recordings** (both refused while a take is live) |
+| In-flight dictation scratch WAVs | `recordings/` | Until the take finishes; emptied at every startup | **Clear History**, **Delete all recordings** |
+| Meeting audio (both tracks) | `meetings/<id>*.wav` | 7 days after a meeting finishes transcribing (`meetings::AUDIO_RETENTION_DAYS`); untranscribed audio is kept until it is transcribed (NT1) | Delete meeting, the retention purge, **Delete all recordings** |
+| Meeting audio no meeting row owns (orphans, abandoned journals) | `meetings/` | Nothing should own it | **Clear History**, **Delete all recordings** |
+| Meeting transcripts and summaries | `meetings` / `meeting_segments` tables | Until deleted | Delete meeting (Clear History does not touch meetings) |
+
+The retention is VISIBLE: History shows "N clips kept for 7 days — review or delete" over the parked takes, with Finish / Retry / Discard per clip and **Delete all recordings** beside **Clear**. Invisible retained audio is the scare; visible retained audio is a feature.
+
+Erasure is one operation over the whole product (`src-tauri/src/erase.rs`): Clear History is the SQLite erase *and* the filesystem erase — every file in `recovery/` and `recordings/`, every parked take's clip, and every meeting audio file no meeting row owns. A file that cannot be removed fails the command with a message, rather than reporting "cleared" over audio still on disk. Both erase commands are refused while a dictation or a meeting is recording, because they sweep the directories a live take writes into. The proof is `src-tauri/tests/erase_everything.rs`, which plants sentinels under `YAP_DATA_DIR` and asserts on the filesystem and the raw DB bytes, not on the query layer.

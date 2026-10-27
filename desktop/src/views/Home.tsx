@@ -2,7 +2,7 @@ import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
 import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
-import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
+import { type TranscriptEntry, retainedClipsLabel, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
@@ -10,7 +10,7 @@ import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
   const {
-    bootError, bootErrors, booting, retryBoot, clearAll, clearing, copyText, diffId, refreshAll,
+    bootError, bootErrors, booting, retryBoot, clearAll, clearing, deleteAllRecordings, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, loadOlderHistory, historyHasMore, loadingOlder, pasteText, perms, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
@@ -195,6 +195,14 @@ export default function Home() {
                 <button className="ghost" onClick={clearAll} disabled={clearing}>
                   {clearing ? "Clearing…" : "Clear"}
                 </button>
+                {/* PRIV-B — the separate, explicit erase for audio only. */}
+                <button
+                  className="ghost danger"
+                  onClick={deleteAllRecordings}
+                  disabled={clearing}
+                >
+                  Delete all recordings
+                </button>
               </div>
 
               {/* YV52 — takes whose transcription failed. The audio is still on
@@ -205,9 +213,12 @@ export default function Home() {
                 <section className="failed-takes">
                   <div className="failed-head">
                     <h3>Failed and unfinished dictations</h3>
-                    <span className="tiny">
-                      Audio kept for 7 days — finish or retry when the engine is
-                      ready, nothing was lost. Nothing here is pasted for you.
+                    {/* PRIV-B — retained audio is VISIBLE: the count, the
+                        window, and the way out, in one line. */}
+                    <span className="tiny" data-testid="retained-clips">
+                      {retainedClipsLabel(failed.length)} — review or delete.
+                      Finish or retry when the engine is ready; nothing here is
+                      pasted for you. Clear removes them with your history.
                     </span>
                   </div>
                   <ul className="feed">
