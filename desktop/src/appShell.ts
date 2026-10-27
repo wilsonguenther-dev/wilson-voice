@@ -738,6 +738,15 @@ export function useAppShell() {
       setLicense(e.payload);
       setBuyPrompt(true);
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Y2-D — the pill (or the menu bar's upgrade item) asked for the purchase
+    // surface via `reveal_purchase_prompt`. It carries NO payload and it is not
+    // a license event: nothing about entitlement changed, somebody pressed an
+    // upgrade affordance. The backend has already unminimized and focused this
+    // window before the event arrives; all that is left is raising the sheet
+    // that already exists, which is why the pill never needs a price or a URL.
+    listen("show_purchase", () => setBuyPrompt(true)).then((u) =>
+      dead ? u() : unsubs.push(u),
+    );
     return () => {
       dead = true;
       unsubs.forEach((u) => u());

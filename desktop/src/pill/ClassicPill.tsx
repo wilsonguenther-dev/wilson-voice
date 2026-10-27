@@ -11,7 +11,10 @@ import {
   PHASE_ID, phaseVisual, progressFraction, progressLabel, progressNumeral,
   type LivePhase, type PhaseArtTable, type TranscribeProgress,
 } from "./live";
-import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
+import {
+  GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute,
+  type PillLicense,
+} from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
@@ -67,7 +70,7 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen }: {
+  { gate = "idle", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
     /**
@@ -80,9 +83,12 @@ export default function ClassicPill(
     onMeetingOpen?: (id: string) => void;
     /**
      * Y2-A — the license as the pill is allowed to say it, already decided by
-     * `pillLicense` in float-main. Accepted here so the wiring is complete and
-     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
-     * this component deliberately does not read it yet.
+     * `pillLicense` in float-main. Y2-D READS it, through `pillLicenseRoute`:
+     * the route decides where a press on the upgrade mark (or on a gated
+     * capsule) goes, and whether that mark exists at all. The capsule never
+     * re-derives either — a licensed install passes `show: false`, the route
+     * is null and the mark is simply not rendered, which is why a paid-up pill
+     * has no dead click region.
      */
     license?: PillLicense | null;
   },
@@ -258,17 +264,40 @@ export default function ClassicPill(
   // Y5-C — the phase's art, drawn from this character's own table. Every phase
   // has a row, so this is never undefined and there is no fallback to forget.
   const art = CLASSIC_PHASE_ART[gate];
+  /**
+   * Y2-D — where a license-driven press goes, decided by `pillLicenseRoute`
+   * (i.e. by `pillLicense().action`) and by nothing in this component.
+   *
+   *   reveal_purchase → `reveal_purchase_prompt`: the main window comes forward
+   *                     and the EXISTING PurchasePrompt sheet rises. The float
+   *                     window opens no browser and never sees a URL.
+   *   license_tab     → the re-activate box (Y2-F's `problem` tone: somebody who
+   *                     already PAID). Also the fallback for a gated capsule
+   *                     whose license payload has not arrived yet (boot, or a
+   *                     dropped event): it is correct under every license state,
+   *                     a purchase is not.
+   */
+  const licenseRoute = pillLicenseRoute(license);
+  const openLicenseSurface = useCallback(() => {
+    // YV65 — a press that only closed a drag is not a press on the mark.
+    if (drag.dragged()) return;
+    if (licenseRoute === "reveal_purchase") {
+      invoke(REVEAL_PURCHASE_COMMAND).catch(() => {});
+      return;
+    }
+    invoke("show_main").catch(() => {});
+    emit("navigate", "settings").catch(() => {});
+    emit("settings-tab", "license").catch(() => {});
+  }, [drag, licenseRoute]);
   const onToggle = useCallback(() => {
     // YV65 — the click that closes a drag must never start/stop dictation.
     if (drag.dragged()) return;
     if (gated) {
-      // Y2-C — a gated capsule is a BUTTON to the purchase surface, not a dead
-      // pill: raise the main window and land on Settings → License, which owns
-      // the checkout link. No new command and no new capability — this is the
-      // `navigate` / `settings-tab` plumbing the tray menu already uses.
-      invoke("show_main").catch(() => {});
-      emit("navigate", "settings").catch(() => {});
-      emit("settings-tab", "license").catch(() => {});
+      // Y2-C/D — a gated capsule is a BUTTON to the purchase SHEET, not a dead
+      // pill. Routed through the same policy-driven handler the upgrade mark
+      // uses, so the capsule and the mark can never disagree about where a
+      // press goes.
+      openLicenseSurface();
       return;
     }
     if (blocked) {
@@ -281,7 +310,7 @@ export default function ClassicPill(
     }
     if (busy || transcribing) return;
     invoke("manual_toggle").catch(() => {});
-  }, [blocked, gated, busy, transcribing, drag]);
+  }, [blocked, gated, busy, transcribing, drag, openLicenseSurface]);
 
   return (
     <div className="stage">
@@ -309,6 +338,31 @@ export default function ClassicPill(
         }}
       >
         <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+        {/* ── Y2-D · the upgrade affordance ──
+            Rendered ONLY when the policy gives it a route, so a licensed pill
+            has no dead click region to hunt for. It lives INSIDE the capsule,
+            which is the element `watchPillHitbox` publishes (YV65), so it shares
+            that one hitbox: the transparent shadow margin stays click-through.
+            `pointerdown` stops so a press on the mark never starts a re-dock
+            drag, and `click` stops so it never reaches `onToggle` and starts a
+            dictation. There is no hover handler and no tab stop on it: passing
+            the cursor over the pill must not pull focus off what the person is
+            typing into. The gated capsule is ITSELF the button, so the mark
+            stands down there (and under a permission block, which outranks). */}
+        {licenseRoute !== null && license && !blocked && !gated ? (
+          <button
+            type="button"
+            className={`pill-upgrade lic-${license.tone}`}
+            title={license.title}
+            aria-label={license.title}
+            tabIndex={-1}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); openLicenseSurface(); }}
+          >
+            <i className="pill-upgrade-glyph" aria-hidden>{license.glyph}</i>
+            {license.value ? <span className="pill-upgrade-value">{license.value}</span> : null}
+          </button>
+        ) : null}
         <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {blocked || gated ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
         </button>
