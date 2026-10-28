@@ -562,6 +562,7 @@ export default function Meetings() {
               ) : (
                 <TranscriptList
                   segments={openMeeting.segments}
+                  hidden={openMeeting.echoSegments}
                   kind={openMeeting.meeting.kind}
                 />
               )}

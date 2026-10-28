@@ -2604,7 +2604,7 @@ impl Database {
                 OR m.id IN (
                      SELECT s.meeting_id FROM meeting_segments_fts f
                      JOIN meeting_segments s ON s.rowid = f.rowid
-                     WHERE meeting_segments_fts MATCH ?3
+                     WHERE meeting_segments_fts MATCH ?3 AND s.suppressed_as_echo = 0
                    )
              ORDER BY m.started_at DESC LIMIT ?1"
         );
@@ -2632,7 +2632,7 @@ impl Database {
                 "SELECT {MEETING_COLS} FROM meetings m
                  WHERE m.title LIKE ?2
                     OR m.id IN (SELECT s.meeting_id FROM meeting_segments s
-                                WHERE s.text LIKE ?2)
+                                WHERE s.text LIKE ?2 AND s.suppressed_as_echo = 0)
                  ORDER BY m.started_at DESC LIMIT ?1"
             ))
             .map_err(|e| e.to_string())?;
@@ -2667,17 +2667,29 @@ impl Database {
     /// answer. A mic-only meeting is unaffected — `track` is constant there, so
     /// this is the same sequence 22-A returned.
     pub fn list_meeting_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
+        self.segments_with_echo_flag(meeting_id, false)
+    }
+
+    /// yap24-NT11 — the rows the residue rule hid as speaker echo, in the same
+    /// order as [`Self::list_meeting_segments`]. Only the Transcript's "N lines
+    /// hidden as speaker echo - Show" reads these; render, export, search and
+    /// notes input never do.
+    pub fn list_echo_suppressed_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
+        self.segments_with_echo_flag(meeting_id, true)
+    }
+
+    fn segments_with_echo_flag(&self, meeting_id: &str, suppressed: bool) -> Result<Vec<MeetingSegment>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
                         track, cluster_index
-                 FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = 0
+                 FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = ?2
                  ORDER BY start_seconds ASC, track ASC, created_at ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![meeting_id], map_meeting_segment)
+            .query_map(params![meeting_id, suppressed as i64], map_meeting_segment)
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for r in rows {
@@ -2767,6 +2779,44 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(n == 1)
+    }
+
+    /// yap24-NT11 (step 4b) — a mic span that is partly echo: the matched run
+    /// leaves the span as its OWN row flagged `suppressed_as_echo = 1` (same
+    /// times, track and cluster), and the span keeps only the residue. One
+    /// transaction; the FTS triggers see an UPDATE and an INSERT, so the echo
+    /// words leave the visible row's index entry. Returns the new row's id.
+    pub fn split_segment_echo(
+        &self,
+        meeting_id: &str,
+        segment_id: &str,
+        residue_text: &str,
+        echo_text: &str,
+    ) -> Result<String, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let new_id = Uuid::new_v4().to_string();
+        let n = tx
+            .execute(
+                "INSERT INTO meeting_segments
+                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at, track,
+                  cluster_index, suppressed_as_echo)
+                 SELECT ?1, meeting_id, start_seconds, end_seconds, ?2, confidence, created_at, track,
+                        cluster_index, 1
+                 FROM meeting_segments WHERE meeting_id = ?3 AND id = ?4",
+                params![new_id, echo_text, meeting_id, segment_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n != 1 {
+            return Err(format!("no segment {segment_id} in meeting {meeting_id}"));
+        }
+        tx.execute(
+            "UPDATE meeting_segments SET text = ?1 WHERE meeting_id = ?2 AND id = ?3",
+            params![residue_text, meeting_id, segment_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(new_id)
     }
 
     /// yap24-NT11 — how many lines the Transcript hides as speaker echo.

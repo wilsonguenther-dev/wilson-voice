@@ -117,7 +117,11 @@ fn open_mono(path: &Path) -> Result<MonoStream, String> {
     let reader = hound::WavReader::open(path).map_err(|e| format!("open {}: {e}", base(path)))?;
     let spec = reader.spec();
     if spec.channels != 1 {
-        return Err(format!("{}: {} channels, expected mono", base(path), spec.channels));
+        return Err(format!(
+            "{}: {} channels, expected mono",
+            base(path),
+            spec.channels
+        ));
     }
     let samples: Box<dyn Iterator<Item = f32>> = match (spec.sample_format, spec.bits_per_sample) {
         (hound::SampleFormat::Float, 32) => {
@@ -189,7 +193,11 @@ fn gcc_phat(planner: &mut FftPlanner<f32>, mic: &[f32], sys: &[f32], max_lag: us
     for (x, y) in a.iter_mut().zip(&b) {
         let c = *x * y.conj();
         let m = c.norm();
-        *x = if m > 1e-12 { c / m } else { Complex::new(0.0, 0.0) };
+        *x = if m > 1e-12 {
+            c / m
+        } else {
+            Complex::new(0.0, 0.0)
+        };
     }
     inv.process(&mut a);
     let mut best = (0i64, 0.0f32);
@@ -312,7 +320,10 @@ fn percentile(v: &mut [f64], p: f64) -> f64 {
 /// with the file present is a no-op that reports `skipped_existing`.
 pub fn aec_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path) -> Result<AecReport, String> {
     if out_wav.exists() {
-        log::info!("meeting_aec prepass_skip file={} reason=exists", base(out_wav));
+        log::info!(
+            "meeting_aec prepass_skip file={} reason=exists",
+            base(out_wav)
+        );
         return Ok(AecReport {
             skipped_existing: true,
             ..AecReport::default()
@@ -342,11 +353,19 @@ pub fn aec_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path) -> Result<Aec
     result
 }
 
-fn run_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path, started: Instant) -> Result<AecReport, String> {
+fn run_prepass(
+    mic_wav: &Path,
+    sys_wav: &Path,
+    out_wav: &Path,
+    started: Instant,
+) -> Result<AecReport, String> {
     let mut mic = open_mono(mic_wav)?;
     let mut sys = open_mono(sys_wav)?;
     if mic.rate != sys.rate {
-        return Err(format!("rate mismatch: mic {} Hz, system {} Hz", mic.rate, sys.rate));
+        return Err(format!(
+            "rate mismatch: mic {} Hz, system {} Hz",
+            mic.rate, sys.rate
+        ));
     }
     if !(16_000..=48_000).contains(&mic.rate) {
         return Err(format!("AEC3 needs 16-48 kHz, got {} Hz", mic.rate));
@@ -376,15 +395,25 @@ fn run_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path, started: Instant)
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(&tmp, spec).map_err(|e| format!("create {}: {e}", base(&tmp)))?;
+    let mut writer =
+        hound::WavWriter::create(&tmp, spec).map_err(|e| format!("create {}: {e}", base(&tmp)))?;
 
-    let (mut cap, mut ren, mut out) = (vec![0.0f32; frame], vec![0.0f32; frame], vec![0.0f32; frame]);
+    let (mut cap, mut ren, mut out) = (
+        vec![0.0f32; frame],
+        vec![0.0f32; frame],
+        vec![0.0f32; frame],
+    );
     // Per 1 s window energies for the numbers the eval and BUDGETS.md read.
     let win_frames = 100usize;
     let (mut e_in, mut e_out, mut e_sys, mut wf) = (0.0f64, 0.0f64, 0.0f64, 0usize);
     let (mut call_db, mut local_db) = (Vec::new(), Vec::new());
     let mut total = 0usize;
-    let close_window = |e_in: f64, e_out: f64, e_sys: f64, n: usize, call_db: &mut Vec<f64>, local_db: &mut Vec<f64>| {
+    let close_window = |e_in: f64,
+                        e_out: f64,
+                        e_sys: f64,
+                        n: usize,
+                        call_db: &mut Vec<f64>,
+                        local_db: &mut Vec<f64>| {
         if n == 0 {
             return;
         }
@@ -436,7 +465,10 @@ fn run_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path, started: Instant)
     let finalized = writer.finalize().map_err(|e| format!("finalize: {e}"));
     if let Err(e) = result.and(finalized) {
         if let Err(rm) = std::fs::remove_file(&tmp) {
-            log::warn!("meeting_aec partial_cleanup_failed file={} reason=\"{rm}\"", base(&tmp));
+            log::warn!(
+                "meeting_aec partial_cleanup_failed file={} reason=\"{rm}\"",
+                base(&tmp)
+            );
         }
         return Err(e);
     }
@@ -460,18 +492,29 @@ fn run_prepass(mic_wav: &Path, sys_wav: &Path, out_wav: &Path, started: Instant)
 /// headphones call (no coupling), an in-person meeting or any pre-pass failure
 /// reads the raw mic unchanged — the failure is logged, never fatal, because
 /// the raw transcript is still the user's meeting.
-pub fn mic_source_for(meeting_id: &str, is_virtual: bool, mic: &Path, sys: Option<&Path>) -> PathBuf {
+pub fn mic_source_for(
+    meeting_id: &str,
+    is_virtual: bool,
+    mic: &Path,
+    sys: Option<&Path>,
+) -> PathBuf {
     let Some(sys) = sys.filter(|_| is_virtual) else {
         return mic.to_path_buf();
     };
     let out = aec_path_for(mic);
     if out.exists() {
-        log::info!("meeting_aec source meeting={meeting_id} track=0 file={} reason=existing", base(&out));
+        log::info!(
+            "meeting_aec source meeting={meeting_id} track=0 file={} reason=existing",
+            base(&out)
+        );
         return out;
     }
     match aec_coupling(mic, sys) {
         None => {
-            log::info!("meeting_aec source meeting={meeting_id} track=0 file={} reason=no_coupling", base(mic));
+            log::info!(
+                "meeting_aec source meeting={meeting_id} track=0 file={} reason=no_coupling",
+                base(mic)
+            );
             mic.to_path_buf()
         }
         Some(lag_ms) => match aec_prepass(mic, sys, &out) {
@@ -509,9 +552,9 @@ pub const RESIDUE_WINDOW_SECONDS: f64 = 1.5;
 pub const RESIDUE_MIN_RUN: usize = 3;
 
 const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "i", "if", "in", "is", "it",
-    "its", "it's", "of", "on", "or", "so", "that", "the", "this", "to", "uh", "um", "was", "we", "with",
-    "you", "yeah", "oh", "okay", "ok", "like", "just", "mm", "hmm", "right",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "i", "if", "in", "is",
+    "it", "its", "it's", "of", "on", "or", "so", "that", "the", "this", "to", "uh", "um", "was",
+    "we", "with", "you", "yeah", "oh", "okay", "ok", "like", "just", "mm", "hmm", "right",
 ];
 
 fn fold(w: &str) -> String {
@@ -593,6 +636,105 @@ pub fn residue_verdict(span: &[TimedWord], sys: &[TimedWord], text_may_drop: boo
     } else {
         SpanVerdict::KeepMixed { residue }
     }
+}
+
+/// Whether `path` is a pre-pass output (`<audio>.t0.aec.wav`), i.e. whether
+/// the pipeline decoded track 0 from the cleaned file.
+pub fn is_aec_output(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".aec.wav"))
+}
+
+/// A stored segment's words spread evenly over its span. Segment rows carry
+/// span times, not word times; a 30 s window's segments are a few seconds
+/// long, so an even spread stays well inside [`RESIDUE_WINDOW_SECONDS`] of
+/// where each word was said.
+pub fn span_words(text: &str, start: f64, end: f64) -> Vec<TimedWord> {
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    let n = parts.len().max(1) as f64;
+    let step = ((end - start).max(0.0)) / n;
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, w)| TimedWord {
+            text: (*w).to_string(),
+            start: start + i as f64 * step,
+            end: start + (i as f64 + 1.0) * step,
+        })
+        .collect()
+}
+
+/// What one residue pass over a meeting did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResidueCounts {
+    pub mic_spans: usize,
+    pub dropped: usize,
+    pub mixed: usize,
+}
+
+/// Step 4b, run by the pipeline AFTER both tracks are decoded and ONLY where
+/// the AEC pre-pass produced track 0 (the one place text agreement may drop
+/// words). Every mic span is judged by [`residue_verdict`] against the system
+/// words around it: a Drop is persisted as the same row flagged
+/// `suppressed_as_echo = 1`; a KeepMixed span keeps its residue and the
+/// matched run becomes its own suppressed row. Idempotent: a second pass sees
+/// only residue, which no longer matches.
+pub fn apply_echo_residue(
+    db: &crate::db::Database,
+    meeting_id: &str,
+) -> Result<ResidueCounts, String> {
+    let started = Instant::now();
+    let segments = db.list_meeting_segments(meeting_id)?;
+    let mut sys: Vec<TimedWord> = segments
+        .iter()
+        .filter(|s| s.track == crate::meetings::SYSTEM_TRACK)
+        .flat_map(|s| span_words(&s.text, s.start_seconds, s.end_seconds))
+        .collect();
+    sys.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut counts = ResidueCounts::default();
+    for seg in segments
+        .iter()
+        .filter(|s| s.track == crate::meetings::MIC_TRACK)
+    {
+        counts.mic_spans += 1;
+        let span = span_words(&seg.text, seg.start_seconds, seg.end_seconds);
+        let lo = seg.start_seconds - RESIDUE_WINDOW_SECONDS;
+        let hi = seg.end_seconds + RESIDUE_WINDOW_SECONDS;
+        let near: Vec<TimedWord> = sys
+            .iter()
+            .filter(|w| w.start >= lo && w.start <= hi)
+            .cloned()
+            .collect();
+        match residue_verdict(&span, &near, true) {
+            SpanVerdict::Keep => {}
+            SpanVerdict::Drop => {
+                if db.mark_segment_suppressed_as_echo(meeting_id, &seg.id)? {
+                    counts.dropped += 1;
+                }
+            }
+            SpanVerdict::KeepMixed { residue } => {
+                let runs = echo_residue_runs(&span, &near);
+                let echo: Vec<&str> = span
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| runs.iter().any(|r| r.contains(i)))
+                    .map(|(_, w)| w.text.as_str())
+                    .collect();
+                db.split_segment_echo(meeting_id, &seg.id, &residue.join(" "), &echo.join(" "))?;
+                counts.mixed += 1;
+            }
+        }
+    }
+    log::info!(
+        "meeting_aec residue meeting={meeting_id} mic_spans={} dropped={} mixed={} sys_words={} wall_ms={}",
+        counts.mic_spans,
+        counts.dropped,
+        counts.mixed,
+        sys.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(counts)
 }
 
 #[cfg(test)]

@@ -882,6 +882,10 @@ ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
 /// non-pinned model transcribed, and a resume can refuse to splice two models'
 /// output into one transcript. NULL means "not transcribed yet" (or a row
 /// written before this migration).
+pub const MIGRATION_6_ASR_MODEL: &str = r#"
+ALTER TABLE meetings ADD COLUMN asr_model TEXT;
+"#;
+
 /// yap24-NT11 — a mic span the echo-residue rule suppressed is KEPT as its own
 /// row with this flag set, so the decision is reviewable ("N lines hidden as
 /// speaker echo - Show") and reversible by a re-transcribe, but it never reaches
@@ -889,10 +893,6 @@ ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
 /// `list_meeting_segments`, which filters it).
 pub const MIGRATION_9_SUPPRESSED_AS_ECHO: &str = r#"
 ALTER TABLE meeting_segments ADD COLUMN suppressed_as_echo INTEGER NOT NULL DEFAULT 0;
-"#;
-
-pub const MIGRATION_6_ASR_MODEL: &str = r#"
-ALTER TABLE meetings ADD COLUMN asr_model TEXT;
 "#;
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
