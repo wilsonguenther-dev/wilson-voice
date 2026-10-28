@@ -7,6 +7,7 @@
  * builder, fixer, lander, reviewer or verdict seat off opus — build.mjs fails instead.
  */
 import fs from 'node:fs'
+import { securityClassOf } from './review-gate.mjs'
 
 /** Seats that judge code or product, or that rebase/resolve/merge. Never tiered, in any repo. */
 export const OPUS_FLOOR = Object.freeze([
@@ -23,13 +24,14 @@ const LINE = /^const SEAT_MODELS = \{\}.*$/gm
 export function seatModelProblems(map, template) {
   const out = []
   if (!map || typeof map !== 'object' || Array.isArray(map)) return ['seat-models.json: must be a JSON object']
-  const known = new Set(['enabled', 'escalate', 'opusOnly', 'seats'])
+  const known = new Set(['enabled', 'escalate', 'opusOnly', 'seats', 'itemBuilders'])
   for (const k of Object.keys(map)) if (!k.startsWith('_') && !known.has(k)) out.push(`seat-models.json: unknown key "${k}"`)
   if (typeof map.enabled !== 'boolean') out.push('seat-models.json: "enabled" must be true or false')
   const esc = map.escalate
   if (!esc || esc.model !== 'opus') out.push('seat-models.json: escalate.model must be "opus" — the quality floor is an opus re-run')
   if (esc && esc.effort !== undefined && !EFFORTS.includes(esc.effort)) out.push(`seat-models.json: escalate.effort must be one of ${EFFORTS.join('|')}`)
   if (map.opusOnly !== undefined && (!Array.isArray(map.opusOnly) || !map.opusOnly.every((s) => typeof s === 'string'))) out.push('seat-models.json: opusOnly must be an array of seat names')
+  out.push(...itemBuildersProblems(map.itemBuilders))
   const protectedSeats = new Set([...OPUS_FLOOR, ...(Array.isArray(map.opusOnly) ? map.opusOnly : [])])
   const seats = map.seats
   if (!seats || typeof seats !== 'object' || Array.isArray(seats)) {
@@ -68,7 +70,63 @@ export function stampSeatModels(template, file) {
   const problems = seatModelProblems(map, template)
   if (problems.length) return { template, problems, summary: 'none' }
   const clean = { enabled: map.enabled, escalate: map.escalate, seats: map.seats }
+  if (map.itemBuilders) clean.builders = map.itemBuilders
   const stamped = template.replace(LINE, () => `const SEAT_MODELS = ${JSON.stringify(clean)} // stamped by build.mjs from scripts/loop/seat-models.json`)
   const tiered = Object.entries(map.seats).map(([s, t]) => `${s}→${t.model}`)
-  return { template: stamped, problems: [], summary: map.enabled ? `${tiered.length} mechanical seat(s) tiered (${tiered.join(', ')}), escalate→opus` : 'disabled — every seat opus' }
+  const per = map.itemBuilders ? `; per-item builders (builder:'${map.itemBuilders.model}', standard class only)→${map.itemBuilders.model}` : ''
+  return { template: stamped, problems: [], summary: map.enabled ? `${tiered.length} mechanical seat(s) tiered (${tiered.join(', ')}), escalate→opus${per}` : 'disabled — every seat opus' }
+}
+
+// ── PER-ITEM BUILDER TIERING (2026-10-26) ─────────────────────────────────────────────────────
+// An item may carry `builder: 'sonnet'`. Its build and fix seats then run on sonnet with the SONNET
+// BUILDER preamble — ONLY when the item is STANDARD class. A SECURITY-class item (review-gate's
+// securityClassOf over the item id + every path its spec/notes/preflight/acceptance names) stays opus,
+// and build.mjs refuses the tag outright. The quality floor is the existing agentR escalation: NEEDS_OPUS,
+// a missing require field, or null twice re-runs the SAME prompt on opus. Every other floor seat
+// (review-opus, review-opus2, fix-land, land-sweeper, drain, main-verify, ...) is untouched.
+export const ITEM_BUILDER_SEATS = Object.freeze(['build', 'fix'])
+export const ITEM_BUILDER_MODELS = Object.freeze(['sonnet'])
+const PATH_TOKEN_RE = /(?:[\w.-]+\/)+[\w.*{},-]+|[\w-]+\.(?:rs|ts|tsx|mjs|js|json|plist|toml|css|html|sh|yml|yaml|md|swift)\b/g
+
+/** The item's review class, judged before any PR exists: its id as the PR title, every path its text names. */
+export function itemSecurityClass(item) {
+  const it = item || {}
+  const text = [it.spec, it.notes, it.preflight, it.acceptance].filter((s) => typeof s === 'string').join('\n')
+  const files = [...new Set(text.match(PATH_TOKEN_RE) || [])]
+  return securityClassOf({ title: `${it.id || ''}: ${it.title || ''}`, files })
+}
+
+/**
+ * The builder model for one item's seat. 'sonnet' only for a build/fix seat of an item tagged
+ * builder:'sonnet' that is STANDARD class; 'opus' for every other build/fix; null for any other seat
+ * (the seat map decides those, and the floor seats are never item-tiered).
+ */
+export function modelFor(seat, item) {
+  if (!ITEM_BUILDER_SEATS.includes(seat)) return null
+  if (!item || !ITEM_BUILDER_MODELS.includes(item.builder)) return 'opus'
+  return itemSecurityClass(item).security ? 'opus' : item.builder
+}
+
+/** build.mjs: a tag that is not 'sonnet', or a tag on a SECURITY-class item, is a build failure. */
+export function itemBuilderTagProblems(item) {
+  if (!item || item.builder === undefined) return []
+  if (!ITEM_BUILDER_MODELS.includes(item.builder)) return [`\`builder\` must be ${ITEM_BUILDER_MODELS.map((m) => `'${m}'`).join(' | ')} or absent (default opus), got ${JSON.stringify(item.builder)}`]
+  const cls = itemSecurityClass(item)
+  return cls.security ? [`tagged builder:'${item.builder}' but it is SECURITY class (${cls.why}) — a security item is always built on opus; remove the tag`] : []
+}
+
+function itemBuildersProblems(b) {
+  if (b === undefined) return []
+  const out = []
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return ['seat-models.json: itemBuilders must be an object {model, effort, require}']
+  if (!ITEM_BUILDER_MODELS.includes(b.model)) out.push(`seat-models.json: itemBuilders.model must be one of ${ITEM_BUILDER_MODELS.join('|')} (haiku never builds)`)
+  if (b.effort !== undefined && !EFFORTS.includes(b.effort)) out.push(`seat-models.json: itemBuilders.effort must be one of ${EFFORTS.join('|')}`)
+  const req = b.require
+  if (!req || typeof req !== 'object' || Array.isArray(req)) out.push('seat-models.json: itemBuilders.require must be {build: [...], fix: [...]}')
+  else for (const seat of ITEM_BUILDER_SEATS) {
+    const r = req[seat]
+    if (!Array.isArray(r) || !r.length || !r.every((k) => typeof k === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))) out.push(`seat-models.json: itemBuilders.require.${seat} must be a non-empty array of RETURN field names`)
+  }
+  for (const k of Object.keys(b)) if (!['model', 'effort', 'require'].includes(k)) out.push(`seat-models.json: itemBuilders has unknown key "${k}"`)
+  return out
 }

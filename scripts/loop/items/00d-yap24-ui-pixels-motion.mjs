@@ -47,7 +47,7 @@ ITEMS.push({
     test -f desktop/src/pill/clock.test.ts
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26, DEFERRED to the next release (not in panelApproved).
     DEPENDS: Y5-D (open PR #196 — spring constants) when merged
 
     EVIDENCE
@@ -61,6 +61,10 @@ ITEMS.push({
     automatic park when no subscriber is animating, and a prefers-reduced-motion switch. Port the
     three loops onto it; every motion is expressed per millisecond. Tests with a fake rAF: equal
     motion at 60 and 120 Hz; parks after settle; reduced motion snaps.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - Y5-D (#196, the spring constants) is MERGED (5f3c852), not open. The animation loops are in FIVE files, not three: ClassicPill, YappyPill,
+        home/YappyHouse, license/YappySprite.tsx and pill/live.ts. The port covers all five. DEFER: next release (idle-CPU hygiene, no user-visible wow).
   `,
   acceptance: `
     cd desktop && npm ci
@@ -76,10 +80,11 @@ ITEMS.push({
   title: 'Pay the visual-QA debt: a headless screenshot matrix of every pill phase x dock x character, attached to the PR',
   preflight: `
     test -f scripts/pill-matrix.mjs
+    grep -q -- '--only' scripts/pill-matrix.mjs
   `,
   spec: `
-    Panel: pending
-    DEPENDS: yap24-PILL1..PILL4, yap24-UI1, Y5-B/Y5-C/Y5-D
+    Panel: APPROVED-WITH-CHANGES 2026-10-26; BUILD THIS FIRST (every PILL item and NT6/NT7 run its phase through this matrix).
+    DEPENDS: Y5-B/Y5-C/Y5-D (merged). [REVERSED 2026-10-26: the PILL items depend on THIS item, not the other way round; the matrix reads its phase list from the pill's own phaseVisual keys, so phases the PILL items add appear automatically.]
 
     EVIDENCE: the 2026-09-15 run's builders logged "NOT visually QA'd" on Y2-B, Y5-B, Y5-C, Y5-D
     (memory project_yap_loop_state_20260912; STATUS-yap.md). A green gate cannot see a pill.
@@ -87,12 +92,19 @@ ITEMS.push({
     DO: scripts/pill-matrix.mjs reuses smoke-windowed.mjs's headless Chrome (--headless=new) and
     vite preview, renders float.html with each phase forced through a dev-only query parameter,
     captures PNGs for every phase x {bottom,left,right} x {classic,yappy}, and fails on the same
-    structural conditions (empty text, clipped text, overflow). Output under
-    docs/pr-screenshots/yap24-UI3/. Never launches the app, never opens a visible window.
+    structural conditions (empty text, clipped text, overflow). --out <dir> (a scratch dir; attach the PNGs to the PR body or a PR comment, NEVER commit them) and --only <phase> to render one phase across 3 docks x 2 characters. Never launches the app, never opens a visible window.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - The old acceptance only ran node --check, so the matrix this item exists to produce was never produced; a green gate could not see a pill.
+        The acceptance now RUNS it and counts the PNGs (at least 24 = phases x 3 docks x 2 characters). The PNGs go to the PR, not the repo. Each PILL
+        item then runs scripts/pill-matrix.mjs --only <its phase>.
   `,
   acceptance: `
     test -f scripts/pill-matrix.mjs
     node --check scripts/pill-matrix.mjs
+    grep -q -- '--only' scripts/pill-matrix.mjs
+    test -z "$(git ls-files docs/pr-screenshots/yap24-UI3)"
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && O="$(mktemp -d)" && node scripts/pill-matrix.mjs --out "$O" && test "$(ls "$O"/*.png | wc -l)" -ge 24
   `,
 })

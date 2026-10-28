@@ -15,7 +15,7 @@
  *                             scripts/loop/items/NN-<group>.mjs, in filename order. One part
  *                             gets a consecutive run of WHOLE item files, never a split file.
  *     the __KEEP_WORKTREE__ marker -> `true` for every part but the last, `false` for the last.
- *     the __LANES__ marker -> item id -> lane index, round-robin over the SOURCE ITEM FILES.
+ *     the __LANES__ marker -> item id -> file ordinal or lane pin; lanes are split per part at run time.
  * Edit THIS file to change the harness. Edit scripts/loop/items/*.mjs to change the work.
  * Never hand-edit scripts/cicd-loop-all.mjs or scripts/loop/generated/*.mjs — every build
  * overwrites them.
@@ -96,6 +96,7 @@ const LOCAL_REPO = '/Users/wilsonguenther/code/wilson-voice'
 const APP = 'desktop'
 const WORKDIR = '/Users/wilsonguenther/code/wilson-voice-loop/lane-a' // lane A
 const WORKDIR_B = '/Users/wilsonguenther/code/wilson-voice-loop/lane-b' // lane B
+const WORKDIR_C = '/Users/wilsonguenther/code/wilson-voice-loop/lane-c' // lane C (args.lanes: 3, Wilson 2026-10-27)
 /**
  * THE TWO LANES. Both are worktrees of LOCAL_REPO, both are created in Recon, both are removed by
  * the LAST part's Drain. Two builders cannot share one checkout, one cargo target dir or one
@@ -103,7 +104,7 @@ const WORKDIR_B = '/Users/wilsonguenther/code/wilson-voice-loop/lane-b' // lane 
  * single-quoted consts because build.mjs scrapes exactly that shape to give the item files their
  * ${WORKDIR} / ${PREVIEW_PORT} / ${CARGO_TARGET_A} values.
  */
-const WORKDIRS = [WORKDIR, WORKDIR_B]
+const WORKDIRS = [WORKDIR, WORKDIR_B, WORKDIR_C]
 /**
  * CARGO TARGET DIRS LIVE OUTSIDE THE WORKTREES, ON PURPOSE. src-tauri statically links
  * transcribe-cpp's ggml and yap-polish vendors llama-cpp-sys-2: a COLD build of this workspace is
@@ -112,15 +113,29 @@ const WORKDIRS = [WORKDIR, WORKDIR_B]
  */
 const CARGO_TARGET_A = '/Users/wilsonguenther/code/wilson-voice-loop/target-a'
 const CARGO_TARGET_B = '/Users/wilsonguenther/code/wilson-voice-loop/target-b'
-const CARGO_TARGETS = [CARGO_TARGET_A, CARGO_TARGET_B]
+const CARGO_TARGET_C = '/Users/wilsonguenther/code/wilson-voice-loop/target-c'
+const CARGO_TARGETS = [CARGO_TARGET_A, CARGO_TARGET_B, CARGO_TARGET_C]
 const LOG = '/Users/wilsonguenther/Obsidian/Wilson-Brain/Projects/Loop-Logs/2026-09-12-yap.md'
 const TELEMETRY = '/Users/wilsonguenther/Obsidian/Wilson-Brain/Projects/Forge-CICD-Telemetry.md'
 const SPEC_SOURCES = 'the repo docs (PRODUCT.md, ROADMAP.md, ARCHITECTURE.md, docs/) and the item spec below'
 const PREVIEW_PORT = '5273' // lane A's vite preview / local frontend server
 const PREVIEW_PORT_B = '5274' // lane B's
-const PREVIEW_PORTS = [PREVIEW_PORT, PREVIEW_PORT_B]
-const BOTH_DIRS = `${WORKDIR} and ${WORKDIR_B}`
-const LANE_TAGS = ['A', 'B']
+const PREVIEW_PORT_C = '5275' // lane C's
+const PREVIEW_PORTS = [PREVIEW_PORT, PREVIEW_PORT_B, PREVIEW_PORT_C]
+/** Every builder lane dir (the name predates lane C). GUARD() forbids touching any of them outside your own. */
+const BOTH_DIRS = `${WORKDIR}, ${WORKDIR_B} and ${WORKDIR_C}`
+const LANE_TAGS = ['A', 'B', 'C']
+/**
+ * args.landBar 'ci' (Wilson 2026-10-27, "the product has NO users"): BUILD-ONLY. A loop-build PR merges as soon as
+ * GitHub CI "Tauri build (Rust + frontend)" is SUCCESS on its current head — no review-opus chain, no parking.
+ * The DRAIN seat is the lander (rebase on conflict, one CI fix round, then label loop-ci-red); builders only merge
+ * what is already CI-green. Absent or any other value -> the review bar exactly as before. Review mode ignores it.
+ */
+const LAND_BAR_CI = (typeof args !== 'undefined' && args && args.mode !== 'review' && args.landBar === 'ci') === true
+const CI_RED_LABEL = 'loop-ci-red'
+const CI_FIX_MARKER = 'loop-ci-fix round 1'
+/** The drain's rebase / CI-fix checkout in landBar 'ci' (a detached worktree of LOCAL_REPO; created if missing). */
+const PRE_REVIEW_DIR = '/Users/wilsonguenther/code/wilson-voice-loop/pre-review'
 /**
  * ── REVIEW MODE ───────────────────────────────────────────────────────────────────────────
  * Review mode walks the OPEN PRs, not ITEMS, because that is what actually exists and item ids
@@ -157,11 +172,16 @@ const KEEP_WORKTREE = /*__KEEP_WORKTREE__*/
 /** Stamped by build.mjs like LOG: which part this is. The status board is keyed on it. */
 const PART = 'part-00'
 /**
- * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
- * whole prompt group (whose items often depend on one another) stays sequential on one lane.
+ * Stamped by build.mjs: item id -> the item FILE's ordinal (informational) or a pinned lane letter
+ * ('A'|'B'|'C', item field `lane`). Only the PIN is read: since 2026-10-27 lanes are assigned PER PART
+ * at run time (splitLanes below) — the old per-file round-robin left lane C idle for a whole part.
  */
 const LANE_BY_ID = /*__LANES__*/
-const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
+// -1 when the item is not pinned; a pin past args.lanes clamps to the last lane (lane:'C' at lanes:2 -> B).
+const pinnedLane = (item) => {
+  const v = LANE_BY_ID[item.id]
+  return typeof v === 'string' && LANE_TAGS.includes(v) ? Math.max(0, Math.min(LANE_TAGS.indexOf(v), BUILD_LANES - 1)) : -1
+}
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
  * Run the script again with args {mode:'review'} for the gate that this pass defers.
@@ -259,7 +279,35 @@ is FINAL for the head it names: a later PASS on the same head never clears it, y
 and a complete fresh round do. Keep any "verdict:" line out of PASS notes (the record subcommand refuses one).
 If you could not review the PR at all, post NO record: a PASS nobody earned is the exact defect this gate exists
 to stop, and with no record the PR simply stays review-pending.
-Add recordHead: "<HEAD>" and recordPosted: true|false to your return.
+Add recordHead: "<HEAD>", recordPosted: true|false and recordCommentId (the id of the comment you posted:
+    gh api repos/${REPO}/issues/${pr}/comments --paginate --jq '.[] | select(.body | test("^seat: ${seat}$"; "m")) | .id' | tail -1)
+to your return.
+`
+
+/**
+ * THE REVIEWER READS, IT DOES NOT REBUILD (harness throughput, 2026-10-27). Before this, every reviewer and every
+ * re-reviewer ran the full 15–30 min gate on a sha the fix-land seat had already gated — 4–7 full runs per PR, the
+ * chain landed ~1 PR/h. The gate is now sha-bound in scripts/loop/gate-ledger.mjs: the seat that runs it records it,
+ * and a reviewer only verifies that record. Interpolated by the review-opus and review-opus2 prompts; build.mjs
+ * (ledgerPromptProblems) fails if a reviewer prompt lacks the check or is handed GATE_CMDS.
+ */
+const REVIEW_GATE_READ = (dir, target, pr) => `
+# THE GATE — VERIFY ITS RECORD FOR THIS HEAD; NEVER RE-RUN IT
+You are a reader. The full gate (tsc, vitest, vite build, both sidecars, clippy, ~1,700 cargo tests; 15–30 min)
+is NOT yours to run: the fix-land seat runs it once after its push and the LAND seat runs it when no record exists.
+    node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs check --sha <HEAD> ; echo "ledger=$?"      (read the code bare)
+  - exit 0 -> paste its line ("gate: satisfied by record <stamp> from <runner>") into your notes and move on.
+  - exit 3 (no complete record for this head) -> write "gate: no record for <HEAD>" in your notes. That is not a
+    finding against the code, and you do NOT fill it by running the gate.
+  - exit 1 (a RED record) -> quote it. A blocking command that is red on this head IS evidence; cite the command.
+To read the tree, check the head out DETACHED in your lane — never a branch, never a commit, never a push:
+    cd ${dir} && git fetch origin pull/${pr}/head && git checkout --detach <HEAD>
+(a security PR's two seats share this lane and this head; if index.lock is held, the other seat is checking out
+the same sha — wait a few seconds and retry.) Run ONLY the targeted tests a SPECIFIC finding needs:
+    cd ${dir}/${APP}/src-tauri && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${target} && cargo test --features custom-protocol --test <file>   (or a <test-name> filter)
+    cd ${dir}/${APP} && npx vitest run <file>
+NEVER the full gate: no unfiltered 'npm test' or 'cargo test', no 'cargo clippy', no sidecar build, and no
+'cargo build' unless a targeted test needs the build it implies. Recon keeps this lane's caches warm for that.
 `
 
 const GUARD = (dir) => `
@@ -300,17 +348,17 @@ Check 'git status --porcelain' before you commit and name anything surprising in
 `
 
 const WORKTREE_CONTRACT = (dir, port, target, other) => `
-THE WORK DIR IS A SHARED WORKTREE, NOT YOUR CLONE — AND THERE ARE TWO OF THEM.
-This loop runs TWO LANES side by side. YOUR LANE IS:
+THE WORK DIR IS A SHARED WORKTREE, NOT YOUR CLONE — AND THERE ARE UP TO THREE OF THEM.
+This loop runs ${BUILD_LANES} LANE(S) side by side. YOUR LANE IS:
     WORKDIR           ${dir}
     APP DIRECTORY     ${dir}/${APP}          <- every build command runs HERE, never at the root
     CARGO_TARGET_DIR  ${target}
     PREVIEW PORT      ${port}
-The other lane (${other}) belongs to a DIFFERENT item that another agent is building RIGHT NOW.
+The other lane(s) (${other}) belong to a DIFFERENT item that another agent is building RIGHT NOW.
 Never cd into it, never check out a branch in it, never kill a server on its port, never remove it.
 
 EXPORT THE TARGET DIR IN EVERY SHELL THAT RUNS CARGO:
-    export CARGO_TARGET_DIR=${target}
+    export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${target}
 It lives outside the worktree so the vendored-ggml build cache survives every item and every part.
 Forgetting it means a COLD build inside the worktree: minutes you did not need to spend, and a
 7.5 GB directory that dies with the worktree.
@@ -320,14 +368,14 @@ ${WORKDIR}, ${CARGO_TARGET_A} and port ${PREVIEW_PORT}; wherever it does, read $
 and ${port}. This substitution is not optional: two lanes on one port or one target dir is two
 builds fighting over one lock, and the evidence you gathered would be the other item's.
 
-Both lanes are worktrees of ${LOCAL_REPO}, created once in Recon with one 'npm ci' and one warm
+Every lane is a worktree of ${LOCAL_REPO}, created once in Recon with one 'npm ci' and one warm
 cargo build each, and every item reuses them. Therefore:
 - Start in YOUR lane: cd ${dir} && git fetch origin && git checkout -B <branch> origin/main
 - Do not 'rm -rf' it, do not re-clone it, and do not run 'npm ci' again unless
   ${APP}/package-lock.json changed on main (say so if you do).
 - Do not create additional worktrees or clones. Disk hygiene is a hard rule: a previous loop left
   26 clones / 78 GB behind on another repo.
-- Leave the branch pushed. Drain removes BOTH worktrees at the end of the run.
+- Leave the branch pushed. Drain removes every lane worktree at the end of the run.
 `
 
 const LOGLINE = (who, itemId, laneStage, extra) => `
@@ -400,7 +448,7 @@ For every behavioural claim, give ONE of these, and say which:
   (2) THE RUNNING APP, for anything a human sees or hears. A green build is not a working UI — a
       pill that never animates, a window that opens offscreen and a hotkey that no longer fires
       all compile perfectly. Run it and look:
-          cd ${dir}/${APP} && export CARGO_TARGET_DIR=<your lane's target dir> && npm run desktop:dev
+          cd ${dir}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=<your lane's target dir> && npm run desktop:dev
       Describe what you observed, and take a screenshot for any visual claim. If you could not run
       it (no display, no permission, sidecar missing), SAY SO plainly and downgrade the claim.
   (3) A COMMAND-LEVEL PROBE for plumbing: the sidecar handshake, a DB migration applied to a COPY
@@ -453,14 +501,18 @@ VERIFICATION THAT VERIFIES NOTHING — the whole catalogue. Read it before you c
  * build script does not re-run, so the same commands pass — the false green that made a measured
  * gate table necessary in the first place.
  *
- * fmt IS A GATE CONJUNCT NOW. The tree was swept (`cargo fmt --all`, 152 hunks / 21 files, listed
- * in .git-blame-ignore-revs) and `cargo fmt --all -- --check` exits 0 on main as of that commit.
+ * fmt IS ADVISORY, NOT A GATE CONJUNCT (Y0-A ledger, PANEL 2026-09-12 — PR #234's ci.yml). The sweep
+ * landed once (b4b8d06, listed in .git-blame-ignore-revs) but main has drifted since: on a740614
+ * `cargo fmt --all -- --check` exits 1 (65 hunks) on unmodified main, and a land gate that required it
+ * turned every PASS/PASS PR ci-red (review pass w7sv7tozp, 2026-10-26). It still RUNS and its hunk
+ * count is posted; its exit code never fails the gate. Item yap-fmt-sweep-2026-10-26 (built LAST)
+ * re-sweeps the tree and flips it back to blocking in the same PR. clippy STAYS blocking.
  * clippy is NOT run with `-- -D warnings`: a mechanical `cargo clippy --fix` sweep landed, and 16
  * lints survive it that need real refactors (very-complex-type, too-many-arguments, clamp-like
  * pattern, const assertions in tests). See PLAN.md's Panel revisions section.
  */
 const GATE_CMDS = (dir, target) => `
-    cd ${dir}/${APP} && export CARGO_TARGET_DIR=${target}
+    cd ${dir}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${target}
     npx tsc --noEmit ; echo "typecheck=$?"
     npm test ; echo "test=$?"
     npm run build ; echo "build=$?"
@@ -469,10 +521,13 @@ const GATE_CMDS = (dir, target) => `
     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${target}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${target}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stage=$?"
     cargo test -p yap-polish --release ; echo "polishtest=$?"
     cargo test -p yap-diarize --release ; echo "diarizetest=$?"
-    cargo fmt --all -- --check ; echo "fmt=$?"
+    cargo fmt --all -- --check > ${target}/fmt-check.txt 2>&1 ; echo "fmt=$? (ADVISORY)" ; echo "fmtHunks=$(grep -c '^Diff in' ${target}/fmt-check.txt)"
     cd ${dir}/${APP}/src-tauri && cargo clippy --all-targets --features custom-protocol ; echo "clippy=$?"
     cd ${dir}/${APP}/src-tauri && cargo test --features custom-protocol ; echo "cargotest=$?"
-ALL ELEVEN MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+THE TEN BLOCKING COMMANDS MUST EXIT 0. Run them SEPARATELY and read every code BARE, never through a pipe.
+fmt IS ADVISORY (Y0-A ledger, PANEL 2026-09-12): run it, report "fmt: advisory, <fmtHunks> hunks" in
+the gate comment, and NEVER let its exit code fail the gate, earn ci-red, or block a merge. The drift
+is on main, not on the PR; do NOT reformat files the PR did not touch. clippy STAYS BLOCKING.
 BOTH SIDECARS ARE BUILT AND BOTH ARE STAGED, and that step comes BEFORE any cargo command against
 the app: bundle.externalBin makes binaries/yap-polish-<triple> AND binaries/yap-diarize-<triple>
 preconditions of every cargo build of wilson-voice. If a cargo command against the app dies with
@@ -482,6 +537,11 @@ clippy is deliberately WITHOUT '-- -D warnings' (16 known lints on main need rea
 is a loop item, not a gate). Do not add the flag, and do not silence lints to make it green.
 NOT IN THIS GATE: 'npm run desktop:build' (the DMG). It is minutes long and belongs to the final
 smoke item. Do not run it here and do not claim it.
+WRITE THE LEDGER RECORD — ONE FULL RUN PER HEAD; every later seat on that sha reuses it (2026-10-27).
+Once the tree you gated is COMMITTED (builders: right after your commit), bind the codes to its sha:
+    cd ${dir} && node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs record --sha "$(git rev-parse HEAD)" --worktree ${dir} --runner <your seat label> --codes "typecheck=<c> test=<c> build=<c> polish=<c> diarize=<c> stage=<c> polishtest=<c> diarizetest=<c> fmt=<c> clippy=<c> cargotest=<c>" ; echo "ledger=$?"
+Real codes only, all ten blocking ones. It refuses (64) a worktree whose HEAD is not that sha or that has modified
+tracked files: then this head simply has no record. Never commit or push just to make it record.
 `
 
 const MERGE_BAR = `
@@ -502,6 +562,164 @@ advisory notes — one-PR-per-advisory is how a loop grows its own backlog with 
 `
 
 /**
+ * TELEMETRY (Wilson 2026-10-27: "Just add telemetry where we need to so we can update"). Interpolated into the
+ * builder prompt (the Sonnet preamble points at it). Names ONLY modules that exist on main: the Rust logger is the
+ * `log` crate teed by logging.rs; there is no TS logger wrapper and no metrics sink until yap-telemetry-diagnostics
+ * lands desktop/src-tauri/src/diagnostics.rs — the block says so instead of inventing one.
+ */
+const TELEMETRY_BLOCK = `
+# TELEMETRY (Wilson 2026-10-27) — MANDATORY on every code path this item adds or changes
+(i) LOG start / finish / failure as ONE structured line, "<module> <event> key=value ...". Rust: the \`log\` crate
+    (log::info! / log::warn! / log::error!) — ${APP}/src-tauri/src/logging.rs tees every record to <data_dir>/logs/yap.log.
+    No println!/eprintln!, no new logger crate. Frontend: there is NO TS logger wrapper; read a rejected invoke with
+    errorText()/errorCode() from ${APP}/src/errors.ts and let the Rust command log the failure — never a bare console.log.
+    Never log transcript text, audio, or a full user path (basename only).
+(ii) SURFACE user-visible failures, never swallow (no \`let _ =\`, \`.ok()\` or empty catch on a path a user would notice):
+    the command returns Err (Result<_, String> or CommandError {code, message}) and the UI shows it through toast() in
+    ${APP}/src/appShell.ts, or through status.lastError emitted by app.emit("status", build_status(..)) in
+    ${APP}/src-tauri/src/lib.rs (the pill reduces it in ${APP}/src/pill/live.ts); tray copy goes through license::tray_line.
+(iii) RECORD one duration or counter where it matters (dictation insert latency, meeting pipeline stage times, model
+    download): there is NO metrics sink on main yet — emit it as a key=value INFO line in the style of
+    ${APP}/src-tauri/src/latency.rs (PipelineSpans). If \`git grep -q "mod diagnostics" -- ${APP}/src-tauri/src/lib.rs\` exits 0
+    on your branch (item yap-telemetry-diagnostics landed), record it through diagnostics.rs instead.
+PR BODY: a "## Telemetry" section listing each line / surfaced error / counter you added (file:line), or
+"none — <why this item adds no runtime path>".
+`
+
+/**
+ * landBar 'ci' — the builder's LAND FIRST step. Merge only what GitHub CI already passed on its exact head; never
+ * rebase, fix or wait here (the DRAIN does that). A function: ONLY_PREFIXES is declared further down.
+ */
+const CI_LAND_BUILDER = () => `# ═══ LAND FIRST — CI-GREEN ONLY (args.landBar 'ci', BUILD-ONLY; ≤ 8 TOOL CALLS, THEN MOVE ON) ═══
+Wilson 2026-10-27: the product has no users, so a ${LOOP_LABEL} PR merges as soon as GitHub CI
+"Tauri build (Rust + frontend)" is SUCCESS on its CURRENT head. There is no reviewer record to wait for.
+    gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --json number,headRefName,headRefOid,isDraft,mergeable --jq 'sort_by(.number)'
+${ONLY_PREFIXES ? `SCOPED to args.only = [${ONLY_PREFIXES.join(', ')}]: land ONLY a PR whose headRefName names an item id with one of
+those prefixes; name every other PR "outside args.only" and leave it.` : ''}
+Oldest PR number first, at most THREE merges, skipping drafts and anything not MERGEABLE. For each candidate:
+    node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs ci --sha <headRefOid> ; echo "ledger=$?"      (read the code bare)
+  exit 0 (the CI job concluded success on that exact sha; the ledger wrote its github-ci record) ->
+    cd ${PRE_REVIEW_DIR} 2>/dev/null || cd ${LOCAL_REPO}
+    gh pr merge -R ${REPO} <n> --squash --delete-branch --admin --match-head-commit <headRefOid>
+    gh pr view -R ${REPO} <n> --json state,mergeCommit      # MERGED is merged; a refused LOCAL branch delete is harmless
+  anything else (5 pending, 1 red, CONFLICTING) -> SKIP it and name it in one line. Pending, red and conflicting
+  PRs are the DRAIN's job: it rebases, spends one CI fix round, or labels ${CI_RED_LABEL}. Never rebase, fix,
+  review or wait here, and never run the local gate for a merge.
+`
+
+/**
+ * DRAIN STEP — ports, disk, teardown. Shared by the review-bar drain and the landBar 'ci' drain so lane C is torn
+ * down by both. A function: KEEP_WORKTREE is stamped per part.
+ */
+const DRAIN_TEARDOWN = (n) => `${n}. DISK HYGIENE — this bit hard last time (26 clones / 78 GB on the sibling project). THERE ARE UP TO
+   THREE LANES (C exists only when a run used args.lanes: 3), each with its own cargo target dir and port:
+     lsof -nP -iTCP:${PREVIEW_PORT} -sTCP:LISTEN     # lane A's vite/preview, if one was left
+     lsof -nP -iTCP:${PREVIEW_PORT_B} -sTCP:LISTEN   # lane B's
+     lsof -nP -iTCP:${PREVIEW_PORT_C} -sTCP:LISTEN   # lane C's
+   Kill whatever is listening on ANY of those ports BY PID (never pkill by pattern), kill any leftover 'tauri dev'
+   or 'yap-polish' process a lane started (by PID, after confirming its cwd is a lane dir), and confirm the ports
+   are clear afterwards.
+   Also report the current sizes: du -sh ${CARGO_TARGET_A} ${CARGO_TARGET_B} ${CARGO_TARGET_C} 2>/dev/null ; df -h /System/Volumes/Data
+${
+  KEEP_WORKTREE
+    ? `   DO NOT REMOVE ANY LANE WORKTREE (${BOTH_DIRS}) OR ANY TARGET DIR (${CARGO_TARGET_A}, ${CARGO_TARGET_B},
+   ${CARGO_TARGET_C}). This script is ONE PART of a multi-part run and the parts that follow reuse the worktrees,
+   their node_modules and the warm cargo caches — a cold rebuild is ~9.5 minutes per lane per part (measured).
+   Leave them exactly where they are; the LAST part's drain tears them down. Do not delete the yap/recon-a,
+   yap/recon-b or yap/recon-c branches either. You still kill the port listeners, you still bundle and sweep dead
+   remote branches, and you still report the target-dir sizes. Return worktreeRemoved: false and say plainly that
+   everything was KEPT ON PURPOSE for the next part; that is the correct outcome here, not a miss.`
+    : `     cd ${LOCAL_REPO} && for W in ${WORKDIR} ${WORKDIR_B} ${WORKDIR_C}; do [ -d "$W" ] && git worktree remove --force "$W"; done; git worktree prune
+     git worktree list                                # paste it: EVERY lane must be GONE
+     git branch -D yap/recon-a ; git branch -D yap/recon-b ; git branch -D yap/recon-c     # throwaway recon branches
+     rm -rf ${CARGO_TARGET_A} ${CARGO_TARGET_B} ${CARGO_TARGET_C}       # cache, not checkouts: ~7.5 GB each (measured)
+     rmdir /Users/wilsonguenther/code/wilson-voice-loop 2>/dev/null || ls -a /Users/wilsonguenther/code/wilson-voice-loop
+   This is the LAST part of the run, so the teardown is yours and nobody else's.
+   Confirm with ls -d that no lane worktree and no lane target dir exists, and report the bytes reclaimed
+   (df -h /System/Volumes/Data before and after). Never leave a clone, a worktree or a target dir behind. Do NOT
+   touch ${LOCAL_REPO}'s own checkout or its desktop/target. Removing them all is not optional and it is not a
+   nicety: it is the last line of defence against the 78 GB of abandoned loop clones this fleet has already paid
+   for once.`
+}`
+
+/**
+ * landBar 'ci' — THE DRAIN IS THE LANDER (Wilson 2026-10-27, build-only). Every open non-draft loop-build PR, oldest
+ * first: CI SUCCESS on the head -> squash-merge; CONFLICTING -> rebase in PRE_REVIEW_DIR, push, re-queue; CI FAILED ->
+ * ONE minimal fix round, push, re-queue; failed again -> loop-ci-red label + first error, left open. No reviewer seat,
+ * no parking label, and the drain never runs the full local gate.
+ */
+const CI_DRAIN_PROMPT = () => `DRAIN = LANDER (args.landBar 'ci', BUILD-ONLY) + SELF-AUDIT for ${REPO}, then the teardown.
+Wilson 2026-10-27: the product has NO users. Every builder PR merges as soon as GitHub CI is green on its head;
+Wilson QAs the real app himself after the batch. There is no review chain, no reviewer record and no parking
+label in this mode — you never review a PR, and you never run the full local gate.
+
+1. gh pr list -R ${REPO} --state open --json number,title,headRefName,createdAt,labels,isDraft
+   This command is the ONLY source of the open-PR count (open_prs_before). Never infer it from branch names.
+
+2. THE LAND QUEUE: every OPEN, NON-DRAFT PR labelled ${LOOP_LABEL}, OLDEST PR NUMBER FIRST.
+    gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --limit 200 --json number,headRefName,headRefOid,isDraft,mergeable,labels --jq '[.[] | select(.isDraft|not)] | sort_by(.number)'
+   A DRAFT is held on purpose (that is the only hold) — skip it. PRs without the label (the old feat/yv1xx ones)
+   are not this queue: count them, name them, leave them. For each PR in the queue, in order:
+   a) READ CI ON THE EXACT HEAD — the ledger reads the "Tauri build (Rust + frontend)" check run itself:
+        gh pr view -R ${REPO} <n> --json headRefOid,mergeable,mergeStateStatus
+        node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs ci --sha <headRefOid> ; echo "ledger=$?"      (read the code bare)
+   b) exit 0 (SUCCESS on that sha; the ledger wrote the runner github-ci record) AND mergeable == MERGEABLE ->
+        cd ${PRE_REVIEW_DIR} 2>/dev/null || cd ${LOCAL_REPO}
+        gh pr merge -R ${REPO} <n> --squash --delete-branch --admin --match-head-commit <headRefOid>
+        gh pr view -R ${REPO} <n> --json state,mergeCommit      # MERGED is merged; a refused LOCAL branch delete is harmless
+      Every merge moves main, so re-read mergeable for the NEXT PR — never trust the list from before the merge.
+   c) mergeable == CONFLICTING -> REBASE in the drain worktree ${PRE_REVIEW_DIR} (a detached worktree of
+      ${LOCAL_REPO}; if it is missing: cd ${LOCAL_REPO} && git worktree add --detach ${PRE_REVIEW_DIR} origin/main):
+        cd ${PRE_REVIEW_DIR} && git status --porcelain      # must be empty; if not, STOP on this PR and name what is there
+        git fetch origin && git checkout -B ci-land/<n> origin/<headRefName> && git rebase origin/main
+      Resolve every conflict MINIMALLY and FAITHFULLY: keep both sides' intent, never drop main's change, never
+      delete a test to get through. A conflict you cannot resolve faithfully -> git rebase --abort, comment the
+      conflicting paths on the PR, and move on (it stays open; that is not a hold, the next drain retries).
+        export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${REVIEW_TARGETS[0]}
+      A quick compile/typecheck of what you touched is allowed (cargo check / npx tsc --noEmit); the full gate is not.
+        git push --force-with-lease=<headRefName>:<headRefOid> origin HEAD:<headRefName>
+        git checkout --detach origin/main && git branch -D ci-land/<n>
+      RE-QUEUE it (append to the END of this pass's queue): CI restarts on the new head.
+   d) ledger exit 1 (CI FAILED on the head) ->
+      - If the PR has a comment starting "${CI_FIX_MARKER}" written for an EARLIER head (check:
+          gh pr view -R ${REPO} <n> --comments)
+        it has had its one round: label it and leave it open —
+          gh label create ${CI_RED_LABEL} -R ${REPO} --color B60205 --description "loop: CI red after one fix round" 2>/dev/null ; true
+          gh pr edit -R ${REPO} <n> --add-label ${CI_RED_LABEL}
+          gh pr comment -R ${REPO} <n> --body "${CI_RED_LABEL}: CI still red after one fix round on <headRefOid>. First error: <the first failing line, verbatim>"
+      - Otherwise spend EXACTLY ONE FIX ROUND: read the failing step's log
+          gh pr checks -R ${REPO} <n> ; gh run view <run id> --log-failed | tail -n 200
+        check the branch out in ${PRE_REVIEW_DIR} exactly as in (c) (rebase onto origin/main in the same step if it
+        is behind), fix the CAUSE minimally, run only the targeted check that failed, commit
+        "<item id>: CI fix round", push --force-with-lease as in (c), then comment
+          gh pr comment -R ${REPO} <n> --body "${CI_FIX_MARKER}: <the first CI error, verbatim> — fixed by <sha>: <one line>"
+        and RE-QUEUE it.
+      A PR already labelled ${CI_RED_LABEL} gets NO further round: merge it only if CI is now SUCCESS on its
+      current head (someone pushed a fix); otherwise skip it.
+   e) ledger exit 5 (queued / in_progress / no check run yet) -> leave it in the queue and go on.
+   AFTER ONE FULL PASS, if anything is still pending or re-queued, wait ONCE in this agent
+        perl -e 'select(undef,undef,undef,600)'
+   then walk the remaining queue ONE more time with (a)-(e) (a PR whose second CI run fails here goes to the
+   ${CI_RED_LABEL} branch of (d) only if its fix-round comment exists; otherwise it gets its round now). Never a
+   third pass and never a second wait: what is still pending is named in stillPending and the next drain or the
+   next builder's LAND step merges it.
+
+3. Sweep dead branches: for each remote branch, check whether its head is an ancestor of main
+   (git merge-base --is-ancestor). Delete the ones that are. Report, do not delete, the ones that are not — and
+   BUNDLE any unpushed local branch before deleting anything
+   (git bundle create ${LOCAL_REPO}/.loop-archive/<name>.bundle <branch> --not origin/main).
+4. Report open_prs_before and open_prs_after from gh (step 1 again, last). If the number went UP, say so plainly.
+${DRAIN_TEARDOWN('5')}
+
+RETURN: {landBar: "ci", open_prs_before, open_prs_after, merged: [{pr, sha}], rebased: [{pr, newHead}],
+         ciFixed: [{pr, firstError, fixSha}], ciRed: [{pr, firstError}], conflictsLeft: [{pr, paths}],
+         stillPending: [{pr, reason}], skippedDrafts: [...], branchesDeleted: [...], branchesKept: [...],
+         worktreeRemoved: true|false, targetDirsRemoved: true|false, portsClean: true|false, diskReclaimed}
+${LOGLINE('drain', '_drain', 'harness:drain')}
+${GUARD(BOTH_DIRS)}
+TOOL-CALL BUDGET FOR THIS SEAT: 200. Spend it on landing, oldest first; name what you did not reach.`
+
+/**
  * THE MERGE GATE, MODE-AWARE. Every agent that can merge interpolates this and nothing else.
  * It MUST stay a function: CI_MODE is assigned after Recon, long after the top-level consts in
  * this file have been evaluated, so a const template literal here would freeze the wrong mode in.
@@ -516,15 +734,21 @@ this repo is weeks old. So the CI check on every PR in this run WILL NEVER TURN 
 it is waiting forever, and "ci-pending" is a state no PR can leave. Confirm it once, yourself:
     cd ${LOCAL_REPO} && node scripts/loop/ci-mode.mjs --why      -> prints "local" + the evidence
 
-A PR IS LANDABLE ONLY WHEN YOU — THIS AGENT, IN THIS WORKTREE, ON THIS PR'S REBASED HEAD — HAVE
-RUN THE WHOLE GATE YOURSELF AND EVERY COMMAND EXITED 0:
+A PR IS LANDABLE ONLY WITH A GREEN GATE BOUND TO ITS EXACT CURRENT HEAD. CHECK THE LEDGER FIRST — the
+fix-land seat runs the full gate once after its push and records it; that run is the one this step reuses:
+    gh pr view -R ${REPO} <n> --json headRefOid                -> <headRefOid>
+    node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs check --sha <headRefOid> ; echo "ledger=$?"      (read the code bare)
+  - exit 0 -> the gate is satisfied. Print its line ("gate: satisfied by record <stamp> from <runner>"), take the
+    codes from that record, and do NOT run the commands below.
+  - exit 3 (no record) or exit 1 (a RED record — it may be a flake) -> run the WHOLE gate yourself, in THIS
+    worktree checked out at <headRefOid>, every command, and record it (your record supersedes a red one):
 ${GATE_CMDS(dir, target)}
-SOMEONE ELSE'S GATE IS NOT YOUR GATE. A gate pasted by another agent, or on an earlier sha, or in
-an earlier section of this run, is evidence about a tree that is not the one you are about to
-merge. If you did not run those commands yourself on the current head, you have no gate.
+SOMEONE ELSE'S GATE IS NOT A GATE unless it is a ledger record for <headRefOid> itself. A gate pasted in a comment,
+an agent's return value, a loop log, or a record for any other sha is evidence about a tree you are not merging.
+The record CLI refuses a worktree that is dirty or not at the sha — that is why a record counts and a paste does not.
 
 NEVER MERGE ON A STALE HEAD. Bind the gate to a sha:
-    cd ${dir} && git rev-parse HEAD                       # the sha your commands measured
+    the ledger record's sha, or: cd ${dir} && git rev-parse HEAD     # the sha your commands measured
     gh pr view -R ${REPO} <n> --json headRefOid,mergeable,mergeStateStatus
 headRefOid at merge time MUST equal that sha. If you rebase, push, amend or add so much as a
 comment-only commit after the gate, THE GATE IS VOID — run it all again on the new head. GitHub
@@ -535,6 +759,7 @@ THEN PASTE THE GATE ON THE PR, AS A COMMENT TITLED EXACTLY "${LOCAL_GATE_TITLE}"
 ci=local — GitHub Actions cannot schedule jobs for this account, so this PR was gated locally.
 gated sha: <the headRefOid you measured>
 worktree:  ${dir}
+ledger:    <the gate-ledger check line, or "run here and recorded">
 
 typecheck=<code>
 test=<code>
@@ -544,7 +769,7 @@ diarize=<code>
 stage=<code>
 polishtest=<code>
 diarizetest=<code>
-fmt=<code>
+fmt: advisory, <fmtHunks> hunks (exit <code>; never fails the gate)
 clippy=<code>
 cargotest=<code>
 
@@ -559,10 +784,10 @@ then has to sweep. Use --admin so a self-opened PR with no approving review can 
 Every merge comment and every status-board row you write carries ci=local.
 
 OUTCOMES IN THIS MODE:
-  - every command 0, sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
+  - every BLOCKING command 0 (fmt is advisory and excluded), sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
     "local-gate", and localGate: {sha, typecheck, test, build, polish, diarize, stage, polishtest,
     diarizetest, fmt, clippy, cargotest}.
-  - any command non-zero  -> this is a red gate. Fix it if this PR is yours to fix; otherwise label
+  - any BLOCKING command non-zero -> this is a red gate (a non-zero fmt ALONE is NEVER ci-red). Fix it if this PR is yours to fix; otherwise label
     ci-red, comment WHICH command failed with its failing output, and report status "ci-red".
     "The local gate failed" with no command name is not a triage.
   - CONFLICTING after your rebase -> label needs-rebase, status "needs-rebase".
@@ -577,16 +802,22 @@ CI_MODE = github — THE CHECK RUN IS THE MERGE GATE (Actions has been restored)
 Read the check run for the CI workflow's "Tauri build (Rust + frontend)" job whose head_sha EQUALS
 headRefOid. A green check on an older sha proves nothing. A "skipped" check is not a pass and not a
 failure — it is not evidence at all, so do not read it either way.
-  - that job == success AND mergeable == MERGEABLE AND every blocking finding disposed AND the
-    review gate below exits 0 on that same headRefOid -> merge with the command the review gate gives
-    (--match-head-commit <headRefOid>). status "merged" with the squash sha; the board row carries ci=github.
-  - it is queued / in_progress / not yet created -> status "ci-pending", reason "ci-pending".
+GREEN CI ON THE EXACT HEAD IS THE GATE — NO LOCAL RUN. The ledger reads that check run itself and records it:
+    node ${LOCAL_REPO}/scripts/loop/gate-ledger.mjs ci --sha <headRefOid> ; echo "ledger=$?"      (read the code bare)
+  - exit 0 (that job == success; "gate: satisfied by record <stamp> from github-ci") AND mergeable == MERGEABLE AND
+    every blocking finding disposed AND the review gate below exits 0 on that same headRefOid -> merge with the
+    command the review gate gives (--match-head-commit <headRefOid>). Do NOT run the local gate. status "merged"
+    with the squash sha; the board row carries ci=github.
+  - exit 5 (queued / in_progress / not yet created) -> status "ci-pending", reason "ci-pending".
     DO NOT POLL, DO NOT SLEEP, DO NOT WAIT — the land sweeper settles it.
-  - it == failure -> label ci-red and comment the FAILING STEP NAME. status "ci-red".
+  - exit 1 (failure) -> label ci-red. ATTRIBUTE IT: unless gate-ledger.mjs check --sha <headRefOid> already exits
+    0 or 1, run the local gate on that head in this worktree and record it; then comment the FAILING CI STEP NAME
+    and the failing local command (or "local gate green — CI-only step <name>"). status "ci-red" either way:
+${GATE_CMDS(dir, target)}
   - mergeable == CONFLICTING after your rebase -> label needs-rebase, status "needs-rebase".
-NOTE: even in this mode the CI workflow does NOT run clippy or fmt as a gate (both are '|| true'),
-and it does not build or stage yap-diarize at all, so a github-mode merge still owes the local
-clippy run, the local fmt check and both sidecar builds. Run them and paste them.
+NOTE: ci.yml's job is a SUPERSET of the local blocking set — it builds, stages and tests BOTH sidecars, runs
+vitest, tsc+vite (npm run build), clippy (app and sidecars, -D warnings), the release app build and cargo test —
+so its success on the exact head owes nothing local. fmt is advisory in both.
 ${REVIEW_GATE_STEP}`
 
 // ── verdict helpers (string-safe; agent returns may be objects or strings) ──
@@ -594,8 +825,43 @@ const asText = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 const saysBlock = (v) => /"verdict"\s*:\s*"BLOCK"/i.test(asText(v))
 const saysReviewed = (v) => /"status"\s*:\s*"reviewed"/i.test(asText(v))
 const hasEmptyBlocking = (v) => /"blocking"\s*:\s*\[\s*\]/.test(asText(v))
-/** A BLOCK verdict with an empty blocking[] is malformed → recorded as PASS + an advisory note. */
-const isMalformedBlock = (v) => saysBlock(v) && hasEmptyBlocking(v)
+/**
+ * A seat's return as an object, or null when its text is not JSON. agent() hands seats back as JSON TEXT (every
+ * review return of pass wf_f3b32723 was a string), so `v.blocking` / `v.recordHead` on the raw value read
+ * undefined: the park seat got {primary:[],lens:[]} and the recordHead checks compared nothing (2026-10-27).
+ */
+const asObj = (v) => {
+  if (v && typeof v === 'object') return v
+  const t = typeof v === 'string' ? v.trim() : ''
+  for (const c of [t, (t.match(/\{[\s\S]*\}/) || [''])[0]]) {
+    try { const o = JSON.parse(c); if (o && typeof o === 'object') return o } catch { /* next candidate */ }
+  }
+  return null
+}
+/** The seat's BLOCKING findings, verbatim, whether it returned an object or JSON text. */
+const blockingOf = (v) => { const b = (asObj(v) || {}).blocking; return Array.isArray(b) ? b : [] }
+const recordHeadOf = (v) => String((asObj(v) || {}).recordHead || '')
+/** A BLOCK that names no finding (empty or missing blocking[]) is malformed — a harness error, never a verdict. */
+const isMalformedBlock = (v) => saysBlock(v) && (hasEmptyBlocking(v) || (asObj(v) !== null && blockingOf(v).length === 0))
+/**
+ * The findings a fixer/parker is handed: the seat's blocking[] verbatim; when a BLOCK carries none, a pointer to the
+ * seat's own record comment (by recordCommentId when it returned one) so the fixer reads them from GitHub instead.
+ */
+const findingsFor = (v, pr) => {
+  const b = blockingOf(v)
+  if (b.length || !saysBlock(v)) return b
+  const id = (String((asObj(v) || {}).recordCommentId || '').match(/\d{6,}/) || [])[0]
+  return [`NO findings array in this seat's return. Read its record verbatim and treat every BLOCKING line in it as a finding: ${id
+    ? `gh api repos/${REPO}/issues/comments/${id} --jq .body`
+    : `gh api repos/${REPO}/issues/${pr}/comments --paginate --jq '.[] | select(.body | test("^seat: review-opus2?$"; "m")) | .body' (the LAST record of that seat on the current head)`}`]
+}
+/** Appended to a reviewer prompt when its first return was a BLOCK with no findings array. */
+const FINDINGS_REASK = `
+
+# RE-ASK: YOUR LAST RETURN SAID BLOCK WITH NO FINDINGS ARRAY — RETURN THE FINDINGS ARRAY
+The harness cannot hand a fixer a finding that is not in your return. If your record on this head is already
+posted, do NOT post another: read it back and return every BLOCKING line in it as blocking: ["...", ...]. A BLOCK
+whose blocking[] is empty again marks this PR loop-review-error and spends no fix round.`
 const SHA40 = /^[0-9a-f]{40}$/
 /**
  * Did a fix round produce a NEW head? (review-opus2 B1 on #222.) before: the heads this pass's reviewers recorded
@@ -641,7 +907,7 @@ const landBlockedLine = (land, reviewedHeads) => {
  * anything the fixer reports (review-opus round 4 advisory). → the repeated head, or ''.
  */
 const repeatedReviewHead = (rounds, current) => {
-  const heads = (vs) => vs.map((v) => String((v && typeof v === 'object' && v.recordHead) || '').toLowerCase()).filter((h) => SHA40.test(h))
+  const heads = (vs) => vs.map((v) => recordHeadOf(v).toLowerCase()).filter((h) => SHA40.test(h))
   const earlier = new Set((rounds || []).flatMap((r) => heads([r.primary, r.lens])))
   return heads(current).find((h) => earlier.has(h)) || ''
 }
@@ -709,6 +975,10 @@ async function agentRRetry(prompt, opts, maxAttempts = 3) {
 // QUALITY FLOOR: the small seat gets SMALL_SEAT_CONTRACT; if it returns NEEDS_OPUS, returns a result
 // missing a required field, or returns null twice, agentR re-runs the SAME prompt on the escalate
 // model (opus) — so the worst case is the old cost plus one cheap attempt, never a guessed result.
+// PER-ITEM BUILDERS (2026-10-26): an item tagged builder:'sonnet' runs its build: and fix: seats on
+// SEAT_MODELS.builders.model with SONNET_BUILDER_PREAMBLE prepended (no mechanical contract), through the
+// SAME escalation. build.mjs refuses the tag on a security-class item (seat-models.mjs modelFor); the id
+// check in builderTier is belt and braces. Untagged items run the opus builder prompt unchanged.
 // Kill switch: seat-models.json "enabled": false, or launch with args {seatModels: false}.
 const SEAT_MODELS = {} // stamped by build.mjs from scripts/loop/seat-models.json
 const TIER_OFF = typeof args !== 'undefined' && args && args.seatModels === false
@@ -720,6 +990,31 @@ function seatTier(label) {
   const t = SEAT_MODELS.seats[seatKeyOf(label)]
   return t && typeof t.model === 'string' && t.model !== 'opus' ? t : null
 }
+const BUILDER_SEATS = ['build', 'fix']
+/** The per-item builder tier for a build:/fix: label, or null (untagged, security id, or tiering off). */
+function builderTier(label, item) {
+  if (TIER_OFF || !SEAT_MODELS || SEAT_MODELS.enabled !== true || !SEAT_MODELS.builders) return null
+  const seat = seatKeyOf(label)
+  if (!BUILDER_SEATS.includes(seat) || !item || item.builder !== 'sonnet') return null
+  if (new RegExp(`^\\s*(?:${SECURITY_IDS})`, 'i').test(String(item.id || ''))) return null
+  const b = SEAT_MODELS.builders
+  if (typeof b.model !== 'string' || b.model === 'opus') return null
+  return { model: b.model, effort: b.effort, require: (b.require && b.require[seat]) || [] }
+}
+const SONNET_BUILDER_PREAMBLE = (seat, model) => `# SONNET BUILDER CONTRACT (${seat} on ${model} — per-item builder tiering)
+You are a Sonnet builder. The item spec below is the whole task: do exactly its DO steps, run exactly its
+acceptance commands, open the PR with the exact title format, and if any step is ambiguous or needs a design
+choice return NEEDS_OPUS with one sentence instead of guessing.
+- NEEDS_OPUS goes in the first string field of the RETURN shape (e.g. {"itemId": "...", "status": "NEEDS_OPUS: <one
+  sentence>"}). Decide it BEFORE you push or open a PR; if you already pushed, say so in the same sentence. The loop
+  then re-runs this whole step on Opus, which resumes your branch.
+- No scope beyond the spec: no extra refactor, no renamed file, no new dependency, no weakened or skipped check.
+- Every exit code, number and SHA in your RETURN is copied from command output you saw, never estimated.
+- The TELEMETRY (Wilson 2026-10-27) block in the prompt below IS part of the spec, not extra scope: every code path
+  you add or change logs start/finish/failure through the \`log\` crate (logging.rs), surfaces failures through the
+  existing error surface, records one duration/counter where it matters, and the PR body gets a "## Telemetry" section.
+
+`
 /** Why a small seat's result cannot be used (null = usable). Never reads a verdict — only shape. */
 function tierProblem(r, tier) {
   if (r === null || r === undefined) return 'null result'
@@ -754,16 +1049,19 @@ You are running a MECHANICAL seat: the commands and the RETURN shape above are t
 6. A command that exits non-zero is NOT ambiguous when the instructions say how to report it (an acceptance
    run that goes red, a status write that fails): report it exactly as instructed — do not escalate it.
 `
-/** agentR: tiered seats try the small model (twice on a null, once otherwise), then the opus path. */
-async function agentR(prompt, opts) {
+/** agentR: tiered seats try the small model (twice on a null, once otherwise), then the opus path.
+ *  `item` (build:/fix: seats only) enables the per-item builder tier; the opus re-run gets the bare prompt. */
+async function agentR(prompt, opts, item) {
   const label = (opts && opts.label) || 'agent'
-  const tier = seatTier(label)
+  const bt = builderTier(label, item)
+  const tier = bt || seatTier(label)
   if (!tier) return agentRRetry(prompt, opts)
   const seat = seatKeyOf(label)
   const small = { ...opts, model: tier.model, effort: tier.effort || (opts && opts.effort) }
+  const smallPrompt = bt ? SONNET_BUILDER_PREAMBLE(seat, tier.model) + prompt : prompt + SMALL_SEAT_CONTRACT(seat, tier.model)
   let why = null
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const r = await agentRRetry(prompt + SMALL_SEAT_CONTRACT(seat, tier.model), small, 1)
+    const r = await agentRRetry(smallPrompt, small, 1)
     if (typeof isStalled === 'function' && isStalled(r)) return r
     why = tierProblem(r, tier)
     if (!why) return r
@@ -822,8 +1120,11 @@ const ONLY_PREFIXES =
 // agent and logs "finished its 0 item(s)". Combine with args.only to batch a named group, e.g.
 //   Workflow {scriptPath: ..., args: {mode: 'build', lanes: 1, only: ['yap-p0-']}}
 // Any other value means 2. Review mode ignores it (the review chains and their 3-agent cap are untouched).
-const BUILD_LANES =
-  MODE === 'build' && typeof args !== 'undefined' && args && (args.lanes === 1 || args.lanes === '1') ? 1 : 2
+// 2026-10-27: `lanes: 3` adds lane C (WORKDIR_C, CARGO_TARGET_C, PREVIEW_PORT_C); items split per part over A/B/C (splitLanes).
+const BUILD_LANES = (() => {
+  const n = MODE === 'build' && typeof args !== 'undefined' && args ? Number(args.lanes) : 2
+  return n === 1 ? 1 : n === 3 ? 3 : 2
+})()
 function onlySkip(item) {
   if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
   return { itemId: item.id, status: 'skipped: not in args.only', only: true }
@@ -916,7 +1217,7 @@ skip one that looks redundant, and do not stop early because an earlier one fail
 builder and you are not a reviewer: an exit code you soften here is a false green that ships.
 
 # WHERE
-    cd ${dir}/${APP} && export CARGO_TARGET_DIR=${target}
+    cd ${dir}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${target}
 ${where}
 Paste \`git log --oneline -1\` and \`git status --porcelain\` before you start. If the working tree is
 dirty when it should be clean, or the checkout is not what is named above, STOP and return
@@ -953,7 +1254,7 @@ async function runBuild(item, lane) {
   const dir = WORKDIRS[lane]
   const port = PREVIEW_PORTS[lane]
   const target = CARGO_TARGETS[lane]
-  const other = WORKDIRS[lane === 1 ? 0 : 1]
+  const other = WORKDIRS.filter((_, i) => i !== lane && i < Math.max(2, BUILD_LANES)).join(' and ')
   const tag = LANE_TAGS[lane]
 
   /**
@@ -999,7 +1300,7 @@ app. Build exactly one item. No scope creep.
 
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 
-# ═══ LAND FIRST — MERGE WHAT IS ALREADY GREEN (${CI_MODE === 'local' ? '≤ 14 TOOL CALLS, ONE PR' : '≤ 6 TOOL CALLS'}, THEN MOVE ON) ═══
+${LAND_BAR_CI ? CI_LAND_BUILDER() : `# ═══ LAND FIRST — MERGE WHAT IS ALREADY GREEN (${CI_MODE === 'local' ? '≤ 14 TOOL CALLS, ONE PR' : '≤ 6 TOOL CALLS'}, THEN MOVE ON) ═══
 Nothing else in this pass merges anything. If you skip this, the PRs pile up and every item after
 you branches off a main that is missing its predecessors — which is how a loop produces fifteen
 conflicting PRs and zero shipped work.
@@ -1023,7 +1324,7 @@ when the review gate above exits 0 on its head: a freshly built PR carries no re
 gate refuses it (review-pending) — that is expected; name it and move on, the review pass reviews it.
 DO NOT TOUCH the pre-existing feat/yv1xx PRs from the previous loop unless they carry the
 ${LOOP_LABEL} label. They are weeks old, they are not this pass's work, and Drain triages them.
-
+`}
 # ═══ PRE-FLIGHT ALREADY RAN — AND IT FAILED, WHICH IS WHY YOU EXIST ═══
 You do NOT run the pre-flight. A separate command-runner seat already ran it on unmodified
 origin/main, detached, in this worktree, before you were dispatched. It FAILED, so this item is
@@ -1072,6 +1373,7 @@ ${item.notes}
 # ACCEPTANCE (these exact checks must pass; put their REAL output in the PR body)
 ${item.acceptance}
 
+${TELEMETRY_BLOCK}
 ${RUNTIME_PROOF(dir)}
 ${REACHABILITY}
 ${VERIFY_NOTHING}
@@ -1094,8 +1396,7 @@ cd ${dir} && git add -A && git commit -m "${item.id}: ${item.title}" && git push
 gh pr create -R ${REPO} --label ${LOOP_LABEL} --title "${item.id}: ${item.title}" --body "<see below>"
 The --label is REQUIRED: the next item's LAND step finds this PR by that label and nothing else, and
 the review pass walks the same label. A PR without it is invisible to both and will rot.
-DO NOT WAIT FOR CI. Push, open the PR, write your log line and your board row, and return. A later
-item's LAND step merges this PR once it is gate-green. Sitting on 'gh run watch' is the wait this
+DO NOT WAIT FOR CI. Push, open the PR, write your log line and your board row, and return. ${LAND_BAR_CI ? 'The DRAIN seat (and any later builder\'s LAND step) merges this PR as soon as GitHub CI is green on its head.' : 'A later\nitem\'s LAND step merges this PR once it is gate-green.'} Sitting on 'gh run watch' is the wait this
 pass exists to delete — and in this run there is no run to watch at all.
 
 PR BODY — ITS FIRST LINE IS FIXED, VERBATIM:
@@ -1107,6 +1408,8 @@ Then, below it, as real pasted output and not prose:
   entry -> import chain for any new frontend module, and the capability entry for any plugin surface
 - your runtime proof: the failing-then-passing test, or what you saw in the running app (with a
   screenshot path), or the command-level probe — and which of the three it was
+- a "## Telemetry" section: every log line, surfaced error and counter/duration this PR adds (file:line), per
+  the TELEMETRY block above
 - an explicit "What I did NOT do" section listing what a reader might assume you did and you did not
 
 RETURN: {itemId, status: "built", branch, prNumber, resumedPr,
@@ -1116,7 +1419,8 @@ RETURN: {itemId, status: "built", branch, prNumber, resumedPr,
          runtimeProof: "test"|"app"|"probe"|"none", acceptanceOutput, notDone: [...]}
 ${LOGLINE(`${p} build`, p, `${tag}:build`, '--open <the open loop-build PR count you just observed>')}
 ${GUARD(dir)}`,
-    { model: 'opus', effort: 'high', phase: p, label: `build:${tag}:${p}` }
+    { model: 'opus', effort: 'high', phase: p, label: `build:${tag}:${p}` },
+    item
   )
   if (build === null) {
     // The Workflow runtime does NOT throw when an agent dies on an API error (usage/session limit,
@@ -1191,7 +1495,8 @@ RETURN: {itemId: "${item.id}", pr: <number>, fixed: true|false, whatFailed, what
          acceptanceIsWrong: "<evidence, or empty>", gateExits: {...}}
 ${LOGLINE(`${p} fix`, p, `${tag}:fix-r1`)}
 ${GUARD(dir)}`,
-    { model: 'opus', effort: 'high', phase: p, label: `fix:${tag}:${p}` }
+    { model: 'opus', effort: 'high', phase: p, label: `fix:${tag}:${p}` },
+    item
   )
   if (fix === null) {
     noteHalt(`${item.id} lane ${LANE_TAGS[lane]} fix round`, 'fix agent returned null — API failure or session/usage limit; no capacity')
@@ -1224,15 +1529,16 @@ make that visible on GitHub and on the board. You fix NOTHING and you merge NOTH
     cd ${dir} && gh pr list -R ${REPO} --head ${item.branch} --state open --json number,url
 Take that PR number as <n>. If there is no open PR, say so and record the item as failed with no PR.
 
-    gh pr edit -R ${REPO} <n> --add-label needs-human
+    ${LAND_BAR_CI ? `gh label create loop-acceptance-red -R ${REPO} --color FBCA04 --description "loop: item acceptance failed twice" 2>/dev/null ; true
+    gh pr edit -R ${REPO} <n> --add-label loop-acceptance-red` : `gh pr edit -R ${REPO} <n> --add-label needs-human`}
     gh pr comment -R ${REPO} <n> --body "<the comment below, verbatim, with the output pasted in>"
     gh pr edit -R ${REPO} <n> --body "<the existing body, with this same block appended at the TOP>"
 
 THE COMMENT, verbatim, and the raw output goes in an indented block (four spaces per line — do not
 use a markdown fence, the output may contain one):
 
-## Acceptance FAILED — executed twice by the loop, not merged
-This PR is NOT mergeable by the loop and nothing in it has been reviewed. The item's acceptance
+## Acceptance FAILED — executed twice by the loop${LAND_BAR_CI ? '' : ', not merged'}
+${LAND_BAR_CI ? 'BUILD-ONLY run (landBar ci): the drain still merges this PR once GitHub CI is green, and the next build pass re-runs the item (its pre-flight will fail on main) to close the gap.' : 'This PR is NOT mergeable by the loop and nothing in it has been reviewed.'} The item's acceptance
 commands were run verbatim on this branch by a command-runner seat, once after the build and once
 after one fix round, and they did not all exit 0.
 first failure: ${(accept && accept.firstFailure) || 'see the output below'}
@@ -1240,7 +1546,7 @@ acceptance output:
 <the output, every line indented by four spaces>
 
 Then the board, and it must say failed:
-    node ${STATUS} ${p} ${tag}:failed "acceptance failed twice; PR open, needs-human, ci=${CI_MODE}" <n>
+    node ${STATUS} ${p} ${tag}:failed "acceptance failed twice; PR open, ${LAND_BAR_CI ? 'loop-acceptance-red' : 'needs-human'}, ci=${CI_MODE}" <n>
 ${LOGLINE(`${p} failed-acceptance`, p, `${tag}:failed`)}
 RETURN: {itemId: "${item.id}", pr: <n or 0>, labelled: true|false, commented: true|false, boardWritten: true|false}
 ${GUARD(dir)}
@@ -1330,6 +1636,8 @@ function takeNextPr() {
  * review gate) and merges that sha. It NEVER waits for CI.
  * Re-dispatch covers the seat(s) that blocked AND every other required seat: a push voids every
  * record, so a security PR's non-blocking seat must PASS the new head too or the gate refuses it.
+ * GATE ONCE PER HEAD (2026-10-27): reviewers verify scripts/loop/gate-ledger.mjs records and never run the full gate;
+ * fix-land's post-push run is the round's one full run and records it; LAND reuses it (or green CI on the head).
  */
 async function reviewOnePr(entry, chain) {
   const dir = REVIEW_DIRS[chain]
@@ -1359,10 +1667,11 @@ Your job is to TRY TO DISPROVE this PR's claims. Not to falsify them — to test
 hard, and to report what survives. A finding you cannot substantiate is not a finding.
 
 Read it: gh pr view -R ${REPO} ${pr} --json number,title,body,headRefOid,files
-and gh pr diff -R ${REPO} ${pr}. You may read code in ${dir} (do NOT check out a branch there —
-the fix agent owns that worktree next; read-only greps only).
+and gh pr diff -R ${REPO} ${pr}. You read code in ${dir}, DETACHED at the head (below) — never a branch
+there: the fix agent owns that worktree next.
 TRIAGE ALREADY ESTABLISHED: ${facts}
 ${reReview(round, prior)}
+${REVIEW_GATE_READ(dir, target, pr)}
 # THE CONTRACT — classify every finding as exactly one
 BLOCKING — a real defect in shipped behaviour: a code bug; a crash or panic path; data loss in the
   local history; a permission or signing regression; audio or text leaving the machine when it
@@ -1410,9 +1719,10 @@ are one reviewer: this harness has already shipped a dead-code fix that TWO inde
 both approved, because both accepted the same false premise. You exist to break that.
 
 Read it: gh pr view -R ${REPO} ${pr} --json number,title,body,headRefOid,files
-and gh pr diff -R ${REPO} ${pr}. Read-only greps in ${dir}; never check out a branch there.
+and gh pr diff -R ${REPO} ${pr}. Read code in ${dir}, DETACHED at the head (below); never check out a branch there.
 TRIAGE ALREADY ESTABLISHED: ${facts}
 ${reReview(round, prior)}
+${REVIEW_GATE_READ(dir, target, pr)}
 # THE CONTRACT — identical to the primary reviewer's. BLOCKING vs ADVISORY, prefix every finding.
 # YOUR FOUR LENSES — the primary reviewer is NOT asked for these. Spend your effort HERE.
 (a) LIVENESS / FALSE PREMISE. Is the code this PR touches actually REACHED at runtime on current
@@ -1456,7 +1766,6 @@ ${GUARD(dir)}`
   // a head with no record), never merged on a verdict nobody gave.
   const UNAVAILABLE = { status: 'unavailable', verdict: 'NONE', blocking: [], advisory: [], whyUnavailable: 'seat returned null (API failure)' }
   const noVerdict = (v) => v === null || /"status"\s*:\s*"unavailable"/i.test(asText(v)) || isMalformedBlock(v) || !/"verdict"\s*:\s*"(PASS|BLOCK)"/i.test(asText(v))
-  const blockingOf = (v) => (v && Array.isArray(v.blocking) ? v.blocking : [])
   // The FIX mode's first step, kept verbatim from the one-round fix+land prompt.
   const REBASE_STEP = `# 1 — REBASE FIRST, ALWAYS. THIS IS STEP ONE AND IT IS NOT OPTIONAL.
 Main has moved under this PR, and other chains are merging while you work.
@@ -1506,8 +1815,16 @@ ${COMMIT_CONTRACT}
     }
     primary = rA === null ? UNAVAILABLE : rA
     lens = seats === 2 ? (rB === null ? UNAVAILABLE : rB) : null
-    for (const [who, v] of [['review-opus', primary], ['review-opus2', lens]]) {
-      if (v && isMalformedBlock(v)) log(`PR#${pr} (${itemId}) round ${round}: ${who} returned BLOCK with an empty blocking[] — no valid record, the PR stays review-pending`)
+    // A BLOCK THAT NAMES NO FINDING IS A HARNESS ERROR, NOT A VERDICT (2026-10-27): re-ask that seat ONCE for the
+    // array; still empty -> label loop-review-error and spend no fix round on findings nobody handed the fixer.
+    if (isMalformedBlock(primary)) primary = (await withAgents(1, () => agentR(primaryPrompt(round, prior) + FINDINGS_REASK, { model: 'opus', effort: 'high', phase: itemId, label: `review-opus:${itemId}` }))) || primary
+    if (lens && isMalformedBlock(lens)) lens = (await withAgents(1, () => agentR(lensPrompt(round, prior) + FINDINGS_REASK, { model: 'opus', effort: 'high', phase: itemId, label: `review-opus2:${itemId}` }))) || lens
+    const emptyBlock = [['review-opus', primary], ['review-opus2', lens]].filter(([, v]) => v && isMalformedBlock(v)).map(([w]) => w)
+    if (emptyBlock.length) {
+      const why = `review round ${round}: ${emptyBlock.join(' + ')} returned BLOCK with no findings array twice — a harness error, not a verdict`
+      const mark = await withAgents(1, () => agentR(reviewErrorPrompt(why), { model: 'opus', effort: 'high', phase: itemId, label: `review-error:${itemId}` }))
+      log(`PR#${pr} (${itemId}, ${klass}): ${why} -> loop-review-error (no fix round spent)`)
+      return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'loop-review-error', blocked: true, rounds, reason: why, land: mark }
     }
     const primaryBlocked = saysBlock(primary) && !isMalformedBlock(primary)
     const lensBlocked = lens !== null && saysReviewed(lens) && saysBlock(lens) && !isMalformedBlock(lens)
@@ -1545,7 +1862,7 @@ ${COMMIT_CONTRACT}
         ? 'fixed'
         : (fixText.match(/"status"\s*:\s*"(no-new-head|closed-superseded|needs-human|needs-rebase|ci-red)"/i) || [])[1] || 'needs-human'
     rounds[rounds.length - 1].fix = fix
-    const reviewedHeads = [primary, lens].map((v) => (v && typeof v === 'object' && v.recordHead) || '')
+    const reviewedHeads = [primary, lens].map(recordHeadOf)
     const fixHead = fixRoundHead(fix, reviewedHeads)
     if (fixStatus === 'no-new-head' || (fixStatus === 'fixed' && !fixHead.changed)) {
       // NO NEW HEAD: a refute-only round. The BLOCK stays final on that head; no reviewer and no lander is spent.
@@ -1564,8 +1881,8 @@ ${COMMIT_CONTRACT}
     }
     round++
     prior = {
-      primaryBlocking: blockingOf(primary),
-      lensBlocking: blockingOf(lens),
+      primaryBlocking: findingsFor(primary, pr),
+      lensBlocking: findingsFor(lens, pr),
       dispositions: fix && Array.isArray(fix.blockingDispositions) ? fix.blockingDispositions : fixText.slice(0, 4000),
       newHead: fixHead.after,
     }
@@ -1573,6 +1890,20 @@ ${COMMIT_CONTRACT}
   }
   const verdicts = { primary, lens, seats, rounds: rounds.length }
 
+  /** THE REVIEW-ERROR SEAT: labels a PR whose reviewer returned BLOCK with no findings twice. Never fixes or merges. */
+  function reviewErrorPrompt(why) {
+    return `You are the REVIEW-ERROR agent for PR #${pr} on ${REPO} (${itemId}, ${klass}). A reviewer seat returned BLOCK
+with no findings array, twice. That is a harness error, not a verdict: no fix round is spent on it.
+${why}
+Do NOT fix it, do NOT push, do NOT merge, do NOT review. The next review pass re-reviews it.
+    gh label create loop-review-error -R ${REPO} --color B60205 --description "a review seat returned BLOCK with no findings; re-review" 2>/dev/null ; true
+    gh pr edit -R ${REPO} ${pr} --add-label loop-review-error || gh api -X POST repos/${REPO}/issues/${pr}/labels -f "labels[]=loop-review-error"
+    gh pr comment -R ${REPO} ${pr} --body "Harness error, not a verdict: <the reason above, in plain words, with the head>"
+Start the comment with exactly those words. Never name the label or the reviewer record marker at the start of
+any comment line, and never write a "verdict:" line: the review gate reads such a line as a BLOCK record.
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "loop-review-error", landed: false, reason}
+${GUARD(dir)}`
+  }
   /**
    * THE FIX / LAND / PARK SEAT. Never a reviewer: it never posts a verdict titled as a review and is
    * never handed the record subcommand (build.mjs validation). 'fix' pushes and does NOT merge; 'land'
@@ -1588,7 +1919,7 @@ ${mode === 'park' ? `
 A reviewer BLOCKed this PR again after ${MAX_FIX_ROUNDS} fix rounds. Do NOT fix it, do NOT push, do NOT merge.
     gh pr edit -R ${REPO} ${pr} --add-label needs-human
     gh pr comment -R ${REPO} ${pr} --body "needs-human: still BLOCKED after ${MAX_FIX_ROUNDS} fix rounds. <every open BLOCKING finding below, verbatim, with the seat that raised it>"
-OPEN BLOCKING FINDINGS: ${JSON.stringify({ primary: blockingOf(primary), lens: blockingOf(lens) })}
+OPEN BLOCKING FINDINGS: ${JSON.stringify({ primary: findingsFor(primary, pr), lens: findingsFor(lens, pr) })}
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "needs-human", landed: false, reason}` : ''}${mode === 'hold' ? `
 # HOLD THIS PR FOR A HUMAN — A BLOCK IS FINAL ON ITS CURRENT HEAD
 ${why}
@@ -1604,6 +1935,7 @@ RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "needs-human", landed: fal
 # 2 — DISPOSE OF EVERY BLOCKING FINDING.
 PRIMARY REVIEWER: ${JSON.stringify(primary)}
 INDEPENDENT REVIEWER (security PRs only; null means it was not seated): ${JSON.stringify(lens)}
+OPEN BLOCKING FINDINGS, VERBATIM: ${JSON.stringify({ primary: findingsFor(primary, pr), lens: findingsFor(lens, pr) })}
 Fix ONLY the BLOCKING findings. Do NOT address advisory findings — they are logged once and never
 re-litigated. Do NOT expand scope. If you believe a blocking finding is WRONG, do not silently drop
 it: post a PR comment with the evidence that refutes it. A reviewer being wrong is a legitimate
@@ -1618,9 +1950,13 @@ reviewer seat(s) at YOUR new head — same lens, fresh context — and only thei
 them on that head, can land this PR. At most ${MAX_FIX_ROUNDS} fix rounds; a BLOCK after the last one ends
 as needs-human. You do NOT merge in this mode, whatever the gate says.
 
-# 3 — THE GATE, EVERY COMMAND, SEPARATELY, ON THE REBASED HEAD
+# 3 — THE GATE, EVERY COMMAND, SEPARATELY, ON THE COMMITTED REBASED HEAD — THE ONE FULL RUN OF THIS ROUND
+Commit your fixes FIRST, then run the gate on that commit and WRITE ITS LEDGER RECORD (the last step of the block
+below). The re-reviewers and the LAND seat do not run the gate — they reuse your record for this sha — so a skipped
+record costs a whole extra run. Commit nothing after the gate: a new commit is a new sha with no record.
 ${GATE_CMDS(dir, target)}
 Then git push --force-with-lease, and read the new head: gh pr view -R ${REPO} ${pr} --json headRefOid
+It MUST equal the sha you recorded; if it does not, record again for the pushed sha only if that tree is the one you gated.
 IF YOU HAVE NOTHING TO PUSH — every blocking finding refuted, no fix committed, the rebase a no-op — the head
 does not change, and re-reviewing an unchanged head cannot clear a BLOCK (a BLOCK is final for its head). Do NOT
 push, and NEVER make an empty commit to force a new head: that launders a refute into a push. Instead:
@@ -1641,7 +1977,7 @@ the marker and carries a BLOCK verdict line as a BLOCK on that head, wherever th
 
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"no-new-head"|"needs-human"|"needs-rebase"|"closed-superseded",
          headBefore: "<headRefOid from step 0>", head: "<the headRefOid after your push (headBefore when nothing was pushed)>", rebased: true|false, conflictsResolved: [...],
-         blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}],
+         blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}], gateRecord: "<the ledger record line>",
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest}}` : ''}${mode === 'land' ? `
 # EVERY REQUIRED REVIEWER SEAT PASSED THE CURRENT HEAD — LAND IT, AND CHANGE NOTHING
 ${klass === 'security' ? 'review-opus AND review-opus2 each' : 'review-opus'} returned PASS${round ? ` after ${round} fix round(s)` : ''} and posted a record on the head
@@ -1679,7 +2015,7 @@ ${GUARD(dir)}`
   const landText = asText(land)
   const statusOf = (re, name) => (re.test(landText) ? name : null)
   // A BLOCK at LAND on the head this pass's reviewers reviewed is FINAL for it: needs-human, never review-pending.
-  const landHeld = /"status"\s*:\s*"merged"/i.test(landText) ? '' : landBlockedLine(land, [primary, lens].map((v) => (v && typeof v === 'object' && v.recordHead) || ''))
+  const landHeld = /"status"\s*:\s*"merged"/i.test(landText) ? '' : landBlockedLine(land, [primary, lens].map(recordHeadOf))
   if (landHeld && !/"status"\s*:\s*"needs-human"/i.test(landText)) {
     // The lander labelled it review-pending (or nothing): ONE hold seat relabels it needs-human.
     await withAgents(1, () => agentR(fixLandPrompt('hold', round, `LAND refused on a head this pass already reviewed: ${landHeld}`), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
@@ -1778,21 +2114,23 @@ log(
     `Gated on the Senior Panel: ${ITEMS.filter((i) => i.gated === 'panel').map((i) => i.id).join(', ') || 'none'}. ` +
     (MODE === 'review'
       ? `REVIEW PASS: no builders. Every open ${LOOP_LABEL} PR is triaged, reviewed adversarially and held to the merge bar.`
-      : `BUILD PASS: two builder lanes, no reviewer and no merge agent. Each build LANDS whatever is already gate-green, then builds its own item. The review pass runs afterwards with args {mode:'review'}.`)
+      : `BUILD PASS: ${BUILD_LANES} builder lane(s), no reviewer and no merge agent. Each build LANDS whatever is already ${LAND_BAR_CI ? 'CI-green' : 'gate-green'}, then builds its own item. ${LAND_BAR_CI ? "landBar 'ci' (BUILD-ONLY): the drain merges every loop-build PR whose GitHub CI is green on its head." : "The review pass runs afterwards with args {mode:'review'}."}`)
 )
 
-const BUILD_RECON = `RECON for the Yap overhaul loop. You set up the TWO lane work dirs the items share, you warm the
+const BUILD_RECON = `RECON for the Yap overhaul loop. You set up the ${BUILD_LANES === 3 ? 'THREE' : 'TWO'} lane work dirs the items share, you warm the
 Rust build cache once per lane, you make sure the ${LOOP_LABEL} label exists, and you MEASURE
 whether GitHub Actions can run at all. Do not build anything. Do not open a PR. Each item's own
 pre-flight is that item's job, never yours.
 
-# 1 — CREATE BOTH LANE WORKTREES (not clones — they share the object store, which is the disk win)
+# 1 — CREATE ${BUILD_LANES === 3 ? 'ALL THREE' : 'BOTH'} LANE WORKTREES (not clones — they share the object store, which is the disk win)
     lane A  ${WORKDIR}      port ${PREVIEW_PORT}   CARGO_TARGET_DIR ${CARGO_TARGET_A}
-    lane B  ${WORKDIR_B}    port ${PREVIEW_PORT_B} CARGO_TARGET_DIR ${CARGO_TARGET_B}
+    lane B  ${WORKDIR_B}    port ${PREVIEW_PORT_B} CARGO_TARGET_DIR ${CARGO_TARGET_B}${BUILD_LANES === 3 ? `
+    lane C  ${WORKDIR_C}    port ${PREVIEW_PORT_C} CARGO_TARGET_DIR ${CARGO_TARGET_C}` : ''}
     mkdir -p /Users/wilsonguenther/code/wilson-voice-loop
     cd ${LOCAL_REPO} && git fetch origin
     git worktree add ${WORKDIR} -b yap/recon-a origin/main
-    git worktree add ${WORKDIR_B} -b yap/recon-b origin/main
+    git worktree add ${WORKDIR_B} -b yap/recon-b origin/main${BUILD_LANES === 3 ? `
+    git worktree add ${WORKDIR_C} -b yap/recon-c origin/main` : ''}
 If either already exists from an earlier attempt or an earlier PART, do NOT blindly delete it: check
 'git worktree list', and REUSE it if it is clean. Say for each which you did. If the branch name is
 already taken, reuse the existing worktree rather than inventing a third one.
@@ -1800,7 +2138,8 @@ Confirm and paste, for EACH: git log --oneline -1 && git status --porcelain
 
 # 2 — INSTALL ONCE PER LANE (the app lives in ${APP}/, never at the repo root)
     cd ${WORKDIR}/${APP} && npm ci --cache ${NPM_CACHE}
-    cd ${WORKDIR_B}/${APP} && npm ci --cache ${NPM_CACHE}
+    cd ${WORKDIR_B}/${APP} && npm ci --cache ${NPM_CACHE}${BUILD_LANES === 3 ? `
+    cd ${WORKDIR_C}/${APP} && npm ci --cache ${NPM_CACHE}` : ''}
 If a lane's node_modules already exists (from an earlier part) and 'npm ls --depth 0' is healthy,
 say so and SKIP that install — the worktrees are deliberately left standing between parts.
 
@@ -1808,13 +2147,15 @@ say so and SKIP that install — the worktrees are deliberately left standing be
 src-tauri statically links transcribe-cpp's ggml and yap-polish vendors llama-cpp-sys-2: a COLD
 build of this workspace is MINUTES. The target dirs live OUTSIDE the worktrees on purpose, so this
 cache survives every item, every part and both passes. For EACH lane, with that lane's target dir:
-    cd ${WORKDIR}/${APP} && export CARGO_TARGET_DIR=${CARGO_TARGET_A}
+    cd ${WORKDIR}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${CARGO_TARGET_A}
     npm run build ; echo "distA=$?"
     cargo build -p yap-polish --release ; echo "sidecarA=$?"
     cargo build -p yap-diarize --release ; echo "diarizeA=$?"
     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${CARGO_TARGET_A}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${CARGO_TARGET_A}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stageA=$?"
     cd ${WORKDIR}/${APP}/src-tauri && cargo build --release --features custom-protocol ; echo "appA=$?"
-and the same for lane B with ${WORKDIR_B} and ${CARGO_TARGET_B}.
+and the same for lane B with ${WORKDIR_B} and ${CARGO_TARGET_B}${BUILD_LANES === 3 ? `, and for lane C with ${WORKDIR_C} and
+${CARGO_TARGET_C} (args.lanes: 3 — a NEW target dir is one COLD build, minutes, paid here once; do NOT copy
+another lane's target dir into it: build-script outputs carry absolute paths into the dir they were built in)` : ''}.
 STAGING BOTH SIDECARS IS NOT OPTIONAL: bundle.externalBin names yap-polish AND yap-diarize, a precondition of
 EVERY cargo build of the app (and desktop/dist must exist or tauri::generate_context! panics), so a missing one fails the build for ENVIRONMENT reasons and a later agent
 will waste an hour reading it as a code defect.
@@ -1825,8 +2166,8 @@ Plus the informational one, so the run knows its baseline:
     cd ${WORKDIR}/${APP} && cargo fmt --all -- --check ; echo "fmt=$?"
 MEASURED ON main 2026-09-12: typecheck=0 test=0 build=0 sidecar=0 polishtest=0 clippy=0 cargotest=0
 and fmt=1. If any of the eight is non-zero for you, report it as the BASELINE state; do not fix it,
-and do not let a later agent be blamed for it. Do NOT repeat the baseline in lane B — confirm the
-two shas match instead.
+and do not let a later agent be blamed for it. Do NOT repeat the baseline in lane B${BUILD_LANES === 3 ? ' or C' : ''} — confirm the
+shas match instead.
 
 # 4b — THE LABEL AND THE BOARD
 Every PR this loop opens carries the ${LOOP_LABEL} label — the LAND step and the review pass both
@@ -1890,7 +2231,7 @@ Confirm and paste, for EACH: git log --oneline -1 && git status --porcelain
 # 2 — INSTALL AND WARM, ONCE PER CHAIN, THROUGH THE SHARED NPM CACHE
     cd ${REVIEW_DIRS[0]}/${APP} && npm ci --cache ${NPM_CACHE}
     cd ${REVIEW_DIRS[1]}/${APP} && npm ci --cache ${NPM_CACHE}
-Then, per chain, with that chain's CARGO_TARGET_DIR exported: npm run build (desktop/dist must exist or
+Then, per chain, with that chain's CARGO_TARGET_DIR and CARGO_INCREMENTAL=0 exported: npm run build (desktop/dist must exist or
 tauri::generate_context! panics), then build and STAGE BOTH sidecars (cargo build -p yap-polish --release and
 cargo build -p yap-diarize --release, then copy each to ${APP}/src-tauri/binaries/<name>-<triple>)
 and build the app once (cd ${APP}/src-tauri && cargo build --release --features custom-protocol).
@@ -1984,16 +2325,56 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
 const errored = []
 const slots = new Array(ITEMS.length).fill(null)
 let halted = null
-const laneItems =
-  BUILD_LANES === 1
-    ? [ITEMS.slice(), []]
-    : [ITEMS.filter((it) => laneOf(it) === 0), ITEMS.filter((it) => laneOf(it) === 1)]
+// PER-PART LANE BALANCE (2026-10-27). Only RUNNABLE items (not args.only-skipped, not panel-gated) are split, round-
+// robin in file order over the lanes; a pinned item takes its lane and the round-robin skips any lane already ahead
+// (pins are counted first), so every lane is within ±1 of the others in this part. lanes:1 -> lane A walks every
+// runnable item in source order. Always three slots; a lane at or above BUILD_LANES gets none and steals nothing.
+const PANEL_OK = (typeof args !== 'undefined' && args && Array.isArray(args.panelApproved) && args.panelApproved) || []
+const isRunnable = (item) => !onlySkip(item) && !(item.gated === 'panel' && !PANEL_OK.includes(item.id))
+function splitLanes(items, n) {
+  const lists = [[], [], []]
+  if (n === 1) return [items.slice(), [], []]
+  const counts = new Array(n).fill(0)
+  for (const it of items) if (pinnedLane(it) >= 0) counts[pinnedLane(it)]++
+  let cursor = 0
+  for (const it of items) {
+    let l = pinnedLane(it)
+    if (l < 0) {
+      const min = Math.min(...counts)
+      for (let k = 0; k < n && l < 0; k++) if (counts[(cursor + k) % n] === min) l = (cursor + k) % n
+      counts[l]++
+      cursor = (l + 1) % n
+    }
+    lists[l].push(it)
+  }
+  return lists
+}
+const laneItems = splitLanes(ITEMS.filter(isRunnable), BUILD_LANES)
 const indexOfItem = (item) => ITEMS.indexOf(item)
+// WORK STEALING (2026-10-27): the per-lane lists are a PLAN, not a cage. A lane that runs out (e.g. every item it was
+// handed is already-done at pre-flight) takes the NEXT UNSTARTED, UNPINNED item from the lane with the most unstarted
+// items left. JS is single-threaded and nothing awaits between pick and started.add, so two lanes never take one item.
+const started = new Set()
+const steals = []
+function nextItemFor(lane) {
+  const own = laneItems[lane].find((it) => !started.has(it))
+  if (own) return own
+  const stealable = (l) => laneItems[l].filter((it) => !started.has(it) && pinnedLane(it) < 0)
+  let from = -1
+  for (let l = 0; l < BUILD_LANES; l++) if (l !== lane && stealable(l).length > (from < 0 ? 0 : stealable(from).length)) from = l
+  if (from < 0) return null
+  const item = stealable(from)[0]
+  steals.push({ itemId: item.id, from: LANE_TAGS[from], to: LANE_TAGS[lane] })
+  log(`lane ${LANE_TAGS[lane]}: out of its own items — STEALS ${item.id} from lane ${LANE_TAGS[from]} (${stealable(from).length} unstarted left there)`)
+  return item
+}
 
 log(
-  `args.lanes = ${BUILD_LANES}${BUILD_LANES === 1 ? ' (ONE builder: lane A runs every item in order, lane B idle)' : ''} || ` +
+  `args.lanes = ${BUILD_LANES}${BUILD_LANES === 1 ? ' (ONE builder: lane A runs every item in order, lanes B/C idle)' : ''} || ` +
+    `landBar = ${LAND_BAR_CI ? 'ci (BUILD-ONLY: merge on GitHub CI green; the drain lands)' : 'review (default)'} || ` +
   `lane A (${WORKDIR}, port ${PREVIEW_PORT}): ${laneItems[0].map((it) => it.id).join(', ') || '(none)'} || ` +
-    `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
+    `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'} || ` +
+    `lane C (${WORKDIR_C}, port ${PREVIEW_PORT_C}): ${laneItems[2].map((it) => it.id).join(', ') || '(none)'}`
 )
 
 if (ONLY_PREFIXES) {
@@ -2006,20 +2387,20 @@ if (ONLY_PREFIXES) {
 
 /** ONE BUILDER LANE. It walks its own items and never awaits the other lane, ever. */
 async function buildLane(lane) {
-  for (const item of laneItems[lane]) {
-    if (halted) break
-    const at = indexOfItem(item)
-    const skipped = onlySkip(item) || panelSkip(item)
-    if (skipped) {
-      slots[at] = skipped
-      continue
-    }
-    // Lane A is the SINGLE writer of the global phase cursor. Lane B never touches it: two writers
+  // Skipped items (args.only / awaiting the panel) are on no lane: lane A records them once, with no agent.
+  if (lane === 0) for (const item of ITEMS) if (!isRunnable(item)) slots[indexOfItem(item)] = onlySkip(item) || panelSkip(item)
+  let ran = 0
+  while (!halted && lane < BUILD_LANES) {
+    const item = nextItemFor(lane)
+    if (!item) break
+    started.add(item)
+    ran++
+    // Lane A is the SINGLE writer of the global phase cursor. Lanes B and C never touch it: two writers
     // race, and the loser's phase label is what Wilson would be reading.
     if (lane === 0) phase(item.id)
-    slots[at] = await runBuildSafe(item, lane)
+    slots[indexOfItem(item)] = await runBuildSafe(item, lane)
   }
-  log(`lane ${LANE_TAGS[lane]}: finished its ${laneItems[lane].length} item(s)`)
+  log(`lane ${LANE_TAGS[lane]}: finished its ${laneItems[lane].length} item(s) — ran ${ran}, ${steals.filter((x) => x.to === LANE_TAGS[lane]).length} stolen`)
 }
 
 /**
@@ -2236,7 +2617,7 @@ ${RUNTIME_PROOF(REVIEW_DIRS[0])}
 
 # 4 — THE APP ACTUALLY RUNS
 A green workspace build is not a running app. Launch it from main's head and say what you saw:
-    cd ${REVIEW_DIRS[0]}/${APP} && export CARGO_TARGET_DIR=${REVIEW_TARGETS[0]} && npm run desktop:dev
+    cd ${REVIEW_DIRS[0]}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${REVIEW_TARGETS[0]} && npm run desktop:dev
 Confirm: the main window renders, the float/pill window appears, the dictation hotkey fires, and the
 sidecar answers. Screenshot anything visual. If you could not launch it (no display, permission
 prompt, sidecar missing), SAY SO plainly and mark the claim unverified — never imply you ran it.
@@ -2244,7 +2625,7 @@ Kill it before you return and confirm nothing listens on ${REVIEW_PORTS[0]}.
 
 # 5 — THE DMG, ONLY IF ASKED
 ${(typeof args !== 'undefined' && args && args.dmg) ? `args.dmg IS SET, so build the bundle once from main's head and report its path and size:
-    cd ${REVIEW_DIRS[0]}/${APP} && export CARGO_TARGET_DIR=${REVIEW_TARGETS[0]} && npm run desktop:build ; echo "dmg=$?"
+    cd ${REVIEW_DIRS[0]}/${APP} && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${REVIEW_TARGETS[0]} && npm run desktop:build ; echo "dmg=$?"
 This takes minutes. Do NOT notarize and do NOT publish anything — a local bundle that builds is the
 claim, nothing further.` : `args.dmg is NOT set, so DO NOT build the DMG. It is minutes long, it is
 not this pass's claim, and the final smoke item owns it. Report dmg: "not requested".`}
@@ -2270,7 +2651,7 @@ let census = null
 if (MODE === 'review') {
   census = await reviewPass()
 } else {
-  await Promise.all([buildLane(0), buildLane(1)])
+  await Promise.all([buildLane(0), buildLane(1), buildLane(2)])
 }
 const results = MODE === 'review' ? reviewOutcomes.slice() : slots.filter((r) => r !== null)
 
@@ -2285,7 +2666,7 @@ if (halted) {
 
 phase('Drain')
 const drain = await agentR(
-  `DRAIN + SELF-AUDIT for ${REPO}, then TEAR DOWN the work dirs.
+  LAND_BAR_CI ? CI_DRAIN_PROMPT() : `DRAIN + SELF-AUDIT for ${REPO}, then TEAR DOWN the work dirs.
 
 1. gh pr list -R ${REPO} --state open --json number,title,headRefName,createdAt,labels
    This command is the ONLY source of the open-PR count. Do not infer it from branch names and do
@@ -2343,35 +2724,7 @@ ${
    remote has stale feat/yv1xx and fix/* branches; most are ancestors of main.
 4. Report open_prs_before and open_prs_after. If the number went UP, this run failed regardless of
    how much merged. Say so plainly.
-5. DISK HYGIENE — this bit hard last time (26 clones / 78 GB on the sibling project). THERE ARE TWO
-   LANES, TWO CARGO TARGET DIRS AND TWO PORTS:
-     lsof -nP -iTCP:${PREVIEW_PORT} -sTCP:LISTEN     # lane A's vite/preview, if one was left
-     lsof -nP -iTCP:${PREVIEW_PORT_B} -sTCP:LISTEN   # lane B's
-   Kill whatever is listening on EITHER port, kill any leftover 'tauri dev' or 'yap-polish'
-   process either lane started, and confirm both ports are clear afterwards.
-   Also report the current sizes: du -sh ${CARGO_TARGET_A} ${CARGO_TARGET_B} and df -h /System/Volumes/Data
-${
-  KEEP_WORKTREE
-    ? `   DO NOT REMOVE ${WORKDIR}, ${WORKDIR_B}, ${CARGO_TARGET_A} OR ${CARGO_TARGET_B}. This script is
-   ONE PART of a multi-part run and the parts that follow reuse both worktrees, both node_modules
-   and both warm cargo caches — a cold rebuild is ~9.5 minutes per lane per part (measured). Leave them exactly
-   where they are; the LAST part's drain tears them down. Do not delete the yap/recon-a or
-   yap/recon-b branches either. You still kill both port listeners, you still bundle and sweep dead
-   remote branches, and you still report the target-dir sizes. Return worktreeRemoved: false and say
-   plainly that everything was KEPT ON PURPOSE for the next part; that is the correct outcome here,
-   not a miss.`
-    : `     cd ${LOCAL_REPO} && git worktree remove --force ${WORKDIR} && git worktree remove --force ${WORKDIR_B} && git worktree prune
-     git worktree list                                # paste it: BOTH lanes must be GONE
-     git branch -D yap/recon-a ; git branch -D yap/recon-b     # the throwaway recon branches
-     rm -rf ${CARGO_TARGET_A} ${CARGO_TARGET_B}       # cache, not checkouts: ~7.5 GB each (measured)
-     rmdir /Users/wilsonguenther/code/wilson-voice-loop 2>/dev/null || ls -a /Users/wilsonguenther/code/wilson-voice-loop
-   This is the LAST part of the run, so the teardown is yours and nobody else's.
-   Confirm with ls -d that neither worktree and neither target dir exists, and report the bytes
-   reclaimed (df -h /System/Volumes/Data before and after). Never leave a clone, a worktree or a
-   target dir behind. Do NOT touch ${LOCAL_REPO}'s own checkout or its desktop/target. Removing all
-   four is not optional and it is not a nicety: it is the last line of defence against the 78 GB of
-   abandoned loop clones this fleet has already paid for once.`
-}
+${DRAIN_TEARDOWN('5')}
 
 RETURN: {open_prs_before, open_prs_after, triaged: [...], preexistingSettled: [{pr, outcome, evidence}],
          blockingDispositions: [...], branchesDeleted: [...], branchesKept: [...],
@@ -2497,7 +2850,9 @@ return {
   part: PART,
   recon,
   census,
-  lanes: { A: laneItems[0].map((it) => it.id), B: laneItems[1].map((it) => it.id) },
+  lanes: { A: laneItems[0].map((it) => it.id), B: laneItems[1].map((it) => it.id), C: laneItems[2].map((it) => it.id) },
+  steals,
+  landBar: LAND_BAR_CI ? 'ci' : 'review',
   results,
   errored,
   counts: {

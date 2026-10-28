@@ -105,13 +105,15 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap24-NT1', prompt: 'yap24-NT', branch: 'loop/yap24-nt1-never-purge-untranscribed-meeting-audio', gated: 'panel',
-  title: 'Meeting audio is never deleted before it has been transcribed, and stranded "transcribing" rows are reconciled on launch',
+  title: 'RESIDUAL: launch recovers a crashed meeting (recover_orphaned_meetings gets its first production caller) and non-complete audio has a 30-day window and a 5 GB ceiling',
   preflight: `
-    test -f desktop/src-tauri/tests/meeting_retention_keeps_untranscribed_audio.rs
-    grep -q "fn reconcile_stranded_meetings" desktop/src-tauri/src/meetings.rs desktop/src-tauri/src/lib.rs desktop/src-tauri/src/meeting_control.rs
+    grep -v '^[[:space:]]*//' desktop/src-tauri/src/lib.rs | grep -q 'recover_orphaned_meetings('
+    grep -q 'FAILED_AUDIO_RETENTION_DAYS' desktop/src-tauri/src/meetings.rs
+    grep -q 'FAILED_AUDIO_CEILING_BYTES' desktop/src-tauri/src/meetings.rs
+    test -f desktop/src-tauri/tests/meeting_failed_audio_ceiling.rs
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26 as a RESIDUAL item: #218 (7399ec5) already shipped the state-aware purge test and reconcile_stranded_meetings; only what the last paragraph lists remains.
     DEPENDS: none (first item of the chain — it stops the data loss before anything else lands)
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
@@ -155,10 +157,7 @@ ITEMS.push({
         "stopped ... -> transcribing" and nothing afterwards.
 
     DO
-      1. Retention becomes STATE-AWARE: audio is eligible for purge only when the meeting is
-         complete AND it has at least one meeting_segments row AND the retention window has
-         passed. Any other state keeps its audio indefinitely, and the Meetings view (yap24-NT6)
-         says so. Both tracks age out together (the YV106 promise stays).
+      1. [SHIPPED by #218; the "at least one segment" clause is now the rule for the 7-day class only, see the last paragraph] Retention is STATE-AWARE: the 7-day purge applies only to a complete meeting that has at least one meeting_segments row. [SUPERSEDED 2026-10-26: any other state keeps its audio 30 days, bounded by the 5 GiB ceiling (R2 in the last paragraph), and the Meetings view (yap24-NT6) says so.] Both tracks age out together (the YV106 promise stays).
       2. reconcile_stranded_meetings(), run once at launch after the DB opens and BEFORE the first
          hygiene sweep:
            - state recording with no live capture  -> partial (crash mid-meeting; the capture
@@ -180,11 +179,41 @@ ITEMS.push({
       - a complete meeting with ZERO segments keeps its audio;
       - reconcile marks a transcribing row whose WAV is missing as failed with the sentence,
         and leaves a transcribing row whose WAV exists untouched.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - WHY A RESIDUAL: this item's old preflight passed on main (the #218 test file and reconcile_stranded_meetings exist), so the harness
+        would have marked it already-done and every revision above that #218 did not ship would have vanished. The preflight now keys on
+        the residual only.
+      - RESIDUAL DO (names are contract; the acceptance greps them):
+          R1. meeting::recover_orphaned_meetings (meeting.rs:1599) has only test callers today. Call it ONCE at launch, after the DB opens and
+              BEFORE reconcile_stranded_meetings; wire each FinalizedMeeting into finish_meeting / set_meeting_sys_wav_path via wav_for_track
+              (never a positional index) and set the row state from FinalizedMeeting.state, then hand the row to the NT2 queue.
+          R2. purge_meeting_audio (db.rs:2052+) selects only state='complete' AND EXISTS segments, so every failed, partial or
+              complete-with-zero-segments row keeps its audio forever (~230 MB/hour of two tracks). Add FAILED_AUDIO_RETENTION_DAYS = 30
+              and FAILED_AUDIO_CEILING_BYTES = 5 GiB in meetings.rs: a row retained for any reason other than (complete AND at least one
+              segment) is purged after 30 days, and past the 5 GiB ceiling the OLDEST such rows purge first until under it. One plain
+              sentence in Settings says so. Test file tests/meeting_failed_audio_ceiling.rs (ordering, ceiling, the 7-day class untouched).
+          R3. Purge and delete also remove the per-track ledger files and the kept anchors (<id>.*.asr-progress.json, <id>.t*.index.jsonl) together
+              with the WAVs. Tested in the same file.
+          R4. (folded in from the retired NT3) kind in_person must plan TrackBPlan::MicOnly with no badge and no error. meeting_kind_branch
+              must assert it; add the assertion if it is absent.
+      - VOID: the pipeline_done_at column and MIGRATION_6_MEETING_NOTES for it (and the "use pipeline_done_at, not segment count" bullet). Its
+        two readers are gone: diarization is deferred (NT5) and the notes job (#250) reads transcript rows, not audio. The acceptance fails
+        if pipeline_done_at appears. No schema change in this item.
+      - Conflict that was resolved: DO step 1's "at least one segment" text contradicted the revision's pipeline_done_at criterion. The shipped
+        rule (complete AND at least one segment, 7 days) stays; everything else falls under R2.
+    Audit 2026-10-26: confirmed on the INSTALLED 0.9.3-dev (a740614) that recover_orphaned_meetings (meeting.rs:1599) is still called only from its test (meeting.rs:4026). Storage is 16-bit WAV at 1.92 MB/min per track (60 MB per 31-min track, 320 MB kept); consider FLAC/Opus under the 5 GB ceiling. See docs/audits/meeting-notetaker-audit-2026-10-26.md issues #11 and #17.
   `,
   acceptance: `
+    grep -v '^[[:space:]]*//' desktop/src-tauri/src/lib.rs | grep -q 'recover_orphaned_meetings('
+    grep -q 'FAILED_AUDIO_RETENTION_DAYS' desktop/src-tauri/src/meetings.rs
+    grep -q 'FAILED_AUDIO_CEILING_BYTES' desktop/src-tauri/src/meetings.rs
+    ! grep -rn 'pipeline_done_at' desktop/src-tauri/src
     cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_failed_audio_ceiling
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_audio_retention
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_kind_branch
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
@@ -192,14 +221,12 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap24-NT2', prompt: 'yap24-NT', branch: 'loop/yap24-nt2-wire-the-meeting-transcription-pipeline', gated: 'panel',
-  title: 'The meeting transcript exists: stop hands the audio to the shipped MeetingAsr job, which writes segments and completes the row',
+  title: 'RESIDUAL: the shipped meeting pipeline gets its guards: live recording never counts toward max_yield, a crash-loop guard, waiting_for_model, asr_model on the row, and a REQUIRED WER/RTF run',
   preflight: `
-    test -f desktop/src-tauri/tests/meeting_pipeline_wired.rs
-    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
-    grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
+    ( if ! ( test -f "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf" ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap24-NT0 has not provisioned the lane model cache; build NT0 first"; exit 0; fi; grep -q 'YAP_EVAL_REQUIRE' desktop/src-tauri/tests/meeting_eval.rs && grep -q 'YAP_MODEL_DIR' desktop/src-tauri/tests/meeting_eval.rs && grep -q 'asr_model' desktop/src-tauri/src/meeting_pipeline.rs && grep -q 'waiting_for_model' desktop/src-tauri/src/meeting_pipeline.rs && grep -q 'MAX_UNPROGRESSED_ATTEMPTS' desktop/src-tauri/src/meeting_pipeline.rs && grep -q 'catch_unwind' desktop/src-tauri/src/meeting_pipeline.rs && test -f desktop/src-tauri/tests/meeting_pipeline_residual.rs )
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26 as a RESIDUAL item: #218 (7399ec5) shipped meeting_pipeline.rs and the wiring test; only the guards in the last paragraph remain.
     DEPENDS: yap24-NT0 (the pinned model + eval corpus its WER/RTF gate runs against),
     yap24-NT1 (audio must not be purged out from under a queued job)
 
@@ -224,7 +251,7 @@ ITEMS.push({
         the ledger per track, e.g. run(&format!("{id}.t{track}")), and add a
         meeting_pipeline_wired test with two tracks of different lengths asserting each track's
         own processed_through and no chunk-index collision.
-      - BLOCKING — segments must NOT land per-chunk. append_meeting_segments (db.rs:1652) is a
+      - [VOID 2026-10-26: #218 shipped per-chunk append plus delete-past-ledger (meeting_pipeline.rs:17-21, :517), which already makes a resume idempotent; no one-shot merge transaction is required here, the host-time merge is NT11-0.] BLOCKING — segments must NOT land per-chunk. append_meeting_segments (db.rs:1652) is a
         non-idempotent INSERT with a fresh row id every call: writing "as each chunk completes"
         (as this spec said) double-writes every seam and duplicates rows on any resume-after-quit.
         Instead: run BOTH tracks' MeetingAsr to completion (interrupted == false), call the
@@ -312,7 +339,7 @@ ITEMS.push({
          {id, state, processedThroughSeconds, durationSeconds}, so yap24-NT6/NT7 can draw progress.
       5. Remove #![allow(dead_code)] from meeting_asr.rs. Anything still dead after the wiring is
          deleted or given a caller — the compiler is the proof that the pipeline is wired.
-      6. A headless CLI entry beside --transcribe-file (cli.rs): --transcribe-meeting <mic.wav>
+      6. [MOVED TO yap24-NT9, which now owns the flag in its own DO and preflight] A headless CLI entry beside --transcribe-file (cli.rs): --transcribe-meeting <mic.wav>
          [--sys <sys.wav>] that runs the same worker against a scratch state root
          (YAP_DATA_DIR required, like --smoke) and prints the segment count and state.
       7. Update meeting_matrix.rs rows whose PolicyOnly cell existed only because the pipeline had
@@ -331,14 +358,43 @@ ITEMS.push({
       - a quit mid-job leaves the ledger; relaunch resumes and the transcript equals an
         uninterrupted run (reuse the existing resume-seam assertions);
       - source scan: MeetingAsr is constructed in src/ outside meeting_asr.rs.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - WHY A RESIDUAL: the old preflight (test -f meeting_pipeline_wired.rs, no allow(dead_code), MeetingAsr constructed outside
+        meeting_asr.rs) passed on main after #218, so this item was silently already-done and its guards were never going to be built.
+      - RESIDUAL DO (shipped and NOT to be redone: the worker module, FIFO, per-track ledger, WavWindows source, progress event, dead_code removal):
+          R1. max_yield. lib.rs (~:6790) passes MeetingAsrConfig::default() (max_yield 120 s, meeting_asr.rs:1674, :1935), so a hands-free
+              take over two minutes hands the engine back to meeting ASR mid-take. A LIVE-RECORDING demand never counts toward max_yield; the
+              120 s cap applies only to a stuck "busy, not recording" flag. Test in tests/meeting_pipeline_residual.rs: a simulated 180 s
+              dictation never observes a meeting chunk take the engine.
+          R2. Crash-loop guard. Add MAX_UNPROGRESSED_ATTEMPTS (2) in meeting_pipeline.rs with a per-meeting attempt counter (persist it beside the
+              progress ledger): two launches that crash without progress mark the row failed with one honest sentence, never a silent retry
+              loop. Wrap the worker body in catch_unwind so one panic fails that row and keeps the FIFO alive. Start the queue about 30 s
+              after launch, after the dictation engine's first warm-up. Enqueue every row that has audio and zero segments in
+              {transcribing, partial}, not transcribing only (verify; add if absent).
+          R3. waiting_for_model. meeting_availability_for checks only that a model id is configured. A refusal on a configured-but-missing
+              model becomes a NEW state waiting_for_model that KEEPS the audio and auto-requeues on the model-download-complete event;
+              never a permanent failed row.
+          R4. asr_model. Record the model that transcribed the row in an asr_model column, via the next free versioned migration step (take
+              the next number at build time; rebase after #250). Meeting ASR is pinned to the catalog's recommended model (parakeet Q8_0);
+              no other engine may transcribe a meeting.
+          R5. Measurability. tests/meeting_eval.rs: YAP_EVAL_REQUIRE=1 turns a missing corpus or model into a panic, never a green skip;
+              YAP_MODEL_DIR links the pinned model into <YAP_DATA_DIR>/models/ and the run refuses an unset YAP_DATA_DIR. Print WER, real-time
+              factor and lecture-15min stop-to-notes wall clock and commit the numbers to docs/BUDGETS.md. Record peak RSS during transcription.
+      - The CLI flag --transcribe-meeting (old DO step 6) is no longer here: yap24-NT9 owns it.
+    Audit 2026-10-26: a 51.8 s dictation spoken right after a meeting stop waited on the meeting decode: asr_decode_ms=5166 after 'cancelling the in-flight meeting chunk decode' (16:31:38Z), vs 338 ms for a 22.8 s take that morning. Measure take latency while a meeting job runs. ASR RTF on real meetings: 0.011-0.028 idle, 0.13 under loop CI load. Per-chunk timing is NEW yap-audit-meeting-timings. See docs/audits/meeting-notetaker-audit-2026-10-26.md issues #8 and #10.
   `,
   acceptance: `
-    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
-    grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
-    grep -q 'meeting_pipeline::spawn' desktop/src-tauri/src/lib.rs
     grep -q 'YAP_EVAL_REQUIRE' desktop/src-tauri/tests/meeting_eval.rs
     grep -q 'YAP_MODEL_DIR' desktop/src-tauri/tests/meeting_eval.rs
+    grep -q 'asr_model' desktop/src-tauri/src/meeting_pipeline.rs
+    grep -q 'waiting_for_model' desktop/src-tauri/src/meeting_pipeline.rs
+    grep -q 'MAX_UNPROGRESSED_ATTEMPTS' desktop/src-tauri/src/meeting_pipeline.rs
+    grep -q 'catch_unwind' desktop/src-tauri/src/meeting_pipeline.rs
+    grep -q 'meeting_pipeline::spawn' desktop/src-tauri/src/lib.rs
+    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
     cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_residual
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_manual_start_stop
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
@@ -410,6 +466,12 @@ ITEMS.push({
     Tests: pure verdict table (delivery x output_was_running x ran_for) in
     tests/system_audio_verdict_silence_is_not_denial.rs; an in_person kind yields MicOnly with
     no badge; existing meeting_track_b_wiring stays green.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - RETIRED. Not in panelApproved. Its preflight (output_was_running in syscapture.rs plus the verdict test file) passes on main
+        (7399ec5), so the harness would report already-done anyway. The one residual line (kind in_person plans MicOnly, no badge, no error;
+        unverified) is folded into yap24-NT1 as R4 with its test in meeting_kind_branch. Nothing else here remains to build.
+    Audit 2026-10-26: on a real virtual call (445654ee) the tap went all_zero_buffers at 12:00, rebuild 2/3 timed out, and the call track ends at 690 s of 883 s. On a kind-unknown meeting (d8761579) no_system_audio_observed after 3 rebuilds, so the meeting was mic-only for 9 min. Retarget the tap on an output-route change instead of rebuilding the same tap. See docs/audits/meeting-notetaker-audit-2026-10-26.md issue #5.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
@@ -423,13 +485,12 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap24-NT4', prompt: 'yap24-NT', branch: 'loop/yap24-nt4-notes-summary-and-action-items-automatically', gated: 'panel',
-  title: 'Notes appear on their own: a completed transcript is summarized locally, action items are stored as rows, and "no model" is a state, not an error',
+  title: 'RESCOPED after #250: the default notes are MEASURED (action-item recall and precision at least 0.8 on a planted-commitment fixture) and installing the notes model leaves polish_model byte-unchanged',
   preflight: `
-    grep -q "CREATE TABLE IF NOT EXISTS meeting_actions" desktop/src-tauri/src/db.rs
-    test -f desktop/src-tauri/tests/meeting_notes_auto_summary.rs
+    ( if ! ( test -f desktop/src-tauri/src/summary_jobs.rs ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR 250 (default meeting notes) has not landed; land it, then build NT4"; exit 0; fi; test -f desktop/src-tauri/tests/meeting_notes_recall_eval.rs && test -f desktop/src-tauri/tests/notes_model_install_keeps_polish_model.rs && test -f desktop/src-tauri/tests/notes_owner_calendar_name.rs && grep -q 'summary recall' docs/BUDGETS.md )
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26 and RESCOPED after PR #250 (notes as Markdown sections in meetings.summary, summary_jobs.rs, polish_model kept as the user override). The meeting_items table, the summary_model split and MIGRATION_6 in the text below are VOID.
     DEPENDS: yap24-NT2 (segments must exist), SEC-C (merged #184 — the polish model install path)
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
@@ -491,13 +552,60 @@ ITEMS.push({
     summary; actions land as rows with evidence ids; no model => needs_model and no error;
     deleting a meeting cascades its actions (extend meeting_delete_cascade); export contains
     both sections.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - WHY: PR #250 (open, landing today) already owns the product half: default 1.5B notes model, notes stored as Markdown sections in
+        meetings.summary, summary_jobs.rs, polish_model kept as the user's override. This item's old schema (meeting_items, a summary_model
+        setting, MIGRATION_6) contradicts a binding ledger decision and duplicates #250, so it is VOID. Action items stay Markdown, not rows;
+        rows are added only if a later item (X1, X3) is approved and needs them.
+      - RESIDUAL DO, after #250 is on main (the preflight holds this item until summary_jobs.rs exists):
+          R1. Provisioning: extend scripts/provision-notetaker-eval.sh to also verify (and APFS-clone read-only from the installed copy, or
+              download per the polish catalog pin) the qwen2.5-1.5b Q4_K_M notes model into the lane cache next to the parakeet file. Same
+              rules as NT0: hash from the catalog, never a second copy of the hash in the script.
+          R2. Measured eval: extend the synthetic corpus generator to plant K explicit commitments in the 15-minute fixture and add
+              tests/meeting_notes_recall_eval.rs, #[ignore], running the REAL 1.5B sidecar through summary_jobs. Gate action-item recall >= 0.8 and
+              precision >= 0.8; under YAP_EVAL_REQUIRE=1 a missing model is a panic, not a skip. Commit both numbers to docs/BUDGETS.md
+              under a heading containing "summary recall".
+          R3. tests/notes_model_install_keeps_polish_model.rs: installing or selecting the notes model leaves the dictation polish_model setting
+              byte-unchanged (read it before and after).
+          R4. Memory: record peak RSS (app plus sidecars) during a summary in docs/BUDGETS.md against the 8 GB floor machine, and make the summary
+              job run serialized with ASR, never concurrently with a live decode, falling back to the next idle tick above a stated ceiling.
+      - Seat evidence: ASR warm (15 min) plus the 1.5B notes sidecar is about 2.6-3.0 GB resident, about 4 GB if the polish and notes
+        sidecars do not share mmap'd weights; next to a live Zoom on 8 GB that swaps, which is why R4 is a gate and not advice.
+    Audit 2026-10-26: all 3 meetings PR 250 summarized on Wilson's Mac grade 1/5. The Summary is 0.91-0.97 verbatim (4-gram containment), key points are raw lines (backfill_key_points), small talk is filed as actions, owners are wrong under echo, and there are up to 8 cross-section duplicates. Rejections per run: 17-38 v3_ungrounded + 3-17 v2_runaway. Add to this eval: Summary verbatim ratio <= 0.5 and owner accuracy. The first post-upgrade meeting auto-downloads 1.1 GB (allows_auto); make that visible before the run. Mechanical fixes are NEW yap-audit-notes-guards; strategy is NEW yap-audit-notes-strategy. See docs/audits/meeting-notetaker-audit-2026-10-26.md issues #2 and #18.
+
+    Panel revisions 2026-10-26 (Senior Panel 3, two seats + synthesis; AI/models and PM seat; applied as gates):
+      - R2 EVAL, RESCOPED. The planted fixture is a 15-minute synthetic (macOS say) meeting containing 6 explicit commitments ("I will send the deck by Friday"),
+        4 implicit commitments ("I can get you the specs"), 2 decisions, 6 small-talk distractors that use "going to" or "'ll" (generic_commitment lets them through),
+        and at least 2 commitments inside the last 20% of the meeting. It runs through summary_jobs alongside call-bleed-2voice (yap-audit-eval-call-bleed). Gates, all
+        asserted by tests/meeting_notes_recall_eval.rs and committed to docs/BUDGETS.md under the heading containing "summary recall":
+          action recall >= 0.8, action precision >= 0.8, decision recall >= 0.5, Summary 4-gram verbatim ratio <= 0.5, cross-section duplicates = 0,
+          items per cited segment <= 2, owner accuracy >= 0.8 OR the owner left blank ("Someone here" counts as blank: it makes no claim).
+        Explicit-only plants reach 0.9 recall while real meetings with implicit commitments and echo still fail; that is why the implicit, distractor and
+        end-of-meeting plants are in the gate.
+      - HUMAN HALF, numbers only: run scripts/eval/compare-reference.py --notes on a COPY of the 31-minute real meeting's DB and paste the verbatim ratio, duplicate
+        count, max items per segment and owner counts in the PR body. Never paste text.
+      - R5 (the v1 remote-name path, which also settles the deferred yap-audit-remote-speaker-names): a pure fn other_party_name(attendees, self) -> Option<String> that returns the
+        display name when exactly one non-self calendar attendee exists and None for zero or two-plus. A Them-track item's owner in the NOTES uses that name when it is Some,
+        otherwise reads "Them". Transcript labels stay Me / Them. It reads the attendees yap-notetaker-detect stores from the calendar match (opt-in); if that item stores
+        none when this builds, ship the pure fn and its test and leave the wiring to that item (say so in the PR body). No new permission, no Accessibility read.
+        tests/notes_owner_calendar_name.rs: one attendee -> name; none -> None; three -> None; the self address is excluded.
+      - The owner-claim rules (mic-track "Someone here", echo owner) live in yap-audit-notes-guards; arms E and C are measured by yap-audit-notes-strategy, which also owns the honest
+        fallback copy. This item owns the eval and its numbers only.
   `,
   acceptance: `
+    test -f desktop/src-tauri/src/summary_jobs.rs
+    test -f desktop/src-tauri/tests/notes_owner_calendar_name.rs
+    ! grep -rn 'meeting_items' desktop/src-tauri/src
+    ! grep -rn 'summary_model' desktop/src-tauri/src
+    grep -q 'summary recall' docs/BUDGETS.md
     cd desktop && npm ci && cd src-tauri
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_auto_summary
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_delete_cascade
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_markdown_export
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test notes_model_install_keeps_polish_model
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test notes_owner_calendar_name
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_recall_eval
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test summary_default_notes
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib summarize
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" cargo test --features custom-protocol --test meeting_notes_recall_eval -- --ignored --nocapture --test-threads=1
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
@@ -506,7 +614,7 @@ ITEMS.push({
   id: 'yap24-NT5', prompt: 'yap24-NT', branch: 'loop/yap24-nt5-diarization-joins-the-pipeline', gated: 'panel',
   title: 'Who said what: in-person meetings run the shipped diarization sidecar after transcription, with the honest accuracy framing',
   preflight: `
-    grep -rln "diarize::pool()" desktop/src-tauri/src | grep -v "diarize.rs\|meeting_matrix.rs" | grep -q .
+    grep -rln "diarize::pool()" desktop/src-tauri/src | grep -vE "diarize\\.rs|meeting_matrix\\.rs" | grep -q .
     test -f desktop/src-tauri/tests/meeting_pipeline_diarizes_in_person.rs
   `,
   spec: `
@@ -544,6 +652,14 @@ ITEMS.push({
 
     Tests: tests/meeting_pipeline_diarizes_in_person.rs with a stub DiarizeClient; a failing
     sidecar leaves the meeting complete with no labels.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DEFER: after the first 100 users (not in panelApproved). Y11-A..E are not on main and speaker labels measured at FAR 1.000.
+      - Regex bug fixed even though deferred: the preflight used grep -v with a BRE alternation, where | is a literal, so the comment at
+        meeting_matrix.rs:143 satisfied line 1. It is grep -vE now, with escaped dots.
+      - Single owner: the ungated yap-notetaker-notes item no longer wires diarize::pool() (its step was struck today), so this item is the
+        ONLY owner of diarization in the meeting pipeline.
+    Audit 2026-10-26: on a 25-min in-person meeting (ba4dac81) every one of 47 rows reads 'Speaker' and cluster_index is NULL on every segment in the DB; yap-diarize is bundled in /Applications/Yap.app but never called. On the 31-min call a second local voice (75% of its words in the mic track) is labelled 'Me'. See docs/audits/meeting-notetaker-audit-2026-10-26.md issues #6 and section 10b.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
@@ -559,11 +675,10 @@ ITEMS.push({
   id: 'yap24-NT6', prompt: 'yap24-NT', branch: 'loop/yap24-nt6-meetings-view-shows-every-state', gated: 'panel',
   title: 'The Meetings view tells the truth about every meeting: progress, notes, failure with Retry, audio kept or expired',
   preflight: `
-    test -f desktop/src/meetings/viewState.ts
-    test -f desktop/src/meetings/viewState.test.ts
+    ( if ! ( test -f desktop/src/meetings/NotesView.tsx ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR 250 (NotesView) has not landed; land it, then build NT6"; exit 0; fi; grep -qE 'canRetry\\([^)]*audioKept' desktop/src/meetings/progress.ts && ! grep -q 'canRetry(m.state)' desktop/src/views/Meetings.tsx && ! test -e desktop/src/meetings/viewState.ts )
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26.
     DEPENDS: yap24-NT2, yap24-NT4 (states and fields it renders)
 
     EVIDENCE
@@ -575,7 +690,7 @@ ITEMS.push({
         (meeting_matrix.rs row 12b).
 
     DO
-      1. A pure module desktop/src/meetings/viewState.ts: meetingViewState(meeting, segmentsCount)
+      1. [VOID 2026-10-26: no viewState.ts; extend desktop/src/meetings/progress.ts, see the last paragraph] A pure module desktop/src/meetings/viewState.ts: meetingViewState(meeting, segmentsCount)
          -> { badge, headline, detail, progress: 0..1 | null, actions: ('retry'|'summarize'|
          'install-model'|'export'|'delete')[] } covering recording, transcribing (with
          processedThroughSeconds / durationSeconds), summarizing, complete, complete +
@@ -592,10 +707,23 @@ ITEMS.push({
       4. Follow the token layer (Y5-A) and the empty/loading/error pattern (Y5-B) if merged;
          otherwise the existing App.css tokens — no new colours.
 
-    Tests: viewState.test.ts — one case per state, the progress arithmetic, and "no state renders
+    Tests: [progress.test.ts, not viewState.test.ts] — one case per state, the progress arithmetic, and "no state renders
     an empty headline".
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - REAL DEFECT, LIVE ON MAIN: Meetings.tsx:289 calls canRetry(m.state) (progress.ts:58), which offers Retry on failed and partial rows even
+        when audio_kept = 0 and no WAV exists, which is exactly what this item's Retry rule forbids.
+      - CHANGE: extend progress.ts to canRetry(state, audioKept) and have Meetings.tsx (and #250's NotesView) pass the row's audio_kept; Retry is
+        offered ONLY when a WAV path exists and audio_kept = 1. Do NOT create viewState.ts: it would duplicate #218's progress.ts and #246/#250's
+        state mapping. progress.test.ts gains the no-audio failed case (actions: delete and export only) and a two-argument canRetry table.
+      - The "N lines hidden as speaker echo - Show" line stays DEFERRED to the NT11 pass. Rebase on #246 and #250 before starting (the
+        preflight holds this item until NotesView.tsx exists).
+    Audit 2026-10-26 (installed 0a87249): the detail view prints the raw state 'complete' (Meetings.tsx:428), cards count 'segments' that are 30 s windows (:320-321), the detail page 'does not refresh itself' (:452), and Write/Retry notes exist only on the card (:339-350). Notes are render-only (NotesView.tsx). Rewrite is NEW yap-audit-rewrite-notes. See docs/audits/meeting-notetaker-audit-2026-10-26.md issue #12.
   `,
   acceptance: `
+    grep -qE 'canRetry\\([^)]*audioKept' desktop/src/meetings/progress.ts
+    ! grep -q 'canRetry(m.state)' desktop/src/views/Meetings.tsx
+    ! test -e desktop/src/meetings/viewState.ts
     cd desktop && npm ci
     npx tsc --noEmit
     npx vitest run src/meetings
@@ -610,9 +738,10 @@ ITEMS.push({
   preflight: `
     grep -q "notes-ready" desktop/src/pill/meeting.ts
     grep -q "notes-ready" desktop/src/pill/meeting.test.ts
+    grep -q "MEETING_PROGRESS_EVENT" desktop/src/pill/meeting.ts
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26.
     DEPENDS: yap24-NT2, yap24-NT6
 
     EVIDENCE
@@ -634,8 +763,19 @@ ITEMS.push({
     Tests: pill/meeting.test.ts — event sequence recording -> processing 0..100 -> notes-ready;
     failure path; a dictation during processing still shows the dictation phases (dictation
     outranks the badge).
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - This is the notetaker wow moment: "Meeting notes ready - Open" arrives while the user is doing something else. Today the pill goes quiet
+        after stop (MeetingBadge knows recording and nothing after it; pill/meeting.ts has no post-stop phase).
+      - CHANGE: consume the EXISTING meeting:progress event (MEETING_PROGRESS_EVENT, emitted by meeting_pipeline.rs:52 and typed in
+        meetings/progress.ts:15). No new event, no polling; the acceptance fails on a setInterval in pill/meeting.ts. The notes-ready phase
+        reads its state from the same payload (state complete) and #250's summary-ready state.
+      - Pill matrix: once scripts/pill-matrix.mjs exists (yap24-UI3), run node scripts/pill-matrix.mjs --only processing and --only notes-ready
+        and attach the PNGs to the PR (never commit them).
   `,
   acceptance: `
+    grep -q "MEETING_PROGRESS_EVENT" desktop/src/pill/meeting.ts
+    ! grep -n "setInterval" desktop/src/pill/meeting.ts
     cd desktop && npm ci
     npx tsc --noEmit
     npx vitest run src/pill
@@ -644,69 +784,19 @@ ITEMS.push({
   `,
 })
 
-ITEMS.push({
-  id: 'yap24-NT8', prompt: 'yap24-NT', branch: 'loop/yap24-nt8-calendar-aware-record-prompt', gated: 'panel',
-  title: 'Calendar-aware: an upcoming meeting or class raises a "Record?" prompt on the pill — opt-in, EventKit, no OAuth',
-  preflight: `
-    grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
-    test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
-  `,
-  spec: `
-    Panel: DEFERRED 2026-09-26T17:35:00Z — see docs/loop/DEFERRED.md. Excluded from pass-1 panelApproved (and
-    from the yap24-NT chain's intent). It adds a NEW permanent TCC permission (Calendars), a
-    5-minute EventKit background poll, and a pill interruption — none of it fixes stop ->
-    transcript -> notes, which is the whole mandate of this pass ("the notetaker is not even
-    working"). Its own spec already requires the panel AND Wilson to bless it, and it is the
-    only pass-1 item whose acceptance can prove nothing beyond a synthetic policy table. 2 of 5
-    panel seats named this the single item to kill from pass 1. Reconsider it after yap24-NT9
-    has passed on one real meeting on Wilson's own Mac, and only after his explicit Calendars
-    yes (ledger: pricing/product identity decisions are his; a new permanent TCC grant belongs
-    in the same bucket).
-    DEPENDS: yap24-NT6, yap24-NT7
-
-    EVIDENCE
-      - Wilson 2026-08-10 (memory project_yap_build_state): "calendar-AWARE (knows when
-        meetings/CLASSES are coming — students are a target — and proactively prompts Record?)";
-        stack decided then: EventKit via objc2-event-kit, reads iCloud/Google/Outlook through
-        Calendar.app, zero OAuth.
-      - Wispr ships a meeting reminder pill ("In {{n}} min", Join + Start, snooze) — parity
-        teardown Notes/Wispr-Full-Parity-Research-2026-08-09.md line 100.
-      - Apple: requestFullAccessToEvents is macOS 14.0+
-        (https://developer.apple.com/documentation/eventkit/ekeventstore/requestfullaccesstoevents(completion:));
-        purpose string NSCalendarsFullAccessUsageDescription, macOS 14.0+
-        (https://developer.apple.com/documentation/bundleresources/information-property-list/nscalendarsfullaccessusagedescription).
-
-    DO
-      1. Settings -> Meetings: "Remind me to record meetings and classes" (default OFF). Turning
-         it on requests calendar access; below macOS 14 the toggle is disabled with the reason.
-      2. A pure policy (calendar_prompt.rs): events with attendees or a video link, or on a
-         calendar the user ticked as "classes", starting within 2 min -> one prompt; snooze 2 min;
-         never while a dictation or meeting is running; never twice for one event.
-      3. The pill shows the prompt (Record / Snooze / Not this one); Record starts the meeting
-         with the event title and kind call when the event has a video link, else in_person.
-      4. Calendar reads are an EventKit query every 5 minutes at most and on
-         EKEventStoreChanged — never a tight poll. Nothing leaves the Mac.
-
-    Tests: tests/calendar_prompt_policy.rs over synthetic events (no EventKit in the test).
-  `,
-  acceptance: `
-    grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
-    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
-    cd src-tauri
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test calendar_prompt_policy
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
-  `,
-})
+// yap24-NT8 — CUT 2026-10-26 by the Senior Panel plan-audit (object removed; the harness has no retired/status field, removal is the mechanism).
+// Why: a duplicate of the ungated yap-notetaker-detect (same calendar_prompt_policy.rs, same EventKit prompt; NT8 default OFF, detect default ON)
+// that also adds a permanent Calendars TCC permission and fixes nothing in stop -> transcript -> notes. One owner now: yap-notetaker-detect,
+// whose calendar signal is opt-in and whose app signal needs no permission. The original spec is in git history (commit before 2026-10-26).
 
 ITEMS.push({
   id: 'yap24-NT9', prompt: 'yap24-NT', branch: 'loop/yap24-nt9-notetaker-end-to-end-proof', gated: 'panel',
   title: 'Phase-closing proof: one headless command runs a two-track fixture through capture, transcript, notes and export',
   preflight: `
-    test -x scripts/notetaker-e2e.sh
-    grep -q "yap24" docs/MEETING-DEMO.md
+    ( if ! ( test -f desktop/src-tauri/tests/meeting_pipeline_residual.rs ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap24-NT2 residual (guards) has not landed; run the review pass, then build NT9"; exit 0; fi; grep -q 'transcribe-meeting' desktop/src-tauri/src/cli.rs && test -x scripts/notetaker-e2e.sh && grep -q "yap24" docs/MEETING-DEMO.md )
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26.
     DEPENDS: yap24-NT0 (the provisioned model + corpus the proof runs against), yap24-NT1-NT4,
     yap24-NT6, yap24-NT7 (NT5 and NT8 are DEFERRED — see their own Panel revisions
     above; NT9 does not wait on either)
@@ -755,8 +845,19 @@ ITEMS.push({
 
     NOT: no microphone, no TCC, no window. This is the headless half; the human half (one real
     meeting on Wilson's Mac) is listed in the PR body as the remaining manual check.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - THIS ITEM NOW OWNS THE FLAG: the proof runs the release binary with --transcribe-meeting, which is absent from cli.rs (grep finds 0), and
+        its former owner (NT2 DO step 6) is skipped as already-done. Step 0 of the DO: add --transcribe-meeting <mic.wav> [--sys <sys.wav>]
+        beside --transcribe-file in cli.rs, running the same pipeline worker against a scratch state root (YAP_DATA_DIR required, like
+        --smoke) and printing the segment count and the final state. The preflight and acceptance both grep it.
+      - The summary assertion follows #250's states: with the notes model linked from YAP_MODEL_DIR the Markdown export contains the notes
+        sections; without it, whatever pending state #250 defines, never an error and never the retired needs_model string.
+      - Depends on NT0, NT1, NT2 (residual), #250 (the preflight holds on the NT2 residual test file).
+    Audit 2026-10-26: the audio box is offline-first. The CLI should run NEW yap-audit-eval-call-bleed's call-bleed-2voice fixture and print its metrics (echo_dup_rate, mid-sentence ends, median segment s, notes owner accuracy, Summary verbatim ratio). See docs/audits/meeting-notetaker-audit-2026-10-26.md section 9.
   `,
   acceptance: `
+    grep -q 'transcribe-meeting' desktop/src-tauri/src/cli.rs
     test -x scripts/notetaker-e2e.sh
     bash -n scripts/notetaker-e2e.sh
     ! grep -q 'SKIP' scripts/notetaker-e2e.sh
@@ -764,20 +865,19 @@ ITEMS.push({
     cd desktop && npm ci && cd src-tauri
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_residual
   `,
 })
 
 ITEMS.push({
   id: 'yap24-NT10', prompt: 'yap24-NT', branch: 'loop/yap24-nt10-meeting-survives-sleep-and-lid-close', gated: 'panel',
-  title: 'A meeting survives a lid close or sleep: the journal finalizes on WillSleep and the row is marked paused_by_sleep, not left recording forever',
+  title: 'A meeting survives a lid close or sleep: IOKit holds the sleep, the journal finalizes, and the row ends partial with one plain sentence instead of staying recording forever',
   notes: 'NEW item added by Senior Panel synthesis 2026-09-26T17:35:00Z (User/wildcard seat, BLOCKING — grounded). The audit counted Y1-B (register NSWorkspaceWillSleepNotification / IORegisterForSystemPower) as already-done, but its own pre-flight only matches a COMMENT in power.rs, not a real observer call site (meeting_matrix.rs row 16 still reads PolicyOnly{absent_call_site:"NSWorkspaceWillSleepNotification"}; grep -c for that literal returns 4 on main today). only:[\'yap24-NT\'] never reaches Y1-B, so without this item a lid-close mid-meeting (walking between rooms, closing the laptop) leaves the row stuck in "recording" with no finalize, and yap24-NT1\'s reconcile only handles a crash, not a clean sleep. Corrects docs/ARCHITECTURE-AUDIT-2026-09-26.md §10\'s already-done count from 2 to 1 (Y4-D only).',
   preflight: `
-    grep -qE "NSWorkspaceWillSleepNotification|IORegisterForSystemPower" desktop/src-tauri/src/power.rs
-    test -f desktop/src-tauri/tests/meeting_survives_sleep.rs
-    ! grep -q 'absent_call_site: "NSWorkspaceWillSleepNotification"' desktop/src-tauri/src/meeting_matrix.rs
+    ( if ! ( test -f desktop/src-tauri/tests/matrix_row16_sleep_wake.rs ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR 239 (sleep/wake observer) has not landed; land it, then build NT10"; exit 0; fi; grep -v '^[[:space:]]*//' desktop/src-tauri/src/power.rs | grep -q 'IORegisterForSystemPower' && test -f desktop/src-tauri/tests/meeting_survives_sleep.rs )
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26.
     DEPENDS: yap24-NT1 (reuses its capture-journal recovery path; this item is the sleep-triggered
     twin of NT1's crash-triggered reconcile)
 
@@ -808,227 +908,116 @@ ITEMS.push({
 
     Tests (tests/meeting_survives_sleep.rs): simulate WillSleep mid-recording -> row finalizes to
     paused_by_sleep with both WAV paths intact; WillSleep with no active meeting is a no-op.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - API CHOICE: NSWorkspaceWillSleepNotification does NOT delay sleep; IORegisterForSystemPower with kIOMessageSystemWillSleep and an
+        IOAllowPowerChange acknowledgement does. The IOKit path is now PRIMARY (the old DO had it as a fallback). Acknowledge only after the
+        journal is finalized. Per Apple's IOKit power-management docs; not re-fetched this run, so the builder reads the current docs first.
+      - KEEP PR #239's NSWorkspace observer registration (and its SleepWakeHub); this item subscribes to the same hub and adds the IOKit hold. The
+        preflight holds this item until #239's tests/matrix_row16_sleep_wake.rs exists. Dep: #239 landed.
+      - NO NEW STATE: the paused_by_sleep state in DO 1, 2, 3 is VOID. Finalize the row to partial with the sentence "Stopped when the Mac went to
+        sleep." and let the existing pipeline enqueue partial rows (NT2 R2 enqueues {transcribing, partial}). Wake never silently resumes the old row.
+        The acceptance fails if the string paused_by_sleep appears anywhere.
+      - Test (tests/meeting_survives_sleep.rs): inject kIOMessageSystemWillSleep mid-recording and assert the row ends partial, both WAV paths intact,
+        the pipeline enqueued it, and the acknowledgement happened after finalize; with no active meeting it is a no-op that still acknowledges.
   `,
   acceptance: `
+    grep -v '^[[:space:]]*//' desktop/src-tauri/src/power.rs | grep -q 'IORegisterForSystemPower'
+    grep -q 'IOAllowPowerChange' desktop/src-tauri/src/power.rs
+    ! grep -rn 'paused_by_sleep' desktop/src desktop/src-tauri/src
     cd desktop && npm ci && cd src-tauri
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_survives_sleep
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test matrix_row16_sleep_wake
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
+// yap24-NT11-0 REMOVED by Senior Panel 3 2026-10-26 (both seats said fold or kill). Its question ("is the bleed real, at a stable lag?") was answered by data on
+// disk: text containment 0.71-0.89 on 3 calls, and acoustically a constant lag (155 of 157 confident windows on c6187806, 144 within 30 ms; GCC-PHAT lag 7.1 / 0.6 / -1.7 ms
+// on the three real calls, no drift). Its PASS gate (envelope peak_ncc >= 0.5) was an unvalidated threshold on an unbuilt metric, its human half put the top CRITICAL
+// behind a calendar dependency, and the mach-epoch persistence is not needed (the WAV sample index is the working shared clock, measured). Its one keep-line (finalize
+// keeps <id>.tN.index.jsonl) now lives in yap24-NT11 DO 5. The original spec is in git history. Do not add it back to panelApproved.
+
 ITEMS.push({
-  id: 'yap24-NT11', prompt: 'yap24-NT', branch: 'loop/yap24-nt11-speaker-bleed-mic-dedupe-with-route-detection', gated: 'panel',
-  title: 'A call on built-in speakers is transcribed once: mic segments that re-hear the system track are dropped, and the dedupe is skipped on headphones',
-  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26 (THE USER seat, HIGH). NOT in pass 1 (gated panel, left out of the pass-1 panelApproved) — the destination is pass 2, see docs/loop/DEFERRED.md #12. It needs yap24-NT2 (the one-shot two-track merge) and yap24-NT3 (the output-device tracking) merged first. Panel round-3 audit 2026-09-26T23:42:00Z (synthesis of two independent seats — Senior macOS Audio/Rust Engineer and THE USER) revised the spec — see "Panel revisions" below. Still pass-2 only; put back into the pass-2 panelApproved array per Loop-Logs/YAP-RESUME-2026-09-26.md.',
+  id: 'yap24-NT11', prompt: 'yap24-NT', branch: 'loop/yap24-nt11-aec3-prepass-on-the-mic-track', gated: 'panel',
+  title: 'A call on built-in speakers is transcribed once: an AEC3 pre-pass cancels the far side out of the mic track (derived file, raw WAV untouched), with a per-span Speaker label and a 3-word residue rule as the fallback',
+  notes: 'REWRITTEN by Senior Panel 3 2026-10-26 (seat A built aec3 0.4.0 in scratch and ran it on the real stored WAVs; seat B the PM/User/AI seat). Earlier revisions (text-dedupe primary, bleed_score gate, persisted mach epochs, the output-route grep) are GONE, not superseded in place. yap24-NT11-0 is folded here and removed. The v1 blocker for the first-session walk: every remote line appears twice (Me and Them) until this lands. Build early.',
   preflight: `
-    test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
-    grep -q 'fn bleed_score' desktop/src-tauri/src/meeting_asr.rs
+    ( if ! ( test -f desktop/src-tauri/tests/meeting_failed_audio_ceiling.rs ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap24-NT1 residual (the purge test file meeting_failed_audio_ceiling.rs, whose purge must also remove the derived .aec.wav) has not landed; run the review pass, then build NT11"; exit 0; fi; test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs && grep -q 'fn aec_prepass' desktop/src-tauri/src/meeting_aec.rs && grep -q 'suppressed_as_echo' desktop/src-tauri/src/db.rs )
   `,
   spec: `
-    Panel: audited 2026-09-26 — SOUND-WITH-CHANGES: approved for pass 2, revised (kill the
-    output-route on/off switch, add an offline acoustic cross-correlation gate + real track-epoch
-    persistence, redefine the dedupe unit as a residue rule, add per-span "Me" attribution) — see
-    "Panel revisions" below. Two independent seats converged on the same BLOCKING finding and the
-    same kill.
-    DEPENDS: yap24-NT2 (the merge stage this dedupe lives in), yap24-NT3 (the whole-meeting output
-    device tracking it reuses)
+    Panel 3 2026-10-26: REWRITTEN, APPROVED. Class: STANDARD (not SEC). Why: it reads and writes audio files in the meetings directory only; it adds no permission, no network, no capture-path
+    change and no IPC surface. The one supply-chain change (a new crate) is covered by the existing supply_chain.rs pin test, which this item extends. Re-classify as SEC only if the build touches
+    permissions.rs, entitlements, or the capture code in syscapture.rs / record.rs.
+    DEPENDS: yap24-NT1 (purge and delete own the derived file), yap24-NT2 (the pipeline whose track-0 windows read the cleaned WAV).
 
-    ### PANEL REVISIONS 2026-09-26T23:42:00Z (Senior Panel synthesis, round 3 — applied,
-    BLOCKING + 4x HIGH + 4x MEDIUM, GROUNDED; Senior macOS Audio/Rust Engineer seat and THE USER
-    seat converged independently on the BLOCKING clock finding and on killOne):
+    WHY (audit issue #1, CRITICAL). On built-in speakers the far side is transcribed twice: 3 of 3 real virtual calls show 0.71-0.89 of the call track's word trigrams inside the mic track's
+    same window; on c6187806 echo_dup_rate is 0.88 and the rendered both-track WER against a cloud reference is 0.838. The notes then give the other side's commitments to Me.
 
-      - BLOCKING — no shared clock zero exists between the two tracks, so the 500 ms overlap
-        window and "same epoch as the track anchors" below have nothing to measure against: each
-        track's host_ns is rebased to its OWN first callback (syscapture.rs's TapClock, and the
-        mic's cpal base in record.rs), the absolute mach time is never persisted, and
-        TrackEpochs::SHARED is, per meeting_asr.rs's own doc comment, "a lie the caller has to
-        tell out loud" — no production path ever fills in a real offset (a source grep for
-        TrackEpochs:: today finds only tests/two_track_merge_*.rs, nothing under src/). Add an
-        NT11 step 0, before the dedupe: at every stream open/reopen, persist the absolute
-        first-callback mach time (the tick TapClock already computes as its epoch, and the mic's
-        cpal base next to record.rs's mach_absolute_time call) into the per-meeting anchor
-        sidecar NT2 already keeps. Build TrackEpochs from those persisted values — never from
-        SHARED — inside NT11's own code path (this item, not NT2's). A source-scan test asserts
-        TrackEpochs::SHARED has no caller under src/. As a fallback when an epoch is missing
-        (e.g. an anchor file written before this landed), estimate it once per meeting from the
-        bleed_score correlation peak below, never from a guessed constant.
+    DECISION (duel settled with evidence): the primary fix is an AEC3 pre-pass, NOT a text dedupe. Seat A MEASURED the pure-Rust aec3 crate 0.4.0 offline over the stored 16 kHz mono WAVs
+    of c6187806 (mic = t0, system tap = t1), NS and AGC off: call-playing windows attenuated 25.5 dB at the median (p25 7.4 dB); local-only windows lose 0.17 dB (p90 0.20); the two stored
+    WAVs are already aligned (lag 7.1 / 0.6 / -1.7 ms on the three real calls, constant across the file, no drift); 12.1 s for 31 minutes on an M4 Pro (about 20-25 s expected on M1 8 GB),
+    streaming state tens of MB; it builds on arm64; MIT OR BSD-3-Clause; its dependencies (rustfft, num-complex, crossbeam) are already in desktop/Cargo.lock, so it adds ONE crate.
+    A text dedupe alone cannot fix ASR of mixed double-talk and would delete real words; energy ducking kills double-talk; the webrtc-audio-processing crate is a second native C library and is REJECTED.
+    VPIO (capture-time voice processing) stays rejected: it ducks the call's own playback, is irreversible, and replaces the shared cpal mic path; the offline system-track reference does the
+    same job non-destructively.
 
-      - HIGH — the dedupe unit is undefined ("segment" spans word-level or higher depending on
-        the ASR model), so text containment on WORD spans reduces to "drop any mic word that also
-        appears on the system track nearby" — a real "yeah", "right", or Wilson reading back
-        "Tuesday at three" gets deleted. On SEGMENT spans the >= 0.6 ratio cuts both ways: a
-        7-word real commitment sitting inside someone else's overlapping 25-word sentence is
-        0.78-contained and gets dropped whole (violating this item's own "no real mic word is
-        lost" test), while below the ratio the other side's full 25 words survive labelled "Me".
-        Replace the ratio rule: for TimedKind::Word, dedupe only a run of 3 or more CONSECUTIVE
-        folded mic words matched to a system run inside the measured lag window — an isolated
-        single-word match is always kept. For TimedKind::Segment (or higher), text containment
-        becomes a residue rule, not a drop/keep binary: remove the matched system run's text from
-        the mic span; if the residue has 0 or 1 non-stopword tokens, drop the span; otherwise KEEP
-        the residue (word-level spans) or keep the whole span flagged mixed=true (segment-level)
-        so NT4 never draws a "Me" action item from it. Text agreement is a NECESSARY condition for
-        a drop, never SUFFICIENT on its own — see the acoustic gate below.
+    DO
+      0. PRESERVE THE EVIDENCE FIRST. The audio of c6187806 is purged about 7 days after 2026-10-26 (complete meeting with segments). Before anything else copy its two WAVs (read-only cp,
+         never move) into the private eval corpus ~/yap-eval-corpus/private/call-c6187806/ (outside the repo, never committed, never uploaded) and record only that path in the PR body.
+      1. Cargo.toml: aec3 = "=0.4.0" (default features), exact pin like llama-cpp-2. NOTICE: add the aec3 entry (MIT OR BSD-3-Clause). tests/supply_chain.rs: add aec3 to the reachable-from-app
+         expected set and assert the exact x.y.z pin with the existing helper. No other new crate may appear in Cargo.lock (the test diffs the lockfile package set against the committed one).
+      2. New module src/meeting_aec.rs, everything behind two fns: fn aec_coupling(mic, sys) -> Option<lag_ms> (GCC-PHAT over the call-playing windows; Some only when a confident lag is found
+         in at least 30% of the windows where the system track is playing) and fn aec_prepass(mic_wav, sys_wav, out_wav) -> Result (streaming, bounded memory, never a whole-meeting f32 buffer).
+         The reference is shifted 20 ms earlier so a lag of -1.7 ms stays causal. It writes <audio>.t0.aec.wav ONCE (idempotent: a second run is a no-op; written to a temp name then renamed);
+         the raw WAV is never modified and a re-transcribe re-derives it.
+      3. MeetingAsr reads <audio>.t0.aec.wav for track 0 (instead of the raw mic) only when kind is virtual AND a t1 track exists AND aec_coupling is Some. Headphones (no coupling) and in-person
+         meetings read the raw mic unchanged. The derived file is purged and deleted WITH the raw WAVs by yap24-NT1's purge and the meeting-delete cascade (extend both; test it); it is never kept alone.
+      4. FALLBACK, after AEC, for what it cannot fix: (a) where the system track is all-zero or missing for a span (a tap hole, a reopen gap; on the real calls: 4456 after 690 s and 61d7, whose far
+         side is mostly NOT in the tap, so no AEC or dedupe can fix it), label the mic speech "Speaker" (unattributed) through meetings::speaker_label, never "Me", and exclude it from Me-owned
+         notes items; (b) the residue rule: a run of 3 or more CONSECUTIVE folded mic words that matches a system run within +-1.5 s is echo residue; an isolated single-word match is always kept;
+         for segment spans, remove the matched run from the mic span and drop the span only if the residue has 0 or 1 non-stopword tokens, else keep the residue flagged mixed. Text agreement is a
+         drop condition only where AEC ran or the span has no system audio; it never deletes on a single word. Each suppressed mic span is persisted as its own row flagged
+         suppressed_as_echo=1 (excluded from render, FTS, export and notes input) via the NEXT free versioned migration step, never an ad hoc ALTER; the Transcript shows one line "N lines hidden as
+         speaker echo - Show" revealing them inline (a one-line TS change in the transcript list). Record route/reopen boundaries against each track's finalized-sample position, never raw host_ns.
+         Tests assert labels through speaker_label itself, never through hardcoded "Me"/"You" literals.
+      5. Finalize keeps <id>.tN.index.jsonl (it no longer deletes the per-track anchors); cleanup only through NT1's purge and the delete cascade. (Carried from the removed NT11-0.)
+      6. DEPENDENT (only when the Rewrite notes button from yap-audit-rewrite-notes is on main at build time; otherwise that item carries this step when it lands): when audio_kept=1 offer
+         "Re-transcribe and rewrite", so an old echo transcript can be re-derived through the AEC pre-pass and its notes rewritten.
+      7. Create scripts/eval/aec-real-call.sh (executable; described under ACCEPTANCE ON REAL AUDIO below). Its output is numbers only, never transcript text.
+      8. NUMBERS to docs/BUDGETS.md under "AEC pre-pass (real call)" and "AEC pre-pass (synthetic)": attenuation p50 and p90, local-only loss p90, lag, wall time and peak RSS for the pre-pass.
+    NOT: no capture-path change, no new TCC permission, no change to dictation, no second native C library, no VPIO, no mach-epoch persistence (the WAV sample index is the shared clock, measured), no
+    merge of the two tracks' transcripts here (ordering by start time belongs to yap-audit-utterance-segments), no NT5 diarization (NEXT-RELEASE note: NT5 on the call track would give Them A / Them B).
+    Known limit, stated honestly: when two people share the laptop mic, AEC correctly keeps both voices on the mic track; their owners are handled by yap-audit-notes-guards ("Someone here"), not here.
 
-      - HIGH — the system WAV is the decisive evidence and this item as first written never uses
-        it. Add a pure fn bleed_score(mic: &[f32], sys: &[f32], lag_range) -> (peak_ncc, lag_ms)
-        in meeting_asr.rs (16 kHz, band-limited envelopes, windowed FFT cross-correlation — O(n),
-        well under 1% of ASR time for a 3-hour meeting) run offline over the two already-finalized
-        WAVs (WavWindows::open, never MemoryWindows — 690 MB for a 3-hour meeting). A candidate mic
-        run/segment is dropped only when peak_ncc clears a committed threshold AND the text rule
-        above agrees. This also satisfies the item's own "measured, not guessed": log the
-        per-meeting median measured lag and commit it, next to each device's queried
-        kAudioDevicePropertyLatency + safety offset, to docs/BUDGETS.md — "a few hundred ms ...
-        through the room" conflated acoustic travel time (~3 ms/m) with this unmeasured clock
-        offset; both numbers now get recorded honestly. Still never touches the capture path or
-        the WAV files — a re-transcribe still re-derives everything.
-
-      - HIGH — kill the output-route classifier as the dedupe on/off switch (killOne, both seats):
-        classifying from the system DEFAULT output device is the wrong device for a call app that
-        outputs elsewhere, misses Bluetooth/HDMI/AirPlay speakers under "unknown is treated as
-        speakers", and misreads Wilson's own machine today (system_profiler SPAudioDataType shows
-        "BH + Headphones: Transport: Unknown" and "BlackHole 2ch: Transport: Virtual"). Gate the
-        dedupe instead on MEASURED COUPLING: it runs only where the bleed_score + text evidence
-        above actually finds matched runs at a stable lag. On AirPods/headphones no runs match, so
-        nothing is dropped, with no device taxonomy required. fn output_route(...) stays in
-        syscapture.rs as a DIAGNOSTIC field only, logged next to the suppression count (see
-        below) — it never again decides on/off. Do not use the grep for fn output_route as a
-        stand-in for "the feature works" (dropped from preflight/acceptance above); the real gate
-        is bleed_score plus the matched-run test below.
-
-      - HIGH — per-span attribution: a route change or a tap rebuild leaves a stretch where the
-        far side's speech exists ONLY on the mic (dead air across a reopen, or AirPods
-        disconnecting back to speakers mid-call) — MicIsMe is decided once per MEETING today
-        (diarization_target from whether any system spans exist at all), so that whole stretch is
-        labelled "Me" and NT4 attributes their sentence to Wilson. Make the label per SPAN, not
-        per meeting: where the route is speakers/unknown and the system track delivered nothing
-        for that span (tap hole, reopen gap, or all-zero samples), label the mic speech "Speaker"
-        (unattributed) through the existing meetings::speaker_label path, not "Me", and exclude it
-        from "Me"-owned action items in NT4. Tests assert labels through speaker_label itself,
-        never through hardcoded "You"/"Me"/"Them" string literals in a fixture (the DO text below
-        says "You"; the shipped label is "Me").
-
-      - MEDIUM — a route change mid-meeting is exactly when cross-track host time is least
-        trustworthy: a reopened stream rebases host_ns to zero, and the segmented timeline cannot
-        recover the dead air across the reopen. Record route and reopen boundaries against each
-        track's finalized-sample position (the axis meeting.rs::finalized_positions already keeps
-        continuous across a reopen), never against raw host_ns. The "speakers -> AirPods" fixture
-        below must include a mic reopen at the boundary; assert nothing within +/-1 s of the seam
-        is dropped unless the acoustic gate actually fires.
-
-      - MEDIUM — VPIO / capture-time voice-processing echo cancellation is REJECTED as the layer
-        for this fix, stated explicitly rather than silently bypassed: it requires both the input
-        and output node in voice-processing mode, ducks the call's OWN playback on macOS 14+
-        (voiceProcessingOtherAudioDuckingConfiguration), is irreversible (a re-transcribe could
-        never recover the raw mic), and would replace the shared cpal mic path dictation also
-        uses. The offline system-track reference (bleed_score above) does the same job
-        non-destructively, entirely outside the capture path, and re-derives on every
-        re-transcribe. Add this sentence to the NOT clause verbatim: "VPIO rejected: it ducks the
-        call's own playback, is irreversible, and replaces the shared cpal mic path; the offline
-        system-track cross-correlation does the same job non-destructively."
-
-      - MEDIUM — the tests as first specified are text-only ("synthetic ChunkOutcome spans, no
-        model"), and meeting_asr.rs's own header warns RNNT/TDT emission times are unstable
-        across decodes and must never be used to match one decode's words against another's — yet
-        this item matches mic-decode words to system-decode words by time. Add a real paired
-        fixture to the NT0 corpus (5 minutes of a call on built-in speakers: mic.wav + sys.wav +
-        anchors, with a committed room impulse response at -18 dB / 40 ms delay and a declared
-        300 ms epoch offset) and gate on it with the real model via --transcribe-meeting headless:
-        remaining duplicated far-side runs <= 5%, mic-only word recall >= 0.98, nothing dropped on
-        the headphones fixture, and the "speakers -> AirPods" reopen fixture above all hold. Keep
-        the synthetic-span unit tests as Tier A (no model); the paired-WAV run is Tier B, gated
-        YAP_EVAL_REQUIRE=1 + YAP_MODEL_DIR like NT0/NT2. Commit both numbers to docs/BUDGETS.md.
-
-      - MEDIUM — suppressed spans must be auditable, not a silent delete-and-count: persist each
-        suppressed mic span as its own row flagged suppressed_as_echo=1 (excluded from render,
-        FTS, export and NT4 input) instead of the "one diagnostics field" this item first
-        specified, so a founder can see and recover a line he remembers saying without a
-        re-transcribe. Add this via the NEXT AVAILABLE versioned migration step (never an ad hoc
-        ALTER — NT4's revision already claims MIGRATION_6_MEETING_NOTES; this one takes the
-        following number when both land). Route spans, now that they are diagnostic-only, live in
-        the same per-meeting anchor/journal sidecar NT2 already keeps, cleaned up only through
-        NT1's purge/delete path — never independently. yap24-NT6 (its own item, not built here)
-        gets a one-line note: "N lines hidden as speaker echo · Show" revealing them inline — that
-        UI line is DEFERRED to NT6's own pass.
-
-    EVIDENCE (both seats, converged): syscapture.rs's TapClock rebases each stream's host_ns to
-    its own first mHostTime and never persists the absolute tick; meeting_asr.rs's doc comment
-    calls TrackEpochs::SHARED "a lie the caller has to tell out loud"; asr_engine.rs's TimedKind
-    is None/Segment/Word/Token and meeting_asr.rs's own fixtures already exercise TimedKind::Word;
-    meeting.rs::finalized_positions stays continuous across a reopen where host_ns does not;
-    system_profiler SPAudioDataType on Wilson's own machine shows "BH + Headphones: Transport:
-    Unknown" and "BlackHole 2ch: Transport: Virtual" — both misclassified by a device-taxonomy
-    route switch.
-
-    WHY (THE USER seat): a founder's real call is a laptop on a desk with the far side playing out
-    of the built-in speakers. The system track (process tap) carries the far side cleanly; the mic
-    track ALSO hears it, a few hundred ms later, through the room. Once NT2 transcribes both tracks
-    and merges them by host time, every remote sentence appears twice — once as Them (system) and
-    once as You (mic) — and NT4's summary then attributes the other side's commitments to Wilson.
-    On headphones/AirPods there is no bleed and nothing must be removed.
-
-    DO (original — SUPERSEDED where it conflicts with "Panel revisions" above; kept for context,
-    read the revisions first)
-      1. SUPERSEDED — output route detection is no longer the dedupe on/off switch (see the HIGH
-         kill finding above). Still add fn output_route(...) in syscapture.rs, beside NT3's
-         per-meeting device tracking, classifying the default output as speakers | headphones |
-         unknown on the same triggers as before, but it now feeds a DIAGNOSTIC log field only —
-         never a gate. The real gate is step 2 below.
-      2. SUPERSEDED — the dedupe still runs INSIDE NT2's one-shot merge stage (after both tracks'
-         ASR finished, before the single transactional write), but the drop decision is now: (a)
-         epochs come from the persisted per-track anchors (BLOCKING finding above), never SHARED;
-         (b) a candidate window is a text-matched run (3+ consecutive words, or the containment
-         residue rule for segment spans — HIGH finding above), gated on peak_ncc from
-         fn bleed_score clearing its committed threshold (HIGH finding above) — text agreement
-         alone is never sufficient; (c) never trim words out of a kept span/residue.
-      3. Audio is never touched — the dedupe and bleed_score both act read-only on the two
-         finalized WAVs/segments, so a re-transcribe re-derives everything. SUPERSEDED: suppressed
-         mic spans are now their own rows flagged suppressed_as_echo=1 (MEDIUM finding above), not
-         a single diagnostics counter; still log how many and on which route per meeting.
-      4. Headphones spans skip the dedupe entirely (no matched runs exist there in practice, so
-         this now falls out of the measured-coupling gate rather than being special-cased); kind
-         in_person meetings (MicOnly per NT3) never run it. NEW: where a speakers/unknown span has
-         no system audio to compare against at all (tap hole / reopen gap), label that mic speech
-         "Speaker" via meetings::speaker_label, not "Me" (HIGH per-span-attribution finding above).
-
-    NOT: no echo cancellation / DSP on the capture path (VPIO explicitly rejected — see the added
-    NOT sentence in the Panel revisions above), no new TCC permission, no change to dictation, no
-    second ASR pass. Route classification is a diagnostic field only, never the on/off switch.
-
-    Tests (tests/meeting_cross_track_bleed.rs) — Tier A, synthetic ChunkOutcome spans, no model:
-      - speakers route, mic re-hears a system sentence 250 ms late, with a real persisted epoch
-        (not SHARED) -> the mic copy is suppressed via a matched run + bleed_score, the system
-        copy stays, the merged transcript has the sentence once;
-      - the same audio spans on a headphones route (no matched run found) -> nothing suppressed;
-      - double-talk: a 7-word mic commitment inside an overlapping 25-word system sentence ->
-        the residue (the mic's own 7 words) survives, in both directions of overlap ratio;
-      - an isolated single mic word ("yeah") that also appears in a nearby system utterance ->
-        kept (never dropped on a single-word match);
-      - mic speech with no overlapping system segment -> kept;
-      - mic speech on a speakers/unknown route where the system track is silent for that span
-        (tap hole) -> labelled "Speaker" via meetings::speaker_label, not "Me";
-      - a route change mid-meeting (speakers -> AirPods) with a mic reopen at the boundary ->
-        dedupe applies only where bleed_score/text evidence actually matches, and nothing within
-        +/-1s of the seam is dropped without that evidence;
-      - source scan: no caller of TrackEpochs::SHARED under src/;
-      - no real mic word is lost: across the fixture, every word that exists only on the mic track
-        survives (mirror meeting_eval's seam_dedupe_never_deletes_real_words posture).
-
-    Tests — Tier B, real model, gated YAP_EVAL_REQUIRE=1 + YAP_MODEL_DIR (MEDIUM finding above):
-      - a paired mic.wav/sys.wav fixture (room impulse response, -18 dB, 40 ms delay, declared
-        300 ms epoch offset) run through --transcribe-meeting headless: duplicated far-side runs
-        <= 5%, mic-only word recall >= 0.98, nothing dropped on the paired headphones fixture.
+    ACCEPTANCE ON REAL AUDIO (numbers only, run from the audio on disk in a mktemp dir, never the data dir): scripts/eval/aec-real-call.sh copies the two WAVs of c6187806 from
+    ~/yap-eval-corpus/private/call-c6187806/ into a mktemp dir, runs the AEC pre-pass, runs wilson-voice --transcribe-file <aec.wav> --timed windowed at 30 s (NT9's --transcribe-meeting when it lands),
+    and prints ONLY numbers via scripts/eval/compare-reference.py --tracks against the cloud reference (YAP_AEC_REAL_REFERENCE). With YAP_EVAL_REQUIRE=1 a missing WAV or reference is a failure, not a skip.
+    Gates:
+      (a) echo_dup_rate <= 0.10 (today 0.88);
+      (b) owner (reference Speaker B) share in the Me track >= 0.60 (was 0.64) and local Speaker D >= 0.70 (was 0.75);
+      (c) remote Speakers A and C share in the Me track <= 0.10 (was 0.66 and 0.75);
+      (d) user-visible (both tracks rendered) WER <= 0.25 (today 0.838);
+      (e) acoustic guard with no ASR: local-only windows attenuation p90 <= 1.0 dB loss, and call-playing windows p50 >= 15 dB.
+    Tier A (no model) also runs on the synthetic call-bleed-2voice fixture and on a headphones control: attenuation p50 >= 15 dB on call windows, nothing removed on the control, plus the unit
+    cases of step 4 (isolated "yeah" kept; 7-word mic commitment inside a 25-word overlapping system sentence keeps its residue; tap-hole span labelled via speaker_label; route change with a mic
+    reopen drops nothing within +-1 s of the seam without evidence; every word that exists only on the mic track survives).
   `,
   acceptance: `
     test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
-    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
-    grep -q 'fn bleed_score' desktop/src-tauri/src/meeting_asr.rs
-    ! grep -rn 'TrackEpochs::SHARED' desktop/src-tauri/src
+    grep -q 'fn aec_prepass' desktop/src-tauri/src/meeting_aec.rs
+    grep -q 'fn aec_coupling' desktop/src-tauri/src/meeting_aec.rs
+    grep -q 'aec3 = "=0.4.0"' desktop/src-tauri/Cargo.toml
+    grep -q 'aec3' NOTICE
+    test -x scripts/eval/aec-real-call.sh
     cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test supply_chain
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cross_track_bleed
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_failed_audio_ceiling
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
-    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" cargo test --features custom-protocol --test meeting_cross_track_bleed -- --ignored --nocapture --test-threads=1
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 bash ../../scripts/eval/aec-real-call.sh
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })

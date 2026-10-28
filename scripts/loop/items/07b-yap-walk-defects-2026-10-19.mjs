@@ -83,6 +83,7 @@ ITEMS.push({
     (2) license_rs_has_no_http_client — reads license.rs via include_str! and fails on "sslip.io", "reqwest",
     "ureq" or "http://"/"https://" outside the PAYMENT_LINK_URL constant. (3) existing licence tests green.
     Can ship alone in the next release.
+    Audit 2026-10-26: still fires on the installed 0.9.3-dev at launch: 16:35:12Z 'revocation refresh skipped (error sending request for url (https://forge.87-99-149-214.sslip.io/...))'. See docs/audits/meeting-notetaker-audit-2026-10-26.md issue #15.
   `,
   acceptance: `
     ! git grep -nE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs

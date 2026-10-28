@@ -373,6 +373,34 @@ test('(i) the real template satisfies the prompt contract', () => {
   for (const seat of ['review-opus', 'review-opus2']) assert.ok(units.some((u) => u.seat === seat && u.text.includes('review-gate.mjs record')), seat)
 })
 
+test('(i) GATE ONCE PER HEAD: reviewer prompts verify the gate-ledger record and are never handed the full gate', async () => {
+  const { ledgerPromptProblems, FULL_GATE_NEEDLE } = await import('./gate-ledger.mjs')
+  const src = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  const units = promptUnits(src)
+  assert.deepEqual(ledgerPromptProblems(units), [])
+  const reviewers = units.filter((u) => ['review-opus', 'review-opus2'].includes(u.seat))
+  assert.ok(reviewers.length >= 2, 'reviewer dispatches found')
+  for (const u of reviewers) {
+    assert.ok(u.text.includes('gate-ledger.mjs check --sha <HEAD>'), `${u.label}: verifies the record for its head`)
+    assert.ok(!u.text.includes(FULL_GATE_NEEDLE), `${u.label}: is handed the full gate`)
+    assert.ok(!u.text.includes('${GATE_CMDS('), `${u.label}: interpolates GATE_CMDS`)
+    assert.match(u.text, /NEVER the full gate/)
+    assert.match(u.text, /git checkout --detach <HEAD>/)
+    assert.match(u.text, /cargo test --features custom-protocol --test <file>/)
+    assert.match(u.text, /npx vitest run <file>/)
+  }
+  for (const seat of ['fix-land', 'land-sweeper', 'build']) {
+    assert.ok(units.some((u) => u.seat === seat && u.text.includes('gate-ledger.mjs check --sha <headRefOid>')), `${seat} checks the ledger before its gate`)
+    assert.ok(units.some((u) => u.seat === seat && u.text.includes('gate-ledger.mjs record')), `${seat} records the gate it runs`)
+    assert.ok(units.some((u) => u.seat === seat && u.text.includes('gate-ledger.mjs ci --sha <headRefOid>')), `${seat} records green CI (github mode)`)
+  }
+  // and the contract bites: hand a reviewer GATE_CMDS and validation fails
+  const anchor = '${REVIEW_GATE_READ(dir, target, pr)}\n# THE CONTRACT — classify every finding as exactly one'
+  assert.equal(src.split(anchor).length, 2, 'the reviewer anchor must exist exactly once')
+  const bad = promptUnits(src.replace(anchor, '${GATE_CMDS(dir, target)}\n' + anchor))
+  assert.ok(ledgerPromptProblems(bad).some((p) => /review-opus.*FULL gate/.test(p)), 'a reviewer handed GATE_CMDS is refused')
+})
+
 test('(i) build.mjs --validate-only FAILS when the real fix-land prompt is handed "review-gate.mjs record"', () => {
   const src = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
   const anchor = 'never start it with the reviewer record marker'

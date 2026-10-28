@@ -304,6 +304,11 @@ ITEMS.push({
       - Do NOT compute these on every take.
       - Do NOT write a second diff implementation.
       - Do NOT transmit any of it, and do not build a leaderboard.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DB-A (usage metering) was KILLED today. Strike "DB-A's usage rollup lands the per-day words and voiced seconds" and "Depends on DB-A": read the
+        per-day words and voiced seconds from the EXISTING get_insights day-series (lib.rs:2420-2432), which this item's own EVIDENCE already cites.
+        Still depends on DB-C, Y4-G, Y5-H. No new rollup table.
   `,
   acceptance: `
     grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs

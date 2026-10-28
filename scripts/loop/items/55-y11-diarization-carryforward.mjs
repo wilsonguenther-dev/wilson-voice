@@ -80,7 +80,7 @@ ITEMS.push({
 })
 
 ITEMS.push({
-  id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null,
+  id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null, builder: 'sonnet',
   notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it',
   preflight: `
@@ -327,7 +327,7 @@ ITEMS.push({
 })
 
 ITEMS.push({
-  id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null,
+  id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null, builder: 'sonnet',
   notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist',
   preflight: `
@@ -393,8 +393,7 @@ ITEMS.push({
   notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
   title: 'A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists',
   preflight: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test meeting_eval
+    grep -q 'corpus: synthetic' desktop/src-tauri/tests/meeting_eval.rs
   `,
   spec: `
     GATED: 'panel'. The mechanism is clear; what a corpus of real human voices
@@ -447,15 +446,21 @@ ITEMS.push({
       - Do NOT record anyone without explicit consent.
       - Do NOT report a blended number.
       - Do NOT skip the arm silently.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - HONESTY HALF ONLY, DEFERRED to after the first 100 users (not in panelApproved). Its dependency Y11-C is not on main. The half that may be built
+        without a decision: every printed DER/EER and every recorded eval number carries its corpus name, and the numbers already recorded in
+        docs/BUDGETS.md and meeting_eval.rs say "corpus: synthetic" explicitly. The preflight and acceptance now check that, and no longer require
+        real_voice_manifest.* (the empty-manifest and named-skip mechanism belong to the consent half).
+      - THE CONSENT HALF IS WILSON'S DECISION, not an agent's: whose voices (a licensed public corpus, recorded-with-consent, or both), where they live
+        (never the repo), how long they are kept and what a contributor's withdrawal requires. The pre-existing note that podcast episodes 10-11 carry
+        Wilson's consent covers HIS voice only, not the other speakers, so it does not settle this.
   `,
   acceptance: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.sha256
-    grep -q 'synthetic' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'refuses_to_blend_corpora_into_one_number' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'absent_corpus_skips_with_a_named_reason' desktop/src-tauri/tests/meeting_eval.rs
+    grep -q 'corpus: synthetic' desktop/src-tauri/tests/meeting_eval.rs
+    grep -qi 'synthetic' docs/BUDGETS.md
     test 0 -eq "$(find desktop/src-tauri/tests/fixtures -name '*.wav' -newer desktop/src-tauri/tests/fixtures/README.md | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
+    cd desktop && npm ci && cd src-tauri
     cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
     cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
   `,

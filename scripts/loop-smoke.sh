@@ -79,8 +79,11 @@
 # this script red on an unmodified tree, which is a smoke test that tells you
 # nothing. Set YAP_SMOKE_CLIPPY_STRICT=1 to gate on `-D warnings` once that item
 # lands. Never silence a lint to make this green.
-# `cargo fmt --all -- --check` IS blocking here and it passes on origin/main
-# today (measured, exit 0).
+# `cargo fmt --all -- --check` is ADVISORY here (Y0-A ledger, PANEL 2026-09-12;
+# PR #234's ci.yml). The b4b8d06 sweep drifted: on a740614 it exits 1 with 65
+# hunks on an unmodified tree. The stage still runs and prints the hunk count;
+# set YAP_SMOKE_FMT_STRICT=1 to gate on it. Item yap-fmt-sweep-2026-10-26
+# re-sweeps the tree and flips this default back to blocking.
 
 set -euo pipefail
 
@@ -88,6 +91,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP="$REPO_ROOT/desktop"
 SRC_TAURI="$DESKTOP/src-tauri"
 TARGET_DIR="${CARGO_TARGET_DIR:-$DESKTOP/target}"
+# debug/incremental is never reused across items and filled target-r1/r2 with GBs even with the
+# parent-dir .cargo/config.toml incremental=false; the env var beats every config layer.
+export CARGO_INCREMENTAL=0
 
 STAGE_NO=0
 
@@ -222,7 +228,14 @@ stage_sidecars() {
 
 stage_test_polish()  { cd "$DESKTOP" && cargo test -p yap-polish  --release; }
 stage_test_diarize() { cd "$DESKTOP" && cargo test -p yap-diarize --release; }
-stage_fmt()          { cd "$SRC_TAURI" && cargo fmt --all -- --check; }
+stage_fmt() {
+  local out code
+  set +e; out="$(cd "$SRC_TAURI" && cargo fmt --all -- --check 2>&1)"; code=$?; set -e
+  printf 'fmt: exit %d, %d hunks\n' "$code" "$(printf '%s\n' "$out" | grep -c '^Diff in' || true)"
+  if [ "${YAP_SMOKE_FMT_STRICT:-0}" = "1" ]; then return "$code"; fi
+  [ "$code" -eq 0 ] || printf 'fmt: ADVISORY (set YAP_SMOKE_FMT_STRICT=1 to gate)\n'
+  return 0
+}
 
 stage_clippy() {
   cd "$SRC_TAURI" || return 1
@@ -281,7 +294,7 @@ stage "npm test (vitest)"                                 stage_npm_test
 stage "build + stage BOTH sidecars for $(rustc -vV | awk '/^host:/ {print $2}')" stage_sidecars
 stage "cargo test -p yap-polish --release"                stage_test_polish
 stage "cargo test -p yap-diarize --release"               stage_test_diarize
-stage "cargo fmt --all -- --check"                        stage_fmt
+stage "cargo fmt --all -- --check (advisory)"             stage_fmt
 stage "cargo clippy --all-targets --features custom-protocol" stage_clippy
 stage "cargo test --features custom-protocol"             stage_cargo_test
 stage "cargo build --release --features custom-protocol"  stage_cargo_release

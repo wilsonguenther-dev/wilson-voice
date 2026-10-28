@@ -6,14 +6,13 @@
 
 ITEMS.push({
   id: 'yap24-PKG1', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg1-one-command-local-release', gated: 'panel',
-  title: 'One local release command: build, Developer ID sign, hdiutil DMG, notarize, staple, verify, updater artifacts — with a dry run',
+  title: 'One local release command, by EXTENDING scripts/sign-local.sh: --dry-run, --check-only, DMG, notarize, staple, verify and the updater manifest through the existing stage-updater-manifest.sh',
   preflight: `
-    test -x scripts/release-local.sh
-    bash scripts/release-local.sh --dry-run --check-only
+    ( if ! ( test -x scripts/qa/release-smoke.sh ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR 242 (release smoke in sign-local.sh) has not landed; land it, then build PKG1"; exit 0; fi; grep -q -- '--check-only' scripts/sign-local.sh && grep -q -- '--dry-run' scripts/sign-local.sh && bash scripts/sign-local.sh --tauri-build --dry-run --check-only )
   `,
   spec: `
-    Panel: pending (SECURITY-class: signing and notarization)
-    DEPENDS: UPD-A (#197, open), UPD-B
+    Panel: APPROVED-WITH-CHANGES 2026-10-26 (SECURITY-class: signing and notarization)
+    DEPENDS: UPD-A (MERGED, 8782b4e: scripts/stage-updater-manifest.sh), UPD-B, and PR #242 (sign-local.sh --tauri-build plus the signed-app release smoke; the preflight holds this item until scripts/qa/release-smoke.sh exists)
 
     EVIDENCE
       - Releases are hand-run from docs/RELEASE.md; .github/workflows/release.yml is disabled
@@ -31,15 +30,32 @@ ITEMS.push({
     stapler staple -> spctl -a -t open -> .app.tar.gz + .sig + latest.json. --dry-run stops before
     notarize and prints each command; --check-only validates tools, identity presence and the
     keychain profile without building. Never prints a secret; never enables app-sandbox.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - REWRITTEN AS AN EXTENSION, NOT A SECOND SCRIPT: scripts/sign-local.sh already has --tauri-build (identity resolution, signing, verify) and #242 adds the
+        signed-app release smoke. A parallel scripts/release-local.sh would be a second release path to keep honest; the acceptance fails if it exists.
+        Extend sign-local.sh with: --dry-run (print each command, stop before notarize), --check-only (validate tools, identity presence and the
+        yap-notary keychain profile without building), the DMG (hdiutil UDZO with an /Applications link), codesign of the DMG, notarytool submit
+        --keychain-profile yap-notary --wait, stapler staple, spctl -a -t open, and the updater artifacts. latest.json comes from the EXISTING
+        scripts/stage-updater-manifest.sh <tag> <stage-dir> (UPD-A): reuse it, do not re-implement it.
+      - ONE ARGUMENT SHAPE: the preflight and the acceptance both run exactly bash scripts/sign-local.sh --tauri-build --dry-run --check-only (the old pair disagreed: no
+        version in one, 0.0.0-ci in the other). The preflight guards with a grep for the new flags FIRST, because on today's main sign-local.sh
+        forwards unknown arguments to npx tauri build, and an unguarded preflight would start a real build.
+      - THE DOC is docs/RELEASING.md (the permission-identity runbook that exists), not docs/RELEASE.md; the acceptance greps it for the command.
+      - Why it is top money: no notarized DMG on launch day means $0. Sign inside-out (sidecars first, no entitlements, then the app without --deep).
   `,
   acceptance: `
-    test -x scripts/release-local.sh
-    bash -n scripts/release-local.sh
-    bash scripts/release-local.sh 0.0.0-ci --dry-run --check-only
-    grep -q "keychain-profile yap-notary" scripts/release-local.sh
-    grep -q "release-local.sh" docs/RELEASE.md
-    grep -q "yap-polish" scripts/release-local.sh
-    grep -q "yap-diarize" scripts/release-local.sh
+    test -x scripts/sign-local.sh
+    bash -n scripts/sign-local.sh
+    grep -q -- '--check-only' scripts/sign-local.sh
+    grep -q -- '--dry-run' scripts/sign-local.sh
+    bash scripts/sign-local.sh --tauri-build --dry-run --check-only
+    grep -q "keychain-profile yap-notary" scripts/sign-local.sh
+    grep -q 'stage-updater-manifest.sh' scripts/sign-local.sh
+    grep -q "yap-polish" scripts/sign-local.sh
+    grep -q "yap-diarize" scripts/sign-local.sh
+    grep -q 'sign-local.sh --tauri-build' docs/RELEASING.md
+    ! test -e scripts/release-local.sh
   `,
 })
 
@@ -57,12 +73,13 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap24-PKG2', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg2-first-run-without-a-network', gated: 'panel',
-  title: 'A fresh Mac with no network at first launch is told exactly why dictation is waiting — or can dictate with a bundled tiny model',
+  title: 'A first launch on ANY network gets an honest wait: one download with size, progress and an ETA, a plain offline sentence, and the first dictation the moment the model lands. No bundled second model.',
   preflight: `
-    grep -q "first_run_offline" desktop/src-tauri/src/models.rs
+    grep -q "fn first_run_offline_" desktop/src-tauri/src/models.rs
+    grep -q 'etaLabel' desktop/src/ModelSetup.tsx
   `,
   spec: `
-    Panel: pending (product decision: bundle whisper-tiny in the DMG, +~40 MB, or not)
+    Panel: APPROVED-WITH-CHANGES 2026-10-26. DECIDED: option B (no bundle). Option A (bundle whisper-tiny) is DEFERRED to after the first 100 users, see the last paragraph for the evidence.
     DEPENDS: Y6-A (onboarding ends in one pasted dictation)
 
     EVIDENCE
@@ -78,10 +95,38 @@ ITEMS.push({
     option B — no bundle, and the onboarding model step detects offline (one HEAD with a 5 s
     timeout) and says "Yap needs one download (N MB) before it can transcribe; connect once."
     Either way a test covers the offline branch.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DUEL, seat B (bundle whisper-tiny, option A) vs seat A (detect offline, one sentence, option B). WINNER: B, with seat B's reframing kept. Evidence:
+        (1) catalog.json: parakeet Q8_0 is 731,357,568 bytes, whisper-tiny Q8_0 is 45,981,088 bytes. True, but (2) the 731 MB download is ALREADY
+        deferred as far as it can go: Onboarding.tsx:157 mounts useModelSetup({ autoDownload: true }), which starts the recommended download the
+        moment the overlay appears, in the background, while the user walks the permission steps; nothing blocks on it until the final dictation
+        step (YV54 makes the button wait with its reason). At 100 Mbps that is about a minute, hidden behind the permission steps; at 25 Mbps
+        about 4 minutes. So option A buys seconds on a typical network, not minutes. (3) The pre-mortem risk is real: the FIRST dictation of
+        every new user would come from whisper-tiny (multilingual, much worse than parakeet), and the first review reads "worse than Apple
+        dictation". That is the highest-stakes sample Yap ever gets. (4) The 8 GB budget does NOT decide it (tiny adds about 60 MB, DMG +46 MB). (5) A
+        bundled model needs a second engine path, sha verification, switch-over, and an asr_model guard to keep tiny out of meetings; the
+        guards would be gates, but the cost buys nothing on the common path. Seat B's real insight stays: the problem is ANY slow network, not only "no
+        network". So:
+      - CHANGE: the model step shows size, percent and a plain ETA (pure function etaLabel in ModelSetup.tsx, vitest over it), says "Yap needs one
+        download (N MB) before it can transcribe; it has started" while waiting, and ONE HEAD with a 5 s timeout detects offline and says "Connect once,
+        Yap finishes the download and starts working" (never an error, the download resumes on reconnect). Rust tests first_run_offline_* cover the
+        offline branch; the acceptance requires at least one of them to RUN.
+      - GATES: the whisper-tiny resource must NOT appear in tauri.conf.json (option A cannot be smuggled in). Meetings stay pinned to the recommended
+        model via NT2 R4 (asr_model); a meeting recorded before the download lands waits in waiting_for_model (NT2 R3).
+      - REGEX BUG FIXED: the old acceptance used grep -c '0 passed', which matches "10 passed" and "20 passed" and so FAILED a green run, and it
+        PASSED a run with failures. It is now: ... 2>&1 | grep -qE 'test result: ok\. [1-9][0-9]* passed'.
+      - DEFERRED (after the first 100 users): option A, bundling whisper-tiny for dictation-only first use, with the guards written as gates (dictation
+        only, never meetings, asr_model stored, pill says quick model now). Revisit if the install funnel shows drop-off at the model step.
   `,
   acceptance: `
-    cd desktop && npm ci && cd src-tauri
-    test "$(cargo test --features custom-protocol --lib models::tests::first_run_offline_ 2>&1 | tee /dev/stderr | grep -c '0 passed')" -eq 0
+    grep -q "fn first_run_offline_" desktop/src-tauri/src/models.rs
+    grep -q 'etaLabel' desktop/src/ModelSetup.tsx
+    ! grep -rn 'whisper-tiny' desktop/src-tauri/tauri.conf.json
+    cd desktop && npm ci
+    npx vitest run src/ModelSetup
+    cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib models::tests::first_run_offline_ 2>&1 | tee /dev/stderr | grep -qE 'test result: ok\\. [1-9][0-9]* passed'
     cargo clippy --all-targets --features custom-protocol
   `,
 })

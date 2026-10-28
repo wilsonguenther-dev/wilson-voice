@@ -31,8 +31,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { stampSeatModels } from './seat-models.mjs'
+import { stampSeatModels, itemBuilderTagProblems } from './seat-models.mjs'
 import { promptUnits, promptGateProblems, securityClassOf, GATE_NEEDLE, REVIEW_SEATS } from './review-gate.mjs'
+import { ledgerPromptProblems } from './gate-ledger.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 /**
@@ -288,10 +289,13 @@ for (const file of itemFiles) {
     continue
   }
   if (ITEMS.length === before) fail(`${file}: pushed no items (does it call ITEMS.push?)`)
-  const lane = itemFiles.indexOf(file) % 2
+  // 2026-10-27: stamp the FILE ORDINAL (informational) or the item's `lane: 'A'|'B'|'C'` pin. The template splits
+  // each PART's runnable items round-robin over args.lanes at run time (splitLanes, ±1 per lane, pins honoured)
+  // and an idle lane steals the next unstarted item — the old ordinal % lanes split left lane C idle for a part.
+  const ordinal = itemFiles.indexOf(file)
   for (let i = before; i < ITEMS.length; i++) {
     origin[i] = file
-    if (ITEMS[i] && typeof ITEMS[i].id === 'string') laneById.set(ITEMS[i].id, lane)
+    if (ITEMS[i] && typeof ITEMS[i].id === 'string') laneById.set(ITEMS[i].id, typeof ITEMS[i].lane === 'string' ? ITEMS[i].lane : ordinal)
   }
   itemsByFile.push(ITEMS.slice(before))
 }
@@ -330,6 +334,11 @@ for (const [i, item] of ITEMS.entries()) {
   if (item.gated !== null && item.gated !== 'panel') {
     fail(`${where} (${item.id}): \`gated\` must be null or 'panel', got ${JSON.stringify(item.gated)}`)
   }
+  if (item.lane !== undefined && !['A', 'B', 'C'].includes(item.lane)) {
+    fail(`${where} (${item.id}): \`lane\` must be 'A', 'B' or 'C' (a pin) or absent (file round-robin), got ${JSON.stringify(item.lane)}`)
+  }
+  // Optional per-item builder tier (2026-10-26): builder:'sonnet' on a STANDARD-class item only.
+  for (const why of itemBuilderTagProblems(item)) fail(`${where} (${item.id}): ${why}`)
   if (typeof item.id === 'string') {
     if (seenIds.has(item.id)) fail(`duplicate item id ${item.id} — in ${seenIds.get(item.id)} and ${where}`)
     else seenIds.set(item.id, where)
@@ -376,7 +385,7 @@ function renderPart(partNo, items, srcs, keepWorktree) {
   const nn = pad2(partNo)
   const gatedCount = items.filter((i) => i.gated === 'panel').length
   const description =
-    `Part ${nn} of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already ` +
+    `Part ${nn} of the Yap (wilson-voice) overhaul, two or three builder lanes (args.lanes): land whatever is already ` +
     `gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a ` +
     `labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run ` +
     `afterwards in the same script with args {mode:'review'}. ${items.length} item${items.length === 1 ? '' : 's'} (${span(items)})` +
@@ -396,7 +405,7 @@ function renderPart(partNo, items, srcs, keepWorktree) {
 ${phaseLines.join('\n')}
   ],
 }`
-  const lanes = JSON.stringify(Object.fromEntries(items.map((it) => [it.id, laneById.get(it.id) === 1 ? 1 : 0])))
+  const lanes = JSON.stringify(Object.fromEntries(items.map((it) => [it.id, laneById.has(it.id) ? laneById.get(it.id) : 0])))
   const out = template
     .replace(META_MARKER, () => metaSource)
     .replace(ITEMS_MARKER, () => srcs.join('\n'))
@@ -712,6 +721,9 @@ function validateScript(label, generated, items) {
   if (items.length) {
     const units = promptUnits(generated)
     for (const p of promptGateProblems(units)) bad(p)
+    // 5h. GATE ONCE PER HEAD (2026-10-27): reviewers verify the gate-ledger record and are never handed GATE_CMDS;
+    //     every prompt handed the full gate also writes its record.
+    for (const p of ledgerPromptProblems(units, REVIEW_SEATS)) bad(p)
     for (const seat of ['build', 'fix-land', 'land-sweeper', 'drain']) {
       if (!units.some((u) => u.seat === seat && u.text.includes(GATE_NEEDLE)))
         bad(`no ${seat} prompt runs "${GATE_NEEDLE}" — ${seat} is a merge path and must run the review gate before gh pr merge`)
@@ -788,8 +800,8 @@ for (const p of parts) {
   {
     const alls = [...p.src.matchAll(/Promise\.all\(/g)]
     if (alls.length !== 2) fail(`${label}: ` + `${alls.length} Promise.all( call(s) — exactly two are allowed: the builder lanes (build mode) and the review chains (review mode)`)
-    if (!p.src.includes('await Promise.all([buildLane(0), buildLane(1)])')) {
-      fail(`${label}: ` + 'build mode must run `await Promise.all([buildLane(0), buildLane(1)])` — nothing else may be run concurrently there')
+    if (!p.src.includes('await Promise.all([buildLane(0), buildLane(1), buildLane(2)])')) {
+      fail(`${label}: ` + 'build mode must run `await Promise.all([buildLane(0), buildLane(1), buildLane(2)])` — nothing else may be run concurrently there')
     }
     if (!p.src.includes('await Promise.all([reviewChain(0), reviewChain(1)])')) {
       fail(`${label}: ` + 'review mode must run `await Promise.all([reviewChain(0), reviewChain(1)])` — the two review chains are its only concurrency')
@@ -938,6 +950,7 @@ const AGENT_STUB = new Proxy(
   }
 )
 let DRY_RUN_REPORT = ''
+const LANE_REPORT = {} // lanes -> ['part-01 8/8/8', ...] from the dry run's lane plan
 function dryRun(label, src, argsIn) {
   let calls = 0
   const CAP = 20000
@@ -980,7 +993,7 @@ function dryRun(label, src, argsIn) {
     return Promise.resolve()
   }
   return fn(...values).then(
-    () => {},
+    (out) => out,
     (err) => {
       const stack = err && err.stack ? String(err.stack) : String(err)
       const m = stack.match(/<anonymous>:(\d+):(\d+)/)
@@ -1008,9 +1021,19 @@ function dryRun(label, src, argsIn) {
   for (const [label, src] of targets) {
     // 2026-09-26: a THIRD shape exercises the args.only path (part skip in the parent, item skip in a
     // part) plus args.now and a panelApproved list, which is exactly how the yap24 passes launch.
-    for (const argsIn of [{}, { mode: 'review' }, { mode: 'build', now: '2026-09-26T00:00:00Z', only: ['yap24-NT'], panelApproved: ['yap24-NT1'] }, { mode: 'build', lanes: 1, only: ['yap-p0-'] }]) await dryRun(label, src, argsIn)
+    for (const argsIn of [{}, { mode: 'review' }, { mode: 'build', now: '2026-09-26T00:00:00Z', only: ['yap24-NT'], panelApproved: ['yap24-NT1'] }, { mode: 'build', lanes: 1, only: ['yap-p0-'] }, { mode: 'build', lanes: 3, landBar: 'ci', now: '2026-10-27T00:00:00Z' }]) {
+      const out = await dryRun(label, src, argsIn)
+      // 2026-10-27 PER-PART LANE BALANCE: the dry run's own lane plan (template splitLanes) is the report and the check.
+      const n = argsIn.lanes === 3 ? 3 : !argsIn.mode && !argsIn.lanes ? 2 : 0
+      if (n && out && out.lanes && label !== path.relative(ROOT, PARENT_OUT)) {
+        const counts = ['A', 'B', 'C'].slice(0, n).map((t) => out.lanes[t].length)
+        const pinned = parts.find((pp) => path.relative(ROOT, pp.file) === label).items.some((i) => typeof i.lane === 'string')
+        if (Math.max(...counts) - Math.min(...counts) > 1 && !pinned) fail(`${label}: lanes:${n} split ${counts.join('/')} is not balanced ±1 (template splitLanes)`)
+        ;(LANE_REPORT[n] = LANE_REPORT[n] || []).push(`${label.split('/').pop().replace('.mjs', '')} ${counts.join('/')}`)
+      }
+    }
   }
-  if (!problems.length) DRY_RUN_REPORT = `${targets.length} script(s) × 4 arg shapes ({}, {mode:'review'}, an args.only yap24 pass and a lanes:1 single-builder pass) executed end-to-end with stubbed agent/parallel/pipeline/phase/log/workflow`
+  if (!problems.length) DRY_RUN_REPORT = `${targets.length} script(s) × 5 arg shapes ({}, {mode:'review'}, an args.only yap24 pass, a lanes:1 single-builder pass and a lanes:3 landBar:'ci' build-only pass) executed end-to-end with stubbed agent/parallel/pipeline/phase/log/workflow`
 }
 
 if (problems.length) die()
@@ -1079,10 +1102,10 @@ console.log(`  parent runs each part from the pinned checkout: ${RUN_ROOT}/scrip
 console.log(`  parent    ${rel(PARENT_OUT)}  (meta.name ${LOOP_NAME})`)
 console.log(`  dry run    ${DRY_RUN_REPORT}`)
 console.log(`  gated      ${ITEMS.filter((i) => i.gated === 'panel').map((i) => i.id).join(', ') || 'none'}`)
-console.log(
-  `  lanes      A: ${ITEMS.filter((i) => laneById.get(i.id) === 0).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 0).length} file(s)` +
-    `  ·  B: ${ITEMS.filter((i) => laneById.get(i.id) === 1).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 1).length} file(s)`
-)
+for (const n of [2, 3]) {
+  // per part, runnable items only (panel-gated items are on no lane until approved); idle lanes steal at run time
+  console.log(`  lanes:${n}    per part ${'ABC'.slice(0, n).split('').join('/')}: ${(LANE_REPORT[n] || []).join('  ·  ')}  (+ work stealing)`)
+}
 console.log(
   `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats (tiering: ${SEAT_STAMP.summary}), phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (four arg shapes, incl. args.only and args.lanes=1) against stubbed globals`
 )

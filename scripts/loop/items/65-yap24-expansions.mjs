@@ -12,7 +12,7 @@ ITEMS.push({
     grep -q "notes_mirror_dir" desktop/src-tauri/src/lib.rs
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26, DEFERRED to the next release (not in panelApproved).
     DEPENDS: yap24-NT4 (notes exist), yap24-NT9
 
     EVIDENCE: Wilson 2026-08-09 (memory project_yap_build_state): "full transcript/file management
@@ -24,6 +24,14 @@ ITEMS.push({
     an optional daily dictation log <folder>/Yap Dictations/<date>.md. Atomic writes; never
     deletes a user file; a missing folder pauses the mirror with one sentence in Settings.
     Obsidian-friendly front matter (date, duration, kind, attendees if known).
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DUEL, seat B (DEFER next release) vs seat A (rescope onto #250's Markdown export). WINNER: both, and not by averaging: the scope is seat A's, the
+        timing is seat B's. Evidence: this item builds on the "NT4 export", but the notes export it mirrors is PR #250's (Markdown sections in
+        meetings.summary; not on main yet, 11 tests red at audit time), so it cannot be built today; and a mirror folder is a nicety for a launch
+        with zero users beyond Wilson (a manual Markdown export already exists).
+      - RESCOPED: DEPENDS is now PR #250's stable Markdown export (export_meeting_markdown plus the summary sections), NOT yap24-NT4 rows (NT4 no
+        longer creates rows) and not NT9. Mirror writes exactly what that export produces. DEFER: next release.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
@@ -32,30 +40,10 @@ ITEMS.push({
   `,
 })
 
-ITEMS.push({
-  id: 'yap24-X2', prompt: 'yap24-X', branch: 'loop/yap24-x2-local-mcp-server-over-yap-history', gated: 'panel',
-  title: 'A local, read-only MCP server so Claude and other agents can search your dictations and meeting notes — nothing leaves the Mac',
-  preflight: `
-    test -d desktop/yap-mcp
-  `,
-  spec: `
-    Panel: pending (new surface: a local server; the panel decides stdio-only vs a socket)
-    DEPENDS: yap24-NT4
-
-    EVIDENCE: parity teardown epic list ("Yap MCP server"); Wispr ships MCP ("AI Tools") in its
-    settings (parity note §2.7 and line 235). Yap already has FTS5 over transcripts and meeting
-    segments (db.rs).
-
-    DO: a small stdio MCP binary (workspace member desktop/yap-mcp) that opens the SQLite DB
-    read-only (SQLITE_OPEN_READ_ONLY, WAL-safe) and exposes search_dictations, search_meetings,
-    get_meeting_notes, list_recent. No network listener. Settings shows the one-line config to
-    paste into an MCP client. Tests over a fixture DB.
-  `,
-  acceptance: `
-    test -d desktop/yap-mcp
-    cd desktop && cargo test -p yap-mcp
-  `,
-})
+// yap24-X2 — CUT 2026-10-26 by the Senior Panel plan-audit (object removed; the harness has no retired/status field, removal is the mechanism).
+// Why: it duplicates the "Set up MCP" row of the ungated yap-notetaker-onboard (a stdio MCP server over read-only SQLite), and it contradicts that item's
+// rule that dictation history is never exposed. MCP as a whole is DEFERRED to after the first 100 users: the yap-notetaker-onboard MCP step was struck
+// today (the row shows as Coming), so there is still exactly ONE owner of the MCP deliverable, and it is not built in v1. Spec is in git history.
 
 ITEMS.push({
   id: 'yap24-X3', prompt: 'yap24-X', branch: 'loop/yap24-x3-ask-your-meeting-locally', gated: 'panel',
@@ -64,7 +52,7 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/meeting_ask_cites_segments.rs
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26, DEFERRED to after the first 100 users (not in panelApproved).
     DEPENDS: yap24-NT4, yap24-NT6
 
     EVIDENCE: Wispr's 2026 notetaker ships "What did I miss" and a notetaker chat (parity note
@@ -75,6 +63,10 @@ ITEMS.push({
     v1); the sidecar answers with JSON {answer, citations:[segment ids]}; an answer without a
     valid citation is refused and shown as "not in this meeting". Runs on the summary worker,
     never concurrently with dictation.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DEFER: after the first 100 users. Wispr's "What did I miss" is cloud; here a 1.5B model on an 8 GB floor machine is conditional on serialization
+        (see NT4 R4). DEPENDS: yap24-NT4 (rescoped: the measured notes eval and RSS ceiling) and the #250 notes; no rows exist to retrieve from until then.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri

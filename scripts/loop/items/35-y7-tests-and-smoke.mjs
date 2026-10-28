@@ -7,7 +7,7 @@
 // SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
 
 ITEMS.push({
-  id: 'Y7-A', prompt: 'Y7', branch: 'loop/y7-a-headless-smoke-against-the-built-binary', gated: null,
+  id: 'Y7-A', prompt: 'Y7', branch: 'loop/y7-a-headless-smoke-against-the-built-binary', gated: null, builder: 'sonnet',
   notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A headless smoke that runs the real built binary end to end, not a unit test of its parts',
   preflight: `
@@ -152,7 +152,7 @@ ITEMS.push({
 })
 
 ITEMS.push({
-  id: 'Y7-C', prompt: 'Y7', branch: 'loop/y7-c-non-vacuous-mutation-proof-for-the-new-tests', gated: null,
+  id: 'Y7-C', prompt: 'Y7', branch: 'loop/y7-c-non-vacuous-mutation-proof-for-the-new-tests', gated: null, builder: 'sonnet',
   notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Every test this loop added is proven non-vacuous by a mutation that makes it fail',
   preflight: `

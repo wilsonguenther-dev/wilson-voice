@@ -16,7 +16,7 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/ptt_speculative_arm.rs
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26, DEFERRED to the next release (not in panelApproved).
     DEPENDS: none
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED, 2+ seats):
@@ -55,6 +55,13 @@ ITEMS.push({
     Tests (tests/ptt_speculative_arm.rs, pure state machine): hold -> promote with pre-roll
     retained; tap -> discard, no take; double-tap -> hands-free with no leftover buffer; a
     promote after a cold open still starts at the press timestamp.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DEFER: next release. It touches ptt_macos.rs right after #249 stabilised the hotkeys, and it needs a measured number, not a guess.
+        Pre-mortem guard recorded for when it is built: a speculative arm that opens the mic on every fn press lights the orange dot dozens of
+        times an hour and flips AirPods to HFP, so warm-stream only plus a soak on Wilson's Mac before landing.
+      - STALE REFERENCES FIXED: after #249, HOLD_ARM_MS is at ptt_macos.rs:142 and TAP_MAX_MS at :146 (the evidence cites :32); a start goes through
+        HotkeyArbiter (hotkeys.rs). The speculative arm applies to the fn SOURCE only: the Carbon chord needs no pre-roll speculation.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
@@ -91,6 +98,10 @@ ITEMS.push({
     plugin path. Migrating users: if a LaunchAgent from the plugin exists and the setting is on,
     register mainApp and remove the agent once. Tests: the pure status->copy mapping and the
     migration decision table.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - DEFER: after the first 100 users. The autostart plugin works; there is no user-visible bug. SMAppService needs an objc2-service-management
+        crate that is not in Cargo.lock today, and macOS 12.x (the stated floor) still needs the plugin path, so it is a dual path for no visible gain.
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
@@ -132,9 +143,17 @@ ITEMS.push({
          calls), keeping the 45 s poll as the backstop.
     Tests: permission copy table; the activation re-check path is a pure function over grant
     snapshots.
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - RESIDUAL ONLY: of the three DO steps two already shipped (Input Monitoring preflight/request and the activation re-check). What remains is
+        the first TCC prompt: Info.plist:16 NSMicrophoneUsageDescription still reads "... to transcribe dictation with Whisper", which names the wrong
+        engine at the user's first impression. Replace it with the panel copy: "Yap listens only while you hold the dictation key or record a
+        meeting, and transcribes on this Mac." The acceptance greps both the absence of the old string and the presence of the new one.
+        Ship this line even if everything else slips.
   `,
   acceptance: `
     ! grep -q "with Whisper" desktop/src-tauri/Info.plist
+    grep -q 'transcribes on this Mac' desktop/src-tauri/Info.plist
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
     cd src-tauri
     cargo test --features custom-protocol --lib permissions
@@ -146,7 +165,7 @@ ITEMS.push({
   id: 'yap24-OS4', prompt: 'yap24-OS', branch: 'loop/yap24-os4-hardened-runtime-entitlement-diet', gated: 'panel',
   title: 'Hardened-runtime diet: prove whether allow-jit and allow-unsigned-executable-memory are needed, and drop what is not',
   preflight: `
-    ! grep -q "com.apple.security.cs.allow-jit" desktop/src-tauri/Entitlements.plist
+    ( if ! ( test -x scripts/qa/release-smoke.sh ); then echo "DEPENDENCY-NOT-ON-$(printf MAIN): PR 242 (release smoke in sign-local.sh) has not landed; land it, then build OS4"; exit 0; fi; ! grep -q "com.apple.security.cs.allow-jit" desktop/src-tauri/Entitlements.plist && test -x scripts/qa/entitlement-diet.sh )
   `,
   spec: `
     Panel: pending (SECURITY-class: the signing path)
@@ -175,11 +194,29 @@ ITEMS.push({
     turn; run the headless smoke (--smoke with YAP_DATA_DIR, --transcribe-file on the fixture) and
     record pass/fail per variant in docs/RELEASE.md. Remove every entitlement whose removal passes.
     app-sandbox stays false. Never ad-hoc sign (resets TCC).
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - THE EXPERIMENT COULD NOT FAIL: its acceptance was greps plus --lib smoke, and sign-local.sh has no --options runtime, so the hardened runtime
+        was off for every variant and every removal passed vacuously. THE GATES NOW: sign-local.sh carries --options runtime (grepped); a new
+        scripts/qa/entitlement-diet.sh signs one variant per removed entitlement and, for EACH signed variant, (a) asserts
+        codesign -dv shows flags=0x10000(runtime), exiting non-zero otherwise, and (b) runs --transcribe-file on that signed binary against a scratch
+        YAP_DATA_DIR with the lane's cached model linked in (an empty scratch root never reaches Metal). The acceptance greps both strings in the
+        script AND in docs/RELEASE.md, and runs the script. Give the yap-polish and yap-diarize sidecars their own entitlement files and drop --deep.
+      - Expectation to test, not assume (CTO seat): WKWebView JIT runs in the com.apple.WebKit.WebContent XPC process and llama.cpp/ggml Metal compiles
+        shaders through MTLDevice, not JIT pages, so both entitlements are probably removable. Unproven until the signed-runtime run passes.
+      - Dep: PR #242 (it edits sign-local.sh); the preflight holds this item until scripts/qa/release-smoke.sh exists.
   `,
   acceptance: `
     grep -q "<false/>" desktop/src-tauri/Entitlements.plist
     grep -q "com.apple.security.app-sandbox" desktop/src-tauri/Entitlements.plist
     grep -q "Entitlement audit" docs/RELEASE.md
+    grep -q 'flags=0x10000(runtime)' docs/RELEASE.md
+    grep -q -- '--options runtime' scripts/sign-local.sh
+    test -x scripts/qa/entitlement-diet.sh
+    bash -n scripts/qa/entitlement-diet.sh
+    grep -q 'flags=0x10000(runtime)' scripts/qa/entitlement-diet.sh
+    grep -q -- '--transcribe-file' scripts/qa/entitlement-diet.sh
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" bash scripts/qa/entitlement-diet.sh
     cd desktop && npm ci && cd src-tauri
     cargo test --features custom-protocol --lib smoke
   `,
@@ -192,7 +229,7 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/idle_timer_budget.rs
   `,
   spec: `
-    Panel: pending
+    Panel: APPROVED-WITH-CHANGES 2026-10-26, DEFERRED to the next release (not in panelApproved).
     DEPENDS: yap24-PILL3 (Secure Input state consumer), Y10-F (idle RAM/CPU publication)
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH — REJECTS part of
@@ -216,15 +253,21 @@ ITEMS.push({
       - Yap idles at ~135 MB RSS (yap23 log, pid 87890) — good; wakeups were never measured.
 
     DO: one table of every periodic timer in the app (name, interval, why, what event could
-    replace it) in docs/BUDGETS.md; Secure Input is checked on key-down and on a slow backstop
-    (>= 10 s) instead of every 2 s; the space-keeper runs on NSWorkspace active-space-change and
+    replace it) in docs/BUDGETS.md; [STRUCK 2026-10-26: this sentence contradicted the Panel revision above] secure_input POLL_INTERVAL stays 2 s and is exempt BY NAME in idle_timer_budget; the ioreg owner-PID spawn (secure_input.rs:176) runs on a false-to-true edge only; the space-keeper runs on NSWorkspace active-space-change and
     screen-change notifications instead of a tick where the API allows; a test enumerates the
-    registered timers and fails if any idle-time interval drops below 10 s.
+    registered timers and fails if any idle-time interval below 10 s is not on the named exempt list (secure_input::POLL_INTERVAL is the only entry).
+
+    Panel revisions 2026-10-26 (Senior Panel plan-audit, two seats + synthesis; applied as preflight/acceptance GATES, not only prose):
+      - The DO text still said to check Secure Input on key-down plus a >= 10 s backstop and to fail any interval below 10 s, against this item's own
+        revision (keep the 2 s poll). Fixed in place above and gated: the acceptance requires the 2 s constant to stay and the exempt entry to exist by
+        name, and requires a test named ioreg_spawns_only_on_rising_edge to run. DEFER: next release (idle-CPU hygiene, no user-visible wow).
   `,
   acceptance: `
+    grep -q 'secure_input::POLL_INTERVAL' desktop/src-tauri/tests/idle_timer_budget.rs
+    grep -q 'POLL_INTERVAL: Duration = Duration::from_secs(2)' desktop/src-tauri/src/secure_input.rs
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test idle_timer_budget
-    cargo test --features custom-protocol --lib secure_input
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test idle_timer_budget
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib secure_input::tests::ioreg_spawns_only_on_rising_edge 2>&1 | grep -qE 'test result: ok\\. [1-9][0-9]* passed'
     cargo clippy --all-targets --features custom-protocol
   `,
 })
