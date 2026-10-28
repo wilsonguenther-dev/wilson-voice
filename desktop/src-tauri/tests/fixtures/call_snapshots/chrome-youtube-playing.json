@@ -1,0 +1,43 @@
+{
+  "synthetic": true,
+  "note": "YouTube in Chrome: the helper runs OUTPUT only, no input. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 2001,
+      "parent_pid": 2000,
+      "bundle_id": "com.google.Chrome.helper",
+      "running_input": false,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 2000,
+      "bundle_id": "com.google.Chrome"
+    }
+  ],
+  "frontmost": "com.google.Chrome",
+  "browser_titles": [
+    {
+      "bundle_id": "com.google.Chrome",
+      "pattern_id": null,
+      "len": 27
+    }
+  ],
+  "ax_source": "yap",
+  "calendar": null,
+  "expect": {
+    "bundle_id": null,
+    "offer": false,
+    "via": null,
+    "text": null
+  }
+}

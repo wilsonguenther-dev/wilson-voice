@@ -1,0 +1,44 @@
+{
+  "synthetic": true,
+  "note": "Yap idle with in=0, nothing else using the mic. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 501,
+      "parent_pid": 1,
+      "bundle_id": "com.apple.WindowServer",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 612,
+      "parent_pid": 1,
+      "bundle_id": "com.spotify.client",
+      "running_input": false,
+      "running_output": false
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 2000,
+      "bundle_id": "com.google.Chrome"
+    }
+  ],
+  "frontmost": null,
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": null,
+  "expect": {
+    "bundle_id": null,
+    "offer": false,
+    "via": null,
+    "text": null
+  }
+}

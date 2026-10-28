@@ -1,0 +1,37 @@
+{
+  "synthetic": true,
+  "note": "FaceTime call: input on com.apple.avconferenced while FaceTime runs. The far side is NOT measured. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 4001,
+      "parent_pid": 1,
+      "bundle_id": "com.apple.avconferenced",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 4000,
+      "bundle_id": "com.apple.FaceTime"
+    }
+  ],
+  "frontmost": "com.apple.FaceTime",
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": null,
+  "expect": {
+    "bundle_id": "com.apple.FaceTime",
+    "offer": true,
+    "via": "daemon",
+    "text": "FaceTime call — record your side?"
+  }
+}

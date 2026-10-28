@@ -6,21 +6,24 @@
 //! `may_raise`) that `tests/calendar_prompt_policy.rs` tables, plus thin OS
 //! adapters (`sys`) that only read.
 //!
-//! Signals. Only (a), the calendar, lives here: an EventKit event starting in
-//! the next [`LEAD_SECS`] or in progress for less than [`IN_PROGRESS_SECS`]
-//! whose URL, location or notes carry a conferencing link. The app/browser
-//! audio signal was struck from this item (Senior Panel, 2026-10-26) and is
-//! owned by yap-call-0 / yap-call-2, which call [`raise`] — this file's offer —
-//! with an [`OfferSource::App`] offer and read [`DetectSettings::offer_detected`].
+//! Signals. (a) The calendar: an EventKit event starting in the next
+//! [`LEAD_SECS`] or in progress for less than [`IN_PROGRESS_SECS`] whose URL,
+//! location or notes carry a conferencing link. (b) The app/browser call
+//! signal is owned by yap-call-0: [`evaluate_calls`] takes a
+//! `call_signals::sys::snapshot`, scores it with `call_signals::score` and
+//! raises an [`OfferSource::App`] offer with `call_signals::offer_copy`'s text.
+//! There is no second, UI-pid app signal anywhere.
 //!
 //! Permissions. Nothing here ever ASKS for Calendars access. The calendar is
 //! read only when the user has turned "Use my calendar" on (default OFF; it is
 //! turned on by the setup card's Connect calendar click via
 //! [`calendar_connected`]) AND EventKit already reports full access.
 //!
-//! Cadence. Event-driven: EventKit's change notification and NSWorkspace
-//! launch/terminate wake the watcher, plus ONE [`POLL_INTERVAL`] (30 s) timer.
-//! Never faster. No network, and nothing reads meeting content beyond the
+//! Cadence. Event-driven: EventKit's change notification, NSWorkspace
+//! launch/terminate and (yap-call-0) CoreAudio's ProcessObjectList and
+//! per-process IsRunningInput listeners wake the watcher, plus ONE
+//! [`POLL_INTERVAL`] (30 s) backstop timer, OFF while "Offer to record" is off
+//! (`call_signals::timer_enabled`). Never faster. No network, and nothing reads meeting content beyond the
 //! three fields that can carry a call link.
 
 use crate::db::Database;
@@ -207,7 +210,11 @@ pub fn load_settings(db: &Database) -> DetectSettings {
 }
 
 pub fn save_offer_detected(db: &Database, on: bool) -> Result<(), String> {
-    db.setting_set(OFFER_DETECTED_KEY, flag_str(on))
+    db.setting_set(OFFER_DETECTED_KEY, flag_str(on))?;
+    // The backstop timer is off while this is off, so the watcher must be
+    // woken to notice it came back on.
+    wake();
+    Ok(())
 }
 
 pub fn save_use_calendar(db: &Database, on: bool) -> Result<(), String> {
@@ -397,30 +404,140 @@ pub fn settings_view(db: &Database) -> DetectSettingsView {
     }
 }
 
-/// One evaluation of the calendar signal.
-fn evaluate(app: &AppHandle, db: &Database, meeting_recording: bool) {
+/// One evaluation of both signals. The calendar leads: when it raised an
+/// offer (it carries the event title) the app signal does not replace it.
+fn evaluate(app: &AppHandle, db: &Database, meeting_recording: bool, calls: &mut CallWatch) {
     if meeting_recording {
         clear(app, None);
         return;
     }
     let s = load_settings(db);
-    if !calendar_signal_enabled(&s, calendar_full_access()) {
+    let (calendar_raised, hint) = evaluate_calendar(app, db, &s);
+    if !calendar_raised {
+        evaluate_calls(app, db, &s, hint, calls);
+    }
+}
+
+/// The calendar signal. Returns (raised an offer, the hint the call score reads).
+fn evaluate_calendar(
+    app: &AppHandle,
+    db: &Database,
+    s: &DetectSettings,
+) -> (bool, Option<crate::call_signals::CalendarHint>) {
+    if !calendar_signal_enabled(s, calendar_full_access()) {
         clear(app, Some(OfferSource::Calendar));
-        return;
+        return (false, None);
     }
     let now = chrono::Utc::now().timestamp();
     let events = sys::events_between(now - IN_PROGRESS_SECS, now + LEAD_SECS);
+    let hint = Some(crate::call_signals::CalendarHint {
+        linked_event_in_window: events
+            .iter()
+            .any(|e| e.has_link() && in_window(e.start_unix, now)),
+    });
     let snoozes = match detector().lock() {
         Ok(d) => d.snoozes.clone(),
-        Err(_) => return,
+        Err(_) => return (false, hint),
     };
     match calendar_offer(&events, now, &snoozes) {
-        Some(offer) => {
-            raise(app, db, meeting_recording, offer);
-        }
+        Some(offer) => (raise(app, db, false, offer), hint),
         None => {
             // The window passed (or the event lost its link): the offer goes.
             clear(app, Some(OfferSource::Calendar));
+            (false, hint)
+        }
+    }
+}
+
+/// What the call signal remembers between evaluations.
+#[derive(Default)]
+struct CallWatch {
+    memory: crate::call_signals::CallMemory,
+    /// The last logged (bundle, offered) so a steady state logs once.
+    last_logged: Option<(String, bool)>,
+    /// The last snapshot error, logged once per distinct error.
+    last_error: Option<String>,
+}
+
+/// yap-call-0 — the app/browser call signal: snapshot → `call_signals::score`
+/// → an [`OfferSource::App`] offer with `call_signals::offer_copy`'s text.
+fn evaluate_calls(
+    app: &AppHandle,
+    db: &Database,
+    s: &DetectSettings,
+    calendar: Option<crate::call_signals::CalendarHint>,
+    calls: &mut CallWatch,
+) {
+    use crate::call_signals;
+    if !s.offer_detected {
+        clear(app, Some(OfferSource::App));
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let snapshot = {
+        call_signals::sys::sync_listeners();
+        let started = std::time::Instant::now();
+        let snap = call_signals::sys::snapshot(
+            call_signals::catalog(),
+            call_signals::AxSource::Yap,
+            false,
+            calendar,
+        );
+        crate::diagnostics::record_duration(
+            "call_signals",
+            "snapshot_ms",
+            started.elapsed().as_millis() as u64,
+        );
+        snap
+    };
+    #[cfg(not(target_os = "macos"))]
+    let snapshot: Result<call_signals::CallSnapshot, String> = {
+        let _ = calendar;
+        Err("call detection is macOS-only".to_string())
+    };
+    let snap = match snapshot {
+        Ok(snap) => {
+            calls.last_error = None;
+            snap
+        }
+        Err(e) => {
+            if calls.last_error.as_deref() != Some(e.as_str()) {
+                log::warn!("call_signals snapshot_failed error={e:?}");
+                calls.last_error = Some(e);
+            }
+            clear(app, Some(OfferSource::App));
+            return;
+        }
+    };
+    let candidate = call_signals::score(&snap, call_signals::catalog(), &calls.memory);
+    calls.memory.observe(candidate.as_ref());
+    let logged = candidate
+        .as_ref()
+        .map(|c| (c.bundle_id.clone(), c.offers()));
+    if logged != calls.last_logged {
+        match &candidate {
+            Some(c) => log::info!(
+                "call_signals scored bundle={} via={:?} confidence={} offers={}",
+                c.bundle_id,
+                c.via,
+                c.confidence,
+                c.offers()
+            ),
+            None => log::info!("call_signals scored bundle=none procs={}", snap.procs.len()),
+        }
+        calls.last_logged = logged;
+    }
+    match candidate.filter(|c| c.offers()) {
+        Some(c) => {
+            let offer = MeetingOffer {
+                key: c.offer_key(),
+                title: Some(call_signals::offer_copy(&c, call_signals::catalog())),
+                source: OfferSource::App,
+            };
+            raise(app, db, false, offer);
+        }
+        None => {
+            clear(app, Some(OfferSource::App));
         }
     }
 }
@@ -438,13 +555,27 @@ pub fn start_watch(
     sys::observe_changes(tx);
     let spawned = std::thread::Builder::new()
         .name("yap-meeting-detect".into())
-        .spawn(move || loop {
-            evaluate(&app, &db, meeting_recording());
-            match rx.recv_timeout(POLL_INTERVAL) {
-                // Coalesce a burst of notifications into one evaluation.
-                Ok(()) => while rx.try_recv().is_ok() {},
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(POLL_INTERVAL),
+        .spawn(move || {
+            let mut calls = CallWatch::default();
+            loop {
+                evaluate(&app, &db, meeting_recording(), &mut calls);
+                // The ONE backstop timer, off while "Offer to record" is off;
+                // the listeners and notifications still wake the thread.
+                let woke = if crate::call_signals::timer_enabled(load_settings(&db).offer_detected)
+                {
+                    rx.recv_timeout(POLL_INTERVAL)
+                } else {
+                    rx.recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
+                match woke {
+                    // Coalesce a burst of notifications into one evaluation.
+                    Ok(()) => while rx.try_recv().is_ok() {},
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(POLL_INTERVAL)
+                    }
+                }
             }
         });
     if let Err(e) = spawned {

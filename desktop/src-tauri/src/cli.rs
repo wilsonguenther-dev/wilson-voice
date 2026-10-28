@@ -41,6 +41,13 @@ const CLEANUP_FLAG: &str = "--cleanup";
 const CAPABILITIES_FLAG: &str = "--asr-capabilities";
 /// yap24-NT11 — headless AEC3 pre-pass over two WAVs on disk.
 const AEC_PREPASS_FLAG: &str = "--aec-prepass";
+/// yap-call-0 — `wilson-voice --probe-calls` prints the current
+/// `call_signals::CallSnapshot` as JSON and exits. It reads, never records.
+/// Window titles are PRIVATE: each is `{ pattern_id, len }`, never the text.
+const PROBE_CALLS_FLAG: &str = "--probe-calls";
+/// Developer-only, at a terminal: also print each browser window title's text.
+/// `scripts/call-walk.sh` NEVER passes it, and nothing in the app does.
+const RAW_TITLES_FLAG: &str = "--raw-titles";
 
 fn run_aec_prepass(args: &[String]) -> i32 {
     let [mic, sys, out] = args else {
@@ -85,6 +92,9 @@ pub fn handle_args() -> Option<i32> {
     }
     if argv.iter().any(|a| a == CAPABILITIES_FLAG) {
         return Some(print_capabilities());
+    }
+    if argv.iter().any(|a| a == PROBE_CALLS_FLAG) {
+        return Some(probe_calls(argv.iter().any(|a| a == RAW_TITLES_FLAG)));
     }
     let timed = argv.iter().any(|a| a == TIMED_FLAG);
     let cleanup = argv.iter().any(|a| a == CLEANUP_FLAG);
@@ -143,6 +153,64 @@ fn print_capabilities() -> i32 {
             eprintln!("capabilities probe failed: {e}");
             1
         }
+    }
+}
+
+/// Whose Accessibility grant a CLI run reports. TCC attributes a process
+/// started from a terminal to the terminal (the responsible process), so a run
+/// with a tty, or with the terminal's environment, reports TERMINAL's
+/// `AXIsProcessTrusted`, not Yap's.
+fn cli_ax_source() -> crate::call_signals::AxSource {
+    use crate::call_signals::AxSource;
+    // SAFETY: isatty on the standard descriptors has no preconditions.
+    let tty = unsafe { libc::isatty(0) == 1 || libc::isatty(1) == 1 || libc::isatty(2) == 1 };
+    if tty || std::env::var_os("TERM_PROGRAM").is_some() {
+        AxSource::Terminal
+    } else {
+        AxSource::Unknown
+    }
+}
+
+/// `wilson-voice --probe-calls [--raw-titles]` — one CallSnapshot as JSON on
+/// stdout. Exit 0 printed, 1 the snapshot could not be taken (below 14.4, the
+/// process list unreadable), 2 not macOS.
+fn probe_calls(raw_titles: bool) -> i32 {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+    #[cfg(target_os = "macos")]
+    {
+        use crate::call_signals;
+        let started = Instant::now();
+        let ax_source = cli_ax_source();
+        let snap = call_signals::sys::snapshot(call_signals::catalog(), ax_source, raw_titles, None);
+        match snap.and_then(|s| {
+            serde_json::to_string_pretty(&s)
+                .map(|json| (s, json))
+                .map_err(|e| e.to_string())
+        }) {
+            Ok((s, json)) => {
+                println!("{json}");
+                log::info!(
+                    "call_signals probe_calls procs={} apps={} ax_source={:?} titles={} raw_titles={raw_titles} ms={}",
+                    s.procs.len(),
+                    s.running_apps.len(),
+                    s.ax_source,
+                    s.browser_titles.as_ref().map_or(-1, |t| t.len() as i64),
+                    started.elapsed().as_millis()
+                );
+                0
+            }
+            Err(e) => {
+                log::error!("call_signals probe_calls_failed error={e:?}");
+                1
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (raw_titles, cli_ax_source());
+        log::error!("call_signals probe_calls_failed error=\"macOS only\"");
+        2
     }
 }
 
