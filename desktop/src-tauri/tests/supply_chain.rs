@@ -907,3 +907,53 @@ fn the_weak_link_ci_script_and_the_dlsym_list_are_the_same_four_symbols() {
         "the script no longer reads like the weak-link checker this test is pinned to"
     );
 }
+
+/// yap24-NT11 — the AEC3 pre-pass crate. Three things must hold:
+/// 1. the manifest pins it exactly (`=x.y.z`) and the lockfile agrees;
+/// 2. it is reachable from the app (it links into wilson-voice, not a sidecar);
+/// 3. it brought exactly ONE new package: everything else in its closure was
+///    already in the app's graph for other reasons (rustfft, num-complex,
+///    crossbeam, log). A future `aec3` bump that drags in a new crate — or a
+///    second native C library — fails here with the new names listed.
+#[test]
+fn aec3_is_pinned_exactly_and_adds_one_crate() {
+    let manifest = include_str!("../Cargo.toml");
+    assert_eq!(exact_pin(manifest, "aec3"), "0.4.0");
+    assert_eq!(locked_version("aec3"), "0.4.0");
+    let app = lockfile_closure("wilson-voice");
+    assert!(app.contains("aec3"), "aec3 must be reachable from wilson-voice");
+    let aec = lockfile_closure("aec3");
+    let allowed: std::collections::BTreeSet<&str> = [
+        "aec3",
+        "crossbeam-channel",
+        "crossbeam-utils",
+        "log",
+        "num-complex",
+        "num-traits",
+        "num-integer",
+        "autocfg",
+        "rustfft",
+        "primal-check",
+        "strength_reduce",
+        "transpose",
+        // num-complex's serde support, unified by the app's own serde use:
+        // pure-Rust derive machinery, all already in the app's graph.
+        "serde",
+        "serde_core",
+        "serde_derive",
+        "proc-macro2",
+        "quote",
+        "syn",
+        "unicode-ident",
+    ]
+    .into_iter()
+    .collect();
+    let unexpected: Vec<&String> = aec.iter().filter(|p| !allowed.contains(p.as_str())).collect();
+    assert!(
+        unexpected.is_empty(),
+        "aec3's dependency closure grew beyond the crates already in the graph: {unexpected:?}"
+    );
+    for banned in ["webrtc-audio-processing", "webrtc-audio-processing-sys"] {
+        assert!(!app.contains(banned), "{banned} is a second native C library and is rejected");
+    }
+}

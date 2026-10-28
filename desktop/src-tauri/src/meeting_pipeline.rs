@@ -854,6 +854,14 @@ fn unlink_purged_meeting_audio(
         for dir in dirs {
             files.extend(meeting_sidecar_paths(&dir, &purged.meeting_id));
         }
+        // yap24-NT11 — the AEC output and the kept anchors of every WAV.
+        files.extend(
+            purged
+                .wavs
+                .iter()
+                .flat_map(|w| crate::meeting_aec::derived_paths_for_wav(w))
+                .filter(|p| p.exists()),
+        );
         files.sort();
         files.dedup();
         for file in files {
@@ -1119,6 +1127,24 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         return Ok(MeetingState::Failed);
     }
 
+    // yap24-NT11 — on a virtual call whose mic hears the speakers, track 0 is
+    // decoded from the AEC3 pre-pass output instead of the raw mic. Headphones
+    // (no coupling), in-person meetings and any pre-pass failure read raw.
+    let sys_path = tracks
+        .iter()
+        .find(|(t, _)| *t == SYSTEM_TRACK)
+        .map(|(_, p)| p.clone());
+    let is_virtual = meeting.kind() == crate::meetings::MeetingKind::Virtual;
+    for (track, path) in tracks.iter_mut() {
+        if *track == MIC_TRACK {
+            *path = crate::meeting_aec::mic_source_for(id, is_virtual, path, sys_path.as_deref());
+        }
+    }
+
+    let aec_ran = tracks
+        .iter()
+        .any(|(t, p)| *t == MIC_TRACK && crate::meeting_aec::is_aec_output(p));
+
     let mut sources: Vec<(i64, WavWindows)> = Vec::new();
     for (track, path) in &tracks {
         match WavWindows::open(path) {
@@ -1283,6 +1309,16 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         decoded += transcript.chunks_decoded + transcript.chunks_resumed;
         failed += transcript.chunks_failed;
         done_before += audio.total_seconds();
+    }
+
+    // yap24-NT11 step 4b — the 3-word residue rule, only where the AEC
+    // pre-pass produced track 0. A failure leaves the transcript as decoded
+    // (still the user's meeting) and says so in the log.
+    if aec_ran {
+        if let Err(e) = crate::meeting_aec::apply_echo_residue(db, id) {
+            log::warn!("meeting_aec residue_failed meeting={id} error=\"{e}\"");
+        }
+        stage_done("echo_residue", &mut stage_clock);
     }
 
     let segments = db.list_meeting_segments(id)?.len();

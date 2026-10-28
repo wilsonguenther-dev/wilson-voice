@@ -621,6 +621,8 @@ export interface KindChoice {
 export interface MeetingDetail {
   meeting: Meeting;
   segments: MeetingSegment[];
+  /** yap24-NT11 — rows hidden as speaker echo; shown only on "Show". */
+  echoSegments?: MeetingSegment[];
   audioOnDisk: boolean;
 }
 

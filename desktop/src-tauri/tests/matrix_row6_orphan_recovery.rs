@@ -98,10 +98,17 @@ fn an_orphan_marker_and_spill_become_a_playable_wav_marked_partial() {
     assert!((meeting.seconds - 3.0).abs() < 0.01);
     assert_eq!(meeting.spliced_silence_samples, 0);
 
-    // The in-progress state is gone; the wav is what is left.
+    // The in-progress state is gone; the wav is what is left, plus
+    // (yap24-NT11) the track's host-time anchor, which finalize now KEEPS on
+    // purpose: it is removed only with the audio (NT1's purge and the delete
+    // cascade), never by recovery.
     assert!(entries(&dir, "meeting.in_progress.json").is_empty());
     assert!(entries(&dir, "spill.pcm").is_empty());
-    assert!(entries(&dir, "index.jsonl").is_empty());
+    assert_eq!(
+        entries(&dir, "index.jsonl").len(),
+        1,
+        "the one track's host-time anchor is kept beside its wav"
+    );
     assert!(
         recover_orphaned_meetings(&dir).is_empty(),
         "a second launch does not recover the same meeting twice"

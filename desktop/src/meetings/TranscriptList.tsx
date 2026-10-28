@@ -18,6 +18,7 @@
  * two-track meeting needs a second recorded track to look at, which means a
  * screenshot of it would otherwise mean holding a live call.
  */
+import { useState } from "react";
 import {
   isTwoTrack,
   orderedTranscript,
@@ -25,11 +26,26 @@ import {
   type TranscriptSegment,
 } from "./transcript";
 
+/**
+ * yap24-NT11 — the one line that admits rows were hidden as speaker echo. Pure,
+ * so the copy is tested without a DOM; null when nothing was hidden.
+ */
+export function echoHiddenLine(count: number): string | null {
+  if (count <= 0) return null;
+  return `${count} ${count === 1 ? "line" : "lines"} hidden as speaker echo`;
+}
+
 export default function TranscriptList<S extends TranscriptSegment>({
   segments,
+  hidden,
   kind,
 }: {
   segments: readonly S[];
+  /**
+   * yap24-NT11 — mic rows the echo-residue rule suppressed. Never rendered
+   * until the reader asks; then they join the list inline, in time order.
+   */
+  hidden?: readonly S[];
   /**
    * The meeting's `meetings.kind` (YV125). Optional so a caller rendering a row
    * from before migration 4 does not have to invent one — a missing kind is
@@ -37,12 +53,28 @@ export default function TranscriptList<S extends TranscriptSegment>({
    */
   kind?: string | null;
 }) {
+  const [showEcho, setShowEcho] = useState(false);
+  const echoLine = echoHiddenLine(hidden?.length ?? 0);
+  const shown =
+    showEcho && hidden && hidden.length > 0
+      ? [...segments, ...hidden].sort((a, b) => a.startSeconds - b.startSeconds)
+      : segments;
   return (
-    // Both the class and the rows come from the same rendering rules the export
-    // uses: a track that contributes no lines is not a second speaker, so it
-    // does not widen the gutter either.
+    <>
+    {echoLine && (
+      <p className="transcript-echo-note">
+        {echoLine}
+        {" - "}
+        <button type="button" className="link" onClick={() => setShowEcho((v) => !v)}>
+          {showEcho ? "Hide" : "Show"}
+        </button>
+      </p>
+    )}
+    {/* Both the class and the rows come from the same rendering rules the
+        export uses: a track that contributes no lines is not a second speaker,
+        so it does not widen the gutter either. */}
     <ol className={isTwoTrack(segments) ? "transcript two-track" : "transcript"}>
-      {orderedTranscript(segments, kind).map(({ segment, track, speaker, offset, text }) => (
+      {orderedTranscript(shown, kind).map(({ segment, track, speaker, offset, text }) => (
         <li key={segment.id}>
           {/* Timestamp and speaker are DATA, so they wear the pixel voice the
               rest of the app gives numbers. */}
@@ -56,5 +88,6 @@ export default function TranscriptList<S extends TranscriptSegment>({
         </li>
       ))}
     </ol>
+    </>
   );
 }

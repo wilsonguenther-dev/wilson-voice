@@ -692,6 +692,8 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             7 => MIGRATION_7_USER_CONTEXT,
             // Y9-A — the transform library's per-invocation status log.
             8 => crate::transforms::MIGRATION_8_TRANSFORM_RUNS,
+            // yap24-NT11 — echo-suppressed mic spans are kept, flagged.
+            9 => meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2602,7 +2604,7 @@ impl Database {
                 OR m.id IN (
                      SELECT s.meeting_id FROM meeting_segments_fts f
                      JOIN meeting_segments s ON s.rowid = f.rowid
-                     WHERE meeting_segments_fts MATCH ?3
+                     WHERE meeting_segments_fts MATCH ?3 AND s.suppressed_as_echo = 0
                    )
              ORDER BY m.started_at DESC LIMIT ?1"
         );
@@ -2630,7 +2632,7 @@ impl Database {
                 "SELECT {MEETING_COLS} FROM meetings m
                  WHERE m.title LIKE ?2
                     OR m.id IN (SELECT s.meeting_id FROM meeting_segments s
-                                WHERE s.text LIKE ?2)
+                                WHERE s.text LIKE ?2 AND s.suppressed_as_echo = 0)
                  ORDER BY m.started_at DESC LIMIT ?1"
             ))
             .map_err(|e| e.to_string())?;
@@ -2665,17 +2667,29 @@ impl Database {
     /// answer. A mic-only meeting is unaffected — `track` is constant there, so
     /// this is the same sequence 22-A returned.
     pub fn list_meeting_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
+        self.segments_with_echo_flag(meeting_id, false)
+    }
+
+    /// yap24-NT11 — the rows the residue rule hid as speaker echo, in the same
+    /// order as [`Self::list_meeting_segments`]. Only the Transcript's "N lines
+    /// hidden as speaker echo - Show" reads these; render, export, search and
+    /// notes input never do.
+    pub fn list_echo_suppressed_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
+        self.segments_with_echo_flag(meeting_id, true)
+    }
+
+    fn segments_with_echo_flag(&self, meeting_id: &str, suppressed: bool) -> Result<Vec<MeetingSegment>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
                         track, cluster_index
-                 FROM meeting_segments WHERE meeting_id = ?1
+                 FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = ?2
                  ORDER BY start_seconds ASC, track ASC, created_at ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![meeting_id], map_meeting_segment)
+            .query_map(params![meeting_id, suppressed as i64], map_meeting_segment)
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for r in rows {
@@ -2753,6 +2767,69 @@ impl Database {
         Ok(wavs)
     }
 
+    /// yap24-NT11 — flag one mic segment as speaker echo: it stays in the table
+    /// (reviewable, re-derivable) and leaves the render, export and notes
+    /// input, which all read [`Db::list_meeting_segments`].
+    pub fn mark_segment_suppressed_as_echo(&self, meeting_id: &str, segment_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meeting_segments SET suppressed_as_echo = 1 WHERE meeting_id = ?1 AND id = ?2",
+                params![meeting_id, segment_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n == 1)
+    }
+
+    /// yap24-NT11 (step 4b) — a mic span that is partly echo: the matched run
+    /// leaves the span as its OWN row flagged `suppressed_as_echo = 1` (same
+    /// times, track and cluster), and the span keeps only the residue. One
+    /// transaction; the FTS triggers see an UPDATE and an INSERT, so the echo
+    /// words leave the visible row's index entry. Returns the new row's id.
+    pub fn split_segment_echo(
+        &self,
+        meeting_id: &str,
+        segment_id: &str,
+        residue_text: &str,
+        echo_text: &str,
+    ) -> Result<String, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let new_id = Uuid::new_v4().to_string();
+        let n = tx
+            .execute(
+                "INSERT INTO meeting_segments
+                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at, track,
+                  cluster_index, suppressed_as_echo)
+                 SELECT ?1, meeting_id, start_seconds, end_seconds, ?2, confidence, created_at, track,
+                        cluster_index, 1
+                 FROM meeting_segments WHERE meeting_id = ?3 AND id = ?4",
+                params![new_id, echo_text, meeting_id, segment_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n != 1 {
+            return Err(format!("no segment {segment_id} in meeting {meeting_id}"));
+        }
+        tx.execute(
+            "UPDATE meeting_segments SET text = ?1 WHERE meeting_id = ?2 AND id = ?3",
+            params![residue_text, meeting_id, segment_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(new_id)
+    }
+
+    /// yap24-NT11 — how many lines the Transcript hides as speaker echo.
+    pub fn count_suppressed_echo_segments(&self, meeting_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM meeting_segments WHERE meeting_id = ?1 AND suppressed_as_echo = 1",
+            params![meeting_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
     /// "Delete this meeting" as the user means it: rows, search index, and the
     /// audio on disk. A privacy feature that half-deletes is worse than none.
     pub fn delete_meeting_with_audio(&self, id: &str) -> Result<(), String> {
@@ -2768,6 +2845,14 @@ impl Database {
             // per-track ASR ledgers AND the kept host-time anchors.
             wavs.extend(crate::meeting_pipeline::meeting_sidecar_paths(&dir, id));
         }
+        // yap24-NT11 — files derived from each WAV (the AEC output, the kept
+        // per-track anchors) go with it; never kept alone.
+        let derived: Vec<PathBuf> = wavs
+            .iter()
+            .flat_map(|w| crate::meeting_aec::derived_paths_for_wav(w))
+            .filter(|p| p.exists())
+            .collect();
+        wavs.extend(derived);
         wavs.sort();
         wavs.dedup();
         for wav in &wavs {

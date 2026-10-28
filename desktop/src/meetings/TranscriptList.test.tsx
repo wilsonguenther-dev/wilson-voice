@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import TranscriptList from "./TranscriptList";
+import TranscriptList, { echoHiddenLine } from "./TranscriptList";
 import {
   MIC_TRACK,
   SYSTEM_TRACK,
@@ -31,6 +31,27 @@ function rows(html: string): number {
 }
 
 describe("TranscriptList", () => {
+  it("yap24-NT11: hidden echo rows are counted on one line and never drawn until Show", () => {
+    expect(echoHiddenLine(0)).toBeNull();
+    expect(echoHiddenLine(1)).toBe("1 line hidden as speaker echo");
+    expect(echoHiddenLine(3)).toBe("3 lines hidden as speaker echo");
+    const html = renderToStaticMarkup(
+      <TranscriptList
+        kind="virtual"
+        segments={[seg("a", 0.0, MIC_TRACK, "my own words")]}
+        hidden={[seg("e1", 1.0, MIC_TRACK, "the far side again"), seg("e2", 2.0, MIC_TRACK, "and again")]}
+      />,
+    );
+    expect(html).toContain("2 lines hidden as speaker echo");
+    expect(html).toContain("Show");
+    expect(html).not.toContain("the far side again");
+    expect(rows(html)).toBe(1);
+    const plain = renderToStaticMarkup(
+      <TranscriptList kind="virtual" segments={[seg("a", 0.0, MIC_TRACK, "my own words")]} />,
+    );
+    expect(plain).not.toContain("hidden as speaker echo");
+  });
+
   it("draws one row per rendered line — a blank span is not a turn", () => {
     const html = renderToStaticMarkup(
       <TranscriptList

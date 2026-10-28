@@ -410,3 +410,86 @@ in practice means until the ASR engine's 15-minute idle unload, and runs anyway 
 `NOTES_MAX_DEFERRAL` (30 min) so a machine that never idles still gets notes. Every wait is logged
 (`summary deferred`, `summary defer_end`, `summary defer_cap`). The 8 GB machine itself was not
 measured; the figures above are per-process RSS from the 24 GB dev machine.
+
+## AEC pre-pass (real call) (yap24-NT11)
+
+Measured 2026-10-27 by `scripts/eval/aec-real-call.sh` (release `wilson-voice --aec-prepass`)
+on the stored 16 kHz mono WAVs of real virtual call c6187806 (31:04, built-in speakers),
+copied into a mktemp dir from the private corpus. NS and AGC off, reference read 20 ms ahead.
+
+| metric | value |
+|---|---|
+| coupling lag (GCC-PHAT, median of confident 1 s windows) | 7.06 ms |
+| call-playing windows / local-only windows | 1106 / 355 |
+| attenuation on call-playing windows p25 / p50 / p90 | 30.0 / 34.3 / 41.6 dB |
+| loss on local-only windows p50 / p90 | 0.15 / 0.37 dB |
+| wall time for 1864 s of audio (M4 Pro) | 9.9 s |
+| peak RSS of the whole process (`/usr/bin/time -l`) | 18.6 MB |
+
+ASR side (fix round 2026-10-27, 30 s windowed `--transcribe-file --timed`, after the eval's
+timestamp-shift fix: `--timed` prints camelCase `startSeconds`, which the first version did not
+shift, so every window sat on 0-30 s). Numbers only:
+
+| metric | raw mic | AEC mic | gate |
+|---|---|---|---|
+| echo_dup_rate | 0.718 | 0.004 | <= 0.10 pass |
+| owner B share in Me | 0.701 | 0.639 | >= 0.60 pass |
+| remote A / C share in Me | 0.762 / 0.788 | 0.031 / 0.019 | <= 0.10 pass |
+| local D share in Me | 0.725 | 0.534 | >= 0.70 FAIL |
+| rendered WER (both tracks) | 0.964 | 0.584 | <= 0.25 FAIL |
+
+Why the two FAILs are not AEC defects (measured, not argued):
+- D's loss sits in 10 of D's 36 reference blocks (102 of 466 words) whose words are ALSO on the
+  system track (t1 transcribes >= 50% of each): D reaches this Mac through the call's playback.
+  There AEC takes D's mic share from 0.745 to 0.049 -- which is cancelling playback, its job. In D's
+  other 26 blocks (364 words) the share is 0.72 raw vs 0.67 after AEC. Ceiling without leaving the
+  echo in: 0.72 x 364 / 466 = 0.56 < 0.70. Five AEC3 suppressor tunings (default, nearend tuning
+  as normal, transparent masks, sensitive dominant-nearend, both) gave D 0.47-0.53: not the cause.
+- Rendered WER with a WORD-PERFECT mic track (the reference's own B and D words, oracle) and the
+  real system-track decode is 0.353 (0.299 with the hypothesis clipped to the reference's span; the
+  reference starts 209.75 s into the audio). The floor is the untouched system-track decode
+  (t1 WER 0.65, 816 insertions), not the mic track, so <= 0.25 is unreachable by this item.
+
+Gates (e): local-only p90 loss <= 1.0 dB, call p50 >= 15 dB. Both pass.
+
+Fix round 2 (2026-10-27, head c531ce4 + eval info lines). Same audio, same decode; the eval now
+also prints `info_*` lines (never gates) so the two FAILs can be read from its own output:
+
+| number | value |
+|---|---|
+| share_t0_D (gate b, >= 0.70) | 0.530 FAIL (0.532 on a second decode) |
+| rendered_wer (gate d, <= 0.25) | 0.576 FAIL (0.566 on a second decode) |
+| info_rendered_wer_in_reference_span (hypothesis cut to the reference's span) | 0.445 (0.434) |
+| info_D_words / in playback blocks (AEC removed >= 10 dB: the block reached the mic through the speakers) | 466 / 108 |
+| info_share_t0_D_outside_playback_blocks | 0.673 (0.679) |
+| info_share_t0_D_ceiling_if_every_local_word_found | 0.768 |
+
+Acoustic split of every reference speaker's words by the same per-block test (mic vs AEC energy,
+plus mic vs tap level): A 1392/1400 and C 461/476 in playback-dominant blocks (the classifier
+agrees with who is remote), B 33/1338, D 111/465. "D" is the cloud transcript's "Unidentified
+Speaker", a catch-all label: about a quarter of its words are far-side audio, so the gate's premise
+that D is a purely local voice does not hold. Even at the raw mic's recall on local speech (0.72)
+the reachable D share is 0.72 x 358/466 = 0.55. Gate (d) stays above 0.25 with the hypothesis
+clipped to the reference's span (0.434-0.445); with a word-perfect mic track it was 0.299 (round 1), so
+the floor is the untouched system-track decode against the cloud reference, not the mic track.
+
+22 of the 63 AEC mic windows decode to nothing; each one checked is a far-side-only window
+the AEC took from about -23 dB to -52..-64 dB (raw mic vs tap within 4 dB), i.e. correctly empty, not a
+decode failure.
+
+Echo lag over 10 s windows with a confident PHAT peak: -7.1 ms in 143 of 154; 6 windows at
+about -50 ms around 1690-1760 s (AEC p50 only 6 dB on the five at -49.9 ms) and 5 at about +32 ms
+from 1800 s. So
+"constant across the file" holds for the bulk, not for the last five minutes; a fixed-delay
+assumption anywhere downstream would be wrong there.
+
+## AEC pre-pass (synthetic) (yap24-NT11)
+
+`tests/meeting_cross_track_bleed.rs`, debug build:
+
+| fixture | call p50 | local p90 loss | lag | wall |
+|---|---|---|---|---|
+| synthetic 40 s, 3-tap room, 3 ms | 68.8 dB (p25 23.6) | 0.01 dB | 3.0 ms | 10.1 s (debug) |
+| NT0 call-bleed-2voice (275 s) | 33.5 dB (p90 35.3) | 0.49 dB | 60.0 ms | 67.3 s (debug) |
+| headphones control | coupling None, nothing derived | - | - | - |
+

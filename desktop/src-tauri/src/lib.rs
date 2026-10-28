@@ -123,6 +123,7 @@ pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
 // (`tests/support/eval_metrics.rs`) and the notes echo-owner guard share it.
+pub mod meeting_aec;
 pub mod meeting_echo;
 // PERM-A — public so `tests/mic_auth_status.rs` can assert the
 // AVAuthorizationStatus discriminants and the call-site sweep without a
@@ -6765,6 +6766,9 @@ fn list_meetings(
 pub struct MeetingDetail {
     pub meeting: meetings::Meeting,
     pub segments: Vec<meetings::MeetingSegment>,
+    /// yap24-NT11 — the rows hidden as speaker echo, shown only behind the
+    /// Transcript's "N lines hidden as speaker echo - Show".
+    pub echo_segments: Vec<meetings::MeetingSegment>,
     /// Whether the WAV named by the row is still on disk. The row can point at
     /// a file the hygiene sweep removed, and a UI that promises audio it cannot
     /// produce is worse than one that says the audio expired.
@@ -6778,6 +6782,7 @@ fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<MeetingDet
         .get_meeting(&id)?
         .ok_or_else(|| "that meeting is no longer here".to_string())?;
     let segments = state.db.list_meeting_segments(&id)?;
+    let echo_segments = state.db.list_echo_suppressed_segments(&id)?;
     let audio_on_disk = meeting
         .mic_wav_path
         .as_deref()
@@ -6786,6 +6791,7 @@ fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<MeetingDet
     Ok(MeetingDetail {
         meeting,
         segments,
+        echo_segments,
         audio_on_disk,
     })
 }

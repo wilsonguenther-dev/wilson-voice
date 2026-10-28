@@ -2149,10 +2149,11 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
             let _ = std::fs::remove_file(spill);
         }
     }
-    let _ = std::fs::remove_file(&index_path);
-    for path in &index_paths {
-        let _ = std::fs::remove_file(path);
-    }
+    // yap24-NT11 (carried from NT11-0) — finalize KEEPS the per-track
+    // host-time anchors (`<id>.tN.index.jsonl`): they are the route/reopen
+    // boundaries against each track's finalized-sample position. They are
+    // removed only with the audio, by NT1's purge and the delete cascade
+    // (`meeting_aec::derived_paths_for_wav`, `meeting_sidecar_paths`).
     let row_path = marker.with_file_name(format!("{id}.{MEETING_ROW_EXT}"));
     let row_id = std::fs::read_to_string(&row_path)
         .ok()
@@ -4449,11 +4450,13 @@ mod tests {
             finalized.seconds
         );
         assert!(finalized.tracks[0].exists());
-        // A clean stop leaves only the wav: no marker, no lock, nothing for
-        // the next launch to pick up.
+        // A clean stop leaves only the wav and (yap24-NT11) its kept host-time
+        // anchors: no marker, no lock, nothing for the next launch to pick up.
         assert!(!marker_exists(&dir));
         assert!(
-            listing(&dir).iter().all(|n| n.ends_with(".wav")),
+            listing(&dir)
+                .iter()
+                .all(|n| n.ends_with(".wav") || n.ends_with(".index.jsonl")),
             "{:?}",
             listing(&dir)
         );
