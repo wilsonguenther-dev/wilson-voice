@@ -9,6 +9,7 @@ import Privacy from "./settings/Privacy";
 import Meetings from "./settings/Meetings";
 import License from "./settings/License";
 import Diagnostics from "./settings/Diagnostics";
+import ModelProviders from "../settings/ModelProviders";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -84,7 +85,13 @@ export default function Settings() {
                   of which embedded model you download — and since YV54 stopped
                   asking first-run users that question, this panel IS the picker
                   for the people who want to answer it. */}
-              {settingsTab === "advanced" && <Advanced />}
+              {settingsTab === "advanced" && (
+                <>
+                  <Advanced />
+                  {/* yap-byom-0 — where notes and polish run, and whether that leaves this Mac. */}
+                  <ModelProviders />
+                </>
+              )}
 
               {/* ── Meetings — offer to record a detected meeting (never auto-records) ── */}
               {settingsTab === "meetings" && <Meetings />}

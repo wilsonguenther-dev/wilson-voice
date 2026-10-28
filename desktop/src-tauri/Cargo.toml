@@ -121,6 +121,10 @@ transcribe-cpp = { version = "0.1.3", default-features = false, features = ["met
 # is the read receipt that gates the clipboard restore (see src/paste_tx.rs).
 # Versions track what Tauri already pulls in — no new crates enter the graph.
 objc2 = "0.6"
+# yap-byom-0 — BYOM API keys live in the login Keychain (src/keychain.rs),
+# through the generic-password API. Already in Cargo.lock (3.7.0) via
+# native-tls; declared because keychain.rs names it. Adds no crate to the graph.
+security-framework = "3.7.0"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 # YV100 (22-B) — the CoreAudio process tap. EXACT pin, no caret: this crate is

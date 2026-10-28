@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
-import { CONSENT_NOTICE } from "./consent";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { type ActiveLeave, consentNotice, leaveLines } from "./consent";
+import { errorText } from "../errors";
 
 /**
  * YV96 — the one-time meeting-capture notice.
@@ -26,6 +28,25 @@ export default function MeetingConsentNotice({
   onClose: () => void;
 }) {
   const actionRef = useRef<HTMLButtonElement | null>(null);
+  // yap-byom-0 — "Nothing is uploaded" only while no model-provider choice
+  // leaves this Mac. null until the backend answers (or if it fails): the
+  // notice then makes no upload claim at all.
+  const [leaves, setLeaves] = useState<string[] | null>(null);
+  const [leavesError, setLeavesError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    invoke<{ activeLeaves: ActiveLeave[] }>("list_model_providers")
+      .then((v) => {
+        if (live) setLeaves(leaveLines(v.activeLeaves));
+      })
+      .catch((e: unknown) => {
+        if (live) setLeavesError(errorText(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const notice = consentNotice(leaves);
 
   useEffect(() => {
     actionRef.current?.focus();
@@ -47,10 +68,10 @@ export default function MeetingConsentNotice({
       }}
     >
       <div className="consent-card">
-        <p className="consent-eyebrow">{CONSENT_NOTICE.eyebrow}</p>
-        <h1 id="consent-title">{CONSENT_NOTICE.title}</h1>
+        <p className="consent-eyebrow">{notice.eyebrow}</p>
+        <h1 id="consent-title">{notice.title}</h1>
 
-        {CONSENT_NOTICE.paragraphs.map((p) => (
+        {notice.paragraphs.map((p) => (
           <p className="consent-body" key={p.slice(0, 24)}>
             {p}
           </p>
@@ -73,11 +94,17 @@ export default function MeetingConsentNotice({
             className="primary"
             onClick={onClose}
           >
-            {CONSENT_NOTICE.action}
+            {notice.action}
           </button>
         </div>
 
-        <p className="consent-fine">{CONSENT_NOTICE.fine}</p>
+        {leavesError && (
+          <p className="consent-fine" role="status">
+            Yap could not read your model-provider choices ({leavesError}), so
+            this notice makes no claim about uploads.
+          </p>
+        )}
+        <p className="consent-fine">{notice.fine}</p>
       </div>
     </div>
   );

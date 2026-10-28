@@ -27,21 +27,22 @@ Your name, your address, your transcripts, and anything you dictated are not in 
 
 ## The only times Yap uses the network
 
-For transparency, here is **every** network connection Yap makes. There are exactly two, and **neither one carries your audio or your text**:
+For transparency, here is **every** network connection Yap makes. There are exactly three. The first two **never carry your audio or your text**; the third exists only if you set it up yourself:
 
 1. **Model downloads.** Yap downloads the models it runs on your Mac — the speech model the first time you use it, and the voice-detection, polish and speaker models when a feature needs them — from fixed, pinned addresses, and checks every file against a fingerprint built into the app before it is used. A download asks for a file; it sends nothing you said or typed. After that, transcription is fully offline.
 2. **Update checks.** Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings. The check asks whether a newer Yap exists; it sends no audio and no text.
+3. **A model provider you add yourself — optional, and off unless you add one.** Yap ships with a bundled model that runs on your Mac, and that stays the default. Under Settings › Advanced › Model providers you can add another provider for meeting notes or for polish. Every choice there says plainly whether it leaves this Mac — **"Leaves this Mac: Yes — <the server's name>"** or **"No"** — and when any choice is Yes, the notice that says "Nothing is uploaded" stops saying it. Notes would send the meeting transcript; polish would send every dictation. Your API key is kept in your Mac's Keychain, tied to that one server; it is never written to Yap's database, settings or logs, and changing the server deletes it. Yap never follows a redirect to a different server. "Test connection" sends a two-word test prompt ("Say OK.") and asks for a reply of at most ten tokens — nothing you said.
 
 Licensing makes **no** network call. Your license is verified **on your Mac**, against a public key compiled into the app — activating it, and every launch after, involves no server at all, and Yap never contacts us to check, renew or confirm it.
 
-Those two are the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
+Those three are the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
 
 ### How you can check this
 
 These claims are not just written down — they are a test in Yap's source, named `no_outbound_on_the_dictation_path`, and it fails if any of them stops being true. What it proves, in its own words:
 
 - **No module on the dictation path references an HTTP client, a socket or a URL.** That path is everything a dictation passes through: recording, voice detection, transcription, polish, paste, snippets and the local history database.
-- **The only network call sites in the whole app are the model download and the updater check** — an explicit list, by file and function. A new one anywhere, for any reason, fails the test until this page is changed to name it.
+- **The only network call sites in the whole app are the model download, the updater check and the one client for a model provider you add** — an explicit list, by file and function. A new one anywhere, for any reason, fails the test until this page is changed to name it.
 - **Nothing in crash capture or the support bundle can upload.** The bundle is a file written to your Desktop for you to send yourself; at most Yap opens a draft in your own mail app, and nothing leaves until you press send.
 - **The app's window can connect to nothing but the app itself**, and the polish and speaker helpers that run beside it have no network code of their own.
 

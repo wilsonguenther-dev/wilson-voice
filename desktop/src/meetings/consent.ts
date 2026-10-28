@@ -70,6 +70,47 @@ export interface RecordingSignal {
  */
 export const CONSENT_PILL_LINE = "Let them know you're recording.";
 
+/**
+ * yap-byom-0 — a task whose model provider sends text off this Mac, as
+ * `list_model_providers` reports it (`activeLeaves`).
+ */
+export interface ActiveLeave {
+  task: "notes" | "polish";
+  host: string;
+}
+
+/** "Notes go to openrouter.ai" / "Polish goes to api.groq.com". */
+export function leaveLines(active: readonly ActiveLeave[]): string[] {
+  return active.map((a) =>
+    a.task === "notes" ? `Notes go to ${a.host}` : `Polish goes to ${a.host}`,
+  );
+}
+
+/** The first paragraph's always-true part: no upload claim in it. */
+const RECORDS_LOCALLY =
+  "Yap records your Mac's microphone and turns it into a transcript here, on this machine.";
+
+/**
+ * yap-byom-0 — the notice with its first paragraph made true for the user's
+ * model-provider choices. `activeLeaves` are the Yes labels
+ * ([`leaveLines`]): empty → the full "Nothing is uploaded" claim; any Yes →
+ * that claim disappears and the paragraph names where text goes; `null` (not
+ * known yet, or the read failed) → no upload claim either way, because a
+ * privacy promise is never made on a guess.
+ */
+export function consentNotice(activeLeaves: readonly string[] | null) {
+  const first =
+    activeLeaves === null
+      ? RECORDS_LOCALLY
+      : activeLeaves.length === 0
+        ? CONSENT_NOTICE.paragraphs[0]
+        : `${RECORDS_LOCALLY} You chose a model provider that runs elsewhere, so some of it leaves this Mac: ${activeLeaves.join("; ")}.`;
+  return {
+    ...CONSENT_NOTICE,
+    paragraphs: [first, ...CONSENT_NOTICE.paragraphs.slice(1)],
+  };
+}
+
 export const CONSENT_NOTICE = {
   eyebrow: "One time only",
   title: "Recording other people is your call",

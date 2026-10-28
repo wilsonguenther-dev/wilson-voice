@@ -106,6 +106,11 @@ pub mod meeting_matrix;
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
+// yap-byom-0 — bring your own model: provider model + per-task pick, API keys in
+// the Keychain bound to their host, and the one redirect-free HTTP client.
+pub mod http_client;
+pub mod keychain;
+pub mod model_providers;
 // yap-notetaker-onboard — Set up Notetaker: Apple Calendar (read-only) and
 // Otter file import.
 pub mod calendar;
@@ -6805,6 +6810,109 @@ fn rename_meeting(
     state.db.rename_meeting(&id, &title)
 }
 
+// ── yap-byom-0 · Settings → Model providers ─────────────────────────────────
+//
+// Every command takes ids, never a URL or a key: Test connection takes the
+// provider ID only, so a webview bug cannot aim a stored key at a new host.
+// None of them returns or logs a key — only its last four. There is no save
+// command yet: the only wired kind is Bundled (built in, not editable), so a
+// save could only ever refuse. yap-byom-1 adds it with the OpenAI-compatible
+// kind, calling `model_providers::upsert_provider` (key → Keychain, host
+// change → key deleted), which tests/model_providers_contract.rs pins today.
+
+/// One keep-alive HTTP client per provider (http_client.rs), app-wide.
+fn byom_clients() -> &'static http_client::ClientCache {
+    static CLIENTS: std::sync::OnceLock<http_client::ClientCache> = std::sync::OnceLock::new();
+    CLIENTS.get_or_init(http_client::ClientCache::new)
+}
+
+/// The Keychain store for the RUNNING bundle id (the test channel's own).
+fn byom_keychain(app: &AppHandle) -> keychain::MacKeychain {
+    keychain::MacKeychain::for_bundle(&app.config().identifier)
+}
+
+#[tauri::command]
+fn list_model_providers(app: AppHandle, state: State<'_, Arc<AppState>>) -> model_providers::ProvidersView {
+    model_providers::list_view(&*state.db, &byom_keychain(&app))
+}
+
+#[tauri::command]
+fn delete_model_provider(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    provider_id: String,
+) -> Result<model_providers::ProvidersView, String> {
+    let keys = byom_keychain(&app);
+    model_providers::delete_provider(&*state.db, &keys, &provider_id).map_err(|e| {
+        log::error!("model_providers delete failed id={provider_id} reason={}", e.tag());
+        e.plain()
+    })?;
+    byom_clients().forget(&provider_id);
+    Ok(model_providers::list_view(&*state.db, &keys))
+}
+
+#[tauri::command]
+fn set_model_provider_choice(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    task: model_providers::Task,
+    provider_id: String,
+) -> Result<model_providers::ProvidersView, String> {
+    model_providers::set_task_provider(&*state.db, task, &provider_id).map_err(|e| {
+        log::error!(
+            "model_providers pick failed task={} reason={}",
+            task.as_str(),
+            e.tag()
+        );
+        e.plain()
+    })?;
+    Ok(model_providers::list_view(&*state.db, &byom_keychain(&app)))
+}
+
+/// Test connection — by provider ID only (see the block comment above).
+#[tauri::command]
+async fn test_model_provider(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    provider_id: String,
+) -> Result<model_providers::TestResult, String> {
+    let state = state.inner().clone();
+    let polish_model = state.settings.lock().polish_model.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let keys = byom_keychain(&handle);
+        let bundled = move |deadline: Duration| -> Box<dyn model_providers::ChatProvider> {
+            let client = models::polish_model(polish_model.trim())
+                .filter(|m| models::is_polish_downloaded(m))
+                .map(models::polish_model_path)
+                .map(polish::SidecarClient::new);
+            Box::new(model_providers::BundledProvider::new(client, deadline))
+        };
+        let mut emit = |event: &str, payload: serde_json::Value| {
+            if let Err(e) = handle.emit(event, payload) {
+                log::warn!("model_providers emit failed event={event} error={e}");
+            }
+        };
+        model_providers::run_test(
+            &*state.db,
+            &keys,
+            byom_clients(),
+            &provider_id,
+            &bundled,
+            &mut emit,
+        )
+        .map_err(|e| {
+            log::error!("model_providers test refused id={provider_id} reason={}", e.tag());
+            e.plain()
+        })
+    })
+    .await
+    .map_err(|e| {
+        log::error!("model_providers test join failed error={e}");
+        "Test connection stopped unexpectedly.".to_string()
+    })?
+}
+
 /// YV96 — should the one-time meeting-capture notice be shown?
 ///
 /// Read once on mount and again after every close. Cheap enough to be a plain
@@ -9854,6 +9962,11 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-byom-0 — Settings → Model providers.
+            list_model_providers,
+            delete_model_provider,
+            set_model_provider_choice,
+            test_model_provider,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
