@@ -1,0 +1,43 @@
+{
+  "synthetic": true,
+  "note": "Safari: com.apple.WebKit.GPU running input AND a Safari window matched the meet pattern. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 3001,
+      "parent_pid": 1,
+      "bundle_id": "com.apple.WebKit.GPU",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 3000,
+      "bundle_id": "com.apple.Safari"
+    }
+  ],
+  "frontmost": "com.apple.Safari",
+  "browser_titles": [
+    {
+      "bundle_id": "com.apple.Safari",
+      "pattern_id": "meet",
+      "len": 19
+    }
+  ],
+  "ax_source": "yap",
+  "calendar": null,
+  "expect": {
+    "bundle_id": "com.apple.Safari",
+    "offer": true,
+    "via": "webkit_title",
+    "text": "Google Meet call — record it?"
+  }
+}

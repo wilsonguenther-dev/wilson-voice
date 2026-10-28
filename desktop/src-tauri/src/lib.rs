@@ -124,6 +124,8 @@ pub mod meeting_import;
 pub mod meeting_control;
 /// yap-notetaker-detect — notice a meeting, offer to record it (never auto-records).
 pub mod meeting_detect;
+// yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
+pub mod call_signals;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness

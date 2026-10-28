@@ -1,0 +1,48 @@
+{
+  "synthetic": true,
+  "note": "Google Meet in Chrome: the input runs on com.google.Chrome.helper (ppid = Chrome), AX granted to Yap, a window matched the meet pattern. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 2001,
+      "parent_pid": 2000,
+      "bundle_id": "com.google.Chrome.helper",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 2000,
+      "bundle_id": "com.google.Chrome"
+    }
+  ],
+  "frontmost": "com.google.Chrome",
+  "browser_titles": [
+    {
+      "bundle_id": "com.google.Chrome",
+      "pattern_id": "meet",
+      "len": 19
+    },
+    {
+      "bundle_id": "com.google.Chrome",
+      "pattern_id": null,
+      "len": 31
+    }
+  ],
+  "ax_source": "yap",
+  "calendar": null,
+  "expect": {
+    "bundle_id": "com.google.Chrome",
+    "offer": true,
+    "via": "helper_parent",
+    "text": "Google Meet call — record it?"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "synthetic": true,
+  "note": "Yap dictating (in=1) and its polish sidecar (child of Yap) playing an earcon. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": true,
+      "running_output": false
+    },
+    {
+      "pid": 905,
+      "parent_pid": 900,
+      "bundle_id": null,
+      "running_input": true,
+      "running_output": true
+    },
+    {
+      "pid": 501,
+      "parent_pid": 1,
+      "bundle_id": "com.apple.WindowServer",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 612,
+      "parent_pid": 1,
+      "bundle_id": "com.spotify.client",
+      "running_input": false,
+      "running_output": false
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 1200,
+      "bundle_id": "us.zoom.xos"
+    }
+  ],
+  "frontmost": "us.zoom.xos",
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": null,
+  "expect": {
+    "bundle_id": null,
+    "offer": false,
+    "via": null,
+    "text": null
+  }
+}

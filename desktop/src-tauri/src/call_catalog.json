@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "note": "yap-call-0 — the call-app catalog, bundled with include_str! by call_signals.rs. Seeded from plan section 2.2(4). verified:false until a Wilson walk (scripts/call-walk.sh) records a non-synthetic fixture for the row; a browser row is verified only from a fixture whose ax_source is \"yap\". Helper patterns are case-insensitive bundle-id prefixes of the PROCESS that carries the audio, which is a helper, never the UI app (syscapture.rs, finding OS-5).",
+  "apps": [
+    { "bundle_id": "us.zoom.xos", "name": "Zoom", "kind": "native", "helpers": ["us.zoom."], "verified": false },
+    { "bundle_id": "com.microsoft.teams2", "name": "Microsoft Teams", "kind": "native", "helpers": ["com.microsoft.teams2"], "verified": false },
+    { "bundle_id": "com.apple.FaceTime", "name": "FaceTime", "kind": "system_daemon", "helpers": ["com.apple.avconferenced"], "verified": false },
+    { "bundle_id": "com.apple.mobilephone", "name": "Phone", "kind": "system_daemon", "helpers": ["com.apple.TelephonyUtilities", "com.apple.callservicesd"], "verified": false },
+    { "bundle_id": "com.apple.ScreenContinuity", "name": "iPhone Mirroring", "kind": "native", "helpers": ["com.apple.ScreenContinuity"], "verified": false },
+    { "bundle_id": "com.tinyspeck.slackmacgap", "name": "Slack", "kind": "native", "helpers": ["com.tinyspeck.slackmacgap"], "verified": false },
+    { "bundle_id": "com.hnc.Discord", "name": "Discord", "kind": "native", "helpers": ["com.hnc.Discord"], "verified": false },
+    { "bundle_id": "net.whatsapp.WhatsApp", "name": "WhatsApp", "kind": "native", "helpers": ["net.whatsapp.WhatsApp"], "verified": false },
+    { "bundle_id": "Cisco-Systems.Spark", "name": "Webex", "kind": "native", "helpers": ["Cisco-Systems.Spark", "com.cisco.webex"], "verified": false },
+    { "bundle_id": "com.google.Chrome", "name": "Google Chrome", "kind": "browser", "helpers": ["com.google.Chrome.helper"], "verified": false,
+      "title_patterns": [
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] },
+        { "id": "webex_web", "name": "Webex", "contains": ["Webex"] }
+      ] },
+    { "bundle_id": "com.microsoft.edgemac", "name": "Microsoft Edge", "kind": "browser", "helpers": ["com.microsoft.edgemac.helper"], "verified": false,
+      "title_patterns": [
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] }
+      ] },
+    { "bundle_id": "com.brave.Browser", "name": "Brave", "kind": "browser", "helpers": ["com.brave.Browser.helper"], "verified": false,
+      "title_patterns": [
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] }
+      ] },
+    { "bundle_id": "company.thebrowser.Browser", "name": "Arc", "kind": "browser", "helpers": ["company.thebrowser.browser.helper"], "verified": false,
+      "title_patterns": [
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] }
+      ] },
+    { "bundle_id": "com.apple.Safari", "name": "Safari", "kind": "browser", "helpers": ["com.apple.WebKit.GPU"], "helper_needs_title": true, "verified": false,
+      "title_patterns": [
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] }
+      ] }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "synthetic": true,
+  "note": "iPhone call on the Mac: input on callservicesd (com.apple.TelephonyUtilities) while Phone runs. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 4101,
+      "parent_pid": 1,
+      "bundle_id": "com.apple.TelephonyUtilities",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 4100,
+      "bundle_id": "com.apple.mobilephone"
+    }
+  ],
+  "frontmost": null,
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": null,
+  "expect": {
+    "bundle_id": "com.apple.mobilephone",
+    "offer": true,
+    "via": "daemon",
+    "text": "Phone call — record your side?"
+  }
+}

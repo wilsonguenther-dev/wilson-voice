@@ -25,9 +25,12 @@
 //! denial from a wedge without a private API.
 //!
 //! So: [`CATapDescription::initMonoGlobalTapButExcludeProcesses`] with exactly
-//! one exclusion — us. No PID resolution for a *target*, no
-//! `kAudioHardwarePropertyProcessObjectList` enumeration, no re-enumeration
-//! listener. The accepted cost, stated out loud: Spotify and notification chimes
+//! one exclusion — us. For the TAP TARGET there is no PID resolution, no
+//! `kAudioHardwarePropertyProcessObjectList` enumeration and no re-enumeration
+//! listener. (Call DETECTION — `call_signals.rs`, yap-call-0 — does enumerate
+//! process objects through [`imp::process_audio_activity`] and does listen for
+//! list changes, but only to READ who is using the mic; it never chooses what
+//! the tap captures.) The accepted cost, stated out loud: Spotify and notification chimes
 //! land in the meeting track. That is the same trade §2.1 already accepted when
 //! it rejected ScreenCaptureKit.
 //!
@@ -2621,6 +2624,49 @@ pub struct ProcessOutputActivity {
     pub running_output: bool,
 }
 
+/// yap-call-0 — one CoreAudio client process's mic AND speaker state, plus
+/// who it is. The generalisation of [`ProcessOutputActivity`]: call detection
+/// needs `kAudioProcessPropertyIsRunningInput` ("an app started using the
+/// microphone") and `kAudioProcessPropertyBundleID` (the HELPER's bundle id —
+/// `com.google.Chrome.helper`, `com.apple.WebKit.GPU`, `com.apple.avconferenced`
+/// — never the UI app's). A flag that could not be read is `None`: unreadable
+/// is skipped, never evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcAudio {
+    /// `kAudioProcessPropertyPID`.
+    pub pid: i32,
+    /// `pbi_ppid`, when the OS would say.
+    #[serde(default)]
+    pub parent_pid: Option<i32>,
+    /// `kAudioProcessPropertyBundleID`, when the process has one.
+    #[serde(default)]
+    pub bundle_id: Option<String>,
+    /// `kAudioProcessPropertyIsRunningInput` != 0; `None` = unreadable.
+    #[serde(default)]
+    pub running_input: Option<bool>,
+    /// `kAudioProcessPropertyIsRunningOutput` != 0; `None` = unreadable.
+    #[serde(default)]
+    pub running_output: Option<bool>,
+}
+
+impl ProcAudio {
+    /// The thin adapter the output-only callers (the denial evidence, B1)
+    /// keep using. A process whose output state is unreadable is skipped —
+    /// exactly what `process_output_activity` always did.
+    pub fn output_activity(&self) -> Option<ProcessOutputActivity> {
+        Some(ProcessOutputActivity {
+            pid: self.pid,
+            parent_pid: self.parent_pid,
+            running_output: self.running_output?,
+        })
+    }
+}
+
+/// [`ProcAudio`] → the output-only view, dropping unreadable rows.
+pub fn output_activity_of(procs: &[ProcAudio]) -> Vec<ProcessOutputActivity> {
+    procs.iter().filter_map(ProcAudio::output_activity).collect()
+}
+
 /// Where per-process output activity comes from. Injectable so a test can
 /// prove what does and does not count.
 pub trait OutputActivitySource: Send + Sync {
@@ -3163,6 +3209,7 @@ pub mod imp {
         kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultOutputDevice,
         kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTranslatePIDToProcessObject,
         kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+        kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningInput,
         kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioTapPropertyFormat,
         kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID,
         AudioDeviceStart, AudioDeviceStop, AudioObjectGetPropertyData,
@@ -3330,12 +3377,9 @@ pub mod imp {
         }
     }
 
-    /// review-opus B1 — every CoreAudio client process's output state:
-    /// `kAudioHardwarePropertyProcessObjectList`, then per object
-    /// `kAudioProcessPropertyPID` and `kAudioProcessPropertyIsRunningOutput`.
-    /// Callers gate this on macOS 14.4. A process whose pid or state cannot be
-    /// read is SKIPPED — that can only lower the evidence, never raise it.
-    pub fn process_output_activity() -> Result<Vec<super::ProcessOutputActivity>, i32> {
+    /// Every CoreAudio process object (`kAudioHardwarePropertyProcessObjectList`).
+    /// Callers gate this on macOS 14.4.
+    pub fn process_object_list() -> Result<Vec<AudioObjectID>, i32> {
         let address = address(kAudioHardwarePropertyProcessObjectList);
         let mut size: u32 = 0;
         // SAFETY: no qualifier; `size` is a stack u32.
@@ -3373,22 +3417,54 @@ pub mod imp {
             }
             objects.truncate(size as usize / std::mem::size_of::<AudioObjectID>());
         }
+        Ok(objects)
+    }
+
+    /// review-opus B1 — every CoreAudio client process's output state, now the
+    /// thin adapter over [`process_audio_activity`]. A process whose pid or
+    /// output state cannot be read is SKIPPED — that can only lower the
+    /// evidence, never raise it.
+    pub fn process_output_activity() -> Result<Vec<super::ProcessOutputActivity>, i32> {
+        Ok(super::output_activity_of(&process_audio_activity()?))
+    }
+
+    /// yap-call-0 — every CoreAudio client process's mic + speaker state and
+    /// bundle id: `kAudioHardwarePropertyProcessObjectList`, then per object
+    /// `kAudioProcessPropertyPID`, `kAudioProcessPropertyIsRunningInput`,
+    /// `kAudioProcessPropertyIsRunningOutput` and `kAudioProcessPropertyBundleID`
+    /// (a +1 CFString, released by `get_string_property`). An object whose pid
+    /// cannot be read is skipped; a flag that cannot be read is `None`.
+    pub fn process_audio_activity() -> Result<Vec<super::ProcAudio>, i32> {
+        let objects = process_object_list()?;
         let mut out = Vec::with_capacity(objects.len());
         for object in objects {
-            // SAFETY: both selectors are documented as fixed-size scalars
-            // (pid_t, UInt32).
-            let pid: Result<i32, i32> = unsafe { get_property(object, kAudioProcessPropertyPID) };
-            let running: Result<u32, i32> =
-                unsafe { get_property(object, kAudioProcessPropertyIsRunningOutput) };
-            if let (Ok(pid), Ok(running)) = (pid, running) {
-                out.push(super::ProcessOutputActivity {
-                    pid,
-                    parent_pid: parent_pid(pid),
-                    running_output: running != 0,
-                });
+            if let Some(proc) = read_proc_audio(object) {
+                out.push(proc);
             }
         }
         Ok(out)
+    }
+
+    /// One process object's [`super::ProcAudio`], or `None` when its pid is
+    /// unreadable (the process left between the list read and this one).
+    pub fn read_proc_audio(object: AudioObjectID) -> Option<super::ProcAudio> {
+        // SAFETY: PID / IsRunningInput / IsRunningOutput are documented as
+        // fixed-size scalars (pid_t, UInt32, UInt32).
+        let pid: i32 = unsafe { get_property(object, kAudioProcessPropertyPID) }.ok()?;
+        let running_input: Option<u32> =
+            unsafe { get_property(object, kAudioProcessPropertyIsRunningInput) }.ok();
+        let running_output: Option<u32> =
+            unsafe { get_property(object, kAudioProcessPropertyIsRunningOutput) }.ok();
+        let bundle_id = get_string_property(object, kAudioProcessPropertyBundleID)
+            .ok()
+            .filter(|b| !b.is_empty());
+        Some(super::ProcAudio {
+            pid,
+            parent_pid: parent_pid(pid),
+            bundle_id,
+            running_input: running_input.map(|v| v != 0),
+            running_output: running_output.map(|v| v != 0),
+        })
     }
 
     /// `pbi_ppid` from `proc_pidinfo(PROC_PIDTBSDINFO)`, or `None`.

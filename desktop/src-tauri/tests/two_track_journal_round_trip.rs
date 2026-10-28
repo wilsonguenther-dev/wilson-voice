@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use wilson_voice_lib::meeting::{
     recover_orphaned_meetings, IndexRecord, MeetingCapture, MeetingJournal, MeetingState,
-    MIC_TRACK, SYSTEM_TRACK, TARGET_RATE,
+    MIC_TRACK, SPLICE_MIN_SAMPLES, SYSTEM_TRACK, TARGET_RATE,
 };
 use wilson_voice_lib::rtring::CaptureAnchor;
 
@@ -298,8 +298,15 @@ fn a_journal_queue_drop_on_one_track_is_spliced_into_that_track() {
         "the depth-1 queue was supposed to reject something — nothing to detect otherwise"
     );
     let finalized = journal.finalize(MeetingState::Partial).expect("finalized");
+    // `dropped` counts the RESAMPLER's output chunks the queue refused, while
+    // the splice is measured from what the DEVICE delivered (`captured`). The
+    // two can differ by the streaming resampler's withheld phase sample — the
+    // sub-millisecond difference SPLICE_MIN_SAMPLES exists to ignore — so a
+    // refused chunk that carried that sample reads as e.g. 12801 dropped vs
+    // 12800 spliced (CI, d875e393). Anything at or past that bound is a real
+    // unspliced loss and still fails.
     assert!(
-        finalized.spliced_silence_samples >= dropped,
+        finalized.spliced_silence_samples + SPLICE_MIN_SAMPLES > dropped,
         "{dropped} sample(s) were dropped but only {} were spliced",
         finalized.spliced_silence_samples
     );

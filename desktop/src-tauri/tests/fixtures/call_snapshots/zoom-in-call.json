@@ -1,0 +1,37 @@
+{
+  "synthetic": true,
+  "note": "Zoom in a call, frontmost: us.zoom.xos running input. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 1200,
+      "parent_pid": 1,
+      "bundle_id": "us.zoom.xos",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 1200,
+      "bundle_id": "us.zoom.xos"
+    }
+  ],
+  "frontmost": "us.zoom.xos",
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": null,
+  "expect": {
+    "bundle_id": "us.zoom.xos",
+    "offer": true,
+    "via": "bundle",
+    "text": "Zoom call — record it?"
+  }
+}
