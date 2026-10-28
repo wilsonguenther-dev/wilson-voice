@@ -452,6 +452,37 @@ Why the two FAILs are not AEC defects (measured, not argued):
 
 Gates (e): local-only p90 loss <= 1.0 dB, call p50 >= 15 dB. Both pass.
 
+Fix round 2 (2026-10-27, head c531ce4 + eval info lines). Same audio, same decode; the eval now
+also prints `info_*` lines (never gates) so the two FAILs can be read from its own output:
+
+| number | value |
+|---|---|
+| share_t0_D (gate b, >= 0.70) | 0.530 FAIL (0.532 on a second decode) |
+| rendered_wer (gate d, <= 0.25) | 0.576 FAIL (0.566 on a second decode) |
+| info_rendered_wer_in_reference_span (hypothesis cut to the reference's span) | 0.445 (0.434) |
+| info_D_words / in playback blocks (AEC removed >= 10 dB: the block reached the mic through the speakers) | 466 / 108 |
+| info_share_t0_D_outside_playback_blocks | 0.673 (0.679) |
+| info_share_t0_D_ceiling_if_every_local_word_found | 0.768 |
+
+Acoustic split of every reference speaker's words by the same per-block test (mic vs AEC energy,
+plus mic vs tap level): A 1392/1400 and C 461/476 in playback-dominant blocks (the classifier
+agrees with who is remote), B 33/1338, D 111/465. "D" is the cloud transcript's "Unidentified
+Speaker", a catch-all label: about a quarter of its words are far-side audio, so the gate's premise
+that D is a purely local voice does not hold. Even at the raw mic's recall on local speech (0.72)
+the reachable D share is 0.72 x 358/466 = 0.55. Gate (d) stays above 0.25 with the hypothesis
+clipped to the reference's span (0.434-0.445); with a word-perfect mic track it was 0.299 (round 1), so
+the floor is the untouched system-track decode against the cloud reference, not the mic track.
+
+22 of the 63 AEC mic windows decode to nothing; each one checked is a far-side-only window
+the AEC took from about -23 dB to -52..-64 dB (raw mic vs tap within 4 dB), i.e. correctly empty, not a
+decode failure.
+
+Echo lag over 10 s windows with a confident PHAT peak: -7.1 ms in 143 of 154; 6 windows at
+about -50 ms around 1690-1760 s (AEC p50 only 6 dB on the five at -49.9 ms) and 5 at about +32 ms
+from 1800 s. So
+"constant across the file" holds for the bulk, not for the last five minutes; a fixed-delay
+assumption anywhere downstream would be wrong there.
+
 ## AEC pre-pass (synthetic) (yap24-NT11)
 
 `tests/meeting_cross_track_bleed.rs`, debug build:

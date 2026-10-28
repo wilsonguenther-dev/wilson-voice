@@ -99,6 +99,69 @@ PY
 
 python3 -I "$here/compare-reference.py" --tracks "$work/t0.json" "$work/t1.json" "$work/reference.txt" | tee "$work/scores.txt"
 
+# INFORMATIONAL, never a gate (fix round 2026-10-27): the numbers a human needs
+# to read gates (b)-D and (d) honestly. Printed as info_* lines; the gate block
+# below reads scores.txt only and is unchanged.
+#  - info_rendered_wer_in_reference_span: rendered WER with the hypothesis cut
+#    to the span the cloud reference covers (it starts offset_seconds into the
+#    audio, so every word decoded before that is scored as an insertion).
+#  - D words split by what the mic physically heard in each reference block:
+#    "playback" = the AEC removed >= 10 dB there, i.e. the block's audio reached
+#    the mic through the speakers (it is in the system tap). D's Me share is
+#    also given over the remaining blocks only, with its ceiling.
+python3 -I - "$here/compare-reference.py" "$work" <<'PY'
+import importlib.util, math, sys, wave
+from array import array
+spec = importlib.util.spec_from_file_location("cr", sys.argv[1])
+cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
+work = sys.argv[2]
+blocks, speakers = cr.parse_reference(open(work + "/reference.txt", encoding="utf-8").read())
+segs = {k: cr.timed_json_segments(f"{work}/t{k}.json") for k in (0, 1)}
+ref = [w for _, _, ws in blocks for w in ws]
+ref_who = [who for _, who, ws in blocks for _ in ws]
+ref_blk = [b for b, (_, _, ws) in enumerate(blocks) for _ in ws]
+offset = 0.0
+for line in open(work + "/scores.txt"):
+    if line.startswith("offset_seconds="):
+        try:
+            offset = float(line.split("=", 1)[1])
+        except ValueError:
+            pass
+if math.isnan(offset):
+    offset = 0.0
+lo = blocks[0][0] + offset if blocks else 0.0
+hi = (blocks[-1][0] + offset + 30.0) if blocks else 0.0
+clipped = {k: [s for s in segs[k] if s[1] > lo and s[0] < hi] for k in segs}
+merged = sorted((p for k in clipped for p in cr.timed_words(clipped[k])), key=lambda p: p[1])
+c = cr.counts(cr.align(ref, [w for w, _ in merged]))
+print(f"info_rendered_wer_in_reference_span={cr.wer(c, len(ref)):.4f}")
+def energies(path):
+    w = wave.open(path, "rb"); rate = w.getframerate(); out = []
+    while True:
+        raw = w.readframes(rate)
+        if not raw:
+            break
+        a = array("h"); a.frombytes(raw)
+        out.append(sum(x * x for x in a) + 1.0)
+    return out
+e_mic = energies(work + "/call.t0.wav"); e_aec = energies(work + "/call.t0.aec.wav")
+playback = set()
+for b, (start, _, _) in enumerate(blocks):
+    end = blocks[b + 1][0] if b + 1 < len(blocks) else start + 20.0
+    s0 = int(start + offset); s1 = max(s0 + 1, int(min(end, start + 20.0) + offset))
+    m = sum(e_mic[s0:s1]); a = sum(e_aec[s0:s1])
+    if m and a and 10.0 * math.log10(m / a) >= 10.0:
+        playback.add(b)
+found = {i for op, i, _ in cr.align(ref, [w for w, _ in cr.timed_words(segs[0])]) if op == cr.MATCH}
+d_all = [i for i, who in enumerate(ref_who) if who == "D"]
+d_loc = [i for i in d_all if ref_blk[i] not in playback]
+nan = float("nan")
+print(f"info_D_words={len(d_all)}")
+print(f"info_D_words_in_playback_blocks={len(d_all) - len(d_loc)}")
+print(f"info_share_t0_D_outside_playback_blocks={(sum(1 for i in d_loc if i in found) / len(d_loc)) if d_loc else nan:.4f}")
+print(f"info_share_t0_D_ceiling_if_every_local_word_found={(len(d_loc) / len(d_all)) if d_all else nan:.4f}")
+PY
+
 # Gates (a)-(e). Speaker letters are reference order; the owner is B, local D, remote A and C.
 python3 -I - "$work/scores.txt" "$work/aec.json" <<'PY'
 import json, sys
