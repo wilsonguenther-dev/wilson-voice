@@ -149,7 +149,7 @@ fn the_label_follows_the_same_branch_the_target_does() {
         );
     }
 
-    // A call whose second track delivered words: the one "Me" configuration.
+    // A call whose second track delivered words: the one "You" configuration.
     let call = [
         seg(0.0, MIC_TRACK, "can we ship on friday"),
         seg(4.0, SYSTEM_TRACK, "friday works for us"),
@@ -248,7 +248,7 @@ fn speaker_label_decides_on_the_target_and_never_on_an_identity_flag() {
 /// — not one 'Me' label swallowing both voices."
 ///
 /// YV125 shipped the second clause (an `in_person` meeting routes to
-/// `ClusterTrackA` and its transcript carries no "Me") and instrumented the
+/// `ClusterTrackA` and its transcript carries no "You") and instrumented the
 /// first with an expiring test, because on that base there was no clusterer and
 /// producing "two clusters" would have meant inventing them. YV126 added
 /// `cluster_track` and `meeting_segments.cluster_index` (migration 5), so the
@@ -297,7 +297,7 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
 }
 
 /// The two labels are different strings. Without this, every assertion above
-/// would still pass if somebody set `UNCLUSTERED_SPEAKER_LABEL = "Me"`.
+/// would still pass if somebody set `UNCLUSTERED_SPEAKER_LABEL = "You"`.
 #[test]
 fn the_branch_is_not_vacuous() {
     assert_ne!(UNCLUSTERED_SPEAKER_LABEL, MIC_SPEAKER_LABEL);

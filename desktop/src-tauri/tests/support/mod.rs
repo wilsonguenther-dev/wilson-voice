@@ -98,7 +98,7 @@ pub fn seed_meeting(db: &Database, dir: &std::path::Path, title: &str, texts: &[
 ///
 /// YV125 — the row is created as [`MeetingKind::Virtual`], which is what a
 /// two-track meeting IS: a call whose other participants arrived on their own
-/// track. That is also the one kind under which the mic track is labelled "Me",
+/// track. That is also the one kind under which the mic track is labelled "You",
 /// so a seeder that left it `unknown` would quietly make every Me/Them
 /// expectation in this suite unreachable.
 pub fn seed_two_track_meeting(

@@ -103,7 +103,7 @@ fn a_mic_only_meeting_is_byte_for_byte_what_merge_timed_produces() {
         );
         assert_eq!(a.end_seconds.to_bits(), b.end_seconds.to_bits());
         assert_eq!(a.track, 0);
-        // NOT "Me" (YV125): the user said this was a call, and the call's
+        // NOT "You" (YV125): the user said this was a call, and the call's
         // audio never arrived on a second track — so the microphone carried
         // whatever was in the room, exactly as it would in person. The TIMES
         // are what this file guards, and they are untouched above.
@@ -182,6 +182,6 @@ fn a_two_track_meeting_is_re_timed_which_is_the_whole_point() {
         80.0 * 1.0001,
         them.start_seconds
     );
-    assert_eq!(them.speaker, "Them");
+    assert_eq!(them.speaker, "Call");
     assert_eq!(merged.len(), 9, "the mic's eight spans plus the tap's one");
 }

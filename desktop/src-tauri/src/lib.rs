@@ -139,6 +139,9 @@ pub mod mic_auth;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
+// yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
+pub mod net;
+pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
 pub mod nudge;
@@ -7934,6 +7937,9 @@ fn begin_meeting(
         return Ok(controller.status());
     }
     controller.start_with_kind(&meetings_dir(), title, kind)?;
+    // yap-notetaker-notes — the light live transcript; it ends by itself when
+    // this meeting's capture leaves the active slot.
+    live_transcript::spawn(app.clone(), st.transcription.clone());
     let status = controller.status();
     // A recording started: whatever offer the pill was holding is answered.
     meeting_detect::clear(app, None);

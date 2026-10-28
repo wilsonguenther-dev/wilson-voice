@@ -25,7 +25,7 @@ use wilson_voice_lib::meetings::{
 
 /// Every fixture in this file is a CALL whose second track really was recorded
 /// — the one configuration in which the microphone holds exactly one speaker,
-/// and therefore the only one whose mic lines read "Me" (YV125). The rules
+/// and therefore the only one whose mic lines read "You" (YV125). The rules
 /// under test here (ordering, tie-break, whitespace, dropped blanks) are the
 /// same under either kind; `meeting_kind_branch.rs` is where the branch itself
 /// is the subject.
@@ -76,22 +76,22 @@ fn mixed_tracks_render_as_one_interleaved_me_them_list() {
         vec![
             (
                 "00:00:00".to_string(),
-                "Me",
+                "You",
                 "can we ship the notarised build on friday".to_string()
             ),
             (
                 "00:00:04".to_string(),
-                "Them",
+                "Call",
                 "friday works if the signing cert lands".to_string()
             ),
             (
                 "00:00:12".to_string(),
-                "Me",
+                "You",
                 "then we hold the price where it is".to_string()
             ),
             (
                 "00:00:17".to_string(),
-                "Them",
+                "Call",
                 "agreed nobody is discounting this quarter".to_string()
             ),
         ],
@@ -176,14 +176,14 @@ fn an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in() {
 /// one place, for both surfaces (YV125).
 #[test]
 fn labels_come_from_the_track_and_an_unknown_track_is_not_you() {
-    // The only configuration in which the microphone may be called "Me".
+    // The only configuration in which the microphone may be called "You".
     assert_eq!(
         meetings::speaker_label(MIC_TRACK, DiarizationTarget::MicIsMe),
-        "Me"
+        "You"
     );
     assert_eq!(
         meetings::speaker_label(SYSTEM_TRACK, DiarizationTarget::MicIsMe),
-        "Them"
+        "Call"
     );
     // Where the mic is the track being clustered, it is NOT this user — it is
     // whoever was in the room, and nothing has told them apart yet.
@@ -216,7 +216,7 @@ fn two_track_detection_is_about_the_segments_not_the_meeting_row() {
 /// Silence on the far side is routine — the far end is muted, or nobody has
 /// spoken yet — and the ASR still emits spans for it, with no words in them.
 /// `render_transcript` drops those, so a UI that widened its speaker gutter on
-/// the raw rows would reserve room for a "Them" who is on neither the screen
+/// the raw rows would reserve room for a "Call" who is on neither the screen
 /// nor in the exported file. `transcript.test.ts`'s "does not widen the gutter
 /// for a tap track that renders nothing" is the twin of this case.
 #[test]

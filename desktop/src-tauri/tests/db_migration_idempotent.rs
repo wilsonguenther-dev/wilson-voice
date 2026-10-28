@@ -396,7 +396,7 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
 /// asked. That is exactly why it is `unknown` and why no backfill exists:
 /// `unknown` is the branch that CLUSTERS Track A, so a meeting whose kind was
 /// never asked is never mistaken for one whose microphone held a single
-/// speaker. Guessing `virtual` to preserve those rows' "Me" labels would be
+/// speaker. Guessing `virtual` to preserve those rows' "You" labels would be
 /// inventing an answer on the one question finding #4 says was being answered
 /// wrongly by assumption.
 #[test]

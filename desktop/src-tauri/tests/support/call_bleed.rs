@@ -32,8 +32,8 @@ impl Who {
     /// The label the shipped renderer and the notes use for this speaker.
     pub fn label(self) -> &'static str {
         match self {
-            Who::Me => "Me",
-            Who::Them => "Them",
+            Who::Me => "You",
+            Who::Them => "Call",
             Who::Here => "Someone here",
         }
     }

@@ -101,7 +101,7 @@ const MEETING_SECONDS: f64 = 45.0;
 ///
 /// Four Me/Them pairs sit closer together than [`SYSTEM_START_OFFSET_SECONDS`]
 /// with **Me** first, which is what makes the un-rebased control fail: dropping
-/// the rebase slides every "Them" 0.75 s early and swaps exactly those four.
+/// the rebase slides every "Call" 0.75 s early and swaps exactly those four.
 const CONVERSATION: [(f64, i64, &str); 13] = [
     (2.0, MIC_TRACK as i64, "avocado"),
     (5.0, SYSTEM_TRACK as i64, "bramble"),
@@ -615,7 +615,7 @@ fn a_mic_only_meeting_walks_the_same_chain_and_never_grows_a_them() {
     // Rendered as the CALL it was started as, which is the strong version of
     // the claim: even under `Virtual`, a meeting whose second track never
     // arrived falls back to clustering Track A (YV125), so every line is the
-    // one unnamed speaker and none of them is a phantom "Them".
+    // one unnamed speaker and none of them is a phantom "Call".
     let lines = render_transcript(&rows, MeetingKind::Virtual);
     assert!(
         lines.iter().all(|l| l.speaker == UNCLUSTERED_SPEAKER_LABEL),

@@ -1,5 +1,5 @@
 //! YV126 — the write path: an `in_person` meeting comes out of clustering with
-//! TWO speakers stored on its transcript rows, not one "Me".
+//! TWO speakers stored on its transcript rows, not one "You".
 //!
 //! ```sh
 //! cargo test --test meeting_cluster_attribution
@@ -8,7 +8,7 @@
 //! This is the second half of YV125's manual acceptance criterion ("a synthetic
 //! two-speaker `in_person`-kind recording produces two distinct, unnamed speaker
 //! clusters on Track A — not one 'Me' label swallowing both voices"). YV125
-//! shipped the first half (the branch stops calling the room "Me") and
+//! shipped the first half (the branch stops calling the room "You") and
 //! instrumented the gap with an expiring test, because on that base there was no
 //! clusterer to produce two clusters with. This file closes it at the mechanism
 //! level: real `cluster_track`, real `attribute_clusters`, real migration-5
@@ -133,7 +133,7 @@ fn an_in_person_meeting_stores_two_distinct_clusters_on_track_a() {
          half of YV125's criterion"
     );
 
-    // …and the transcript still refuses to call any of it "Me", because a
+    // …and the transcript still refuses to call any of it "You", because a
     // microphone in a room is not a person (YV125's first half, unchanged).
     let m = db.get_meeting(&meeting.id).unwrap().unwrap();
     let lines = render_transcript(&after, m.kind());
@@ -188,7 +188,7 @@ fn a_row_takes_the_cluster_it_shares_the_most_time_with() {
 
 /// One pass clusters ONE track. Rows on the other track are not returned at all
 /// — not even as `None` — so a virtual meeting's mic rows, which the YV125
-/// branch files as "Me" by mechanism rather than by clustering, cannot be
+/// branch files as "You" by mechanism rather than by clustering, cannot be
 /// cleared by a pass that never looked at them.
 #[test]
 fn attribution_never_touches_a_track_the_pass_did_not_cluster() {

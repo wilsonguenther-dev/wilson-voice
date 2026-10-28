@@ -104,8 +104,8 @@ fn split_in_two(
 fn expected_turns() -> Vec<(String, String)> {
     let mut want = Vec::new();
     for (_, q, a) in TURNS {
-        want.push(("Them".to_string(), q.to_string()));
-        want.push(("Me".to_string(), a.to_string()));
+        want.push(("Call".to_string(), q.to_string()));
+        want.push(("You".to_string(), a.to_string()));
     }
     want
 }
@@ -127,8 +127,8 @@ fn truth() -> Vec<(&'static str, f64)> {
 fn naive_merge() -> Vec<MergedSpan> {
     let mut out: Vec<MergedSpan> = Vec::new();
     for (track, speaker, chunks) in [
-        (MIC_TRACK, "Me", mic_chunks()),
-        (SYSTEM_TRACK, "Them", tap_chunks()),
+        (MIC_TRACK, "You", mic_chunks()),
+        (SYSTEM_TRACK, "Call", tap_chunks()),
     ] {
         for span in merge_timed(&chunks) {
             out.push(MergedSpan {

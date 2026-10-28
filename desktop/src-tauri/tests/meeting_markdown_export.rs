@@ -55,8 +55,8 @@ fn a_three_segment_meeting_round_trips_readably() {
     // `seed_meeting` starts a meeting the way `Database::create_meeting` does —
     // with the kind picker skipped — so this row is `unknown`, its single mic
     // track is the one that has to be clustered, and its lines are the
-    // un-named speaker rather than "Me" (YV125, merged finding #4). The
-    // configuration that still reads "Me" is a call with a live second track:
+    // un-named speaker rather than "You" (YV125, merged finding #4). The
+    // configuration that still reads "You" is a call with a live second track:
     // `meeting_markdown_export_two_track.rs` covers it, and
     // `meeting_transcript_render_single_track_unchanged.rs` proves the speaker
     // WORD is the only byte of this document that YV125 moved.
@@ -71,7 +71,7 @@ fn a_three_segment_meeting_round_trips_readably() {
         "**[00:00:08] {who}:** and we hold the price at nineteen dollars"
     )));
     assert!(
-        !round_tripped.contains("] Me:**"),
+        !round_tripped.contains("] You:**"),
         "a meeting whose kind was never asked may not claim the microphone was \
          only this user:\n{round_tripped}"
     );

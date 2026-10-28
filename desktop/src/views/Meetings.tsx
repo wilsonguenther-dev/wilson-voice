@@ -7,6 +7,7 @@ import {
 import NotesView from "../meetings/NotesView";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
+import LiveTranscript from "../meetings/LiveTranscript";
 import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
@@ -171,6 +172,8 @@ export default function Meetings() {
                         {systemAudioBadge(meetingStatus)}
                       </span>
                     )}
+                    {/* yap-notetaker-notes — the light live transcript. */}
+                    <LiveTranscript recording={meetingStatus.recording} />
                   </div>
                   <span className="rec-clock">{elapsedLabel(meetingStatus)}</span>
                   <button

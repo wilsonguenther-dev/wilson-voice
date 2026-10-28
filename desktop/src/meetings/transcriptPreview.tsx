@@ -12,7 +12,7 @@
  *   * `blank-tap` — a virtual meeting whose far side never made a sound: the
  *     tap recorded rows, the ASR found no words in them, and the screen must
  *     look exactly like the mic-only one. This scene exists because the review
- *     of YV108 found the opposite — labelled empty "Them" rows and a widened
+ *     of YV108 found the opposite — labelled empty "Call" rows and a widened
  *     speaker gutter for a speaker the exported file did not contain.
  *
  * Same rules as `license/preview.tsx` and `meetings/preview.tsx`: a BUILD ENTRY

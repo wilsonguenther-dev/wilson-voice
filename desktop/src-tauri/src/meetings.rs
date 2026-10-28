@@ -92,7 +92,7 @@ pub const FAILED_AUDIO_CEILING_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 /// 22-A records one track: the mic, which is the person holding the Mac.
 /// Labelling it costs nothing today and is what makes the 22-B upgrade legible
 /// ("now it can tell you apart from the room") — finding #10.
-pub const MIC_SPEAKER_LABEL: &str = "Me";
+pub const MIC_SPEAKER_LABEL: &str = "You";
 
 /// YV108 — the counterpart finding #10 promised: everything that reached the
 /// Mac's speakers rather than its microphone, which in a virtual meeting is
@@ -101,7 +101,7 @@ pub const MIC_SPEAKER_LABEL: &str = "Me";
 /// Deliberately NOT a name and not per-person: the system track is one mixed
 /// stream of every remote participant, and telling those apart is diarization
 /// (yap23). "Them" is the honest granularity this phase actually has.
-pub const SYSTEM_SPEAKER_LABEL: &str = "Them";
+pub const SYSTEM_SPEAKER_LABEL: &str = "Call";
 
 /// YV125 — what the mic track is called when it is the track that has to be
 /// CLUSTERED, and clustering has not run yet.
@@ -1133,7 +1133,7 @@ pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<
 ///
 /// ## Transcript
 ///
-/// **[00:00:00] Me:** first thing said
+/// **[00:00:00] You:** first thing said
 /// ```
 ///
 /// Every transcript line begins with the bold timestamp, so segment text that
@@ -1174,7 +1174,7 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
 
     if let Some(summary) = meeting.summary.as_deref().filter(|s| !s.trim().is_empty()) {
         out.push_str("## Summary\n\n");
-        out.push_str(&export_notes_body(summary));
+        out.push_str(&checkbox_action_items(&export_notes_body(summary)));
         out.push_str("\n\n");
     }
 
@@ -1219,6 +1219,32 @@ pub fn export_notes_body(summary: &str) -> String {
     }
 }
 
+/// yap-notetaker-notes — in the export, every bullet under an
+/// `### Action items` heading becomes a Markdown task (`- [ ] `), so the file
+/// opens in Obsidian / GitHub / Notes as a checklist. Other sections, and a
+/// bullet already written as a task, are left exactly as stored.
+pub fn checkbox_action_items(body: &str) -> String {
+    let mut in_actions = false;
+    let mut out = Vec::new();
+    for line in body.lines() {
+        if let Some(h) = line.strip_prefix("### ") {
+            in_actions = h.trim().eq_ignore_ascii_case("action items");
+            out.push(line.to_string());
+            continue;
+        }
+        if line.starts_with("## ") {
+            in_actions = false;
+        }
+        match line.strip_prefix("- ") {
+            Some(rest) if in_actions && !rest.starts_with("[ ] ") && !rest.starts_with("[x] ") => {
+                out.push(format!("- [ ] {rest}"));
+            }
+            _ => out.push(line.to_string()),
+        }
+    }
+    out.join("\n")
+}
+
 /// Collapse any whitespace (including the newlines a transcript should never
 /// contain but might) into single spaces, so one segment is always one line.
 fn one_line(s: &str) -> String {
@@ -1229,6 +1255,16 @@ fn one_line(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn export_turns_action_items_into_tasks_and_nothing_else() {
+        let body = "**Pricing**\n\nWe met.\n\n### Decisions\n\n- Keep $49 (00:01)\n\n### Action items\n\n- Send the doc (Call, 00:02)\n- [ ] Already a task\n\n### Open questions\n\n- Annual discount? (00:03)";
+        let out = checkbox_action_items(body);
+        assert!(out.contains("- Keep $49 (00:01)"), "{out}");
+        assert!(out.contains("- [ ] Send the doc (Call, 00:02)"), "{out}");
+        assert!(out.contains("- [ ] Already a task") && !out.contains("[ ] [ ]"), "{out}");
+        assert!(out.contains("- Annual discount? (00:03)"), "{out}");
+    }
 
     fn meeting() -> Meeting {
         Meeting {
@@ -1289,7 +1325,7 @@ mod tests {
     fn markdown_has_headers_timestamps_and_body() {
         // The fixture meeting's `kind` is `unknown` — the picker was skipped —
         // so its single mic track is the one that has to be clustered and it is
-        // NOT labelled "Me" (YV125). `a_virtual_meeting_with_a_second_track_is_still_me_and_them`
+        // NOT labelled "Me" (YV125). `a_virtual_meeting_with_a_second_track_is_still_you_and_call`
         // covers the case that still may be.
         let md = render_markdown(
             &meeting(),
@@ -1302,18 +1338,19 @@ mod tests {
         assert!(md.contains("- **Duration:** 12m 30s"));
     }
 
-    /// The configuration where the mic really is one speaker, still rendered
-    /// exactly as YV108 shipped it.
+    /// The configuration where the mic really is one speaker: the two tracks
+    /// read as turns, track 0 "You" and track 1 "Call" (yap-notetaker-notes;
+    /// YV108 shipped them as Me / Them).
     #[test]
-    fn a_virtual_meeting_with_a_second_track_is_still_me_and_them() {
+    fn a_virtual_meeting_with_a_second_track_is_still_you_and_call() {
         let mut m = meeting();
         m.kind = MeetingKind::Virtual.as_str().into();
         let mut them = seg(2.0, "morning, can you hear me");
         them.track = SYSTEM_TRACK;
         let md = render_markdown(&m, &[seg(0.0, "morning everyone"), them]);
-        assert!(md.contains("**[00:00:00] Me:** morning everyone"), "{md}");
+        assert!(md.contains("**[00:00:00] You:** morning everyone"), "{md}");
         assert!(
-            md.contains("**[00:00:02] Them:** morning, can you hear me"),
+            md.contains("**[00:00:02] Call:** morning, can you hear me"),
             "{md}"
         );
     }

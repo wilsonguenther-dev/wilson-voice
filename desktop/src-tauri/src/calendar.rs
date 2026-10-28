@@ -314,6 +314,6 @@ pub fn them_owner_label(other_party: Option<&str>) -> String {
     other_party
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .unwrap_or("Them")
+        .unwrap_or(crate::meetings::SYSTEM_SPEAKER_LABEL)
         .to_string()
 }

@@ -1187,7 +1187,9 @@ where
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let partial = partial_path(dest);
-    let client = reqwest::Client::new();
+    // yap-notetaker-notes — the one HTTP door (see `net`); the privacy test
+    // installs a deny-all egress here.
+    let client = crate::net::http_client("model-download")?;
     let mut last_err = "no download URLs configured".to_string();
     let download_started = std::time::Instant::now();
 

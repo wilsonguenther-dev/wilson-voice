@@ -86,7 +86,7 @@ fn the_grammar_is_byte_identical_with_and_without_speakers() {
         bare_grammar, attributed_grammar,
         "speakers reached the prompt and not the grammar"
     );
-    for name in ["Jeisil", "Aidan", "speaker", "Speaker", "Me", "Them"] {
+    for name in ["Jeisil", "Aidan", "speaker", "Speaker", "You", "Call"] {
         assert!(
             !attributed_grammar.contains(name),
             "{name:?} must not appear anywhere in the grammar:\n{attributed_grammar}"

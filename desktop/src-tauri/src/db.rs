@@ -2569,7 +2569,8 @@ impl Database {
     }
 
     /// Meetings newest-first. A non-empty `query` searches segment text through
-    /// FTS5 **and** the title, so "yesterday's standup" is findable both by what
+    /// FTS5 **and** the title **and** the stored notes (summary, decisions,
+    /// action items — yap-notetaker-notes), so "yesterday's standup" is findable both by what
     /// it was called and by what was said in it.
     pub fn list_meetings(&self, limit: i64, query: Option<String>) -> Result<Vec<Meeting>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -2601,6 +2602,7 @@ impl Database {
         let sql = format!(
             "SELECT {MEETING_COLS} FROM meetings m
              WHERE m.title LIKE ?2
+                OR m.summary LIKE ?2
                 OR m.id IN (
                      SELECT s.meeting_id FROM meeting_segments_fts f
                      JOIN meeting_segments s ON s.rowid = f.rowid
@@ -2631,6 +2633,7 @@ impl Database {
             .prepare(&format!(
                 "SELECT {MEETING_COLS} FROM meetings m
                  WHERE m.title LIKE ?2
+                    OR m.summary LIKE ?2
                     OR m.id IN (SELECT s.meeting_id FROM meeting_segments s
                                 WHERE s.text LIKE ?2 AND s.suppressed_as_echo = 0)
                  ORDER BY m.started_at DESC LIMIT ?1"

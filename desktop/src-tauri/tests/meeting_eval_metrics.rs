@@ -178,13 +178,13 @@ fn median_segment_seconds_is_a_median_not_a_mean() {
 fn planted() -> Vec<PlantedItem> {
     vec![
         PlantedItem {
-            owner: "Me".into(),
+            owner: "You".into(),
             keywords: ["send", "revised", "budget", "outline"]
                 .map(String::from)
                 .to_vec(),
         },
         PlantedItem {
-            owner: "Them".into(),
+            owner: "Call".into(),
             keywords: ["call", "caterer", "confirm", "headcount"]
                 .map(String::from)
                 .to_vec(),
@@ -210,9 +210,9 @@ fn notes_owner_accuracy_is_one_for_right_owners_and_zero_for_wrong_ones() {
     let right = [
         note(
             "Send the revised budget outline to the group by Friday",
-            "Me",
+            "You",
         ),
-        note("Call the caterer to confirm the headcount", "Them"),
+        note("Call the caterer to confirm the headcount", "Call"),
         note("Pick up the folding tables from the church", "Someone here"),
     ];
     assert_eq!(notes_owner_accuracy(&planted(), &right), 1.0);
@@ -221,10 +221,10 @@ fn notes_owner_accuracy_is_one_for_right_owners_and_zero_for_wrong_ones() {
     let echoed = [
         note(
             "Send the revised budget outline to the group by Friday",
-            "Me",
+            "You",
         ),
-        note("Call the caterer to confirm the headcount", "Me"),
-        note("Pick up the folding tables from the church", "Me"),
+        note("Call the caterer to confirm the headcount", "You"),
+        note("Pick up the folding tables from the church", "You"),
     ];
     assert!((notes_owner_accuracy(&planted(), &echoed) - 1.0 / 3.0).abs() < 1e-9);
 }
@@ -234,7 +234,7 @@ fn notes_owner_accuracy_counts_blank_owners_and_missed_items_as_wrong() {
     let blank = [note("Send the revised budget outline to the group", "")];
     assert_eq!(notes_owner_accuracy(&planted(), &blank), 0.0);
     // An item about something else never matches, even with the right owner.
-    let unrelated = [note("Order umbrellas for the door", "Me")];
+    let unrelated = [note("Order umbrellas for the door", "You")];
     assert_eq!(notes_owner_accuracy(&planted(), &unrelated), 0.0);
     assert_eq!(notes_owner_accuracy(&planted(), &[]), 0.0);
     assert_eq!(notes_owner_accuracy(&[], &blank), 0.0);
@@ -243,8 +243,8 @@ fn notes_owner_accuracy_counts_blank_owners_and_missed_items_as_wrong() {
 #[test]
 fn notes_owner_accuracy_matches_the_best_item_and_ignores_case() {
     let notes = [
-        note("Order umbrellas for the door", "Them"),
-        note("send revised budget outline", "me"),
+        note("Order umbrellas for the door", "Call"),
+        note("send revised budget outline", "you"),
     ];
     let one = &planted()[..1];
     assert_eq!(notes_owner_accuracy(one, &notes), 1.0);
@@ -338,11 +338,11 @@ fn the_script_plants_six_commitments_and_two_decisions_with_owners() {
             keywords.iter().all(|w| words.iter().any(|t| t == w)),
             "{keywords:?} are not all in {text}"
         );
-        assert!(["Me", "Them", "Someone here"].contains(owner));
+        assert!(["You", "Call", "Someone here"].contains(owner));
     }
     let count = |who: &str| commitments.iter().filter(|c| c.0 == who).count();
     assert_eq!(
-        (count("Them"), count("Me"), count("Someone here")),
+        (count("Call"), count("You"), count("Someone here")),
         (3, 2, 1)
     );
 }
@@ -377,7 +377,7 @@ fn the_script_follows_the_corpus_rules() {
 fn reference_blocks_are_m_ss_speaker_headers_then_text() {
     let turns = vec![
         CallTurn {
-            speaker: "Them".into(),
+            speaker: "Call".into(),
             voice: "Fred".into(),
             track: "track1.wav".into(),
             text: "Hello there everyone.".into(),
@@ -385,7 +385,7 @@ fn reference_blocks_are_m_ss_speaker_headers_then_text() {
             end_seconds: 3.0,
         },
         CallTurn {
-            speaker: "Me".into(),
+            speaker: "You".into(),
             voice: "Samantha".into(),
             track: "track0.wav".into(),
             text: "Hi.".into(),
@@ -395,6 +395,6 @@ fn reference_blocks_are_m_ss_speaker_headers_then_text() {
     ];
     assert_eq!(
         reference_blocks(&turns),
-        "0:00 - Them\nHello there everyone.\n\n1:15 - Me\nHi.\n"
+        "0:00 - Call\nHello there everyone.\n\n1:15 - You\nHi.\n"
     );
 }

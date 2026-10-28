@@ -1357,6 +1357,12 @@ impl MeetingJournal {
         })
     }
 
+    /// yap-notetaker-notes — each track's raw spill (i16 LE mono, 16 kHz),
+    /// track order. The live transcript reads their tails while recording.
+    pub fn spill_paths(&self) -> Vec<PathBuf> {
+        self.spills.clone()
+    }
+
     /// How many tracks this journal was opened for.
     pub fn tracks(&self) -> usize {
         self.spills.len()
@@ -2560,6 +2566,17 @@ impl MeetingCapture {
     /// How many tracks this meeting is recording.
     pub fn tracks(&self) -> usize {
         self.inner.lock().tracks.len()
+    }
+
+    /// yap-notetaker-notes — this meeting's spill files, one per track; empty
+    /// when the journal is off (then there is no live transcript to show).
+    pub fn spill_paths(&self) -> Vec<PathBuf> {
+        self.inner
+            .lock()
+            .journal
+            .as_ref()
+            .map(|j| j.spill_paths())
+            .unwrap_or_default()
     }
 
     /// yap24-NT1 (R1) — bind this meeting's journal to its DB row. A capture

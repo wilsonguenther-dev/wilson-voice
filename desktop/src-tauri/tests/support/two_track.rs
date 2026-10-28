@@ -70,7 +70,7 @@ pub const RESIDUAL_HORIZON_SECONDS: f64 = 3.0 * 60.0 * 60.0;
 
 /// The budget YV107's spec sets and this harness re-asserts end to end: 50 ms
 /// of residual cross-track offset at [`RESIDUAL_HORIZON_SECONDS`]. Well under a
-/// syllable, which is the unit that decides whether "Me" or "Them" said
+/// syllable, which is the unit that decides whether "You" or "Call" said
 /// something first.
 pub const RESIDUAL_BUDGET_MS: f64 = 50.0;
 

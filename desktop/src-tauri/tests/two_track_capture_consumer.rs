@@ -223,7 +223,7 @@ fn a_tap_block_never_reaches_a_dictation_take() {
 fn a_tap_block_into_a_mic_only_meeting_is_dropped_not_folded_into_track_zero() {
     // A 22-A (one-track) meeting with a tap somehow running — a rebuild landing
     // a beat after the user stopped a virtual meeting and started an in-person
-    // one. Mixing the room into "Me" would be a silent, unfixable corruption of
+    // one. Mixing the room into "You" would be a silent, unfixable corruption of
     // the one track the user is sure about.
     let dir = tmpdir("mic-only");
     let journal = MeetingJournal::start(&dir, 1).expect("journal");

@@ -367,8 +367,8 @@ the row's `prompt` as its `instruction`, with the stage's own deadline.
 
 The two-track meeting the headless notetaker proof (`scripts/notetaker-e2e.sh`)
 runs through `wilson-voice --transcribe-meeting track0.wav --sys track1.wav`:
-`track0.wav` is the microphone ("Me"), `track1.wav` the system-audio track
-("Them"). A few seconds each, 16 kHz mono 16-bit, rendered on the machine with
+`track0.wav` is the microphone ("You"), `track1.wav` the system-audio track
+("Call"). A few seconds each, 16 kHz mono 16-bit, rendered on the machine with
 the same recipe as `quick-brown-fox-16k.wav` from invented, mundane sentences
 with no names, so the proof needs no network and no owner-gated corpus:
 
