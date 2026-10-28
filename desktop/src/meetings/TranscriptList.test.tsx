@@ -66,8 +66,8 @@ describe("TranscriptList", () => {
     expect(rows(html)).toBe(2);
     expect(html).toContain("real words");
     expect(html).toContain("also real");
-    // The blank span drew no labelled row: "Them" appears nowhere.
-    expect(html).not.toContain("Them");
+    // The blank span drew no labelled row: "Call" appears nowhere.
+    expect(html).not.toContain("Call");
   });
 
   it("shows the collapsed text, the same string the export writes", () => {
@@ -122,7 +122,7 @@ describe("TranscriptList", () => {
   /**
    * YV125 — the component reads the meeting's kind, not just its tracks. A
    * meeting whose kind was never answered draws the un-clustered label, and no
-   * amount of segment shape brings "Me" back.
+   * amount of segment shape brings "You" back.
    */
   it("does not call the microphone Me when the meeting was never a call", () => {
     const room = [
@@ -133,15 +133,16 @@ describe("TranscriptList", () => {
       const html = renderToStaticMarkup(
         <TranscriptList kind={kind} segments={room} />,
       );
-      expect(html).toContain(`>${UNCLUSTERED_SPEAKER_LABEL}</span>`);
-      expect(html).not.toContain(">Me</span>");
+      // yap-notetaker-notes: a single mic track carries no speaker label at all.
+      expect(html).not.toContain(`>${UNCLUSTERED_SPEAKER_LABEL}</span>`);
+      expect(html).not.toContain("seg-who");
     }
     // …and the one branch that still does.
     const call = [...room, seg("c", 6.0, SYSTEM_TRACK, "sounds right")];
     const html = renderToStaticMarkup(
       <TranscriptList kind="virtual" segments={call} />,
     );
-    expect(html).toContain(">Me</span>");
-    expect(html).toContain(">Them</span>");
+    expect(html).toContain(">You</span>");
+    expect(html).toContain(">Call</span>");
   });
 });

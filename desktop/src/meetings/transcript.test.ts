@@ -31,7 +31,7 @@ import {
 /**
  * YV125 — the kind every fixture below runs under unless it says otherwise: a
  * CALL, which is the one configuration in which the microphone holds exactly
- * one speaker and its lines read "Me". `meeting_kind_branch.rs` is the Rust
+ * one speaker and its lines read "You". `meeting_kind_branch.rs` is the Rust
  * twin of the branch itself; the "diarizationTarget" block near the bottom is
  * this file's copy of that truth table.
  */
@@ -55,10 +55,10 @@ describe("orderedTranscript", () => {
     expect(
       orderedTranscript(CONVERSATION, CALL).map((l) => [l.speaker, l.segment.text]),
     ).toEqual([
-      ["Me", "can we ship the notarised build on friday"],
-      ["Them", "friday works if the signing cert lands"],
-      ["Me", "then we hold the price where it is"],
-      ["Them", "agreed nobody is discounting this quarter"],
+      ["You", "can we ship the notarised build on friday"],
+      ["Call", "friday works if the signing cert lands"],
+      ["You", "then we hold the price where it is"],
+      ["Call", "agreed nobody is discounting this quarter"],
     ]);
   });
 
@@ -82,8 +82,8 @@ describe("orderedTranscript", () => {
       ],
       CALL,
     );
-    expect(forwards.map((l) => l.speaker)).toEqual(["Me", "Them"]);
-    expect(backwards.map((l) => l.speaker)).toEqual(["Me", "Them"]);
+    expect(forwards.map((l) => l.speaker)).toEqual(["You", "Call"]);
+    expect(backwards.map((l) => l.speaker)).toEqual(["You", "Call"]);
   });
 
   it("leaves a mic-only transcript in exactly the order it arrived", () => {
@@ -97,7 +97,7 @@ describe("orderedTranscript", () => {
       "2",
       "3",
     ]);
-    // NOT "Me" (YV125), and under `virtual` at that: the user said this was a
+    // NOT "You" (YV125), and under `virtual` at that: the user said this was a
     // call and the call's audio never arrived on a second track, so the
     // microphone carried whatever was in the room. Rust's twin is
     // `a_mic_only_meeting_walks_the_same_chain_and_never_grows_a_them`.
@@ -130,7 +130,7 @@ describe("orderedTranscript", () => {
    *
    * This is the case the first review of YV108 caught: Rust dropped the blank
    * span, the mirror did not, and the same three segments rendered as 2 lines in
-   * the exported file and 3 on screen — the third being a labelled "Them" row
+   * the exported file and 3 on screen — the third being a labelled "Call" row
    * with a timestamp and nothing in it.
    */
   it("never turns an empty span into a blank turn", () => {
@@ -199,18 +199,18 @@ describe("track and label", () => {
   });
 
   it("labels the mic Me only where the mechanism supports it", () => {
-    expect(speakerLabel(MIC_TRACK, "micIsMe")).toBe("Me");
+    expect(speakerLabel(MIC_TRACK, "micIsMe")).toBe("You");
     expect(speakerLabel(MIC_TRACK, "clusterTrackA")).toBe(
       UNCLUSTERED_SPEAKER_LABEL,
     );
     // The system track is not this user's microphone under EITHER branch —
     // that is mechanical, not inferred, so no kind can move it.
-    expect(speakerLabel(SYSTEM_TRACK, "micIsMe")).toBe("Them");
-    expect(speakerLabel(SYSTEM_TRACK, "clusterTrackA")).toBe("Them");
-    expect(speakerLabel(7, "micIsMe")).toBe("Them");
-    expect(speakerLabel(7, "clusterTrackA")).toBe("Them");
+    expect(speakerLabel(SYSTEM_TRACK, "micIsMe")).toBe("Call");
+    expect(speakerLabel(SYSTEM_TRACK, "clusterTrackA")).toBe("Call");
+    expect(speakerLabel(7, "micIsMe")).toBe("Call");
+    expect(speakerLabel(7, "clusterTrackA")).toBe("Call");
     // Not vacuous: the two mic labels are different strings.
-    expect(UNCLUSTERED_SPEAKER_LABEL).not.toBe("Me");
+    expect(UNCLUSTERED_SPEAKER_LABEL).not.toBe("You");
   });
 });
 
@@ -247,8 +247,8 @@ describe("diarizationTarget", () => {
       seg("them", 4, SYSTEM_TRACK, "friday works for us"),
     ];
     expect(orderedTranscript(call, "virtual").map((l) => l.speaker)).toEqual([
-      "Me",
-      "Them",
+      "You",
+      "Call",
     ]);
     const silentTap = [
       seg("mic", 0, MIC_TRACK, "can we ship on friday"),
@@ -260,7 +260,7 @@ describe("diarizationTarget", () => {
     // The hybrid case: the tap delivered, and the room is still clustered.
     expect(orderedTranscript(call, "in_person").map((l) => l.speaker)).toEqual([
       UNCLUSTERED_SPEAKER_LABEL,
-      "Them",
+      "Call",
     ]);
   });
 });
@@ -278,7 +278,7 @@ describe("isTwoTrack", () => {
    *
    * A tap that recorded only silence still produces rows — the ASR emits a span
    * with no words in it — and those rows draw nothing. Widening the speaker
-   * gutter for them would reserve room on screen for a "Them" the transcript
+   * gutter for them would reserve room on screen for a "Call" the transcript
    * does not contain and the export never had. Mirrors `meetings::is_two_track`.
    */
   it("does not widen the gutter for a tap track that renders nothing", () => {

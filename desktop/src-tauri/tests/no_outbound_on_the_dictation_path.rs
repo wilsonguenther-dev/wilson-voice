@@ -127,11 +127,16 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
     (
         "model download",
         &[
-            // `download_file` delegates to its cancellable form, which is
-            // where the request is made.
-            ("models.rs", "download_file_cancellable"),
+            // `download_file` delegates to its cancellable form, which takes
+            // its client from `net::http_client` (below) and makes the
+            // request in `download_attempt`.
             ("models.rs", "download_attempt"),
             ("models.rs", "ensure_silero_vad_model"),
+            // yap-notetaker-notes: the one HTTP-client seam the model
+            // download takes its client from (`Direct` / `DenyAll`), so the
+            // meeting-notes privacy test can deny all egress.
+            ("net.rs", "egress_client"),
+            ("net.rs", "http_client"),
         ],
     ),
     (

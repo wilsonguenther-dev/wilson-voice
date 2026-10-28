@@ -60,25 +60,25 @@ fn a_two_track_export_reads_as_one_labelled_conversation() {
     assert_eq!(
         transcript,
         vec![
-            "**[00:00:00] Me:** can we ship the notarised build on friday",
-            "**[00:00:04] Them:** friday works if the signing cert lands",
-            "**[00:00:09] Me:** the cert cleared this morning",
-            "**[00:00:13] Them:** then i will tell the reseller friday",
-            "**[00:00:18] Me:** and we hold the price where it is",
-            "**[00:00:22] Them:** agreed nobody is discounting this quarter",
+            "**[00:00:00] You:** can we ship the notarised build on friday",
+            "**[00:00:04] Call:** friday works if the signing cert lands",
+            "**[00:00:09] You:** the cert cleared this morning",
+            "**[00:00:13] Call:** then i will tell the reseller friday",
+            "**[00:00:18] You:** and we hold the price where it is",
+            "**[00:00:22] Call:** agreed nobody is discounting this quarter",
         ],
         "the export must be the conversation, in the order it happened"
     );
 
     // Both labels present, and neither one swallowed the other.
     assert_eq!(
-        transcript.iter().filter(|l| l.contains("] Me:**")).count(),
+        transcript.iter().filter(|l| l.contains("] You:**")).count(),
         3
     );
     assert_eq!(
         transcript
             .iter()
-            .filter(|l| l.contains("] Them:**"))
+            .filter(|l| l.contains("] Call:**"))
             .count(),
         3
     );
@@ -100,7 +100,7 @@ fn a_two_track_export_reads_as_one_labelled_conversation() {
 /// The insert order is deliberately NOT the speaking order in the fixture above
 /// (the tap's rows are written after every one of the mic's). If the export
 /// were ordered by `created_at` or by rowid, it would come out grouped by
-/// speaker — three "Me" lines then three "Them" lines — which is exactly the
+/// speaker — three "You" lines then three "Call" lines — which is exactly the
 /// two-columns-to-reconcile failure this item exists to prevent.
 #[test]
 fn the_order_comes_from_the_clock_not_from_the_insert_order() {
@@ -129,12 +129,12 @@ fn the_order_comes_from_the_clock_not_from_the_insert_order() {
 }
 
 /// The other half of the criterion. A mic-only meeting exported through the
-/// same DB path: same lines, same order, no "Them" anywhere, no second wav.
+/// same DB path: same lines, same order, no "Call" anywhere, no second wav.
 ///
 /// YV125 changed exactly one word of it. `seed_meeting` skips the kind picker,
 /// so the row is `unknown`; a meeting nobody said was a call has one recorded
 /// track carrying whoever was in the room, and its lines are the un-named
-/// speaker rather than "Me" (merged finding #4).
+/// speaker rather than "You" (merged finding #4).
 /// `meeting_transcript_render_single_track_unchanged.rs` is what proves that
 /// word is the ONLY byte of this document that moved.
 #[test]
@@ -154,7 +154,7 @@ fn a_mic_only_export_is_unchanged_from_22a() {
 
     let (meeting, md) = db.meeting_markdown(&id).unwrap();
     assert!(meeting.sys_wav_path.is_none());
-    assert!(!md.contains("Them"), "no phantom second speaker:\n{md}");
+    assert!(!md.contains("Call"), "no phantom second speaker:\n{md}");
 
     let transcript: Vec<&str> = md.lines().filter(|l| l.starts_with("**[")).collect();
     let who = meetings::UNCLUSTERED_SPEAKER_LABEL;
@@ -167,7 +167,7 @@ fn a_mic_only_export_is_unchanged_from_22a() {
         ]
     );
     assert!(
-        !md.contains("] Me:**"),
+        !md.contains("] You:**"),
         "one recorded track and no answered kind is not evidence that the \
          microphone held only this user:\n{md}"
     );

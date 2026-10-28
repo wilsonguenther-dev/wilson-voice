@@ -11,11 +11,11 @@
 //!
 //! ## What YV125 changes, and why the fixture was NOT re-captured
 //!
-//! Merged finding #4: labelling the microphone "Me" is a claim about identity
+//! Merged finding #4: labelling the microphone "You" is a claim about identity
 //! derived from a channel number. It holds for a call whose other participants
 //! are on a separate track, and it is false for an in-person meeting, a class,
 //! a hybrid room, or a call whose tap never attached — on all of which track 0
-//! carries the whole room and "Me" swallows every other voice in it. Migration
+//! carries the whole room and "You" swallows every other voice in it. Migration
 //! 4 stores the meeting's kind, `meetings::diarization_target` branches on it,
 //! and a mic-only meeting — which is EVERY meeting recorded before this build,
 //! whose kind reads `unknown` — is the branch that has to be clustered. Until
@@ -147,7 +147,7 @@ fn a_mic_only_export_differs_from_the_pre_yv108_renderer_only_in_the_speaker_wor
 /// a live second track, where the microphone really does hold one speaker.
 ///
 /// This is what stops the fix from being "delete the Me label" — it is a branch,
-/// and this is the branch that still says "Me".
+/// and this is the branch that still says "You".
 #[test]
 fn a_call_with_a_second_track_still_exports_me_byte_for_byte() {
     let mut m = meeting_22a();
@@ -173,7 +173,7 @@ fn a_call_with_a_second_track_still_exports_me_byte_for_byte() {
         );
     }
     assert!(
-        md.contains("**[00:00:12] Them:** sounds right to me"),
+        md.contains("**[00:00:12] Call:** sounds right to me"),
         "{md}"
     );
 }
@@ -196,7 +196,7 @@ fn the_comparison_is_not_vacuous() {
         mask_started(&unmask_speaker(&one_word_off)),
         mask_started(FIXTURE)
     );
-    assert!(mask_started(FIXTURE).contains("**[00:00:04] Me:**"));
+    assert!(mask_started(FIXTURE).contains("**[00:00:04] You:**"));
     // And `unmask_speaker` is not a second mask that could swallow a real
     // difference either: it rewrites the speaker word and leaves the rest,
     // including a segment whose TEXT is the word it rewrites.
@@ -206,7 +206,7 @@ fn the_comparison_is_not_vacuous() {
         segs
     });
     assert!(
-        unmask_speaker(&says_speaker).contains("Me:** Speaker: the notarised"),
+        unmask_speaker(&says_speaker).contains("You:** Speaker: the notarised"),
         "the un-mask must anchor on the export's own punctuation, not on the \
          bare word:\n{}",
         unmask_speaker(&says_speaker)
@@ -218,7 +218,7 @@ fn the_comparison_is_not_vacuous() {
 }
 
 /// The transcript half specifically: same lines, same order, one speaker — and
-/// no phantom "Them" appears, because the render path is track-aware and the
+/// no phantom "Call" appears, because the render path is track-aware and the
 /// kind branch does not invent a second track it never had.
 #[test]
 fn every_line_of_a_mic_only_transcript_is_one_unnamed_speaker_in_input_order() {
@@ -237,7 +237,7 @@ fn every_line_of_a_mic_only_transcript_is_one_unnamed_speaker_in_input_order() {
         vec!["00:00:00", "00:00:04", "00:00:08"]
     );
     assert!(
-        !meetings::render_markdown(&meeting_22a(), &segments).contains("Them"),
+        !meetings::render_markdown(&meeting_22a(), &segments).contains("Call"),
         "a mic-only meeting must never mention a second speaker"
     );
 }

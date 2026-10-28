@@ -270,7 +270,7 @@ fn the_app_cannot_reach_a_named_speaker_yet() {
         .filter_map(|s| speakers.speaker_for(s))
         .map(|s| s.label().to_string())
         .collect();
-    assert_eq!(labels, vec!["Me", "Them"]);
+    assert_eq!(labels, vec!["You", "Call"]);
     let lib = include_str!("../src/lib.rs");
     assert!(
         lib.contains("summarize::TrackSpeakers::for_meeting("),

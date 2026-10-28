@@ -605,7 +605,7 @@ export interface MeetingSegment {
   text: string;
   confidence?: number | null;
   createdAt: string;
-  /** 0 = mic ("Me"), 1 = system audio ("Them"). Absent = mic, per the column's
+  /** 0 = mic ("You"), 1 = system audio ("Call"). Absent = mic, per the column's
    *  `DEFAULT 0`: every row written before migration 3 really was the mic. */
   track?: number | null;
 }

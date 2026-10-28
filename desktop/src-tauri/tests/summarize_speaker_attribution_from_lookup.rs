@@ -201,7 +201,7 @@ fn no_speaker_source_renders_exactly_what_yv97_rendered() {
 ///
 /// `TrackSpeakers::for_meeting` and `meetings::render_transcript` both compute
 /// the target from the meeting's kind and its own segments. If they ever stop
-/// agreeing, an action item says "Them" beside a transcript row that says "Me",
+/// agreeing, an action item says "Call" beside a transcript row that says "You",
 /// on the same screen, about the same sentence.
 #[test]
 fn track_speakers_agree_with_the_rendered_transcript_line_for_line() {
@@ -227,8 +227,14 @@ fn track_speakers_agree_with_the_rendered_transcript_line_for_line() {
 
     // …and it reaches the prompt, in the order the model reads it.
     let lines = transcript_lines_with(&segments, &speakers);
-    assert_eq!(lines[0].render(), format!("seg_0001 (Me): {}", TURNS[0]));
-    assert_eq!(lines[1].render(), format!("seg_0002 (Them): {}", TURNS[1]));
+    assert_eq!(
+        lines[0].render(),
+        format!("seg_0001 ({MIC_SPEAKER_LABEL}): {}", TURNS[0])
+    );
+    assert_eq!(
+        lines[1].render(),
+        format!("seg_0002 ({SYSTEM_SPEAKER_LABEL}): {}", TURNS[1])
+    );
 }
 
 /// The clustering branch declines rather than tagging every line "Speaker".
@@ -360,10 +366,10 @@ fn a_truncated_attributed_line_is_not_double_labelled() {
         "one label, once, per line:\n{text}"
     );
     assert_eq!(
-        text.matches("(Me)").count(),
+        text.matches("(You)").count(),
         1,
         "and one speaker tag, once:\n{text}"
     );
-    assert_eq!(speakers_in(&text)[0].as_deref(), Some("Me"));
+    assert_eq!(speakers_in(&text)[0].as_deref(), Some("You"));
     assert_eq!(labels_in(&text)[0], "seg_0001");
 }

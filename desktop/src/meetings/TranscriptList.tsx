@@ -8,7 +8,7 @@
  * gutter reserving room for one.
  *
  * YV125 — the speaker column depends on the MEETING as well as its segments,
- * so the meeting's `kind` is a prop. "Me" is a claim about identity, and it is
+ * so the meeting's `kind` is a prop. "You" is a claim about identity, and it is
  * only true where the mechanism makes it true (a call whose other participants
  * are on their own track); everywhere else the microphone is the track being
  * clustered and its lines say only that somebody spoke.
@@ -54,6 +54,7 @@ export default function TranscriptList<S extends TranscriptSegment>({
   kind?: string | null;
 }) {
   const [showEcho, setShowEcho] = useState(false);
+  const twoTrack = isTwoTrack(segments);
   const echoLine = echoHiddenLine(hidden?.length ?? 0);
   const shown =
     showEcho && hidden && hidden.length > 0
@@ -73,15 +74,19 @@ export default function TranscriptList<S extends TranscriptSegment>({
     {/* Both the class and the rows come from the same rendering rules the
         export uses: a track that contributes no lines is not a second speaker,
         so it does not widen the gutter either. */}
-    <ol className={isTwoTrack(segments) ? "transcript two-track" : "transcript"}>
+    <ol className={twoTrack ? "transcript two-track" : "transcript"}>
       {orderedTranscript(shown, kind).map(({ segment, track, speaker, offset, text }) => (
         <li key={segment.id}>
           {/* Timestamp and speaker are DATA, so they wear the pixel voice the
               rest of the app gives numbers. */}
           <span className="seg-time">{offset}</span>
-          <span className={track === MIC_TRACK ? "seg-who" : "seg-who them"}>
-            {speaker}
-          </span>
+          {/* yap-notetaker-notes — turns are You / Call on a two-track call; a
+              single mic track (in person) carries no speaker label at all. */}
+          {twoTrack && (
+            <span className={track === MIC_TRACK ? "seg-who" : "seg-who them"}>
+              {speaker}
+            </span>
+          )}
           {/* The line's collapsed text, never `segment.text` — the export
               renders the collapsed form and the screen must not differ. */}
           <span className="seg-text">{text}</span>

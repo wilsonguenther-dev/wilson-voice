@@ -30,8 +30,8 @@ pub enum Speaker {
 impl Speaker {
     pub fn label(self) -> &'static str {
         match self {
-            Speaker::Me => "Me",
-            Speaker::Them => "Them",
+            Speaker::Me => "You",
+            Speaker::Them => "Call",
         }
     }
     pub fn track(self) -> i64 {

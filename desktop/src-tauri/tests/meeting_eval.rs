@@ -301,7 +301,7 @@ const TWO_TRACK_CALLBACK_FRAMES: [usize; 2] = [160, 320];
 /// FOUR Me/Them pairs sit closer together than
 /// [`TWO_TRACK_ORIGIN_OFFSET_SECONDS`] with **Me** first (12.0/12.4,
 /// 36.0/36.5, 50.0/50.3, 68.0/68.6). That is the whole design: dropping the
-/// rebase slides every "Them" 750 ms early and swaps exactly those four, so a
+/// rebase slides every "Call" 750 ms early and swaps exactly those four, so a
 /// gate that would pass without the rebase cannot exist. Same-track markers are
 /// never closer than five seconds, and none sits within four seconds of a chunk
 /// boundary (30 s, 60 s) — the seam merge is fixture (b)'s subject, not this
@@ -333,7 +333,7 @@ const TWO_TRACK_PREFIX: &str = "The next word is";
 const TWO_TRACK_SUFFIX: &str = "spoken once.";
 
 /// The speaker label for a track, straight from the shipped renderer's own
-/// constants so the fixture and the UI cannot disagree about who "Them" is.
+/// constants so the fixture and the UI cannot disagree about who "Call" is.
 fn two_track_speaker(track: usize) -> &'static str {
     if track == MIC_TRACK {
         MIC_SPEAKER_LABEL
@@ -734,7 +734,55 @@ fn read_meta(root: &Path, id: &str) -> FixtureMeta {
     let path = root.join(id).join("meta.json");
     let body = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} is part of the fixture: {e}", path.display()));
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("{} is not valid: {e}", path.display()))
+    let mut value: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("{} is not valid: {e}", path.display()));
+    relabel_legacy_tracks(&mut value);
+    serde_json::from_value(value).unwrap_or_else(|e| panic!("{} is not valid: {e}", path.display()))
+}
+
+/// yap-notetaker-notes renamed the two track labels from "Me" / "Them" to
+/// [`MIC_SPEAKER_LABEL`] / [`SYSTEM_SPEAKER_LABEL`] ("You" / "Call"). The
+/// corpus lives OUTSIDE the repo (`~/yap-eval-corpus`), is shared by every
+/// checkout on this machine, is pinned by the committed manifest's checksums,
+/// and was grown under the old names; rewriting it in place would turn every
+/// other checkout's eval red. So the label, and only the label (audio, times
+/// and words are untouched), is read under its current name: `speaker` /
+/// `owner` values and the `Me:word` rows of a two-track `expected_sequence`.
+fn relabel_legacy_tracks(value: &mut serde_json::Value) {
+    fn label(s: &str) -> Option<&'static str> {
+        match s {
+            "Me" => Some(MIC_SPEAKER_LABEL),
+            "Them" => Some(SYSTEM_SPEAKER_LABEL),
+            _ => None,
+        }
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match (key.as_str(), &mut *v) {
+                    ("speaker" | "owner", serde_json::Value::String(s)) => {
+                        if let Some(new) = label(s) {
+                            *s = new.to_string();
+                        }
+                    }
+                    ("expected_sequence", serde_json::Value::Array(rows)) => {
+                        for row in rows.iter_mut() {
+                            if let serde_json::Value::String(s) = row {
+                                if let Some((who, word)) = s.split_once(':') {
+                                    if let Some(new) = label(who) {
+                                        *s = format!("{new}:{word}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => relabel_legacy_tracks(v),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(relabel_legacy_tracks),
+        _ => {}
+    }
 }
 
 fn read_reference(root: &Path, id: &str) -> String {
@@ -2537,7 +2585,7 @@ fn two_track_ordering_fixture_is_hard_by_construction() {
     );
 
     // …and that is what the render actually does with them. Local seconds taken
-    // at face value — every "Them" 750 ms early — against the spoken order.
+    // at face value — every "Call" 750 ms early — against the spoken order.
     let naive = TrackTimeline::exact(0.0, TARGET_RATE as f64);
     let spans: Vec<HostSpan> = TWO_TRACK_CONVERSATION
         .iter()
@@ -6957,7 +7005,7 @@ fn meeting_eval_call_bleed_fixture_has_the_bleed_it_declares() {
     assert_eq!((r0, r1), (TARGET_RATE, TARGET_RATE));
     assert_eq!(mic.len(), sys.len(), "the two tracks are the same length");
     let mut ratios = Vec::new();
-    for turn in cb.turns.iter().filter(|t| t.speaker == "Them") {
+    for turn in cb.turns.iter().filter(|t| t.speaker == "Call") {
         let heard = rms_between(&mic, turn.start_seconds + 0.2, turn.end_seconds - 0.2);
         let sent = rms_between(&sys, turn.start_seconds + 0.2, turn.end_seconds - 0.2);
         ratios.push(20.0 * (heard / sent).log10());

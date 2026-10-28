@@ -178,3 +178,11 @@
   width: min(100%, 520px);
   margin: 16px auto 0;
 }
+
+/* yap-notetaker-notes — the live transcript inside the recording banner. */
+.live-transcript { display: grid; gap: 6px; margin-top: 6px; }
+.live-track { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; }
+.live-track ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.live-track li { font-size: 12px; opacity: 0.85; }
+.live-track li:last-child { opacity: 1; }
+.live-transcript-wait { opacity: 0.7; margin-top: 4px; }

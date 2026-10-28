@@ -2643,7 +2643,7 @@ button.star.on {
 }
 
 /* YV108 · two tracks in ONE list.
-   "Them" is a character wider than "Me", so the speaker gutter widens only for
+   "Call" is a character wider than "You", so the speaker gutter widens only for
    a meeting that actually has a second track — a mic-only transcript keeps the
    exact column it has always had rather than reserving space for a speaker who
    was never recorded. The two speakers differ in colour, not in indent: the

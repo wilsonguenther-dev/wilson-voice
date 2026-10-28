@@ -30,9 +30,9 @@ export const MIC_TRACK = 0;
 export const SYSTEM_TRACK = 1;
 
 /** Mirrors `meetings::MIC_SPEAKER_LABEL`. */
-export const MIC_SPEAKER_LABEL = "Me";
+export const MIC_SPEAKER_LABEL = "You";
 /** Mirrors `meetings::SYSTEM_SPEAKER_LABEL`. */
-export const SYSTEM_SPEAKER_LABEL = "Them";
+export const SYSTEM_SPEAKER_LABEL = "Call";
 /**
  * YV125 — mirrors `meetings::UNCLUSTERED_SPEAKER_LABEL`: what the microphone is
  * called when it is the track that has to be CLUSTERED and clustering has not

@@ -31,7 +31,7 @@ use wilson_voice_lib::meeting_asr::{
 
 /// Every fixture in these two files is a CALL — two recorded tracks, the merge's
 /// entire subject. YV125's kind is what decides whether the microphone may be
-/// labelled "Me", and `Virtual` is the one value under which it may.
+/// labelled "You", and `Virtual` is the one value under which it may.
 const CALL: wilson_voice_lib::meetings::MeetingKind =
     wilson_voice_lib::meetings::MeetingKind::Virtual;
 
@@ -149,12 +149,12 @@ fn misaligned_seams_still_interleave_strictly_by_host_time() {
         if i == 9 {
             // The seam-duplicate word sits at 29.6 s, between beats 9 (29 s)
             // and 10 (32 s). It belongs to the mic.
-            expected.push(("Me".into(), format!("me-{i}")));
-            expected.push(("Me".into(), "boundary".into()));
+            expected.push(("You".into(), format!("me-{i}")));
+            expected.push(("You".into(), "boundary".into()));
             continue;
         }
         expected.push((
-            if i % 2 == 0 { "Them" } else { "Me" }.to_string(),
+            if i % 2 == 0 { "Call" } else { "You" }.to_string(),
             if i % 2 == 0 {
                 format!("them-{i}")
             } else {
@@ -567,7 +567,7 @@ fn a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else() {
 /// SQLite `INTEGER` numbering, with the Meetings screen's TypeScript mirror
 /// (`src/meetings/transcript.ts`) held to it by YV108's own fixtures. Resolving
 /// it by keeping this branch's copy would have compiled, passed every test in
-/// this file, and left two "Me"/"Them" rules in the tree — the exact split
+/// this file, and left two "You"/"Call" rules in the tree — the exact split
 /// YV108's review already had to close once between the export and the screen.
 ///
 /// So the resolution deletes this branch's copy, casts at the seam between the

@@ -305,7 +305,7 @@ fn each_failure_mode_from_the_audit_trips_its_gate() {
     // Small talk filed as actions.
     let mut s = perfect();
     for at in notes_planted::distractor_starts() {
-        s.actions.push(item("small talk", at, Some("Me")));
+        s.actions.push(item("small talk", at, Some("You")));
     }
     let sc = score(&s);
     assert_eq!(sc.distractors_filed, 6);
@@ -318,7 +318,7 @@ fn each_failure_mode_from_the_audit_trips_its_gate() {
     // Wrong owners under echo: every Them item filed as Me.
     let mut s = perfect();
     for a in &mut s.actions {
-        a.speaker = Some("Me".into());
+        a.speaker = Some("You".into());
     }
     let sc = score(&s);
     assert!(sc.owner_wrong >= 4);
