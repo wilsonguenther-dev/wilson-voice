@@ -3,9 +3,9 @@
 Local Wispr Flow alternative with a meeting notetaker. Researched against open-source
 dictation apps and implemented as a real desktop product, not a script soup.
 
-## What Yap does at 0.9.2
+## What Yap does at 0.9.3
 
-Every line is something a user of the 0.9.2 build can do today. Built-but-unwired work is
+Every line is something a user of the 0.9.3 build can do today. Built-but-unwired work is
 listed separately below it, and nothing aspirational is listed as shipped.
 
 **Dictation**

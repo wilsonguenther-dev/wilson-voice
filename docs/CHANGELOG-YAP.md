@@ -1,5 +1,15 @@
 # Yap Changelog
 
+## v0.9.3
+
+- **Dictation lands where you dictated.** Text goes into the field you were in when you started talking, or it does not paste at all, including secure fields, and a take is never stranded on the Copy card. New hotkeys cover hands-free, cancel, copy last, paste last and a Scratchpad window you can dictate notes into. More languages are in the picker, a rule you say once applies where it matches, your own writing samples shape the polish, and formatting keeps every word and finishes every list.
+- **Meeting notes with no setup.** A meeting now ends with a title, key points, decisions and action items from a model that ships with Yap. A meeting survives a lid close, sleep or a crash, the Meetings screen shows progress, notes and a Retry when something fails, a call on built-in speakers is transcribed once instead of twice, chunks are cut at pauses, the transcript shows your turns and the call's turns live as they happen, a Markdown export turns action items into checkable tasks, and a "Set up Notetaker" card walks you through it. Notes never touch the network.
+- **Call detection, first step.** Yap can now tell which call app is using your microphone. This is the groundwork for offering to take notes on a call; it never records anything on its own.
+- **Bring your own model.** Notes and polish can run on the bundled model or on any OpenAI-compatible provider you choose, with the key kept in the macOS Keychain, a Test connection button, and a plain "Leaves this Mac" label on every choice that sends text off the machine.
+- **The pill grew up.** It is now a bar with characters, shows when Yap is polishing and pasting, marks hands-free mode, counts down the trial, says when the hotkey cannot hear you, stops jittering at the screen edge, and draws on whole pixels. Optional start, stop and paste sounds, short coaching tips and a menu bar that shows the last transcript come with it.
+- **Permissions you can finish.** Onboarding ends with one real pasted dictation or tells you exactly what is missing, a denied microphone gets its own screen with a working link, and every message names the copy of Yap that is running.
+- **Diagnostics and errors.** One Diagnostics panel shows a live health line and exports a redacted bundle, crash reports stay on your Mac, every failure is one sentence with one action, and Clear History now erases the audio too.
+
 ## v0.9.2
 
 - **Hotkeys work with zero permissions.** ⌃⌥⌘Space starts and stops a take on a fresh install before you grant anything, because it is registered as a system hotkey that needs no Accessibility or Input Monitoring grant. The fn key is now the extra, and when macOS has switched it off Yap says so instead of showing it as working.
