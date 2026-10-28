@@ -93,3 +93,33 @@ describe("the Settings line", () => {
     expect(acknowledgedLabel(junk)).toContain("not-a-date");
   });
 });
+
+// yap-byom-0 — the notice's upload claim follows the model-provider choices.
+import { consentNotice, leaveLines } from "./consent";
+
+describe("consentNotice(activeLeaves) — yap-byom-0", () => {
+  it("keeps 'Nothing is uploaded' while every choice stays on this Mac", () => {
+    expect(consentNotice([]).paragraphs[0]).toContain("Nothing is uploaded");
+  });
+
+  it("drops 'Nothing is uploaded' the moment a Yes label is active", () => {
+    const leaves = leaveLines([{ task: "notes", host: "openrouter.ai" }]);
+    expect(leaves).toEqual(["Notes go to openrouter.ai"]);
+    const n = consentNotice(leaves);
+    const all = n.paragraphs.join(" ");
+    expect(all).not.toContain("Nothing is uploaded");
+    expect(n.paragraphs[0]).toContain("Notes go to openrouter.ai");
+    expect(n.paragraphs).toHaveLength(3);
+  });
+
+  it("makes no upload claim while the choices are unknown", () => {
+    expect(consentNotice(null).paragraphs[0]).not.toContain("Nothing is uploaded");
+    expect(consentNotice(null).paragraphs[0]).toContain("on this machine");
+  });
+
+  it("names polish in the singular", () => {
+    expect(leaveLines([{ task: "polish", host: "api.groq.com" }])).toEqual([
+      "Polish goes to api.groq.com",
+    ]);
+  });
+});

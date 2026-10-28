@@ -6442,6 +6442,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustfft",
+ "security-framework",
  "semver",
  "serde",
  "serde_json",

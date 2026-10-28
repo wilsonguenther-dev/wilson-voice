@@ -3,7 +3,8 @@
 //! PRIVACY.md makes a claim that is Yap's sharpest marketing line: the audio
 //! you dictate and the text it becomes never leave your Mac, Yap ships no
 //! analytics, telemetry or crash-upload SDK, and the network is touched in
-//! exactly two places — the model download and the updater check. This file
+//! exactly three places — the model download, the updater check, and (only if
+//! the user adds one, yap-byom-0) a model provider they chose. This file
 //! is the proof that claim cites by name. Every test here reads SOURCE, so it
 //! needs no network, no microphone and no app state, and it fails the moment a
 //! change makes the claim false.
@@ -142,6 +143,13 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
             ("lib.rs", "install_update"),
             ("lib.rs", "run"),
         ],
+    ),
+    (
+        // yap-byom-0 — a model provider the USER adds and picks (off by
+        // default; Bundled stays the default). One client factory, no
+        // redirects followed; every other file reaches it through this one.
+        "model provider you choose",
+        &[("http_client.rs", "use")],
     ),
 ];
 
@@ -672,8 +680,9 @@ fn the_take_path_does_not_import_the_http_client_crate() {
 fn only_two_network_call_sites_exist() {
     assert_eq!(
         NETWORK_CALL_SITES.len(),
-        2,
-        "PRIVACY.md names exactly two network uses; adding a purpose means editing both"
+        3,
+        "PRIVACY.md names exactly three network uses (the third, yap-byom-0, only when the \
+         user adds a model provider); adding a purpose means editing both"
     );
     let src = manifest().join("src");
     let files = rs_files(&src);
