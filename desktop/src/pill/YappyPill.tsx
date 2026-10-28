@@ -19,7 +19,7 @@ import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { reactiveLine, DEFAULT_TONE, bucketFor } from "./tone";
 import {
-  advanceLive, createLiveState, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
+  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
   type TranscribeProgress,
@@ -71,10 +71,16 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", tone = "friendly", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
+    /**
+     * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
+     * decided by the SHELL. Only the accessible name and the announcement read
+     * it here; the visible stop hint and lock chip are the shell's.
+     */
+    chordLabel?: string;
     progress?: TranscribeProgress | null;
     /**
      * YV95 / yap24-NT7 — the meeting, owned by the SHELL (float-main) like
@@ -111,7 +117,7 @@ export default function YappyPill(
   // Y3-C — decode progress reaches the mount-once scene the same way the gate
   // does: through a ref, because the canvas loop is not re-created per render.
   const applyProgressRef = useRef<(p: TranscribeProgress | null) => void>(() => {});
-  const gateVisual = phaseVisual(gate);
+  const gateVisual = phaseVisual(gate, chordLabel);
   const blocked = gateVisual.needsPermission;
   // Y2-C — the trial ended and this press was refused. Same "the press produced
   // nothing" shape as `blocked`, different reason and a different destination:
@@ -294,7 +300,7 @@ export default function YappyPill(
     // that owns them draws its own scene; the two refusal phases are grey on
     // purpose — a muted capsule is the whole visual point.
     const ACC: Record<Phase, string> = {
-      idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%",
+      idle: "351 95% 71%", listening: "351 95% 71%", "listening-locked": "351 95% 71%", thinking: "38 92% 55%",
       done: "152 69% 52%", sleepy: "230 20% 60%",
       blocked: "0 0% 55%", waiting: "0 0% 55%", gated: "38 92% 55%",
       transcribing: "38 92% 55%", polishing: "38 92% 55%", pasting: "38 92% 55%",
@@ -601,9 +607,9 @@ export default function YappyPill(
       // Y5-J — the canvas is aria-hidden pixels, so the stage itself carries
       // the phase's name; the live region below announces its changes.
       role="group"
-      aria-label={phaseAccessibleName(gate, progress)}
+      aria-label={phaseAccessibleName(gate, progress, chordLabel)}
     >
-      <PhaseAnnouncer phase={gate} />
+      <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
       <div ref={bubbleRef} className="kami-bubble"></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in

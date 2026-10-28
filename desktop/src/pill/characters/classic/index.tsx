@@ -16,6 +16,9 @@ export const CLASSIC_PHASE_ART: PhaseArtTable = {
   idle: { sprite: "seed", motion: "breathe" },
   sleepy: { sprite: "seed", motion: "still" },
   listening: { sprite: "wave", motion: "pulse" },
+  // yap24-PILL4 — the same live wave: a latched take is still a live take; the
+  // lock is the SHELL's chip, never a second set of art.
+  "listening-locked": { sprite: "wave", motion: "pulse" },
   "model-loading": { sprite: "mic", motion: "breathe" },
   transcribing: { sprite: "xscribe", motion: "work" },
   polishing: { sprite: "spark", motion: "work" },
@@ -40,7 +43,7 @@ export const classic: Character = {
   render: (frame) => ({
     art: CLASSIC_PHASE_ART[frame.phase],
     // Classic is the neutral voice: the phase table's own label, in every tone.
-    copy: phaseVisual(frame.phase).label,
+    copy: phaseVisual(frame.phase, frame.chordLabel).label,
     size: { w: frame.box.w, h: frame.box.h },
     canvas: null,
     node:

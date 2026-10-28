@@ -44,6 +44,14 @@
       "left": { "width": 30, "height": 102.5 },
       "right": { "width": 30, "height": 102.5 }
     },
+    "listening-locked": {
+      "wispr": "activePopo",
+      "orientation": "strip",
+      "why": "yap24-PILL4: a latched (hands-free) take is the same live bar as listening; the lock chip and stop hint ride in the shell's phase strip outside the box. Yap's listening bar always carries its stop control beside the waveform, which is Wispr's activePopo (waveform plus cancel/stop), not the bare activePtt 30x73.",
+      "bottom": { "width": 102.5, "height": 30 },
+      "left": { "width": 30, "height": 102.5 },
+      "right": { "width": 30, "height": 102.5 }
+    },
     "transcribing": {
       "wispr": "processing",
       "orientation": "banner",

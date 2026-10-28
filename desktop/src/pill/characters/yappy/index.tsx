@@ -20,6 +20,9 @@ export const YAPPY_PHASE_ART: PhaseArtTable = {
   idle: { sprite: "face-rest", motion: "breathe" },
   sleepy: { sprite: "face-asleep", motion: "still" },
   listening: { sprite: "world-listen", motion: "pulse" },
+  // yap24-PILL4 — Yappy keeps listening (and chattering) on a latched take; the
+  // lock is the SHELL's chip, never a second set of art.
+  "listening-locked": { sprite: "world-listen", motion: "pulse" },
   "model-loading": { sprite: "world-stretch", motion: "breathe" },
   transcribing: { sprite: "world-type", motion: "work" },
   polishing: { sprite: "world-polish", motion: "work" },

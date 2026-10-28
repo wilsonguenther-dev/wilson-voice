@@ -43,7 +43,7 @@ export const example: Character = {
     const size = fitSquare(frame.box, 24);
     return {
       art: EXAMPLE_PHASE_ART[frame.phase],
-      copy: phaseVisual(frame.phase).label,
+      copy: phaseVisual(frame.phase, frame.chordLabel).label,
       size,
       canvas: { imageSmoothingEnabled: false },
       node: (

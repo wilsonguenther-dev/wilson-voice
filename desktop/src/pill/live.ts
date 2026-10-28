@@ -435,7 +435,16 @@ export type LivePhase =
    * `calm`, not `warn`: Yap still works, one key of it does not. Outranks only
    * rest (`idle`/`sleepy`), never a take; see [`blindFromStatus`].
    */
-  | "blind"; // OWNED BY yap24-PILL3
+  | "blind" // OWNED BY yap24-PILL3
+  // ── yap24-PILL4 ──────────────────────────────────────────────────────────
+  /**
+   * A HANDS-FREE take: the same capture as `listening`, but latched — no key
+   * is held, so the pill must say how to end it. `build_status` carries
+   * `hands_free` (lib.rs) and this is the variant it selects. The shell draws
+   * a lock chip and the stop hint built from the live binding (`chordLabel`);
+   * each character keeps its listening art, so the commentary keeps running.
+   */
+  | "listening-locked"; // OWNED BY yap24-PILL4
 
 /** How a phase is drawn, and what a click on it means. */
 export interface PhaseVisual {
@@ -457,12 +466,16 @@ export interface PhaseVisual {
  * can never be drawn two different ways, and a variant added to the union
  * without a case here is a compile error rather than a silently invisible state.
  */
-export function phaseVisual(phase: LivePhase): PhaseVisual {
+export function phaseVisual(phase: LivePhase, chordLabel: string = DEFAULT_STOP_KEY): PhaseVisual {
   switch (phase) {
     case "idle":
       return { tone: "calm", label: "Start dictation", needsPermission: false, placeholder: false };
     case "listening":
       return { tone: "live", label: "Stop dictation", needsPermission: false, placeholder: false };
+    case "listening-locked":
+      // yap24-PILL4 — `live` like a hold (it IS a live take); the label is the
+      // way out, named by the key the user actually bound.
+      return { tone: "live", label: handsFreeLabel(chordLabel), needsPermission: false, placeholder: false };
     case "thinking":
       return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: false };
     case "done":
@@ -535,8 +548,12 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
  * than a bare verb, because that count is the information the pill exists to
  * carry. Both pills call this; neither spells a label of its own.
  */
-export function phaseAccessibleName(phase: LivePhase, progress: TranscribeProgress | null = null): string {
-  const visual = phaseVisual(phase);
+export function phaseAccessibleName(
+  phase: LivePhase,
+  progress: TranscribeProgress | null = null,
+  chordLabel: string = DEFAULT_STOP_KEY,
+): string {
+  const visual = phaseVisual(phase, chordLabel);
   return progress !== null && visual.tone === "busy" ? progressLabel(progress) : visual.label;
 }
 
@@ -549,9 +566,38 @@ export function phaseAccessibleName(phase: LivePhase, progress: TranscribeProgre
  * promise. Progress is deliberately NOT announced — "2 of 5, 3 of 5, 4 of 5"
  * read aloud over someone's next sentence is noise; it lives in the name.
  */
-export function phaseAnnouncement(phase: LivePhase): string {
-  return phaseVisual(phase).label;
+export function phaseAnnouncement(phase: LivePhase, chordLabel: string = DEFAULT_STOP_KEY): string {
+  return phaseVisual(phase, chordLabel).label;
 }
+
+// ── yap24-PILL4: hands-free names its own way out ───────────────────────────
+
+/**
+ * The stop key the pill names before the first `status` event lands: the
+ * backend's default hold label (`Settings::default().hotkey_label`). Every
+ * later render uses the status payload's `chordLabel` instead.
+ */
+export const DEFAULT_STOP_KEY = "fn⌃";
+
+/** Is this a live capture — held or latched? */
+export const isListening = (p: LivePhase): boolean => p === "listening" || p === "listening-locked";
+
+/**
+ * The hands-free stop hint, built from the LIVE binding (`AppStatus.chord_label`,
+ * lib.rs) — never a hardcoded key: since #249 the chords are rebindable, and a
+ * hint naming a key that no longer does anything is worse than no hint. When
+ * the full sentence would clip on a side dock (a long rebind such as
+ * ⌃⌥⇧⌘Backspace), it keeps the KEY and drops the prefix: the lock chip beside
+ * it already says "hands-free".
+ */
+export function handsFreeLabel(chordLabel: string): string {
+  const key = chordLabel.trim() || DEFAULT_STOP_KEY;
+  const full = `Hands-free — ${key} to stop`;
+  return stripTextWidthPx(full) + LOCK_CHIP_PX <= SIDE_DOCK_TEXT_PX ? full : `${key} to stop`;
+}
+
+/** The shell's lock chip in the strip: 10px glyph + 2px padding + 4px gap (float.css `.lock-chip`). */
+export const LOCK_CHIP_PX = 16;
 
 /** The events that can move the pill in or out of a permission phase. */
 export type GateEvent =
@@ -623,6 +669,9 @@ export const PHASE_PRECEDENCE: readonly LivePhase[] = [
   // because a cancel is expected and a failure is not.
   "error",
   "cancelled",
+  // yap24-PILL4 — above `listening`: the gate reducer only knows "recording"
+  // and says `listening`; the take reducer knows the latch, and must win.
+  "listening-locked",
   "listening",
   "model-loading",
   "transcribing",
@@ -708,7 +757,7 @@ export function reduceGatePhase(prev: LivePhase, ev: GateEvent): LivePhase {
       // gate stops NEW dictation only; `license.rs` promises it "never takes
       // back the ones already spoken", so the trial ending mid-flight must not
       // eat the take that is still on its way to `done`.
-      if (prev === "listening" || prev === "thinking" || prev === "transcribing") return prev;
+      if (isListening(prev) || prev === "thinking" || prev === "transcribing") return prev;
       return "gated";
     case "gate_settled":
       // Only ever moves the phase it owns, for the same reason `cancel_settled`
@@ -783,7 +832,7 @@ export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
   // one of them is the frozen pill this item exists to delete. `empty`,
   // `error` and `cancelled` deliberately DO NOT join: they are settled states
   // that repaint once and then let the loop go quiet, exactly like `blocked`.
-  const active = phase === "listening" || phase === "thinking" || phase === "done"
+  const active = isListening(phase) || phase === "thinking" || phase === "done"
     || phase === "transcribing" || phase === "model-loading" || phase === "polishing"
     || phase === "pasting";
   if (active || f.busyVisuals || f.level >= 0.02) {
@@ -847,7 +896,7 @@ export function frameIntervalMs(phase: LivePhase, f: FrameInputs): number {
  * list, or the table tests test whatever someone remembered to type.
  */
 export const ALL_LIVE_PHASES: readonly LivePhase[] = [
-  "idle", "sleepy", "listening", "model-loading", "transcribing", "polishing",
+  "idle", "sleepy", "listening", "listening-locked", "model-loading", "transcribing", "polishing",
   "pasting", "thinking", "done", "empty", "cancelled", "error", "gated",
   // `blocked` before `waiting`: PERM-C asserts that order for the two phases a
   // click sends to the Permissions pane, and it is also the precedence order.
@@ -871,6 +920,7 @@ export const PHASE_ID: Record<LivePhase, string> = {
   idle: "idle",
   sleepy: "sleepy",
   listening: "listening",
+  "listening-locked": "listening_locked",
   "model-loading": "model_loading",
   transcribing: "transcribing",
   polishing: "polishing",
@@ -908,6 +958,8 @@ export const PHASE_HOLD_MS: Record<LivePhase, number | null> = {
   idle: null,
   sleepy: null,
   listening: null,
+  /** A latched take waits on the user exactly as a held one does. */
+  "listening-locked": null,
   blocked: null,
   waiting: null,
   /** yap24-PILL3 — waits on another app releasing Secure Input. */
@@ -958,10 +1010,12 @@ export const phaseHoldMs = (phase: LivePhase): number | null => PHASE_HOLD_MS[ph
  * `every_phase_has_a_way_back_to_idle` is a test, not a hope.
  */
 export const PHASE_NEXT: Record<LivePhase, readonly LivePhase[]> = {
-  idle: ["listening", "sleepy", "blocked", "waiting", "gated", "blind"],
-  sleepy: ["idle", "listening", "blocked", "waiting", "gated", "blind"],
-  // NB: no "done". See above.
-  listening: ["model-loading", "transcribing", "thinking", "cancelled", "error", "blocked"],
+  idle: ["listening", "listening-locked", "sleepy", "blocked", "waiting", "gated", "blind"],
+  sleepy: ["idle", "listening", "listening-locked", "blocked", "waiting", "gated", "blind"],
+  // NB: no "done". See above. A held take can be LATCHED mid-take (the
+  // hands-free chord while holding), so `listening-locked` is reachable from it.
+  listening: ["listening-locked", "model-loading", "transcribing", "thinking", "cancelled", "error", "blocked"],
+  "listening-locked": ["model-loading", "transcribing", "thinking", "cancelled", "error", "blocked"],
   "model-loading": ["transcribing", "thinking", "error", "cancelled"],
   // `done` directly: polish is SKIPPABLE (`polish_skip_reason`), so a decoded
   // take can land its text without an LLM stage ever running.
@@ -969,16 +1023,17 @@ export const PHASE_NEXT: Record<LivePhase, readonly LivePhase[]> = {
   thinking: ["polishing", "pasting", "done", "empty", "error", "cancelled"],
   polishing: ["pasting", "done", "empty", "error"],
   pasting: ["done", "error"],
-  done: ["idle", "sleepy", "listening", "blind"],
-  empty: ["idle", "listening", "blind"],
-  cancelled: ["idle", "listening", "blind"],
-  error: ["idle", "listening", "blind"],
-  gated: ["idle", "listening", "blind"],
-  waiting: ["idle", "blocked", "listening", "blind"],
-  blocked: ["idle", "listening", "blind"],
-  // yap24-PILL3 — the chord or a click still starts a take from here, and a
-  // permission/license refusal outranks it.
-  blind: ["idle", "sleepy", "listening", "blocked", "waiting", "gated"],
+  done: ["idle", "sleepy", "listening", "listening-locked", "blind"],
+  empty: ["idle", "listening", "listening-locked", "blind"],
+  cancelled: ["idle", "listening", "listening-locked", "blind"],
+  error: ["idle", "listening", "listening-locked", "blind"],
+  gated: ["idle", "listening", "listening-locked", "blind"],
+  waiting: ["idle", "blocked", "listening", "listening-locked", "blind"],
+  blocked: ["idle", "listening", "listening-locked", "blind"],
+  // yap24-PILL3 — the chord or a click still starts a take from here (the
+  // hands-free chord too, yap24-PILL4), and a permission/license refusal
+  // outranks it.
+  blind: ["idle", "sleepy", "listening", "listening-locked", "blocked", "waiting", "gated"],
 };
 
 /** May the pill move straight from `from` to `to`? */
@@ -1012,6 +1067,14 @@ export const PHASE_COPY: Record<LivePhase, Record<ChatTone, string>> = {
     rude: "talking. finally.",
     friendly: "listening!",
     rose: "i'm all yours 🌹",
+  },
+  // yap24-PILL4 — the tone's line for a latched take. The STRIP does not say
+  // it (the shell shows `handsFreeLabel` there: the way out outranks a quip),
+  // but every phase owes every tone a line, and the character may voice it.
+  "listening-locked": {
+    rude: "hands off. keep talking.",
+    friendly: "hands-free — keep going!",
+    rose: "no hands needed 🌹",
   },
   "model-loading": {
     rude: "warming up. wait.",
@@ -1156,6 +1219,8 @@ export interface TakeStatus {
   engineLoading?: boolean;
   /** Set by lib.rs:1460 / 2497; the sentence `error` shows comes from here. */
   lastError?: string | null;
+  /** yap24-PILL4 — `AppStatus.hands_free`: the take is latched, not held. */
+  handsFree?: boolean;
 }
 
 /**
@@ -1250,7 +1315,7 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
     case "progress":
       // Real chunks came back, so this is really `transcribing` (Y3-C). It may
       // not resurrect a take that has already ended.
-      return isWorking(prev) || prev === "listening" ? "transcribing" : prev;
+      return isWorking(prev) || isListening(prev) ? "transcribing" : prev;
     case "transcript":
       // A transcript event is only ever emitted for a take that produced text
       // (lib.rs:2509), so words <= 0 should be impossible — handled anyway,
@@ -1267,7 +1332,7 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
     }
     case "status": {
       const s = ev.status;
-      if (s.recording) return "listening";
+      if (s.recording) return s.handsFree ? "listening-locked" : "listening";
       if (s.busy) {
         if (s.engineLoading) return "model-loading";
         // Y3-C owns `transcribing` and only real progress opens it, so a busy
@@ -1278,10 +1343,10 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
       }
       // Not recording, not busy: the take is over. WHY it is over is the
       // interesting part.
-      if (s.lastError) return isWorking(prev) || prev === "listening" ? "error" : prev;
+      if (s.lastError) return isWorking(prev) || isListening(prev) ? "error" : prev;
       // The hold just ended and `busy` has not been set yet — the status
       // events race. Never `done` (see above), never `idle`.
-      if (prev === "listening") return "thinking";
+      if (isListening(prev)) return "thinking";
       // yap24-PILL2 — `polishing` and `pasting` exist ONLY because the backend
       // said so, and the backend also reports how the take ends; a quiet
       // status racing ahead of that terminal stage must not overrule it. The
@@ -1315,7 +1380,7 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
  * follows settles it.
  */
 export function reduceTakeStage(prev: LivePhase, stage: TakeStageName, words?: number): LivePhase {
-  const live = isWorking(prev) || prev === "listening";
+  const live = isWorking(prev) || isListening(prev);
   if (!live) return prev;
   switch (stage) {
     case "decoding":
@@ -1343,12 +1408,19 @@ export function reduceTakeStage(prev: LivePhase, stage: TakeStageName, words?: n
  * hold with no key-up for 90 s, or any take during which macOS switched the fn
  * tap off. It outranks the phase copy because it is the one line that tells the
  * user how to end a take the hotkey may have lost track of. Mirrors
- * `ptt_macos::STILL_RECORDING_MESSAGE` (tests/hotkey_stop.rs holds them equal).
- * It must fit the strip's one line (`fitsSideDockStrip`): a longer phrasing was
- * cut to "…click…" by the 192 px ellipsis. The capsule's own stop control is
- * on screen beside it, so the line only has to name the key.
+ * `ptt_macos::still_recording_message` (tests/hotkey_stop.rs holds them equal).
+ * yap24-PILL4: it names the key the user BOUND (`chordLabel`, off the status
+ * payload), never a hardcoded one. The capsule's own stop control is on screen
+ * beside it, so the line only has to name the key.
  */
-export const STILL_RECORDING_LINE = "Still recording — tap fn to stop";
+export function stillRecordingLine(chordLabel: string = DEFAULT_STOP_KEY): string {
+  const key = chordLabel.trim() || DEFAULT_STOP_KEY;
+  const full = `Still recording — ${key} to stop`;
+  // A long binding ("fn / fn⌃", a four-modifier rebind) would be cut to
+  // "…to st…" by the strip's ellipsis; the KEY and "stop" are the part that
+  // matters, so the shorter verb goes first.
+  return fitsSideDockStrip(full) ? full : `Recording — ${key} to stop`;
+}
 
 /**
  * yap-qa-hotkey-walk-binding DO 3 — fn pressed WITHOUT the binding's ⌃ (the
@@ -1366,8 +1438,13 @@ export const FN_HINT_SHOW_MS = 3_500;
  * The phase-strip line: the still-recording prompt wins while live, then a
  * pending fn hint, then the phase's own line.
  */
-export function stripLine(line: string, stillRecording: boolean, hint: string | null = null): string {
-  if (stillRecording) return STILL_RECORDING_LINE;
+export function stripLine(
+  line: string,
+  stillRecording: boolean,
+  hint: string | null = null,
+  chordLabel: string = DEFAULT_STOP_KEY,
+): string {
+  if (stillRecording) return stillRecordingLine(chordLabel);
   return hint ?? line;
 }
 

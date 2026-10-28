@@ -41,7 +41,7 @@ import { emit } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
 import { Mic, MicOff, NotebookPen, Settings2, Square, X } from "lucide-react";
 import { barAxis, barTokens, shellBarPhase, type BarDock } from "./dock";
-import type { LivePhase, TranscribeProgress } from "./live";
+import { isListening, type LivePhase, type TranscribeProgress } from "./live";
 
 export type SlotId = "dictate" | "scratchpad" | "cancel" | "wpm" | "menu";
 /** Where along the bar's length a slot sits: before the centre, the centre, after it. */
@@ -109,7 +109,7 @@ export const SLOT_GAP_PX = 3;
 export const SCRATCHPAD_WINDOW_LANDED = false;
 
 /** A take is live: recording, or decoding in chunks (Y3-D's cancel reaches both). */
-const takeIsLive = (p: LivePhase): boolean => p === "listening" || p === "transcribing";
+const takeIsLive = (p: LivePhase): boolean => isListening(p) || p === "transcribing";
 const permissionStopped = (p: LivePhase): boolean => p === "blocked" || p === "waiting" || p === "gated";
 
 /** The bar's thickness for this context, straight off Y5-I's geometry table. */
@@ -151,7 +151,7 @@ export function wordReadout(ctx: SlotCtx): WordReadout | null {
     const words = ctx.progress.wordsSoFar;
     return { words, wpm: rate(words), estimate: false };
   }
-  if (ctx.phase === "listening") {
+  if (isListening(ctx.phase)) {
     return { words: Math.round(ctx.listen.estWords), wpm: rate(ctx.listen.estWords), estimate: true };
   }
   return null;
@@ -193,7 +193,7 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     group: "lead",
     glyph: () => <NotebookPen strokeWidth={2.2} />,
     tooltip: () => "Open Scratchpad",
-    visible: (ctx) => SCRATCHPAD_WINDOW_LANDED && ctx.scratchpadOnBar && ctx.phase === "listening",
+    visible: (ctx) => SCRATCHPAD_WINDOW_LANDED && ctx.scratchpadOnBar && isListening(ctx.phase),
     onPress: () => openMain("scratchpad"),
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
@@ -214,10 +214,10 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     group: "centre",
     glyph: (ctx) =>
       permissionStopped(ctx.phase) ? <MicOff strokeWidth={2.2} />
-        : ctx.phase === "listening" ? <Square fill="currentColor" strokeWidth={0} />
+        : isListening(ctx.phase) ? <Square fill="currentColor" strokeWidth={0} />
           : <Mic strokeWidth={2.2} />,
     tooltip: (ctx) =>
-      ctx.phase === "listening" ? "Stop dictation"
+      isListening(ctx.phase) ? "Stop dictation"
         : permissionStopped(ctx.phase) ? "Dictation is unavailable — open to fix"
           : "Start dictation",
     // Always: the centre IS the bar. At rest it is the seed, so it is exactly as
@@ -258,7 +258,7 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     group: "trail",
     glyph: () => <Settings2 strokeWidth={2.2} />,
     tooltip: () => "Microphone and settings",
-    visible: (ctx) => ctx.phase === "listening",
+    visible: (ctx) => isListening(ctx.phase),
     onPress: () => { openBarMenu().catch(() => openMain("settings", "audio")); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,

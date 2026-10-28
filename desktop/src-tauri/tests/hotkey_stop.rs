@@ -10,10 +10,10 @@
 #![cfg(target_os = "macos")]
 
 use wilson_voice_lib::ptt_macos::{
-    end_hands_free, end_hands_free_calls, re_arm_verdict, stop_take_with, stops_by, DisableWindow,
-    EdgeSource, PttEvent, PttMachine, Step, StopOrigin, DEBOUNCE_MS, HOLD_ARM_MS, POLL_INTERVAL_MS,
-    POLL_SOURCE_STATE, RECREATE_WINDOW_MS, RE_ARM_VERIFY_MS, STILL_RECORDING_AFTER_SECS,
-    STILL_RECORDING_MESSAGE, TAP_LOCATION,
+    end_hands_free, end_hands_free_calls, re_arm_verdict, still_recording_message, stop_take_with,
+    stops_by, DisableWindow, EdgeSource, PttEvent, PttMachine, Step, StopOrigin, DEBOUNCE_MS,
+    HOLD_ARM_MS, POLL_INTERVAL_MS, POLL_SOURCE_STATE, RECREATE_WINDOW_MS, RE_ARM_VERIFY_MS,
+    STILL_RECORDING_AFTER_SECS, TAP_LOCATION,
 };
 
 const TAP: EdgeSource = EdgeSource::Tap;
@@ -323,9 +323,15 @@ fn three_disables_in_a_minute_rebuild_the_tap_and_re_arm_is_verified() {
 fn the_pill_and_the_backend_say_the_same_still_recording_line() {
     let live = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/pill/live.ts"))
         .expect("read live.ts");
+    // yap24-PILL4: the line names the BOUND key on both sides of the wire,
+    // so the pill's template is the backend's format with the key spliced in.
+    assert_eq!(
+        still_recording_message("⌃⌥H"),
+        "Still recording — ⌃⌥H to stop"
+    );
     assert!(
-        live.contains(STILL_RECORDING_MESSAGE),
-        "{STILL_RECORDING_MESSAGE}"
+        live.contains("`Still recording — ${key} to stop`"),
+        "live.ts must build the still-recording line from chordLabel"
     );
     let float = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -334,5 +340,5 @@ fn the_pill_and_the_backend_say_the_same_still_recording_line() {
     .expect("read float-main.tsx");
     // yap-qa-hotkey-walk-binding added the fn hint as a third, lower-ranked
     // argument; still-recording still wins inside `stripLine`.
-    assert!(float.contains("stripLine(line, stillRecording, fnHint)"));
+    assert!(float.contains("stripLine(line, stillRecording, fnHint, chordLabel)"));
 }

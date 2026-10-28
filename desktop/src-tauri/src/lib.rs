@@ -827,6 +827,14 @@ pub struct AppStatus {
     /// pill swaps its phase line for `ptt_macos::STILL_RECORDING_MESSAGE`.
     #[serde(default)]
     pub still_recording: bool,
+    /// yap24-PILL4 — the label of the key that ends THIS take's latch, built
+    /// from the live binding (never a hardcoded "fn⌃", now that #249 made the
+    /// chords rebindable): the hands-free chord's `hotkeys::chord_label` when
+    /// the latch was set by that chord (an fn tap does not end it — the PTT
+    /// machine never saw it start), otherwise the hold key the user bound.
+    /// The pill builds "Hands-free — <chord_label> to stop" from it.
+    #[serde(default)]
+    pub chord_label: String,
 }
 
 struct AppState {
@@ -835,6 +843,9 @@ struct AppState {
     busy: PLMutex<bool>,
     /// Hands-free latch (double-tap fn⌃); release keys but keep recording.
     hands_free: PLMutex<bool>,
+    /// yap24-PILL4 — the live latch was set by the hands-free CHORD (or the
+    /// tray), not by an fn double-tap; read only while `hands_free` is true.
+    hands_free_by_chord: PLMutex<bool>,
     /// Y3-F — the in-flight take has already crossed [`record::SESSION_WARN_AT`]
     /// and the one calm ceiling notice has been said. Latched so the watchdog,
     /// which ticks at HUD cadence, says it ONCE; cleared when a take starts.
@@ -1227,6 +1238,21 @@ fn status_message(inputs: &StatusInputs<'_>) -> String {
     }
 }
 
+/// yap24-PILL4 — which key ends the live take's latch (see
+/// `AppStatus::chord_label`). Pure, so the choice is a unit test.
+fn hands_free_stop_label(
+    hands_free: bool,
+    by_chord: bool,
+    hold_label: &str,
+    chord: &str,
+) -> String {
+    if hands_free && by_chord {
+        chord.to_string()
+    } else {
+        hold_label.to_string()
+    }
+}
+
 fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
@@ -1236,6 +1262,12 @@ fn build_status(state: &AppState) -> AppStatus {
     let last_error_code = last.map(|l| l.code.to_string());
     let accessibility = permissions::is_accessibility_trusted();
     let ptt = state.settings.lock().hotkey_label.clone();
+    let chord_label = hands_free_stop_label(
+        hands_free,
+        *state.hands_free_by_chord.lock(),
+        &ptt,
+        &hotkey_table::active_chord(hotkey_table::BindingAction::HandsFreeToggle).1,
+    );
     let ready = model_ready(state);
     let secure = state.secure_input.lock().clone();
     let engine_loading = state.transcription.is_loading();
@@ -1264,7 +1296,7 @@ fn build_status(state: &AppState) -> AppStatus {
     });
     #[cfg(target_os = "macos")]
     let message = if still_recording {
-        ptt_macos::STILL_RECORDING_MESSAGE.to_string()
+        ptt_macos::still_recording_message(&chord_label)
     } else {
         message
     };
@@ -1312,6 +1344,7 @@ fn build_status(state: &AppState) -> AppStatus {
         engine_loading,
         tap_health_message,
         still_recording,
+        chord_label,
     }
 }
 
@@ -8403,9 +8436,10 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                     }
                     ptt_macos::PttEvent::HandsFreeOn => {
                         *st.hands_free.lock() = true;
+                        *st.hands_free_by_chord.lock() = false;
                         emit_status(&h, &st);
                         float_pill::show_for_recording(&h);
-                        log::info!("hands-free ON");
+                        log::info!("hands-free ON source=fn_double_tap");
                     }
                     ptt_macos::PttEvent::HandsFreeOff => {
                         *st.hands_free.lock() = false;
@@ -8506,6 +8540,10 @@ fn toggle_hands_free(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin)
         }
         if *state.recording.lock() {
             *state.hands_free.lock() = true;
+            *state.hands_free_by_chord.lock() = true;
+            log::info!("hands-free ON source=chord origin={origin:?}");
+        } else {
+            log::warn!("hands-free toggle failed reason=take_did_not_start origin={origin:?}");
         }
         emit_status(app, state);
     }
@@ -9482,6 +9520,7 @@ pub fn run() {
         recording: PLMutex::new(false),
         busy: PLMutex::new(false),
         hands_free: PLMutex::new(false),
+        hands_free_by_chord: PLMutex::new(false),
         session_cap_warned: PLMutex::new(false),
         command_selection: PLMutex::new(None),
         recorder: PLMutex::new(None),
@@ -12231,6 +12270,7 @@ mod tests {
             recording: super::PLMutex::new(false),
             busy: super::PLMutex::new(false),
             hands_free: super::PLMutex::new(false),
+            hands_free_by_chord: super::PLMutex::new(false),
             session_cap_warned: super::PLMutex::new(false),
             command_selection: super::PLMutex::new(None),
             recorder: super::PLMutex::new(None),
@@ -13993,5 +14033,27 @@ mod db_b_recovery_followups {
             .unwrap();
         assert!(finish_preconditions(&db, &empty, false, Some(())).is_err());
         assert!(db.get_failed_dictation(&empty.id).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod hands_free_stop_label_tests {
+    use super::hands_free_stop_label;
+
+    /// yap24-PILL4: a latch the CHORD set is ended by the chord (an fn tap
+    /// never reaches the PTT machine's latch), and the label follows a rebind.
+    #[test]
+    fn a_chord_latch_names_the_rebound_chord() {
+        assert_eq!(hands_free_stop_label(true, true, "fn⌃", "⌃⌥H"), "⌃⌥H");
+    }
+
+    /// A double-tap latch, a hold take and no take at all name the hold key.
+    #[test]
+    fn otherwise_the_bound_hold_key() {
+        assert_eq!(hands_free_stop_label(true, false, "fn", "⌃⌘H"), "fn");
+        assert_eq!(
+            hands_free_stop_label(false, true, "fn / fn⌃", "⌃⌘H"),
+            "fn / fn⌃"
+        );
     }
 }

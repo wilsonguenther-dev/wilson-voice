@@ -18,10 +18,10 @@
  */
 import { phaseAnnouncement, PHASE_ID, type LivePhase } from "./live";
 
-export default function PhaseAnnouncer({ phase }: { phase: LivePhase }) {
+export default function PhaseAnnouncer({ phase, chordLabel }: { phase: LivePhase; chordLabel?: string }) {
   return (
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-announces={PHASE_ID[phase]}>
-      {phaseAnnouncement(phase)}
+      {phaseAnnouncement(phase, chordLabel)}
     </span>
   );
 }
