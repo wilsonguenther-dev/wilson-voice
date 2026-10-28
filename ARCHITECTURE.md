@@ -1,6 +1,6 @@
 # Yap — Architecture Decision (locked 2026-07-18, re-measured by Y6-E)
 
-**App version:** `0.9.2` — `desktop/src-tauri/tauri.conf.json`; `tests/docs_match_the_app.rs`
+**App version:** `0.9.3` — `desktop/src-tauri/tauri.conf.json`; `tests/docs_match_the_app.rs`
 fails when this line and the config disagree, so a release bumps it with the config.
 
 ## Product
