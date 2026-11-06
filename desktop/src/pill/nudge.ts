@@ -19,8 +19,8 @@
  * Pure + deterministic: no timers, no events, no DOM. `NudgeRow.tsx` feeds it
  * what the app already knows and renders what it returns.
  */
-import { nudgeLine } from "./tone";
-import type { ChatTone } from "./live";
+import { milestoneLine, nudgeLine } from "./tone";
+import { PILL_MESSAGES, pillMessageAllowed, type ChatTone, type PillCategory } from "./live";
 
 /** nudge.rs `TAKE_CONTEXT_EVENT`: one per finished dictation. */
 export const TAKE_CONTEXT_EVENT = "take_context";
@@ -73,10 +73,22 @@ export interface NudgeShown {
   thisSession: number;
   /** Every condition that has ever fired on this install. */
   ever: ReadonlySet<string>;
+  /**
+   * WF-17 — per-nudge showings ([`tipHistoryFromLedger`]). When present it
+   * replaces `ever` for nudges: each may show [`TIP_MAX_SHOWS`] times, at most
+   * once every [`TIP_MIN_GAP_DAYS`] days. Absent = the old once-ever rule.
+   */
+  history?: ReadonlyMap<string, TipHistory>;
+  /** WF-17 — today's [`dayIndex`]; read with `history`. */
+  today?: number;
+  /** WF-17 — the categories muted in Settings › Notifications. */
+  muted?: ReadonlySet<string>;
 }
 
 export interface Nudge {
-  id: NudgeId;
+  id: NudgeId | MilestoneId;
+  /** WF-17 — its row in `live.ts` `PILL_MESSAGES` (tip / news / milestone). */
+  category: PillCategory;
   /** The line in each companion tone. */
   copy: Record<ChatTone, string>;
 }
@@ -110,17 +122,128 @@ export function silenced(ctx: NudgeContext, shown: NudgeShown): boolean {
 /** The nudge to show now, or `null`. Highest-priority unfired condition wins. */
 export function nextNudge(ctx: NudgeContext, shown: NudgeShown): Nudge | null {
   if (silenced(ctx, shown)) return null;
+  const muted = shown.muted ?? NOTHING_MUTED;
   for (const id of NUDGE_IDS) {
-    if (shown.ever.has(id)) continue;
+    // WF-17 — a muted category never reaches the pill.
+    if (!pillMessageAllowed(`nudge:${id}`, muted)) continue;
+    if (shown.history) {
+      if (!tipFrequencyAllows(shown.history.get(id), shown.today ?? 0)) continue;
+    } else if (shown.ever.has(id)) continue;
     if (holds(id, ctx)) return nudge(id);
   }
   return null;
+}
+
+const NOTHING_MUTED: ReadonlySet<string> = new Set();
+
+// ── WF-17 — each tip: at most once every 3 days, 3 times in total ──────────
+
+/** A tip waits at least this many whole days between showings. */
+export const TIP_MIN_GAP_DAYS = 3;
+/** A tip shows at most this many times on one install, ever. */
+export const TIP_MAX_SHOWS = 3;
+
+/** How often a nudge has shown, and on which day it last did. */
+export interface TipHistory {
+  count: number;
+  /** [`dayIndex`] of the last showing; `null` = a pre-WF-17 entry, day unknown. */
+  lastDay: number | null;
+}
+
+/** Whole UTC days since the epoch: the unit the ledger slugs carry. */
+export const dayIndex = (ms: number): number => Math.floor(ms / 86_400_000);
+
+/** May a nudge with this history show on `today`? */
+export function tipFrequencyAllows(h: TipHistory | undefined, today: number): boolean {
+  if (!h || h.count <= 0) return true;
+  if (h.count >= TIP_MAX_SHOWS) return false;
+  if (h.lastDay === null) return true;
+  return today - h.lastDay >= TIP_MIN_GAP_DAYS;
+}
+
+/**
+ * The ledger slug recording one showing of `id` on `day`. The ledger
+ * (nudge.rs `mark`) stores each slug once and only accepts `[a-z0-9-]`, so a
+ * showing per day is `<id>-<day>` ("no-text-field-20398", well inside
+ * `MAX_CONDITION_LEN`). A bare `<id>` is a showing from before WF-17.
+ */
+export const tipShownSlug = (id: NudgeId, day: number): string => `${id}-${day}`;
+
+/** Each nudge's history, read back out of the ledger's `shown` slugs. */
+export function tipHistoryFromLedger(shown: readonly string[]): Map<NudgeId, TipHistory> {
+  const out = new Map<NudgeId, TipHistory>();
+  for (const id of NUDGE_IDS) {
+    let count = 0;
+    let lastDay: number | null = null;
+    for (const slug of shown) {
+      if (slug === id) {
+        count += 1;
+        continue;
+      }
+      if (!slug.startsWith(`${id}-`)) continue;
+      const rest = slug.slice(id.length + 1);
+      if (!/^\d+$/.test(rest)) continue;
+      const day = Number(rest);
+      count += 1;
+      lastDay = lastDay === null ? day : Math.max(lastDay, day);
+    }
+    if (count > 0) out.set(id, { count, lastDay });
+  }
+  return out;
+}
+
+/** `h` after one more showing on `day`. */
+export const recordTipShown = (h: TipHistory | undefined, day: number): TipHistory => ({
+  count: (h?.count ?? 0) + 1,
+  lastDay: day,
+});
+
+// ── WF-17 — milestones ──────────────────────────────────────────────────────
+
+/** Counts worth a word, lowest first. Each fires once, ever. */
+export const MILESTONE_IDS = ["takes-100", "takes-1000"] as const;
+export type MilestoneId = (typeof MILESTONE_IDS)[number];
+/** The successful-take count each milestone celebrates. */
+export const MILESTONE_AT: Record<MilestoneId, number> = { "takes-100": 100, "takes-1000": 1000 };
+
+/**
+ * The milestone to show now, or `null`. Only the HIGHEST one reached is ever
+ * a candidate (an install that arrives at 1,000 takes is not told about 100),
+ * it fires once ever (`shown.ever`), never during a take, shares the
+ * one-note-per-session cap with the nudges, and a muted category never shows.
+ * Unlike a nudge it ignores the 7-day window and the fluency cap: milestones
+ * are for people who already know the app.
+ */
+export function nextMilestone(ctx: NudgeContext, shown: NudgeShown): Nudge | null {
+  if (ctx.takeLive || shown.thisSession >= MAX_NUDGES_PER_SESSION) return null;
+  for (let i = MILESTONE_IDS.length - 1; i >= 0; i -= 1) {
+    const id = MILESTONE_IDS[i];
+    if (ctx.takesSoFar < MILESTONE_AT[id]) continue;
+    if (shown.ever.has(id)) return null;
+    if (!pillMessageAllowed(`milestone:${id}`, shown.muted ?? NOTHING_MUTED)) return null;
+    return milestone(id);
+  }
+  return null;
+}
+
+/** A milestone by id, its copy from `tone.ts`. */
+export function milestone(id: MilestoneId): Nudge {
+  return {
+    id,
+    category: PILL_MESSAGES[`milestone:${id}`],
+    copy: {
+      rude: milestoneLine(id, "rude"),
+      friendly: milestoneLine(id, "friendly"),
+      rose: milestoneLine(id, "rose"),
+    },
+  };
 }
 
 /** A nudge by id, its copy straight out of the one voice system (`tone.ts`). */
 export function nudge(id: NudgeId): Nudge {
   return {
     id,
+    category: PILL_MESSAGES[`nudge:${id}`],
     copy: {
       rude: nudgeLine(id, "rude"),
       friendly: nudgeLine(id, "friendly"),
