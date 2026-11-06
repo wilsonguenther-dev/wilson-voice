@@ -364,7 +364,7 @@ pub fn resolve_ranked<D: Clone>(
     let ranked = order
         .iter()
         .filter(|id| !id.is_empty() && Some(id.as_str()) != wanted)
-        .filter_map(|id| find(id))
+        .filter_map(|id| find(id.as_str()))
         .find(|c| !c.is_virtual);
     if let Some(c) = ranked {
         return Resolution::FellBackToNext {

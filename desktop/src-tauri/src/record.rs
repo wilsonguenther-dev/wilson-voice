@@ -1730,6 +1730,66 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 const WATCHDOG_TICK: Duration = Duration::from_secs(60);
 /// How long `end` waits for the consumer to finish the take's tail (YV91).
 const CONSUMER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+/// WF-10 — the worker's tick while a take (or a meeting) is in flight. A mic
+/// that vanishes mid-take is noticed within this, and the take carries on on
+/// the next ranked mic; the idle stream keeps [`IDLE_TICK`] (YV81).
+const ARMED_TICK: Duration = Duration::from_millis(250);
+/// WF-10 — a stream whose device errored is retried no more often than this
+/// (an unplugged mic with nothing to fall back to must not spin the HAL).
+const FAILED_RETRY: Duration = Duration::from_secs(1);
+
+// ── WF-10: "Mic disconnected — continuing on …" ─────────────────────────────
+// Set by the capture worker when a take in flight is carried onto a DIFFERENT
+// input device; read by `build_status` (lib.rs) so the pill says so, and
+// cleared at the next Arm so the note belongs to exactly one take.
+
+fn mic_switch_slot() -> &'static Mutex<Option<String>> {
+    static NOTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    NOTE.get_or_init(|| Mutex::new(None))
+}
+
+static MIC_SWITCH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The pill line for a take that moved to `to` — because its mic went away
+/// (`lost`), or because the resolver now prefers another one (the pinned mic
+/// came back). Never empty, never a path; the name is the one Settings shows.
+pub fn mic_switch_note(to: &str, lost: bool) -> String {
+    let to = to.trim();
+    match (lost, to.is_empty()) {
+        (true, true) => "Mic disconnected — continuing on another microphone".to_string(),
+        (true, false) => format!("Mic disconnected — continuing on {to}"),
+        (false, true) => "Switched microphones — still recording".to_string(),
+        (false, false) => format!("Switched to {to} — still recording"),
+    }
+}
+
+/// The note for the take in flight, if its mic was swapped mid-take.
+pub fn mid_take_mic_note() -> Option<String> {
+    mic_switch_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// Bumped on every mid-take switch; the HUD loop re-emits status when it moves.
+pub fn mic_switch_seq() -> u64 {
+    MIC_SWITCH_SEQ.load(Ordering::SeqCst)
+}
+
+fn note_mid_take_switch(to: &str, lost: bool) {
+    *mic_switch_slot().lock().unwrap_or_else(|p| p.into_inner()) = Some(mic_switch_note(to, lost));
+    MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+}
+
+fn clear_mid_take_note() {
+    *mic_switch_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// Did a reopen move a take in flight onto a different device? (Pure.) A
+/// format change on the SAME mic (AirPods dropping to HFP) is not a switch.
+fn is_mid_take_switch(from: &str, to: &str, armed: bool) -> bool {
+    armed && !to.is_empty() && from != to
+}
 
 pub(crate) const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 pub(crate) const NO_SAMPLES_ERR: &str =
@@ -2299,8 +2359,15 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
         // every five seconds for the rest of the session: the next command
         // wakes it, which is the same signal-not-poll contract the arm/stop
         // path already keeps.
-        let next = if live.is_some() {
-            rx.recv_timeout(IDLE_TICK)
+        let next = if let Some(stream) = live.as_ref() {
+            // WF-10 — tick fast while audio is wanted, so a mic that vanishes
+            // mid-take is replaced within [`ARMED_TICK`], not a minute later.
+            let tick = if stream.is_armed() || held_for_meeting {
+                ARMED_TICK
+            } else {
+                IDLE_TICK
+            };
+            rx.recv_timeout(tick)
         } else {
             rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         };
@@ -2342,6 +2409,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
+                    // WF-10 — a fresh take starts with no "continuing on" note.
+                    clear_mid_take_note();
                     stream.begin(journal, spill.map(|s| *s));
                     let _ = reply.send(Ok(()));
                 }
@@ -2408,7 +2477,13 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 let event = input_format::take_event();
                 match live.as_mut() {
                     Some(stream) => {
-                        if event.is_some() || last_watchdog.elapsed() >= WATCHDOG_TICK {
+                        // WF-10 — a dead stream (mic unplugged) is not left to
+                        // wait for the 60 s tick: it is replaced at once, and
+                        // retried at most every [`FAILED_RETRY`].
+                        let failed_due =
+                            stream.has_failed() && last_watchdog.elapsed() >= FAILED_RETRY;
+                        if event.is_some() || failed_due || last_watchdog.elapsed() >= WATCHDOG_TICK
+                        {
                             last_watchdog = Instant::now();
                             watchdog_poll(stream, &mut cache, event);
                         }
@@ -2642,8 +2717,13 @@ fn reopen_with(
     live.drain_consumer(CONSUMER_DRAIN_TIMEOUT);
     live.stream = None;
     let reuse = (live.dsp.clone(), live.failed.clone());
+    let from_device = live.device_name.clone();
+    // Read BEFORE the open: a successful reopen clears the shared flag.
+    let device_lost = live.has_failed();
     match open(reuse) {
         Ok(reopened) => {
+            // WF-10 — the take is moving to another mic: say so in the pill.
+            let switched = is_mid_take_switch(&from_device, &reopened.device_name, live.is_armed());
             live.stream = reopened.stream;
             // The rings, the window and the thread draining them all belong to
             // the DEVICE, so they are adopted wholesale. Assigning the consumer
@@ -2659,6 +2739,13 @@ fn reopen_with(
                 // Frame zero OF THE NEW RING: every frame this device delivers
                 // from now on belongs to the take that is still running.
                 live.window.open(0);
+            }
+            if switched {
+                note_mid_take_switch(&live.device_name, device_lost);
+                log::warn!(
+                    "mic_select switched_mid_take device_lost={device_lost} kept_samples={}",
+                    live.output_samples()
+                );
             }
             // A meeting is a SECOND consumer of this device, with its own
             // resampler, and YV92's rule — a ratio must never survive a format
@@ -5431,6 +5518,124 @@ mod tests {
             !live.is_capturing(),
             "a reopen restores the take's intent — it does not invent one"
         );
+    }
+
+    /// WF-10 — the acceptance test. A fake device list: the pinned Shure MV7,
+    /// AirPods ranked next, and BlackHole as the system default (virtual, so
+    /// never auto-picked). The MV7 is unplugged mid-take: the stream errors,
+    /// the resolver walks the ranking to the AirPods, the take is carried
+    /// across, nothing captured before the removal is lost, the AirPods' audio
+    /// lands in the SAME take, and the pill gets its "continuing on" line.
+    #[test]
+    fn removal_mid_take_switches_to_the_next_mic_without_losing_captured_audio() {
+        use crate::mic_select::{resolve_ranked, Candidate, Resolution};
+        fn cand(id: &str, device: &'static str, is_virtual: bool) -> Candidate<&'static str> {
+            Candidate {
+                id: id.to_string(),
+                device,
+                is_virtual,
+            }
+        }
+        let order: Vec<String> = vec!["coreaudio:MV7".to_string(), "coreaudio:AirPods".to_string()];
+        let plugged = vec![
+            cand("coreaudio:MV7", "Shure MV7", false),
+            cand("coreaudio:AirPods", "AirPods Pro", false),
+            cand("coreaudio:BlackHole", "BlackHole 2ch", true),
+        ];
+        assert_eq!(
+            resolve_ranked(
+                Some("coreaudio:MV7"),
+                &order,
+                &plugged,
+                Some("coreaudio:BlackHole")
+            ),
+            Resolution::Chosen("Shure MV7")
+        );
+
+        let mut live = hardware_free_stream("Shure MV7", fmt(48_000));
+        live.begin(None, None);
+        for _ in 0..4 {
+            feed_one_callback(&live, &tone_at(48_000, 0.2, 220.0, 0.3));
+        }
+        let captured_before = live.output_samples();
+        assert!(captured_before > 0, "the take is recording on the MV7");
+
+        // Unplugged: cpal's error callback flags the stream, and the device
+        // list the watchdog re-resolves against no longer has the MV7.
+        live.failed.store(true, Ordering::SeqCst);
+        let unplugged: Vec<_> = plugged
+            .iter()
+            .filter(|c| c.id != "coreaudio:MV7")
+            .cloned()
+            .collect();
+        let next = resolve_ranked(
+            Some("coreaudio:MV7"),
+            &order,
+            &unplugged,
+            Some("coreaudio:BlackHole"),
+        );
+        assert_eq!(
+            next,
+            Resolution::FellBackToNext {
+                device: "AirPods Pro",
+                chosen_missing: true
+            },
+            "the next RANKED mic, never the virtual system default"
+        );
+        let next = next.device().expect("a physical mic is still plugged in");
+
+        let seq = mic_switch_seq();
+        reopen_with(&mut live, None, hardware_free_reopen(next, fmt(24_000)));
+        assert_eq!(live.device_name, "AirPods Pro");
+        assert!(live.is_armed() && live.is_capturing(), "the take continues");
+        assert!(!live.has_failed());
+        assert!(
+            live.output_samples() >= captured_before,
+            "every sample captured before the removal is kept"
+        );
+        assert!(mic_switch_seq() > seq, "the pill is told to redraw");
+        assert!(mid_take_mic_note().is_some());
+
+        feed_one_callback(&live, &tone_at(24_000, 0.2, 220.0, 0.3));
+        assert!(
+            live.output_samples() > captured_before,
+            "the AirPods' audio lands in the same take"
+        );
+        let taken = live.end();
+        assert!(
+            taken.samples.len() as u64 > captured_before,
+            "the finished take holds both halves"
+        );
+    }
+
+    #[test]
+    fn the_pill_line_names_the_mic_the_take_continues_on() {
+        assert_eq!(
+            mic_switch_note("AirPods Pro", true),
+            "Mic disconnected — continuing on AirPods Pro"
+        );
+        assert_eq!(
+            mic_switch_note("  ", true),
+            "Mic disconnected — continuing on another microphone"
+        );
+        assert_eq!(
+            mic_switch_note("Shure MV7", false),
+            "Switched to Shure MV7 — still recording"
+        );
+        // A format change on the same mic, or no take in flight, is no switch.
+        assert!(is_mid_take_switch("Shure MV7", "AirPods Pro", true));
+        assert!(!is_mid_take_switch("AirPods Pro", "AirPods Pro", true));
+        assert!(!is_mid_take_switch("Shure MV7", "AirPods Pro", false));
+        assert!(!is_mid_take_switch("Shure MV7", "", true));
+    }
+
+    #[test]
+    fn the_worker_ticks_fast_only_while_audio_is_wanted() {
+        assert!(ARMED_TICK < IDLE_TICK);
+        assert!(FAILED_RETRY < WATCHDOG_TICK);
+        let code = include_str!("record.rs");
+        assert!(code.contains("let failed_due"));
+        assert!(code.contains("clear_mid_take_note();"));
     }
 
     /// YV92/OS-9 — the hole the format half of the cache key does NOT close,
