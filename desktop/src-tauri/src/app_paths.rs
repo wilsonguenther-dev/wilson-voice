@@ -101,6 +101,18 @@ pub fn is_default_root(candidate: &Path) -> bool {
     candidate == default || candidate.starts_with(&default)
 }
 
+/// yap-1106 — where meeting exports go by default: a USER-VISIBLE folder,
+/// `~/Documents/Yap/Meetings`, not Application Support. Created on the first
+/// export, never at launch. Not part of [`AppPaths`]: it is not state, it is
+/// the user's documents, and `YAP_DATA_DIR` must not move it.
+pub fn default_meeting_export_dir() -> PathBuf {
+    dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Yap")
+        .join("Meetings")
+}
+
 static PATHS: OnceLock<AppPaths> = OnceLock::new();
 
 /// The process's resolved paths. Read once from the environment, then frozen —
@@ -150,6 +162,13 @@ mod tests {
                 derived.display()
             );
         }
+    }
+
+    #[test]
+    fn the_export_folder_is_under_documents_not_the_data_root() {
+        let d = default_meeting_export_dir();
+        assert!(d.ends_with("Yap/Meetings"), "{}", d.display());
+        assert!(!is_default_root(&d), "exports are the user's documents, not app state");
     }
 
     #[test]

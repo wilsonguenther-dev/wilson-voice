@@ -356,6 +356,28 @@ impl TeardownReport {
         )
     }
 
+    /// yap-1106 — `exit clean closed=<names>` when every step finished, or
+    /// `exit unclean closed=<names> missed=<names>` naming the steps that timed
+    /// out, were skipped or panicked. One greppable line per quit.
+    pub fn clean_line(&self) -> String {
+        let (done, missed): (Vec<&str>, Vec<&str>) = self
+            .steps
+            .iter()
+            .partition::<Vec<_>, _>(|s| s.outcome == StepOutcome::Done)
+            .into();
+        let join = |v: &[&str]| if v.is_empty() { "-".to_string() } else { v.join(",") };
+        if missed.is_empty() {
+            format!("exit clean closed={} ms={}", join(&done), self.total.as_millis())
+        } else {
+            format!(
+                "exit unclean closed={} missed={} ms={}",
+                join(&done),
+                join(&missed),
+                self.total.as_millis()
+            )
+        }
+    }
+
     pub fn outcome_of(&self, name: &str) -> Option<StepOutcome> {
         self.steps
             .iter()

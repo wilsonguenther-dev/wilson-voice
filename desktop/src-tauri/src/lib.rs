@@ -69,6 +69,9 @@ pub mod formatting_options;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
+// yap-1106 — the launch-time leftovers sweep (tmp/, finished ledgers, expired
+// recovery clips, the retired Python sidecar, stray root exports).
+pub mod leftovers;
 // YV92 — the input format-change state machine (AirPods mid-meeting) plus the
 // CoreAudio listeners that make it prompt. Public because the state machine is
 // the falsifiable half: `tests/input_format_change_handler.rs` drives it with a
@@ -620,6 +623,11 @@ pub struct AppSettings {
     /// would rather spend the memory all day than the one-time first-take wait.
     #[serde(default)]
     pub preload_model: bool,
+    /// yap-1106 — where meeting Markdown exports are written. `None` = the
+    /// default, `~/Documents/Yap/Meetings` (`app_paths::default_meeting_export_dir`),
+    /// created on first export. Changeable from Settings › Meetings.
+    #[serde(default)]
+    pub meeting_export_dir: Option<String>,
     /// Launch Yap at login (YV42), applied through tauri-plugin-autostart's
     /// macOS LaunchAgent. Defaults OFF — nothing installs a login item behind
     /// the user's back; the toggle is applied immediately on save and re-applied
@@ -759,6 +767,7 @@ impl Default for AppSettings {
             calibration_sample: None,
             native_model: default_native_model(),
             preload_model: false,
+            meeting_export_dir: None,
             autostart: false,
             check_updates: true,
             skipped_update_version: None,
@@ -4406,6 +4415,39 @@ fn purge_expired_meeting_audio(db: &Database) -> usize {
 /// A row list that cannot be read yields `None`, which makes `hygiene::sweep`
 /// skip the recovery directory entirely rather than delete audio it cannot
 /// prove is unreachable.
+/// yap-1106 — the launch-time leftovers pass (`leftovers::sweep`). Reads the
+/// complete-meeting ids and the recovery keep-list from the DB; a DB that cannot
+/// answer makes the sweep skip the class that needs the answer, never guess.
+fn run_leftovers_sweep(db: &Database) {
+    let completed = match db.meeting_ids_in_state(meetings::MeetingState::Complete.as_str()) {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("leftovers: complete-meeting list unreadable ({e}); ledgers kept");
+            Vec::new()
+        }
+    };
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => Some(rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>()),
+        Err(e) => {
+            log::warn!("leftovers: recovery sweep skipped, row list unreadable ({e})");
+            None
+        }
+    };
+    let export_dir = {
+        let settings = load_settings(&data_dir().join("settings.json"));
+        meeting_export_dir(&settings)
+    };
+    let outcome = leftovers::sweep(
+        &data_dir(),
+        &completed,
+        keep.as_deref(),
+        &export_dir,
+        std::time::SystemTime::now(),
+    );
+    log::info!("{}", outcome.log_line());
+    diagnostics::record_duration("leftovers", "swept_files", outcome.swept() as u64);
+}
+
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
     // YV94 — same posture, one window later: expired meeting audio is dropped
@@ -8012,21 +8054,189 @@ fn export_meeting_markdown(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<ExportResult, String> {
-    write_meeting_markdown(&state.db, &id)
+    let dir = meeting_export_dir(&state.settings.lock());
+    let started = std::time::Instant::now();
+    match write_meeting_markdown(&state.db, &id, &dir) {
+        Ok(r) => {
+            let name = Path::new(&r.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            log::info!("meetings export ok file={name} segments={}", r.count);
+            diagnostics::record_duration("meetings", "export", started.elapsed().as_millis() as u64);
+            Ok(r)
+        }
+        Err(e) => {
+            log::warn!("meetings export failed id={id} err={e}");
+            Err(format!("Couldn't export this meeting ({e}). Check the export folder in Settings › Meetings."))
+        }
+    }
+}
+
+/// yap-1106 — the export folder the settings name, or the default.
+pub(crate) fn meeting_export_dir(settings: &AppSettings) -> PathBuf {
+    match settings.meeting_export_dir.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => PathBuf::from(expand_tilde(s)),
+        _ => app_paths::default_meeting_export_dir(),
+    }
+}
+
+/// `~/x` → `<home>/x`; anything else unchanged.
+fn expand_tilde(s: &str) -> String {
+    match s.strip_prefix("~/") {
+        Some(rest) => home_dir().join(rest).display().to_string(),
+        None if s == "~" => home_dir().display().to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// yap-1106 — the path an export of `id` would have (or has): the folder plus
+/// `meetings::export_file_name`. Pure over the row; does not touch the disk.
+fn meeting_export_path(db: &Database, settings: &AppSettings, id: &str) -> Result<PathBuf, String> {
+    let meeting = db.get_meeting(id)?.ok_or_else(|| format!("no meeting {id}"))?;
+    Ok(meeting_export_dir(settings).join(meetings::export_file_name(&meeting.title, meeting.started_at)))
+}
+
+/// yap-1106 — Copy as Markdown: the same bytes the export writes, on the
+/// clipboard. `async` so the sequenced copy runs OFF the main thread (it waits
+/// on it; see `paste::copy_text_sequenced`).
+#[tauri::command]
+async fn copy_meeting_markdown(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<usize, String> {
+    let (_, markdown) = state.db.meeting_markdown(&id).map_err(|e| {
+        log::warn!("meetings copy failed id={id} err={e}");
+        format!("Couldn't read this meeting ({e}). Open it again and retry.")
+    })?;
+    let chars = markdown.chars().count();
+    tauri::async_runtime::spawn_blocking(move || paste::copy_text_sequenced(&app, &markdown))
+        .await
+        .map_err(|e| format!("copy task join failed: {e}"))?
+        .map_err(|e| {
+            log::warn!("meetings copy failed id={id} err={e}");
+            "Couldn't put the Markdown on the clipboard. Try Export Markdown instead.".to_string()
+        })?;
+    log::info!("meetings copy ok chars={chars}");
+    diagnostics::bump("meetings", "copy_markdown");
+    Ok(chars)
+}
+
+/// yap-1106 — what Show in Finder revealed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevealResult {
+    pub path: String,
+    /// `"file"` — the export was selected in Finder; `"folder"` — no export of
+    /// this meeting exists yet, so the export folder was opened.
+    pub target: String,
+}
+
+/// yap-1106 — Show in Finder: select the meeting's export when it exists,
+/// otherwise open the export folder (created on demand).
+#[tauri::command]
+fn reveal_meeting_export(state: State<'_, Arc<AppState>>, id: String) -> Result<RevealResult, String> {
+    let path = meeting_export_path(&state.db, &state.settings.lock(), &id).map_err(|e| {
+        log::warn!("meetings reveal failed id={id} err={e}");
+        format!("Couldn't find this meeting ({e}).")
+    })?;
+    if path.is_file() {
+        support::reveal_in_finder(&path);
+        log::info!("meetings reveal target=file");
+        return Ok(RevealResult { path: path.display().to_string(), target: "file".into() });
+    }
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| app_paths::default_meeting_export_dir());
+    open_folder(&dir, "meetings reveal")?;
+    log::info!("meetings reveal target=folder");
+    Ok(RevealResult { path: dir.display().to_string(), target: "folder".into() })
+}
+
+/// Create `dir` and open it in Finder. One sentence + one action on failure.
+fn open_folder(dir: &Path, who: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        log::warn!("{who} folder create failed err={e}");
+        format!("Couldn't create the export folder ({e}). Pick another folder in Settings › Meetings.")
+    })?;
+    std::process::Command::new("/usr/bin/open").arg(dir).spawn().map_err(|e| {
+        log::warn!("{who} open failed err={e}");
+        format!("Couldn't open the folder in Finder ({e}).")
+    })?;
+    Ok(())
+}
+
+/// yap-1106 — Settings › Meetings › Open meetings folder.
+#[tauri::command]
+fn open_meeting_export_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let dir = meeting_export_dir(&state.settings.lock());
+    open_folder(&dir, "meetings open-folder")?;
+    log::info!("meetings open-folder ok");
+    Ok(dir.display().to_string())
+}
+
+/// yap-1106 — what Settings › Meetings shows about the export folder.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingExportLocation {
+    pub path: String,
+    pub is_default: bool,
+    pub default_path: String,
+}
+
+#[tauri::command]
+fn meeting_export_location(state: State<'_, Arc<AppState>>) -> MeetingExportLocation {
+    let settings = state.settings.lock();
+    MeetingExportLocation {
+        path: meeting_export_dir(&settings).display().to_string(),
+        is_default: settings.meeting_export_dir.as_deref().map(str::trim).is_none_or(str::is_empty),
+        default_path: app_paths::default_meeting_export_dir().display().to_string(),
+    }
+}
+
+/// yap-1106 — change the export folder. `None` / blank = back to the default.
+/// The folder is created here, so a path that cannot be written is refused at
+/// save time rather than on the next export.
+#[tauri::command]
+fn set_meeting_export_dir(
+    state: State<'_, Arc<AppState>>,
+    path: Option<String>,
+) -> Result<MeetingExportLocation, String> {
+    let next = path.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(expand_tilde);
+    if let Some(p) = next.as_deref() {
+        let dir = Path::new(p);
+        if !dir.is_absolute() {
+            return Err("Use a full path, like ~/Documents/Yap/Meetings.".into());
+        }
+        std::fs::create_dir_all(dir).map_err(|e| {
+            log::warn!("meetings export-dir set failed err={e}");
+            format!("Couldn't create that folder ({e}). Pick one you can write to.")
+        })?;
+    }
+    {
+        let mut settings = state.settings.lock();
+        settings.meeting_export_dir = next;
+        persist_settings(&settings).map_err(|e| {
+            log::warn!("meetings export-dir persist failed err={e}");
+            format!("The folder was not saved ({e}). Try again.")
+        })?;
+    }
+    log::info!("meetings export-dir set default={}", path.as_deref().map(str::trim).is_none_or(str::is_empty));
+    Ok(meeting_export_location(state))
 }
 
 /// yap24-NT9 — the export itself, shared by the `export_meeting_markdown`
 /// command and the headless `--transcribe-meeting` proof, so the file the CLI
 /// asserts on is byte-for-byte the file the Meetings view writes.
-pub(crate) fn write_meeting_markdown(db: &Database, id: &str) -> Result<ExportResult, String> {
+pub(crate) fn write_meeting_markdown(db: &Database, id: &str, dir: &Path) -> Result<ExportResult, String> {
     use std::io::Write;
 
     let (meeting, markdown) = db.meeting_markdown(id)?;
-    let dir = data_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = meetings::export_file_stem(&meeting.title, meeting.started_at);
-    let path = dir.join(format!("{stem}.md"));
-    let tmp = dir.join(format!(".{stem}.md.part"));
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // yap-1106 — `<date> <title>.md` in the export folder (default
+    // `~/Documents/Yap/Meetings`), through the same sanitiser as before.
+    let name = meetings::export_file_name(&meeting.title, meeting.started_at);
+    let path = dir.join(&name);
+    let tmp = dir.join(format!(".{name}.part"));
 
     let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
     let mut w = std::io::BufWriter::new(file);
@@ -10035,6 +10245,11 @@ pub fn run() {
                 // dictation emits (`hygiene::log_snapshot_async`) bracket the
                 // model, so the rss_mb delta between them IS the engine.
                 log::info!("{}", hygiene::collect(&data_dir()).summary_line());
+                // yap-1106 — the leftovers sweep runs at EVERY launch, right
+                // away (not after the 30 s delay): it only touches files
+                // nothing in this build is writing, and its line is how a
+                // launch proves it left nothing behind.
+                run_leftovers_sweep(&db);
                 std::thread::sleep(hygiene::STARTUP_SWEEP_DELAY);
                 run_disk_sweep(&db);
                 let mut since_sweep = Duration::ZERO;
@@ -10276,6 +10491,11 @@ pub fn run() {
             rename_meeting,
             delete_meeting,
             export_meeting_markdown,
+            copy_meeting_markdown,
+            reveal_meeting_export,
+            open_meeting_export_dir,
+            meeting_export_location,
+            set_meeting_export_dir,
             // YV96 — the one-time capture notice. Two reads and one write on a
             // single `settings_kv` row; nothing here can block a recording.
             meeting_consent,
@@ -11163,6 +11383,9 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let report = quit_teardown(app_handle, &state);
                     log::info!("{}", report.log_line());
+                    // yap-1106 — one line a reader can grep for: did this quit
+                    // close everything it meant to, and what did it close.
+                    log::info!("{}", report.clean_line());
                 }
             }
             _ => {}

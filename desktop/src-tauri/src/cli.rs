@@ -741,7 +741,7 @@ fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingRep
     let notes_ms = notes_start.elapsed().as_millis() as u64;
     crate::diagnostics::record_duration("cli", "meeting_notes", notes_ms);
 
-    let export = crate::write_meeting_markdown(&db, &id)?;
+    let export = crate::write_meeting_markdown(&db, &id, &crate::data_dir())?;
     let meeting = db.get_meeting(&id)?.ok_or("the meeting row vanished")?;
     let asr_model = db.meeting_asr_model(&id)?;
     Ok(MeetingReport {

@@ -924,9 +924,18 @@ pub fn format_duration(seconds: f64) -> String {
     }
 }
 
-/// A filename stem that survives the Finder, a shell, and a zip: ASCII-ish,
-/// no separators, no leading dot, never empty.
-pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
+/// yap-1106 — the export's file name: `<date> <title>.md`, e.g.
+/// `2026-11-06 weekly-sync.md`. The date is local; the title goes through the
+/// same sanitiser as [`export_file_stem`]. Deterministic per meeting, so a
+/// re-export overwrites its own earlier file rather than piling up copies.
+pub fn export_file_name(title: &str, started_at: DateTime<Utc>) -> String {
+    let date = started_at.with_timezone(&chrono::Local).format("%Y-%m-%d");
+    format!("{date} {}.md", slug_title(title))
+}
+
+/// The title part of an export name: ASCII alphanumerics, dashes between
+/// words, at most 40 chars, never empty.
+fn slug_title(title: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = true; // suppresses a leading dash
     for ch in title.chars() {
@@ -947,10 +956,16 @@ pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
     if slug.is_empty() {
         slug.push_str("meeting");
     }
+    slug
+}
+
+/// A filename stem that survives the Finder, a shell, and a zip: ASCII-ish,
+/// no separators, no leading dot, never empty.
+pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
     let stamp = started_at
         .with_timezone(&chrono::Local)
         .format("%Y%m%d-%H%M%S");
-    format!("{slug}-{stamp}")
+    format!("{}-{stamp}", slug_title(title))
 }
 
 // ── YV108 · the mixed Me/Them transcript ────────────────────────────────────
@@ -1412,6 +1427,19 @@ mod tests {
         assert!(!stem.contains(' '));
         // A title with nothing usable still yields a name.
         assert!(export_file_stem("///", started).starts_with("meeting-"));
+    }
+
+    /// yap-1106 — `<date> <title>.md`, through the same sanitiser.
+    #[test]
+    fn export_file_name_is_date_then_title() {
+        let started = Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap();
+        let name = export_file_name("Weekly sync / Q3 (planning)", started);
+        let local_date = started.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        assert_eq!(name, format!("{local_date} weekly-sync-q3-planning.md"));
+        assert!(!name.contains('/'));
+        assert!(export_file_name("///", started).ends_with(" meeting.md"));
+        // Same meeting, same name — a re-export replaces, never duplicates.
+        assert_eq!(export_file_name("x", started), export_file_name("x", started));
     }
 
     /// YV104 published the column name; migration 3 is where it lands. Nothing
