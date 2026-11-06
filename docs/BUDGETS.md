@@ -502,3 +502,53 @@ assumption anywhere downstream would be wrong there.
 | NT0 call-bleed-2voice (275 s) | 33.5 dB (p90 35.3) | 0.49 dB | 60.0 ms | 67.3 s (debug) |
 | headphones control | coupling None, nothing derived | - | - | - |
 
+
+---
+
+## speed_bench (SP-03)
+
+**What it measures:** the release side of a dictation, stage by stage, on three fixed recordings,
+through the shipped pipeline with no window and no paste:
+
+```
+scripts/qa/speed-bench.sh --note "<what changed>"     # needs a built wilson-voice; never builds
+wilson-voice --bench <wav> [<wav>…] [--no-cleanup]     # the command it drives; one JSON object on stdout
+```
+
+`--bench` loads the model once (`cold_load_ms`), then for each file: levels the samples the way
+capture does while the key is held (off the clock), starts the **release clock**, runs the
+release-side DSP + VAD (`record::bench_release_dsp` — gain, edge fade, denoise at the shipped
+default, energy VAD, pauses, and the Silero trim when its model is already on disk; never a
+download), the warm decode (`transcribe_native`, the dictation path itself, shipped default
+language set), and the cleanup pipeline at the shipped default level. The LLM polish stage is
+always **skipped** headless and nothing is pasted. Per file it reports `dsp_ms`, `asr_load_ms`,
+`asr_decode_ms`, `cleanup_ms`, `release_text_ms` (one wall span from the release clock to cleaned
+text, not a sum), `rtf` (`asr_decode_ms / decoded audio ms`; lower is faster), `release_rtf`,
+windows, and `wer` against the fixture's reference text.
+
+**Fixtures:** `scripts/eval/bench/bench-{20s,127s,240s}.txt` are the reference texts (dictation-style
+prose, 53 / 295 / 643 words). `scripts/eval/make-bench-fixtures.sh` speaks each with macOS `say`
+(voice pinned, `$YAP_BENCH_VOICE`, default Samantha) into a 16 kHz mono WAV beside it, padded with
+trailing silence to exactly 20 s, 127 s and 240 s. The WAVs are generated, never committed, and
+never captured user audio.
+
+**The gate:** each run appends one dated row below. It **fails (exit 1)** when `240 s r→t ms` is
+more than **20 %** over the last accepted row from the **same machine and model** — the row is
+still written, marked `REGRESSED`, and is never the base for the next comparison, so a regression
+cannot become the new normal by being re-run. The first row for a machine + model is `baseline`.
+`scripts/qa/speed-bench.sh --self-test` proves the gate on synthetic runs without a binary.
+
+**In the app:** every `latency …` line now ends with `rtf_p50=… rtf_last=…` — this take's decode
+RTF and the median over the session's last 10 takes (`latency::record_decode_rtf`). SP-01 sizes
+its windows from those.
+
+Columns: release→text (`r→t`) in ms per fixture; `240 s decode` is `asr_decode_ms` alone; `rtf_p50`
+is the median decode RTF over the three files; `WER` is 20 s / 127 s / 240 s.
+
+<!-- speed-bench:rows:start -->
+| date (UTC) | commit | machine | model | vad | 20 s r→t | 127 s r→t | 240 s r→t | 240 s decode | rtf_p50 | WER | status | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+<!-- speed-bench:rows:end -->
+
+The baseline row is written by the batch integrator's first `scripts/qa/speed-bench.sh` run on the
+merged build (builders in this loop do not compile), and must land before SP-04..SP-10 start.

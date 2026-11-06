@@ -134,6 +134,11 @@ export interface AppSettings {
   copyLastChord?: ChordSetting | null;
   /** Y8-A — Open Scratchpad chord rebind; null/absent = ⌃⌘J. */
   scratchpadChord?: ChordSetting | null;
+  /**
+   * WF-18 — each always-global action's 2nd … 4th shortcut (the primary stays
+   * in its own field). Rust `shortcuts::editor` validates every save.
+   */
+  extraChords?: ExtraBinding[];
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
   /**
@@ -801,4 +806,10 @@ export function formatDayShort(d: string) {
 export const RETAINED_CLIP_DAYS = 7;
 export function retainedClipsLabel(count: number): string {
   return `${count} ${count === 1 ? "clip" : "clips"} kept for ${RETAINED_CLIP_DAYS} days`;
+}
+
+/** WF-18 — one extra shortcut of an always-global action (Rust `editor::ExtraBinding`). */
+export interface ExtraBinding {
+  action: "record_meeting" | "hands_free_toggle" | "copy_last" | "open_scratchpad";
+  chord: ChordSetting;
 }

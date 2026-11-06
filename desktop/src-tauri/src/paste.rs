@@ -32,6 +32,13 @@ pub fn copy_text_sequenced(app: &AppHandle, text: &str) -> Result<(), String> {
     paste_tx::copy_sequenced(app, text)
 }
 
+/// WF-15 — the Scratchpad's Copy: sequenced like [`copy_text_sequenced`] and
+/// marked transient (`paste_tx::TRANSIENT_MARKER`) so clipboard managers do
+/// not keep the note in their history. Never call it from the main thread.
+pub fn copy_text_transient(app: &AppHandle, text: &str) -> Result<(), String> {
+    paste_tx::copy_transient_sequenced(app, text)
+}
+
 #[derive(Debug)]
 pub struct PasteOutcome {
     pub copied: bool,
