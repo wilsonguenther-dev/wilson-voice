@@ -12,7 +12,7 @@
  *      ready, picked-but-unplugged, no device at all, and the list error.
  *
  * The menu rows follow `tray_menu::microphone_menu` and the Settings copy
- * follows `views/settings/MicrophonePicker.tsx`; the format strings are
+ * follows `views/settings/parts/MicrophonePicker.tsx`; the format strings are
  * checked against those sources so a preview cannot silently drift. Devices
  * are fixtures. Colours come from desktop/src/tokens.css.
  *
@@ -30,7 +30,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME =
   process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const TRAY_RS = readFileSync(join(ROOT, "desktop/src-tauri/src/tray_menu.rs"), "utf8");
-const PICKER_TSX = readFileSync(join(ROOT, "desktop/src/views/settings/MicrophonePicker.tsx"), "utf8");
+const PICKER_TSX = readFileSync(join(ROOT, "desktop/src/views/settings/parts/MicrophonePicker.tsx"), "utf8");
 const TOKENS = readFileSync(join(ROOT, "desktop/src/tokens.css"), "utf8");
 
 function assertSourcesMatch() {

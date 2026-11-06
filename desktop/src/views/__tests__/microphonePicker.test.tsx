@@ -17,7 +17,7 @@ import MicrophonePicker, {
   micHint,
   systemDefaultLabel,
   type MicList,
-} from "../settings/MicrophonePicker";
+} from "../settings/parts/MicrophonePicker";
 
 type State = Record<string, unknown>;
 const makeCtx = (state: State): AppCtx =>

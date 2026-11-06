@@ -22,6 +22,7 @@ import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
 import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, retryDeadlineMs, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
+import type { MicList } from "./views/settings/parts/MicrophonePicker";
 
 /**
  * yap-p0-insertion-bridge-fallback DO 3 — the boot batch, one entry per backend
@@ -92,6 +93,9 @@ export function useAppShell() {
   // sheet is up. `null` until the first `license_status` lands: the chip and the
   // License tab render nothing rather than guessing "trial" for a paying user.
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  // WF-09 — the backend device watcher's latest microphone list (plug /
+  // unplug), read by Settings › Audio › Microphone.
+  const [microphones, setMicrophones] = useState<MicList | null>(null);
   const [buyPrompt, setBuyPrompt] = useState(false);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
@@ -799,6 +803,10 @@ export function useAppShell() {
     // window before the event arrives; all that is left is raising the sheet
     // that already exists, which is why the pill never needs a price or a URL.
     listen("show_purchase", () => setBuyPrompt(true)).then((u) =>
+      dead ? u() : unsubs.push(u),
+    );
+    // WF-09 — `mic_select::CHANGED_EVENT` (MICROPHONES_CHANGED in the picker).
+    listen<MicList>("microphones-changed", (e) => setMicrophones(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
     return () => {
@@ -1515,7 +1523,7 @@ export function useAppShell() {
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,
     snippets, status, supportBusy, supportOpen, supportPreview, sysAudio,
     sysAudioBusy, sysAudioGate, toast, toggleRecord, trialWarnShown, update,
-    userName, wasModelReady,
+    userName, wasModelReady, microphones,
   };
 }
 

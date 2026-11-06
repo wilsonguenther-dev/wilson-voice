@@ -1,5 +1,5 @@
 import { useAppCtx } from "../../appShell";
-import MicrophonePicker from "./MicrophonePicker";
+import MicrophonePicker from "./parts/MicrophonePicker";
 
 export default function Audio() {
   const {

@@ -2,11 +2,12 @@
 // "Microphone ▸" submenu draws (both come from `mic_select::list`), with
 // "System Default" first. A pick is saved on this Mac and used by the next
 // take; the list redraws on its own when a mic is plugged in or unplugged
-// (`microphones-changed`, published by the backend device watcher).
+// (`microphones-changed`, published by the backend device watcher; the shell
+// in appShell.ts owns that subscription and hands the list down as
+// `microphones`, so this pane registers no listener of its own).
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useAppCtx } from "../../appShell";
+import { useAppCtx } from "../../../appShell";
 
 /** Mirrors `mic_select::MicDevice`. */
 export interface MicDevice {
@@ -57,7 +58,7 @@ type Load =
   | { kind: "ready"; list: MicList };
 
 export default function MicrophonePicker() {
-  const { toast, toastError } = useAppCtx();
+  const { toast, toastError, microphones } = useAppCtx();
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [saving, setSaving] = useState(false);
 
@@ -77,14 +78,17 @@ export default function MicrophonePicker() {
       .catch(() => {
         if (!dead) setLoad({ kind: "error" });
       });
-    const un = listen<MicList>(MICROPHONES_CHANGED, (e) => {
-      if (!dead) setLoad({ kind: "ready", list: e.payload });
-    });
     return () => {
       dead = true;
-      un.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  // The backend device watcher's latest list (plug / unplug), via the shell.
+  useEffect(() => {
+    if (microphones && Array.isArray(microphones.devices)) {
+      setLoad({ kind: "ready", list: microphones });
+    }
+  }, [microphones]);
 
   const pick = (value: string) => {
     if (load.kind !== "ready") return;
