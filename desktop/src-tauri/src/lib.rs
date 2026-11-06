@@ -111,6 +111,9 @@ pub mod meetings;
 pub mod http_client;
 pub mod keychain;
 pub mod model_providers;
+// yap-1106-byom-cloud-fast-path — the cloud route (policy) and its SSE client.
+pub mod cloud_route;
+pub mod cloud_client;
 // yap-notetaker-onboard — Set up Notetaker: Apple Calendar (read-only) and
 // Otter file import.
 pub mod calendar;
