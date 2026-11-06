@@ -33,7 +33,7 @@ import LanguageChip from "./LanguageChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
-import { resolveCharacter } from "./characters/registry";
+import { shellBody } from "./characters/registry";
 import type { Character, CharacterFrame, CharacterPaint } from "./characters/types";
 import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
 
@@ -53,9 +53,9 @@ interface AppStatus {
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = resolveCharacter(), tone = "friendly" }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = shellBody(), tone = "friendly" }: {
     gate?: LivePhase;
-    /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: classic. */
+    /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: the shell's neutral body (`shellBody`). */
     character?: Character;
     /** Y5-K — the companion tone, decided by the shell (float-main) and handed down in the frame. */
     tone?: ChatTone;
@@ -405,9 +405,9 @@ export default function ClassicPill(
     reducedMotion: prefersReducedMotion(),
     chordLabel,
   };
-  // A character with nothing for a frame never blanks the pill: classic paints it.
+  // A character with nothing for a frame never blanks the pill: the shell's neutral body paints it.
   const paintOf = (f: CharacterFrame): CharacterPaint =>
-    character.render(f) ?? (resolveCharacter().render(f) as CharacterPaint);
+    character.render(f) ?? (shellBody().render(f) as CharacterPaint);
   const paint = paintOf(frame);
   const art = paint.art;
   // The take-landed flash is the shell's timer; the creature only draws `done`.
