@@ -62,12 +62,12 @@ pub mod diarize_protocol;
 // `tests/pill_idle_tick_during_recording.rs` drives it directly rather than
 // trying to infer a sleep duration from the outside.
 pub mod float_pill;
-/// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
-mod pill_click;
 pub mod focus;
 /// Y4-H — the formatting screen's copy, derived from the pipeline's own
 /// `runs_*` predicates so it cannot drift from what the pipeline does.
 pub mod formatting_options;
+/// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
+mod pill_click;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -1945,7 +1945,11 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
                 // publish (poked by a later pick, or the device list moving)
                 // redraws it — and the user is told now.
                 mic_select::poke();
-                notify(&app, "Yap", "Yap could not save that microphone — try again");
+                notify(
+                    &app,
+                    "Yap",
+                    "Yap could not save that microphone — try again",
+                );
             }
         });
     if let Err(e) = spawned {
@@ -1957,11 +1961,7 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
 /// The submenu is found by id and replaced whole, so a retry after a
 /// half-applied failure is idempotent; what was drawn is recorded in
 /// `tray_menu::MIC_SHOWN` only on success.
-fn apply_microphone_menu_on_main(
-    app: &AppHandle,
-    state: &AppState,
-    list: &mic_select::MicList,
-) {
+fn apply_microphone_menu_on_main(app: &AppHandle, state: &AppState, list: &mic_select::MicList) {
     let Some(menu) = state.tray_menu.lock().clone() else {
         log::debug!("tray microphone_menu skipped reason=tray_not_built");
         return;
@@ -5704,10 +5704,7 @@ fn pill_drag_start(app: AppHandle) {
 /// pre-click app (latched by `pill_drag_start`) BEFORE `stop_take` reads the
 /// paste target, so the text lands where the user was typing.
 #[tauri::command]
-fn pill_click_toggle(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), CommandError> {
+fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
     let state = state.inner();
     if !*state.recording.lock() {
         if *state.busy.lock() {
@@ -5732,7 +5729,10 @@ fn pill_click_toggle(
         emit_status(&app, state);
         return Ok(());
     }
-    let pre = pill_click::PRESS.lock().pre_click(hotkeys::now_ms()).cloned();
+    let pre = pill_click::PRESS
+        .lock()
+        .pre_click(hotkeys::now_ms())
+        .cloned();
     match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
         pill_click::PasteTarget::Keep => {
             log::info!("pill click action=stop refocus=false");
