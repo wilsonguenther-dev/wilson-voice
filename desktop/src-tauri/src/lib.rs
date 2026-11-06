@@ -1875,6 +1875,23 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         TrayCommand::PickMicrophone(index) => {
             pick_microphone_from_tray(app, index);
         }
+        // WF-11 — pick Auto-detect or a language from the submenu, resolved
+        // against the rows ON SCREEN and written through the ONE writer the
+        // bar's chip and Settings use, which redraws the submenu and tells
+        // every window.
+        TrayCommand::PickLanguage(index) => {
+            pick_language_from_tray(app, state, index);
+        }
+        // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
+        TrayCommand::OpenLanguageSettings => {
+            log::info!("tray open_language_settings");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("navigate", "settings");
+            let _ = app.emit("settings-tab", tray_menu::LANGUAGE_SETTINGS_TAB);
+        }
         // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
         // and re-publishes, which redraws the calendar rows.
         TrayCommand::ToggleHideMeetingTitles => {
@@ -1982,6 +1999,135 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
     if let Err(e) = spawned {
         log::warn!("tray pick_microphone spawn_failed error={e}");
     }
+}
+
+/// WF-11 — the tray half of a language pick. The row carries the exact prefs
+/// the chip would write for the same choice (`tray_menu::prefs_for_pick`).
+fn pick_language_from_tray(app: &AppHandle, state: &AppState, index: usize) {
+    let Some(row) = tray_menu::language_row(index) else {
+        log::warn!("tray pick_language stale_row index={index}");
+        sync_language_menu(app);
+        return;
+    };
+    match write_dictation_languages(app, state, &row.prefs, "tray") {
+        Ok(_) => log::info!("tray pick_language index={index} pick={}", row.pick),
+        Err(e) => {
+            log::warn!("tray pick_language failed pick={} error={e}", row.pick);
+            // The check item flipped itself on the click; redraw from the
+            // unchanged settings so it reads true again — and say so.
+            sync_language_menu(app);
+            notify(app, "Yap", "Yap could not switch the language — try again");
+        }
+    }
+}
+
+/// WF-11 — redraw the Languages submenu from the live settings. Safe from any
+/// thread: the mutation hops to the main thread.
+fn sync_language_menu(app: &AppHandle) {
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            apply_language_menu_on_main(&app_main, &state);
+        }
+    });
+    if let Err(e) = hop {
+        log::warn!("tray language_menu hop_failed error={e}");
+    }
+}
+
+/// WF-11 — the ONE place the Languages submenu is mutated. MAIN THREAD only.
+/// Built from the live prefs and the LAST probed model support (never loads
+/// the model to draw a check); what was drawn is recorded in
+/// `tray_menu::LANG_SHOWN` only on success.
+fn apply_language_menu_on_main(app: &AppHandle, state: &AppState) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray language_menu skipped reason=tray_not_built");
+        return;
+    };
+    let prefs = state.settings.lock().language_prefs();
+    let support = tray_menu::LANG_SHOWN.support();
+    let opts = languages::language_options(&prefs, support.as_ref());
+    let plan = tray_menu::language_menu(&opts);
+    match place_language_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray language_menu synced rows={} checked={} probed={}",
+                plan.rows.len(),
+                plan.checked_pick().unwrap_or("none"),
+                support.is_some()
+            );
+            tray_menu::LANG_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray language_menu apply_failed error={e}");
+            tray_menu::LANG_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_language_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::LanguageMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_LANGUAGES)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, in the Dictation group: under Microphone once the device list has
+    // landed (the Microphone submenu is always re-placed directly under
+    // Hands-free, so the order stays Hands-free, Microphone, Languages), else
+    // directly under Hands-free.
+    let items = menu.items().map_err(|e| format!("items: {e}"))?;
+    let at = items
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        })
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the languages submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| CheckMenuItem::with_id(app, r.id.as_str(), &r.text, true, r.checked, None::<&str>))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| format!("separator: {e}"))?;
+    let settings_i = MenuItem::with_id(
+        app,
+        tray_menu::ID_LANGUAGE_SETTINGS,
+        tray_menu::LANGUAGE_SETTINGS_LABEL,
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("settings item: {e}"))?;
+    let mut entries: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = children
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    entries.push(&separator);
+    entries.push(&settings_i);
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_LANGUAGES,
+        tray_menu::label(tray_menu::ID_LANGUAGES),
+        true,
+        &entries,
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
 }
 
 /// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
@@ -5292,6 +5438,7 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
 /// honest `supportsDetect: null`, never a guess.
 #[tauri::command]
 async fn language_options(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<languages::LanguageOptions, String> {
     let state = state.inner().clone();
@@ -5312,16 +5459,21 @@ async fn language_options(
             }
             None => None,
         };
+        // WF-11 — the tray's Languages submenu draws from the last probe (it
+        // never loads the model itself); a probe that changed what the model
+        // can do redraws it so its check matches the chip's.
+        if tray_menu::LANG_SHOWN.support() != support {
+            tray_menu::LANG_SHOWN.remember_support(support.clone());
+            sync_language_menu(&app);
+        }
         Ok(languages::language_options(&prefs, support.as_ref()))
     })
     .await
     .map_err(|e| format!("language probe failed: {e}"))?
 }
 
-/// Y10-A — the ONE writer of the three language fields, for the Settings
-/// control and the bar's picker alike. Normalizes (known codes only, primary
-/// first, at most `languages::MAX_LANGUAGE_SET`), persists, and broadcasts the
-/// same `settings` event every other settings write does.
+/// Y10-A — the Settings control's and the bar's picker's door to the ONE
+/// writer of the three language fields ([`write_dictation_languages`]).
 #[tauri::command]
 fn set_dictation_languages(
     app: AppHandle,
@@ -5330,7 +5482,26 @@ fn set_dictation_languages(
     set: Vec<String>,
     auto: bool,
 ) -> Result<AppSettings, String> {
-    let prefs = languages::LanguagePrefs::from_settings(&primary, &set, auto);
+    let prefs = languages::LanguagePrefs { primary, set, auto };
+    write_dictation_languages(&app, state.inner().as_ref(), &prefs, "app")
+}
+
+/// Y10-A / WF-11 — THE writer of the three language fields, for the Settings
+/// control, the bar's chip, the offer card and the tray's Languages submenu
+/// alike. Normalizes (known codes only, primary first, at most
+/// `languages::MAX_LANGUAGE_SET`), persists, broadcasts the same `settings`
+/// event every other settings write does PLUS
+/// `languages::LANGUAGES_CHANGED_EVENT` with the new prefs (so every window's
+/// language store applies it at once), and redraws the tray submenu — one
+/// store, every surface follows it.
+fn write_dictation_languages(
+    app: &AppHandle,
+    state: &AppState,
+    requested: &languages::LanguagePrefs,
+    source: &str,
+) -> Result<AppSettings, String> {
+    let prefs =
+        languages::LanguagePrefs::from_settings(&requested.primary, &requested.set, requested.auto);
     let next = {
         let mut settings = state.settings.lock();
         settings.language = prefs.primary.clone();
@@ -5338,14 +5509,19 @@ fn set_dictation_languages(
         settings.language_auto = prefs.auto;
         settings.clone()
     };
-    persist_settings(&next)?;
+    if let Err(e) = persist_settings(&next) {
+        log::warn!("dictation languages: persist_failed source={source} error={e}");
+        return Err(e);
+    }
     let _ = app.emit("settings", &next);
+    let _ = app.emit(languages::LANGUAGES_CHANGED_EVENT, &prefs);
     log::info!(
-        "dictation languages: primary={} set={:?} auto={}",
+        "dictation languages: source={source} primary={} set={:?} auto={}",
         prefs.primary,
         prefs.set,
         prefs.auto
     );
+    sync_language_menu(app);
     Ok(next)
 }
 
@@ -5802,6 +5978,9 @@ fn save_settings(
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
+    // WF-11 — a full-settings save may carry the language fields; the tray's
+    // Languages submenu follows the store.
+    sync_language_menu(&app);
     // YV53: the dock edge moves the NSPanel itself, so it must land before the
     // show below re-parks — and `reposition` covers the still-recording case
     // where the pill stays up without a show call.
@@ -12816,6 +12995,9 @@ pub fn run() {
                     log::warn!("tray microphone_menu hop_failed error={e}");
                 }
             });
+            // WF-11 — the Languages submenu is drawn at launch from the saved
+            // prefs, then redrawn by every language write.
+            sync_language_menu(app.handle());
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(

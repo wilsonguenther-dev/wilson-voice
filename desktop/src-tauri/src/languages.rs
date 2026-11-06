@@ -510,6 +510,14 @@ pub fn language_options(
 /// The pill event that raises the card (payload: [`LanguageOffer`]).
 pub const LANGUAGE_OFFER_EVENT: &str = "language_offer";
 
+/// WF-11 — emitted by the ONE language writer (`lib.rs`
+/// `write_dictation_languages`) after every write, from any surface — the
+/// tray's Languages submenu, the bar's chip, Settings, the offer card — with
+/// the normalized [`LanguagePrefs`] as payload, so every window's language
+/// store (`desktop/src/languagePicker.ts` `createLanguageStore`) applies the
+/// pick at once instead of waiting for a model probe.
+pub const LANGUAGES_CHANGED_EVENT: &str = "dictation-languages";
+
 /// The `settings_kv` key of the offer ledger.
 pub const LANGUAGE_OFFER_LEDGER_KEY: &str = "language_offer_ledger_v1";
 
