@@ -1438,7 +1438,7 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   color: var(--overlay-text);
   background: rgba(255, 255, 255, 0.12);
 }
-.backtrack-caught-actions button:focus-visible { outline: 2px solid var(--overlay-action); outline-offset: 1px; }
+/* Y5-J — focus ring for .backtrack-caught-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 .backtrack-caught-actions .backtrack-caught-undo { background: var(--overlay-action); color: var(--overlay-text-on-action); }
 .backtrack-caught-actions button:disabled { opacity: 0.6; cursor: default; }
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
