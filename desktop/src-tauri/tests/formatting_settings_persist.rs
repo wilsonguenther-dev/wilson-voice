@@ -53,7 +53,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// `every_app_settings_field_round_trips`, THEN bump it.
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
-const APP_SETTINGS_FIELD_COUNT: usize = 44;
+// WF-17: +1 (muted_pill_categories).
+const APP_SETTINGS_FIELD_COUNT: usize = 45;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -154,6 +155,8 @@ fn fully_populated() -> AppSettings {
             "com.apple.mail".to_string(),
             "markdown".to_string(),
         )]),
+        // WF-17 — non-default: two of the three quiet-mode switches off.
+        muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
     }
 }
 
@@ -397,4 +400,35 @@ fn structure_settings_persist() {
     let loaded = load_settings(&old);
     assert!(loaded.structure_enabled);
     assert!(loaded.structure_app_overrides.is_empty());
+}
+
+/// WF-17 — only tips, feature news and milestones can be muted. A store (or a
+/// frontend save) carrying "error", "permission", "recovery" or junk keeps only
+/// the mutable ones, once each, in table order.
+#[test]
+fn quiet_mode_never_stores_an_unmutable_category() {
+    use wilson_voice_lib::sanitize_muted_pill_categories;
+    let raw: Vec<String> = [
+        "error",
+        "milestone",
+        "permission",
+        "tip",
+        "tip",
+        "recovery",
+        "bogus",
+        "news",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(
+        sanitize_muted_pill_categories(&raw),
+        vec![
+            "tip".to_string(),
+            "news".to_string(),
+            "milestone".to_string()
+        ]
+    );
+    assert!(sanitize_muted_pill_categories(&["error".to_string()]).is_empty());
+    assert!(AppSettings::default().muted_pill_categories.is_empty());
 }
