@@ -1882,3 +1882,16 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
     animation: none !important;
   }
 }
+
+/* yap-1106-fb-02-pill-first-click — every clickable control on the pill is
+   at least 24 x 24 pt where it is DRAWN, not only where it is hit: the meeting
+   stop was a 20 pt square the eye aimed at and the hand missed. The hit area is
+   the same rect (pill/hitTargets.ts publishes it, float_pill.rs pads anything
+   that still comes in smaller), so what you see is exactly what takes the click.
+   Last in the file so a component's own width/height can only ever grow it.
+   The retired Classic pill's 20 pt flow-bar slots keep their drawn size (the
+   slot layout is measured in SLOT_PX); their HIT area is still padded to 24. */
+[data-pill-control]:not(.slot) {
+  min-width: 24px;
+  min-height: 24px;
+}

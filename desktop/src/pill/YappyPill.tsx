@@ -673,6 +673,7 @@ export default function YappyPill(
         <button
           type="button"
           className="kami-blocked gated"
+          data-pill-control="trial-ended"
           aria-label={gateVisual.label}
           title={GATED_TITLE}
           onClick={openPurchase}
@@ -686,6 +687,7 @@ export default function YappyPill(
         <button
           type="button"
           className={`kami-blocked ${gate}`}
+          data-pill-control="mic-blocked"
           aria-label={gateVisual.label}
           title={gateVisual.label}
           onClick={openPermissions}

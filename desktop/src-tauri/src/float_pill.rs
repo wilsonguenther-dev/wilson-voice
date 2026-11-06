@@ -442,11 +442,189 @@ pub fn snap_position(release: (f64, f64), screen_frame: (f64, f64, f64, f64)) ->
 
 /// The pill webview reports the capsule's rect inside the float window, in
 /// logical points (YV65). See [`start_hover_watch`] for why this exists.
+///
+/// fb-02 — once the webview has published the precise LIST
+/// (`pill_set_hitboxes`), this legacy single-rect call (the bounding union,
+/// still sent for older listeners) is ignored: it must never widen the list
+/// back into one box that covers the empty glass between controls.
 pub fn set_hitbox(x: f64, y: f64, w: f64, h: f64) {
-    HIT_X.store(x.round() as i32, Ordering::SeqCst);
-    HIT_Y.store(y.round() as i32, Ordering::SeqCst);
-    HIT_W.store(w.round() as i32, Ordering::SeqCst);
-    HIT_H.store(h.round() as i32, Ordering::SeqCst);
+    if HIT_LIST_PUBLISHED.load(Ordering::SeqCst) {
+        return;
+    }
+    store_hitboxes(&[HitRect { x, y, w, h }]);
+}
+
+/// yap-1106-fb-02-pill-first-click — the smallest hit area any pill control
+/// gets, in logical points (Apple's HIG floor for a pointer target is 24 x 24
+/// on macOS controls this small). A control drawn smaller is grown around its
+/// own centre, so the click-through region never ends a hair inside the glyph.
+pub const MIN_HIT_PT: f64 = 24.0;
+/// How far OUTSIDE the hit rects the off-main proximity check already counts
+/// the cursor as arriving. The watch wakes (and drops to its fast tick) while
+/// the hand is still on its way, so the panel has stopped being click-through
+/// by the time the pointer lands on a control — the first press is never
+/// spent on the app underneath (Wilson 15:29Z: "the first time i click it the
+/// second time doesn't work the third time it works").
+pub const NEAR_MARGIN_PT: f64 = 24.0;
+/// The most rects the webview may publish. A pill has a capsule, a clock and a
+/// handful of buttons; anything past this is a bug upstream, not a layout.
+pub const MAX_HIT_RECTS: usize = 32;
+/// A press held on a control keeps the panel interactive for at most this long
+/// without a release. A lost pointer-up must never leave the panel swallowing
+/// clicks meant for the app underneath.
+pub const PRESS_HOLD_MAX_MS: u64 = 3000;
+
+/// Every rect the panel takes the cursor over, window-logical points, top-left
+/// origin, each already grown to [`MIN_HIT_PT`]. The SAME rects the pill's
+/// controls draw in (desktop/src/pill/hitTargets.ts measures them off the DOM),
+/// never just the capsule — ARCHITECTURE-PILL's "ignores clicks except over the
+/// capsule" left every button outside the capsule unreachable.
+static HIT_RECTS: Mutex<Vec<(f64, f64, f64, f64)>> = Mutex::new(Vec::new());
+/// Unix ms of the last pointer-down the webview reported on a control (0 = no
+/// press held). See [`press_hold_live`].
+static PRESS_HELD_AT: AtomicU64 = AtomicU64::new(0);
+/// Has the webview ever published the precise rect list? See [`set_hitbox`].
+static HIT_LIST_PUBLISHED: AtomicBool = AtomicBool::new(false);
+
+/// One rect as the pill webview publishes it (`pill_set_hitboxes`).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+pub struct HitRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Grow `rect` symmetrically about its centre until it is at least `min` on
+/// each side. A rect already that big comes back unchanged.
+pub fn pad_to_min(rect: (f64, f64, f64, f64), min: f64) -> (f64, f64, f64, f64) {
+    let (x, y, w, h) = rect;
+    let (nw, nh) = (w.max(min), h.max(min));
+    (x - (nw - w) / 2.0, y - (nh - h) / 2.0, nw, nh)
+}
+
+/// Grow `rect` by `margin` on every side.
+pub fn inflate(rect: (f64, f64, f64, f64), margin: f64) -> (f64, f64, f64, f64) {
+    let (x, y, w, h) = rect;
+    (x - margin, y - margin, w + 2.0 * margin, h + 2.0 * margin)
+}
+
+/// The rects the webview sent, made safe to hit-test: non-finite or empty ones
+/// dropped, at most [`MAX_HIT_RECTS`] kept, each padded to [`MIN_HIT_PT`].
+pub fn sanitize_hit_rects(rects: &[HitRect]) -> Vec<(f64, f64, f64, f64)> {
+    rects
+        .iter()
+        .filter(|r| [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.w > 0.0 && r.h > 0.0)
+        .take(MAX_HIT_RECTS)
+        .map(|r| pad_to_min((r.x, r.y, r.w, r.h), MIN_HIT_PT))
+        .collect()
+}
+
+/// Bounding box of `rects` (None when empty). Only the advisory proximity check
+/// uses it; the authority is [`point_in_hitboxes`] over the real list.
+pub fn bounding_rect(rects: &[(f64, f64, f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    let first = rects.first()?;
+    let (mut l, mut t, mut r, mut b) = (first.0, first.1, first.0 + first.2, first.1 + first.3);
+    for &(x, y, w, h) in &rects[1..] {
+        l = l.min(x);
+        t = t.min(y);
+        r = r.max(x + w);
+        b = b.max(y + h);
+    }
+    Some((l, t, r - l, b - t))
+}
+
+/// Is `point` (window-relative logical points) inside ANY of `rects`? Edges are
+/// inclusive, so the four inner corners of a control are hits.
+pub fn point_in_hitboxes(point: (f64, f64), rects: &[(f64, f64, f64, f64)]) -> bool {
+    let (px, py) = point;
+    rects
+        .iter()
+        .any(|&(x, y, w, h)| w > 0.0 && h > 0.0 && px >= x && px <= x + w && py >= y && py <= y + h)
+}
+
+/// Publish the pill's hit rects (capsule + every control). Returns how many
+/// were kept. The bounding box also lands in `HIT_*`, which the off-main
+/// proximity check reads through [`refresh_capsule_screen_rect`].
+pub fn set_hitboxes(rects: &[HitRect]) -> usize {
+    HIT_LIST_PUBLISHED.store(true, Ordering::SeqCst);
+    store_hitboxes(rects)
+}
+
+fn store_hitboxes(rects: &[HitRect]) -> usize {
+    let clean = sanitize_hit_rects(rects);
+    let (bx, by, bw, bh) = bounding_rect(&clean).unwrap_or((0.0, 0.0, 0.0, 0.0));
+    // Floor the origin and ceil the far edge: the integer box may only ever
+    // grow past the real rects, never shave a control's edge off.
+    let (l, t) = (bx.floor(), by.floor());
+    HIT_X.store(l as i32, Ordering::SeqCst);
+    HIT_Y.store(t as i32, Ordering::SeqCst);
+    HIT_W.store(((bx + bw).ceil() - l) as i32, Ordering::SeqCst);
+    HIT_H.store(((by + bh).ceil() - t) as i32, Ordering::SeqCst);
+    let n = clean.len();
+    match HIT_RECTS.lock() {
+        Ok(mut g) => *g = clean,
+        Err(p) => *p.into_inner() = clean,
+    }
+    n
+}
+
+fn hit_rects_now() -> Vec<(f64, f64, f64, f64)> {
+    match HIT_RECTS.lock() {
+        Ok(g) => g.clone(),
+        Err(p) => p.into_inner().clone(),
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Is a press reported at `held_at_ms` still holding the panel interactive at
+/// `now_ms`? `0` means no press; a press older than [`PRESS_HOLD_MAX_MS`] has
+/// expired (its pointer-up was lost), so the panel goes back to click-through.
+pub fn press_hold_live(held_at_ms: u64, now_ms: u64) -> bool {
+    held_at_ms != 0 && now_ms.saturating_sub(held_at_ms) <= PRESS_HOLD_MAX_MS
+}
+
+/// The webview saw a pointer-down (`true`) or its release (`false`) on a pill
+/// control. While a press is held the hover watch never hands the panel back to
+/// click-through — the second half of "no hover-state race swallows the first
+/// click": a hitbox re-publish or a cursor test landing between mouse-down and
+/// mouse-up can no longer drop the mouse-up on the floor.
+pub fn set_press_held(held: bool) {
+    PRESS_HELD_AT.store(if held { now_ms().max(1) } else { 0 }, Ordering::SeqCst);
+}
+
+/// `pill.click` telemetry's control name: lowercase ascii letters, digits and
+/// `-` only, at most 32 chars, `unknown` when nothing survives. Never free text
+/// from the page in a log line.
+pub fn sanitize_control(control: &str) -> String {
+    let s: String = control
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(32)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if s.is_empty() {
+        "unknown".into()
+    } else {
+        s
+    }
+}
+
+/// yap-1106-fb-02-pill-first-click — one line per click on a pill control:
+/// `pill click control=<name> handled=<bool> interactive=<bool>`.
+pub fn log_click(control: &str, handled: bool) {
+    log::info!(
+        "pill click control={} handled={} interactive={}",
+        sanitize_control(control),
+        handled,
+        INTERACTIVE.load(Ordering::SeqCst)
+    );
 }
 
 /// Pure hit test for the reported capsule rect. `point` is window-relative in
@@ -595,6 +773,12 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false)
+            // yap-1106-fb-02-pill-first-click — the panel is non-activating
+            // and almost never key, so without this WKWebView spends the first
+            // mouse-down on an inactive window making it key and never
+            // delivers it to the page: the click a user aimed at Stop simply
+            // vanished. Every pill control must work on the FIRST press.
+            .accept_first_mouse(true)
             .visible(false)
             .visible_on_all_workspaces(true);
 
@@ -1028,7 +1212,9 @@ fn cursor_on_capsule_cheap() -> bool {
         return false;
     }
     let p = objc2_app_kit::NSEvent::mouseLocation();
-    point_in_screen_rect((p.x, p.y), rect)
+    // fb-02 — the near zone is the hit area plus NEAR_MARGIN_PT, so the watch
+    // wakes while the hand is still arriving, not after it has clicked.
+    point_in_screen_rect((p.x, p.y), inflate(rect, NEAR_MARGIN_PT))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1380,7 +1566,16 @@ pub fn start_hover_watch(app: AppHandle) {
             // safe: a slow poll that also gates the panel's clicks does not
             // delay the first click on the pill, it feeds it to the app
             // underneath.
-            let tick = hover_tick_ms(is_shown(), is_hovered(), meeting_recording(), dictating());
+            // fb-02 — a cursor in the near zone counts as hovering for the
+            // cadence: the 1 Hz meeting tick must never be what stands between
+            // a hand that has arrived and the panel taking its click.
+            let near_now = CURSOR_NEAR.load(Ordering::Relaxed);
+            let tick = hover_tick_ms(
+                is_shown(),
+                is_hovered() || near_now,
+                meeting_recording(),
+                dictating(),
+            );
             let (sleeps, last_ms) = sleep_slices(tick, PROXIMITY_SLICE_MS);
             for i in 0..sleeps {
                 thread::sleep(Duration::from_millis(if i + 1 == sleeps {
@@ -1421,6 +1616,7 @@ fn update_interactive(app: &AppHandle) {
     // Never hand the panel back to click-through mid-gesture: a fast drag
     // outruns the cursor test and the mouse-up would land on the floor.
     let want = DRAGGING.load(Ordering::SeqCst)
+        || press_hold_live(PRESS_HELD_AT.load(Ordering::SeqCst), now_ms())
         || (w.is_visible().unwrap_or(false) && cursor_over_capsule(app, &w));
     if INTERACTIVE.swap(want, Ordering::SeqCst) != want {
         let _ = w.set_ignore_cursor_events(!want);
@@ -1476,6 +1672,12 @@ fn cursor_over_capsule(app: &AppHandle, w: &tauri::WebviewWindow) -> bool {
         (cursor.x - origin.x as f64) / scale,
         (cursor.y - origin.y as f64) / scale,
     );
+    // fb-02 — the authority is the LIST of rects the controls draw in; the
+    // integer bounding box is only the fallback for a list never published.
+    let rects = hit_rects_now();
+    if !rects.is_empty() {
+        return point_in_hitboxes(point, &rects);
+    }
     point_in_hitbox(
         point,
         (
@@ -1538,6 +1740,11 @@ mod tests {
         assert!(!super::pill_visible_after_card(false, false));
     }
 
+    use super::{
+        bounding_rect, inflate, pad_to_min, point_in_hitboxes, point_in_screen_rect,
+        press_hold_live, sanitize_control, sanitize_hit_rects, HitRect, MIN_HIT_PT, NEAR_MARGIN_PT,
+        PRESS_HOLD_MAX_MS,
+    };
     use super::{panel_origin, point_in_hitbox, snap_position, PillPosition, EDGE_SNAP_PT};
 
     // A 2x Retina 1440x900-point display at the global origin, and the float
@@ -1692,6 +1899,119 @@ mod tests {
         assert!(!point_in_hitbox((119.0, 70.0), hit));
         assert!(!point_in_hitbox((150.0, 40.0), hit));
         assert!(!point_in_hitbox((150.0, 70.0), (0, 0, 0, 0)));
+    }
+
+    /// fb-02 — a control smaller than 24 x 24 pt is grown about its centre; a
+    /// big one is untouched.
+    #[test]
+    fn small_controls_are_padded_to_24_points() {
+        let r = pad_to_min((100.0, 50.0, 16.0, 16.0), MIN_HIT_PT);
+        assert_eq!(r, (96.0, 46.0, 24.0, 24.0));
+        assert_eq!(
+            pad_to_min((0.0, 0.0, 60.0, 30.0), MIN_HIT_PT),
+            (0.0, 0.0, 60.0, 30.0)
+        );
+        let clean = sanitize_hit_rects(&[
+            HitRect {
+                x: 10.0,
+                y: 10.0,
+                w: 12.0,
+                h: 40.0,
+            },
+            HitRect {
+                x: f64::NAN,
+                y: 0.0,
+                w: 30.0,
+                h: 30.0,
+            },
+            HitRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 30.0,
+            },
+        ]);
+        assert_eq!(clean, vec![(4.0, 10.0, 24.0, 40.0)]);
+        assert!(clean.iter().all(|r| r.2 >= MIN_HIT_PT && r.3 >= MIN_HIT_PT));
+    }
+
+    /// fb-02 — the click-through region is the LIST of control rects, not the
+    /// capsule alone and not their bounding box: the centre and the four inner
+    /// corners of every control are hits, the gap between two controls is not.
+    #[test]
+    fn every_control_centre_and_inner_corner_is_a_hit() {
+        let capsule = HitRect {
+            x: 114.0,
+            y: 60.0,
+            w: 72.0,
+            h: 22.0,
+        };
+        let stop = HitRect {
+            x: 200.0,
+            y: 100.0,
+            w: 18.0,
+            h: 18.0,
+        };
+        let trial = HitRect {
+            x: 20.0,
+            y: 10.0,
+            w: 90.0,
+            h: 26.0,
+        };
+        let rects = sanitize_hit_rects(&[capsule, stop, trial]);
+        for c in [capsule, stop, trial] {
+            let (x, y, w, h) = (c.x, c.y, c.w, c.h);
+            let inset = 1.0;
+            for p in [
+                (x + w / 2.0, y + h / 2.0),
+                (x + inset, y + inset),
+                (x + w - inset, y + inset),
+                (x + inset, y + h - inset),
+                (x + w - inset, y + h - inset),
+            ] {
+                assert!(
+                    point_in_hitboxes(p, &rects),
+                    "{p:?} of {c:?} must take the click"
+                );
+            }
+        }
+        // Between the capsule and the stop button: empty glass stays click-through.
+        assert!(!point_in_hitboxes((195.0, 70.0), &rects));
+        assert!(!point_in_hitboxes((150.0, 70.0), &[]));
+        let b = bounding_rect(&rects).expect("box");
+        assert!(b.0 <= 20.0 && b.1 <= 10.0 && b.0 + b.2 >= 218.0 && b.1 + b.3 >= 118.0);
+        assert_eq!(bounding_rect(&[]), None);
+    }
+
+    /// fb-02 — the near zone reaches NEAR_MARGIN_PT past the hit area on every side.
+    #[test]
+    fn near_zone_reaches_past_the_hit_area() {
+        let r = inflate((100.0, 100.0, 24.0, 24.0), NEAR_MARGIN_PT);
+        assert_eq!(r, (76.0, 76.0, 72.0, 72.0));
+        assert!(point_in_screen_rect((80.0, 80.0), r));
+        assert!(!point_in_screen_rect((75.0, 80.0), r));
+    }
+
+    /// fb-02 — a held press keeps the panel interactive, but a lost pointer-up
+    /// expires instead of swallowing clicks for good.
+    #[test]
+    fn a_held_press_expires_if_its_release_is_lost() {
+        assert!(!press_hold_live(0, 10_000));
+        assert!(press_hold_live(10_000, 10_000));
+        assert!(press_hold_live(10_000, 10_000 + PRESS_HOLD_MAX_MS));
+        assert!(!press_hold_live(10_000, 10_001 + PRESS_HOLD_MAX_MS));
+        // A clock that stepped backwards is still "held", never a panic.
+        assert!(press_hold_live(10_000, 9_000));
+    }
+
+    /// fb-02 — `pill.click` never logs free text from the page.
+    #[test]
+    fn click_telemetry_control_names_are_sanitized() {
+        assert_eq!(sanitize_control("meeting-stop"), "meeting-stop");
+        assert_eq!(sanitize_control("Trial-Ended"), "trial-ended");
+        assert_eq!(sanitize_control("a b/c\n<script>"), "abcnscript");
+        assert_eq!(sanitize_control(""), "unknown");
+        assert_eq!(sanitize_control(&"x".repeat(80)).len(), 32);
     }
 
     /// The atomic round-trip that carries the dock edge into `park_pill`.
