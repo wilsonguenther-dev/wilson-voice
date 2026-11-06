@@ -193,6 +193,15 @@ pub struct CallAudioLive {
 /// [`ActiveCapture::call_audio_probe`].
 pub type CallAudioProbe = Arc<dyn Fn() -> CallAudioLive + Send + Sync>;
 
+/// The per-tick readers the ticker thread carries: YV110's sentence and
+/// yap-1106's chip. One struct so the ticker's signature stays inside clippy's
+/// argument budget as the status grows.
+#[derive(Clone, Default)]
+struct TickProbes {
+    system_audio: Option<SystemAudioProbe>,
+    call_audio: Option<CallAudioProbe>,
+}
+
 /// yap-1106-call-audio-truth — per-track delivery, measured by the engine at
 /// stop. Seconds of audio, not wall time; `sys_nonzero_s` is the part of the
 /// system track that carried sound (`syscapture::TapDelivery::nonzero_frames`).
@@ -658,16 +667,17 @@ impl MeetingController {
         );
 
         let stop = Arc::new(TickerStop::default());
-        let system_audio = capture.system_audio_probe();
-        let call_audio = capture.call_audio_probe();
+        let probes = TickProbes {
+            system_audio: capture.system_audio_probe(),
+            call_audio: capture.call_audio_probe(),
+        };
         let ticker = self.spawn_ticker(
             meeting.id.clone(),
             meeting.title.clone(),
             Instant::now(),
             Arc::clone(&diagnostics),
             Arc::clone(&stop),
-            system_audio.clone(),
-            call_audio.clone(),
+            probes.clone(),
         );
 
         *guard = Some(Active {
@@ -676,8 +686,8 @@ impl MeetingController {
             started_at: meeting.started_at,
             started: Instant::now(),
             capture,
-            system_audio,
-            call_audio,
+            system_audio: probes.system_audio,
+            call_audio: probes.call_audio,
             diagnostics,
             stop,
             ticker: Some(ticker),
@@ -697,8 +707,7 @@ impl MeetingController {
         started: Instant,
         diagnostics: Arc<Mutex<MeetingDiagnostics>>,
         stop: Arc<TickerStop>,
-        system_audio: Option<SystemAudioProbe>,
-        call_audio: Option<CallAudioProbe>,
+        probes: TickProbes,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         let probe = Arc::clone(&self.probe);
@@ -734,8 +743,8 @@ impl MeetingController {
                         // YV110 — re-read every tick, not snapshotted at start:
                         // a tap lost at minute nine has to reach the pill on the
                         // next second, not at the end of the meeting.
-                        system_audio: system_audio.as_ref().and_then(|probe| probe()),
-                        call_audio: call_audio.as_ref().map(|probe| probe()),
+                        system_audio: probes.system_audio.as_ref().and_then(|probe| probe()),
+                        call_audio: probes.call_audio.as_ref().map(|probe| probe()),
                     });
                 }
             })
