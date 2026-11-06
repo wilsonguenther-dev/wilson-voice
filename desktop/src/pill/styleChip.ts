@@ -76,3 +76,18 @@ export function parseChip(raw: unknown): StyleChip {
     expiresInMs: typeof r.expiresInMs === "number" ? r.expiresInMs : null,
   };
 }
+
+/** The sample chip the pill matrix draws (`float.html?phase=listening&styleChip=1`). */
+export const SAMPLE_STYLE_CHIP: StyleChip = {
+  visible: true,
+  app: "Slack",
+  mode: "casual",
+  label: "Slack · casual",
+  overridden: false,
+  expiresInMs: null,
+};
+
+/** The forced chip for a matrix scene, or null when the URL asks for none. */
+export function forcedStyleChip(search: string): StyleChip | null {
+  return new URLSearchParams(search).get("styleChip") === "1" ? SAMPLE_STYLE_CHIP : null;
+}

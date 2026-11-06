@@ -22,6 +22,8 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import StyleChip from "./pill/StyleChip";
+import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
   acceptProgress,
@@ -72,6 +74,7 @@ import type { ListenEstimate, SlotCtx } from "./pill/slots";
 import {
   forcedPill,
   matrixLanguageOfferScene,
+  matrixStyleChipScene,
   matrixLicenseScenes,
   matrixPhases,
   type ForcedPill,
@@ -201,6 +204,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     ...matrixLicenseScenes(),
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
+    // WF-20 — the per-app style chip over a listening pill.
+    matrixStyleChipScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
@@ -595,6 +600,11 @@ function Float() {
         )}
         {stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
+      {/* WF-20 — "Slack · casual": the app-aware mode for this app; a click
+          changes it for this app for 15 minutes. Listening only, and never
+          when app-aware modes are off. A later sibling of .bar, so the side
+          dock rules in float.css can place it like the phase line. */}
+      <StyleChip phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
     </>
   );
 }

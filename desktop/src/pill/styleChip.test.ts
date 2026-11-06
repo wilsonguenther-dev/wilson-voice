@@ -62,3 +62,12 @@ describe("WF-20 style chip", () => {
     });
   });
 });
+
+describe("WF-20 style chip matrix scene", () => {
+  it("forces the sample chip only when the URL asks", async () => {
+    const { forcedStyleChip, SAMPLE_STYLE_CHIP } = await import("./styleChip");
+    expect(forcedStyleChip("?phase=listening&styleChip=1")).toEqual(SAMPLE_STYLE_CHIP);
+    expect(forcedStyleChip("?phase=listening")).toBe(null);
+    expect(chipShows(SAMPLE_STYLE_CHIP, "listening")).toBe(true);
+  });
+});
