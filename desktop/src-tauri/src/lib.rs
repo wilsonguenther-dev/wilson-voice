@@ -3338,6 +3338,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let db_ref: &Database = &db;
             let mut persist = PersistTakeChunks::new(&mut progress, db_ref, take_id.as_deref());
             take_stages.emit(take_stage::TakeStage::Decoding, None);
+            // SP-03 — the decoded audio's length, read before `rec.samples`
+            // moves into the decode, for the latency line's rolling RTF.
+            let decoded_audio_s = rec.samples.len() as f64 / f64::from(record::TARGET_RATE);
             let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -3709,6 +3712,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
+            // SP-03 — this take's decode RTF joins the session's rolling window.
+            let (rtf_p50, rtf_last) = latency::record_decode_rtf(asr.decode_ms, decoded_audio_s);
             // YV40: the whole take as disjoint spans in one stable key=value
             // line (see `latency`) — press side, capture, DSP finalize, ASR load
             // vs decode, cleanup, paste — instead of the old cumulative mix.
@@ -3725,6 +3730,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     paste_ms,
                     backend: &asr.backend,
                     pasted: outcome.pasted,
+                    rtf_p50,
+                    rtf_last,
                 }
                 .summary_line()
             );

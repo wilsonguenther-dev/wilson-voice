@@ -572,10 +572,49 @@ pub fn finish_recording(
     // swap below, from the same mask `voiced_seconds` just summed.
     let take_pauses = pause_spans(&samples, TARGET_RATE);
 
-    // YV36 — Silero VAD voice isolation through the WARM engine loaded once at
-    // startup (`vad::WarmVad`, held in the app state). `None` means no model on
-    // disk / the load failed, and ANY inference failure falls back to the
-    // energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
+    // YV36 — Silero VAD voice isolation (see `silero_trim`). SP-03: the same
+    // function is what `wilson-voice --bench` runs over a file.
+    let (samples, speech_present) = silero_trim(samples, isolation_vad);
+
+    // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
+    // runs alongside transcription + paste instead of sitting between key-release
+    // and ASR (YV37). The guard unlinks it when the take is done.
+    //
+    // DB-B: the same writer also links the finished wav into the recovery dir
+    // as `<id>.decoding.wav` for as long as the take is in flight. That link is
+    // what a SIGKILL, a crash or the tray's `app.exit(0)` mid-decode leaves
+    // behind (none of them run `Drop`), in a directory `sweep_stale_wavs` never
+    // touches, so the next launch's `recover_dictation` adopts it.
+    let clip = ClipWav::spawn(active.wav_path, samples.clone(), Some(&active.recovery_dir));
+    // YV63 normal completion: the take survived capture and its wav is being
+    // written, so the spill is no longer the only copy of these words — the
+    // in-progress marker goes with it, and startup finds no orphan to recover.
+    if let Some(journal) = journal {
+        journal.finish();
+    }
+
+    Ok(RecordingResult {
+        samples,
+        clip,
+        speech_seconds: speech_seconds.max(0.05),
+        // The TRUE voiced value — no clip-length fallback, so a silent tap reads
+        // 0.0 and the no-speech gate can reject it before ASR.
+        voiced_seconds: voiced,
+        pause_spans: take_pauses,
+        hold_wall_seconds,
+        speech_present,
+        capture_start_ms: active.capture_start_ms,
+        device_failed,
+    })
+}
+
+/// YV36 — Silero VAD voice isolation through the WARM engine loaded once at
+/// startup (`vad::WarmVad`, held in the app state). `None` means no model on
+/// disk / the load failed, and ANY inference failure falls back to the
+/// energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
+/// Returns the ASR buffer (trimmed to the voiced span when Silero found speech)
+/// and whether speech is present.
+fn silero_trim(mut samples: Vec<f32>, isolation_vad: Option<&vad::WarmVad>) -> (Vec<f32>, bool) {
     let mut speech_present = true;
     if let Some(warm) = isolation_vad {
         match warm.isolate(&samples, TARGET_RATE) {
@@ -607,36 +646,60 @@ pub fn finish_recording(
             }
         }
     }
+    (samples, speech_present)
+}
 
-    // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
-    // runs alongside transcription + paste instead of sitting between key-release
-    // and ASR (YV37). The guard unlinks it when the take is done.
-    //
-    // DB-B: the same writer also links the finished wav into the recovery dir
-    // as `<id>.decoding.wav` for as long as the take is in flight. That link is
-    // what a SIGKILL, a crash or the tray's `app.exit(0)` mid-decode leaves
-    // behind (none of them run `Drop`), in a directory `sweep_stale_wavs` never
-    // touches, so the next launch's `recover_dictation` adopts it.
-    let clip = ClipWav::spawn(active.wav_path, samples.clone(), Some(&active.recovery_dir));
-    // YV63 normal completion: the take survived capture and its wav is being
-    // written, so the spill is no longer the only copy of these words — the
-    // in-progress marker goes with it, and startup finds no orphan to recover.
-    if let Some(journal) = journal {
-        journal.finish();
+/// SP-03 — `wilson-voice --bench`: the leveling a live take gets WHILE it is
+/// being captured (the streamed high-pass + AGC, YV37), done over a buffer read
+/// from a file. A file never streamed, so this is the batch chain the live path
+/// itself falls back to (`fallback_chain`: high-pass + RMS normalize at 16 kHz).
+/// It runs BEFORE the bench's release clock starts, exactly as capture-time DSP
+/// is off the release path in the app.
+pub(crate) fn bench_capture_chain(raw: &[f32]) -> Vec<f32> {
+    fallback_chain(raw, TARGET_RATE)
+}
+
+/// SP-03 — one bench take after the release-side DSP + VAD.
+pub(crate) struct BenchDsp {
+    /// The buffer ASR decodes (trimmed to the voiced span when Silero ran).
+    pub samples: Vec<f32>,
+    /// Energy-VAD voiced seconds over the untrimmed buffer (the WPM denominator).
+    pub voiced_seconds: f64,
+    /// `false` only when Silero ran and heard no speech.
+    pub speech_present: bool,
+}
+
+/// SP-03 — the release-side half of `finish_recording`, in its order, over a
+/// leveled buffer: apply the (unit) gain, de-click the edges, optionally
+/// denoise, measure voiced time and pauses, then the Silero trim. The session
+/// ceiling and the history wav are left out — a bench file is not a take to
+/// keep, and the ceiling only cuts audio longer than any bench fixture.
+pub(crate) fn bench_release_dsp(
+    leveled: &[f32],
+    denoise: bool,
+    isolation_vad: Option<&vad::WarmVad>,
+) -> Result<BenchDsp, String> {
+    if leveled.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
     }
-
-    Ok(RecordingResult {
+    let gained = apply_gain(leveled, 1.0);
+    let faded = edge_fade(&gained, TARGET_RATE, EDGE_FADE_MS);
+    let out = if denoise {
+        denoise_rnnoise(&faded, TARGET_RATE)
+    } else {
+        faded
+    };
+    if out.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
+    }
+    let voiced = voiced_seconds(&out, TARGET_RATE);
+    // Same work the live take does on release; the bench only pays for it.
+    let _pauses = pause_spans(&out, TARGET_RATE);
+    let (samples, speech_present) = silero_trim(out, isolation_vad);
+    Ok(BenchDsp {
         samples,
-        clip,
-        speech_seconds: speech_seconds.max(0.05),
-        // The TRUE voiced value — no clip-length fallback, so a silent tap reads
-        // 0.0 and the no-speech gate can reject it before ASR.
         voiced_seconds: voiced,
-        pause_spans: take_pauses,
-        hold_wall_seconds,
         speech_present,
-        capture_start_ms: active.capture_start_ms,
-        device_failed,
     })
 }
 
@@ -3652,6 +3715,32 @@ pub(crate) fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> R
 
 #[cfg(test)]
 mod tests {
+    /// SP-03 — the bench's release-side DSP keeps a voiced buffer whole when
+    /// no Silero engine is loaded (energy-VAD path), reports its voiced time,
+    /// and refuses an empty buffer instead of timing nothing.
+    #[test]
+    fn bench_release_dsp_keeps_the_buffer_on_the_energy_vad_path() {
+        let rate = super::TARGET_RATE as f32;
+        // 2 s: 0.5 s silence, 1 s of a 220 Hz tone, 0.5 s silence.
+        let raw: Vec<f32> = (0..(2 * super::TARGET_RATE as usize))
+            .map(|i| {
+                let t = i as f32 / rate;
+                if (0.5..1.5).contains(&t) {
+                    0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let leveled = super::bench_capture_chain(&raw);
+        assert_eq!(leveled.len(), raw.len());
+        let out = super::bench_release_dsp(&leveled, false, None).unwrap();
+        assert_eq!(out.samples.len(), raw.len(), "no Silero → no trim");
+        assert!(out.speech_present);
+        assert!(out.voiced_seconds > 0.0 && out.voiced_seconds <= 2.0);
+        assert!(super::bench_release_dsp(&[], false, None).is_err());
+    }
+
     use super::*;
     use std::f32::consts::PI;
 
