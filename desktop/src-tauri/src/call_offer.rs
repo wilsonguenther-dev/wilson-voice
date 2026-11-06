@@ -251,6 +251,12 @@ pub enum Input {
     /// The start behind [`Effect::StartRecording`] failed: back to the chip,
     /// so the user sees the error and can press it again.
     StartFailed,
+    /// fix-b1-1 — a meeting started some OTHER way (pill, ⌃⌘M, tray, the tray's
+    /// Upcoming row, the Meetings tab, the calendar offer), or the calendar
+    /// raised its own offer. From Offering / Chip: withdraw, and spend this
+    /// call so it is not offered again when that recording stops. In
+    /// Recording / EndPrompt (the offer's own recording) and Idle: nothing.
+    MeetingStartedElsewhere,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,6 +367,16 @@ impl CallOfferMachine {
                     vec![]
                 }
             }
+            Input::MeetingStartedElsewhere => match self.phase {
+                Phase::Offering | Phase::Chip => {
+                    // The call is covered by the other recording / offer: it
+                    // is spent, so the same call never re-offers.
+                    self.spent_key = self.live.as_ref().map(|l| l.sighting.key.clone());
+                    self.quiet_since_ms = None;
+                    self.withdraw()
+                }
+                Phase::Idle | Phase::Recording | Phase::EndPrompt => vec![],
+            },
             Input::RecordingStopped => {
                 self.quiet_since_ms = None;
                 self.end_prompt_answered = false;
@@ -523,6 +539,39 @@ impl CallOfferMachine {
             },
         }
     }
+}
+
+// ─── the offer's own start, when a meeting already records ──────────────────
+
+/// fix-b1-1 — the sentence [Record] on the offer / chip returns when a
+/// meeting is already recording (one sentence, no action needed: the meeting
+/// the user started is still running).
+pub const ALREADY_RECORDING_MSG: &str = "A meeting is already recording";
+
+/// What `apply_call_offer_effects` does with [`Effect::StartRecording`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferStart {
+    /// Nothing records: start the meeting, then stamp it with the detected app.
+    Begin,
+    /// A meeting the offer did not start is running: never stamp it, withdraw
+    /// the offer, return [`ALREADY_RECORDING_MSG`].
+    AlreadyRecording,
+}
+
+/// Decided from `controller.is_recording()` read BEFORE `begin_meeting`.
+pub fn offer_start_decision(meeting_already_recording: bool) -> OfferStart {
+    if meeting_already_recording {
+        OfferStart::AlreadyRecording
+    } else {
+        OfferStart::Begin
+    }
+}
+
+/// Whether the meeting row may get `detected_app` / `detected_via`: ONLY when
+/// nothing recorded before and this very start began the recording (the
+/// start is idempotent, so a race that lost to another start is caught too).
+pub fn may_stamp_detection(meeting_already_recording: bool, started_by_this_call: bool) -> bool {
+    offer_start_decision(meeting_already_recording) == OfferStart::Begin && started_by_this_call
 }
 
 /// The wire shape of [`CALL_OFFER_EVENT`] / `call_offer_state`.
