@@ -830,6 +830,10 @@ pub struct AppStatus {
     /// state for a model that is still coming off disk.
     #[serde(default)]
     pub engine_loading: bool,
+    /// yap-1106-byom-cloud-fast-path — the last take's route for the pill chip
+    /// ("Cloud" / "On this Mac") and its tooltip. `None` before the first take.
+    #[serde(default)]
+    pub cloud_route: Option<cloud_route::RouteChip>,
     /// Y1-A — macOS switched the CGEvent tap off (slow callback, sleep/wake, or
     /// a user-input flood) and we switched it back on. `None` for a healthy
     /// session AND for the first re-arm, which is silent by design; `Some` from
@@ -1336,6 +1340,7 @@ fn build_status(state: &AppState) -> AppStatus {
         _ => message,
     };
     AppStatus {
+        cloud_route: cloud_last_route(),
         recording,
         busy,
         last_error,
@@ -3396,8 +3401,31 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // failure modes are otherwise invisible by construction.
                 // yap24-PILL2: wrapped so `polishing` is reported exactly when
                 // the cleanup pipeline actually calls the polish stage.
-                take_stages.polishing(|t| polish::polish_llm_result(t, dictation_mode, &polish_config)),
+                // yap-1106-byom-cloud-fast-path: the cloud route first when the
+                // user turned it on and a key exists; the SAME polish runs on
+                // the bundled model when it is off, offline, slow or failing.
+                take_stages.polishing(|t| {
+                    cloud_polish(&app, &db, t, &|t| {
+                        polish::polish_llm_result(t, dictation_mode, &polish_config)
+                    })
+                }),
             );
+            // yap-1106: the polish result carries {raw, polished, route} so the
+            // reveal-edit card (yap-wf-05) and the backtrack notice (yap-wf-06)
+            // can show it; the webview only, never the log.
+            if let Some(chip) = cloud_last_route() {
+                if let Err(e) = app.emit(
+                    POLISH_RESULT_EVENT,
+                    serde_json::json!({
+                        "raw": raw_text,
+                        "polished": text,
+                        "route": chip.route,
+                        "reason": chip.reason,
+                    }),
+                ) {
+                    log::warn!("byom polish_result_emit_failed error={e}");
+                }
+            }
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
             // after . ? ! / a new line / in an empty field, and add the leading
@@ -6921,6 +6949,323 @@ async fn test_model_provider(
     })?
 }
 
+// ── yap-1106-byom-cloud-fast-path · the cloud route in the app ─────────────
+//
+// Policy lives in `cloud_route.rs` (mode, budgets, retry, breaker, ledger) and
+// the SSE client in `cloud_client.rs`; this block is the glue: resolve the key
+// (Keychain, never settings), run the routed job, remember the chip.
+
+/// The event carrying `{raw, polished, route, reason}` after every polish.
+pub const POLISH_RESULT_EVENT: &str = "polish_result";
+/// Progressive meeting-notes text: `{id, delta}` per streamed chunk, then
+/// `{id, done: true}`.
+pub const NOTES_DELTA_EVENT: &str = "meeting_notes_delta";
+
+static CLOUD_BREAKER: std::sync::OnceLock<std::sync::Mutex<cloud_route::CircuitBreaker>> =
+    std::sync::OnceLock::new();
+static CLOUD_LAST_ROUTE: std::sync::OnceLock<std::sync::Mutex<Option<cloud_route::RouteChip>>> =
+    std::sync::OnceLock::new();
+
+fn cloud_breaker() -> &'static std::sync::Mutex<cloud_route::CircuitBreaker> {
+    CLOUD_BREAKER.get_or_init(|| std::sync::Mutex::new(cloud_route::CircuitBreaker::new()))
+}
+
+/// The last route taken (pill chip + notes header).
+pub(crate) fn cloud_last_route() -> Option<cloud_route::RouteChip> {
+    CLOUD_LAST_ROUTE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().cloned())
+}
+
+fn note_cloud_route(chip: cloud_route::RouteChip) {
+    if let Ok(mut g) = CLOUD_LAST_ROUTE.get_or_init(|| std::sync::Mutex::new(None)).lock() {
+        *g = Some(chip);
+    }
+}
+
+/// Today in the user's local day (the cap is per LOCAL day).
+fn cloud_today() -> chrono::NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
+/// Run `job` on the cloud route with `local` as the fallback. `cloud_text` is
+/// what the hosted model gets as the user turn; `accept` validates the
+/// complete answer. The chip is updated for every call, cloud or not.
+fn cloud_run<R>(
+    app: &AppHandle,
+    db: &Database,
+    job: cloud_route::Job,
+    system: &str,
+    cloud_text: &str,
+    max_tokens: u32,
+    cancel: &summary_jobs::CancelToken,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+    accept: &dyn Fn(&str) -> Option<R>,
+    local: &mut dyn FnMut() -> R,
+) -> cloud_route::Routed<R> {
+    use cloud_route::{CloudMode, Job};
+    let mode = CloudMode::load(db);
+    let notes_best = db.setting_get(cloud_route::NOTES_MODEL_KEY).as_deref() == Some("best");
+    let provider = if mode.wants_cloud() {
+        model_providers::cloud_key_provider(db, &byom_keychain(app))
+    } else {
+        None
+    };
+    let model = cloud_client::model_for(job, notes_best);
+    let budget = cloud_route::budget_for(job);
+    let constrained_notes_allowed =
+        db.setting_get(cloud_route::CONSTRAINED_NOTES_KEY).as_deref() == Some("allow");
+    let ctx = cloud_route::RouteContext {
+        mode,
+        has_key: provider.is_some(),
+        probe: &cloud_route::AssumeOnline,
+        breaker: cloud_breaker(),
+        kv: db,
+        today: cloud_today(),
+        job,
+        model,
+        budget,
+        constrained_notes_allowed,
+    };
+    let mut cloud = |budget: cloud_route::Budget, _attempt: u32| {
+        let (cfg, key) = provider
+            .as_ref()
+            .ok_or(cloud_route::CloudError::Cancelled)?;
+        let client = byom_clients()
+            .client_for(&cfg.id, cloud_client::CLIENT_TIMEOUT)
+            .map_err(|_| cloud_route::CloudError::Protocol)?;
+        let model = if job == Job::Notes || cfg.model.trim().is_empty() {
+            model
+        } else {
+            cfg.model.trim()
+        };
+        cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
+            model,
+            job,
+            system,
+            cloud_text,
+            max_tokens,
+            budget,
+            cancel,
+            on_delta,
+        )
+    };
+    let routed = cloud_route::run_routed(&ctx, &mut cloud, accept, local);
+    note_cloud_route(cloud_route::RouteChip::new(routed.route, routed.reason, job));
+    routed
+}
+
+/// Dictation cleanup on the cloud route: pastes only a COMPLETE, validated
+/// answer; anything else is the bundled model's result.
+fn cloud_polish(
+    app: &AppHandle,
+    db: &Database,
+    text: &str,
+    local: &dyn Fn(&str) -> Result<String, &'static str>,
+) -> Result<String, &'static str> {
+    let words = text.split_whitespace().count() as u32;
+    let max_tokens = (words.saturating_mul(3) + 64).clamp(64, 4096);
+    let mut sink = |_: &str| {};
+    cloud_run(
+        app,
+        db,
+        cloud_route::Job::Polish,
+        cloud_client::CLEANUP_SYSTEM,
+        text,
+        max_tokens,
+        &summary_jobs::CancelToken::new(),
+        &mut sink,
+        &|out| polish::validate_polish(text, out).map(Ok),
+        &mut || local(text),
+    )
+    .value
+}
+
+/// Meeting notes on the cloud route (progressive deltas to the notes view);
+/// `None` means "run the bundled notes model" — the caller does that.
+fn cloud_notes(
+    state: &AppState,
+    id: &str,
+    segments: &[meetings::MeetingSegment],
+    kind: meetings::MeetingKind,
+    cancel: &summary_jobs::CancelToken,
+) -> Option<String> {
+    let app = MEETING_APP.get()?.clone();
+    let lines = meetings::render_transcript(segments, kind);
+    let transcript: String = lines
+        .iter()
+        .map(|l| format!("[{}] {}: {}\n", l.offset, l.speaker, l.text))
+        .collect();
+    if transcript.trim().is_empty() {
+        return None;
+    }
+    let emitter = app.clone();
+    let meeting_id = id.to_string();
+    let mut on_delta = move |delta: &str| {
+        if let Err(e) = emitter.emit(
+            NOTES_DELTA_EVENT,
+            serde_json::json!({"id": meeting_id, "delta": delta}),
+        ) {
+            log::warn!("byom notes_delta_emit_failed error={e}");
+        }
+    };
+    let routed = cloud_run(
+        &app,
+        &state.db,
+        cloud_route::Job::Notes,
+        cloud_client::NOTES_SYSTEM,
+        &transcript,
+        4096,
+        cancel,
+        &mut on_delta,
+        &|out| {
+            let t = out.trim();
+            (!t.is_empty()).then(|| Some(t.to_string()))
+        },
+        &mut || None::<String>,
+    );
+    if let Err(e) = app.emit(
+        NOTES_DELTA_EVENT,
+        serde_json::json!({"id": id, "done": true, "route": routed.route}),
+    ) {
+        log::warn!("byom notes_done_emit_failed error={e}");
+    }
+    routed.value
+}
+
+/// Settings › Models & privacy — everything the cloud section renders.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudRouteView {
+    mode: cloud_route::CloudMode,
+    spend: cloud_route::SpendView,
+    key_needs_attention: bool,
+    key_saved: bool,
+    key_hint: String,
+    notes_best: bool,
+    last_route: Option<cloud_route::RouteChip>,
+    label: &'static str,
+    leaves_host: Option<String>,
+}
+
+fn cloud_route_view_for(app: &AppHandle, db: &Database) -> CloudRouteView {
+    let keys = byom_keychain(app);
+    let saved = model_providers::cloud_key_provider(db, &keys);
+    CloudRouteView {
+        mode: cloud_route::CloudMode::load(db),
+        spend: cloud_route::spend_view(db, cloud_today()),
+        key_needs_attention: cloud_route::key_needs_attention(db),
+        key_saved: saved.is_some(),
+        key_hint: saved
+            .as_ref()
+            .map(|(_, k)| keychain::key_hint(k))
+            .unwrap_or_default(),
+        notes_best: db.setting_get(cloud_route::NOTES_MODEL_KEY).as_deref() == Some("best"),
+        last_route: cloud_last_route(),
+        label: cloud_route::CLOUD_LABEL,
+        leaves_host: saved.and_then(|(cfg, _)| cfg.host()),
+    }
+}
+
+#[tauri::command]
+fn cloud_route_view(app: AppHandle, state: State<'_, Arc<AppState>>) -> CloudRouteView {
+    cloud_route_view_for(&app, &state.db)
+}
+
+#[tauri::command]
+fn set_cloud_mode(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    mode: cloud_route::CloudMode,
+) -> Result<CloudRouteView, String> {
+    cloud_route::CloudMode::save(&*state.db, mode).map_err(|e| {
+        log::error!("byom mode_save_failed error={e}");
+        "The mode could not be saved — try again.".to_string()
+    })?;
+    Ok(cloud_route_view_for(&app, &state.db))
+}
+
+#[tauri::command]
+fn set_cloud_daily_cap(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    usd: f64,
+) -> Result<CloudRouteView, String> {
+    cloud_route::set_daily_cap(&*state.db, usd).map_err(|e| {
+        log::warn!("byom cap_refused reason=invalid");
+        e
+    })?;
+    Ok(cloud_route_view_for(&app, &state.db))
+}
+
+#[tauri::command]
+fn set_cloud_notes_model(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    best: bool,
+) -> Result<CloudRouteView, String> {
+    state
+        .db
+        .setting_set(cloud_route::NOTES_MODEL_KEY, if best { "best" } else { "fast" })
+        .map_err(|e| {
+            log::error!("byom notes_model_save_failed error={e}");
+            "The notes model choice could not be saved.".to_string()
+        })?;
+    log::info!("byom notes_model_set best={best}");
+    Ok(cloud_route_view_for(&app, &state.db))
+}
+
+/// Save (or replace) the cloud key: Keychain only, bound to the host. A new
+/// key clears "needs attention" and — the first time — turns the mode to
+/// "Cloud when online" (DO 11). An empty key deletes the provider.
+#[tauri::command]
+fn save_cloud_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<CloudRouteView, String> {
+    let keys = byom_keychain(&app);
+    let db: &Database = &state.db;
+    let cfg = model_providers::cloud_key_provider(db, &keys)
+        .map(|(c, _)| c)
+        .or_else(|| {
+            model_providers::load(db)
+                .providers
+                .into_iter()
+                .find(|p| p.kind == model_providers::ProviderKind::CloudKey)
+        })
+        .unwrap_or_else(model_providers::ProviderConfig::cloud_key);
+    if key.trim().is_empty() {
+        if let Err(e) = model_providers::delete_provider(db, &keys, &cfg.id) {
+            if !matches!(e, model_providers::ProviderError::UnknownProvider { .. }) {
+                log::error!("byom key_delete_failed reason={}", e.tag());
+                return Err(e.plain());
+            }
+        }
+        byom_clients().forget(&cfg.id);
+        log::info!("byom key_removed");
+        return Ok(cloud_route_view_for(&app, db));
+    }
+    let had_key = model_providers::cloud_key_provider(db, &keys).is_some();
+    model_providers::upsert_provider(db, &keys, cfg, Some(&key)).map_err(|e| {
+        log::error!("byom key_save_failed reason={}", e.tag());
+        e.plain()
+    })?;
+    cloud_route::set_key_attention(db, false);
+    if !had_key && cloud_route::CloudMode::load(db) == cloud_route::CloudMode::AlwaysLocal {
+        if let Err(e) = cloud_route::CloudMode::save(db, cloud_route::CloudMode::CloudWhenOnline) {
+            log::warn!("byom mode_autoselect_failed error={e}");
+        }
+    }
+    if let Ok(mut b) = cloud_breaker().lock() {
+        b.record_success();
+    }
+    log::info!("byom key_saved");
+    Ok(cloud_route_view_for(&app, db))
+}
+
 /// YV96 — should the one-time meeting-capture notice be shown?
 ///
 /// Read once on mount and again after every close. Cheap enough to be a plain
@@ -7682,7 +8027,50 @@ fn summarize_meeting_blocking(
     cancel: &summary_jobs::CancelToken,
 ) -> Result<String, summary_jobs::NotesError> {
     let chosen = state.settings.lock().polish_model.clone();
-    summarize_meeting_with(&state.db, &chosen, id, cancel)
+    // yap-1106-byom-cloud-fast-path: the cloud route first (when on, keyed,
+    // online, under the cap and the breaker is closed); the bundled notes
+    // model is the fallback for everything else.
+    if cloud_route::CloudMode::load(&*state.db).wants_cloud() {
+        let meeting = state.db.get_meeting(id).ok().flatten();
+        let segments = state.db.list_meeting_segments(id).unwrap_or_default();
+        if let Some(m) = meeting.filter(|m| summary_jobs::transcript_settled(&m.state)) {
+            if !segments.is_empty() {
+                if let Some(markdown) = cloud_notes(state, id, &segments, m.kind(), cancel) {
+                    if cancel.is_cancelled() {
+                        return Err(summary_jobs::NotesError::Cancelled);
+                    }
+                    let now_segments = state.db.list_meeting_segments(id).unwrap_or_default();
+                    if !summary_jobs::same_transcript(&segments, &now_segments) {
+                        log::warn!("summary: meeting {id}'s transcript changed under its cloud notes — nothing stored");
+                        return Err(summary_jobs::NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
+                    }
+                    state
+                        .db
+                        .set_meeting_summary(id, &markdown, Some("cloud"))
+                        .map_err(summary_jobs::NotesError::Summary)?;
+                    if let Err(e) = state.db.setting_set(&format!("notes_route:{id}"), "cloud") {
+                        log::warn!("byom notes_route_save_failed error={e}");
+                    }
+                    log::info!("summary: meeting summarized on the cloud route");
+                    return Ok(markdown);
+                }
+            }
+        }
+    }
+    let out = summarize_meeting_with(&state.db, &chosen, id, cancel);
+    if out.is_ok() {
+        if let Err(e) = state.db.setting_set(&format!("notes_route:{id}"), "local") {
+            log::warn!("byom notes_route_save_failed error={e}");
+        }
+    }
+    out
+}
+
+/// yap-1106 — where a meeting's notes were written (`cloud` / `local`), for
+/// the notes header chip; `None` when the notes predate the route.
+#[tauri::command]
+fn meeting_notes_route(state: State<'_, Arc<AppState>>, id: String) -> Option<String> {
+    state.db.setting_get(&format!("notes_route:{id}"))
 }
 
 /// yap24-NT9 — the notes pass itself, over any `Database` and a chosen notes
@@ -9978,6 +10366,13 @@ pub fn run() {
             delete_model_provider,
             set_model_provider_choice,
             test_model_provider,
+            // yap-1106-byom-cloud-fast-path — Settings → cloud model (your key).
+            cloud_route_view,
+            set_cloud_mode,
+            set_cloud_daily_cap,
+            set_cloud_notes_model,
+            save_cloud_key,
+            meeting_notes_route,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
