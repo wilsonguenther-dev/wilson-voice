@@ -20,6 +20,7 @@ import {
   type LanguageOffer,
   type LanguageOfferChoice,
 } from "./languageOffer";
+import { matrixLanguageOfferScene } from "./forced";
 
 const OFFER: LanguageOffer = {
   code: "es",
@@ -118,5 +119,14 @@ describe("language offer — matrix scene", () => {
     expect(forcedLanguageOffer("?phase=idle&langOffer=1")).toEqual(SAMPLE_LANGUAGE_OFFER);
     expect(forcedLanguageOffer("?phase=idle")).toBeNull();
     expect(isLanguageOffer(SAMPLE_LANGUAGE_OFFER)).toBe(true);
+  });
+
+  it("the matrix row's query raises the same card the row expects", () => {
+    const row = matrixLanguageOfferScene();
+    expect(row.phase).toBe("idle");
+    expect(row.phaseId).toBe("idle");
+    expect(row.id).toBe("lang-offer");
+    const offer = forcedLanguageOffer("?phase=idle&" + row.query);
+    expect(offer?.code).toBe(row.offer);
   });
 });

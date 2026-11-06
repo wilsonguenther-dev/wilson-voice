@@ -57,7 +57,13 @@ import {
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
-import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
+import {
+  forcedPill,
+  matrixLanguageOfferScene,
+  matrixLicenseScenes,
+  matrixPhases,
+  type ForcedPill,
+} from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -176,7 +182,12 @@ const FORCED: ForcedPill | null =
 if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
-  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [...matrixPhases(), ...matrixLicenseScenes()];
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [
+    ...matrixPhases(),
+    ...matrixLicenseScenes(),
+    // WF-12 — the language-offer card over an idle pill.
+    matrixLanguageOfferScene(),
+  ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
 

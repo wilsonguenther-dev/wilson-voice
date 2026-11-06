@@ -170,3 +170,29 @@ export function matrixLicenseScenes(): MatrixLicenseRow[] {
     label: v.label,
   }));
 }
+
+/**
+ * WF-12 — the "Sounded like Spanish — Add Spanish?" card's matrix row: an idle
+ * pill with the sample offer drawn over it (`float.html?phase=idle&langOffer=1`,
+ * see `forcedLanguageOffer`). `query` is appended to the scene's URL and
+ * `offer` is the code `[data-language-offer]` must carry, so a card that
+ * silently failed to mount is a finding, not a photo of a plain idle pill.
+ */
+export interface MatrixOfferRow extends MatrixPhase {
+  phaseId: string;
+  query: string;
+  offer: string;
+}
+
+export function matrixLanguageOfferScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "lang-offer",
+    phaseId: PHASE_ID.idle,
+    query: "langOffer=1",
+    offer: "es",
+    tone: v.tone,
+    label: v.label,
+  };
+}
