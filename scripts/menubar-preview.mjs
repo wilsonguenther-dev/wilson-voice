@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * menubar-preview.mjs — before/after PNGs of the menu-bar menu
- * (yap-1106-menubar-redesign + WF-07 upcoming meetings + WF-11 Languages).
+ * (yap-1106-menubar-redesign + WF-07 upcoming meetings + WF-11 Languages +
+ * WF-14 "Update ready").
  *
  * The real menu is a native NSMenu built by lib.rs FROM
  * `tray_menu::MENU_LAYOUT` + `TRAY_ITEMS`. A native menu cannot be rendered
@@ -78,7 +79,26 @@ export function parseTrayMenu(src) {
       layout.push(items.get(id));
     }
   }
-  return { consts, items, layout };
+  return { consts, items, layout, src };
+}
+
+/* ── WF-14: the "Update ready" line, mirroring tray_menu::update_ready_label ── */
+
+/**
+ * The label `update_ready_label(blocker, armed)` returns, read straight out of
+ * its match arms so the preview cannot drift from the Rust. `blocker` is null
+ * (quiet) or "Meeting" | "Polish" | "Take".
+ */
+function updateReadyLabel(parsed, blocker, armed) {
+  if (!blocker) {
+    const id = parsed.consts.get("ID_UPDATE_READY");
+    if (!id) throw new Error("tray_menu.rs: no Update ready line at this revision");
+    return parsed.items.get(id).label;
+  }
+  const re = new RegExp(`\\(Some\\(Busy::${blocker}\\), ${armed}\\) => "((?:[^"\\\\]|\\\\.)*)"`);
+  const m = parsed.src.match(re);
+  if (!m) throw new Error(`tray_menu.rs: no update_ready_label arm for ${blocker}/${armed}`);
+  return m[1].replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
 }
 
 function sourceAt(rev) {
@@ -175,6 +195,10 @@ function menuFor(parsed, state) {
       disabled: slot.kind === "StateLabel" || (rec && slot.id === kindId),
       submenuArrow: slot.kind === "KindSubmenu",
     });
+    // WF-14 — inserted directly under the status header by sync_update_ready.
+    if (slot.id === parsed.consts.get("ID_LICENSE_HEADER") && state.update) {
+      out.push({ label: updateReadyLabel(parsed, state.update.blocker, state.update.armed) });
+    }
     if (slot.id === kindId && state.calendar) out.push(...upcomingRows(parsed, state.calendar));
     // WF-11 — inserted under Hands-free (under Microphone once the device
     // list lands; the Microphone submenu is not drawn by this preview).
@@ -277,6 +301,30 @@ const STATES = [
     name: "languages-one",
     title: "Languages: one language (default install)",
     state: { languages: { set: ["en"], picked: "en" } },
+    afterOnly: true,
+  },
+  {
+    name: "update-ready",
+    title: "Update downloaded, Yap quiet: one click restarts",
+    state: { update: { blocker: null, armed: false } },
+    afterOnly: true,
+  },
+  {
+    name: "update-ready-in-meeting",
+    title: "Update downloaded during a meeting: the click will wait",
+    state: { recording: true, update: { blocker: "Meeting", armed: false } },
+    afterOnly: true,
+  },
+  {
+    name: "update-armed-in-meeting",
+    title: "Clicked during a meeting: restarts after it (click again to cancel)",
+    state: { recording: true, update: { blocker: "Meeting", armed: true } },
+    afterOnly: true,
+  },
+  {
+    name: "update-armed-dictating",
+    title: "Clicked mid-dictation: restarts after the take",
+    state: { update: { blocker: "Take", armed: true } },
     afterOnly: true,
   },
 ];
