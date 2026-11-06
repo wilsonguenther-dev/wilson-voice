@@ -242,6 +242,8 @@ use hotkeys::{HotkeyEdge, HotkeySource};
 /// directly — the signature block is the one stage that copies bytes verbatim
 /// after polish, so undo has to be asserted against the real function.
 pub mod snippets;
+// WF-20 — the pill's per-app style chip and its 15-minute override. Pure.
+pub mod style_chip;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
@@ -1030,6 +1032,12 @@ struct AppState {
     /// send has to write those same bytes; rebuilding at send time would make
     /// the preview a preview of a different file.
     support_bundle: PLMutex<Option<support::PreparedBundle>>,
+    /// WF-20 — the chip's per-app mode picks, each holding 15 minutes. In
+    /// memory only: a relaunch forgets them (see `style_chip`).
+    style_overrides: PLMutex<style_chip::StyleOverrides>,
+    /// WF-20 — the frontmost app read when the CURRENT take started; the app a
+    /// chip click scopes its pick to. `None` until read, or without AX.
+    style_chip_app: PLMutex<Option<String>>,
 }
 
 /// The environment variable that relocates the app's ENTIRE state root (Y0-D).
@@ -2615,6 +2623,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             arm_asr_engine(app, state);
             let _ = app.emit("recording", true);
             emit_status(app, state);
+            // WF-20 — the style chip: which app-aware mode this app gets.
+            emit_style_chip_for_take(app, state);
             // Wispr-style: glass island appears for the hold
             float_pill::show_for_recording(app);
             // Stream mic levels to the float HUD at HUD_FPS. YV38: the thread
@@ -3225,6 +3235,8 @@ fn run_model_transform_take(
             cursor_context.before_caret.as_deref(),
             cursor_context.browser_mode,
         );
+    // WF-20 — a running chip pick for this app replaces the resolved mode.
+    let mode = apply_style_override(app, &settings.dictation_mode, source_app, mode);
     let cfg = polish::PolishConfig::from_settings(settings, mode);
     let mut result = transforms::run_installed(def, selection, mode, &cfg);
     if result.status == transforms::TransformStatus::Succeeded {
@@ -3766,6 +3778,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 source_app.as_deref().unwrap_or_default(),
                 cursor_context.before_caret.as_deref(),
                 cursor_context.browser_mode,
+            );
+            // WF-20 — the pill's style chip: a pick the user made for THIS app
+            // in the last 15 minutes replaces the resolved mode. Only while
+            // app-aware modes are on; a fixed Settings mode still wins.
+            let dictation_mode = apply_style_override(
+                &app2,
+                &settings.dictation_mode,
+                source_app.as_deref().unwrap_or_default(),
+                dictation_mode,
             );
             // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
             // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
@@ -5503,6 +5524,106 @@ fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
 #[tauri::command]
 fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
     float_pill::set_panel_frame(&app, w, h, anchor_x, anchor_y);
+}
+
+/// WF-20 — read the frontmost app for the take that just started and tell the
+/// pill which app-aware mode it gets. Off the calling thread: the AX read talks
+/// to the user's app and can stall, and this runs on the take-start path.
+fn emit_style_chip_for_take(app: &AppHandle, state: &Arc<AppState>) {
+    *state.style_chip_app.lock() = None;
+    let app = app.clone();
+    let state = state.clone();
+    std::thread::spawn(move || {
+        let name = focus::frontmost_app_name();
+        let setting = state.settings.lock().dictation_mode.clone();
+        let now = style_chip::monotonic_ms();
+        let chip = style_chip::chip_for(
+            &setting,
+            name.as_deref(),
+            &state.style_overrides.lock(),
+            now,
+        );
+        *state.style_chip_app.lock() = name;
+        log::info!(
+            "style_chip shown visible={} mode={} overridden={}",
+            chip.visible,
+            chip.mode,
+            chip.overridden
+        );
+        let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    });
+}
+
+/// WF-20 — the chip pick for `source_app`, if one is running, replaces the
+/// resolved mode (`style_chip::effective_mode`). Logs only when it does.
+fn apply_style_override(
+    app: &AppHandle,
+    setting: &str,
+    source_app: &str,
+    resolved: dictation::DictationMode,
+) -> dictation::DictationMode {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return resolved;
+    };
+    let now = style_chip::monotonic_ms();
+    let mode = style_chip::effective_mode(
+        setting,
+        source_app,
+        resolved,
+        &state.style_overrides.lock(),
+        now,
+    );
+    if mode != resolved {
+        log::info!(
+            "style_chip applied mode={} over={}",
+            style_chip::mode_word(mode),
+            style_chip::mode_word(resolved)
+        );
+    }
+    mode
+}
+
+/// WF-20 — a click on the pill's style chip: cycle THIS take's app to the next
+/// of the six app-aware modes for the next 15 minutes, and return the chip to
+/// render. Refused (an error the pill shows as a toast) when no take is
+/// listening, when app-aware modes are off, or when no app was read.
+#[tauri::command]
+fn pill_cycle_style(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<style_chip::StyleChip, String> {
+    let state = state.inner().clone();
+    if !*state.recording.lock() {
+        log::info!("style_chip cycle_refused reason=not_listening");
+        return Err("The style chip only changes while Yap is listening.".into());
+    }
+    let setting = state.settings.lock().dictation_mode.clone();
+    if !style_chip::app_aware_on(&setting) {
+        log::info!("style_chip cycle_refused reason=app_aware_off");
+        return Err("App-aware modes are off. Turn them on in Formatting.".into());
+    }
+    let Some(name) = state.style_chip_app.lock().clone() else {
+        log::info!("style_chip cycle_refused reason=no_app");
+        return Err("Yap could not tell which app this is.".into());
+    };
+    let now = style_chip::monotonic_ms();
+    let chip = {
+        let mut overrides = state.style_overrides.lock();
+        let shown = style_chip::shown_mode(&setting, &name, &overrides, now);
+        if overrides.cycle(&name, shown, now).is_none() {
+            log::info!("style_chip cycle_refused reason=no_app");
+            return Err("Yap could not tell which app this is.".into());
+        }
+        style_chip::chip_for(&setting, Some(&name), &overrides, now)
+    };
+    log::info!(
+        "style_chip cycled mode={} ttl_ms={} live_overrides={}",
+        chip.mode,
+        style_chip::OVERRIDE_TTL_MS,
+        state.style_overrides.lock().len()
+    );
+    let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    Ok(chip)
 }
 
 /// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
@@ -11003,6 +11124,8 @@ pub fn run() {
         license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
         support_bundle: PLMutex::new(None),
+        style_overrides: PLMutex::new(style_chip::StyleOverrides::new()),
+        style_chip_app: PLMutex::new(None),
     });
 
     // yap-meetings-fix (A, B) — the meeting transcription pipeline: ONE worker
@@ -11333,6 +11456,7 @@ pub fn run() {
             set_dictation_languages,
             pill_set_hitbox,
             pill_set_panel_frame,
+            pill_cycle_style,
             pending_copy_card,
             dismiss_copy_card,
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
@@ -13853,6 +13977,8 @@ mod tests {
             license,
             transcription,
             support_bundle: super::PLMutex::new(None),
+            style_overrides: super::PLMutex::new(crate::style_chip::StyleOverrides::new()),
+            style_chip_app: super::PLMutex::new(None),
         })
     }
 
