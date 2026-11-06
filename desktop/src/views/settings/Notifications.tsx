@@ -3,6 +3,14 @@
 // and recovery messages are not switches at all — they always show — and the
 // category of every pill message lives in one table (`pill/live.ts`
 // `PILL_MESSAGES`), so this pane cannot drift from what the pill does.
+//
+// BEFORE/AFTER PNGs (integrator, headless only — never the real app): with the
+// Vite dev server up on :5273, run
+//   YAP_SMOKE_VIEWS=Settings YAP_SMOKE_RUN=wf17-<before|after> node scripts/smoke-windowed.mjs
+// on origin/main (before: no Notifications tab) and on this branch (after).
+// `captureSettingsTabs` clicks every `.settings-subnav [role=tab]`, so the new
+// tab lands as `settings-notifications-<size>.png` under docs/smoke-shots/.
+// The all-on state is the fixture default (no `mutedPillCategories`).
 import { useAppCtx } from "../../appShell";
 import { parseMutedCategories, withMuted, type MutableCategory } from "../../pill/live";
 
@@ -26,7 +34,7 @@ export default function Notifications() {
               type="checkbox"
               checked={!muted.has(s.id)}
               onChange={(e) =>
-                saveSettings({
+                void saveSettings({
                   ...settings,
                   mutedPillCategories: withMuted(settings.mutedPillCategories, s.id, !e.target.checked),
                 })
