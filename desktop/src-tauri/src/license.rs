@@ -2119,7 +2119,9 @@ mod tests {
         assert_eq!(upgrade_tray_label(false), "See Yap pricing");
         assert_eq!(upgrade_tray_label(true), "Upgrade Yap — $29 once");
         assert!(!upgrade_tray_label(false).contains('$'));
-        assert!(!upgrade_tray_label(false).to_lowercase().contains("checkout"));
+        assert!(!upgrade_tray_label(false)
+            .to_lowercase()
+            .contains("checkout"));
         assert_eq!(UPGRADE_TRAY_LABEL, upgrade_tray_label(PURCHASE_OPEN));
     }
 

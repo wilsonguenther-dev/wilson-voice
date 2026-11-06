@@ -77,10 +77,7 @@ fn fn_body(src: &str, name: &str) -> String {
 
 /// The forbidden shapes, each paired with the fear it is there to catch.
 const FORBIDDEN: &[(&str, &str)] = &[
-    (
-        "PURCHASE_PAGE_URL",
-        "the purchase page constant itself",
-    ),
+    ("PURCHASE_PAGE_URL", "the purchase page constant itself"),
     (
         "open_purchase_page",
         "delegating to the opener, which is the same thing one hop away",

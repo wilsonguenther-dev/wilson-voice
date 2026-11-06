@@ -9212,15 +9212,17 @@ fn open_purchase_page() -> Result<(), String> {
             });
         match &result {
             Ok(()) => log::info!("license purchase_page_open ok purchase_open={purchase_open}"),
-            Err(_) => log::warn!(
-                "license purchase_page_open failure=spawn purchase_open={purchase_open}"
-            ),
+            Err(_) => {
+                log::warn!("license purchase_page_open failure=spawn purchase_open={purchase_open}")
+            }
         }
         result
     }
     #[cfg(not(target_os = "macos"))]
     {
-        log::warn!("license purchase_page_open failure=unsupported_os purchase_open={purchase_open}");
+        log::warn!(
+            "license purchase_page_open failure=unsupported_os purchase_open={purchase_open}"
+        );
         Err(format!(
             "Open {} in your browser to see Yap pricing.",
             license::PURCHASE_PAGE_URL

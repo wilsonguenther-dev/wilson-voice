@@ -60,11 +60,11 @@ fn hits_under(root: &Path, skip: &[PathBuf]) -> (usize, Vec<String>) {
 #[test]
 fn no_stripe_payment_link_in_desktop_or_site() {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let desktop = crate_dir.parent().expect("src-tauri has a parent").to_path_buf();
-    let site = desktop
+    let desktop = crate_dir
         .parent()
-        .expect("desktop has a parent")
-        .join("site");
+        .expect("src-tauri has a parent")
+        .to_path_buf();
+    let site = desktop.parent().expect("desktop has a parent").join("site");
 
     let (desktop_files, desktop_hits) = hits_under(&desktop, &[desktop.join("dist")]);
     let (site_files, site_hits) = hits_under(&site, &[]);
@@ -98,7 +98,9 @@ fn site_buy_button_points_at_the_purchase_page() {
     let buy = html
         .find("Buy Yap")
         .expect("site/dist/index.html has no \"Buy Yap\" button");
-    let anchor_start = html[..buy].rfind("<a ").expect("\"Buy Yap\" is not inside a link");
+    let anchor_start = html[..buy]
+        .rfind("<a ")
+        .expect("\"Buy Yap\" is not inside a link");
     let anchor = &html[anchor_start..buy];
     assert!(
         anchor.contains(r#"href="https://drivia.consulting/yap""#),
