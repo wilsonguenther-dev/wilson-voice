@@ -21,6 +21,8 @@ import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LanguageOfferCard from "./pill/LanguageOfferCard";
+import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
   acceptProgress,
   errorSentence,
@@ -538,6 +540,8 @@ function Float() {
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
+      {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
+      <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
       {!FORCED && <NudgeRow phase={phase} tone={chatTone} />}
