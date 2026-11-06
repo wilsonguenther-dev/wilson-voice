@@ -15,6 +15,10 @@
 //! decode is in flight. When stdin closes (the app died or let go), the worker
 //! frees the model and the process ends with `_exit(0)`.
 
+// The app's end uses the constructors this end never calls (and vice versa),
+// so a bin crate sees them as dead. One file, two ends: the allow is the
+// price of the two ends never drifting.
+#[allow(dead_code)]
 #[path = "../../src-tauri/src/asr_protocol.rs"]
 mod asr_protocol;
 
@@ -298,7 +302,7 @@ fn handle_transcribe(req: &AsrRequest, engine: Option<&mut Engine>) -> AsrRespon
     // sticky (see the app's `asr_engine::reset_cancel`).
     engine.cancel.reset();
     let started = Instant::now();
-    let result = engine.session.run(&samples, &options);
+    let result = engine.session.run(samples.as_slice(), &options);
     eprintln!(
         "yap-asr decode samples={} ms={} ok={}",
         samples.len(),
