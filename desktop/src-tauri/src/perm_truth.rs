@@ -490,9 +490,6 @@ pub fn is_user_copy_path(path: &Path) -> bool {
     if !s.ends_with(".app") || s.starts_with("/Volumes/") {
         return false;
     }
-    if s.starts_with("/private/var/folders/") || s.starts_with("/var/folders/") {
-        return false;
-    }
     let comps: Vec<String> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
@@ -773,18 +770,18 @@ fn ask_on_main(app: &tauri::AppHandle, title: &str, detail: &str, question: bool
     app.run_on_main_thread(move || {
         use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn};
         use objc2_foundation::NSString;
+        // Dropping `tx` unsent reads as "no answer" (None) on the other side.
         let Some(mtm) = objc2::MainThreadMarker::new() else {
-            let _ = tx.send(false);
             return;
         };
         let alert = NSAlert::new(mtm);
         alert.setMessageText(&NSString::from_str(&title));
         alert.setInformativeText(&NSString::from_str(&detail));
         if question {
-            alert.addButtonWithTitle(&NSString::from_str("Move to Trash"));
-            alert.addButtonWithTitle(&NSString::from_str("Not Now"));
+            let _ = alert.addButtonWithTitle(&NSString::from_str("Move to Trash"));
+            let _ = alert.addButtonWithTitle(&NSString::from_str("Not Now"));
         } else {
-            alert.addButtonWithTitle(&NSString::from_str("OK"));
+            let _ = alert.addButtonWithTitle(&NSString::from_str("OK"));
         }
         let answer = alert.runModal();
         let _ = tx.send(question && answer == NSAlertFirstButtonReturn);
@@ -811,7 +808,9 @@ fn move_to_trash(path: &str) -> Result<(), String> {
     let url = NSURL::fileURLWithPath(&NSString::from_str(path));
     NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, None)
-        .map_err(|e| e.localizedDescription().to_string())
+        // The error CODE only: its description names the bundle, and log
+        // lines never carry paths.
+        .map_err(|e| format!("nserror_code={}", e.code()))
 }
 
 #[cfg(not(target_os = "macos"))]
