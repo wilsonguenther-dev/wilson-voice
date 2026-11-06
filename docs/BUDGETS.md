@@ -550,5 +550,23 @@ is the median decode RTF over the three files; `WER` is 20 s / 127 s / 240 s.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 <!-- speed-bench:rows:end -->
 
-The baseline row is written by the batch integrator's first `scripts/qa/speed-bench.sh` run on the
-merged build (builders in this loop do not compile), and must land before SP-04..SP-10 start.
+**No downloads, no real state.** `--bench` benches the model the app would select — on a fresh
+data dir that is the SHIPPED default (`handy-computer/parakeet-unified-en-0.6b-gguf`, Q8_0), never
+whisper-tiny — found installed in the models dir or in `$YAP_MODEL_DIR`. It never fetches one: with
+no installed model it exits **2** with one sentence naming the data dir. `speed-bench.sh` runs it
+against a scratch `YAP_DATA_DIR` (deleted at exit) unless the caller sets one, and deletes the
+fixture WAVs it generated unless `--keep-fixtures`.
+
+**The baseline row** (SP-03; must land before SP-04..SP-10 start) comes from a RELEASE build on the
+merged batch — builders in this loop do not compile, so the integrator runs it, on a clean tree so
+the commit cell has no `-dirty`:
+
+```bash
+CARGO_INCREMENTAL=0 cargo build --release --manifest-path desktop/src-tauri/Cargo.toml   # loop target dir
+YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  scripts/qa/speed-bench.sh --bin <target>/release/wilson-voice --note "SP-03 baseline"   # status: baseline
+YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  scripts/qa/speed-bench.sh --bin <target>/release/wilson-voice --dry-run   # prints 'ok ±x% vs <commit>'
+```
+
+Commit the one dated row it appends between the markers below.
