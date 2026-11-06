@@ -39,6 +39,25 @@ const KCG_HID_EVENT_TAP: u32 = 0;
 const KCG_HEAD_INSERT: u32 = 0;
 const KCG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 const KCG_EVENT_SOURCE_STATE_HID: i32 = 1;
+// WF-19 — other-mouse (any button but left / right) events and the field that
+// names the button.
+const KCG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+const KCG_EVENT_OTHER_MOUSE_UP: u32 = 26;
+const KCG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
+const KCG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
+const KCG_SESSION_EVENT_TAP: u32 = 1;
+const KCG_TAIL_APPEND: u32 = 1;
+const KCG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
+
+/// What the existing fn tap listens for: key / flags edges, and (WF-19) the
+/// other-mouse buttons, so a bound mouse button rides the SAME tap.
+pub const MAIN_TAP_MASK: u64 = (1u64 << KCG_EVENT_FLAGS_CHANGED)
+    | (1u64 << KCG_EVENT_KEY_DOWN)
+    | (1u64 << KCG_EVENT_OTHER_MOUSE_DOWN)
+    | (1u64 << KCG_EVENT_OTHER_MOUSE_UP);
+/// The existing tap stays LISTEN-ONLY (Input Monitoring — what fn already
+/// needs); a mouse binding adds no permission to it.
+pub const MAIN_TAP_OPTIONS: u32 = KCG_EVENT_TAP_OPTION_LISTEN_ONLY;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttBinding {
@@ -98,6 +117,400 @@ impl CommandBinding {
             Self::Off => "off",
         }
     }
+}
+
+// ── WF-19: a non-primary mouse button as push-to-talk or hands-free ──────────
+//
+// Any mouse button except left and right can be bound from Settings ›
+// Shortcuts. Its presses ride the SAME listen-only tap fn already uses (that
+// tap's mask gains other-mouse down/up — `MAIN_TAP_MASK`), so the binding needs
+// no permission beyond fn's. While a button is bound, a second, best-effort tap
+// (`ensure_mouse_swallow_tap`) drops that button's events so they do not reach
+// other apps; when that tap is live it is the one that feeds the machine, so a
+// press is never applied twice. If macOS refuses it, the button still dictates
+// through the existing tap and simply passes through as well.
+
+/// CoreGraphics' number for the left button. Never bindable.
+pub const MOUSE_BUTTON_LEFT: u32 = 0;
+/// CoreGraphics' number for the right button. Never bindable.
+pub const MOUSE_BUTTON_RIGHT: u32 = 1;
+/// CoreGraphics' number for the middle button (wheel click).
+pub const MOUSE_BUTTON_MIDDLE: u32 = 2;
+/// Highest CoreGraphics button number (`CGMouseButton` is 0…31).
+pub const MOUSE_BUTTON_MAX: u32 = 31;
+/// The one sentence a refused left / right binding carries to the UI.
+pub const MOUSE_PRIMARY_REFUSED: &str =
+    "Left and right click can't be shortcuts — pick the middle button or a side button";
+
+/// What a bound mouse button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    /// The same hybrid gesture as fn: hold to talk, double-click to latch
+    /// hands-free, click to end hands-free.
+    Hold,
+    /// One click starts a hands-free take, the next click ends it.
+    HandsFree,
+}
+
+/// A validated mouse push-to-talk binding. The fields are private so the only
+/// way to make one is [`MouseBinding::new`] / [`MouseBinding::parse`], and both
+/// refuse left and right click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseBinding {
+    button: u32,
+    mode: MouseMode,
+}
+
+impl MouseBinding {
+    /// `button` is the CoreGraphics number (2 = middle, 3 = "button 4", …).
+    pub fn new(button: u32, mode: MouseMode) -> Result<Self, String> {
+        if button == MOUSE_BUTTON_LEFT || button == MOUSE_BUTTON_RIGHT {
+            return Err(MOUSE_PRIMARY_REFUSED.to_string());
+        }
+        if button > MOUSE_BUTTON_MAX {
+            return Err(format!(
+                "Mouse button {} isn't one macOS reports — pick the middle button or a side button",
+                button + 1
+            ));
+        }
+        Ok(Self { button, mode })
+    }
+
+    pub fn button(self) -> u32 {
+        self.button
+    }
+
+    pub fn mode(self) -> MouseMode {
+        self.mode
+    }
+
+    /// "middle button" or "button 4" — the name the mouse's maker uses.
+    pub fn button_label(self) -> String {
+        if self.button == MOUSE_BUTTON_MIDDLE {
+            "middle button".to_string()
+        } else {
+            format!("button {}", self.button + 1)
+        }
+    }
+
+    /// The chord label the pill and Settings show.
+    pub fn label(self) -> String {
+        match self.mode {
+            MouseMode::Hold => format!("hold {}", self.button_label()),
+            MouseMode::HandsFree => format!("click {}", self.button_label()),
+        }
+    }
+
+    /// The stored form: `middle` / `button<N>` (N = the 1-based number the
+    /// mouse's maker prints), then `:hands_free` for the click-to-toggle mode.
+    pub fn to_settings(self) -> String {
+        let button = if self.button == MOUSE_BUTTON_MIDDLE {
+            "middle".to_string()
+        } else {
+            format!("button{}", self.button + 1)
+        };
+        match self.mode {
+            MouseMode::Hold => button,
+            MouseMode::HandsFree => format!("{button}:hands_free"),
+        }
+    }
+
+    /// Parse the stored setting. `""` / `"off"` = no mouse binding. Left and
+    /// right click (`left`, `right`, `button1`, `button2`) are refused with
+    /// [`MOUSE_PRIMARY_REFUSED`], never silently mapped to something else.
+    pub fn parse(s: &str) -> Result<Option<Self>, String> {
+        let s = s.trim().to_ascii_lowercase();
+        if s.is_empty() || s == "off" || s == "none" {
+            return Ok(None);
+        }
+        let (button, mode) = match s.split_once(':') {
+            Some((b, m)) => (b, m),
+            None => (s.as_str(), "hold"),
+        };
+        let mode = match mode {
+            "hold" | "push_to_talk" | "ptt" => MouseMode::Hold,
+            "hands_free" | "toggle" => MouseMode::HandsFree,
+            other => {
+                return Err(format!(
+                    "Unknown mouse mode \"{other}\" — use hold or hands_free"
+                ))
+            }
+        };
+        let cg = match button {
+            "left" | "primary" => MOUSE_BUTTON_LEFT,
+            "right" | "secondary" => MOUSE_BUTTON_RIGHT,
+            "middle" => MOUSE_BUTTON_MIDDLE,
+            b => match b.strip_prefix("button").and_then(|n| n.parse::<u32>().ok()) {
+                Some(0) | None => {
+                    return Err(format!(
+                        "Unknown mouse button \"{b}\" — use middle or button4, button5, …"
+                    ))
+                }
+                Some(n) => n - 1,
+            },
+        };
+        Self::new(cg, mode).map(Some)
+    }
+}
+
+/// What one other-mouse event means for push-to-talk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEffect {
+    /// Not the bound button (or nothing is bound): untouched, passes through.
+    Ignore,
+    /// The bound button in `Hold` mode went down (`true`) or up (`false`).
+    Hold(bool),
+    /// The bound button in `HandsFree` mode went down: start or end the take.
+    Toggle,
+    /// The bound button's other half (the up of a hands-free click): nothing
+    /// to do, but it is still the bound button, so it does not pass through.
+    Swallow,
+}
+
+/// PURE: map one other-mouse down / up of CoreGraphics button `button`.
+pub fn mouse_effect(binding: Option<MouseBinding>, button: i64, down: bool) -> MouseEffect {
+    let Some(b) = binding else {
+        return MouseEffect::Ignore;
+    };
+    if !mouse_swallows(Some(b), button) {
+        return MouseEffect::Ignore;
+    }
+    match (b.mode, down) {
+        (MouseMode::Hold, d) => MouseEffect::Hold(d),
+        (MouseMode::HandsFree, true) => MouseEffect::Toggle,
+        (MouseMode::HandsFree, false) => MouseEffect::Swallow,
+    }
+}
+
+/// PURE: is `button` the bound one, i.e. kept from other apps? Left and right
+/// click are never kept, whatever the binding says.
+pub fn mouse_swallows(binding: Option<MouseBinding>, button: i64) -> bool {
+    match binding {
+        Some(b) => {
+            button != MOUSE_BUTTON_LEFT as i64
+                && button != MOUSE_BUTTON_RIGHT as i64
+                && button == b.button as i64
+        }
+        None => false,
+    }
+}
+
+/// PURE: is the bound button held, as far as the poll may say? The HID
+/// button-state read is trusted only once it has reported the button DOWN at
+/// least once (`read_proven`); until then the tap's own record stands, so a
+/// blind read can never stop a hold take the instant it starts.
+pub fn mouse_held_for_poll(
+    binding: Option<MouseBinding>,
+    read_proven: bool,
+    read_down: bool,
+    tap_held: bool,
+) -> bool {
+    match binding {
+        Some(b) if b.mode == MouseMode::Hold => {
+            if read_proven {
+                read_down
+            } else {
+                tap_held
+            }
+        }
+        _ => false,
+    }
+}
+
+/// PURE: the poll's second stop mechanism for a mouse hold — the tap thinks the
+/// button is still down, a proven read says it is up: the release was lost.
+pub fn mouse_lost_release(
+    binding: Option<MouseBinding>,
+    read_proven: bool,
+    read_down: bool,
+    tap_held: bool,
+) -> bool {
+    matches!(binding, Some(b) if b.mode == MouseMode::Hold) && read_proven && tap_held && !read_down
+}
+
+static MOUSE_BINDING: Mutex<Option<MouseBinding>> = Mutex::new(None);
+/// The bound button is down, as the taps saw it (Hold mode only).
+static MOUSE_HELD: AtomicBool = AtomicBool::new(false);
+/// The HID button-state read has reported the bound button down at least once.
+static MOUSE_READ_PROVEN: AtomicBool = AtomicBool::new(false);
+/// The swallow tap's thread was started (or is starting).
+static MOUSE_TAP_STARTING: AtomicBool = AtomicBool::new(false);
+/// The swallow tap is installed on its run loop and owns the bound button.
+static MOUSE_TAP_LIVE: AtomicBool = AtomicBool::new(false);
+static MOUSE_TAP_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static MOUSE_EVENTS_SWALLOWED: AtomicU64 = AtomicU64::new(0);
+static MOUSE_PRESSES: AtomicU64 = AtomicU64::new(0);
+
+/// Bind (or with `None`, unbind) the mouse push-to-talk button, live. Safe to
+/// call before [`start`]; the binding is read on every mouse event.
+pub fn set_mouse_binding(binding: Option<MouseBinding>) {
+    let prev = std::mem::replace(&mut *MOUSE_BINDING.lock(), binding);
+    if prev != binding {
+        MOUSE_HELD.store(false, Ordering::SeqCst);
+        MOUSE_READ_PROVEN.store(false, Ordering::SeqCst);
+        match binding {
+            Some(b) => log::info!(
+                "ptt_mouse bind button={} mode={:?}",
+                b.button() + 1,
+                b.mode()
+            ),
+            None => log::info!("ptt_mouse bind button=off"),
+        }
+    }
+    if binding.is_some() {
+        ensure_mouse_swallow_tap();
+    }
+}
+
+/// The live mouse binding, if any.
+pub fn mouse_binding() -> Option<MouseBinding> {
+    *MOUSE_BINDING.lock()
+}
+
+/// Is the bound button kept from other apps right now (the swallow tap is live)?
+pub fn mouse_swallow_live() -> bool {
+    MOUSE_TAP_LIVE.load(Ordering::SeqCst)
+}
+
+/// Counters: (bound-button presses applied, bound-button events kept from apps).
+pub fn mouse_counters() -> (u64, u64) {
+    (
+        MOUSE_PRESSES.load(Ordering::Relaxed),
+        MOUSE_EVENTS_SWALLOWED.load(Ordering::Relaxed),
+    )
+}
+
+/// One other-mouse down / up into the machine. Returns whether `button` is the
+/// bound one. Called by exactly ONE tap per event: the swallow tap while it is
+/// live, the existing listen-only tap otherwise.
+fn on_mouse_button(state: &Arc<TapState>, button: i64, down: bool) -> bool {
+    let binding = *MOUSE_BINDING.lock();
+    match mouse_effect(binding, button, down) {
+        MouseEffect::Ignore => false,
+        MouseEffect::Swallow => true,
+        MouseEffect::Hold(d) => {
+            MOUSE_HELD.store(d, Ordering::SeqCst);
+            if d {
+                MOUSE_PRESSES.fetch_add(1, Ordering::Relaxed);
+            }
+            let hid = unsafe { ffi::CGEventSourceFlagsState(POLL_SOURCE_STATE) };
+            let (fn_down, control, command, option) = decode_flags(hid);
+            let want = combo_wanted(*state.binding.lock(), fn_down, control) || d;
+            let cmd = command_wanted(*state.command_binding.lock(), command, option);
+            log::info!("ptt_mouse press button={} down={d} mode=hold", button + 1);
+            let step = state
+                .machine
+                .lock()
+                .edge(want, cmd, now_ms(), EdgeSource::Tap);
+            dispatch(state, step);
+            true
+        }
+        MouseEffect::Toggle => {
+            MOUSE_PRESSES.fetch_add(1, Ordering::Relaxed);
+            log::info!("ptt_mouse press button={} mode=hands_free", button + 1);
+            let step = state.machine.lock().toggle_hands_free(now_ms());
+            dispatch(state, step);
+            true
+        }
+    }
+}
+
+/// The swallow tap's mask: the bound button's down, up and drag.
+const MOUSE_SWALLOW_MASK: u64 = (1u64 << KCG_EVENT_OTHER_MOUSE_DOWN)
+    | (1u64 << KCG_EVENT_OTHER_MOUSE_UP)
+    | (1u64 << KCG_EVENT_OTHER_MOUSE_DRAGGED);
+
+/// Start the best-effort swallow tap once, on its own thread and run loop.
+fn ensure_mouse_swallow_tap() {
+    if !crate::smoke::global_hotkeys_allowed() {
+        return;
+    }
+    if MOUSE_TAP_STARTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = thread::Builder::new()
+        .name("wv-mouse-ptt".into())
+        .spawn(|| unsafe {
+            let tap = ffi::CGEventTapCreate(
+                KCG_SESSION_EVENT_TAP,
+                KCG_TAIL_APPEND,
+                KCG_EVENT_TAP_OPTION_DEFAULT,
+                MOUSE_SWALLOW_MASK,
+                Some(mouse_swallow_callback),
+                std::ptr::null_mut(),
+            );
+            if tap.is_null() {
+                // Not fatal: the existing listen-only tap still turns the button
+                // into push-to-talk; the click just also reaches the app below.
+                log::warn!(
+                    "ptt_mouse swallow_unavailable reason=tap_refused (the bound button still dictates and also reaches other apps)"
+                );
+                MOUSE_TAP_STARTING.store(false, Ordering::SeqCst);
+                return;
+            }
+            MOUSE_TAP_PORT.store(tap, Ordering::SeqCst);
+            ffi::CGEventTapEnable(tap, true);
+            let source = ffi::CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0);
+            if source.is_null() {
+                log::warn!("ptt_mouse swallow_unavailable reason=run_loop_source");
+                MOUSE_TAP_PORT.store(std::ptr::null_mut(), Ordering::SeqCst);
+                ffi::CFMachPortInvalidate(tap);
+                ffi::CFRelease(tap);
+                MOUSE_TAP_STARTING.store(false, Ordering::SeqCst);
+                return;
+            }
+            ffi::CFRunLoopAddSource(
+                ffi::CFRunLoopGetCurrent(),
+                source,
+                ffi::kCFRunLoopCommonModes,
+            );
+            MOUSE_TAP_LIVE.store(true, Ordering::SeqCst);
+            log::info!("ptt_mouse swallow_tap running");
+            ffi::CFRunLoopRun();
+            MOUSE_TAP_LIVE.store(false, Ordering::SeqCst);
+            MOUSE_TAP_STARTING.store(false, Ordering::SeqCst);
+            log::warn!("ptt_mouse swallow_tap stopped");
+        });
+    if let Err(e) = spawned {
+        log::warn!("ptt_mouse swallow_unavailable reason=thread_spawn err={e}");
+        MOUSE_TAP_STARTING.store(false, Ordering::SeqCst);
+    }
+}
+
+unsafe extern "C" fn mouse_swallow_callback(
+    _proxy: ffi::CGEventTapProxy,
+    event_type: u32,
+    event: ffi::CGEventRef,
+    _user_info: *mut std::ffi::c_void,
+) -> ffi::CGEventRef {
+    if let Some(kind) = classify_tap_disable(event_type) {
+        log::warn!(
+            "ptt_mouse swallow_tap disabled kind={} — re-arming",
+            kind.name()
+        );
+        let port = MOUSE_TAP_PORT.load(Ordering::SeqCst);
+        if !port.is_null() {
+            ffi::CGEventTapEnable(port, true);
+        }
+        return event;
+    }
+    if event.is_null() || !MOUSE_TAP_LIVE.load(Ordering::SeqCst) {
+        return event;
+    }
+    let button = ffi::CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
+    let binding = *MOUSE_BINDING.lock();
+    if !mouse_swallows(binding, button) {
+        return event;
+    }
+    if event_type == KCG_EVENT_OTHER_MOUSE_DOWN || event_type == KCG_EVENT_OTHER_MOUSE_UP {
+        let Some(st) = GLOBAL_STATE.lock().clone() else {
+            // Nothing would act on the press — let the app have it.
+            return event;
+        };
+        on_mouse_button(&st, button, event_type == KCG_EVENT_OTHER_MOUSE_DOWN);
+    }
+    MOUSE_EVENTS_SWALLOWED.fetch_add(1, Ordering::Relaxed);
+    std::ptr::null_mut()
 }
 
 // ── yap-qa-hotkey-walk-binding DO 3: fn ALONE says why it did nothing ─────────
@@ -386,6 +799,8 @@ pub struct PttMachine {
     /// ignored: a read that is blind (all zero) would otherwise look like an
     /// instant key-up and stop every hold take the moment it started.
     hid_proven: bool,
+    /// WF-19 — the last hands-free mouse click (debounce for its toggle).
+    last_toggle_at: Option<u64>,
 }
 
 impl PttMachine {
@@ -560,6 +975,38 @@ impl PttMachine {
         Step::none()
     }
 
+    /// WF-19 — a hands-free mouse click: start a latched take, or end the one
+    /// that is latched. A hold take already live (fn held) owns the recording,
+    /// so the click does nothing to it.
+    pub fn toggle_hands_free(&mut self, now_ms: u64) -> Step {
+        if let Some(t) = self.last_toggle_at {
+            if now_ms.saturating_sub(t) < DEBOUNCE_MS {
+                return Step::none();
+            }
+        }
+        self.last_toggle_at = Some(now_ms);
+        if self.hands_free {
+            self.hands_free = false;
+            self.hold_armed = false;
+            self.command_mode = false;
+            self.press_at = None;
+            self.last_tap_at = None;
+            self.press_gen += 1;
+            self.end_take();
+            return Step::of(&[PttEvent::HandsFreeOff, PttEvent::Stop]);
+        }
+        if self.take_live() {
+            return Step::none();
+        }
+        self.hands_free = true;
+        self.command_mode = false;
+        self.last_tap_at = None;
+        self.take_started_at = Some(now_ms);
+        self.still_prompted = false;
+        self.tap_disabled_in_take = false;
+        Step::of(&[PttEvent::HandsFreeOn, PttEvent::Start])
+    }
+
     /// The hold-arm timer for press generation `gen` fired.
     pub fn hold_timer(&mut self, gen: u64, now_ms: u64) -> Step {
         if gen != self.press_gen
@@ -700,6 +1147,8 @@ mod ffi {
         pub fn CGEventGetFlags(event: CGEventRef) -> u64;
         pub fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
         pub fn CGEventSourceFlagsState(state_id: i32) -> u64;
+        /// WF-19 — is mouse `button` down in source state `state_id`?
+        pub fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -916,12 +1365,38 @@ static HID_READ_LOGGED: AtomicBool = AtomicBool::new(false);
 fn poll_once(state: &Arc<TapState>) -> Step {
     let hid = unsafe { ffi::CGEventSourceFlagsState(POLL_SOURCE_STATE) };
     let (fn_down, control, command, option) = decode_flags(hid);
-    let want = combo_wanted(*state.binding.lock(), fn_down, control);
+    // WF-19: a held mouse button is part of the combo for the poll too, or the
+    // hold-arm reconcile would stop every mouse hold the moment it started.
+    let mouse = *MOUSE_BINDING.lock();
+    let mouse_read = match mouse {
+        Some(b) if b.mode() == MouseMode::Hold => unsafe {
+            ffi::CGEventSourceButtonState(POLL_SOURCE_STATE, b.button())
+        },
+        _ => false,
+    };
+    if mouse_read && !MOUSE_READ_PROVEN.swap(true, Ordering::SeqCst) {
+        log::info!("ptt_mouse hid_read sees the bound button (second stop mechanism live)");
+    }
+    let read_proven = MOUSE_READ_PROVEN.load(Ordering::SeqCst);
+    let tap_held = MOUSE_HELD.load(Ordering::SeqCst);
+    let mouse_held = mouse_held_for_poll(mouse, read_proven, mouse_read, tap_held);
+    let lost_release = mouse_lost_release(mouse, read_proven, mouse_read, tap_held);
+    if lost_release {
+        MOUSE_HELD.store(false, Ordering::SeqCst);
+        log::warn!("ptt_mouse lost_release reconciled by the poll");
+    }
+    let want = combo_wanted(*state.binding.lock(), fn_down, control) || mouse_held;
     let cmd = command_wanted(*state.command_binding.lock(), command, option);
     let now = now_ms();
     let mut m = state.machine.lock();
     let was_proven = m.hid_proven();
-    let mut step = m.poll(want, fn_down, cmd, now);
+    let mut step = if lost_release && !m.hid_proven() {
+        // The keyboard read is not proven, the mouse read is: only the mouse's
+        // own lost release may move the machine.
+        m.edge(want, cmd, now, EdgeSource::Poll)
+    } else {
+        m.poll(want, fn_down, cmd, now)
+    };
     if !was_proven && m.hid_proven() && !HID_READ_LOGGED.swap(true, Ordering::SeqCst) {
         // The measurement the PR asks for, on whatever grants this build has.
         log::info!("FN PTT: HID flags read sees fn (second stop mechanism live)");
@@ -1007,12 +1482,11 @@ fn ensure_poll() {
 unsafe fn install_tap(
     user_info: *mut std::ffi::c_void,
 ) -> Result<ffi::CFMachPortRef, &'static str> {
-    let mask = (1u64 << KCG_EVENT_FLAGS_CHANGED) | (1u64 << KCG_EVENT_KEY_DOWN);
     let tap = ffi::CGEventTapCreate(
         TAP_LOCATION,
         KCG_HEAD_INSERT,
-        KCG_EVENT_TAP_OPTION_LISTEN_ONLY,
-        mask,
+        MAIN_TAP_OPTIONS,
+        MAIN_TAP_MASK,
         Some(tap_callback),
         user_info,
     );
@@ -1080,6 +1554,17 @@ unsafe extern "C" fn tap_callback(
     }
     Arc::increment_strong_count(user_info as *const TapState);
     let state = Arc::from_raw(user_info as *const TapState);
+
+    // WF-19: a bound mouse button. The swallow tap owns it while it is live
+    // (it applies the press AND keeps it from apps); otherwise this tap applies
+    // it and the click also passes through. Never both, so no double toggle.
+    if event_type == KCG_EVENT_OTHER_MOUSE_DOWN || event_type == KCG_EVENT_OTHER_MOUSE_UP {
+        if !MOUSE_TAP_LIVE.load(Ordering::SeqCst) {
+            let button = ffi::CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
+            on_mouse_button(&state, button, event_type == KCG_EVENT_OTHER_MOUSE_DOWN);
+        }
+        return event;
+    }
 
     // yap-perm-truth: a real key / flags edge is the ONLY delivery evidence
     // `permissions::input_monitoring_state` accepts.
@@ -1811,5 +2296,221 @@ mod tests {
             CommandBinding::from_settings("nonsense"),
             CommandBinding::Command
         );
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::{
+        mouse_effect, mouse_held_for_poll, mouse_lost_release, mouse_swallows, EdgeSource,
+        MouseBinding, MouseEffect, MouseMode, PttEvent, PttMachine, DEBOUNCE_MS, HOLD_ARM_MS,
+        KCG_EVENT_OTHER_MOUSE_DOWN, KCG_EVENT_OTHER_MOUSE_UP, KCG_EVENT_TAP_OPTION_LISTEN_ONLY,
+        MAIN_TAP_MASK, MAIN_TAP_OPTIONS, MOUSE_BUTTON_LEFT, MOUSE_BUTTON_MAX, MOUSE_BUTTON_MIDDLE,
+        MOUSE_BUTTON_RIGHT, MOUSE_PRIMARY_REFUSED,
+    };
+
+    fn hold(button: u32) -> Option<MouseBinding> {
+        Some(MouseBinding::new(button, MouseMode::Hold).expect("bindable"))
+    }
+
+    fn hands_free(button: u32) -> Option<MouseBinding> {
+        Some(MouseBinding::new(button, MouseMode::HandsFree).expect("bindable"))
+    }
+
+    /// WF-19 ACCEPTANCE: left and right click can never be bound — not by
+    /// number, not by name, not in either mode.
+    #[test]
+    fn left_and_right_click_can_never_be_bound() {
+        for mode in [MouseMode::Hold, MouseMode::HandsFree] {
+            assert_eq!(
+                MouseBinding::new(MOUSE_BUTTON_LEFT, mode),
+                Err(MOUSE_PRIMARY_REFUSED.to_string())
+            );
+            assert_eq!(
+                MouseBinding::new(MOUSE_BUTTON_RIGHT, mode),
+                Err(MOUSE_PRIMARY_REFUSED.to_string())
+            );
+        }
+        for stored in [
+            "left",
+            "right",
+            "primary",
+            "secondary",
+            "button1",
+            "button2",
+            "LEFT",
+            " right ",
+            "left:hands_free",
+            "right:hold",
+            "button1:hands_free",
+            "button2:toggle",
+        ] {
+            assert_eq!(
+                MouseBinding::parse(stored),
+                Err(MOUSE_PRIMARY_REFUSED.to_string()),
+                "{stored:?} must be refused"
+            );
+        }
+        // Every value parse DOES accept is a non-primary button.
+        for n in 3..=32u32 {
+            for suffix in ["", ":hold", ":hands_free"] {
+                let stored = format!("button{n}{suffix}");
+                let b = MouseBinding::parse(&stored)
+                    .expect("side buttons bind")
+                    .expect("not off");
+                assert!(b.button() >= MOUSE_BUTTON_MIDDLE, "{stored}");
+            }
+        }
+    }
+
+    /// Even with a binding live, left / right events are never kept from apps
+    /// and never move the machine.
+    #[test]
+    fn left_and_right_events_always_pass_through() {
+        for binding in [
+            None,
+            hold(MOUSE_BUTTON_MIDDLE),
+            hands_free(3),
+            hold(MOUSE_BUTTON_MAX),
+        ] {
+            for button in [MOUSE_BUTTON_LEFT as i64, MOUSE_BUTTON_RIGHT as i64] {
+                assert!(!mouse_swallows(binding, button));
+                assert_eq!(mouse_effect(binding, button, true), MouseEffect::Ignore);
+                assert_eq!(mouse_effect(binding, button, false), MouseEffect::Ignore);
+            }
+        }
+    }
+
+    #[test]
+    fn middle_and_side_buttons_bind_and_round_trip() {
+        let middle = MouseBinding::parse("middle").unwrap().unwrap();
+        assert_eq!(middle.button(), MOUSE_BUTTON_MIDDLE);
+        assert_eq!(middle.mode(), MouseMode::Hold);
+        assert_eq!(middle.label(), "hold middle button");
+        assert_eq!(MouseBinding::parse("button3").unwrap(), Some(middle));
+
+        let b4 = MouseBinding::parse("button4:hands_free").unwrap().unwrap();
+        assert_eq!(b4.button(), 3);
+        assert_eq!(b4.mode(), MouseMode::HandsFree);
+        assert_eq!(b4.label(), "click button 4");
+
+        for b in [middle, b4, MouseBinding::parse("button5").unwrap().unwrap()] {
+            assert_eq!(MouseBinding::parse(&b.to_settings()), Ok(Some(b)));
+        }
+    }
+
+    #[test]
+    fn off_unbinds_and_garbage_is_refused() {
+        for off in ["", "off", "none", "  OFF "] {
+            assert_eq!(MouseBinding::parse(off), Ok(None));
+        }
+        for bad in [
+            "button0",
+            "button33",
+            "wheel",
+            "button",
+            "middle:sideways",
+            "button4:",
+        ] {
+            let got = MouseBinding::parse(bad);
+            assert!(got.is_err(), "{bad:?} parsed as {got:?}");
+            assert_ne!(got, Err(MOUSE_PRIMARY_REFUSED.to_string()), "{bad:?}");
+        }
+        assert!(MouseBinding::new(MOUSE_BUTTON_MAX + 1, MouseMode::Hold).is_err());
+    }
+
+    #[test]
+    fn mouse_effect_maps_only_the_bound_button() {
+        assert_eq!(mouse_effect(None, 3, true), MouseEffect::Ignore);
+        assert_eq!(mouse_effect(hold(3), 4, true), MouseEffect::Ignore);
+        assert_eq!(mouse_effect(hold(3), 3, true), MouseEffect::Hold(true));
+        assert_eq!(mouse_effect(hold(3), 3, false), MouseEffect::Hold(false));
+        assert_eq!(mouse_effect(hands_free(2), 2, true), MouseEffect::Toggle);
+        assert_eq!(mouse_effect(hands_free(2), 2, false), MouseEffect::Swallow);
+        assert!(mouse_swallows(hands_free(2), 2));
+        assert!(!mouse_swallows(hands_free(2), 3));
+        assert!(!mouse_swallows(None, 2));
+    }
+
+    /// WF-19 ACCEPTANCE: works with the EXISTING tap, no new permission — the
+    /// fn tap's mask carries the other-mouse buttons and it stays listen-only
+    /// (Input Monitoring, which fn already uses).
+    #[test]
+    fn mouse_rides_the_existing_listen_only_tap() {
+        assert_ne!(MAIN_TAP_MASK & (1u64 << KCG_EVENT_OTHER_MOUSE_DOWN), 0);
+        assert_ne!(MAIN_TAP_MASK & (1u64 << KCG_EVENT_OTHER_MOUSE_UP), 0);
+        // fn's own events are still there.
+        assert_ne!(MAIN_TAP_MASK & (1u64 << super::KCG_EVENT_FLAGS_CHANGED), 0);
+        assert_ne!(MAIN_TAP_MASK & (1u64 << super::KCG_EVENT_KEY_DOWN), 0);
+        // Left / right down/up (1, 2, 3, 4) are not in the mask at all.
+        for t in 1..=4u32 {
+            assert_eq!(MAIN_TAP_MASK & (1u64 << t), 0, "event type {t}");
+        }
+        assert_eq!(MAIN_TAP_OPTIONS, KCG_EVENT_TAP_OPTION_LISTEN_ONLY);
+    }
+
+    /// Hold mode is the fn gesture: hold past HOLD_ARM_MS starts, release stops.
+    #[test]
+    fn mouse_hold_starts_on_hold_and_stops_on_release() {
+        let mut m = PttMachine::new();
+        let down = m.edge(true, false, 1_000, EdgeSource::Tap);
+        let gen = down.arm_hold.expect("hold timer armed");
+        let start = m.hold_timer(gen, 1_000 + HOLD_ARM_MS);
+        assert_eq!(start.events, vec![PttEvent::Start]);
+        let stop = m.edge(false, false, 3_000, EdgeSource::Tap);
+        assert_eq!(stop.events, vec![PttEvent::Stop]);
+        assert!(!m.take_live());
+    }
+
+    #[test]
+    fn mouse_hands_free_click_toggles() {
+        let mut m = PttMachine::new();
+        let on = m.toggle_hands_free(1_000);
+        assert_eq!(on.events, vec![PttEvent::HandsFreeOn, PttEvent::Start]);
+        assert!(m.hands_free());
+        // Chatter inside the debounce window is ignored.
+        assert!(m
+            .toggle_hands_free(1_000 + DEBOUNCE_MS - 1)
+            .events
+            .is_empty());
+        assert!(m.hands_free());
+        let off = m.toggle_hands_free(2_000);
+        assert_eq!(off.events, vec![PttEvent::HandsFreeOff, PttEvent::Stop]);
+        assert!(!m.take_live());
+    }
+
+    #[test]
+    fn mouse_hands_free_click_leaves_a_held_fn_take_alone() {
+        let mut m = PttMachine::new();
+        let gen = m
+            .edge(true, false, 1_000, EdgeSource::Tap)
+            .arm_hold
+            .unwrap();
+        assert_eq!(m.hold_timer(gen, 1_400).events, vec![PttEvent::Start]);
+        assert!(m.toggle_hands_free(1_500).events.is_empty());
+        assert!(!m.hands_free());
+        assert_eq!(
+            m.edge(false, false, 2_000, EdgeSource::Tap).events,
+            vec![PttEvent::Stop]
+        );
+    }
+
+    #[test]
+    fn mouse_poll_trusts_the_read_only_once_proven() {
+        // Unproven read: the tap's record stands (a blind read never stops it).
+        assert!(mouse_held_for_poll(hold(3), false, false, true));
+        assert!(!mouse_held_for_poll(hold(3), false, false, false));
+        // Proven read: the read decides.
+        assert!(mouse_held_for_poll(hold(3), true, true, false));
+        assert!(!mouse_held_for_poll(hold(3), true, false, true));
+        // Hands-free mode / unbound: the button is never part of the combo.
+        assert!(!mouse_held_for_poll(hands_free(3), true, true, true));
+        assert!(!mouse_held_for_poll(None, true, true, true));
+
+        assert!(mouse_lost_release(hold(3), true, false, true));
+        assert!(!mouse_lost_release(hold(3), false, false, true));
+        assert!(!mouse_lost_release(hold(3), true, true, true));
+        assert!(!mouse_lost_release(hold(3), true, false, false));
+        assert!(!mouse_lost_release(hands_free(3), true, false, true));
     }
 }

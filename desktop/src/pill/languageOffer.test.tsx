@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement, ReactNode } from "react";
-import { LanguageOfferView, respondToLanguageOffer } from "./LanguageOfferCard";
+import LanguageOfferCard, { LanguageOfferView, respondToLanguageOffer } from "./LanguageOfferCard";
+import { CARD_CLASSES, CARD_SELECTOR } from "./state";
 import {
   LANGUAGE_OFFER_EVENT,
   LANGUAGE_OFFER_QUIET_DAYS,
@@ -128,5 +129,28 @@ describe("language offer — matrix scene", () => {
     expect(row.id).toBe("lang-offer");
     const offer = forcedLanguageOffer("?phase=idle&" + row.query);
     expect(offer?.code).toBe(row.offer);
+  });
+});
+
+describe("language offer — one-pill card row (fix-b1-2)", () => {
+  it("card_selector_matches_a_rendered_language_offer_card", () => {
+    // The SHIPPING card (not the view): the element float-main's
+    // useCardOnScreen measures and float.css places is its outermost box.
+    const html = renderToStaticMarkup(<LanguageOfferCard forced={OFFER} />);
+    const outer = /^<div class="([^"]+)"/.exec(html);
+    expect(outer, html).not.toBeNull();
+    const classes = outer![1].split(/\s+/);
+    expect(classes).toContain("language-offer-wrap");
+    // CARD_SELECTOR is a plain class list: the card matches when one of its
+    // outer classes is on it.
+    const selectorClasses = CARD_SELECTOR.split(",").map((part) => part.trim().replace(/^\./, ""));
+    expect(selectorClasses).toEqual([...CARD_CLASSES]);
+    expect(selectorClasses.some((c) => classes.includes(c))).toBe(true);
+    // ...and the card inside it is the dialog, so the measured box holds all of it.
+    expect(html).toContain('data-language-offer="es"');
+  });
+
+  it("no_offer_renders_no_card_so_the_row_is_not_reserved", () => {
+    expect(renderToStaticMarkup(<LanguageOfferCard forced={null} />)).toBe("");
   });
 });

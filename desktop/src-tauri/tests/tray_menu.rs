@@ -340,8 +340,15 @@ fn a_restart_during_the_hide_window_shows_the_pill() {
 
     // Nothing about the hide reaches settings.json.
     let json = serde_json::to_value(AppSettings::default()).expect("settings serialize");
+    // WF-16's screen-share switch is a real preference ("hide Yap from
+    // capture during meetings"), not a persisted pill hide: the one named
+    // exemption. Any other hide/hidden/until key still fails.
+    const NOT_A_PILL_HIDE: &[&str] = &["hidefromcaptureinmeetings"];
     for key in json.as_object().expect("settings object").keys() {
         let k = key.to_lowercase();
+        if NOT_A_PILL_HIDE.contains(&k.as_str()) {
+            continue;
+        }
         assert!(
             !(k.contains("hide") || k.contains("hidden") || k.contains("until")),
             "settings key {key:?} looks like a persisted pill hide"

@@ -581,11 +581,19 @@ fn evaluate(app: &AppHandle, db: &Database, meeting_recording: bool, calls: &mut
     evaluate_upcoming(db, &load_settings(db));
     if meeting_recording {
         clear(app, None);
+        // fix-b1-1 — a still-live call offer / chip goes too (a no-op while
+        // the recording is the call offer's own): never "Record Zoom call"
+        // on screen during a recording.
+        crate::call_offer_meeting_started_elsewhere(app, "meeting_recording");
         return;
     }
     let s = load_settings(db);
     let (calendar_raised, hint) = evaluate_calendar(app, db, &s);
-    if !calendar_raised {
+    if calendar_raised {
+        // fix-b1-1 (A4) — the calendar offer leads: a live call offer is
+        // withdrawn, so two offers are never on screen at once.
+        crate::call_offer_meeting_started_elsewhere(app, "calendar_offer");
+    } else {
         evaluate_calls(app, db, &s, hint, calls);
     }
 }

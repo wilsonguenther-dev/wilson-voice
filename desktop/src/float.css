@@ -1137,6 +1137,60 @@ html[data-dock="right"] .phase-strip {
   transform: translateY(-50%);
 }
 
+/* WF-20 — the per-app style chip ("Slack · casual"). It takes the hint row
+   the layout reserves, which the plain listening phase leaves empty, and is
+   placed exactly like .phase-strip at every dock. Clickable: unlike the strip
+   it takes pointer events, and StyleChipButton.tsx widens the hitbox to cover it. */
+.style-chip {
+  position: fixed;
+  z-index: 5;
+  left: 50%;
+  bottom: calc(50% + 16px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 192px; /* HINT_W in pill/state.ts */
+  height: 16px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--pill-chip-surface);
+  color: var(--pill-chip-text);
+  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 120ms ease;
+}
+.style-chip:hover { background: var(--pill-chip-surface-hover); }
+.style-chip[aria-busy="true"] { cursor: progress; }
+.style-chip-app {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.style-chip-sep { color: var(--pill-chip-text-quiet); }
+.style-chip-mode { flex: none; }
+.style-chip[data-overridden="true"] .style-chip-mode { color: var(--pill-chip-picked); }
+html[data-dock="left"] .style-chip { left: var(--flow-bar-inset); right: auto; transform: none; }
+html[data-dock="right"] .style-chip { left: auto; right: var(--flow-bar-inset); transform: none; }
+.bar[data-bar-position="left"][data-bar-orientation="strip"] ~ .style-chip {
+  left: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.bar[data-bar-position="right"][data-bar-orientation="strip"] ~ .style-chip {
+  right: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .style-chip { transition: none; }
+}
+
 /* Y5-C — the per-character motion hint both capsules publish as `data-motion`.
    `shake` is the only one that is a real animation here; `work`/`pulse`/
    `breathe` are already carried by the capsule's own state classes, and
@@ -1635,13 +1689,18 @@ html[data-one-pill="true"] .kami-license {
 }
 html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
 html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
-/* A card (copy card, "Record this meeting?", the nudge) takes the top row the
- * layout reserved for it; the panel grew to hold it. */
+/* A card (copy card, "Record this meeting?", WF-12's language offer, the
+ * nudge) takes the top row the layout reserved for it; the panel grew to hold
+ * it. The list here is CARD_CLASSES in pill/state.ts: a card on one list and
+ * not the other is measured but not placed, or placed but not measured. Two
+ * cards up at once stack: --card-stack-y is each one's place in the row
+ * (float-main.tsx useCardOnScreen). */
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
+html[data-one-pill="true"] .language-offer-wrap,
 html[data-one-pill="true"][data-dock] .nudge-row {
   left: var(--card-x);
-  top: var(--card-y);
+  top: calc(var(--card-y) + var(--card-stack-y, 0px));
   right: auto;
   bottom: auto;
   width: var(--card-w);

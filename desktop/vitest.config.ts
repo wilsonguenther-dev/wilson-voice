@@ -63,6 +63,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -81,6 +82,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "scratchpad/notesModel.ts": { lines: 100, branches: 96, functions: 100, statements: 96 },
   "scratchpad/windowPrefs.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
   "shortcutEditor.ts": { lines: 98, branches: 94, functions: 100, statements: 97 },
+  // WF-19 — floor set by the builder WITHOUT a run (no-compile rule); the
+  // integrator re-measures and may only raise it.
+  "mouseBinding.ts": { lines: 90, branches: 80, functions: 100, statements: 90 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
   "toast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
