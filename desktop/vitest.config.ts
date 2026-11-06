@@ -62,6 +62,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-call-1 — the call offer's copy, surface and countdown rules.
+  "pill/callOffer.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
