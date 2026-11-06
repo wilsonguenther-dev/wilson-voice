@@ -11323,9 +11323,11 @@ pub fn run() {
             // the pill and Diagnostics as one small event.
             {
                 let handle = app.handle().clone();
-                engine_owner::set_health_listener(Box::new(move |health| {
-                    let _ = handle.emit(engine_owner::ENGINE_HEALTH_EVENT, health.as_str());
-                }));
+                engine_owner::set_health_listener(Box::new(
+                    move |health: engine_owner::EngineHealth| {
+                        let _ = handle.emit(engine_owner::ENGINE_HEALTH_EVENT, health.as_str());
+                    },
+                ));
             }
 
             // yap-notetaker-onboard — Help → "Set up Notetaker". Appended to the
