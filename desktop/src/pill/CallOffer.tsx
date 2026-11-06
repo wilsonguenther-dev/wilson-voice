@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { CONSENT_PILL_LINE } from "../meetings/consent";
 import {
   ACCEPT_CALL_OFFER,
   CALL_OFFER_CHOOSE,
@@ -98,7 +99,10 @@ export function CallOfferSurface({
     );
   }
 
-  const { headline, site, consent } = callOfferLines(view);
+  // The ONE consent line under the offer is CONSENT_PILL_LINE, rendered here
+  // by name so the pill can never ship without it (callOfferLines carries the
+  // same constant for the model test).
+  const { headline, site } = callOfferLines(view);
   const secs = secondsLeft(view, elapsedMs);
   const total = view.countdownMsLeft || COUNTDOWN_MS;
   const frac = Math.max(0, Math.min(1, 1 - elapsedMs / total));
@@ -126,7 +130,7 @@ export function CallOfferSurface({
         </svg>
       </div>
       {site && <p className="call-offer-site">{site}</p>}
-      <p className="call-offer-consent">{consent}</p>
+      <p className="call-offer-consent">{CONSENT_PILL_LINE}</p>
       {err}
       <div className="call-offer-actions">
         <button type="button" className="call-offer-record" onClick={onRecord}>
