@@ -36,6 +36,10 @@ const ALLOWED_CALLERS: &[&str] = &[
     // The UI-facing command, so a button can answer with a typed
     // `license_required` instead of doing nothing.
     "manual_toggle",
+    // yap-wf-01-click-the-pill-to — a click on the pill starts a hands-free
+    // take; its start half is gated exactly like `manual_toggle` (typed
+    // `license_required`), its stop half never is.
+    "pill_click_toggle",
     // Read-only surfaces + activation. These report or change the license; they
     // do not gate a feature on it.
     "license_status",
