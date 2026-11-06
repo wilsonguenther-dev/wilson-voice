@@ -37,6 +37,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "buildChannel.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "diff.ts": { lines: 96, branches: 100, functions: 100, statements: 96 },
   "errors.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "retryDictation.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "home/habitat/habitat.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyRecorder.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

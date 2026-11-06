@@ -14370,3 +14370,325 @@ mod hands_free_stop_label_tests {
         );
     }
 }
+
+/// yap-1106-retry-failed-dictation — the engine stage of a retry, with fake
+/// engines that hang or dawdle. Wilson's words: "I've never pressed retry and
+/// it worked, ever. It always infinitely loads." Every case here ends inside
+/// its deadline, and none of them loads a second engine.
+#[cfg(test)]
+mod retry_engine_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A throwaway directory for the fake model file, removed on drop.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "yap-retry-engine-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `Result<AsrOutput, _>` has no `Debug`; the error, or a panic.
+    fn err_of(r: Result<transcription::AsrOutput, String>) -> String {
+        match r {
+            Ok(out) => panic!("expected an error, got a transcript of {} chars", out.text.len()),
+            Err(e) => e,
+        }
+    }
+
+    /// Decodes forever — until `release` is raised. The 2026-11-06 stuck
+    /// engine: no cancel hook, never returns on its own.
+    struct HangingEngine {
+        release: Arc<AtomicBool>,
+    }
+
+    impl transcription::Transcriber for HangingEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("released at last".into())
+        }
+    }
+
+    /// Takes `decode` of real time, then answers. The live take a retry queues
+    /// behind.
+    struct SlowEngine {
+        decode: Duration,
+    }
+
+    impl transcription::Transcriber for SlowEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.decode);
+            Ok("slow but sure".into())
+        }
+    }
+
+    fn manager(
+        loader: impl Fn() -> Box<dyn transcription::Transcriber> + Send + Sync + 'static,
+        timeout: Duration,
+    ) -> (transcription::TranscriptionManager, PathBuf, ScratchDir) {
+        let dir = ScratchDir::new();
+        let path = dir.0.join("fake.gguf");
+        std::fs::write(&path, b"not a model").unwrap();
+        let m = transcription::TranscriptionManager::with_loader(
+            Arc::new(move |_p: &Path| Ok(loader())),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            timeout,
+        );
+        (m, path, dir)
+    }
+
+    fn retry(
+        m: &transcription::TranscriptionManager,
+        deadline: Duration,
+        phases: &mut Vec<RetryPhase>,
+    ) -> (Result<transcription::AsrOutput, String>, Duration) {
+        let decode_mgr = m.clone();
+        let started = Instant::now();
+        let r = retry_decode_bounded(
+            m,
+            "row-1",
+            5.0,
+            deadline,
+            &mut |p| phases.push(p),
+            move || {
+                decode_mgr
+                    .transcribe(vec![0.01; 16_000], None, None)
+                    .map(|text| transcription::AsrOutput {
+                        text,
+                        ..recovered_only_output()
+                    })
+            },
+        );
+        (r, started.elapsed())
+    }
+
+    #[test]
+    fn retry_deadline_scales_with_the_clip_between_30_and_180_seconds() {
+        assert_eq!(retry_deadline(5.0), Duration::from_secs(30));
+        assert_eq!(retry_deadline(82.3), Duration::from_secs_f64(97.3));
+        assert_eq!(retry_deadline(153.1), Duration::from_secs_f64(168.1));
+        assert_eq!(retry_deadline(900.0), Duration::from_secs(180));
+        assert_eq!(retry_deadline(-1.0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_retry_fails_fast_while_an_abandoned_engine_is_still_running_and_loads_nothing() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_millis(100),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        // The live take that hung: the lease times out and the engine is left
+        // on its worker thread, exactly the state Retry was pressed in.
+        let err = m.transcribe(vec![0.01; 16_000], None, None).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert_eq!(m.abandoned_engines(), 1);
+        assert!(!m.is_busy(), "the lease is released at the timeout");
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
+        assert_eq!(err_of(result), transcription::ENGINE_STUCK);
+        assert!(wall < Duration::from_secs(1), "fail fast, not at the deadline: {wall:?}");
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        assert!(phases.is_empty(), "it never queued and never decoded: {phases:?}");
+
+        // When the stuck engine finally returns it is counted out, not reused.
+        release.store(true, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while m.abandoned_engines() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(m.abandoned_engines(), 0);
+        assert!(!m.is_loaded(), "the abandoned engine is dropped, never put back");
+    }
+
+    #[test]
+    fn a_retry_queues_behind_a_busy_engine_then_completes_on_it() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(400),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        // Let the live take lease the engine.
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(m.is_busy());
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(10), &mut phases);
+        assert_eq!(result.unwrap().text, "slow but sure");
+        assert_eq!(phases, vec![RetryPhase::Queued, RetryPhase::Decoding]);
+        assert!(wall >= Duration::from_millis(350), "it waited its turn: {wall:?}");
+        assert_eq!(m.engine_loads(), 1, "one engine, shared — never a second load");
+        assert_eq!(live_take.join().unwrap().unwrap(), "slow but sure");
+    }
+
+    #[test]
+    fn a_retry_whose_decode_hangs_comes_back_at_its_deadline_with_the_plain_sentence() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        // The manager's own per-decode wall is LONGER than the retry's deadline
+        // (production: 120 s per window vs 30–180 s per retry), so the retry's
+        // clock is what ends the wait.
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_secs(30),
+        );
+        m.load("fake", &path).unwrap();
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(300), &mut phases);
+        assert_eq!(err_of(result), RETRY_DEADLINE_ERROR);
+        assert!(
+            wall >= Duration::from_millis(300) && wall < Duration::from_secs(3),
+            "at the deadline, not forever: {wall:?}"
+        );
+        assert_eq!(phases, vec![RetryPhase::Decoding]);
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_retry_that_queues_past_its_deadline_gives_up_in_plain_words() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_secs(2),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(200), &mut phases);
+        assert_eq!(err_of(result), RETRY_ENGINE_BUSY_ERROR);
+        assert!(wall < Duration::from_secs(1), "{wall:?}");
+        assert_eq!(phases, vec![RetryPhase::Queued]);
+        assert_eq!(m.engine_loads(), 1);
+        live_take.join().unwrap().unwrap();
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the headless replay of the two clips
+/// Wilson's 2026-11-06 session kept (82.3 s bb865dde… and 153.1 s 6c97f34c…)
+/// through the REAL retry engine stage. The clips are private data: the test
+/// reads them from a COPY whose directory `YAP_RETRY_REPLAY_DIR` names, and
+/// is `#[ignore]`d so CI (which has neither the clips nor the model) stays
+/// green. The model is read from the same directory (`<file>` of the default
+/// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
+///
+///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
+///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+#[cfg(test)]
+mod retry_replay {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
+            eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let model_id = default_native_model();
+        let model = models::catalog_model(&model_id).expect("default model is in the catalog");
+        let filename = model.default_file().expect("default file").filename.clone();
+        let model_path = std::env::var("YAP_RETRY_REPLAY_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dir.join(&filename));
+        assert!(model_path.is_file(), "model missing at {}", model_path.display());
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        wavs.sort();
+        assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+
+        let manager = transcription::TranscriptionManager::new();
+        let prefs = AppSettings::default().language_prefs();
+        for wav in wavs {
+            let name = wav.file_name().unwrap().to_string_lossy().to_string();
+            let samples = record::read_wav_16k_mono(&wav).unwrap();
+            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+            let deadline = retry_deadline(clip_secs);
+            let (m, id, path, p) = (manager.clone(), model_id.clone(), model_path.clone(), prefs.clone());
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &manager,
+                &name,
+                clip_secs,
+                deadline,
+                &mut |ph| phases.push(ph),
+                move || {
+                    transcribe_native(&m, &id, &path, samples, &p, None, &mut transcribe_progress::NoObserver)
+                },
+            );
+            let wall = started.elapsed();
+            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+            let words = out.text.split_whitespace().count();
+            println!(
+                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
+                deadline.as_secs_f64(),
+                out.chunks,
+                out.chunks_failed,
+                wall.as_millis(),
+                manager.engine_loads()
+            );
+            assert!(words > 0, "{name}: empty transcript");
+            assert!(wall < deadline, "{name}: {wall:?} over the deadline {deadline:?}");
+        }
+        assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
+    }
+}
