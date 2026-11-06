@@ -65,6 +65,9 @@ pub enum TrayCommand {
     RecordUpcoming(usize),
     /// WF-07 — "Hide meeting titles" (persisted by `meeting_detect`).
     ToggleHideMeetingTitles,
+    /// WF-09 — pick an input device, by its row index in the "Microphone"
+    /// submenu ([`microphone_row`]); row 0 is "System Default".
+    PickMicrophone(usize),
     /// `app.exit(0)` — reaches `RunEvent::Exit` and its one bounded teardown
     /// (`lifecycle::quit_plan`), which drains the ASR engine, waits for the
     /// in-flight take and finalizes a live meeting. Never `process::exit`.
@@ -94,6 +97,7 @@ impl TrayCommand {
             TrayCommand::SendFeedback => "send_feedback",
             TrayCommand::RecordUpcoming(_) => "record_upcoming",
             TrayCommand::ToggleHideMeetingTitles => "toggle_hide_meeting_titles",
+            TrayCommand::PickMicrophone(_) => "pick_microphone",
             TrayCommand::Quit => "quit",
         }
     }
@@ -101,7 +105,7 @@ impl TrayCommand {
 
 /// Every [`TrayCommand::name`]. The test walks this to prove no command is
 /// unreachable from the menu.
-pub const COMMAND_NAMES: [&str; 19] = [
+pub const COMMAND_NAMES: [&str; 20] = [
     "toggle_dictation",
     "paste_last_transcript",
     "copy_last_transcript",
@@ -120,6 +124,7 @@ pub const COMMAND_NAMES: [&str; 19] = [
     "send_feedback",
     "record_upcoming",
     "toggle_hide_meeting_titles",
+    "pick_microphone",
     "quit",
 ];
 
@@ -135,6 +140,9 @@ pub enum ItemKind {
     /// WF-07 — the "Today's meetings" submenu; its children are built from
     /// [`upcoming_menu`] and dispatch [`TrayCommand::RecordUpcoming`].
     UpcomingSubmenu,
+    /// WF-09 — the "Microphone" submenu; its children are built from
+    /// [`microphone_menu`] and dispatch [`TrayCommand::PickMicrophone`].
+    MicrophoneSubmenu,
 }
 
 /// One row of the menu bar.
@@ -177,6 +185,11 @@ pub const ID_HIDE_MEETING_TITLES: &str = "upcoming_hide_titles";
 /// WF-07 — prefix of each "Record …" child of [`ID_UPCOMING`]; the suffix is
 /// the row index.
 pub const UPCOMING_RECORD_PREFIX: &str = "upcoming_record_";
+/// WF-09 — the "Microphone" submenu (Dictation group, under Hands-free).
+pub const ID_MICROPHONE: &str = "microphone";
+/// WF-09 — prefix of each child of [`ID_MICROPHONE`]; the suffix is the row
+/// index (0 = "System Default").
+pub const MIC_PICK_PREFIX: &str = "mic_pick_";
 
 /// The `navigate` payload that lands on the transcript history. Yap's history
 /// lives on the Home view (`desktop/src/views/Home.tsx`); there is no separate
@@ -184,7 +197,7 @@ pub const UPCOMING_RECORD_PREFIX: &str = "upcoming_record_";
 /// frontend's `Nav` union so the two cannot drift.
 pub const HISTORY_NAV: &str = "home";
 
-pub const TRAY_ITEMS: [TrayItem; 22] = [
+pub const TRAY_ITEMS: [TrayItem; 23] = [
     TrayItem {
         id: ID_LICENSE_HEADER,
         label: "Yap",
@@ -295,6 +308,11 @@ pub const TRAY_ITEMS: [TrayItem; 22] = [
         label: "Hide Meeting Titles",
         kind: ItemKind::Action(TrayCommand::ToggleHideMeetingTitles),
     },
+    TrayItem {
+        id: ID_MICROPHONE,
+        label: "Microphone",
+        kind: ItemKind::MicrophoneSubmenu,
+    },
 ];
 
 /// One slot of the menu as it is BUILT.
@@ -355,14 +373,17 @@ pub const MENU_LAYOUT: [Slot; 22] = [
 /// (yap24-NT7, above "Record a meeting" once notes land) and the meeting
 /// header (yap-1106, at the top of the menu while a meeting records), and the
 /// three calendar rows (WF-07, under the kind picker while "Use my calendar"
-/// is on and access is granted).
-pub const INSERTED_ITEMS: [&str; 6] = [
+/// is on and access is granted), and the "Microphone" submenu (WF-09, under
+/// Hands-free once the device watcher has enumerated the inputs — it is
+/// rebuilt whenever a device is plugged in or the pick changes).
+pub const INSERTED_ITEMS: [&str; 7] = [
     ID_UPGRADE,
     ID_NOTES_READY,
     ID_MEETING_HEADER,
     ID_NEXT_MEETING,
     ID_UPCOMING,
     ID_HIDE_MEETING_TITLES,
+    ID_MICROPHONE,
 ];
 
 /// The row for `id`, if the menu has one.
@@ -385,11 +406,17 @@ pub fn command_for(id: &str) -> Option<TrayCommand> {
     if let Some(i) = item(id) {
         return match i.kind {
             ItemKind::Action(c) => Some(c),
-            ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => None,
+            ItemKind::StateLabel
+            | ItemKind::KindSubmenu
+            | ItemKind::UpcomingSubmenu
+            | ItemKind::MicrophoneSubmenu => None,
         };
     }
     if let Some(index) = upcoming_index_for_menu_id(id) {
         return Some(TrayCommand::RecordUpcoming(index));
+    }
+    if let Some(index) = microphone_index_for_menu_id(id) {
+        return Some(TrayCommand::PickMicrophone(index));
     }
     meeting_control::kind_for_menu_id(id).map(TrayCommand::RecordMeetingAs)
 }
@@ -397,6 +424,15 @@ pub fn command_for(id: &str) -> Option<TrayCommand> {
 /// The row index a "Record …" child id carries (`upcoming_record_3` → 3).
 pub fn upcoming_index_for_menu_id(id: &str) -> Option<usize> {
     let digits = id.strip_prefix(UPCOMING_RECORD_PREFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The row index a "Microphone" child id carries (`mic_pick_2` → 2).
+pub fn microphone_index_for_menu_id(id: &str) -> Option<usize> {
+    let digits = id.strip_prefix(MIC_PICK_PREFIX)?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -801,6 +837,198 @@ pub static UPCOMING_SHOWN: UpcomingLatch = UpcomingLatch::new();
 /// [`UPCOMING_SHOWN`]`.row(index)`.
 pub fn upcoming_row(index: usize) -> Option<UpcomingRow> {
     UPCOMING_SHOWN.row(index)
+}
+
+// ─── WF-09 — the Microphone submenu ──────────────────────────────────────────
+
+/// One child of "Microphone".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicRow {
+    /// `mic_pick_<index>` — resolved by [`command_for`].
+    pub id: String,
+    pub text: String,
+    /// The check: the device the next take will open.
+    pub checked: bool,
+    /// `false` for the "not connected" line of a pinned, unplugged device.
+    pub enabled: bool,
+    /// What clicking saves: `None` = System Default, else the stable id.
+    pub choice: Option<String>,
+    /// The device name saved next to the id (shown while it is unplugged).
+    pub name: Option<String>,
+}
+
+/// The children of "Microphone", decided from ONE device snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicMenu {
+    pub rows: Vec<MicRow>,
+}
+
+/// THE decision for the Microphone submenu. "System Default" is always the
+/// first row (with the device it currently means, when there is one); then
+/// every input plugged in now. The check sits on the device the next take
+/// opens — so when the pinned mic is unplugged, the check moves to System
+/// Default and the pin stays visible as a disabled "— Not Connected" row,
+/// rather than vanishing from the menu.
+pub fn microphone_menu(list: &crate::mic_select::MicList) -> MicMenu {
+    let mut rows = Vec::with_capacity(list.devices.len() + 2);
+    let default_text = match list.system_default_name().filter(|n| !n.is_empty()) {
+        Some(name) => format!("{} ({name})", crate::mic_select::SYSTEM_DEFAULT_LABEL),
+        None => crate::mic_select::SYSTEM_DEFAULT_LABEL.to_string(),
+    };
+    rows.push(MicRow {
+        id: format!("{MIC_PICK_PREFIX}0"),
+        text: default_text,
+        checked: list.chosen_id.is_none() || list.chosen_missing,
+        enabled: true,
+        choice: None,
+        name: None,
+    });
+    for d in &list.devices {
+        let text = if d.name.is_empty() {
+            "Unnamed Input".to_string()
+        } else {
+            d.name.clone()
+        };
+        rows.push(MicRow {
+            id: format!("{MIC_PICK_PREFIX}{}", rows.len()),
+            text,
+            checked: !list.chosen_missing && list.chosen_id.as_deref() == Some(d.id.as_str()),
+            enabled: true,
+            choice: Some(d.id.clone()),
+            name: Some(d.name.clone()),
+        });
+    }
+    if list.chosen_missing {
+        if let Some(id) = list.chosen_id.as_ref() {
+            let name = list
+                .chosen_name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "Saved microphone".to_string());
+            rows.push(MicRow {
+                id: format!("{MIC_PICK_PREFIX}{}", rows.len()),
+                text: format!("{name} \u{2014} Not Connected"),
+                checked: false,
+                enabled: false,
+                choice: Some(id.clone()),
+                name: Some(name),
+            });
+        }
+    }
+    MicMenu { rows }
+}
+
+/// What the Microphone submenu LAST SUCCESSFULLY showed — a click on
+/// `mic_pick_<i>` resolves against THIS, never against a newer device list the
+/// menu has not drawn yet, so a pick always saves the row the user saw.
+#[derive(Debug, Default)]
+pub struct MicLatch {
+    shown: Mutex<Option<MicMenu>>,
+}
+
+impl MicLatch {
+    pub const fn new() -> Self {
+        MicLatch {
+            shown: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<MicMenu>> {
+        self.shown.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn set(&self, shown: Option<MicMenu>) {
+        *self.lock() = shown;
+    }
+
+    pub fn row(&self, index: usize) -> Option<MicRow> {
+        self.lock()
+            .as_ref()
+            .and_then(|m| m.rows.get(index).cloned())
+    }
+}
+
+/// The process's one Microphone latch.
+pub static MIC_SHOWN: MicLatch = MicLatch::new();
+
+/// [`MIC_SHOWN`]`.row(index)`.
+pub fn microphone_row(index: usize) -> Option<MicRow> {
+    MIC_SHOWN.row(index)
+}
+
+#[cfg(test)]
+mod microphone_menu_tests {
+    use super::*;
+    use crate::mic_select::{MicDevice, MicList};
+
+    fn dev(id: &str, name: &str, default: bool) -> MicDevice {
+        MicDevice {
+            id: id.into(),
+            name: name.into(),
+            is_system_default: default,
+        }
+    }
+
+    fn two_mics() -> Vec<MicDevice> {
+        vec![
+            dev("coreaudio:Built-in", "MacBook Pro Microphone", true),
+            dev("coreaudio:MV7", "Shure MV7", false),
+        ]
+    }
+
+    #[test]
+    fn system_default_is_first_and_checked_when_nothing_is_picked() {
+        let m = microphone_menu(&MicList {
+            devices: two_mics(),
+            ..MicList::default()
+        });
+        assert_eq!(m.rows.len(), 3);
+        assert_eq!(m.rows[0].text, "System Default (MacBook Pro Microphone)");
+        assert!(m.rows[0].checked);
+        assert_eq!(m.rows[0].choice, None);
+        assert!(m.rows[1..].iter().all(|r| !r.checked));
+        assert_eq!(
+            command_for(&m.rows[2].id),
+            Some(TrayCommand::PickMicrophone(2))
+        );
+    }
+
+    #[test]
+    fn the_picked_device_carries_the_check() {
+        let m = microphone_menu(&MicList {
+            devices: two_mics(),
+            chosen_id: Some("coreaudio:MV7".into()),
+            chosen_name: Some("Shure MV7".into()),
+            ..MicList::default()
+        });
+        assert!(!m.rows[0].checked);
+        assert!(m.rows[2].checked);
+        assert_eq!(m.rows[2].choice.as_deref(), Some("coreaudio:MV7"));
+    }
+
+    #[test]
+    fn an_unplugged_pick_moves_the_check_to_default_and_stays_visible() {
+        let m = microphone_menu(&MicList {
+            devices: vec![dev("coreaudio:Built-in", "MacBook Pro Microphone", true)],
+            chosen_id: Some("coreaudio:MV7".into()),
+            chosen_name: Some("Shure MV7".into()),
+            chosen_missing: true,
+            ..MicList::default()
+        });
+        assert!(m.rows[0].checked, "the take falls back to the default");
+        let last = m.rows.last().expect("a not-connected row");
+        assert_eq!(last.text, "Shure MV7 \u{2014} Not Connected");
+        assert!(!last.enabled && !last.checked);
+    }
+
+    #[test]
+    fn microphone_ids_round_trip() {
+        assert_eq!(microphone_index_for_menu_id("mic_pick_0"), Some(0));
+        assert_eq!(microphone_index_for_menu_id("mic_pick_12"), Some(12));
+        assert_eq!(microphone_index_for_menu_id("mic_pick_"), None);
+        assert_eq!(microphone_index_for_menu_id("mic_pick_x"), None);
+        assert_eq!(command_for(ID_MICROPHONE), None);
+    }
 }
 
 #[cfg(test)]

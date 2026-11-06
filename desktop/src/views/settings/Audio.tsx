@@ -1,4 +1,5 @@
 import { useAppCtx } from "../../appShell";
+import MicrophonePicker from "./MicrophonePicker";
 
 export default function Audio() {
   const {
@@ -7,6 +8,7 @@ export default function Audio() {
   if (!settings) return null;
   return (
                 <section className="settings-panel" data-settings-pane="audio">
+                  <MicrophonePicker />
                   <div className="panel" data-row>
                   <h3>While you talk</h3>
                   <label className="toggle">

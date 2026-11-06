@@ -2140,6 +2140,52 @@ fn should_close_idle_stream(inputs: &IdleInputs) -> bool {
         && inputs.idle_for >= IDLE_CLOSE
 }
 
+/// WF-09 — should Arm/Hold drop the warm stream because the user picked a
+/// different microphone since it was opened?
+///
+/// The persistent stream outlives a take by up to [`IDLE_CLOSE`], so without
+/// this a pick made in that window would only apply to the take AFTER the next
+/// one. A stream that is mid-take or feeding a meeting is never dropped here:
+/// losing a meeting's audio is unrecoverable, and the watchdog carries a live
+/// capture across to the newly resolved device on its next tick anyway.
+fn should_reopen_for_mic_pick(
+    stream_open: bool,
+    capturing: bool,
+    held_for_meeting: bool,
+    meeting_active: bool,
+    opened_generation: u64,
+    current_generation: u64,
+) -> bool {
+    stream_open
+        && !capturing
+        && !held_for_meeting
+        && !meeting_active
+        && opened_generation != current_generation
+}
+
+/// The Arm/Hold half of [`should_reopen_for_mic_pick`]: drop the warm stream
+/// (and its cache entry) when the pick moved, logging the one decision.
+fn drop_stream_if_mic_picked(
+    live: &mut Option<LiveStream>,
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+    held_for_meeting: bool,
+    opened_generation: u64,
+) {
+    let current = crate::mic_select::generation();
+    if should_reopen_for_mic_pick(
+        live.is_some(),
+        live.as_ref().is_some_and(LiveStream::is_capturing),
+        held_for_meeting,
+        crate::meeting::meeting_capture_active(),
+        opened_generation,
+        current,
+    ) {
+        log::info!("mic_select reopen reason=picked_since_open");
+        *live = None;
+        cache.invalidate();
+    }
+}
+
 /// The worker thread: owns the persistent stream + the device/config cache and
 /// answers every arm/stop with an explicit signal (never a poll).
 fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
@@ -2150,6 +2196,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
     let mut last_watchdog = Instant::now();
     // Is a meeting holding the stream open? (YV91.)
     let mut held_for_meeting = false;
+    // WF-09 — the microphone-pick generation the open stream was opened at.
+    let mut opened_generation = crate::mic_select::generation();
 
     loop {
         // YV81 — the tick exists ONLY to close an open stream that has gone
@@ -2176,9 +2224,21 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     live = None;
                     cache.invalidate();
                 }
+                drop_stream_if_mic_picked(
+                    &mut live,
+                    &mut cache,
+                    held_for_meeting,
+                    opened_generation,
+                );
                 if live.is_none() {
+                    // Read BEFORE resolving: a pick that lands mid-open makes
+                    // the next Arm reopen rather than being silently missed.
+                    let generation = crate::mic_select::generation();
                     match open_stream(&mut cache) {
-                        Ok(stream) => live = Some(stream),
+                        Ok(stream) => {
+                            live = Some(stream);
+                            opened_generation = generation;
+                        }
                         Err(e) => {
                             let _ = reply.send(Err(e));
                             continue;
@@ -2212,9 +2272,21 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     live = None;
                     cache.invalidate();
                 }
+                drop_stream_if_mic_picked(
+                    &mut live,
+                    &mut cache,
+                    held_for_meeting,
+                    opened_generation,
+                );
                 if live.is_none() {
+                    // Read BEFORE resolving: a pick that lands mid-open makes
+                    // the next Arm reopen rather than being silently missed.
+                    let generation = crate::mic_select::generation();
                     match open_stream(&mut cache) {
-                        Ok(stream) => live = Some(stream),
+                        Ok(stream) => {
+                            live = Some(stream);
+                            opened_generation = generation;
+                        }
                         Err(e) => {
                             let _ = reply.send(Err(e));
                             continue;
@@ -2351,7 +2423,7 @@ fn watchdog_poll(
             live.device_name
         );
     }
-    let observed = match default_input_device() {
+    let observed = match chosen_input_device() {
         Ok((device, name)) => device.default_input_config().ok().map(|config| {
             (
                 name,
@@ -2557,19 +2629,17 @@ fn open_stream(
     open_stream_into(cache, None)
 }
 
-/// The system default input device and the name it reports, or the "no mic"
-/// error. Split out so the format watchdog can ask the same question the opener
-/// asks without duplicating cpal's default-device rules.
-fn default_input_device() -> Result<(cpal::Device, String), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))?;
-    let name = device
-        .description()
-        .map(|d| d.name().to_string())
-        .unwrap_or_default();
-    Ok((device, name))
+/// The input device the next take opens and the name it reports, or the "no
+/// mic" error. Split out so the format watchdog can ask the same question the
+/// opener asks without duplicating the device rules.
+///
+/// WF-09 — this is no longer always the system default: the microphone picker
+/// (`mic_select`) may pin a device by its stable id, and a pinned device that
+/// is not plugged in falls back to the system default
+/// (`mic_select::resolve`). With nothing pinned it is the old default path.
+fn chosen_input_device() -> Result<(cpal::Device, String), String> {
+    crate::mic_select::input_device_for_next_take()
+        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))
 }
 
 /// The three things a reopened stream inherits from the take that was already
@@ -2591,7 +2661,7 @@ fn open_stream_into(
     reuse: Option<TakeInFlight>,
 ) -> Result<LiveStream, String> {
     let opened_at = Instant::now();
-    let (device, dev_name) = default_input_device()?;
+    let (device, dev_name) = chosen_input_device()?;
 
     let (device, supported, was_cached) = resolve_device_config(
         cache,
@@ -5497,4 +5567,50 @@ mod tests {
         );
     }
 
+    /// WF-09 — a microphone picked while the warm stream is idle is used by the
+    /// NEXT take: Arm drops the stream opened at the old pick. A stream that is
+    /// mid-take or feeding a meeting is never dropped for a pick.
+    #[test]
+    fn a_mic_pick_reopens_the_warm_stream_for_the_next_take() {
+        // Idle warm stream, pick moved: reopen.
+        assert!(should_reopen_for_mic_pick(true, false, false, false, 3, 4));
+        // Same pick: keep the warm path (YV35).
+        assert!(!should_reopen_for_mic_pick(true, false, false, false, 4, 4));
+        // No stream open: the cold open already resolves the new pick.
+        assert!(!should_reopen_for_mic_pick(
+            false, false, false, false, 3, 4
+        ));
+        // Mid-take, held for a meeting, or a meeting running: never.
+        assert!(!should_reopen_for_mic_pick(true, true, false, false, 3, 4));
+        assert!(!should_reopen_for_mic_pick(true, false, true, false, 3, 4));
+        assert!(!should_reopen_for_mic_pick(true, false, false, true, 3, 4));
+    }
+
+    /// WF-09 — the opener and the watchdog both resolve the device through the
+    /// picker, never straight through cpal's default (which would silently
+    /// ignore the user's pick, or swap a pinned take back to the default on
+    /// the next watchdog tick).
+    #[test]
+    fn capture_opens_the_picked_device_not_the_raw_default() {
+        let src = include_str!("record.rs");
+        // Production code only: the assertions below must not be satisfied by
+        // their own string literals in this test module.
+        let prod = src
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("record.rs has a body");
+        let code: String = prod
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("crate::mic_select::input_device_for_next_take()"));
+        assert!(code.contains("let (device, dev_name) = chosen_input_device()?;"));
+        assert!(code.contains("let observed = match chosen_input_device() {"));
+        let raw_default = ["host", ".default_input_device()"].concat();
+        assert!(
+            !code.contains(&raw_default),
+            "record.rs must not open the system default directly"
+        );
+    }
 }
