@@ -3000,6 +3000,33 @@ pub const PASTE_FAILED_EVENT: &str = "paste_failed";
 /// was ever consulted.
 pub const POLISH_SKIPPED_EVENT: &str = "polish_skipped";
 
+/// WF-06 — the pill's "Backtrack caught" toast: a spoken self-correction was
+/// applied to the take that just landed. Payload: [`backtrack_caught_payload`].
+pub const BACKTRACK_CAUGHT_EVENT: &str = "backtrack_caught";
+
+/// WF-06 — the [`BACKTRACK_CAUGHT_EVENT`] payload, or `None` when the toast must
+/// not show: no correction was applied (a filler-only cleanup included), or the
+/// take has no raw text that differs from what was pasted, so Undo would have
+/// nothing to paste back. `raw` is the take as dictated — what Undo pastes.
+pub fn backtrack_caught_payload(
+    id: &str,
+    correction: Option<&dictation::BacktrackCorrection>,
+    text: &str,
+    raw: Option<&str>,
+) -> Option<serde_json::Value> {
+    let c = correction?;
+    if c.dropped.trim().is_empty() || c.kept.trim().is_empty() {
+        return None;
+    }
+    let raw = dictation::undo_ai_edit_text(text, raw)?;
+    Some(serde_json::json!({
+        "id": id,
+        "dropped": c.dropped,
+        "kept": c.kept,
+        "raw": raw,
+    }))
+}
+
 /// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
 /// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
 /// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
@@ -3390,6 +3417,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // tell the UI WHICH failure this was.
         // yap24-PILL2: this take's stage reporter (see `take_stage.rs`).
         let take_stages = take_stage::TakeStages::new(&app2);
+        // WF-06 — the spoken self-correction this take's backtrack stage applied
+        // (and how many it applied), carried out of the take closure so the
+        // Dictated arm can raise the pill's "Backtrack caught" toast.
+        let mut backtrack_caught: Option<(dictation::BacktrackCorrection, usize)> = None;
         let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
@@ -3986,6 +4017,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             }
             entry.stages_that_ran = Some(stages);
             entry.polish_skip_reason = formatting_trace.llm_skip_reason.map(|r| r.to_string());
+            backtrack_caught = formatting_trace
+                .backtrack
+                .clone()
+                .map(|c| (c, formatting_trace.backtrack_corrections));
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
@@ -4028,6 +4063,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // so the pill can show it without reading the history row.
                 if let Some(reason) = entry.polish_skip_reason.as_deref() {
                     let _ = app2.emit(POLISH_SKIPPED_EVENT, reason);
+                }
+                // WF-06 — "Dropped '2', kept '3'" with Undo. Only for a real
+                // spoken self-correction (filler-only cleanup never sets it),
+                // and only when there IS a raw take to paste back.
+                if let Some(payload) = backtrack_caught_payload(
+                    &entry.id,
+                    backtrack_caught.as_ref().map(|(c, _)| c),
+                    &entry.text,
+                    entry.raw_text.as_deref(),
+                ) {
+                    // Counts only — never the dropped/kept words.
+                    log::info!(
+                        "dictation backtrack_caught corrections={}",
+                        backtrack_caught.as_ref().map_or(0, |(_, n)| *n)
+                    );
+                    let _ = app2.emit(BACKTRACK_CAUGHT_EVENT, payload);
                 }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 // Y8-C — one earcon for the landed take: achievement when it

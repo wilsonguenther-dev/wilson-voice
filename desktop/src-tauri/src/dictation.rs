@@ -963,6 +963,16 @@ pub struct FormattingTrace {
     /// nothing usable back. `None` at every other level, and `None` when the
     /// model's rewrite was accepted.
     pub llm_skip_reason: Option<&'static str>,
+    /// WF-06 — the spoken self-correction the backtrack stage applied to this
+    /// take (the last one, if several), for the pill's "Backtrack caught"
+    /// toast. `None` when nothing was corrected — including a take whose only
+    /// cleanup was filler removal. DICTATED TEXT: shown on the user's own pill
+    /// only; never logged, never stored, never part of `stages_that_ran`.
+    #[serde(skip)]
+    pub backtrack: Option<BacktrackCorrection>,
+    /// WF-06 — how many self-corrections the backtrack stage applied. A count,
+    /// never text, so it is safe for a log line.
+    pub backtrack_corrections: usize,
 }
 
 impl FormattingTrace {
@@ -1174,9 +1184,13 @@ where
     // Stage 2 — backtrack cleanup (fillers + self-correction).
     if level.runs_backtrack() && Stage::Backtrack.runs_for(language) {
         trace.stages.push(STAGE_BACKTRACK);
-        let out = clean_backtrack(&text);
-        if !out.trim().is_empty() {
-            text = out;
+        let report = clean_backtrack_report(&text);
+        if !report.text.trim().is_empty() {
+            // WF-06: only a real self-correction raises the toast; filler-only
+            // cleanup leaves `backtrack` at `None`.
+            trace.backtrack_corrections = report.corrections.len();
+            trace.backtrack = report.headline().cloned();
+            text = report.text;
         }
     }
     // Stage 3 — rules formatting. `format_dictation` also runs a backtrack pass
@@ -1389,20 +1403,94 @@ enum TokenCategory {
 
 /// Conservative rule-based backtrack cleanup: apply spoken self-corrections, then
 /// strip fillers. Guarded so a non-empty input can never become empty.
+///
+/// The text half of [`clean_backtrack_report`] — the one implementation, so the
+/// text a take gets and the "Backtrack caught" toast it shows can never disagree.
 pub fn clean_backtrack(text: &str) -> String {
+    clean_backtrack_report(text).text
+}
+
+/// WF-06 — one spoken self-correction the backtrack rules applied: the words
+/// the speaker retracted and the words that replaced them ("coffee at 2
+/// actually 3" → dropped `2`, kept `3`).
+///
+/// This carries DICTATED TEXT. It exists only to be shown to the user who said
+/// it, on their own pill; it never goes to the log, the database or
+/// [`FormattingTrace::stages_that_ran`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktrackCorrection {
+    pub dropped: String,
+    pub kept: String,
+}
+
+/// WF-06 — what [`clean_backtrack`] did to one utterance: the cleaned text,
+/// every self-correction it applied (in the order applied), and how many filler
+/// words/particles it removed. Fillers are counted, never listed — a filler-only
+/// cleanup is not a "Backtrack caught" moment and must not raise the toast.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BacktrackReport {
+    pub text: String,
+    pub corrections: Vec<BacktrackCorrection>,
+    pub fillers_removed: usize,
+}
+
+impl BacktrackReport {
+    /// True only when a real spoken self-correction was applied. Filler removal
+    /// alone is `false`: that is cleanup, not a caught backtrack.
+    pub fn caught(&self) -> bool {
+        !self.corrections.is_empty()
+    }
+
+    /// The correction the toast names: the LAST one applied, which is the
+    /// speaker's final word on the matter.
+    pub fn headline(&self) -> Option<&BacktrackCorrection> {
+        self.corrections.last()
+    }
+}
+
+/// [`clean_backtrack`], plus what it removed (WF-06). Same rules, same
+/// never-empty guard: when the guard falls back to the original transcript the
+/// report says nothing was removed, because nothing was.
+pub fn clean_backtrack_report(text: &str) -> BacktrackReport {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return String::new();
+        return BacktrackReport::default();
     }
-    let corrected = apply_self_correction(trimmed);
+    let (corrected, corrections) = apply_self_correction(trimmed);
+    let before_fillers = corrected.split_whitespace().count();
     let deflated = remove_fillers(&corrected);
     let cleaned = deflated.trim();
     // Never lose text: if the rules stripped everything (e.g. an all-filler
     // utterance), fall back to the original transcript.
     if cleaned.is_empty() {
-        return trimmed.to_string();
+        return BacktrackReport {
+            text: trimmed.to_string(),
+            corrections: Vec::new(),
+            fillers_removed: 0,
+        };
     }
-    cleaned.to_string()
+    BacktrackReport {
+        text: cleaned.to_string(),
+        corrections,
+        fillers_removed: before_fillers.saturating_sub(cleaned.split_whitespace().count()),
+    }
+}
+
+/// A token as the user should read it in the toast: surrounding punctuation
+/// gone, case kept ("3," → "3", "Friday." → "Friday").
+fn display_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_string()
+}
+
+/// A retracted or kept clause as the user should read it: outer whitespace and
+/// clause punctuation trimmed, inner wording untouched.
+fn display_clause(clause: &str) -> String {
+    clause
+        .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?') || c.is_whitespace())
+        .to_string()
 }
 
 /// Remove filler words: discourse particles first, then standalone pure-filler
@@ -1519,17 +1607,22 @@ fn is_inside_quotes(text: &str, at: usize) -> bool {
 /// Apply the unambiguous self-correction triggers: every [`CORRECTION_MARKERS`]
 /// phrase retracts what precedes it (or swaps a single same-category word), and an
 /// "actually" restatement ("coffee at 2 actually 3" → "coffee at 3") swaps the value.
-fn apply_self_correction(text: &str) -> String {
+///
+/// Returns the corrected text and every correction applied, in order (WF-06).
+fn apply_self_correction(text: &str) -> (String, Vec<BacktrackCorrection>) {
     let mut s = text.to_string();
+    let mut corrections = Vec::new();
     for marker in CORRECTION_MARKERS {
-        if let Some(corrected) = apply_clause_correction(&s, marker) {
+        if let Some((corrected, what)) = apply_clause_correction(&s, marker) {
             s = corrected;
+            corrections.push(what);
         }
     }
-    if let Some(corrected) = apply_actually_restatement(&s) {
+    if let Some((corrected, what)) = apply_actually_restatement(&s) {
         s = corrected;
+        corrections.push(what);
     }
-    s
+    (s, corrections)
 }
 
 /// Handle a clause-retraction marker: keep whatever follows the marker (the
@@ -1538,8 +1631,9 @@ fn apply_self_correction(text: &str) -> String {
 /// (preceded by a boundary), so it can never chop content out of plain prose.
 /// A one-word correction that names the same KIND of thing as a word in the
 /// retracted clause is spliced in place instead ("Tuesday, wait no, Friday").
-/// Returns `None` (no change) when the pattern isn't a safe, obvious correction.
-fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
+/// Returns `None` (no change) when the pattern isn't a safe, obvious correction;
+/// otherwise the corrected text and what was dropped/kept (WF-06).
+fn apply_clause_correction(text: &str, marker: &str) -> Option<(String, BacktrackCorrection)> {
     let pos = find_marker(text, marker)?;
     let before = &text[..pos];
     let after = text[pos + marker.len()..]
@@ -1561,12 +1655,18 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
         .trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | '\n') || c.is_whitespace());
     // Same-category restatement first: the speaker replaced ONE word, not the
     // clause, so keep the clause and swap that word.
-    if let Some(spliced) = splice_same_category(core_before, after) {
-        return Some(spliced);
+    if let Some((spliced, dropped)) = splice_same_category(core_before, after) {
+        return Some((
+            spliced,
+            BacktrackCorrection {
+                dropped,
+                kept: display_token(after),
+            },
+        ));
     }
-    let head = match core_before.rfind([',', '.', ';', '\n']) {
-        Some(i) => core_before[..=i].trim().to_string(),
-        None => String::new(),
+    let (head, retracted) = match core_before.rfind([',', '.', ';', '\n']) {
+        Some(i) => (core_before[..=i].trim().to_string(), &core_before[i + 1..]),
+        None => (String::new(), core_before),
     };
     let combined = if head.is_empty() {
         after.to_string()
@@ -1576,7 +1676,13 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
     if combined.trim().is_empty() {
         None
     } else {
-        Some(combined)
+        Some((
+            combined,
+            BacktrackCorrection {
+                dropped: display_clause(retracted),
+                kept: display_clause(after),
+            },
+        ))
     }
 }
 
@@ -1606,7 +1712,9 @@ fn find_marker(text: &str, marker: &str) -> Option<usize> {
 /// category as a word already in it ("let's meet Tuesday" + "Friday" → "let's meet
 /// Friday"). Anything longer is a restatement of the whole clause, which the caller
 /// handles by retraction — so this stays a swap of a single, interchangeable word.
-fn splice_same_category(retracted: &str, correction: &str) -> Option<String> {
+///
+/// Returns the spliced clause and the word it replaced (WF-06).
+fn splice_same_category(retracted: &str, correction: &str) -> Option<(String, String)> {
     let mut words = correction.split_whitespace();
     let word = words.next()?;
     if words.next().is_some() {
@@ -1617,9 +1725,10 @@ fn splice_same_category(retracted: &str, correction: &str) -> Option<String> {
     let target = tokens
         .iter()
         .rposition(|t| token_category(t) == Some(category))?;
+    let dropped = display_token(tokens[target]);
     tokens[target] = word;
     let out = tokens.join(" ");
-    (!out.trim().is_empty()).then_some(out)
+    (!out.trim().is_empty()).then_some((out, dropped))
 }
 
 /// The category a token belongs to, if it is one of the few kinds of word a spoken
@@ -1645,7 +1754,9 @@ fn token_category(token: &str) -> Option<TokenCategory> {
 /// category (two numbers, two weekdays, …), replace the first with the second and
 /// drop "actually" ("coffee at 2 actually 3" → "coffee at 3"). Requiring a shared
 /// category keeps it safe — it never fires on the adverb ("I actually enjoyed …").
-fn apply_actually_restatement(text: &str) -> Option<String> {
+///
+/// Returns the restated text and the swapped pair (WF-06).
+fn apply_actually_restatement(text: &str) -> Option<(String, BacktrackCorrection)> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     for i in 1..tokens.len().saturating_sub(1) {
         let category = token_category(tokens[i - 1]);
@@ -1656,7 +1767,13 @@ fn apply_actually_restatement(text: &str) -> Option<String> {
             let mut out: Vec<&str> = Vec::with_capacity(tokens.len() - 2);
             out.extend_from_slice(&tokens[..i - 1]);
             out.extend_from_slice(&tokens[i + 1..]);
-            return Some(out.join(" "));
+            return Some((
+                out.join(" "),
+                BacktrackCorrection {
+                    dropped: display_token(tokens[i - 1]),
+                    kept: display_token(tokens[i + 1]),
+                },
+            ));
         }
     }
     None
@@ -3859,6 +3976,126 @@ mod tests {
             clean_backtrack("standup is Tuesday actually Thursday"),
             "standup is Thursday"
         );
+    }
+
+    // --- WF-06 "Backtrack caught" ------------------------------------------
+
+    /// `(input, expected (dropped, kept) of the LAST correction, or None)`.
+    /// `None` rows are the ones that must never raise the toast.
+    const WF06_CASES: &[(&str, Option<(&str, &str)>)] = &[
+        ("coffee at 2 actually 3", Some(("2", "3"))),
+        ("standup is Tuesday actually Thursday", Some(("Tuesday", "Thursday"))),
+        ("meet at noon, scratch that, meet at one", Some(("meet at noon", "meet at one"))),
+        (
+            "I'm free today, let's do noon, scratch that, let's do one",
+            Some(("let's do noon", "let's do one")),
+        ),
+        ("book the blue one, no wait, the red one", Some(("book the blue one", "the red one"))),
+        ("let's meet Tuesday, wait no, Friday", Some(("Tuesday", "Friday"))),
+        ("the invoice is due April, i mean, June", Some(("April", "June"))),
+        ("um coffee at 2 actually 3", Some(("2", "3"))),
+        // The [DOC] negative: "actually" the adverb is not a correction.
+        ("I actually enjoyed it", None),
+        ("I actually think we should meet at the office tomorrow.", None),
+        // Filler-only cleanup is cleanup, not a caught backtrack.
+        ("um so I think we should uh go home", None),
+        ("we need milk, like, and eggs", None),
+        // The never-empty guard and a dangling marker: nothing was removed.
+        ("um uh er", None),
+        ("meet at noon scratch that", None),
+    ];
+
+    #[test]
+    fn clean_backtrack_reports_what_it_removed() {
+        for (input, expected) in WF06_CASES {
+            let report = clean_backtrack_report(input);
+            let got = report
+                .headline()
+                .map(|c| (c.dropped.as_str(), c.kept.as_str()));
+            assert_eq!(got, *expected, "headline for {input:?}");
+            assert_eq!(report.caught(), expected.is_some(), "caught() for {input:?}");
+        }
+    }
+
+    #[test]
+    fn clean_backtrack_report_never_triggers_on_i_actually_enjoyed_it() {
+        let report = clean_backtrack_report("I actually enjoyed it");
+        assert_eq!(report.text, "I actually enjoyed it");
+        assert!(report.corrections.is_empty());
+        assert_eq!(report.fillers_removed, 0);
+        assert!(!report.caught());
+    }
+
+    #[test]
+    fn clean_backtrack_report_counts_fillers_without_catching() {
+        let report = clean_backtrack_report("we need milk, like, and eggs");
+        assert!(report.fillers_removed >= 1, "{report:?}");
+        assert!(!report.caught());
+        let report = clean_backtrack_report("um coffee at 2 actually 3");
+        assert_eq!(report.text, "coffee at 3");
+        assert_eq!(report.corrections.len(), 1);
+        assert_eq!(report.fillers_removed, 1);
+        // The never-empty fallback reports nothing removed.
+        let report = clean_backtrack_report("um uh er");
+        assert_eq!(report.text, "um uh er");
+        assert_eq!(report.fillers_removed, 0);
+        assert!(!report.caught());
+    }
+
+    #[test]
+    fn clean_backtrack_is_the_text_half_of_the_report() {
+        for (input, _) in WF06_CASES {
+            assert_eq!(clean_backtrack(input), clean_backtrack_report(input).text);
+        }
+        for input in generated_backtrack_utterances() {
+            assert_eq!(
+                clean_backtrack(&input),
+                clean_backtrack_report(&input).text,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_carries_backtrack_only_for_real_corrections() {
+        let trace = |raw: &str| {
+            run_cleanup_traced(
+                raw,
+                CleanupLevel::Light,
+                DictationMode::Notes,
+                Style::default(),
+                &[],
+                |t| t.to_string(),
+                |_| Err("no_model"),
+            )
+            .1
+        };
+        let corrected = trace("let's meet Tuesday, wait no, Friday");
+        assert_eq!(
+            corrected.backtrack,
+            Some(BacktrackCorrection {
+                dropped: "Tuesday".to_string(),
+                kept: "Friday".to_string(),
+            })
+        );
+        assert_eq!(corrected.backtrack_corrections, 1);
+        // Filler-only: the backtrack stage ran, but nothing was corrected.
+        let fillers = trace("um so the report is uh done");
+        assert!(fillers.stages.contains(&STAGE_BACKTRACK));
+        assert_eq!(fillers.backtrack, None);
+        assert_eq!(fillers.backtrack_corrections, 0);
+        // Raw passthrough: no stage, no toast.
+        let raw = run_cleanup_traced(
+            "coffee at 2 actually 3",
+            CleanupLevel::None,
+            DictationMode::Notes,
+            Style::default(),
+            &[],
+            |t| t.to_string(),
+            |_| Err("no_model"),
+        )
+        .1;
+        assert_eq!(raw.backtrack, None);
     }
 
     #[test]
