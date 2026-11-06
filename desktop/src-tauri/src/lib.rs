@@ -93,10 +93,6 @@ pub mod license;
 // yap-lic-01 — offline verifier for drivia.consulting license tokens (compact
 // JWS, EdDSA, EMBEDDED keys only). Wired into `license` as the v2 path.
 pub mod license_v2;
-// yap-1106-lic-03 — the drivia.consulting activation client: activate /
-// refresh / deactivate over `license::LicenseTransport` (the only module that
-// reaches the licensing service). Tokens are verified offline by `license_v2`.
-pub mod license_client;
 // yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
 pub mod lifecycle;
 mod logging;
@@ -10922,41 +10918,14 @@ fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
 }
 
 /// Paste a license key. Verified BEFORE it is written, so a bad paste never
-/// lands on disk.
-///
-/// yap-1106-lic-03 — a `DCL-` key goes to drivia.consulting: ONE
-/// `POST /api/v1/licensing/activate` (`license_client`), on a blocking thread
-/// so the webview never waits on the main thread. The returned token is
-/// verified offline by `license_v2` before it is stored. Any other paste (a v1
-/// key, or a token) is checked locally with no network call, as before.
+/// lands on disk. Activation is entirely local (yap-lic-00): the key is checked
+/// against the compiled-in public key and no network call is made.
 #[tauri::command]
-async fn activate_license(
+fn activate_license(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
-    client: State<'_, Arc<license_client::LicenseClient>>,
     key: String,
 ) -> Result<license::LicenseStatus, CommandError> {
-    if license_client::is_dcl_key(&key) {
-        let client = client.inner().clone();
-        let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
-        return match joined {
-            Ok(Ok(status)) => {
-                let _ = app.emit("license", &status);
-                Ok(status)
-            }
-            Ok(Err(e)) => Err(CommandError {
-                code: e.code,
-                message: e.message,
-            }),
-            Err(_) => {
-                log::warn!("license_client activate failure=join");
-                Err(CommandError {
-                    code: "server".to_string(),
-                    message: license_client::message_for("server").to_string(),
-                })
-            }
-        };
-    }
     match state.license.activate(&key) {
         Ok(status) => {
             let _ = app.emit("license", &status);
@@ -11015,34 +10984,12 @@ fn open_purchase_page() -> Result<(), String> {
 
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
-///
-/// yap-1106-lic-03 — a drivia.consulting token frees its seat server-side
-/// FIRST (`license_client::LicenseClient::deactivate`); offline, the license
-/// stays and the error says why. A Mac with no token clears locally.
 #[tauri::command]
-async fn deactivate_license(
-    app: AppHandle,
-    client: State<'_, Arc<license_client::LicenseClient>>,
-) -> Result<license::LicenseStatus, CommandError> {
-    let client = client.inner().clone();
-    let joined = tauri::async_runtime::spawn_blocking(move || client.deactivate()).await;
-    match joined {
-        Ok(Ok(status)) => {
-            let _ = app.emit("license", &status);
-            Ok(status)
-        }
-        Ok(Err(e)) => Err(CommandError {
-            code: e.code,
-            message: e.message,
-        }),
-        Err(_) => {
-            log::warn!("license_client deactivate failure=join");
-            Err(CommandError {
-                code: "server".to_string(),
-                message: license_client::message_for("server").to_string(),
-            })
-        }
-    }
+fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
+    state.license.deactivate();
+    let status = state.license.status();
+    let _ = app.emit("license", &status);
+    status
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -12467,45 +12414,6 @@ pub fn run() {
             // toggle stays authoritative even if the .app moved (which strands
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
-
-            // yap-1106-lic-03 — the activation client, on the licensing
-            // Keychain service of the RUNNING bundle id (a test channel keeps
-            // its own seat). Then the launch-time refresh check, on its own
-            // thread: it makes NO request while the token is fresh
-            // (`license_client::refresh_due`), and never blocks startup.
-            let lic_client = Arc::new(license_client::LicenseClient::new(
-                state.license.clone(),
-                Arc::new(license_client::HttpTransport),
-                Arc::new(keychain::MacKeychain::with_service(
-                    license_client::keychain_service_for(&app.config().identifier),
-                )),
-            ));
-            app.manage(lic_client.clone());
-            {
-                let handle = app.handle().clone();
-                let spawned = std::thread::Builder::new()
-                    .name("license-refresh".into())
-                    .spawn(move || {
-                        let outcome = lic_client.refresh_if_due();
-                        if outcome.changes_status() {
-                            let status = lic_client.status();
-                            let _ = handle.emit("license", &status);
-                            if let license_client::RefreshOutcome::Deleted(code) = &outcome {
-                                // The activation screen states the reason.
-                                let _ = handle.emit(
-                                    "license_notice",
-                                    serde_json::json!({
-                                        "code": code,
-                                        "message": license_client::message_for(code),
-                                    }),
-                                );
-                            }
-                        }
-                    });
-                if spawned.is_err() {
-                    log::warn!("license_client refresh_thread failure=spawn");
-                }
-            }
 
             // DB-D — the Scratchpad's close/blur handling now rides with the
             // window itself: yap-1106-one-pill makes it on first use

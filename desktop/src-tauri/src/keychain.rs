@@ -134,16 +134,6 @@ impl MacKeychain {
             service: service_for(bundle_id),
         }
     }
-
-    /// yap-1106-lic-03 — a store on an explicit service name. The licensing
-    /// client uses `<bundle id>.license` (see
-    /// `license_client::keychain_service_for`), so it can never read or
-    /// overwrite a model-provider key and a test channel keeps its own seat.
-    pub fn with_service(service: impl Into<String>) -> Self {
-        Self {
-            service: service.into(),
-        }
-    }
 }
 
 /// `errSecItemNotFound` — the item does not exist.
