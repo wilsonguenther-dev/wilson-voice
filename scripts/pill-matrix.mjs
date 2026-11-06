@@ -279,7 +279,7 @@ function __pillDetect(want) {
     const clock = painted.find((p) => p[0] === "clock");
     if (want && want.meeting === "recording" && !clock) out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
     if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
-    const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress].filter(Boolean);
+    const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
     const uw = Math.max(...boxes.map((b) => b.x + b.w)) - ux, uh = Math.max(...boxes.map((b) => b.y + b.h)) - uy;
     const wantW = Math.ceil(uw + 2 * MARGIN), wantH = Math.ceil(uh + 2 * MARGIN);

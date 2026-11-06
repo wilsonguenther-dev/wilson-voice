@@ -189,7 +189,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
       <button
         type="button"
         className={`meeting-badge meeting-after ${view.kind}`}
-        data-pill-slot="clock"
+      data-pill-slot="clock"
         data-meeting-phase={view.kind}
         title={view.title}
         aria-label={view.title}

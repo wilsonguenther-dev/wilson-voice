@@ -12,8 +12,8 @@ import { ALL_LIVE_PHASES } from "./live";
 import { BAR_DOCKS } from "./dock";
 import {
   CHARACTER_OPEN, CHARACTER_REST, CLOCK_REACH_PT, LEGACY_PANEL, PANEL_MARGIN, SHRINK_HOLD_MS,
-  boxGap, boxesOverlap, capsuleCentre, layoutProblems, layoutVars, meetingMode, pillLayout,
-  shrinkDelay, unionBox, type MeetingMode, type PillLayout,
+  boxGap, boxesOverlap, capsuleCentre, currentPillLayout, layoutProblems, layoutVars, meetingMode, pillLayout,
+  publishPillLayout, shrinkDelay, unionBox, type MeetingMode, type PillLayout,
 } from "./state";
 
 const MEETINGS: readonly MeetingMode[] = ["none", "recording", "after"];
@@ -201,5 +201,26 @@ describe("pill/state — one pill, one layout", () => {
     expect(layoutProblems(stranded).join(";")).toMatch(/from the character/);
     const fixed: PillLayout = { ...good, panel: { w: 300, h: 140 } };
     expect(layoutProblems(fixed).join(";")).toMatch(/union\+margin/);
+  });
+
+  it("the_published_layout_is_what_yappys_draw_loop_reads", () => {
+    const l = pillLayout({ phase: "listening", meeting: "recording", dock: "right" });
+    publishPillLayout(l);
+    expect(currentPillLayout()).toBe(l);
+    publishPillLayout(null);
+    expect(currentPillLayout()).toBeNull();
+  });
+
+  it("a_character_change_is_never_held", () => {
+    const yappy = pillLayout({ phase: "listening", meeting: "none", dock: "bottom" });
+    const legacy = pillLayout({ phase: "idle", meeting: "none", dock: "bottom", character: "legacy" });
+    expect(shrinkDelay(yappy, legacy)).toBe(0);
+    expect(shrinkDelay(legacy, yappy)).toBe(0);
+  });
+
+  it("a_painted_slot_outside_the_panel_is_reported", () => {
+    const good = pillLayout({ phase: "idle", meeting: "recording", dock: "bottom" });
+    const out: PillLayout = { ...good, hint: { ...good.hint, x: -40 } };
+    expect(layoutProblems(out).join(";")).toMatch(/hint outside the panel/);
   });
 });

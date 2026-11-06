@@ -1531,6 +1531,11 @@ html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-or
 html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
   text-align: right;
 }
+/* No free-floating clock: until the first layout has placed it (one frame at
+ * mount), Yappy's clock slot is not painted anywhere. */
+html:not([data-one-pill="true"]) .kami-stage .meeting-badge {
+  visibility: hidden;
+}
 html[data-one-pill="true"] .kami-bubble {
   max-width: var(--bubble-w);
 }
