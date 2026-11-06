@@ -1942,7 +1942,11 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
 /// The submenu is found by id and replaced whole, so a retry after a
 /// half-applied failure is idempotent; what was drawn is recorded in
 /// `tray_menu::MIC_SHOWN` only on success.
-fn apply_microphone_menu_on_main(app: &AppHandle, state: &AppState, list: &mic_select::MicList) {
+fn apply_microphone_menu_on_main(
+    app: &AppHandle,
+    state: &AppState,
+    list: &mic_select::MicList,
+) {
     let Some(menu) = state.tray_menu.lock().clone() else {
         log::debug!("tray microphone_menu skipped reason=tray_not_built");
         return;
