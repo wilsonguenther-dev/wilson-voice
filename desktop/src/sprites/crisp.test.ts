@@ -157,7 +157,8 @@ describe("canvas_css_is_pixelated_and_unscaled", () => {
   }
 
   it("no source turns canvas smoothing back on", () => {
-    const on = FILES.filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f)).filter((f) => /imageSmoothingEnabled\s*=\s*true/.test(readFileSync(f, "utf8")));
+    // raster.ts is the canvas MODEL the tests paint into: its default mirrors a real 2D context (smoothing on), which is what lets it count a blit that forgot to turn smoothing off.
+    const on = FILES.filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f) && !f.endsWith("/sprites/raster.ts")).filter((f) => /imageSmoothingEnabled\s*=\s*true/.test(readFileSync(f, "utf8")));
     expect(on).toEqual([]);
   });
 });
