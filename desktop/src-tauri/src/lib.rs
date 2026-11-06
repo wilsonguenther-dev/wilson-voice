@@ -131,6 +131,8 @@ pub mod meeting_detect;
 /// yap-call-1 — the call offer: countdown, chip, Offer / Never per app, Call ended.
 pub mod call_offer;
 pub mod call_signals;
+/// yap-call-2 — Chromium-family browser calls told apart by the front tab's AX window title.
+pub mod call_titles;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
