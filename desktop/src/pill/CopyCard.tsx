@@ -127,24 +127,24 @@ export default function CopyCard() {
       <p className="copy-card-hint" role="status">{cardHint(copied, repairable, card.reason)}</p>
       <div className="copy-card-actions">
         {insertable && (
-          <button type="button" className="copy-card-insert" data-pill-control="copy-card-insert" onClick={insertHere}>
+          <button type="button" className="copy-card-insert" onClick={insertHere}>
             Insert
           </button>
         )}
-        <button type="button" className="copy-card-copy" data-pill-control="copy-card-copy" onClick={() => void copy()}>
+        <button type="button" className="copy-card-copy" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy"}
         </button>
         {pane && (
-          <button type="button" className="copy-card-settings" data-pill-control="copy-card-settings" onClick={openSettings}>
+          <button type="button" className="copy-card-settings" onClick={openSettings}>
             Open Settings
           </button>
         )}
         {repairable && (
-          <button type="button" className="copy-card-repair" data-pill-control="copy-card-repair" onClick={repair}>
+          <button type="button" className="copy-card-repair" onClick={repair}>
             Repair
           </button>
         )}
-        <button type="button" className="copy-card-close" data-pill-control="copy-card-close" aria-label="Dismiss" onClick={dismiss}>
+        <button type="button" className="copy-card-close" aria-label="Dismiss" onClick={dismiss}>
           ×
         </button>
       </div>

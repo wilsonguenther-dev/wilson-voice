@@ -57,7 +57,6 @@ export function LanguageOfferView({
         <button
           type="button"
           className="language-offer-add"
-          data-pill-control="language-offer-add"
           disabled={busy}
           onClick={() => onChoose("add")}
         >
@@ -66,7 +65,6 @@ export function LanguageOfferView({
         <button
           type="button"
           className="language-offer-later"
-          data-pill-control="language-offer-later"
           disabled={busy}
           onClick={() => onChoose("notNow")}
         >

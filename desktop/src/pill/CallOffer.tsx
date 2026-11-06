@@ -75,10 +75,10 @@ export function CallOfferSurface({
         <p className="call-offer-headline">{CALL_ENDED_HEADLINE}</p>
         {err}
         <div className="call-offer-actions">
-          <button type="button" className="call-offer-stop" data-pill-control="call-offer-stop" onClick={() => onChoose("stop")}>
+          <button type="button" className="call-offer-stop" onClick={() => onChoose("stop")}>
             Stop
           </button>
-          <button type="button" className="call-offer-keep" data-pill-control="call-offer-keep" onClick={() => onChoose("keep_going")}>
+          <button type="button" className="call-offer-keep" onClick={() => onChoose("keep_going")}>
             Keep going
           </button>
         </div>
@@ -90,7 +90,7 @@ export function CallOfferSurface({
     // After expiry / Not now: ONE quiet chip, no sound, no second banner.
     return (
       <div className="call-offer is-chip" data-call-offer="chip">
-        <button type="button" className="call-offer-chip" data-pill-control="call-offer-chip" onClick={onRecord}>
+        <button type="button" className="call-offer-chip" onClick={onRecord}>
           <span className="call-offer-chip-dot" aria-hidden />
           {chipLabel(view)}
         </button>
@@ -133,13 +133,13 @@ export function CallOfferSurface({
       <p className="call-offer-consent">{CONSENT_PILL_LINE}</p>
       {err}
       <div className="call-offer-actions">
-        <button type="button" className="call-offer-record" data-pill-control="call-offer-record" onClick={onRecord}>
+        <button type="button" className="call-offer-record" onClick={onRecord}>
           Record
         </button>
-        <button type="button" className="call-offer-notnow" data-pill-control="call-offer-notnow" onClick={() => onChoose("not_now")}>
+        <button type="button" className="call-offer-notnow" onClick={() => onChoose("not_now")}>
           Not now
         </button>
-        <button type="button" className="call-offer-never" data-pill-control="call-offer-never" onClick={() => onChoose("never")}>
+        <button type="button" className="call-offer-never" onClick={() => onChoose("never")}>
           {neverLabel(view)}
         </button>
       </div>
