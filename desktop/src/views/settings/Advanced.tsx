@@ -3,6 +3,7 @@ import { ModelPicker, PolishModelPicker } from "../../ModelSetup";
 import { checkForUpdate } from "../../updater";
 import { type AppSettings } from "../../appTypes";
 import { useAppCtx } from "../../appShell";
+import PowerPanel from "./PowerPanel";
 
 export default function Advanced() {
   const {
@@ -34,6 +35,7 @@ export default function Advanced() {
   }
   return (
                 <section className="settings-panel" data-settings-pane="advanced">
+                  <PowerPanel />
                   <div className="panel" data-row>
                     <h3>Speech model</h3>
                     <ModelPicker setup={modelSetup} />

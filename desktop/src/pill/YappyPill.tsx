@@ -15,6 +15,7 @@ import { MouthDriver } from "./mouth";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
+import GovernorChip from "./GovernorChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { reactiveLine, DEFAULT_TONE, bucketFor } from "./tone";
@@ -692,6 +693,7 @@ export default function YappyPill(
         </button>
       )}
       <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+      <GovernorChip />
     </div>
   );
 }

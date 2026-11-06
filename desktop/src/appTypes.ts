@@ -223,6 +223,8 @@ export interface AppSettings {
    * app's id (e.g. "com.apple.mail"): "markdown" | "plain" | "off".
    */
   structureAppOverrides?: Record<string, string>;
+  /// yap-1106-resource-governor — "Pause heavy work on battery below N%" (1..=99).
+  pauseHeavyWorkBelowPercent?: number;
   /**
    * Denoise the captured clip with RNNoise before transcription (backend
    * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)

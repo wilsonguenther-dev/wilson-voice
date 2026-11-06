@@ -29,6 +29,7 @@ import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
+import GovernorChip from "./GovernorChip";
 import LanguageChip from "./LanguageChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
@@ -441,6 +442,7 @@ export default function ClassicPill(
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
         <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+        <GovernorChip />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
             has no dead click region to hunt for. It lives INSIDE the capsule,

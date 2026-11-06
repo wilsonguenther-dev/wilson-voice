@@ -1487,3 +1487,42 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 }
 .pill-lang:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
 .pill-lang.has-notice { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
+
+/* ── yap-1106-resource-governor — the "going easy" chip ──
+   One dot, one short clause, one optional action. Same family as the
+   meeting badge; the dot is static (no pulse: a saving-battery chip that
+   animates would be the joke). */
+.governor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--pill-fg, rgba(255, 255, 255, 0.86));
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+.governor-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e0b341;
+  flex: none;
+}
+.governor-chip.minimal .governor-dot { background: #e5673f; }
+.governor-run {
+  margin-left: 2px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.governor-run:disabled { opacity: 0.5; cursor: default; }

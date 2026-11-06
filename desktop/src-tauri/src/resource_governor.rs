@@ -362,6 +362,8 @@ pub struct GovernorView {
     pub pill_label: Option<String>,
     /// Is heavy work (meeting ASR, notes, diarization) being held?
     pub heavy_work_deferred: bool,
+    /// The jobs currently waiting (meeting ids, `notes:<id>`, `diarize`).
+    pub waiting_jobs: Vec<String>,
 }
 
 /// The one sentence for Settings. Plain words, the reading in them.
@@ -402,6 +404,8 @@ struct Inner {
     /// Per-job "Run anyway" overrides. Keyed by the job's id (a meeting id,
     /// `notes:<id>`, `diarize:<id>`); cleared once the Mac is back at full.
     overrides: HashSet<String>,
+    /// Jobs that asked and were told to wait — what "Run anyway" acts on.
+    waiting: Vec<String>,
     last_read: Option<Instant>,
 }
 
@@ -424,6 +428,7 @@ impl Governor {
                 readings: Readings::default(),
                 pause_below: clamp_pause_below(pause_below),
                 overrides: HashSet::new(),
+                waiting: Vec::new(),
                 last_read: None,
             }),
             emit: Mutex::new(None),
@@ -516,17 +521,20 @@ impl Governor {
     /// including when the user pressed "Run anyway" for this job.
     pub fn heavy_work_deferred(&self, job: &str) -> Option<String> {
         let verdict = self.verdict(Duration::from_secs(5));
-        let reason = heavy_work_deferred_by(&verdict)?;
-        let overridden = self
-            .inner
-            .lock()
-            .map(|g| g.overrides.contains(job))
-            .unwrap_or(false);
-        if overridden {
-            None
-        } else {
-            Some(reason)
+        let held = heavy_work_deferred_by(&verdict)
+            .filter(|_| !self.inner.lock().map(|g| g.overrides.contains(job)).unwrap_or(false));
+        // Track who is waiting so the UI can offer "Run anyway" per job.
+        if let Ok(mut g) = self.inner.lock() {
+            let idx = g.waiting.iter().position(|w| w == job);
+            match (held.is_some(), idx) {
+                (true, None) => g.waiting.push(job.to_string()),
+                (false, Some(i)) => {
+                    g.waiting.remove(i);
+                }
+                _ => {}
+            }
         }
+        held
     }
 
     pub fn live_transcript_paused(&self) -> bool {
@@ -578,7 +586,9 @@ impl Governor {
     }
 
     fn view_of(g: &Inner) -> GovernorView {
-        Self::view_of_parts(&g.verdict, &g.readings, g.pause_below)
+        let mut v = Self::view_of_parts(&g.verdict, &g.readings, g.pause_below);
+        v.waiting_jobs = g.waiting.clone();
+        v
     }
 
     fn view_of_parts(v: &Verdict, r: &Readings, pause_below: u8) -> GovernorView {
@@ -595,6 +605,7 @@ impl Governor {
             sentence: sentence_for(v),
             pill_label: pill_label_for(v),
             heavy_work_deferred: heavy_work_deferred_by(v).is_some(),
+            waiting_jobs: Vec::new(),
         }
     }
 }
@@ -1047,10 +1058,12 @@ mod tests {
             assert!(s[0].heavy_work_deferred);
         }
 
+        assert_eq!(g.view().waiting_jobs, vec!["m1".to_string()]);
         // "Run anyway" for m1 lets m1 through and nobody else.
         g.run_anyway("m1");
         assert_eq!(g.heavy_work_deferred("m1"), None);
         assert_eq!(g.heavy_work_deferred("m2").as_deref(), Some("battery"));
+        assert_eq!(g.view().waiting_jobs, vec!["m2".to_string()]);
 
         // Plug in: full, overrides cleared, one more transition.
         probe.set(r(true, 4));
