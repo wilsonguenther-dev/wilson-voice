@@ -15,18 +15,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  NUDGE_IDS,
   NUDGE_TTL_MS,
   TAKE_CONTEXT_EVENT,
+  dayIndex,
   daysSince,
   isTakeContext,
+  nextMilestone,
   nextNudge,
+  recordTipShown,
+  tipHistoryFromLedger,
+  tipShownSlug,
   type Feature,
   type Nudge,
+  type NudgeId,
+  type NudgeShown,
   type TakeContextPayload,
+  type TipHistory,
 } from "./nudge";
 import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import { holdPillHitbox } from "./drag";
-import type { ChatTone, LivePhase } from "./live";
+import { CATEGORY_NOUN, type ChatTone, type LivePhase } from "./live";
 
 /** nudge.rs `NudgeLedger` (serde camelCase). */
 interface LedgerPayload {
@@ -39,11 +48,28 @@ interface LedgerPayload {
 /** The phases a nudge may appear in: the pill at rest. */
 const REST: ReadonlySet<LivePhase> = new Set<LivePhase>(["idle", "sleepy"]);
 
-export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: ChatTone }) {
+const NOTHING_MUTED: ReadonlySet<string> = new Set();
+
+const isNudgeId = (id: string): id is NudgeId => (NUDGE_IDS as readonly string[]).includes(id);
+
+export default function NudgeRow({
+  phase,
+  tone,
+  muted = NOTHING_MUTED,
+}: {
+  phase: LivePhase;
+  tone: ChatTone;
+  /** WF-17 — categories muted in Settings › Notifications (float-main reads them). */
+  muted?: ReadonlySet<string>;
+}) {
   const [ledger, setLedger] = useState<LedgerPayload | null>(null);
   const [active, setActive] = useState<Nudge | null>(null);
   // Mutable bookkeeping that must not re-render the float on every take.
   const ever = useRef<Set<string>>(new Set());
+  // WF-17 — how often each nudge has shown and when; read from the ledger.
+  const history = useRef<Map<string, TipHistory>>(new Map());
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const thisSession = useRef(0);
   const sessionTakes = useRef(0);
   const lastTake = useRef<TakeContextPayload | null>(null);
@@ -58,6 +84,7 @@ export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: Chat
       .then((l) => {
         if (dead || !l) return;
         (l.shown ?? []).forEach((id) => ever.current.add(id));
+        history.current = tipHistoryFromLedger(l.shown ?? []);
         setLedger(l);
       })
       .catch(() => {});
@@ -91,21 +118,36 @@ export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: Chat
     pending.current = false;
     if (cardThisTake.current) return;
     const unused: Feature[] = ledger.meetingsRecorded > 0 ? [] : ["meetings"];
-    const n = nextNudge(
-      {
-        takeLive: !atRest,
-        lastTake: lastTake.current,
-        // The ledger's count was read at mount; this session's takes are on top.
-        takesSoFar: ledger.successfulTakes + sessionTakes.current,
-        daysSinceInstall: daysSince(ledger.firstSeenMs, Date.now()),
-        unusedFeatures: unused,
-      },
-      { thisSession: thisSession.current, ever: ever.current },
-    );
+    const now = Date.now();
+    const today = dayIndex(now);
+    const context = {
+      takeLive: !atRest,
+      lastTake: lastTake.current,
+      // The ledger's count was read at mount; this session's takes are on top.
+      takesSoFar: ledger.successfulTakes + sessionTakes.current,
+      daysSinceInstall: daysSince(ledger.firstSeenMs, now),
+      unusedFeatures: unused,
+    };
+    // WF-17 — the muted categories and each tip's 3-day / 3-times history ride
+    // along; a lesson outranks a milestone, and both share the session cap.
+    const shown: NudgeShown = {
+      thisSession: thisSession.current,
+      ever: ever.current,
+      history: history.current,
+      today,
+      muted: mutedRef.current,
+    };
+    const n = nextNudge(context, shown) ?? nextMilestone(context, shown);
     if (!n) return;
     thisSession.current += 1;
     ever.current.add(n.id);
-    invoke("nudge_mark_shown", { condition: n.id }).catch(() => {});
+    let condition: string = n.id;
+    if (isNudgeId(n.id)) {
+      // One ledger slug per showing, so the caps survive a relaunch.
+      condition = tipShownSlug(n.id, today);
+      history.current.set(n.id, recordTipShown(history.current.get(n.id), today));
+    }
+    invoke("nudge_mark_shown", { condition }).catch(() => {});
     setActive(n);
   }, [phase, ledger]);
 
@@ -126,18 +168,25 @@ export default function NudgeRow({ phase, tone }: { phase: LivePhase; tone: Chat
     };
   }, [active, dismiss]);
 
+  // WF-17 — muting a category while one of its notes is up takes it down.
+  useEffect(() => {
+    if (active && muted.has(active.category)) setActive(null);
+  }, [active, muted]);
+
   if (!active) return null;
+  const noun = CATEGORY_NOUN[active.category];
   return (
     <div
       ref={ref}
       className="nudge-row"
       data-nudge={active.id}
+      data-nudge-category={active.category}
       role="note"
-      aria-label={`Tip: ${active.copy[tone]}`}
+      aria-label={`${noun}: ${active.copy[tone]}`}
     >
       {/* Y5-J: the action is the × button; a clickable <div> has no keyboard path. */}
       <span className="nudge-text">{active.copy[tone]}</span>
-      <button type="button" className="nudge-close" aria-label="Dismiss tip" onClick={dismiss}>
+      <button type="button" className="nudge-close" aria-label={`Dismiss ${noun.toLowerCase()}`} onClick={dismiss}>
         ×
       </button>
     </div>

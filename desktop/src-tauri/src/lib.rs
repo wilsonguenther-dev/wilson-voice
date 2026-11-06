@@ -4784,7 +4784,14 @@ fn nudge_ledger(state: State<'_, Arc<AppState>>) -> nudge::NudgeLedger {
 /// launch. `Ok(false)` = it was already recorded (or not a valid slug).
 #[tauri::command]
 fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Result<bool, String> {
-    nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
+    let res = nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis());
+    // WF-17 — one line per pill note shown (the condition is a short slug,
+    // never user text): how often tips actually reach people.
+    match &res {
+        Ok(stored) => log::info!("nudge shown condition_len={} stored={stored}", condition.len()),
+        Err(e) => log::warn!("nudge mark_failed err={e}"),
+    }
+    res
 }
 
 /// Y10-A — the language picker's view (Settings and the bar): the prefs, the
