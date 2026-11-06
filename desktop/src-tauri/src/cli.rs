@@ -17,6 +17,13 @@
 //! notes pass the Meetings card uses when the notes model is installed, exports
 //! the Markdown through the same writer, and prints one JSON report on stdout.
 //! `scripts/notetaker-e2e.sh` is the gate that drives it.
+//!
+//! SP-03 adds `--bench <wav> [<wav>…] [--no-cleanup]`: the dictation pipeline
+//! a released take runs — release-side DSP + VAD, the warm decode, the cleanup
+//! pipeline (the LLM polish is always skipped headless) and no paste — timed
+//! stage by stage over each file, printed as ONE JSON object on stdout.
+//! `scripts/qa/speed-bench.sh` drives it and keeps the history in
+//! docs/BUDGETS.md (`speed_bench`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -95,6 +102,15 @@ pub fn handle_args() -> Option<i32> {
     }
     if argv.iter().any(|a| a == PROBE_CALLS_FLAG) {
         return Some(probe_calls(argv.iter().any(|a| a == RAW_TITLES_FLAG)));
+    }
+    // SP-03 — `--bench <wav…>`: per-stage ms + RTF as JSON, no paste.
+    match bench_args(&argv) {
+        Ok(Some(bench)) => return Some(run_bench(&bench)),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            return Some(2);
+        }
     }
     let timed = argv.iter().any(|a| a == TIMED_FLAG);
     let cleanup = argv.iter().any(|a| a == CLEANUP_FLAG);
@@ -420,6 +436,245 @@ fn ensure_model() -> Result<(String, PathBuf), String> {
     Ok((model.id.clone(), path))
 }
 
+// ── SP-03 · `--bench` ──────────────────────────────────────────────────────────
+
+/// Flag that switches the binary into the speed bench.
+const BENCH_FLAG: &str = "--bench";
+/// Skip the cleanup pipeline (decode-only numbers).
+const BENCH_NO_CLEANUP_FLAG: &str = "--no-cleanup";
+
+/// Parsed `--bench` invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchArgs {
+    wavs: Vec<PathBuf>,
+    cleanup: bool,
+}
+
+/// `--bench <wav> [<wav>…]`: every argument after the flag up to the next
+/// `--flag` is a WAV. `Ok(None)` when the flag is absent; an error when it is
+/// given no file, so a typo never benches nothing and exits 0.
+fn bench_args(argv: &[String]) -> Result<Option<BenchArgs>, String> {
+    let Some(at) = argv.iter().position(|a| a == BENCH_FLAG) else {
+        return Ok(None);
+    };
+    let wavs: Vec<PathBuf> = argv[at + 1..]
+        .iter()
+        .take_while(|a| !a.starts_with("--"))
+        .map(PathBuf::from)
+        .collect();
+    if wavs.is_empty() {
+        return Err(format!("{BENCH_FLAG} requires at least one .wav file"));
+    }
+    Ok(Some(BenchArgs {
+        wavs,
+        cleanup: !argv.iter().any(|a| a == BENCH_NO_CLEANUP_FLAG),
+    }))
+}
+
+/// Lower-case words, punctuation dropped (apostrophes kept), for scoring.
+fn normalized_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Word error rate of `hypothesis` against `reference`: word-level edit
+/// distance over the reference length. `0.0` is a perfect match; an empty
+/// reference scores `0.0` for an empty hypothesis and `1.0` otherwise.
+fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
+    let r = normalized_words(reference);
+    let h = normalized_words(hypothesis);
+    if r.is_empty() {
+        return if h.is_empty() { 0.0 } else { 1.0 };
+    }
+    // One rolling row of the Levenshtein table over words.
+    let mut prev: Vec<usize> = (0..=h.len()).collect();
+    let mut cur = vec![0usize; h.len() + 1];
+    for (i, rw) in r.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, hw) in h.iter().enumerate() {
+            let sub = prev[j] + usize::from(rw != hw);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[h.len()] as f64 / r.len() as f64
+}
+
+/// The reference transcript beside a fixture: `<stem>.txt` next to `<stem>.wav`.
+fn reference_text(wav: &Path) -> Option<String> {
+    std::fs::read_to_string(wav.with_extension("txt")).ok()
+}
+
+/// Milliseconds as an integer, from an `Instant`.
+fn ms_since(t: Instant) -> i64 {
+    t.elapsed().as_millis() as i64
+}
+
+/// One file through the release-side pipeline on the WARM engine. Returns the
+/// take's JSON row. The release clock starts once the leveled samples exist —
+/// in the app that leveling streams during capture, before the key is up.
+#[allow(clippy::too_many_arguments)]
+fn bench_take(
+    manager: &TranscriptionManager,
+    model_id: &str,
+    model_path: &Path,
+    settings: &crate::AppSettings,
+    vad: Option<&crate::vad::WarmVad>,
+    wav: &Path,
+    cleanup: bool,
+    window: &mut crate::latency::RtfWindow,
+) -> Result<serde_json::Value, String> {
+    if !wav.is_file() {
+        return Err(format!("no such wav file: {}", basename(wav)));
+    }
+    let raw = record::read_wav_16k_mono(wav)?;
+    let audio_s = raw.len() as f64 / f64::from(record::TARGET_RATE);
+    let leveled = record::bench_capture_chain(&raw);
+    drop(raw);
+
+    let t_release = Instant::now();
+    let dsp = record::bench_release_dsp(&leveled, settings.denoise, vad)?;
+    let dsp_ms = ms_since(t_release);
+    let decoded_s = dsp.samples.len() as f64 / f64::from(record::TARGET_RATE);
+    let asr = crate::transcribe_native(
+        manager,
+        model_id,
+        model_path,
+        dsp.samples,
+        &settings.language_prefs(),
+        None,
+        &mut crate::transcribe_progress::NoObserver,
+    )?;
+    let t_cleanup = Instant::now();
+    if cleanup {
+        // The shipped default cleanup (see `cleanup_report`); the LLM polish
+        // stage is never reached headless.
+        let _ = cleanup_report(&asr.text);
+    }
+    let cleanup_ms = ms_since(t_cleanup);
+    let release_text_ms = ms_since(t_release);
+
+    let rtf = crate::latency::decode_rtf(asr.decode_ms, decoded_s);
+    window.push(rtf);
+    let release_rtf = crate::latency::decode_rtf(release_text_ms, audio_s);
+    let wer = reference_text(wav).map(|r| word_error_rate(&r, &asr.text));
+    log::info!(
+        "bench take file={} audio_s={audio_s:.1} release_text_ms={release_text_ms} \
+         asr_decode_ms={} rtf={rtf:.3}",
+        basename(wav),
+        asr.decode_ms
+    );
+    Ok(serde_json::json!({
+        "file": basename(wav),
+        "audio_s": (audio_s * 10.0).round() / 10.0,
+        "decoded_s": (decoded_s * 10.0).round() / 10.0,
+        "voiced_s": (dsp.voiced_seconds * 10.0).round() / 10.0,
+        "speech_present": dsp.speech_present,
+        "dsp_ms": dsp_ms,
+        "asr_load_ms": asr.load_ms,
+        "asr_decode_ms": asr.decode_ms,
+        "cleanup_ms": cleanup_ms,
+        "release_text_ms": release_text_ms,
+        "rtf": rtf,
+        "release_rtf": release_rtf,
+        "chunks": asr.chunks,
+        "chunks_failed": asr.chunks_failed,
+        "degraded": asr.degraded,
+        "words": normalized_words(&asr.text).len(),
+        "wer": wer,
+    }))
+}
+
+/// `wilson-voice --bench <wav…>` — load the model once (reported as
+/// `cold_load_ms`), then run every file through [`bench_take`] on the warm
+/// engine and print ONE JSON object. Exit 0 only when every file produced
+/// text; a failed file keeps its row with an `error` and no numbers.
+fn run_bench(args: &BenchArgs) -> i32 {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+    // The SHIPPED defaults (denoise, language set), never the user's settings —
+    // the same "do not depend on app state" rule `--cleanup` follows. The model
+    // mirrors the app's selection, like `--transcribe-file`.
+    let settings = crate::AppSettings::default();
+    let (model_id, model_path) = match ensure_model() {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("bench model_unavailable");
+            eprintln!("bench failed: {e}");
+            return 1;
+        }
+    };
+    let manager = TranscriptionManager::new();
+    let t_load = Instant::now();
+    if let Err(e) = manager.load(&model_id, &model_path) {
+        log::warn!("bench model_load_failed");
+        eprintln!("bench failed: {e}");
+        return 1;
+    }
+    let cold_load_ms = ms_since(t_load);
+    // Silero only when its model is already on disk — never a download. The
+    // VAD is the one the app warms at launch; its absence is the energy-VAD
+    // path the app also runs, and the JSON says which one was timed.
+    let vad_path = crate::vad::model_path(&crate::data_dir());
+    let vad = if vad_path.is_file() {
+        crate::vad::WarmVad::load(&vad_path).ok()
+    } else {
+        None
+    };
+    let mut window = crate::latency::RtfWindow::new();
+    let mut takes = Vec::with_capacity(args.wavs.len());
+    let mut failed = 0usize;
+    for wav in &args.wavs {
+        match bench_take(
+            &manager,
+            &model_id,
+            &model_path,
+            &settings,
+            vad.as_ref(),
+            wav,
+            args.cleanup,
+            &mut window,
+        ) {
+            Ok(row) => takes.push(row),
+            Err(e) => {
+                failed += 1;
+                log::warn!("bench take_failed file={}", basename(wav));
+                takes.push(serde_json::json!({ "file": basename(wav), "error": e }));
+            }
+        }
+    }
+    let report = serde_json::json!({
+        "bench": "sp-03",
+        "model": model_id,
+        "backend": "native",
+        "cold_load_ms": cold_load_ms,
+        "vad": if vad.is_some() { "silero" } else { "energy" },
+        "denoise": settings.denoise,
+        "cleanup": args.cleanup,
+        "polish": "skipped",
+        "paste": false,
+        "rtf_p50": window.p50(),
+        "rtf_last": window.last(),
+        "takes": takes,
+    });
+    println!("{report}");
+    log::info!(
+        "bench done takes={} failed={failed} cold_load_ms={cold_load_ms}",
+        args.wavs.len()
+    );
+    i32::from(failed > 0)
+}
 
 // ── yap24-NT9 · `--transcribe-meeting` ─────────────────────────────────────────
 
@@ -793,6 +1048,44 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// SP-03 — `--bench` takes every path up to the next flag, honours
+    /// `--no-cleanup` anywhere, is absent without the flag, and refuses an
+    /// empty file list instead of benching nothing.
+    #[test]
+    fn bench_args_collect_wavs_until_the_next_flag() {
+        assert_eq!(bench_args(&args(&["--transcribe-file", "a.wav"])), Ok(None));
+        assert_eq!(
+            bench_args(&args(&["--bench", "a.wav", "b.wav", "--no-cleanup"])),
+            Ok(Some(BenchArgs {
+                wavs: vec![PathBuf::from("a.wav"), PathBuf::from("b.wav")],
+                cleanup: false,
+            }))
+        );
+        assert!(
+            bench_args(&args(&["--bench", "c.wav"]))
+                .unwrap()
+                .unwrap()
+                .cleanup
+        );
+        assert!(bench_args(&args(&["--bench"])).is_err());
+        assert!(bench_args(&args(&["--bench", "--no-cleanup"])).is_err());
+    }
+
+    /// SP-03 — the bench's accuracy guard: case and punctuation never count,
+    /// one substitution in four words is 0.25, insertions and deletions count.
+    #[test]
+    fn word_error_rate_scores_words_not_punctuation() {
+        assert_eq!(word_error_rate("Hello, world.", "hello world"), 0.0);
+        assert_eq!(
+            word_error_rate("the quick brown fox", "the quick red fox"),
+            0.25
+        );
+        assert_eq!(word_error_rate("one two", "one two three"), 0.5);
+        assert_eq!(word_error_rate("one two", ""), 1.0);
+        assert_eq!(word_error_rate("", ""), 0.0);
+        assert_eq!(word_error_rate("don't stop", "Don't stop!"), 0.0);
     }
 
     /// yap24-NT9 — both spellings parse, a missing value is an error rather
