@@ -24,8 +24,15 @@ interface MeetingExportLocation {
   defaultPath: string;
 }
 
+// WF-16 — "Hide Yap from screen sharing" lives in the Meeting detection panel.
+// BEFORE/AFTER PNGs (integrator, headless only — never the real app): with the
+// Vite dev server up on :5273, run
+//   YAP_SMOKE_VIEWS=Settings YAP_SMOKE_RUN=wf16-<before|after> node scripts/smoke-windowed.mjs
+// on origin/main (before: no switch) and on this branch (after); the Meetings
+// tab lands as `settings-meetings-<size>.png` under docs/smoke-shots/. The
+// default state (switch on) is the fixture default (no `hideFromCaptureInMeetings`).
 export default function Meetings() {
-  const { toast, toastError } = useAppCtx();
+  const { toast, toastError, settings, saveSettings } = useAppCtx();
   const [view, setView] = useState<DetectSettingsView | null>(null);
   // yap-1106 — the export folder: shown, openable, changeable.
   const [exportLoc, setExportLoc] = useState<MeetingExportLocation | null>(null);
@@ -130,6 +137,26 @@ export default function Meetings() {
           starts recording on its own.
         </p>
       </div>
+      {settings && (
+        <div className="panel" data-row data-settings-row="capture-hide">
+          <h3>Screen sharing</h3>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.hideFromCaptureInMeetings !== false}
+              onChange={(e) =>
+                void saveSettings({ ...settings, hideFromCaptureInMeetings: e.target.checked })
+              }
+            />
+            <span>Hide Yap from screen sharing during meetings</span>
+          </label>
+          <p className="settings-hint">
+            While a meeting records, the pill and the Scratchpad stay out of
+            screen shares and screenshots. They show again when you stop. The
+            call offer is always hidden.
+          </p>
+        </div>
+      )}
       <div className="panel" data-row data-settings-row="call-offer-never">
         <h3>Never offer for</h3>
         {never.length === 0 ? (

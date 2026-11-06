@@ -161,6 +161,12 @@ export interface AppSettings {
    * lines always show (`pill/live.ts` `PILL_MESSAGES`).
    */
   mutedPillCategories?: string[];
+  /**
+   * WF-16 (backend `hide_from_capture_in_meetings`, default true): while a
+   * meeting records, the pill, its meeting chip and the Scratchpad are kept
+   * out of screen shares and screenshots. Missing = on.
+   */
+  hideFromCaptureInMeetings?: boolean;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**

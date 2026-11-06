@@ -235,6 +235,9 @@ pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
         log::warn!("scratchpad create_failed err={e}");
         format!("scratchpad window: {e}")
     })?;
+    // WF-16 — a Scratchpad opened during a recorded meeting is built hidden
+    // from screen capture; `float_pill::sync_capture_hidden` restores it on stop.
+    crate::call_offer::apply_content_protection(&w);
     let w2 = w.clone();
     w.on_window_event(move |e| match e {
         tauri::WindowEvent::CloseRequested { api, .. } => {
