@@ -78,7 +78,7 @@ describe("control first, one-line hint after", () => {
     expect(privacy.indexOf('className="settings-footer"')).toBeGreaterThan(-1);
     expect(shortcut.indexOf('className="settings-footer"')).toBeGreaterThan(-1);
     expect(privacy.indexOf("Save settings")).toBeGreaterThan(privacy.indexOf('className="settings-footer"'));
-    expect(shortcut.indexOf("Reset to ⌃⌥⌘Space")).toBeGreaterThan(shortcut.indexOf('className="settings-footer"'));
+    expect(shortcut.indexOf("Reset to default")).toBeGreaterThan(shortcut.indexOf('className="settings-footer"'));
   });
 });
 
