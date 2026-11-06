@@ -394,8 +394,9 @@ export default function ClassicPill(
     meetingRecording: meeting.recording,
     stopKey: chordLabel,
     }),
-    // The CAPSULE owns hover and focus, so it alone opens the rail.
-    railOpen: hover === "expanded" || focusWithin,
+    // The CAPSULE owns hover and focus, so it alone opens the rail (a forced
+    // matrix scene, `slots.railOpen`, holds it open without a pointer).
+    railOpen: !!slots?.railOpen || hover === "expanded" || focusWithin,
   };
   const barAxis = layoutSlots(slotCtx).axis;
   const tipSide = tooltipSide(slotCtx.dock);
@@ -425,7 +426,7 @@ export default function ClassicPill(
   return (
     <div className="stage">
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
-      <div ref={hotElRef} className="pill-hot" data-hover={hover}>
+      <div ref={hotElRef} className="pill-hot" data-hover={slots?.railOpen ? "expanded" : hover}>
       <div
         ref={pillRef}
         className={cls}

@@ -75,6 +75,7 @@ import {
 import {
   forcedPill,
   matrixLanguageOfferScene,
+  matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
   type ForcedPill,
@@ -231,6 +232,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     ...matrixLicenseScenes(),
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
+    // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
+    matrixRailScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
@@ -569,6 +572,8 @@ function Float() {
     meetingTitle: meeting.status.title ?? null,
     keys: railKeys,
     stopKey: chordLabel,
+    // A matrix scene forces the rail out; a real pill opens it on hover/focus (PillShell).
+    railOpen: FORCED?.rail ? true : undefined,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
   // unknown id falls back to classic. The shell never branches on an id: a
