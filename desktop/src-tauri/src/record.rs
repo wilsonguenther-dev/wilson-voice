@@ -5,7 +5,7 @@
 //! Live RMS level is exposed for the floating HUD waveform.
 
 use crate::dictation;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
 use parking_lot::{Condvar, Mutex as PLMutex};
