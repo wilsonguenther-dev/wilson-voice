@@ -53,7 +53,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// `every_app_settings_field_round_trips`, THEN bump it.
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
-const APP_SETTINGS_FIELD_COUNT: usize = 43;
+const APP_SETTINGS_FIELD_COUNT: usize = 44;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
