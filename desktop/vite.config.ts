@@ -109,6 +109,12 @@ export default defineConfig(async () => ({
                 __dirname,
                 "dev/shortcuts-editor-preview.html",
               ),
+              // WF-19 — the mouse-button panel (off / hold / handsfree /
+              // listening / refused) for the batch's headless PNGs.
+              mousePttPreview: resolve(
+                __dirname,
+                "dev/mouse-ptt-preview.html",
+              ),
             }
           : {}),
       },
