@@ -189,6 +189,9 @@ function __pillDetect(want) {
     // WF-12 — an offer scene (lang-offer) must actually draw its card.
     if (want.offer && !document.querySelector('[data-language-offer="' + want.offer + '"]')) bad.push("no [data-language-offer=" + want.offer + "] card");
     if (want.chip && !document.querySelector('[data-style-chip="' + want.chip + '"]')) bad.push("no [data-style-chip=" + want.chip + "] chip");
+    // WF-02 — a drag scene must actually be in the blob, with its drop zones up.
+    if (want.drag && de.dataset.pillDrag !== want.drag) bad.push("html[data-pill-drag]=" + de.dataset.pillDrag + " (asked " + want.drag + ")");
+    if (want.drag && !de.dataset.pillDragTarget) bad.push("no html[data-pill-drag-target] (drop zones not lit)");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
@@ -525,7 +528,7 @@ async function run() {
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, pill: character, dock, meeting }) + ")");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting }) + ")");
             const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);

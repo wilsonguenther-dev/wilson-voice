@@ -1708,3 +1708,122 @@ html[data-one-pill="true"][data-dock] .nudge-row {
   box-sizing: border-box;
   transform: none;
 }
+
+/* ── WF-02 — the pill shrinks to a blob while you drag it ────────────────────
+   pill/drag.ts publishes the gesture on <html>:
+     data-pill-drag="blob"      while the pill is dragged (past the 4 pt slop)
+     data-pill-drag="squash"    for SQUASH_MS after it lands on a dock
+     data-pill-drag-target      the dock a release right now would land in
+     data-pill-drag-motion      "instant" under Reduce Motion, else "animate"
+   The blob is 28 pt (drag.ts BLOB_PT): Yappy's face and nothing else. Its
+   centre is the character's head in the one-pill layout (--char-*), or the
+   window's centre for a pill that publishes no layout. */
+html {
+  --blob-d: 28px;
+  --blob-cx: calc(var(--char-x, calc(50% - 14px)) + var(--char-w, 28px) / 2);
+  --blob-cy: calc(var(--char-y, calc(50% - 14px)) + var(--char-h, 28px) * 0.4);
+}
+
+/* Yappy — the canvas world is clipped down to a disc around the face, over a
+   shell-coloured disc so the blob reads as a body, not a cropped photo. */
+html[data-pill-drag="blob"] .kami-canvas {
+  clip-path: circle(calc(var(--blob-d) / 2) at var(--blob-cx) var(--blob-cy));
+}
+html[data-pill-drag-motion="animate"] .kami-canvas {
+  /* The resting circle covers any window the pill can have, so the clip only
+     ever shows while it is shrinking or growing back. */
+  clip-path: circle(200vmax at var(--blob-cx) var(--blob-cy));
+  transition: clip-path var(--duration-quick) var(--ease-glide);
+}
+html[data-pill-drag="blob"][data-pill-drag-motion="animate"] .kami-canvas {
+  clip-path: circle(calc(var(--blob-d) / 2) at var(--blob-cx) var(--blob-cy));
+}
+html[data-pill-drag="blob"] .kami-stage::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--blob-cx) - var(--blob-d) / 2 - 2px);
+  top: calc(var(--blob-cy) - var(--blob-d) / 2 - 2px);
+  width: calc(var(--blob-d) + 4px);
+  height: calc(var(--blob-d) + 4px);
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* Classic — the capsule itself collapses to a 28 pt disc; its content waits. */
+html[data-pill-drag="blob"] .pill {
+  width: var(--blob-d);
+  height: var(--blob-d);
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+html[data-pill-drag="blob"][data-pill-drag-motion="animate"] .pill {
+  transition:
+    width var(--duration-quick) var(--ease-glide),
+    height var(--duration-quick) var(--ease-glide),
+    padding var(--duration-quick) var(--ease-glide);
+}
+html[data-pill-drag="blob"] .pill > * {
+  opacity: 0;
+}
+
+/* Everything that rides on the pill steps aside while it is a blob. */
+html[data-pill-drag="blob"] :is(.kami-bubble, .kami-license, .kami-progress, .meeting-badge,
+  .phase-strip, .style-chip, .nudge-row, .pill-upgrade) {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* The three drop zones — bottom, left, right — faint, with the one a release
+   would land in lit. Painted over the transparent window, never clickable. */
+html[data-pill-drag="blob"] body::after {
+  --zone-l: color-mix(in srgb, var(--pill-text) 12%, transparent);
+  --zone-r: color-mix(in srgb, var(--pill-text) 12%, transparent);
+  --zone-b: color-mix(in srgb, var(--pill-text) 12%, transparent);
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  background:
+    radial-gradient(10px 34px at 4px 50%, var(--zone-l), transparent 100%),
+    radial-gradient(10px 34px at calc(100% - 4px) 50%, var(--zone-r), transparent 100%),
+    radial-gradient(40px 8px at 50% calc(100% - 3px), var(--zone-b), transparent 100%);
+}
+html[data-pill-drag="blob"][data-pill-drag-target="left"] body::after {
+  --zone-l: color-mix(in srgb, var(--pill-text) 48%, transparent);
+}
+html[data-pill-drag="blob"][data-pill-drag-target="right"] body::after {
+  --zone-r: color-mix(in srgb, var(--pill-text) 48%, transparent);
+}
+html[data-pill-drag="blob"][data-pill-drag-target="bottom"] body::after {
+  --zone-b: color-mix(in srgb, var(--pill-text) 48%, transparent);
+}
+
+/* Squash on drop (absorbs backlog item 19): a short land-and-settle. */
+@keyframes pill-drag-squash {
+  0% { transform: scale(1.14, 0.86); }
+  55% { transform: scale(0.96, 1.04); }
+  100% { transform: none; }
+}
+html[data-pill-drag="squash"][data-pill-drag-motion="animate"] :is(.pill, .kami-canvas) {
+  transform-origin: 50% 100%;
+  animation: pill-drag-squash 220ms var(--ease-glide);
+}
+
+/* Reduce Motion: the blob appears and the pill comes back in one frame, and
+   nothing squashes (drag.ts settleVisual never even sets "squash"). */
+html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
+  transition: none !important;
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-pill-drag] :is(.pill, .kami-canvas) {
+    transition: none !important;
+    animation: none !important;
+  }
+}
