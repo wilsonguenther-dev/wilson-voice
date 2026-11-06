@@ -16,6 +16,8 @@
  * through the transcription pipeline (processing with percent) to
  * "Notes ready — Open" or the failure's sentence.
  */
+import { useCallRecordingView } from "./CallOffer";
+import { badgeCallLabel } from "./callOfferModel";
 import { useCallback, useEffect, useReducer, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -115,6 +117,9 @@ export default function MeetingBadge({
   after?: MeetingAfterView | null;
   onOpen?: (id: string) => void;
 }) {
+  // yap-call-1 — the pill never lies: a recording that started from a call
+  // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
+  const callApp = badgeCallLabel(useCallRecordingView());
   if (!status.recording) {
     if (!after) return null;
     return <MeetingAfter view={after} onOpen={onOpen} />;
@@ -131,6 +136,11 @@ export default function MeetingBadge({
     <div className="meeting-badge" role="status" aria-live="off">
       <span className="rec-dot" aria-hidden />
       <span className="rec-time">{elapsedLabel(status)}</span>
+      {callApp && (
+        <span className="rec-app" data-call-app title={`Recording ${callApp} call`}>
+          {callApp}
+        </span>
+      )}
       {callAudio ? (
         <span
           className={`rec-sysaudio call-audio-chip is-${callAudio.state}`}

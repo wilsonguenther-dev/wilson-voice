@@ -26,7 +26,7 @@ import {
   surfaceAt,
   type CallOfferChoice,
   type CallOfferView,
-} from "./callOffer";
+} from "./callOfferModel";
 
 export const CALL_ENDED_HEADLINE = "Call ended — stop recording?";
 
