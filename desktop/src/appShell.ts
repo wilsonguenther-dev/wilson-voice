@@ -1011,7 +1011,8 @@ export function useAppShell() {
 
   // ── YP3 · licensing actions ──
   // The URL is NOT here: `open_purchase_page` takes no argument and opens the
-  // compile-time `license::PAYMENT_LINK_URL`, so no string the webview can
+  // compile-time `license::PURCHASE_PAGE_URL` (https://drivia.consulting/yap,
+  // in both purchase_open states), so no string the webview can
   // influence ever reaches a process launch.
   async function buyYap() {
     try {

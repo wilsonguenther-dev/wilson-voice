@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import YappySprite from "./YappySprite";
-import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, PRICE_LABEL } from "./status";
+import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, purchaseCopy } from "./status";
 
 /**
  * YP3 — what a person sees when the fortnight is over and they press the hotkey
@@ -18,11 +18,19 @@ import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, PRICE_LABEL } from "./status";
  *    and this is the moment to be warm, not stern.
  */
 export default function PurchasePrompt({
+  purchaseOpen,
   foundingOpen,
   onBuy,
   onEnterKey,
   onDismiss,
 }: {
+  /**
+   * yap-1106-lic-02 — the backend's `LicenseStatus.purchase_open` (Rust
+   * `PURCHASE_OPEN`). While false the primary button reads "See Yap pricing"
+   * and still opens the drivia.consulting page (which says "not open yet");
+   * nothing on the sheet promises a checkout.
+   */
+  purchaseOpen: boolean;
   /**
    * The backend's `LicenseStatus.founding_open` (Rust `founding_valid`). The
    * founding price and code render ONLY when this is true.
@@ -34,6 +42,7 @@ export default function PurchasePrompt({
   onDismiss: () => void;
 }) {
   const buyRef = useRef<HTMLButtonElement | null>(null);
+  const purchase = purchaseCopy(purchaseOpen);
 
   // Esc closes it, and focus starts on the primary action so the whole sheet is
   // reachable from the keyboard — the person who got here pressed a hotkey.
@@ -71,8 +80,14 @@ export default function PurchasePrompt({
         </p>
 
         <div className="buy-actions">
-          <button ref={buyRef} type="button" className="primary" onClick={() => onBuy()}>
-            Buy Yap — {PRICE_LABEL} once
+          <button
+            ref={buyRef}
+            type="button"
+            className="primary"
+            data-purchase-open={purchaseOpen ? "true" : "false"}
+            onClick={() => onBuy()}
+          >
+            {purchase.button}
           </button>
           <button type="button" className="ghost" onClick={onEnterKey}>
             I already have a key
@@ -81,6 +96,7 @@ export default function PurchasePrompt({
 
         <p className="buy-fine">
           One time, no subscription, no account.
+          {!purchaseOpen && " Sales are not open yet."}
           {foundingOpen && (
             <>
               {" "}Founding price <strong className="license-price">{FOUNDING_PRICE_LABEL}</strong>{" "}

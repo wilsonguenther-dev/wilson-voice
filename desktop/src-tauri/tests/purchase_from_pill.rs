@@ -77,10 +77,7 @@ fn fn_body(src: &str, name: &str) -> String {
 
 /// The forbidden shapes, each paired with the fear it is there to catch.
 const FORBIDDEN: &[(&str, &str)] = &[
-    (
-        "PAYMENT_LINK_URL",
-        "the Stripe Payment Link constant itself",
-    ),
+    ("PURCHASE_PAGE_URL", "the purchase page constant itself"),
     (
         "open_purchase_page",
         "delegating to the opener, which is the same thing one hop away",
@@ -89,7 +86,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("std::process", "spawning any process at all, spelled long"),
     ("http://", "a literal URL"),
     ("https://", "a literal URL"),
-    ("buy.stripe.com", "the checkout host"),
+    (concat!("buy.", "stripe", ".com"), "a Stripe checkout host"),
     ("opener", "the tauri-plugin-opener surface"),
     ("shell", "the tauri-plugin-shell surface"),
 ];
@@ -130,9 +127,9 @@ fn reveal_purchase_prompt_never_opens_a_url() {
         .filter(|n| opener.contains(n))
         .collect();
     assert!(
-        fired.contains(&"PAYMENT_LINK_URL") && fired.contains(&"Command::new"),
+        fired.contains(&"PURCHASE_PAGE_URL") && fired.contains(&"Command::new"),
         "positive control failed: `open_purchase_page` no longer hands \
-         PAYMENT_LINK_URL to a process (fired: {fired:?})"
+         PURCHASE_PAGE_URL to a process (fired: {fired:?})"
     );
 
     // REACHABLE: a command missing from generate_handler! fails at runtime on
@@ -224,7 +221,7 @@ fn pill_upgrade_is_inert_when_licensed() {
             "{name} no longer routes only `reveal_purchase` to the sheet"
         );
         for needle in [
-            "buy.stripe.com",
+            concat!("buy.", "stripe", ".com"),
             "https://",
             "$29",
             "$19",
@@ -243,13 +240,18 @@ fn pill_upgrade_is_inert_when_licensed() {
     );
 }
 
-/// Exactly ONE Payment Link exists, and it is in Rust.
+/// Exactly ONE purchase URL exists, and it is in Rust (yap-1106-lic-02: the
+/// drivia.consulting Yap page; the old Payment Link constant is gone).
 #[test]
 fn there_is_exactly_one_payment_link() {
     assert_eq!(
-        LICENSE_RS.matches("PAYMENT_LINK_URL: &str =").count(),
+        LICENSE_RS.matches("PURCHASE_PAGE_URL: &str =").count(),
         1,
-        "PAYMENT_LINK_URL is declared more than once in license.rs"
+        "PURCHASE_PAGE_URL is declared more than once in license.rs"
+    );
+    assert!(
+        !LICENSE_RS.contains(concat!("PAYMENT_LINK", "_URL")),
+        "the retired Stripe Payment Link constant is back in license.rs"
     );
     for src in [PILL_LICENSE_TS, CLASSIC_PILL_TSX, YAPPY_PILL_TSX] {
         assert!(
