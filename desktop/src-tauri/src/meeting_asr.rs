@@ -2359,6 +2359,9 @@ pub const UTTERANCE_MAX_SECONDS: f64 = 20.0;
 /// Merge, step two: a piece shorter than this is a fragment, and joins a
 /// neighbour whenever the result stays under [`UTTERANCE_MAX_SECONDS`].
 pub const UTTERANCE_MIN_SECONDS: f64 = 3.0;
+/// Word times are milliseconds divided by 1000; a threshold compared to their
+/// difference needs a tolerance or `12.6 - 12.0 >= 0.6` is false in f64.
+const UTTERANCE_TIME_EPS: f64 = 1e-6;
 
 /// One utterance cut out of a window's word rows: absolute seconds (the rows
 /// were shifted onto the meeting's timeline by [`ChunkOutcome::from_transcript`])
@@ -2433,8 +2436,9 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
     for pair in rows.windows(2) {
         let (prev, next) = (pair[0], pair[1]);
         let gap = (next.start_seconds - prev.end_seconds).max(0.0);
-        let cut = gap >= UTTERANCE_CUT_GAP_SECONDS
-            || (ends_sentence(&prev.text) && gap >= UTTERANCE_SENTENCE_GAP_SECONDS);
+        let cut = gap + UTTERANCE_TIME_EPS >= UTTERANCE_CUT_GAP_SECONDS
+            || (ends_sentence(&prev.text)
+                && gap + UTTERANCE_TIME_EPS >= UTTERANCE_SENTENCE_GAP_SECONDS);
         if cut {
             pieces.push(piece_of(&current));
             current.clear();
@@ -2449,7 +2453,9 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
         if let Some(last) = merged.last_mut() {
             let gap = (piece.start_seconds - last.end_seconds).max(0.0);
             let joined = piece.end_seconds - last.start_seconds;
-            if gap < UTTERANCE_MERGE_GAP_SECONDS && joined <= UTTERANCE_MAX_SECONDS {
+            if gap + UTTERANCE_TIME_EPS < UTTERANCE_MERGE_GAP_SECONDS
+                && joined <= UTTERANCE_MAX_SECONDS + UTTERANCE_TIME_EPS
+            {
                 join_into(last, &piece);
                 continue;
             }
@@ -2465,10 +2471,11 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
         let mut i = 0;
         while i < merged.len() {
             if merged.len() > 1 && merged[i].seconds() < UTTERANCE_MIN_SECONDS {
-                let fits_prev = i > 0
-                    && merged[i].end_seconds - merged[i - 1].start_seconds <= UTTERANCE_MAX_SECONDS;
+                let cap = UTTERANCE_MAX_SECONDS + UTTERANCE_TIME_EPS;
+                let fits_prev =
+                    i > 0 && merged[i].end_seconds - merged[i - 1].start_seconds <= cap;
                 let fits_next = i + 1 < merged.len()
-                    && merged[i + 1].end_seconds - merged[i].start_seconds <= UTTERANCE_MAX_SECONDS;
+                    && merged[i + 1].end_seconds - merged[i].start_seconds <= cap;
                 let gap_prev = if i > 0 {
                     merged[i].start_seconds - merged[i - 1].end_seconds
                 } else {
