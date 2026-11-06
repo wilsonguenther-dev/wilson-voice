@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * menubar-preview.mjs — before/after PNGs of the menu-bar menu
- * (yap-1106-menubar-redesign + WF-07 upcoming meetings).
+ * (yap-1106-menubar-redesign + WF-07 upcoming meetings + WF-11 Languages).
  *
  * The real menu is a native NSMenu built by lib.rs FROM
  * `tray_menu::MENU_LAYOUT` + `TRAY_ITEMS`. A native menu cannot be rendered
@@ -129,6 +129,29 @@ function upcomingRows(parsed, { hideTitles, meetings }) {
   return rows;
 }
 
+const LANGUAGE_NAMES = { en: "English", es: "Spanish", fr: "French" };
+
+/**
+ * WF-11 — the Languages submenu as `tray_menu::language_menu` builds it:
+ * Auto-detect (only with a choice in the set and a model that can detect),
+ * each language in picker order, the check on what the chip shows, then a
+ * separator and "Language Settings…". Labels come from the source consts.
+ */
+function languageRow(parsed, { set, picked, canDetect = true }) {
+  const id = parsed.consts.get("ID_LANGUAGES");
+  const auto = parsed.consts.get("LANGUAGE_AUTO_LABEL");
+  const settings = parsed.consts.get("LANGUAGE_SETTINGS_LABEL");
+  if (!id || !auto || !settings || !parsed.items.has(id)) {
+    throw new Error("tray_menu.rs: no Languages submenu at this revision");
+  }
+  const order = Object.keys(LANGUAGE_NAMES);
+  const langs = [...set].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const picks = [...(set.length > 1 && canDetect ? ["auto"] : []), ...langs];
+  const submenu = picks.map((p) => ({ label: p === "auto" ? auto : LANGUAGE_NAMES[p], checked: p === picked }));
+  submenu.push({ sep: true }, { label: settings });
+  return { label: parsed.items.get(id).label, submenu };
+}
+
 /** The rows as the app shows them in one state. */
 function menuFor(parsed, state) {
   const out = [];
@@ -153,6 +176,11 @@ function menuFor(parsed, state) {
       submenuArrow: slot.kind === "KindSubmenu",
     });
     if (slot.id === kindId && state.calendar) out.push(...upcomingRows(parsed, state.calendar));
+    // WF-11 — inserted under Hands-free (under Microphone once the device
+    // list lands; the Microphone submenu is not drawn by this preview).
+    if (slot.id === parsed.consts.get("ID_HANDS_FREE") && state.languages) {
+      out.push(languageRow(parsed, state.languages));
+    }
   }
   // A group emptied by the recording move leaves a doubled separator; NSMenu
   // shows both, so the preview does too.
@@ -177,7 +205,14 @@ function html(title, rows) {
     })
     .join("");
   const sub = openSub
-    ? `<div class="menu sub">${openSub.submenu.map((t) => `<div class="row"><span class="check"></span><span class="lbl">${esc(t)}</span></div>`).join("")}</div>`
+    ? `<div class="menu sub">${openSub.submenu
+        .map((t) => (typeof t === "string" ? { label: t } : t))
+        .map((t) =>
+          t.sep
+            ? `<div class="sep"></div>`
+            : `<div class="row"><span class="check">${t.checked ? "✓" : ""}</span><span class="lbl">${esc(t.label)}</span></div>`
+        )
+        .join("")}</div>`
     : "";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;background:#2e3138;font:13px -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
@@ -220,6 +255,30 @@ const STATES = [
     state: { calendar: { hideTitles: false, meetings: [] } },
     afterOnly: true,
   },
+  {
+    name: "languages-auto",
+    title: "Languages: English + Spanish, Auto-detect on",
+    state: { languages: { set: ["es", "en"], picked: "auto" } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-spanish",
+    title: "Languages: Spanish picked (from the tray or the pill's chip)",
+    state: { languages: { set: ["en", "es"], picked: "es" } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-no-detect",
+    title: "Languages: the speech model cannot detect, so no Auto-detect row",
+    state: { languages: { set: ["en", "es", "fr"], picked: "en", canDetect: false } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-one",
+    title: "Languages: one language (default install)",
+    state: { languages: { set: ["en"], picked: "en" } },
+    afterOnly: true,
+  },
 ];
 
 async function shoot(cdp, file, doc) {
@@ -257,7 +316,7 @@ async function main() {
   if (args.selfTest) {
     for (const j of jobs) {
       console.log("\n# " + j.file);
-      for (const r of j.rows) console.log(r.sep ? "  ────" : "  " + (r.checked ? "✓ " : "") + r.label + (r.submenu ? "  ›  [" + r.submenu.join(" | ") + "]" : ""));
+      for (const r of j.rows) console.log(r.sep ? "  ────" : "  " + (r.checked ? "✓ " : "") + r.label + (r.submenu ? "  ›  [" + r.submenu.map((t) => (typeof t === "string" ? t : t.sep ? "──" : (t.checked ? "✓ " : "") + t.label)).join(" | ") + "]" : ""));
     }
     return;
   }

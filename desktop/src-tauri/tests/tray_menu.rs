@@ -80,7 +80,8 @@ fn every_menu_item_maps_to_a_registered_command() {
             ItemKind::StateLabel
             | ItemKind::KindSubmenu
             | ItemKind::UpcomingSubmenu
-            | ItemKind::MicrophoneSubmenu => assert_eq!(
+            | ItemKind::MicrophoneSubmenu
+            | ItemKind::LanguageSubmenu => assert_eq!(
                 command_for(item.id),
                 None,
                 "{:?} is not an action and must not dispatch",
@@ -147,6 +148,9 @@ fn every_menu_item_maps_to_a_registered_command() {
                 "record_upcoming" => "RecordUpcoming".to_string(),
                 // WF-09 — the "Microphone" children.
                 "pick_microphone" => "PickMicrophone".to_string(),
+                // WF-11 — the "Languages" children.
+                "pick_language" => "PickLanguage".to_string(),
+                "open_language_settings" => "OpenLanguageSettings".to_string(),
                 _ => "RecordMeetingAs".to_string(),
             });
         assert!(
@@ -199,6 +203,9 @@ fn no_item_is_unreachable() {
             ItemKind::KindSubmenu => name == "record_meeting_as" && !KIND_PICKER.is_empty(),
             ItemKind::UpcomingSubmenu => name == "record_upcoming",
             ItemKind::MicrophoneSubmenu => name == "pick_microphone",
+            ItemKind::LanguageSubmenu => {
+                name == "pick_language" || name == "open_language_settings"
+            }
             ItemKind::StateLabel => false,
         });
         assert!(reachable, "command {name} has no menu item");
@@ -249,18 +256,55 @@ fn no_item_is_unreachable() {
     );
 }
 
-/// Y6-B "what not to do": no Languages / Formatting submenu (Y10).
+/// Y6-B "what not to do": no Formatting submenu. The one language row is
+/// WF-11's Languages submenu, which is never empty.
 #[test]
 fn no_language_or_formatting_submenu() {
     for item in TRAY_ITEMS.iter() {
         let l = item.label.to_lowercase();
         assert!(
-            !l.contains("language") && !l.contains("formatting"),
+            !l.contains("formatting"),
             "{:?} ({}) is out of scope for Y6-B",
             item.id,
             item.label
         );
+        if l.contains("language") {
+            assert_eq!(item.id, tray_menu::ID_LANGUAGES, "one language row only");
+            assert_eq!(item.kind, ItemKind::LanguageSubmenu);
+        }
     }
+}
+
+/// WF-11 — the Languages submenu: anchored under Microphone (or Hands-free),
+/// placed by ONE function that always ends on "Language Settings…", picks
+/// written through the ONE language writer (the same one the bar's chip and
+/// Settings call), and every write — from any surface — redraws the tray and
+/// tells every window at once.
+#[test]
+fn languages_submenu_shares_the_one_language_writer() {
+    let lib = code_only(LIB_SRC);
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_LANGUAGES));
+    let place = fn_body(&lib, "place_language_submenu");
+    assert!(place.contains("tray_menu::ID_LANGUAGES"));
+    assert!(place.contains("tray_menu::ID_MICROPHONE"));
+    assert!(place.contains("tray_menu::ID_HANDS_FREE"));
+    assert!(place.contains("tray_menu::ID_LANGUAGE_SETTINGS"));
+    let writer = fn_body(&lib, "write_dictation_languages");
+    assert!(writer.contains("languages::LANGUAGES_CHANGED_EVENT"));
+    assert!(writer.contains("sync_language_menu("));
+    let command = fn_body(&lib, "set_dictation_languages");
+    assert!(command.contains("write_dictation_languages("));
+    let tray_pick = fn_body(&lib, "pick_language_from_tray");
+    assert!(tray_pick.contains("tray_menu::language_row("));
+    assert!(tray_pick.contains("write_dictation_languages("));
+    assert_eq!(
+        command_for("lang_pick_2"),
+        Some(TrayCommand::PickLanguage(2))
+    );
+    assert_eq!(
+        command_for(tray_menu::ID_LANGUAGE_SETTINGS),
+        Some(TrayCommand::OpenLanguageSettings)
+    );
 }
 
 /// "Transcript History…" lands on a view the frontend actually has: the value

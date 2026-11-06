@@ -440,3 +440,102 @@ fn an_extra_chord_routes_to_its_action() {
     hotkey_table::set_active_aliases(Vec::new());
     assert_eq!(hotkey_table::alias_action(&sc), None);
 }
+
+// ── fix-b2-1: a save that moves a chord from an extra to a primary ──────────
+
+/// The resolved primaries of the always-global actions for `settings`.
+fn live_primaries(
+    settings: &[(BindingAction, Option<&ChordSetting>)],
+) -> Vec<(
+    BindingAction,
+    tauri_plugin_global_shortcut::Shortcut,
+    String,
+)> {
+    settings
+        .iter()
+        .map(|(a, c)| {
+            let (sc, l) = hotkey_table::resolve(*a, *c);
+            (*a, sc, l)
+        })
+        .collect()
+}
+
+/// The shipped-UI repro: Open Scratchpad rebound to ⌃⌘K, ⌃⌘J added as an
+/// extra of Copy last, then the footer "Reset to default". The save hands
+/// ⌃⌘J back to Open Scratchpad as its primary, so the extras' unregister
+/// plan must leave it registered.
+#[test]
+fn reset_all_keeps_a_chord_that_moves_from_an_extra_to_a_primary() {
+    let k = chord("KeyK", true, false, false, true);
+    let j = chord("KeyJ", true, false, false, true);
+    // Before: the state the editor saved.
+    let before: Vec<(BindingAction, Option<&ChordSetting>)> =
+        BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, (*a == BindingAction::OpenScratchpad).then_some(&k)))
+            .collect();
+    let extras_before = vec![ExtraBinding {
+        action: BindingAction::CopyLast,
+        chord: j.clone(),
+    }];
+    let old_extras = validate_extras(&before, &extras_before).expect("⌃⌘J is a valid extra");
+    let mut all = live_primaries(&before);
+    all.extend(old_extras.clone());
+    check_distinct(&all).expect("⌃⌘K primary + ⌃⌘J extra do not overlap");
+
+    // After "Reset to default": every primary back to its default, no extras.
+    let after: Vec<(BindingAction, Option<&ChordSetting>)> =
+        BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, None))
+            .collect();
+    let new_extras = validate_extras(&after, &[]).expect("no extras is valid");
+    assert!(new_extras.is_empty());
+    let live: Vec<_> = live_primaries(&after)
+        .into_iter()
+        .map(|(_, sc, _)| sc)
+        .collect();
+    let (j_sc, _) = hotkey_table::resolve(BindingAction::OpenScratchpad, None);
+    assert_eq!(
+        old_extras[0].1, j_sc,
+        "the extra and the default are one chord"
+    );
+    assert!(live.contains(&j_sc), "Open Scratchpad's default is ⌃⌘J");
+
+    // The old diff alone would drop ⌃⌘J — the dead-shortcut bug.
+    assert_eq!(
+        hotkey_table::alias_diff(&old_extras, &new_extras).1,
+        vec![j_sc]
+    );
+    // The plan keeps it: Open Scratchpad holds it now.
+    assert!(
+        hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live).is_empty(),
+        "a chord a live primary holds is never unregistered"
+    );
+    // And nothing new is added on top of a live primary.
+    assert!(hotkey_table::alias_register_conflicts(&old_extras, &new_extras, &live).is_empty());
+}
+
+/// The same reset with an extra that no primary takes over: it is dropped.
+#[test]
+fn removing_an_extra_no_primary_holds_unregisters_it() {
+    let defaults: Vec<(BindingAction, Option<&ChordSetting>)> =
+        BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, None))
+            .collect();
+    let extras_before = vec![ExtraBinding {
+        action: BindingAction::OpenScratchpad,
+        chord: chord("KeyK", true, true, false, false),
+    }];
+    let old_extras = validate_extras(&defaults, &extras_before).expect("⌃⌥K is a valid extra");
+    let new_extras = validate_extras(&defaults, &[]).expect("no extras is valid");
+    let live: Vec<_> = live_primaries(&defaults)
+        .into_iter()
+        .map(|(_, sc, _)| sc)
+        .collect();
+    assert_eq!(
+        hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live),
+        vec![old_extras[0].1]
+    );
+}

@@ -5,6 +5,7 @@ import {
   LICENSE_SCENES,
   matrixLicenseScenes,
   matrixPhases,
+  matrixRailScene,
   resolvePhase,
   SAMPLE_PROGRESS,
   sceneLicense,
@@ -83,5 +84,13 @@ describe("yap24-PILL1 — license scenes", () => {
       expect(r.label.length).toBeGreaterThan(0);
     }
     expect(rows.some((r) => r.id === "trial-quiet")).toBe(true);
+  });
+});
+
+describe("yap-1106-pill-notes-and-meeting / WF-03 — the rail scene", () => {
+  it("is an idle pill with the rail forced open", () => {
+    const row = matrixRailScene();
+    expect(row).toMatchObject({ phase: "idle", id: "rail", phaseId: PHASE_ID.idle, query: "rail=open", offer: "" });
+    expect(row.label.length).toBeGreaterThan(0);
   });
 });

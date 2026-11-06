@@ -1875,6 +1875,23 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         TrayCommand::PickMicrophone(index) => {
             pick_microphone_from_tray(app, index);
         }
+        // WF-11 — pick Auto-detect or a language from the submenu, resolved
+        // against the rows ON SCREEN and written through the ONE writer the
+        // bar's chip and Settings use, which redraws the submenu and tells
+        // every window.
+        TrayCommand::PickLanguage(index) => {
+            pick_language_from_tray(app, state, index);
+        }
+        // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
+        TrayCommand::OpenLanguageSettings => {
+            log::info!("tray open_language_settings");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("navigate", "settings");
+            let _ = app.emit("settings-tab", tray_menu::LANGUAGE_SETTINGS_TAB);
+        }
         // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
         // and re-publishes, which redraws the calendar rows.
         TrayCommand::ToggleHideMeetingTitles => {
@@ -1982,6 +1999,135 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
     if let Err(e) = spawned {
         log::warn!("tray pick_microphone spawn_failed error={e}");
     }
+}
+
+/// WF-11 — the tray half of a language pick. The row carries the exact prefs
+/// the chip would write for the same choice (`tray_menu::prefs_for_pick`).
+fn pick_language_from_tray(app: &AppHandle, state: &AppState, index: usize) {
+    let Some(row) = tray_menu::language_row(index) else {
+        log::warn!("tray pick_language stale_row index={index}");
+        sync_language_menu(app);
+        return;
+    };
+    match write_dictation_languages(app, state, &row.prefs, "tray") {
+        Ok(_) => log::info!("tray pick_language index={index} pick={}", row.pick),
+        Err(e) => {
+            log::warn!("tray pick_language failed pick={} error={e}", row.pick);
+            // The check item flipped itself on the click; redraw from the
+            // unchanged settings so it reads true again — and say so.
+            sync_language_menu(app);
+            notify(app, "Yap", "Yap could not switch the language — try again");
+        }
+    }
+}
+
+/// WF-11 — redraw the Languages submenu from the live settings. Safe from any
+/// thread: the mutation hops to the main thread.
+fn sync_language_menu(app: &AppHandle) {
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            apply_language_menu_on_main(&app_main, &state);
+        }
+    });
+    if let Err(e) = hop {
+        log::warn!("tray language_menu hop_failed error={e}");
+    }
+}
+
+/// WF-11 — the ONE place the Languages submenu is mutated. MAIN THREAD only.
+/// Built from the live prefs and the LAST probed model support (never loads
+/// the model to draw a check); what was drawn is recorded in
+/// `tray_menu::LANG_SHOWN` only on success.
+fn apply_language_menu_on_main(app: &AppHandle, state: &AppState) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray language_menu skipped reason=tray_not_built");
+        return;
+    };
+    let prefs = state.settings.lock().language_prefs();
+    let support = tray_menu::LANG_SHOWN.support();
+    let opts = languages::language_options(&prefs, support.as_ref());
+    let plan = tray_menu::language_menu(&opts);
+    match place_language_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray language_menu synced rows={} checked={} probed={}",
+                plan.rows.len(),
+                plan.checked_pick().unwrap_or("none"),
+                support.is_some()
+            );
+            tray_menu::LANG_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray language_menu apply_failed error={e}");
+            tray_menu::LANG_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_language_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::LanguageMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_LANGUAGES)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, in the Dictation group: under Microphone once the device list has
+    // landed (the Microphone submenu is always re-placed directly under
+    // Hands-free, so the order stays Hands-free, Microphone, Languages), else
+    // directly under Hands-free.
+    let items = menu.items().map_err(|e| format!("items: {e}"))?;
+    let at = items
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        })
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the languages submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| CheckMenuItem::with_id(app, r.id.as_str(), &r.text, true, r.checked, None::<&str>))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| format!("separator: {e}"))?;
+    let settings_i = MenuItem::with_id(
+        app,
+        tray_menu::ID_LANGUAGE_SETTINGS,
+        tray_menu::LANGUAGE_SETTINGS_LABEL,
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("settings item: {e}"))?;
+    let mut entries: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = children
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    entries.push(&separator);
+    entries.push(&settings_i);
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_LANGUAGES,
+        tray_menu::label(tray_menu::ID_LANGUAGES),
+        true,
+        &entries,
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
 }
 
 /// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
@@ -4730,6 +4876,51 @@ fn adopt_recovered_takes(
     recovered
 }
 
+/// yap-fx-07 — the error an in-session orphaned capture spill carries in
+/// History: the take was cut off before it was transcribed (the 2026-11-06
+/// "arm while already capturing" case), and its audio is all there is.
+const ABORTED_TAKE_ERROR: &str = "recording cut off before it was transcribed";
+
+/// yap-fx-07 — how old (mtime) an aborted capture spill must be before the
+/// in-session scan adopts it. `SpillWriter::drop`'s copy fallback can still be
+/// writing a younger one; ten seconds is far past any copy of a take's audio.
+const ABORTED_SPILL_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// yap-fx-07 — "every kept clip is listed": adopt the capture spills a take
+/// aborted mid-session left in the recovery dir, so each gets a
+/// `failed_dictations` row (and a Retry) NOW rather than at the next launch —
+/// or is deleted, when it is silent (`record::is_silent_clip`). Runs before
+/// every History list and every hygiene pass. Never touches an in-flight
+/// `.decoding.wav` link (a live decode owns it) and never decodes or pastes.
+/// A row list that cannot be read skips the scan: it cannot tell an orphan
+/// from a kept clip without it. Returns how many rows were added.
+fn adopt_aborted_spills(db: &Database, dir: &Path) -> usize {
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>(),
+        Err(e) => {
+            log::warn!("recovery orphan_scan_skipped reason=rows_unreadable error={e}");
+            return 0;
+        }
+    };
+    let started = std::time::Instant::now();
+    let takes = record::recover_aborted_capture_spills(
+        dir,
+        &keep,
+        std::time::SystemTime::now(),
+        ABORTED_SPILL_MIN_AGE,
+    );
+    if takes.is_empty() {
+        return 0;
+    }
+    let adopted = adopt_recovered_takes(db, takes, ABORTED_TAKE_ERROR, "yap-fx-07 aborted spill");
+    log::info!(
+        "recovery orphan_spills_adopted count={adopted} ms={}",
+        started.elapsed().as_millis()
+    );
+    diagnostics::record_duration("recovery", "orphan_spills_adopted", adopted as u64);
+    adopted
+}
+
 /// DB-B — the launch sweep for a LONG take the app died in the middle of.
 ///
 /// While a take decodes, its finished clip is hard-linked into the recovery
@@ -4912,6 +5103,9 @@ fn run_leftovers_sweep(db: &Database) {
 
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
+    // yap-fx-07 — orphans become rows (or, silent, are deleted) BEFORE the
+    // keep-list below is read, so the sweep never sees one as row-less.
+    adopt_aborted_spills(db, &recovery_dir());
     // YV94 — same posture, one window later: expired meeting audio is dropped
     // before the orphan sweep runs, so the sweep never sees those WAVs as
     // "unreachable files I should think about".
@@ -5244,6 +5438,7 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
 /// honest `supportsDetect: null`, never a guess.
 #[tauri::command]
 async fn language_options(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<languages::LanguageOptions, String> {
     let state = state.inner().clone();
@@ -5264,16 +5459,21 @@ async fn language_options(
             }
             None => None,
         };
+        // WF-11 — the tray's Languages submenu draws from the last probe (it
+        // never loads the model itself); a probe that changed what the model
+        // can do redraws it so its check matches the chip's.
+        if tray_menu::LANG_SHOWN.support() != support {
+            tray_menu::LANG_SHOWN.remember_support(support.clone());
+            sync_language_menu(&app);
+        }
         Ok(languages::language_options(&prefs, support.as_ref()))
     })
     .await
     .map_err(|e| format!("language probe failed: {e}"))?
 }
 
-/// Y10-A — the ONE writer of the three language fields, for the Settings
-/// control and the bar's picker alike. Normalizes (known codes only, primary
-/// first, at most `languages::MAX_LANGUAGE_SET`), persists, and broadcasts the
-/// same `settings` event every other settings write does.
+/// Y10-A — the Settings control's and the bar's picker's door to the ONE
+/// writer of the three language fields ([`write_dictation_languages`]).
 #[tauri::command]
 fn set_dictation_languages(
     app: AppHandle,
@@ -5282,7 +5482,26 @@ fn set_dictation_languages(
     set: Vec<String>,
     auto: bool,
 ) -> Result<AppSettings, String> {
-    let prefs = languages::LanguagePrefs::from_settings(&primary, &set, auto);
+    let prefs = languages::LanguagePrefs { primary, set, auto };
+    write_dictation_languages(&app, state.inner().as_ref(), &prefs, "app")
+}
+
+/// Y10-A / WF-11 — THE writer of the three language fields, for the Settings
+/// control, the bar's chip, the offer card and the tray's Languages submenu
+/// alike. Normalizes (known codes only, primary first, at most
+/// `languages::MAX_LANGUAGE_SET`), persists, broadcasts the same `settings`
+/// event every other settings write does PLUS
+/// `languages::LANGUAGES_CHANGED_EVENT` with the new prefs (so every window's
+/// language store applies it at once), and redraws the tray submenu — one
+/// store, every surface follows it.
+fn write_dictation_languages(
+    app: &AppHandle,
+    state: &AppState,
+    requested: &languages::LanguagePrefs,
+    source: &str,
+) -> Result<AppSettings, String> {
+    let prefs =
+        languages::LanguagePrefs::from_settings(&requested.primary, &requested.set, requested.auto);
     let next = {
         let mut settings = state.settings.lock();
         settings.language = prefs.primary.clone();
@@ -5290,14 +5509,19 @@ fn set_dictation_languages(
         settings.language_auto = prefs.auto;
         settings.clone()
     };
-    persist_settings(&next)?;
+    if let Err(e) = persist_settings(&next) {
+        log::warn!("dictation languages: persist_failed source={source} error={e}");
+        return Err(e);
+    }
     let _ = app.emit("settings", &next);
+    let _ = app.emit(languages::LANGUAGES_CHANGED_EVENT, &prefs);
     log::info!(
-        "dictation languages: primary={} set={:?} auto={}",
+        "dictation languages: source={source} primary={} set={:?} auto={}",
         prefs.primary,
         prefs.set,
         prefs.auto
     );
+    sync_language_menu(app);
     Ok(next)
 }
 
@@ -5526,24 +5750,10 @@ fn save_settings(
     // can put them back alongside every primary.
     let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
-        let aliases_now = hotkey_table::active_aliases();
-        if aliases_now != aliases_before {
-            let (re_reg, drop_now) = hotkey_table::alias_diff(&aliases_now, &aliases_before);
-            if smoke::global_hotkeys_allowed() {
-                let gs = app.global_shortcut();
-                for sc in drop_now {
-                    let _ = gs.unregister(sc);
-                }
-                for sc in re_reg {
-                    if !gs.is_registered(sc) {
-                        if let Err(e) = gs.register(sc) {
-                            log::warn!("shortcuts extra_rollback_failed ({e})");
-                        }
-                    }
-                }
-            }
-            hotkey_table::set_active_aliases(aliases_before.clone());
-        }
+        // fix-b2-1: the PRIMARIES are restored first and the extras last, so
+        // (a) the extras' drop plan sees the restored primaries and never
+        // unregisters a chord one of them holds, and (b) a primary swap-back
+        // that drops a chord a restored extra holds is re-registered below.
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -5565,6 +5775,40 @@ fn save_settings(
                 log::warn!("dictate chord rollback failed: {e}");
             }
         }
+        // Every extra held before this save is re-asserted, not only the
+        // diff: a primary swap-back above may have dropped one (a save that
+        // moved ⌃⌘J from an extra to a primary, refused in step 2b before the
+        // alias set changed, swaps the primary back and unregisters ⌃⌘J).
+        let aliases_now = hotkey_table::active_aliases();
+        let restored_primaries = live_primary_chords(dictate_toggle_chord(&prev).0);
+        let drop_now =
+            hotkey_table::alias_unregister_plan(&aliases_now, &aliases_before, &restored_primaries);
+        let mut restored = 0usize;
+        if smoke::global_hotkeys_allowed() {
+            let gs = app.global_shortcut();
+            for sc in &drop_now {
+                if gs.is_registered(*sc) {
+                    if let Err(e) = gs.unregister(*sc) {
+                        log::warn!("shortcuts extra_rollback_unregister_failed ({e})");
+                    }
+                }
+            }
+            for (_, sc, _) in &aliases_before {
+                if !gs.is_registered(*sc) {
+                    match gs.register(*sc) {
+                        Ok(()) => restored += 1,
+                        Err(e) => log::warn!("shortcuts extra_rollback_failed ({e})"),
+                    }
+                }
+            }
+        }
+        if aliases_now != aliases_before || restored > 0 {
+            log::info!(
+                "shortcuts extras_rolled_back restored={restored} dropped={}",
+                drop_now.len()
+            );
+        }
+        hotkey_table::set_active_aliases(aliases_before.clone());
         if let Err(e) = persist_settings(&prev) {
             log::warn!("settings rollback persist failed: {e}");
         }
@@ -5619,12 +5863,49 @@ fn save_settings(
             .map_err(CommandError::refused)?;
         let old_extras = hotkey_table::active_aliases();
         if new_extras != old_extras {
-            let (to_reg, to_unreg) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            let (to_reg, removed) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            // fix-b2-1: the primaries as they stand after step 2. A removed
+            // extra that one of them now holds (reset-all handing ⌃⌘J back to
+            // Open Scratchpad) stays registered — step 2's swap skipped its
+            // register because the extra already held it.
+            let live_primaries = live_primary_chords(dictate_toggle_chord(&next).0);
+            let to_unreg =
+                hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live_primaries);
+            let kept_for_primary = removed.len().saturating_sub(to_unreg.len());
+            if kept_for_primary > 0 {
+                log::info!("shortcuts extra_now_primary kept={kept_for_primary}");
+            }
+            // A NEW extra a live primary already holds passed the gate only by
+            // a bug (check_distinct refuses it): log it and refuse the save.
+            let conflicts =
+                hotkey_table::alias_register_conflicts(&old_extras, &new_extras, &live_primaries);
+            if let Some((action, _, label)) = conflicts.first() {
+                log::error!(
+                    "shortcuts extra_on_live_primary action={} label={label} count={}",
+                    action.title(),
+                    conflicts.len()
+                );
+                return Err(rollback(
+                    CommandError::refused(format!(
+                        "{label} is already another action's shortcut — pick a different one"
+                    )),
+                    dictate_applied,
+                    &applied,
+                ));
+            }
             if smoke::global_hotkeys_allowed() {
                 let gs = app.global_shortcut();
                 let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
                 for sc in &to_reg {
                     if gs.is_registered(*sc) {
+                        // Not a live primary (checked above), yet held: a
+                        // leftover registration. Keep it, but never silently.
+                        let who = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(a, ..)| a.title())
+                            .unwrap_or("unknown");
+                        log::warn!("shortcuts extra_already_registered action={who}");
                         continue;
                     }
                     if let Err(e) = gs.register(*sc) {
@@ -5697,6 +5978,9 @@ fn save_settings(
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
+    // WF-11 — a full-settings save may carry the language fields; the tray's
+    // Languages submenu follows the store.
+    sync_language_menu(&app);
     // YV53: the dock edge moves the NSPanel itself, so it must land before the
     // show below re-parks — and `reposition` covers the still-recording case
     // where the pill stays up without a show call.
@@ -6205,14 +6489,30 @@ fn correct_transcript(
 /// Expired ones are purged (audio included) before the list is built, so the
 /// UI can never offer a retry against a clip retention already removed.
 #[tauri::command]
-fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
-    purge_expired_failed_takes(&state.db);
-    Ok(state
-        .db
-        .list_failed_dictations()?
-        .into_iter()
-        .map(failed_row_for_display)
-        .collect())
+///
+/// yap-fx-07 — async, with the work on a blocking thread: adopting an aborted
+/// spill reads and rewrites its audio, which must never run on the main thread
+/// a sync command would hold.
+async fn list_failed_dictations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FailedDictation>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FailedDictation>, String> {
+        purge_expired_failed_takes(&state.db);
+        // yap-fx-07 — a spill a mid-session abort left behind is listed too.
+        adopt_aborted_spills(&state.db, &recovery_dir());
+        Ok(state
+            .db
+            .list_failed_dictations()?
+            .into_iter()
+            .map(failed_row_for_display)
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        log::error!("recovery list_failed worker failed: {e}");
+        "Couldn't load the kept clips — try again".to_string()
+    })?
 }
 
 /// yap-recovery-followups (f) — the row as History shows it. "Already
@@ -10206,6 +10506,24 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
     )
 }
 
+/// fix-b2-1 (WF-18) — every chord a PRIMARY holds right now: the
+/// always-global rebindable chords (Record meeting included), the dictate
+/// toggle `dictate`, and the cancel key while a take has it armed. The extras'
+/// unregister plan never drops one of these.
+fn live_primary_chords(
+    dictate: tauri_plugin_global_shortcut::Shortcut,
+) -> Vec<tauri_plugin_global_shortcut::Shortcut> {
+    let mut v: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+        .iter()
+        .map(|a| hotkey_table::active_chord(*a).0)
+        .collect();
+    v.push(dictate);
+    if let Some(c) = hotkey_table::armed_cancel() {
+        v.push(c);
+    }
+    v
+}
+
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
 fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
@@ -12677,6 +12995,9 @@ pub fn run() {
                     log::warn!("tray microphone_menu hop_failed error={e}");
                 }
             });
+            // WF-11 — the Languages submenu is drawn at launch from the saved
+            // prefs, then redrawn by every language write.
+            sync_language_menu(app.handle());
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
@@ -12929,6 +13250,62 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
+    /// recovery dir is LISTED (a `failed_dictations` row with a Retry) without
+    /// waiting for a relaunch; a silent one is deleted instead; a second pass
+    /// adds nothing.
+    #[test]
+    fn aborted_spill_is_listed_or_deleted_only_if_silent() {
+        let dir = temp_dir("fx07-adopt");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        std::fs::create_dir_all(&recovery).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        for (name, amp) in [
+            ("voiced.capture.wav", 0.3f32),
+            ("hiss.capture.wav", 0.002f32),
+        ] {
+            let path = recovery.join(name);
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..(16_000 * 3) {
+                let t = i as f32 / 16_000.0;
+                w.write_sample(amp * (2.0 * std::f32::consts::PI * 220.0 * t).sin())
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 1);
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(rows.len(), 1, "the voiced spill is listed");
+        assert_eq!(rows[0].error, super::ABORTED_TAKE_ERROR);
+        assert!(rows[0].wav_path.ends_with("voiced.wav"));
+        assert!(std::path::Path::new(&rows[0].wav_path).exists());
+        assert!((rows[0].speech_seconds - 3.0).abs() < 0.01);
+        assert!(!recovery.join("voiced.capture.wav").exists());
+        assert!(
+            !recovery.join("hiss.capture.wav").exists(),
+            "silent spill deleted"
+        );
+        assert!(!recovery.join("hiss.wav").exists());
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 0, "idempotent");
+        assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn take_stage_terminal_for_each_outcome() {
         use super::{terminal_stage, TakeOutcome};

@@ -192,6 +192,17 @@ function __pillDetect(want) {
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
+    // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
+    // rail on the classic capsule (Yappy's legacy stage owns its whole window),
+    // rotated with the dock: a row at the bottom, a column at a side dock while
+    // no meeting banner holds the bar.
+    if (want.id === "rail" && want.pill === "classic") {
+      if (!document.querySelector('.slots[data-rail="open"]')) bad.push("rail scene drew no open rail");
+      const wantAxis = want.dock === "bottom" || want.meeting === "recording" ? "row" : "column";
+      if (capsule && want.meeting !== "recording" && capsule.getAttribute("data-bar-axis") !== wantAxis) {
+        bad.push("rail axis " + capsule.getAttribute("data-bar-axis") + " at " + want.dock + " (want " + wantAxis + ")");
+      }
+    }
     if (bad.length) out.push({ id: "phase-not-applied", detail: bad.join("; ") });
   }
 

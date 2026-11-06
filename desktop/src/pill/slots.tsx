@@ -39,11 +39,21 @@ import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
-import { Mic, MicOff, NotebookPen, Settings2, Square, X } from "lucide-react";
+import { Mic, MicOff, NotebookPen, Settings2, Square, StickyNote, Users, X } from "lucide-react";
 import { barAxis, barTokens, shellBarPhase, type BarDock } from "./dock";
 import { isListening, type LivePhase, type TranscribeProgress } from "./live";
 
-export type SlotId = "dictate" | "scratchpad" | "cancel" | "wpm" | "menu";
+export type SlotId =
+  | "dictate"
+  | "scratchpad"
+  | "cancel"
+  | "wpm"
+  | "menu"
+  // yap-1106-pill-notes-and-meeting / WF-03 — the hover rail and the hands-free stop.
+  | "meeting-start"
+  | "note"
+  | "meeting-stop"
+  | "hands-free-stop";
 /** Where along the bar's length a slot sits: before the centre, the centre, after it. */
 export type SlotGroup = "lead" | "centre" | "trail";
 /** Which way a tooltip opens. Always AWAY from the screen edge the bar is docked to. */
@@ -69,6 +79,64 @@ export interface SlotCtx {
   listen: ListenEstimate;
   /** The user's "Add to Flow Bar" toggle for the Scratchpad (Wispr gates theirs the same way). */
   scratchpadOnBar: boolean;
+  /**
+   * yap-1106-pill-notes-and-meeting / WF-03 — the resting pill is hovered or
+   * holds keyboard focus, so its action rail is out. Decided by the CAPSULE
+   * (PillShell owns the hover machine); absent = closed.
+   */
+  railOpen?: boolean;
+  /** A meeting is RECORDING right now (`MeetingStatus.recording`). Absent = no. */
+  meetingRecording?: boolean;
+  /** The running meeting's clock as the backend rendered it ("12:34"), for a Note's timestamp. */
+  meetingClock?: string | null;
+  /** The running meeting's title, if it has one. */
+  meetingTitle?: string | null;
+  /** The live keys the rail's keycaps show, read from `hotkey_bindings`. Absent = no keycaps. */
+  keys?: RailKeys;
+  /** The key that ends a hands-free take (`AppStatus.chord_label`). */
+  stopKey?: string;
+}
+
+/**
+ * WF-03 — the keys the rail names, each the user's REAL current binding off
+ * the backend's live hotkey table (`hotkey_bindings`), never a default typed
+ * here. `null` = that action has no working key right now, and its tooltip
+ * shows no keycap rather than a key that does nothing.
+ */
+export interface RailKeys {
+  dictate: string | null;
+  scratchpad: string | null;
+  meeting: string | null;
+}
+export const NO_RAIL_KEYS: RailKeys = { dictate: null, scratchpad: null, meeting: null };
+
+/** The slice of `hotkey_bindings` (hotkeyRecorder.ts `HotkeyBindingsReport`) the rail reads. */
+export interface RailBindingRow {
+  action: string;
+  key: string;
+  liveKey: string | null;
+}
+
+/**
+ * The rail's keycaps from the live hotkey table. Prefers the key that performs
+ * the action RIGHT NOW (`liveKey`, which differs from `key` when a fallback is
+ * held) and falls back to the stored key; an empty or missing row is `null`.
+ * Pure, so "a rebind changes the tooltip" is a unit test, not a restart.
+ */
+export function railKeysFrom(rows: readonly RailBindingRow[] | null | undefined): RailKeys {
+  const keyOf = (...actions: string[]): string | null => {
+    for (const a of actions) {
+      const r = rows?.find((x) => x.action === a);
+      const k = (r?.liveKey ?? r?.key ?? "").trim();
+      if (k) return k;
+    }
+    return null;
+  };
+  return {
+    dictate: keyOf("dictate_hold", "dictate_toggle"),
+    scratchpad: keyOf("open_scratchpad"),
+    meeting: keyOf("record_meeting"),
+  };
 }
 
 /** What a press is allowed to do that the slot cannot do by itself. */
@@ -82,6 +150,8 @@ export interface FlowBarSlot {
   group: SlotGroup;
   glyph(ctx: SlotCtx): ReactNode;
   tooltip(ctx: SlotCtx): string;
+  /** The live key that performs this action, drawn as a keycap in the tooltip. `null`/absent = none. */
+  keycap?(ctx: SlotCtx): string | null;
   visible(ctx: SlotCtx): boolean;
   /** `null` = a readout, not a control (the WPM slot). */
   onPress: ((ctx: SlotCtx, act: SlotActions) => void) | null;
@@ -117,9 +187,24 @@ export function barThickness(ctx: SlotCtx): number {
   return barTokens(shellBarPhase(ctx.phase, ctx.meetingOnScreen), ctx.dock).thickness;
 }
 
-/** The bar's length axis for this context: a column only for a strip phase at a side dock. */
+/**
+ * The bar's length axis for this context: a column only for a strip phase at a
+ * side dock — and for the resting rail at a side dock, which rotates with the
+ * strip it grew out of (WF-03: Dictate, Scratchpad, Meeting stacked).
+ */
 export function slotAxis(ctx: SlotCtx): "row" | "column" {
+  // A meeting's banner stays a row at every dock (dock-geometry.json), rail or not.
+  if (railShown(ctx) && !ctx.meetingOnScreen) return ctx.dock === "bottom" ? "row" : "column";
   return barAxis(shellBarPhase(ctx.phase, ctx.meetingOnScreen), ctx.dock);
+}
+
+/**
+ * WF-03 — the resting rail is out: the pill is hovered or focused, and nothing
+ * else owns the bar (no take, no permission/license stop). A meeting that is
+ * recording does not close it: the rail is where its Note and Stop live.
+ */
+export function railShown(ctx: SlotCtx): boolean {
+  return !!ctx.railOpen && ctx.phase === "idle";
 }
 
 /** The tooltip opens away from the docked edge: up from the bottom, inward from a side. */
@@ -164,6 +249,106 @@ const openMain = (nav: string, tab?: string) => {
 };
 
 /**
+ * Telemetry: ONE structured line per rail action and per failure, in the repo's
+ * "<module> <event> key=value" shape. Never the note text, never a key, never a
+ * path — only which action, the dock, and the outcome.
+ */
+export function railLogLine(event: string, fields: Record<string, string | number | boolean> = {}): string {
+  const kv = Object.entries(fields).map(([k, v]) => `${k}=${String(v).replace(/\s+/g, "_")}`);
+  return ["pill_rail", event, ...kv].join(" ");
+}
+function railLog(event: string, fields: Record<string, string | number | boolean> = {}): void {
+  console.info(railLogLine(event, fields));
+}
+const railFailureListeners = new Set<(sentence: string) => void>();
+/**
+ * The shell (float-main) shows a failed rail action's sentence in its phase
+ * strip — the pill's one line of text — because the main window's toast host
+ * (toast.ts) lives in another window. Returns the unsubscribe.
+ */
+export function subscribeRailFailure(cb: (sentence: string) => void): () => void {
+  railFailureListeners.add(cb);
+  return () => { railFailureListeners.delete(cb); };
+}
+/** A rail action failed: one log line, and the one sentence (with its way forward) a person can act on. */
+export function railFailed(action: string, err: unknown, sentence: string): void {
+  console.warn(railLogLine("failed", { action, error: typeof err === "string" ? err.slice(0, 80) : "error" }));
+  railFailureListeners.forEach((cb) => cb(sentence));
+}
+
+/** The Scratchpad window (DB-D) — the rail's Scratchpad, and Note when no meeting runs. */
+async function openScratchpad(dock: BarDock): Promise<void> {
+  railLog("scratchpad_open", { dock });
+  await invoke("open_scratchpad").catch((e) => {
+    railFailed("scratchpad", e, "Scratchpad didn't open here, so it opened in Yap.");
+    openMain("scratchpad");
+  });
+}
+
+/** Mirrors `meeting_control::KindChoice` (serde camelCase; `MeetingKind` is snake_case). */
+interface KindChoice {
+  kind: string;
+  label: string;
+}
+
+/**
+ * Start meeting WITH ITS KIND: a native popup of the backend's own picker
+ * (`meeting_kind_choices`, the list the tray and the Meetings tab render), so
+ * the pill can never offer a kind the others do not. Nothing records until the
+ * person picks a row — a click is the consent (product rule).
+ */
+async function startMeetingMenu(dock: BarDock): Promise<void> {
+  railLog("meeting_menu", { dock });
+  const got = await invoke<KindChoice[] | null>("meeting_kind_choices").catch(() => null);
+  const choices = Array.isArray(got) ? got.filter((c) => c && c.kind && c.label) : [];
+  const start = (kind: string | null) => {
+    const t0 = Date.now();
+    invoke("start_meeting", { title: null, kind })
+      .then(() => railLog("meeting_start", { kind: kind ?? "unknown", dock, ms: Date.now() - t0 }))
+      .catch((e) => railFailed("meeting_start", e, typeof e === "string" && e ? e : "Meeting didn't start — try Record in the menu bar."));
+  };
+  if (choices.length === 0) { start(null); return; }
+  const menu = await Menu.new({
+    items: choices.map((c) => ({ text: c.label, action: () => start(c.kind) })),
+  });
+  await menu.popup();
+}
+
+async function stopMeeting(dock: BarDock): Promise<void> {
+  const t0 = Date.now();
+  await invoke("stop_meeting")
+    .then(() => railLog("meeting_stop", { dock, ms: Date.now() - t0 }))
+    .catch((e) => railFailed("meeting_stop", e, "Meeting didn't stop — use Stop in the menu bar."));
+}
+
+/** "Meeting note · 12:34" — the note's timestamp is the meeting's own clock. */
+export function meetingNoteTitle(clock: string | null | undefined, title?: string | null): string {
+  const at = (clock ?? "").trim() || "0:00";
+  const of = (title ?? "").trim();
+  return of ? `Meeting note · ${of} · ${at}` : `Meeting note · ${at}`;
+}
+
+/**
+ * DECISION (item 18): "take notes there". While a meeting records, Note makes a
+ * TIMESTAMPED note — titled off the meeting's own clock and seeded with
+ * "[12:34] " — and opens it in the Scratchpad, the one window that takes typing
+ * while the meeting app stays in front. With no meeting running, Note is the
+ * Scratchpad itself.
+ */
+async function takeNote(ctx: SlotCtx): Promise<void> {
+  if (!ctx.meetingRecording) { await openScratchpad(ctx.dock); return; }
+  const at = (ctx.meetingClock ?? "").trim() || "0:00";
+  try {
+    await invoke("save_note_draft", { id: null, title: meetingNoteTitle(at, ctx.meetingTitle), content: `[${at}] ` });
+    railLog("meeting_note", { dock: ctx.dock });
+  } catch (e) {
+    railFailed("meeting_note", e, "Note didn't save — open the Scratchpad and type it there.");
+    return;
+  }
+  await openScratchpad(ctx.dock);
+}
+
+/**
  * The Mic/Settings menu is a NATIVE popup (`Menu.popup`), not a DOM popover: a
  * 30 px strip in a click-through panel has nowhere to draw a list, and an
  * NSMenu can never open off-screen. Allowed by `core:default` (which carries
@@ -184,17 +369,20 @@ async function openBarMenu(): Promise<void> {
 const fixedAcross = () => SLOT_PX;
 
 /**
- * THE FIVE. Order within a group is order along the bar. Exactly five, per the
- * spec, and no empty ones: every row here draws something real when visible.
+ * THE FIVE take-time slots (Y8-B), plus item 18 / WF-03's rail: Meeting, Note,
+ * Stop meeting at rest, and the hands-free Stop. Order within a group is order
+ * along the bar; no empty ones: every row here draws something real when visible.
  */
 export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
   {
     id: "scratchpad",
     group: "lead",
     glyph: () => <NotebookPen strokeWidth={2.2} />,
-    tooltip: () => "Open Scratchpad",
-    visible: (ctx) => SCRATCHPAD_WINDOW_LANDED && ctx.scratchpadOnBar && isListening(ctx.phase),
-    onPress: () => openMain("scratchpad"),
+    tooltip: () => "Scratchpad",
+    keycap: (ctx) => ctx.keys?.scratchpad ?? null,
+    // WF-03: on the resting rail always; mid-take only behind the toggle (DB-D).
+    visible: (ctx) => railShown(ctx) || (SCRATCHPAD_WINDOW_LANDED && ctx.scratchpadOnBar && isListening(ctx.phase)),
+    onPress: (ctx) => { void openScratchpad(ctx.dock); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
   },
@@ -219,13 +407,53 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     tooltip: (ctx) =>
       isListening(ctx.phase) ? "Stop dictation"
         : permissionStopped(ctx.phase) ? "Dictation is unavailable — open to fix"
-          : "Start dictation",
+          : railShown(ctx) ? "Dictate"
+            : "Start dictation",
+    // WF-03: "Dictate fn" — the live hold key, at rest only (mid-take the key is the stop key).
+    keycap: (ctx) => (ctx.phase === "idle" ? ctx.keys?.dictate ?? null : null),
     // Always: the centre IS the bar. At rest it is the seed, so it is exactly as
     // thick as the bar and never thicker.
     visible: () => true,
     onPress: (_ctx, act) => act.toggleDictation(),
     lengthPx: SLOT_PX,
-    acrossPx: (ctx) => Math.min(SLOT_PX, barThickness(ctx)),
+    // At rest it is the seed, exactly as thick as the bar; with the rail out the
+    // pill is hover-expanded (float.css), so it takes a full slot box.
+    acrossPx: (ctx) => (railShown(ctx) ? SLOT_PX : Math.min(SLOT_PX, barThickness(ctx))),
+  },
+  {
+    // Item 18 — Start meeting, WITH its kind (native picker). Hidden once one records.
+    id: "meeting-start",
+    group: "trail",
+    glyph: () => <Users strokeWidth={2.2} />,
+    tooltip: () => "Record a meeting",
+    keycap: (ctx) => ctx.keys?.meeting ?? null,
+    visible: (ctx) => railShown(ctx) && !ctx.meetingRecording,
+    onPress: (ctx) => { startMeetingMenu(ctx.dock).catch((e) => railFailed("meeting_menu", e, "Meeting picker didn't open — try Record in the menu bar.")); },
+    lengthPx: SLOT_PX,
+    acrossPx: fixedAcross,
+  },
+  {
+    // Item 18 — a timestamped Note into the running meeting (see `takeNote`).
+    id: "note",
+    group: "trail",
+    glyph: () => <StickyNote strokeWidth={2.2} />,
+    tooltip: (ctx) => `Note at ${(ctx.meetingClock ?? "").trim() || "0:00"}`,
+    visible: (ctx) => railShown(ctx) && !!ctx.meetingRecording,
+    onPress: (ctx) => { void takeNote(ctx); },
+    lengthPx: SLOT_PX,
+    acrossPx: fixedAcross,
+  },
+  {
+    // Item 18 — Stop meeting, beside its Note. The meeting key toggles it too.
+    id: "meeting-stop",
+    group: "trail",
+    glyph: () => <Square fill="currentColor" strokeWidth={0} />,
+    tooltip: () => "Stop meeting",
+    keycap: (ctx) => ctx.keys?.meeting ?? null,
+    visible: (ctx) => railShown(ctx) && !!ctx.meetingRecording,
+    onPress: (ctx) => { void stopMeeting(ctx.dock); },
+    lengthPx: SLOT_PX,
+    acrossPx: fixedAcross,
   },
   {
     id: "wpm",
@@ -260,6 +488,22 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     tooltip: () => "Microphone and settings",
     visible: (ctx) => isListening(ctx.phase),
     onPress: () => { openBarMenu().catch(() => openMain("settings", "audio")); },
+    lengthPx: SLOT_PX,
+    acrossPx: fixedAcross,
+  },
+  {
+    // Item 18 — hands-free polish: a stop you can CLICK (and Tab to), its key
+    // as a keycap. The capsule's own stop glyph is aria-hidden and untabbable.
+    id: "hands-free-stop",
+    group: "trail",
+    glyph: () => <Square fill="currentColor" strokeWidth={0} />,
+    tooltip: () => "Stop hands-free",
+    keycap: (ctx) => (ctx.stopKey ?? "").trim() || null,
+    // A row only: on a side dock's column the Classic window (300x140) has no
+    // room for a third trail slot — pill-matrix found the column pushed past
+    // both window edges. There the key (and the capsule) still stop it.
+    visible: (ctx) => ctx.phase === "listening-locked" && slotAxis(ctx) === "row",
+    onPress: (ctx, act) => { railLog("hands_free_stop", { dock: ctx.dock }); act.toggleDictation(); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
   },
@@ -321,6 +565,19 @@ export function pressSlot(slot: FlowBarSlot, ctx: SlotCtx, act: SlotActions, dra
 }
 
 /**
+ * A slot's tooltip: the words, then the live key as a keycap ("Dictate [fn]").
+ * Re-rendered from `ctx.keys` on every frame, so a rebind shows up at once.
+ */
+export function SlotTip({ text, keycap, side }: { text: string; keycap: string | null; side: TooltipSide }) {
+  return (
+    <span className="slot-tip" role="tooltip" data-tip-side={side}>
+      {text}
+      {keycap ? <kbd className="keycap">{keycap}</kbd> : null}
+    </span>
+  );
+}
+
+/**
  * One group of slots (lead or trail) as DOM, inside the capsule. The centre
  * (Dictate) is the capsule's own body, drawn by the character, which reads
  * `slotById("dictate")` for its glyph and tooltip.
@@ -337,13 +594,12 @@ export function FlowBarSlots(
   const shown = layoutSlots(ctx).placements.filter((p) => p.group === group);
   if (shown.length === 0) return null;
   return (
-    <span className="slots" data-slot-group={group} data-bar-axis={slotAxis(ctx)}>
+    <span className="slots" data-slot-group={group} data-bar-axis={slotAxis(ctx)} data-rail={railShown(ctx) ? "open" : undefined}>
       {shown.map((p) => {
         const slot = slotById(p.id);
         const tip = slot.tooltip(ctx);
-        const tipEl = (
-          <span className="slot-tip" role="tooltip" data-tip-side={side}>{tip}</span>
-        );
+        const key = slot.keycap?.(ctx) ?? null;
+        const tipEl = <SlotTip text={tip} keycap={key} side={side} />;
         const style = { ["--slot-length" as string]: `${p.length}px`, ["--slot-across" as string]: `${p.across}px` };
         if (!slot.onPress) {
           return (
@@ -372,6 +628,7 @@ export function FlowBarSlots(
             data-slot={p.id}
             data-tip-side={side}
             aria-label={tip}
+            aria-keyshortcuts={key ?? undefined}
             style={style}
             onClick={(e) => {
               e.stopPropagation();
