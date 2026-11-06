@@ -939,7 +939,7 @@ pub mod editor {
         extras: &[ExtraBinding],
     ) -> Result<Vec<(BindingAction, Shortcut, String)>, String> {
         let mut out = Vec::new();
-        for e in extras {
+        for (i, e) in extras.iter().enumerate() {
             if !supports_extra(e.action) {
                 return Err(format!(
                     "{} has one shortcut — change it instead of adding another",
@@ -952,7 +952,7 @@ pub mod editor {
                 .and_then(|(_, p)| *p);
             let before: Vec<ChordSetting> = {
                 let mut v = bindings_of(e.action, primary, &[]);
-                for prev in extras.iter().take_while(|x| !std::ptr::eq(*x, e)) {
+                for prev in &extras[..i] {
                     if prev.action == e.action {
                         v.push(prev.chord.clone());
                     }

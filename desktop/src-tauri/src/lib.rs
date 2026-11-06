@@ -500,6 +500,11 @@ pub struct AppSettings {
     /// Y8-A — the Open Scratchpad chord rebind. `None` = ⌃⌘J.
     #[serde(default)]
     pub scratchpad_chord: Option<hotkeys::ChordSetting>,
+    /// WF-18 — each always-global action's 2nd … 4th shortcut (the primary
+    /// stays in its own field above). Validated by `shortcuts::editor` on
+    /// every save and again at launch. Empty = one shortcut per action.
+    #[serde(default)]
+    pub extra_chords: Vec<shortcuts::editor::ExtraBinding>,
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
@@ -746,6 +751,7 @@ impl Default for AppSettings {
             hands_free_chord: None,
             copy_last_chord: None,
             scratchpad_chord: None,
+            extra_chords: Vec::new(),
             pill_style: "classic".into(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
@@ -4908,7 +4914,22 @@ fn save_settings(
             let (sc, label) = hotkey_table::resolve(a, chord_setting(&next, a));
             all.push((a, sc, label));
         }
-        hotkey_table::check_distinct(&all).map_err(CommandError::refused)?;
+        // WF-18 — every extra shortcut passes the same gate as a primary and
+        // joins the distinctness check, so no two actions share a chord.
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let extras = shortcuts::editor::validate_extras(&primaries, &next.extra_chords)
+            .map_err(|why| {
+                log::warn!("shortcuts extra_refused count={} reason={why}", next.extra_chords.len());
+                CommandError::refused(why)
+            })?;
+        all.extend(extras);
+        hotkey_table::check_distinct(&all).map_err(|why| {
+            log::warn!("shortcuts overlap_refused reason={why}");
+            CommandError::refused(why)
+        })?;
     }
     // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
     // PERSIST, then APPLY the chords; an apply that fails rolls back every
@@ -4966,7 +4987,28 @@ fn save_settings(
     // (the chord is taken) or an uncatalogued `command_failed` (anything else,
     // which the toast never shows verbatim). Only Yap's own constant sentences
     // ("finish the current take …") are built as `refused` here directly.
+    // WF-18 — the extra shortcuts held before this save, so a later refusal
+    // can put them back alongside every primary.
+    let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
+        let aliases_now = hotkey_table::active_aliases();
+        if aliases_now != aliases_before {
+            let (re_reg, drop_now) = hotkey_table::alias_diff(&aliases_now, &aliases_before);
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                for sc in drop_now {
+                    let _ = gs.unregister(sc);
+                }
+                for sc in re_reg {
+                    if !gs.is_registered(sc) {
+                        if let Err(e) = gs.register(sc) {
+                            log::warn!("shortcuts extra_rollback_failed ({e})");
+                        }
+                    }
+                }
+            }
+            hotkey_table::set_active_aliases(aliases_before.clone());
+        }
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -5030,6 +5072,60 @@ fn save_settings(
         log::info!("{} chord → {new_label}", a.title());
         hotkey_table::set_active_chord(a, (new_chord, new_label));
         applied.push((a, old));
+    }
+    // 2b. WF-18 — the extra shortcuts: register the new ones first, drop the
+    // ones this save removed only after that, roll back on a refusal.
+    {
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let new_extras = shortcuts::editor::validate_extras(&primaries, &next.extra_chords)
+            .map_err(CommandError::refused)?;
+        let old_extras = hotkey_table::active_aliases();
+        if new_extras != old_extras {
+            let (to_reg, to_unreg) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
+                for sc in &to_reg {
+                    if gs.is_registered(*sc) {
+                        continue;
+                    }
+                    if let Err(e) = gs.register(*sc) {
+                        let label = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(.., l)| l.clone())
+                            .unwrap_or_default();
+                        log::warn!("shortcuts extra_register_failed label={label}");
+                        for d in &done {
+                            let _ = gs.unregister(*d);
+                        }
+                        return Err(rollback(
+                            chord_rebind_error(&label, &e.to_string()),
+                            dictate_applied,
+                            &applied,
+                        ));
+                    }
+                    done.push(*sc);
+                }
+                for sc in &to_unreg {
+                    if gs.is_registered(*sc) {
+                        if let Err(e) = gs.unregister(*sc) {
+                            log::warn!("shortcuts extra_unregister_failed ({e})");
+                        }
+                    }
+                }
+            }
+            log::info!(
+                "shortcuts extras_saved count={} added={} removed={}",
+                new_extras.len(),
+                to_reg.len(),
+                to_unreg.len()
+            );
+            hotkey_table::set_active_aliases(new_extras);
+        }
     }
     let meeting_applied = applied
         .iter()
@@ -11301,6 +11397,29 @@ pub fn run() {
                             Err(e) => log::warn!("{} ({}) register failed: {e}", resolved.1, a.title()),
                         }
                         hotkey_table::set_chord_status(a, hotkeys::CarbonStatus::from_result(&r));
+                    }
+                    // WF-18 — each action's extra shortcuts, re-validated (a
+                    // stored extra a rule now refuses is dropped and logged).
+                    {
+                        let extras = {
+                            let settings = st.settings.lock();
+                            let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+                                .iter()
+                                .map(|a| (*a, chord_setting(&settings, *a)))
+                                .collect();
+                            shortcuts::editor::resolve_extras_lenient(&primaries, &settings.extra_chords)
+                        };
+                        let mut live = Vec::new();
+                        for (a, sc, label) in extras {
+                            match h.global_shortcut().register(sc) {
+                                Ok(()) => {
+                                    log::info!("shortcuts extra_registered action={a:?} label={label}");
+                                    live.push((a, sc, label));
+                                }
+                                Err(e) => log::warn!("shortcuts extra_register_failed action={a:?} label={label} ({e})"),
+                            }
+                        }
+                        hotkey_table::set_active_aliases(live);
                     }
                     {
                         // The binding table at launch, once the tap thread has

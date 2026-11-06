@@ -746,6 +746,49 @@ pub fn set_meeting_status(s: CarbonStatus) {
 type ActiveChord = (BindingAction, (Shortcut, String), CarbonStatus);
 static ACTIVE_EXTRA: Mutex<Vec<ActiveChord>> = Mutex::new(Vec::new());
 
+/// WF-18 — the EXTRA chords (beyond each action's primary) Yap holds right
+/// now: `shortcuts::editor` validates them, launch and `save_settings`
+/// register them, and `shortcut_defer::route` maps a press back to its action.
+static ACTIVE_ALIASES: Mutex<Vec<(BindingAction, Shortcut, String)>> = Mutex::new(Vec::new());
+
+/// The extra chords registered right now.
+pub fn active_aliases() -> Vec<(BindingAction, Shortcut, String)> {
+    ACTIVE_ALIASES.lock().clone()
+}
+
+/// Replace the registered extra chords (after the plugin calls succeeded).
+pub fn set_active_aliases(v: Vec<(BindingAction, Shortcut, String)>) {
+    *ACTIVE_ALIASES.lock() = v;
+}
+
+/// The action an extra chord belongs to, if `shortcut` is one.
+pub fn alias_action(shortcut: &Shortcut) -> Option<BindingAction> {
+    ACTIVE_ALIASES
+        .lock()
+        .iter()
+        .find(|(_, sc, _)| sc == shortcut)
+        .map(|(a, ..)| *a)
+}
+
+/// Which extras to register and which to drop when the set moves from `old`
+/// to `new`: `(to_register, to_unregister)`. PURE.
+pub fn alias_diff(
+    old: &[(BindingAction, Shortcut, String)],
+    new: &[(BindingAction, Shortcut, String)],
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
+    let reg = new
+        .iter()
+        .filter(|(_, sc, _)| !old.iter().any(|(_, o, _)| o == sc))
+        .map(|(_, sc, _)| *sc)
+        .collect();
+    let unreg = old
+        .iter()
+        .filter(|(_, sc, _)| !new.iter().any(|(_, n, _)| n == sc))
+        .map(|(_, sc, _)| *sc)
+        .collect();
+    (reg, unreg)
+}
+
 /// The chord `action` holds right now (its default until launch resolves it).
 /// Record meeting and Cancel read their own slots.
 pub fn active_chord(action: BindingAction) -> (Shortcut, String) {
