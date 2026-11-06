@@ -248,6 +248,8 @@ use hotkeys::{HotkeyEdge, HotkeySource};
 /// directly — the signature block is the one stage that copies bytes verbatim
 /// after polish, so undo has to be asserted against the real function.
 pub mod snippets;
+// WF-20 — the pill's per-app style chip and its 15-minute override. Pure.
+pub mod style_chip;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
@@ -485,6 +487,12 @@ pub struct AppSettings {
     /// (⌥) | off. Independent of `ptt_binding` so plain dictation is unaffected.
     #[serde(default = "default_command_binding")]
     pub command_binding: String,
+    /// WF-19 — a mouse button as push-to-talk: `""` (off, default), `middle`
+    /// or `button<N>` (N ≥ 3, the maker's number), plus `:hands_free` for
+    /// click-to-toggle. Left and right click are refused on save
+    /// (`ptt_macos::MouseBinding::parse`).
+    #[serde(default)]
+    pub ptt_mouse_binding: String,
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
@@ -685,6 +693,12 @@ pub struct AppSettings {
     /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
     #[serde(default)]
     pub muted_pill_categories: Vec<String>,
+    /// WF-16 — "Hide Yap from screen sharing during meetings". On by default:
+    /// while a meeting records, the pill (and its meeting chip) and the
+    /// Scratchpad are kept out of screen shares and screenshots; they come
+    /// back in captures when it stops. `float_pill::sync_capture_hidden`.
+    #[serde(default = "default_true")]
+    pub hide_from_capture_in_meetings: bool,
 }
 
 /// WF-17 — the pill-message categories a user may mute. Mirrors
@@ -773,6 +787,7 @@ impl Default for AppSettings {
             show_floating_pill: true,
             ptt_binding: "fn_control".into(),
             command_binding: "command".into(),
+            ptt_mouse_binding: String::new(),
             keep_cmd_shift_v: false,
             dictate_toggle: None,
             meeting_chord: None,
@@ -810,6 +825,7 @@ impl Default for AppSettings {
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
             muted_pill_categories: Vec::new(),
+            hide_from_capture_in_meetings: true,
         }
     }
 }
@@ -1036,6 +1052,12 @@ struct AppState {
     /// send has to write those same bytes; rebuilding at send time would make
     /// the preview a preview of a different file.
     support_bundle: PLMutex<Option<support::PreparedBundle>>,
+    /// WF-20 — the chip's per-app mode picks, each holding 15 minutes. In
+    /// memory only: a relaunch forgets them (see `style_chip`).
+    style_overrides: PLMutex<style_chip::StyleOverrides>,
+    /// WF-20 — the frontmost app read when the CURRENT take started; the app a
+    /// chip click scopes its pick to. `None` until read, or without AX.
+    style_chip_app: PLMutex<Option<String>>,
 }
 
 /// The environment variable that relocates the app's ENTIRE state root (Y0-D).
@@ -1119,6 +1141,9 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
+        // WF-16 — hide the pill / Scratchpad from capture on the start edge,
+        // restore on stop (edge-latched: a no-op on every other tick).
+        float_pill::sync_capture_hidden(&app);
         // yap-call-1 — "Call ended" reads off THIS tick (no new timer).
         call_offer_meeting_tick(&app, status.recording);
         let Some(state) = app.try_state::<Arc<AppState>>() else {
@@ -1301,6 +1326,8 @@ fn toggle_meeting(
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         meeting_detect::clear(app, None);
+        // fix-b1-1 — the call offer / chip goes too (the pill-never-lies rule).
+        call_offer_meeting_started_elsewhere(app, "toggle");
         if idle_pill_on(state) {
             float_pill::show_for_recording(app);
         }
@@ -2740,6 +2767,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             arm_asr_engine(app, state);
             let _ = app.emit("recording", true);
             emit_status(app, state);
+            // WF-20 — the style chip: which app-aware mode this app gets.
+            emit_style_chip_for_take(app, state);
             // Wispr-style: glass island appears for the hold
             float_pill::show_for_recording(app);
             // Stream mic levels to the float HUD at HUD_FPS. YV38: the thread
@@ -3377,6 +3406,8 @@ fn run_model_transform_take(
             cursor_context.before_caret.as_deref(),
             cursor_context.browser_mode,
         );
+    // WF-20 — a running chip pick for this app replaces the resolved mode.
+    let mode = apply_style_override(app, &settings.dictation_mode, source_app, mode);
     let cfg = polish::PolishConfig::from_settings(settings, mode);
     let mut result = transforms::run_installed(def, selection, mode, &cfg);
     if result.status == transforms::TransformStatus::Succeeded {
@@ -3922,6 +3953,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 source_app.as_deref().unwrap_or_default(),
                 cursor_context.before_caret.as_deref(),
                 cursor_context.browser_mode,
+            );
+            // WF-20 — the pill's style chip: a pick the user made for THIS app
+            // in the last 15 minutes replaces the resolved mode. Only while
+            // app-aware modes are on; a fixed Settings mode still wins.
+            let dictation_mode = apply_style_override(
+                &app2,
+                &settings.dictation_mode,
+                source_app.as_deref().unwrap_or_default(),
+                dictation_mode,
             );
             // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
             // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
@@ -5344,6 +5384,12 @@ fn save_settings(
                 next.muted_pill_categories.len()
             );
         }
+        if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
+            log::info!(
+                "settings capture_hide_changed on={}",
+                next.hide_from_capture_in_meetings
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -5351,6 +5397,19 @@ fn save_settings(
         "both" | "fn_or_fn_control" => "fn / fn⌃".into(),
         _ => "fn⌃".into(),
     };
+    // WF-19 — a mouse push-to-talk button. Left / right click (and anything
+    // that is not a real button) are refused here, before anything persists;
+    // an accepted value is stored in its canonical form.
+    #[cfg(target_os = "macos")]
+    {
+        match ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding) {
+            Ok(b) => next.ptt_mouse_binding = b.map(|b| b.to_settings()).unwrap_or_default(),
+            Err(why) => {
+                log::warn!("ptt_mouse bind_refused reason={why}");
+                return Err(CommandError::refused(why));
+            }
+        }
+    }
     let dictate_changed = state.settings.lock().dictate_toggle != next.dictate_toggle;
     if dictate_changed {
         // Validate BEFORE persisting: a refused rebind is an error the
@@ -5643,6 +5702,9 @@ fn save_settings(
     // where the pill stays up without a show call.
     float_pill::set_position(float_pill::PillPosition::from_settings(&next.pill_position));
     float_pill::reposition(&app);
+    // WF-16 — switching the setting mid-meeting applies at once.
+    float_pill::set_hide_from_capture(next.hide_from_capture_in_meetings);
+    float_pill::sync_capture_hidden(&app);
     if tray_menu::idle_pill_visible(
         next.show_floating_pill,
         state.pill_hide.is_hidden(std::time::Instant::now()),
@@ -5657,6 +5719,11 @@ fn save_settings(
         ptt_macos::set_command_binding(ptt_macos::CommandBinding::from_settings(
             &next.command_binding,
         ));
+        // WF-19 — validated above, so this parse cannot fail; off on the
+        // impossible error rather than a guess.
+        ptt_macos::set_mouse_binding(
+            ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding).unwrap_or(None),
+        );
     }
     // YV42: the login item follows the toggle immediately, not on next launch.
     apply_autostart(&app, next.autostart);
@@ -5679,6 +5746,106 @@ fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
 #[tauri::command]
 fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
     float_pill::set_panel_frame(&app, w, h, anchor_x, anchor_y);
+}
+
+/// WF-20 — read the frontmost app for the take that just started and tell the
+/// pill which app-aware mode it gets. Off the calling thread: the AX read talks
+/// to the user's app and can stall, and this runs on the take-start path.
+fn emit_style_chip_for_take(app: &AppHandle, state: &Arc<AppState>) {
+    *state.style_chip_app.lock() = None;
+    let app = app.clone();
+    let state = state.clone();
+    std::thread::spawn(move || {
+        let name = focus::frontmost_app_name();
+        let setting = state.settings.lock().dictation_mode.clone();
+        let now = style_chip::monotonic_ms();
+        let chip = style_chip::chip_for(
+            &setting,
+            name.as_deref(),
+            &state.style_overrides.lock(),
+            now,
+        );
+        *state.style_chip_app.lock() = name;
+        log::info!(
+            "style_chip shown visible={} mode={} overridden={}",
+            chip.visible,
+            chip.mode,
+            chip.overridden
+        );
+        let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    });
+}
+
+/// WF-20 — the chip pick for `source_app`, if one is running, replaces the
+/// resolved mode (`style_chip::effective_mode`). Logs only when it does.
+fn apply_style_override(
+    app: &AppHandle,
+    setting: &str,
+    source_app: &str,
+    resolved: dictation::DictationMode,
+) -> dictation::DictationMode {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return resolved;
+    };
+    let now = style_chip::monotonic_ms();
+    let mode = style_chip::effective_mode(
+        setting,
+        source_app,
+        resolved,
+        &state.style_overrides.lock(),
+        now,
+    );
+    if mode != resolved {
+        log::info!(
+            "style_chip applied mode={} over={}",
+            style_chip::mode_word(mode),
+            style_chip::mode_word(resolved)
+        );
+    }
+    mode
+}
+
+/// WF-20 — a click on the pill's style chip: cycle THIS take's app to the next
+/// of the six app-aware modes for the next 15 minutes, and return the chip to
+/// render. Refused (an error the pill shows as a toast) when no take is
+/// listening, when app-aware modes are off, or when no app was read.
+#[tauri::command]
+fn pill_cycle_style(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<style_chip::StyleChip, String> {
+    let state = state.inner().clone();
+    if !*state.recording.lock() {
+        log::info!("style_chip cycle_refused reason=not_listening");
+        return Err("The style chip only changes while Yap is listening.".into());
+    }
+    let setting = state.settings.lock().dictation_mode.clone();
+    if !style_chip::app_aware_on(&setting) {
+        log::info!("style_chip cycle_refused reason=app_aware_off");
+        return Err("App-aware modes are off. Turn them on in Formatting.".into());
+    }
+    let Some(name) = state.style_chip_app.lock().clone() else {
+        log::info!("style_chip cycle_refused reason=no_app");
+        return Err("Yap could not tell which app this is.".into());
+    };
+    let now = style_chip::monotonic_ms();
+    let chip = {
+        let mut overrides = state.style_overrides.lock();
+        let shown = style_chip::shown_mode(&setting, &name, &overrides, now);
+        if overrides.cycle(&name, shown, now).is_none() {
+            log::info!("style_chip cycle_refused reason=no_app");
+            return Err("Yap could not tell which app this is.".into());
+        }
+        style_chip::chip_for(&setting, Some(&name), &overrides, now)
+    };
+    log::info!(
+        "style_chip cycled mode={} ttl_ms={} live_overrides={}",
+        chip.mode,
+        style_chip::OVERRIDE_TTL_MS,
+        state.style_overrides.lock().len()
+    );
+    let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    Ok(chip)
 }
 
 /// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
@@ -9221,9 +9388,31 @@ fn begin_meeting(
     title: Option<String>,
     kind: meetings::MeetingKind,
 ) -> Result<meeting_control::MeetingStatus, String> {
+    begin_meeting_from(app, st, title, kind, StartOrigin::Elsewhere).map(|(status, _)| status)
+}
+
+/// fix-b1-1 — who is starting the meeting. Every start that is NOT the call
+/// offer's own [Record] withdraws the call offer and chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    /// `accept_call_offer` → `Effect::StartRecording`.
+    CallOffer,
+    /// The pill, the Meetings tab, the tray's Upcoming row, the calendar offer.
+    Elsewhere,
+}
+
+/// `begin_meeting`, also saying whether THIS call began the recording (false:
+/// a meeting was already running and its status came back unchanged).
+fn begin_meeting_from(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    title: Option<String>,
+    kind: meetings::MeetingKind,
+    origin: StartOrigin,
+) -> Result<(meeting_control::MeetingStatus, bool), String> {
     let controller = st.meeting().ok_or("Yap is still starting up")?;
     if controller.is_recording() {
-        return Ok(controller.status());
+        return Ok((controller.status(), false));
     }
     controller.start_with_kind(&meetings_dir(), title, kind)?;
     // yap-notetaker-notes — the light live transcript; it ends by itself when
@@ -9232,10 +9421,14 @@ fn begin_meeting(
     let status = controller.status();
     // A recording started: whatever offer the pill was holding is answered.
     meeting_detect::clear(app, None);
+    if origin == StartOrigin::Elsewhere {
+        // fix-b1-1 — and the call offer / chip, which this start did not answer.
+        call_offer_meeting_started_elsewhere(app, "begin_meeting");
+    }
     if idle_pill_on(st) {
         float_pill::show_for_recording(app);
     }
-    Ok(status)
+    Ok((status, true))
 }
 
 /// yap-notetaker-detect — the offer the pill should show, for a pill webview
@@ -9382,14 +9575,46 @@ fn apply_call_offer_effects(
                     "call_offer record bundle={bundle_id} via={} offer={offer_id}",
                     detected_via.as_str()
                 );
-                match begin_meeting(app, st, Some(title), meetings::MeetingKind::Virtual) {
-                    Ok(status) => {
-                        if let Some(id) = status.id.as_deref() {
-                            if let Err(e) =
-                                st.db
-                                    .set_meeting_detection(id, &bundle_id, detected_via.as_str())
-                            {
-                                log::warn!("call_offer detection_store_failed err={e}");
+                // fix-b1-1 — read BEFORE begin_meeting: a meeting the offer did
+                // not start is never stamped with this call's app / via.
+                let already = st.meeting().is_some_and(|c| c.is_recording());
+                let begun = match call_offer::offer_start_decision(already) {
+                    call_offer::OfferStart::AlreadyRecording => None,
+                    call_offer::OfferStart::Begin => Some(begin_meeting_from(
+                        app,
+                        st,
+                        Some(title),
+                        meetings::MeetingKind::Virtual,
+                        StartOrigin::CallOffer,
+                    )),
+                };
+                match begun {
+                    None | Some(Ok((_, false))) => {
+                        log::info!(
+                            "call_offer start_refused reason=already_recording bundle={bundle_id}"
+                        );
+                        crate::diagnostics::bump("call_offer", "already_recording");
+                        // Recording → Chip → withdrawn and spent: no chip stays
+                        // claiming the call is not recorded.
+                        let policy = call_offer::load_policy(&st.db);
+                        let _ = call_offer::drive(call_offer::Input::StartFailed, &policy);
+                        let _ =
+                            call_offer::drive(call_offer::Input::MeetingStartedElsewhere, &policy);
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        error = Some(call_offer::ALREADY_RECORDING_MSG.to_string());
+                    }
+                    Some(Ok((status, true))) => {
+                        if call_offer::may_stamp_detection(already, true) {
+                            if let Some(id) = status.id.as_deref() {
+                                if let Err(e) = st.db.set_meeting_detection(
+                                    id,
+                                    &bundle_id,
+                                    detected_via.as_str(),
+                                ) {
+                                    log::warn!("call_offer detection_store_failed err={e}");
+                                }
                             }
                         }
                         if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
@@ -9398,7 +9623,7 @@ fn apply_call_offer_effects(
                         crate::diagnostics::bump("call_offer", "recorded");
                         started = Some(status);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         log::warn!("call_offer start_failed bundle={bundle_id} err={e}");
                         let (more, _, _) = call_offer::drive(
                             call_offer::Input::StartFailed,
@@ -9467,6 +9692,31 @@ pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sig
         }
         let _ = apply_call_offer_effects(app, &st, fx);
     }
+}
+
+/// fix-b1-1 — a meeting started any way but the call offer's own [Record]
+/// (pill, ⌃⌘M, tray, the tray's Upcoming row, the Meetings tab, the calendar
+/// offer), or the calendar raised its offer: the call offer and chip are
+/// withdrawn and that call is spent. A no-op while the offer's own recording
+/// runs, and when nothing is offered. `source` is a fixed word for the log.
+pub(crate) fn call_offer_meeting_started_elsewhere(app: &AppHandle, source: &'static str) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    // The policy is not read by this input: no settings read per wake.
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::MeetingStartedElsewhere,
+        &call_offer::PolicyMap::new(),
+    );
+    if fx.is_empty() {
+        return;
+    }
+    if fx.contains(&call_offer::Effect::Withdraw) {
+        log::info!("call_offer withdrawn reason=meeting_started_elsewhere source={source}");
+        crate::diagnostics::bump("call_offer", "withdrawn_elsewhere");
+    }
+    let _ = apply_call_offer_effects(app, &st, fx);
 }
 
 /// The 1 s meeting tick (no new timer): "Call ended" while recording a
@@ -10109,6 +10359,16 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
     let command_binding = ptt_macos::CommandBinding::from_settings(
         &state.settings.lock().command_binding,
     );
+    // WF-19 — the mouse button rides the same tap. A stored value that no
+    // longer parses (hand-edited file) is logged and treated as off.
+    let mouse = match ptt_macos::MouseBinding::parse(&state.settings.lock().ptt_mouse_binding) {
+        Ok(b) => b,
+        Err(why) => {
+            log::warn!("ptt_mouse bind_refused at_launch reason={why}");
+            None
+        }
+    };
+    ptt_macos::set_mouse_binding(mouse);
     let st = state.clone();
     let h = app.clone();
     ptt_macos::start(
@@ -11273,6 +11533,8 @@ pub fn run() {
         license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
         support_bundle: PLMutex::new(None),
+        style_overrides: PLMutex::new(style_chip::StyleOverrides::new()),
+        style_chip_app: PLMutex::new(None),
     });
 
     // yap-meetings-fix (A, B) — the meeting transcription pipeline: ONE worker
@@ -11603,6 +11865,7 @@ pub fn run() {
             set_dictation_languages,
             pill_set_hitbox,
             pill_set_panel_frame,
+            pill_cycle_style,
             pending_copy_card,
             dismiss_copy_card,
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
@@ -12332,6 +12595,9 @@ pub fn run() {
             float_pill::set_position(float_pill::PillPosition::from_settings(
                 &state.settings.lock().pill_position,
             ));
+            // WF-16 — before any window is built, so each one reads the real
+            // setting through `call_offer::apply_content_protection`.
+            float_pill::set_hide_from_capture(state.settings.lock().hide_from_capture_in_meetings);
             // Y6-D: a cold launch (no settings file → not onboarded) lands on
             // onboarding and does NOT put up an idle pill it cannot honour; the
             // pill appears when onboarding saves settings (`save_settings`
@@ -14143,6 +14409,8 @@ mod tests {
             license,
             transcription,
             support_bundle: super::PLMutex::new(None),
+            style_overrides: super::PLMutex::new(crate::style_chip::StyleOverrides::new()),
+            style_chip_app: super::PLMutex::new(None),
         })
     }
 

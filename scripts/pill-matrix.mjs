@@ -23,6 +23,17 @@
  *                     content boxes plus the 10 pt margin (pill/state.ts)
  *   slot-off-layout   a painted slot is not inside the box the layout gave it
  *
+ * fix-b1-2 adds the CARD checks. Every card on screen (the cards named by
+ * desktop/src/pill/state.ts CARD_CLASSES — copy card, meeting offer, WF-12's
+ * language offer, coaching nudge) is a painted slot too, so a card over the
+ * character, bubble, hint or clock box (or over another card) is a
+ * one-pill-overlap, a card outside the row the layout reserved is a
+ * slot-off-layout, and:
+ *
+ *   card-outside-panel  any pixel of a card past the panel edge (the NSPanel
+ *                       clips it) — judged at every dock x {no meeting,
+ *                       meeting}, so the lang-offer scene covers all six
+ *
  * The window is sized to the layout's panel (window.__YAP_PILL_LAYOUT__), the
  * way float_pill.rs set_panel_frame sizes the NSPanel, before it is judged.
  *
@@ -145,6 +156,21 @@ function fixtureScript(tones) {
  * EDGE, not a container. So unlike the smoke's out-of-bounds check, those three
  * never excuse a box: anything past them is cut off on screen.
  */
+/* fix-b1-2 — the card list is READ from the one list the shell measures
+   (pill/state.ts CARD_CLASSES), so the matrix can never judge a different set
+   of cards than float-main lays out. */
+function cardSelectorFromState() {
+  const src = readFileSync(join(DESKTOP, "src", "pill", "state.ts"), "utf8");
+  const m = /export const CARD_CLASSES = \[([^\]]*)\]/.exec(src);
+  const classes = m ? [...m[1].matchAll(/"([a-z0-9-]+)"/g)].map((x) => x[1]) : [];
+  if (!classes.length) {
+    console.error("pill-matrix: CARD_CLASSES not found in desktop/src/pill/state.ts (INSTRUMENT failure)");
+    process.exit(3);
+  }
+  return classes.map((c) => "." + c).join(", ");
+}
+const CARD_SELECTOR = cardSelectorFromState();
+
 const DETECTORS = String.raw`
 function __pillDetect(want) {
   const out = [];
@@ -162,6 +188,7 @@ function __pillDetect(want) {
     if (want.license && de.dataset.license !== want.license) bad.push("html[data-license]=" + de.dataset.license + " (asked " + want.license + ")");
     // WF-12 — an offer scene (lang-offer) must actually draw its card.
     if (want.offer && !document.querySelector('[data-language-offer="' + want.offer + '"]')) bad.push("no [data-language-offer=" + want.offer + "] card");
+    if (want.chip && !document.querySelector('[data-style-chip="' + want.chip + '"]')) bad.push("no [data-style-chip=" + want.chip + "] chip");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
@@ -272,6 +299,16 @@ function __pillDetect(want) {
     slot("bubble", ".kami-bubble", L.bubble);
     slot("clock", "[data-pill-slot=clock]", L.clock);
     slot("progress", ".kami-progress", L.progress);
+    /* fix-b1-2 — EVERY card on screen, not the first: two can be up at once. */
+    const cardsOut = [];
+    for (const el of document.querySelectorAll(${JSON.stringify(CARD_SELECTOR)})) {
+      if (!shown(el)) continue;
+      const b = rectBox(el);
+      painted.push(["card " + name(el), b, L.card]);
+      if (b.x < -tol || b.y < -tol || b.x + b.w > W + tol || b.y + b.h > H + tol)
+        cardsOut.push(name(el) + " " + box({ left: b.x, top: b.y, width: b.w, height: b.h }) + " past the " + W + "x" + H + " panel");
+    }
+    if (cardsOut.length) out.push({ id: "card-outside-panel", detail: cardsOut.join("; ") });
     const ov = [];
     for (let i = 0; i < painted.length; i++) for (let j = i + 1; j < painted.length; j++)
       if (overlap(painted[i][1], painted[j][1])) ov.push(painted[i][0] + "/" + painted[j][0] + " " + box({ left: painted[j][1].x, top: painted[j][1].y, width: painted[j][1].w, height: painted[j][1].h }));
@@ -488,7 +525,7 @@ async function run() {
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, pill: character, dock, meeting }) + ")");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, pill: character, dock, meeting }) + ")");
             const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
@@ -582,7 +619,43 @@ async function selfTest(cdp, base, phases) {
     console.error("SELF-TEST VACUOUS — one-pill detector stayed blind to: " + missed2.join(", "));
     return 9;
   }
-  console.error("self-test-must-fail: all " + (expect.length + expect2.length) + " detectors fired on the synthetic breaks; exiting 1 BY DESIGN.");
+  /* fix-b1-2 — the card detectors, on a real Yappy lang-offer capture: the
+     card dropped onto Yappy's face, and a card hanging past the panel edge. */
+  const offerScene = phases.find((x) => x.offer);
+  let expect3 = [];
+  if (offerScene) {
+    expect3 = ["one-pill-overlap", "card-outside-panel"];
+    const s3 = await openPage(cdp, { [offerScene.phase]: offerScene.tone, [offerScene.id]: offerScene.tone });
+    await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + offerScene.phase + "&pill=yappy&dock=bottom&meeting=none&" + offerScene.query }, s3);
+    await settle(cdp, s3, offerScene.phaseId || offerScene.id);
+    await fitPanel(cdp, s3);
+    await evaluate(cdp, s3, DETECTORS + ";true");
+    const clean3 = await evaluate(cdp, s3, "__pillDetect(null)");
+    console.log("self-test: lang-offer capture before the break: " + (clean3.findings.length ? clean3.findings.map((f) => f.id).join(", ") : "clean"));
+    await evaluate(cdp, s3, String.raw`(() => {
+      const L = window.__YAP_PILL_LAYOUT__;
+      const card = document.querySelector(".language-offer-wrap");
+      if (!L || !card) return false;
+      // Onto Yappy's box, and wider than the panel, so it also leaves it.
+      card.style.setProperty("top", L.char.y + "px", "important");
+      card.style.setProperty("left", L.char.x + "px", "important");
+      card.style.setProperty("width", window.innerWidth + "px", "important");
+      card.style.setProperty("max-width", window.innerWidth + "px", "important");
+      return true;
+    })()`);
+    const res3 = await evaluate(cdp, s3, "__pillDetect(null)");
+    const got3 = res3.findings.map((f) => f.id);
+    for (const f of res3.findings) console.log("  detector fired: " + f.id + " — " + f.detail);
+    const missed3 = expect3.filter((e) => !got3.includes(e));
+    if (missed3.length) {
+      console.error("SELF-TEST VACUOUS — card detector stayed blind to: " + missed3.join(", "));
+      return 9;
+    }
+  } else {
+    console.error("SELF-TEST VACUOUS — no lang-offer scene in __YAP_PILL_PHASES__ to break a card on");
+    return 9;
+  }
+  console.error("self-test-must-fail: all " + (expect.length + expect2.length + expect3.length) + " detectors fired on the synthetic breaks; exiting 1 BY DESIGN.");
   return 1;
 }
 

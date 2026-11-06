@@ -594,9 +594,10 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         }
 
         let win = builder.build().map_err(|e| format!("float window: {e}"))?;
-        // yap-call-1 — the pill and its recording dot are NEVER hidden from a
-        // screen share (`content_protected_for("float")` is false); only the
-        // call-offer window is.
+        // yap-call-1 / WF-16 — built through the one rule: outside a meeting
+        // the pill shows in a screen share; while a meeting records (and the
+        // "Hide Yap from screen sharing" setting is on) it is hidden, and
+        // `sync_capture_hidden` flips it back on stop.
         crate::call_offer::apply_content_protection(&win);
     }
 
@@ -689,6 +690,137 @@ pub fn set_meeting_recording(recording: bool) {
 
 pub fn meeting_recording() -> bool {
     MEETING_RECORDING.load(Ordering::SeqCst)
+}
+
+// ─── WF-16: hide Yap from screen sharing while a meeting records ─────────────
+//
+// A setting (`AppSettings::hide_from_capture_in_meetings`, on by default)
+// keeps the pill (with its meeting chip) and the Scratchpad out of screen
+// shares and screenshots while a meeting records; they come back in captures
+// the moment it stops. The call-offer window is ALWAYS hidden
+// (`call_offer::content_protected_for`). On macOS Tauri's content protection
+// sets the NSWindow `sharingType` to `.none` when on and restores `.readOnly`,
+// the default, when off. The only caller of the Tauri call stays
+// `call_offer::apply_content_protection`, which reads [`capture_hidden_for`].
+// No Screen Recording permission and no private API are involved.
+
+/// The windows WF-16 hides from capture while a meeting records: the pill
+/// panel (which also draws the meeting chip) and the Scratchpad.
+pub const MEETING_CAPTURE_HIDDEN_WINDOWS: [&str; 2] = ["float", crate::scratchpad::WINDOW_LABEL];
+
+/// WF-16 — mirror of the setting. Starts true, the setting's default, and is
+/// re-set from the stored settings at launch and on every save.
+static HIDE_FROM_CAPTURE_SETTING: AtomicBool = AtomicBool::new(true);
+
+/// WF-16 — the edge latch shared by every caller of [`sync_capture_hidden`].
+static CAPTURE_TOGGLE: Mutex<CaptureToggle> = Mutex::new(CaptureToggle::new());
+
+/// WF-16 — the pure decision: hide while a meeting records AND the setting is on.
+pub fn capture_hidden_wanted(setting_on: bool, meeting_recording: bool) -> bool {
+    setting_on && meeting_recording
+}
+
+/// WF-16 — the per-window rule. The call offer is always hidden; the pill and
+/// the Scratchpad only while `meeting_hidden` (see [`capture_hidden_wanted`]);
+/// every other window (main) is never hidden.
+pub fn capture_hidden_for(label: &str, meeting_hidden: bool) -> bool {
+    crate::call_offer::content_protected_for(label)
+        || (meeting_hidden && MEETING_CAPTURE_HIDDEN_WINDOWS.contains(&label))
+}
+
+/// WF-16 — the live answer: what a window built right now should get.
+pub fn capture_hidden_now() -> bool {
+    capture_hidden_wanted(
+        HIDE_FROM_CAPTURE_SETTING.load(Ordering::SeqCst),
+        meeting_recording(),
+    )
+}
+
+/// WF-16 — tell the toggle what the setting says (launch + `save_settings`).
+pub fn set_hide_from_capture(on: bool) {
+    HIDE_FROM_CAPTURE_SETTING.store(on, Ordering::SeqCst);
+}
+
+pub fn hide_from_capture() -> bool {
+    HIDE_FROM_CAPTURE_SETTING.load(Ordering::SeqCst)
+}
+
+/// WF-16 — the toggle function. Fed the setting and the meeting state on every
+/// meeting status tick (1 Hz while recording) and on every settings save, it
+/// returns `Some(hidden)` ONLY on an edge, so the windows are touched once on
+/// record start and once on stop, never 3,600 times an hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureToggle {
+    applied: Option<bool>,
+}
+
+impl CaptureToggle {
+    pub const fn new() -> Self {
+        Self { applied: None }
+    }
+
+    /// What the windows currently carry (`None` = never applied: every window
+    /// was built with the launch value from [`capture_hidden_now`]).
+    pub fn applied(&self) -> Option<bool> {
+        self.applied
+    }
+
+    pub fn step(&mut self, setting_on: bool, meeting_recording: bool) -> Option<bool> {
+        let want = capture_hidden_wanted(setting_on, meeting_recording);
+        // First observation while nothing is hidden: the windows were built
+        // with `false` already — record it without touching them.
+        if self.applied.is_none() && !want {
+            self.applied = Some(false);
+            return None;
+        }
+        if self.applied == Some(want) {
+            return None;
+        }
+        self.applied = Some(want);
+        Some(want)
+    }
+}
+
+impl Default for CaptureToggle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Why a capture edge happened, for the log line only.
+fn capture_reason(hidden: bool, setting_on: bool) -> &'static str {
+    match (hidden, setting_on) {
+        (true, _) => "meeting_start",
+        (false, false) => "setting_off",
+        (false, true) => "meeting_stop",
+    }
+}
+
+/// WF-16 — bring the pill and Scratchpad windows in line with the setting and
+/// the meeting state. Cheap when nothing changed (two atomics + a latch), so
+/// the meeting status sink calls it on every tick. A window that does not
+/// exist yet is skipped: it reads [`capture_hidden_now`] when it is built.
+pub fn sync_capture_hidden<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let setting_on = hide_from_capture();
+    let recording = meeting_recording();
+    let edge = match CAPTURE_TOGGLE.lock() {
+        Ok(mut t) => t.step(setting_on, recording),
+        Err(poisoned) => poisoned.into_inner().step(setting_on, recording),
+    };
+    let Some(hidden) = edge else {
+        return;
+    };
+    let mut windows = 0u32;
+    for label in MEETING_CAPTURE_HIDDEN_WINDOWS {
+        if let Some(w) = app.get_webview_window(label) {
+            crate::call_offer::apply_content_protection(&w);
+            windows += 1;
+        }
+    }
+    log::info!(
+        "float_pill capture_hidden hidden={hidden} reason={} windows={windows}",
+        capture_reason(hidden, setting_on)
+    );
 }
 
 /// YV95 — tell the pill a dictation take is (or is no longer) live. Called from

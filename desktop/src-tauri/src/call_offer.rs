@@ -10,9 +10,11 @@
 //! candidate's offer id — `tests/call_offer_policy.rs` tables that.
 //!
 //! The offer renders in its own small window ([`CALL_OFFER_WINDOW`]) so it can
-//! be hidden from screen capture / screen share without hiding the pill's
-//! recording dot: [`content_protected_for`] is the one rule, and
-//! [`apply_content_protection`] is the one caller of `set_content_protected`.
+//! be hidden from screen capture / screen share at all times, while the pill
+//! is hidden only during a recorded meeting (WF-16, a setting, on by default):
+//! [`content_protected_for`] is the always-on rule, `float_pill::capture_hidden_for`
+//! the per-window rule, and [`apply_content_protection`] the one caller of
+//! `set_content_protected`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,17 +33,24 @@ pub const CALL_OFFER_WINDOW: &str = "call-offer";
 /// Emitted with a [`CallOfferView`] every time the surface changes.
 pub const CALL_OFFER_EVENT: &str = "call_offer";
 
-/// The one content-protection rule. True only for the offer window; the pill
-/// (label `float`) and its recording dot are never hidden from a share.
+/// The ALWAYS-ON content-protection rule: true only for the offer window.
+/// WF-16 adds the meeting-time rule on top (`float_pill::capture_hidden_for`):
+/// the pill (label `float`, with its meeting chip) and the Scratchpad are
+/// hidden only while a meeting records and the setting is on.
 pub fn content_protected_for(label: &str) -> bool {
     label == CALL_OFFER_WINDOW
 }
 
-/// The ONE caller of `set_content_protected`, used where each window is built.
+/// The ONE caller of `set_content_protected`: where each window is built, and
+/// by `float_pill::sync_capture_hidden` on a meeting's start / stop edge.
 pub fn apply_content_protection<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
-    let protect = content_protected_for(w.label());
+    let protect =
+        crate::float_pill::capture_hidden_for(w.label(), crate::float_pill::capture_hidden_now());
     if let Err(e) = w.set_content_protected(protect) {
-        log::warn!("call_offer content_protected label={} err={e}", w.label());
+        log::warn!(
+            "call_offer content_protected_failed label={} protect={protect} err={e}",
+            w.label()
+        );
     }
 }
 
@@ -251,6 +260,12 @@ pub enum Input {
     /// The start behind [`Effect::StartRecording`] failed: back to the chip,
     /// so the user sees the error and can press it again.
     StartFailed,
+    /// fix-b1-1 — a meeting started some OTHER way (pill, ⌃⌘M, tray, the tray's
+    /// Upcoming row, the Meetings tab, the calendar offer), or the calendar
+    /// raised its own offer. From Offering / Chip: withdraw, and spend this
+    /// call so it is not offered again when that recording stops. In
+    /// Recording / EndPrompt (the offer's own recording) and Idle: nothing.
+    MeetingStartedElsewhere,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,6 +376,16 @@ impl CallOfferMachine {
                     vec![]
                 }
             }
+            Input::MeetingStartedElsewhere => match self.phase {
+                Phase::Offering | Phase::Chip => {
+                    // The call is covered by the other recording / offer: it
+                    // is spent, so the same call never re-offers.
+                    self.spent_key = self.live.as_ref().map(|l| l.sighting.key.clone());
+                    self.quiet_since_ms = None;
+                    self.withdraw()
+                }
+                Phase::Idle | Phase::Recording | Phase::EndPrompt => vec![],
+            },
             Input::RecordingStopped => {
                 self.quiet_since_ms = None;
                 self.end_prompt_answered = false;
@@ -523,6 +548,39 @@ impl CallOfferMachine {
             },
         }
     }
+}
+
+// ─── the offer's own start, when a meeting already records ──────────────────
+
+/// fix-b1-1 — the sentence [Record] on the offer / chip returns when a
+/// meeting is already recording (one sentence, no action needed: the meeting
+/// the user started is still running).
+pub const ALREADY_RECORDING_MSG: &str = "A meeting is already recording";
+
+/// What `apply_call_offer_effects` does with [`Effect::StartRecording`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferStart {
+    /// Nothing records: start the meeting, then stamp it with the detected app.
+    Begin,
+    /// A meeting the offer did not start is running: never stamp it, withdraw
+    /// the offer, return [`ALREADY_RECORDING_MSG`].
+    AlreadyRecording,
+}
+
+/// Decided from `controller.is_recording()` read BEFORE `begin_meeting`.
+pub fn offer_start_decision(meeting_already_recording: bool) -> OfferStart {
+    if meeting_already_recording {
+        OfferStart::AlreadyRecording
+    } else {
+        OfferStart::Begin
+    }
+}
+
+/// Whether the meeting row may get `detected_app` / `detected_via`: ONLY when
+/// nothing recorded before and this very start began the recording (the
+/// start is idempotent, so a race that lost to another start is caught too).
+pub fn may_stamp_detection(meeting_already_recording: bool, started_by_this_call: bool) -> bool {
+    offer_start_decision(meeting_already_recording) == OfferStart::Begin && started_by_this_call
 }
 
 /// The wire shape of [`CALL_OFFER_EVENT`] / `call_offer_state`.

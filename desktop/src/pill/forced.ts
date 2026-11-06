@@ -214,3 +214,28 @@ export function matrixLanguageOfferScene(): MatrixOfferRow {
     label: v.label,
   };
 }
+
+/**
+ * WF-20 — the per-app style chip's matrix row: a listening pill with the sample
+ * chip in the hint row (`float.html?phase=listening&styleChip=1`, see
+ * `forcedStyleChip`). `chip` is the mode `[data-style-chip]` must carry, so a
+ * chip that failed to mount is a finding, not a photo of a plain listening pill.
+ */
+export interface MatrixChipRow extends MatrixPhase {
+  phaseId: string;
+  query: string;
+  chip: string;
+}
+
+export function matrixStyleChipScene(): MatrixChipRow {
+  const v = phaseVisual("listening");
+  return {
+    phase: "listening",
+    id: "style-chip",
+    phaseId: PHASE_ID.listening,
+    query: "styleChip=1",
+    chip: "casual",
+    tone: v.tone,
+    label: v.label,
+  };
+}

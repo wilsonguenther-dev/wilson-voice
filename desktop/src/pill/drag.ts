@@ -162,7 +162,9 @@ const holds = new Map<string, [number, number, number, number]>();
  * panel. The backend takes ONE rect, so the capsule and this extra rect are
  * sent as their bounding union. `null` = no extra; the capsule alone.
  */
-let extraRect: [number, number, number, number] | null = null;
+/** Extra rects the hitbox covers beside the capsule, one per owner (WF-20: the
+ *  style chip and the meeting control can be up together). */
+const extraRects = new Map<string, [number, number, number, number]>();
 
 type Rect4 = [number, number, number, number];
 
@@ -179,7 +181,8 @@ export function unionHitbox(a: Rect4 | null, b: Rect4 | null): Rect4 | null {
 }
 
 function sendCapsule(): void {
-  const r = unionHitbox(capsuleRect, extraRect);
+  let r: Rect4 | null = capsuleRect;
+  for (const e of extraRects.values()) r = unionHitbox(r, e);
   if (r) sendHitbox(...r);
 }
 
@@ -194,8 +197,12 @@ export function reportPillHitbox(x: number, y: number, w: number, h: number): vo
  * ADDITION to the capsule. Unlike `holdPillHitbox` this never replaces the
  * capsule: the pill stays grabbable while the extra control is clickable.
  */
-export function extendPillHitbox(rect: { x: number; y: number; w: number; h: number } | null): void {
-  extraRect = rect ? [rect.x, rect.y, rect.w, rect.h] : null;
+export function extendPillHitbox(
+  rect: { x: number; y: number; w: number; h: number } | null,
+  owner = "capsule",
+): void {
+  if (rect) extraRects.set(owner, [rect.x, rect.y, rect.w, rect.h]);
+  else extraRects.delete(owner);
   if (holds.size) return;
   sendCapsule();
 }
