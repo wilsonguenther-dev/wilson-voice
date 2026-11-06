@@ -685,6 +685,12 @@ pub struct AppSettings {
     /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
     #[serde(default)]
     pub muted_pill_categories: Vec<String>,
+    /// WF-16 — "Hide Yap from screen sharing during meetings". On by default:
+    /// while a meeting records, the pill (and its meeting chip) and the
+    /// Scratchpad are kept out of screen shares and screenshots; they come
+    /// back in captures when it stops. `float_pill::sync_capture_hidden`.
+    #[serde(default = "default_true")]
+    pub hide_from_capture_in_meetings: bool,
 }
 
 /// WF-17 — the pill-message categories a user may mute. Mirrors
@@ -810,6 +816,7 @@ impl Default for AppSettings {
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
             muted_pill_categories: Vec::new(),
+            hide_from_capture_in_meetings: true,
         }
     }
 }
@@ -1119,6 +1126,9 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
+        // WF-16 — hide the pill / Scratchpad from capture on the start edge,
+        // restore on stop (edge-latched: a no-op on every other tick).
+        float_pill::sync_capture_hidden(&app);
         // yap-call-1 — "Call ended" reads off THIS tick (no new timer).
         call_offer_meeting_tick(&app, status.recording);
         let Some(state) = app.try_state::<Arc<AppState>>() else {
@@ -5346,6 +5356,12 @@ fn save_settings(
                 next.muted_pill_categories.len()
             );
         }
+        if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
+            log::info!(
+                "settings capture_hide_changed on={}",
+                next.hide_from_capture_in_meetings
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -5645,6 +5661,9 @@ fn save_settings(
     // where the pill stays up without a show call.
     float_pill::set_position(float_pill::PillPosition::from_settings(&next.pill_position));
     float_pill::reposition(&app);
+    // WF-16 — switching the setting mid-meeting applies at once.
+    float_pill::set_hide_from_capture(next.hide_from_capture_in_meetings);
+    float_pill::sync_capture_hidden(&app);
     if tray_menu::idle_pill_visible(
         next.show_floating_pill,
         state.pill_hide.is_hidden(std::time::Instant::now()),
@@ -12417,6 +12436,9 @@ pub fn run() {
             float_pill::set_position(float_pill::PillPosition::from_settings(
                 &state.settings.lock().pill_position,
             ));
+            // WF-16 — before any window is built, so each one reads the real
+            // setting through `call_offer::apply_content_protection`.
+            float_pill::set_hide_from_capture(state.settings.lock().hide_from_capture_in_meetings);
             // Y6-D: a cold launch (no settings file → not onboarded) lands on
             // onboarding and does NOT put up an idle pill it cannot honour; the
             // pill appears when onboarding saves settings (`save_settings`

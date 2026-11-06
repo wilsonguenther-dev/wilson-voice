@@ -54,7 +54,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
-const APP_SETTINGS_FIELD_COUNT: usize = 46;
+const APP_SETTINGS_FIELD_COUNT: usize = 47;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -168,6 +168,8 @@ fn fully_populated() -> AppSettings {
                 shift: false,
             },
         }],
+        // WF-16 — non-default: the screen-share hide switched off.
+        hide_from_capture_in_meetings: false,
     }
 }
 

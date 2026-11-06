@@ -623,8 +623,11 @@ fn sighting_copy_comes_from_offer_copy() {
 
 // ─── content protection (no GUI launch) ─────────────────────────────────────
 
+/// WF-16 changed the pill's half of this: the static rule still protects only
+/// the offer window, and the pill / Scratchpad are hidden only while a meeting
+/// records (`tests/capture_hide_in_meetings.rs`).
 #[test]
-fn offer_window_is_content_protected_and_the_pill_never_is() {
+fn offer_window_is_always_content_protected_and_the_pill_only_in_meetings() {
     assert_eq!(CALL_OFFER_WINDOW, "call-offer");
     assert!(content_protected_for("call-offer"));
     assert!(!content_protected_for("pill"));
@@ -642,8 +645,8 @@ fn offer_window_is_content_protected_and_the_pill_never_is() {
     let body = &body[..body.find("\n}\n").expect("end of fn")];
     assert!(body.contains("call_offer::CALL_OFFER_WINDOW"));
     assert!(body.contains("call_offer::apply_content_protection(&win)"));
-    // The pill window is built through the same rule (false for "float"),
-    // and is never built with protection switched on.
+    // The pill window is built through the same rule (false for "float"
+    // outside a meeting), and never switches protection on by itself.
     assert!(float.contains("crate::call_offer::apply_content_protection(&win)"));
     assert!(!float.contains("set_content_protected"));
     assert!(!float.contains("content_protected(true)"));

@@ -10,9 +10,11 @@
 //! candidate's offer id — `tests/call_offer_policy.rs` tables that.
 //!
 //! The offer renders in its own small window ([`CALL_OFFER_WINDOW`]) so it can
-//! be hidden from screen capture / screen share without hiding the pill's
-//! recording dot: [`content_protected_for`] is the one rule, and
-//! [`apply_content_protection`] is the one caller of `set_content_protected`.
+//! be hidden from screen capture / screen share at all times, while the pill
+//! is hidden only during a recorded meeting (WF-16, a setting, on by default):
+//! [`content_protected_for`] is the always-on rule, `float_pill::capture_hidden_for`
+//! the per-window rule, and [`apply_content_protection`] the one caller of
+//! `set_content_protected`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,17 +33,24 @@ pub const CALL_OFFER_WINDOW: &str = "call-offer";
 /// Emitted with a [`CallOfferView`] every time the surface changes.
 pub const CALL_OFFER_EVENT: &str = "call_offer";
 
-/// The one content-protection rule. True only for the offer window; the pill
-/// (label `float`) and its recording dot are never hidden from a share.
+/// The ALWAYS-ON content-protection rule: true only for the offer window.
+/// WF-16 adds the meeting-time rule on top (`float_pill::capture_hidden_for`):
+/// the pill (label `float`, with its meeting chip) and the Scratchpad are
+/// hidden only while a meeting records and the setting is on.
 pub fn content_protected_for(label: &str) -> bool {
     label == CALL_OFFER_WINDOW
 }
 
-/// The ONE caller of `set_content_protected`, used where each window is built.
+/// The ONE caller of `set_content_protected`: where each window is built, and
+/// by `float_pill::sync_capture_hidden` on a meeting's start / stop edge.
 pub fn apply_content_protection<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
-    let protect = content_protected_for(w.label());
+    let protect =
+        crate::float_pill::capture_hidden_for(w.label(), crate::float_pill::capture_hidden_now());
     if let Err(e) = w.set_content_protected(protect) {
-        log::warn!("call_offer content_protected label={} err={e}", w.label());
+        log::warn!(
+            "call_offer content_protected_failed label={} protect={protect} err={e}",
+            w.label()
+        );
     }
 }
 
