@@ -1301,6 +1301,8 @@ fn toggle_meeting(
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         meeting_detect::clear(app, None);
+        // fix-b1-1 — the call offer / chip goes too (the pill-never-lies rule).
+        call_offer_meeting_started_elsewhere(app, "toggle");
         if idle_pill_on(state) {
             float_pill::show_for_recording(app);
         }
@@ -9221,9 +9223,31 @@ fn begin_meeting(
     title: Option<String>,
     kind: meetings::MeetingKind,
 ) -> Result<meeting_control::MeetingStatus, String> {
+    begin_meeting_from(app, st, title, kind, StartOrigin::Elsewhere).map(|(status, _)| status)
+}
+
+/// fix-b1-1 — who is starting the meeting. Every start that is NOT the call
+/// offer's own [Record] withdraws the call offer and chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    /// `accept_call_offer` → `Effect::StartRecording`.
+    CallOffer,
+    /// The pill, the Meetings tab, the tray's Upcoming row, the calendar offer.
+    Elsewhere,
+}
+
+/// `begin_meeting`, also saying whether THIS call began the recording (false:
+/// a meeting was already running and its status came back unchanged).
+fn begin_meeting_from(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    title: Option<String>,
+    kind: meetings::MeetingKind,
+    origin: StartOrigin,
+) -> Result<(meeting_control::MeetingStatus, bool), String> {
     let controller = st.meeting().ok_or("Yap is still starting up")?;
     if controller.is_recording() {
-        return Ok(controller.status());
+        return Ok((controller.status(), false));
     }
     controller.start_with_kind(&meetings_dir(), title, kind)?;
     // yap-notetaker-notes — the light live transcript; it ends by itself when
@@ -9232,10 +9256,14 @@ fn begin_meeting(
     let status = controller.status();
     // A recording started: whatever offer the pill was holding is answered.
     meeting_detect::clear(app, None);
+    if origin == StartOrigin::Elsewhere {
+        // fix-b1-1 — and the call offer / chip, which this start did not answer.
+        call_offer_meeting_started_elsewhere(app, "begin_meeting");
+    }
     if idle_pill_on(st) {
         float_pill::show_for_recording(app);
     }
-    Ok(status)
+    Ok((status, true))
 }
 
 /// yap-notetaker-detect — the offer the pill should show, for a pill webview
@@ -9382,14 +9410,46 @@ fn apply_call_offer_effects(
                     "call_offer record bundle={bundle_id} via={} offer={offer_id}",
                     detected_via.as_str()
                 );
-                match begin_meeting(app, st, Some(title), meetings::MeetingKind::Virtual) {
-                    Ok(status) => {
-                        if let Some(id) = status.id.as_deref() {
-                            if let Err(e) =
-                                st.db
-                                    .set_meeting_detection(id, &bundle_id, detected_via.as_str())
-                            {
-                                log::warn!("call_offer detection_store_failed err={e}");
+                // fix-b1-1 — read BEFORE begin_meeting: a meeting the offer did
+                // not start is never stamped with this call's app / via.
+                let already = st.meeting().is_some_and(|c| c.is_recording());
+                let begun = match call_offer::offer_start_decision(already) {
+                    call_offer::OfferStart::AlreadyRecording => None,
+                    call_offer::OfferStart::Begin => Some(begin_meeting_from(
+                        app,
+                        st,
+                        Some(title),
+                        meetings::MeetingKind::Virtual,
+                        StartOrigin::CallOffer,
+                    )),
+                };
+                match begun {
+                    None | Some(Ok((_, false))) => {
+                        log::info!(
+                            "call_offer start_refused reason=already_recording bundle={bundle_id}"
+                        );
+                        crate::diagnostics::bump("call_offer", "already_recording");
+                        // Recording → Chip → withdrawn and spent: no chip stays
+                        // claiming the call is not recorded.
+                        let policy = call_offer::load_policy(&st.db);
+                        let _ = call_offer::drive(call_offer::Input::StartFailed, &policy);
+                        let _ =
+                            call_offer::drive(call_offer::Input::MeetingStartedElsewhere, &policy);
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        error = Some(call_offer::ALREADY_RECORDING_MSG.to_string());
+                    }
+                    Some(Ok((status, true))) => {
+                        if call_offer::may_stamp_detection(already, true) {
+                            if let Some(id) = status.id.as_deref() {
+                                if let Err(e) = st.db.set_meeting_detection(
+                                    id,
+                                    &bundle_id,
+                                    detected_via.as_str(),
+                                ) {
+                                    log::warn!("call_offer detection_store_failed err={e}");
+                                }
                             }
                         }
                         if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
@@ -9398,7 +9458,7 @@ fn apply_call_offer_effects(
                         crate::diagnostics::bump("call_offer", "recorded");
                         started = Some(status);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         log::warn!("call_offer start_failed bundle={bundle_id} err={e}");
                         let (more, _, _) = call_offer::drive(
                             call_offer::Input::StartFailed,
@@ -9467,6 +9527,31 @@ pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sig
         }
         let _ = apply_call_offer_effects(app, &st, fx);
     }
+}
+
+/// fix-b1-1 — a meeting started any way but the call offer's own [Record]
+/// (pill, ⌃⌘M, tray, the tray's Upcoming row, the Meetings tab, the calendar
+/// offer), or the calendar raised its offer: the call offer and chip are
+/// withdrawn and that call is spent. A no-op while the offer's own recording
+/// runs, and when nothing is offered. `source` is a fixed word for the log.
+pub(crate) fn call_offer_meeting_started_elsewhere(app: &AppHandle, source: &'static str) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    // The policy is not read by this input: no settings read per wake.
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::MeetingStartedElsewhere,
+        &call_offer::PolicyMap::new(),
+    );
+    if fx.is_empty() {
+        return;
+    }
+    if fx.contains(&call_offer::Effect::Withdraw) {
+        log::info!("call_offer withdrawn reason=meeting_started_elsewhere source={source}");
+        crate::diagnostics::bump("call_offer", "withdrawn_elsewhere");
+    }
+    let _ = apply_call_offer_effects(app, &st, fx);
 }
 
 /// The 1 s meeting tick (no new timer): "Call ended" while recording a
