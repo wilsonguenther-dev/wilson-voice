@@ -310,7 +310,7 @@ fn only_user_choice_record_yields_start_recording() {
             seen(Some(zoom()), now + 2),
         ];
         for (i, input) in inputs.into_iter().enumerate() {
-            let policy = if (round + i as u64) % 5 == 0 {
+            let policy = if (round + i as u64).is_multiple_of(5) {
                 &never
             } else {
                 &empty
