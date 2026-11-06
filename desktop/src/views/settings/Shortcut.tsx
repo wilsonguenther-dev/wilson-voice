@@ -6,7 +6,7 @@ import { recorderPrompt, type HotkeyBindingsReport } from "../../hotkeyRecorder"
 import { useAppCtx } from "../../appShell";
 import type { ChordSetting } from "../../appTypes";
 import { dictateLabel } from "../../hotkeyStatus";
-import ExtraBindings from "./ExtraBindings";
+import ExtraBindings from "../../ExtraBindings";
 import { handsFreeLine, resetAllToDefault, resetToDefault, type EditableAction } from "../../shortcutEditor";
 
 const MODIFIER_CODES = new Set([

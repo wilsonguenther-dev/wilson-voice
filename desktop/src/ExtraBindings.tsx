@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import type { AppSettings } from "../../appTypes";
-import { formatChord, recorderStep } from "../../hotkeyRecorder";
+import type { AppSettings } from "./appTypes";
+import { formatChord, recorderStep } from "./hotkeyRecorder";
 import {
   addBinding, bindingsOf, MAX_BINDINGS_PER_ACTION, removeAt, type EditableAction,
-} from "../../shortcutEditor";
+} from "./shortcutEditor";
 
 /**
  * WF-18 — the 2nd … 4th shortcuts of one always-global action, under its main
