@@ -27,6 +27,8 @@ import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
+import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
+import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
   errorSentence,
@@ -87,6 +89,7 @@ import {
   matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
+  matrixDragBlobScene,
   type ForcedPill,
 } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
@@ -246,8 +249,14 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixStyleChipScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
     matrixRailScene(),
+    // WF-02 — the pill mid-drag: the blob plus its three drop zones.
+    matrixDragBlobScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+  if (forcedDragScene(window.location.search)) {
+    const root = document.documentElement;
+    applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
+  }
 }
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);

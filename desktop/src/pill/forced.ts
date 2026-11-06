@@ -209,6 +209,31 @@ export function matrixBacktrackCaughtScene(): MatrixOfferRow {
   };
 }
 
+/**
+ * yap-wf-02-the-pill-shrinks-to — WF-02's drag blob (`float.html?phase=idle&drag=blob`,
+ * see `forcedDragScene` in drag.ts): the pill mid-drag, collapsed to Yappy's
+ * face with the three drop zones up. `drag` is what `<html data-pill-drag>`
+ * must carry, so a blob that silently failed to apply is a finding, not a
+ * photo of a resting pill. Photographed at every dock like any other row.
+ */
+export interface MatrixDragRow extends MatrixOfferRow {
+  drag: "blob";
+}
+
+export function matrixDragBlobScene(): MatrixDragRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "drag-blob",
+    phaseId: PHASE_ID.idle,
+    query: "drag=blob",
+    offer: "",
+    drag: "blob",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
 export function matrixLanguageOfferScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return {
