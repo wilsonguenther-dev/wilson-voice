@@ -260,6 +260,10 @@ describe("WF-17 quiet mode in the nudge engine", () => {
     // A pre-WF-17 bare entry counts as one showing on an unknown (long-ago) day.
     expect(tipHistoryFromLedger(["meetings"]).get("meetings")).toEqual({ count: 1, lastDay: null });
     expect(nextNudge(ctxFor("meetings"), withHistory(tipHistoryFromLedger(["meetings"]), 5))?.id).toBe("meetings");
+    // Several dated showings: the count is all of them and the last day is the latest, in any order.
+    expect(tipHistoryFromLedger(["code-editor-20390", "code-editor-20401", "code-editor-20395"]).get("code-editor")).toEqual({ count: 3, lastDay: 20401 });
+    // A history without a day yet (first launch) still lets an unshown tip through.
+    expect(nextNudge(ctxFor("meetings"), { thisSession: 0, ever: new Set(), history: new Map() })?.id).toBe("meetings");
   });
 
   it("milestones: the highest reached, once ever, muteable, never during a take", () => {
