@@ -129,6 +129,8 @@ pub mod meeting_control;
 pub mod meeting_detect;
 // yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
 pub mod call_signals;
+/// yap-call-1 — the call offer: countdown, chip, Offer / Never per app, Call ended.
+pub mod call_offer;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
@@ -1082,6 +1084,8 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
+        // yap-call-1 — "Call ended" reads off THIS tick (no new timer).
+        call_offer_meeting_tick(&app, status.recording);
         let Some(state) = app.try_state::<Arc<AppState>>() else {
             return;
         };
@@ -8592,6 +8596,273 @@ pub(crate) fn release_offer_pill(app: &AppHandle) {
     float_pill::after_recording(app, float_pill::pill_visible_after_card(show, in_flight));
 }
 
+// ── yap-call-1 · the call offer ─────────────────────────────────────────────
+
+/// Create (once) the small offer window, content-protected so a screen share
+/// never shows it. The pill (`float`) and its recording dot stay visible.
+fn ensure_call_offer_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+        return Ok(w);
+    }
+    let (w, h) = (340.0, 176.0);
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        call_offer::CALL_OFFER_WINDOW,
+        tauri::WebviewUrl::App("call-offer.html".into()),
+    )
+    .title("")
+    .inner_size(w, h)
+    .resizable(false)
+    .decorations(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .visible_on_all_workspaces(true);
+    #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
+    {
+        builder = builder.transparent(true);
+    }
+    let win = builder.build().map_err(|e| format!("call-offer window: {e}"))?;
+    call_offer::apply_content_protection(&win);
+    let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    // Park it just above the pill (bottom-centre of the pill's monitor).
+    if let (Some(pill), Ok(Some(mon))) = (
+        app.get_webview_window("float"),
+        win.current_monitor(),
+    ) {
+        if let Ok(pos) = pill.outer_position() {
+            let scale = mon.scale_factor();
+            let x = pos.x as f64 / scale;
+            let y = (pos.y as f64 / scale - h - 8.0).max(0.0);
+            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+        }
+    }
+    Ok(win)
+}
+
+/// Apply the machine's effects. The ONE place a call offer becomes a recording
+/// (`Effect::StartRecording`, only ever produced by `UserChoice::Record`).
+fn apply_call_offer_effects(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    effects: Vec<call_offer::Effect>,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    use call_offer::Effect;
+    let mut started = None;
+    let mut error = None;
+    for fx in effects {
+        match fx {
+            Effect::ShowOffer | Effect::ShowChip | Effect::ShowEndPrompt => {
+                match ensure_call_offer_window(app) {
+                    Ok(w) => {
+                        let _ = w.show();
+                    }
+                    Err(e) => log::warn!("call_offer window_failed err={e}"),
+                }
+            }
+            Effect::Withdraw | Effect::HideEndPrompt => {
+                if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                    let _ = w.hide();
+                }
+            }
+            Effect::StartRecording { offer_id, bundle_id, title, detected_via } => {
+                log::info!(
+                    "call_offer record bundle={bundle_id} via={} offer={offer_id}",
+                    detected_via.as_str()
+                );
+                match begin_meeting(app, st, Some(title), meetings::MeetingKind::Virtual) {
+                    Ok(status) => {
+                        if let Some(id) = status.id.as_deref() {
+                            if let Err(e) =
+                                st.db.set_meeting_detection(id, &bundle_id, detected_via.as_str())
+                            {
+                                log::warn!("call_offer detection_store_failed err={e}");
+                            }
+                        }
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        crate::diagnostics::bump("call_offer", "recorded");
+                        started = Some(status);
+                    }
+                    Err(e) => {
+                        log::warn!("call_offer start_failed bundle={bundle_id} err={e}");
+                        let (more, _, _) = call_offer::drive(
+                            call_offer::Input::StartFailed,
+                            &call_offer::load_policy(&st.db),
+                        );
+                        // StartFailed only ever yields ShowChip: keep the window up.
+                        let _ = more;
+                        error = Some(e);
+                    }
+                }
+            }
+            Effect::Rejected { reason } => {
+                log::info!("call_offer rejected reason={reason:?}");
+                error = Some(reason);
+            }
+            Effect::SaveNever { bundle_id } => {
+                log::info!("call_offer never bundle={bundle_id}");
+                if let Err(e) =
+                    call_offer::set_app_policy(&st.db, &bundle_id, Some(call_offer::AppPolicy::Never))
+                {
+                    log::warn!("call_offer never_save_failed err={e}");
+                    error = Some(format!("Couldn't save Never for this app: {e}"));
+                }
+            }
+            Effect::StopRecording => {
+                log::info!("call_offer stop_after_call_ended");
+                if let Some(c) = st.meeting() {
+                    if c.is_recording() {
+                        if let Err(e) = c.stop("call ended, user stopped") {
+                            error = Some(e);
+                        } else if !*st.recording.lock() {
+                            float_pill::after_recording(app, idle_pill_on(st));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = app.emit(call_offer::CALL_OFFER_EVENT, call_offer::current_view());
+    match error {
+        Some(e) => Err(e),
+        None => Ok(started),
+    }
+}
+
+/// Feed the call signal into the machine (`meeting_detect::evaluate_calls`).
+pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sighting>) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::Seen { sighting, now_ms: call_offer::now_ms() },
+        &policy,
+    );
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowOffer) {
+            log::info!("call_offer offered");
+            crate::diagnostics::bump("call_offer", "offered");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// The 1 s meeting tick (no new timer): "Call ended" while recording a
+/// detected call, and "the recording stopped" for the machine.
+fn call_offer_meeting_tick(app: &AppHandle, recording: bool) {
+    let Some(bundle) = call_offer::recording_bundle() else {
+        return;
+    };
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let input = if !recording {
+        call_offer::Input::RecordingStopped
+    } else {
+        #[cfg(target_os = "macos")]
+        let running = crate::call_signals::sys::snapshot(
+            crate::call_signals::catalog(),
+            crate::call_signals::AxSource::Unknown,
+            false,
+            None,
+        )
+        .ok()
+        .map(|snap| {
+            crate::call_signals::bundle_input_running(&snap, crate::call_signals::catalog(), &bundle)
+        });
+        #[cfg(not(target_os = "macos"))]
+        let running: Option<bool> = {
+            let _ = &bundle;
+            None
+        };
+        call_offer::Input::Tick { now_ms: call_offer::now_ms(), app_input_running: running }
+    };
+    let (fx, _, _) = call_offer::drive(input, &policy);
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowEndPrompt) {
+            log::info!("call_offer call_ended_prompt bundle={bundle}");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// yap-call-1 — [Record] on the offer or the chip. Starts ONLY if `offer_id`
+/// is the LIVE candidate's id; a stale or invented id is rejected here, in the
+/// backend, whatever the webview sends.
+#[tauri::command]
+fn accept_call_offer(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::User { choice: call_offer::UserChoice::Record, offer_id },
+        &policy,
+    );
+    apply_call_offer_effects(&app, &st, fx)
+}
+
+/// yap-call-1 — Not now (also the countdown's expiry), Never for <App>,
+/// and the "Call ended" prompt's Stop / Keep going.
+#[tauri::command]
+fn call_offer_choose(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+    choice: String,
+) -> Result<(), String> {
+    let choice = call_offer::UserChoice::parse(&choice)
+        .filter(|c| *c != call_offer::UserChoice::Record)
+        .ok_or_else(|| format!("unknown call offer choice: {choice}"))?;
+    log::info!("call_offer choose choice={choice:?}");
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(call_offer::Input::User { choice, offer_id }, &policy);
+    apply_call_offer_effects(&app, &st, fx).map(|_| ())
+}
+
+/// yap-call-1 — what the offer window should draw (for a webview that mounted
+/// after the emit).
+#[tauri::command]
+fn call_offer_state() -> call_offer::CallOfferView {
+    call_offer::current_view()
+}
+
+/// yap-call-1 — Settings › Meetings: the apps set to Never.
+#[tauri::command]
+fn call_offer_never_list(state: State<'_, Arc<AppState>>) -> Vec<call_offer::NeverRow> {
+    call_offer::never_rows(&call_offer::load_policy(&state.db), crate::call_signals::catalog())
+}
+
+/// yap-call-1 — Reset one app (or every app when `bundle_id` is absent) to Offer.
+#[tauri::command]
+fn call_offer_reset(
+    state: State<'_, Arc<AppState>>,
+    bundle_id: Option<String>,
+) -> Result<Vec<call_offer::NeverRow>, String> {
+    let map = match bundle_id {
+        Some(b) => call_offer::set_app_policy(&state.db, &b, None)?,
+        None => {
+            state.db.setting_set(call_offer::CALL_OFFER_POLICY_KEY, "{}")?;
+            call_offer::PolicyMap::new()
+        }
+    };
+    let rows = call_offer::never_rows(&map, crate::call_signals::catalog());
+    log::info!("call_offer reset never_left={}", rows.len());
+    meeting_detect::wake();
+    Ok(rows)
+}
+
 /// Settings › Meetings — both toggles and where calendar access stands.
 #[tauri::command]
 fn meeting_detect_settings(state: State<'_, Arc<AppState>>) -> meeting_detect::DetectSettingsView {
@@ -10591,6 +10862,12 @@ pub fn run() {
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
             pending_meeting_offer,
             meeting_offer_respond,
+            // yap-call-1 — the call offer window's commands.
+            accept_call_offer,
+            call_offer_choose,
+            call_offer_state,
+            call_offer_never_list,
+            call_offer_reset,
             meeting_detect_settings,
             set_meeting_detect_settings,
             pill_drag_start,

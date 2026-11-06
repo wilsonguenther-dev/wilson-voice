@@ -86,25 +86,42 @@ export function leaveLines(active: readonly ActiveLeave[]): string[] {
   );
 }
 
-/** The first paragraph's always-true part: no upload claim in it. */
-const RECORDS_LOCALLY =
-  "Yap records your Mac's microphone and turns it into a transcript here, on this machine.";
+/**
+ * yap-call-1 — WHAT is recorded. A call records other people too, so the
+ * notice never says "your Mac's microphone" alone: `call` (the default — a
+ * meeting may always be a call) names the call audio playing on this Mac;
+ * `your_side` is FaceTime / Phone (the system-daemon rows), where the far side
+ * is not captured.
+ */
+export type RecordedScope = "call" | "your_side";
+
+export function recordedLine(scope: RecordedScope = "call"): string {
+  return scope === "your_side"
+    ? "Yap records your side only — your microphone — and turns it into a transcript here, on this machine."
+    : "Yap records your microphone and the call audio playing on this Mac, and turns it into a transcript here, on this machine.";
+}
 
 /**
- * yap-byom-0 — the notice with its first paragraph made true for the user's
- * model-provider choices. `activeLeaves` are the Yes labels
- * ([`leaveLines`]): empty → the full "Nothing is uploaded" claim; any Yes →
- * that claim disappears and the paragraph names where text goes; `null` (not
- * known yet, or the read failed) → no upload claim either way, because a
- * privacy promise is never made on a guess.
+ * yap-byom-0 + yap-call-1 — the notice with its first paragraph made true for
+ * what is recorded and for the user's model-provider choices. `activeLeaves`
+ * are the Yes labels ([`leaveLines`], or bare hosts): empty → "Nothing is
+ * uploaded"; any Yes → that sentence is NOT rendered and the paragraph LISTS
+ * where text goes; `null` (not known yet, or the read failed) → no upload
+ * claim either way, because a privacy promise is never made on a guess.
  */
-export function consentNotice(activeLeaves: readonly string[] | null) {
+export function consentNotice(
+  activeLeaves: readonly string[] | null,
+  scope: RecordedScope = "call",
+) {
+  const what = recordedLine(scope);
   const first =
     activeLeaves === null
-      ? RECORDS_LOCALLY
+      ? what
       : activeLeaves.length === 0
-        ? CONSENT_NOTICE.paragraphs[0]
-        : `${RECORDS_LOCALLY} You chose a model provider that runs elsewhere, so some of it leaves this Mac: ${activeLeaves.join("; ")}.`;
+        ? `${what} Nothing is uploaded, and no one else can read it.`
+        : `${what} You chose a model provider that runs elsewhere, so some of it leaves this Mac: ${activeLeaves
+            .map((l) => (l.includes(" ") ? l : `Notes go to ${l}`))
+            .join("; ")}.`;
   return {
     ...CONSENT_NOTICE,
     paragraphs: [first, ...CONSENT_NOTICE.paragraphs.slice(1)],
@@ -115,7 +132,9 @@ export const CONSENT_NOTICE = {
   eyebrow: "One time only",
   title: "Recording other people is your call",
   paragraphs: [
-    "Yap records your Mac's microphone and turns it into a transcript here, on this machine. Nothing is uploaded, and no one else can read it.",
+    // yap-call-1 — the static fallback says only what is always true; the
+    // rendered notice comes from consentNotice(), which adds the upload line.
+    "Yap records your microphone and the call audio playing on this Mac, and turns it into a transcript here, on this machine.",
     "Recording laws differ by state and by country. Some places need only your permission, some need everyone's, and a few treat a phone call differently from a room. Following the law where you are is your responsibility — Yap does not know where you are, and it will not decide this for you.",
     "Yap does not announce itself. Nobody in the room or on the call is told that a recording is running unless you tell them. Yap shows you it is recording — the pill and the menu bar stay visible the whole time — but that indicator is on your screen, for you.",
   ],

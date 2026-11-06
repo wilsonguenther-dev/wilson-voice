@@ -126,8 +126,10 @@ export function elapsedLabel(status: MeetingStatus | null | undefined): string {
  * pill's button and the Meetings empty state cannot describe the same action
  * three different ways.
  */
-export function recordLabel(status: MeetingStatus): string {
+export function recordLabel(status: MeetingStatus, app?: string | null): string {
   if (status.recording) return "Stop meeting";
+  // yap-call-1 — the call offer's one-click chip: "Record Zoom call".
+  if (app && app.trim()) return `Record ${app.trim()} call`;
   return "Record this meeting";
 }
 
