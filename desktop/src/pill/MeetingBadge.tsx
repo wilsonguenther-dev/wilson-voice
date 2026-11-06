@@ -128,7 +128,7 @@ export default function MeetingBadge({
   // backend without the field falls back to YV110's two-word "mic only".
   const callAudio = callAudioChip(status);
   return (
-    <div className="meeting-badge" role="status" aria-live="off">
+    <div className="meeting-badge" data-pill-slot="clock" role="status" aria-live="off">
       <span className="rec-dot" aria-hidden />
       <span className="rec-time">{elapsedLabel(status)}</span>
       {callAudio ? (
@@ -189,6 +189,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
       <button
         type="button"
         className={`meeting-badge meeting-after ${view.kind}`}
+        data-pill-slot="clock"
         data-meeting-phase={view.kind}
         title={view.title}
         aria-label={view.title}
@@ -204,6 +205,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
   return (
     <div
       className={`meeting-badge meeting-after ${view.kind}`}
+        data-pill-slot="clock"
       data-meeting-phase={view.kind}
       role="status"
       aria-live="polite"

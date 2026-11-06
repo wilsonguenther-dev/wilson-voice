@@ -71,6 +71,8 @@ export interface PillLayout {
   hint: Box;
   /** The meeting clock / post-stop badge, in Yappy's trailing slot. */
   clock: Box | null;
+  /** The decode progress row under Yappy (transcribing only). */
+  progress: Box | null;
   /** The character's centre inside the panel (float_pill.rs parks by it). */
   anchor: { x: number; y: number };
 }
@@ -94,8 +96,13 @@ export const BUBBLE_LIFT = 10;
 export const HINT_W = 192;
 export const HINT_LINE_H = 14;
 /** The clock row: dot + "00:03:37" + call-audio mark + stop; the after badge is wider. */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 132, after: 176 };
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 184, after: 184 };
 export const CLOCK_H = 26;
+/** Y3-C's decode fill + numeral (`.kami-progress`): a row under Yappy while transcribing. */
+export const PROGRESS_W = 100;
+export const PROGRESS_H = 14;
+/** The phase that carries the determinate progress row. */
+export const PROGRESS_PHASE: LivePhase = "transcribing";
 /** The historical fixed panel (float_pill.rs PILL_W x PILL_H) a legacy character keeps. */
 export const LEGACY_PANEL = { w: 300, h: 140 } as const;
 /** Phases Yappy draws as the small resting capsule; every other phase opens him. */
@@ -115,13 +122,13 @@ const shift = (b: Box, dx: number, dy: number): Box => ({ x: b.x + dx, y: b.y + 
 export function pillLayout(input: PillInput): PillLayout {
   const { phase, meeting, dock } = input;
   const character: LayoutCharacter = input.character ?? "yappy";
-  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}`;
+  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}`;
   if (character === "legacy") {
     const w = LEGACY_PANEL.w, h = LEGACY_PANEL.h;
     const char = { x: 0, y: 0, w, h };
     return {
       key, phase, meeting, dock, character, legacy: true, panel: { w, h }, char,
-      bubble: char, hint: char, clock: null, anchor: { x: w / 2, y: h / 2 },
+      bubble: char, hint: char, clock: null, progress: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
   const env = RESTING_PHASES.has(phase) ? CHARACTER_REST : CHARACTER_OPEN;
@@ -131,20 +138,27 @@ export function pillLayout(input: PillInput): PillLayout {
   const char0: Box = { x: 0, y: 0, w: env.w, h: env.h };
   // A box of width `w` aligned to the character's dock edge (centred at the bottom dock).
   const alignX = (w: number) => (dock === "left" ? 0 : dock === "right" ? env.w - w : (env.w - w) / 2);
+  // The next free row under the character.
+  let below = env.h + SLOT_GAP;
   let clock0: Box | null = null;
   if (meeting !== "none") {
     const cw = CLOCK_W[meeting];
-    clock0 = dock === "bottom"
+    if (dock === "bottom") {
       // The pill's own trailing slot: beside Yappy, vertically centred on him.
-      ? { x: env.w + SLOT_GAP, y: (env.h - CLOCK_H) / 2, w: cw, h: CLOCK_H }
+      clock0 = { x: env.w + SLOT_GAP, y: (env.h - CLOCK_H) / 2, w: cw, h: CLOCK_H };
+    } else {
       // A side dock is a column at the screen edge: the slot sits under him,
       // flush to the same edge, so the clock is never stranded mid-screen.
-      : { x: alignX(cw), y: env.h + SLOT_GAP, w: cw, h: CLOCK_H };
+      clock0 = { x: alignX(cw), y: below, w: cw, h: CLOCK_H };
+      below += CLOCK_H + SLOT_GAP;
+    }
   }
+  const progress0: Box | null =
+    phase === PROGRESS_PHASE ? { x: alignX(PROGRESS_W), y: below, w: PROGRESS_W, h: PROGRESS_H } : null;
   const bubble0: Box = { x: alignX(BUBBLE_W), y: -BUBBLE_LIFT - BUBBLE_H, w: BUBBLE_W, h: BUBBLE_H };
   const hint0: Box = { x: alignX(HINT_W), y: bubble0.y - SLOT_GAP - hintH, w: HINT_W, h: hintH };
   // 2 — the union, then translate it PANEL_MARGIN in from the panel's top-left.
-  const all = [char0, bubble0, hint0, ...(clock0 ? [clock0] : [])];
+  const all = [char0, bubble0, hint0, ...(clock0 ? [clock0] : []), ...(progress0 ? [progress0] : [])];
   const minX = Math.min(...all.map((b) => b.x));
   const minY = Math.min(...all.map((b) => b.y));
   const maxX = Math.max(...all.map(right));
@@ -158,6 +172,7 @@ export function pillLayout(input: PillInput): PillLayout {
     bubble: shift(bubble0, dx, dy),
     hint: shift(hint0, dx, dy),
     clock: clock0 ? shift(clock0, dx, dy) : null,
+    progress: progress0 ? shift(progress0, dx, dy) : null,
     anchor: { x: char.x + char.w / 2, y: char.y + char.h / 2 },
   };
 }
@@ -197,6 +212,7 @@ export function layoutProblems(l: PillLayout): string[] {
   const out: string[] = [];
   const named: Array<[string, Box]> = [["character", l.char], ["bubble", l.bubble], ["hint", l.hint]];
   if (l.clock) named.push(["clock", l.clock]);
+  if (l.progress) named.push(["progress", l.progress]);
   for (let i = 0; i < named.length; i++) {
     for (let j = i + 1; j < named.length; j++) {
       if (boxesOverlap(named[i][1], named[j][1])) out.push(`overlap ${named[i][0]}/${named[j][0]}`);
@@ -219,13 +235,16 @@ export function layoutProblems(l: PillLayout): string[] {
  */
 export function layoutVars(l: PillLayout): Record<string, string> {
   const px = (n: number) => `${Math.round(n * 100) / 100}px`;
-  const c = l.clock ?? { x: 0, y: 0, w: 0, h: 0 };
+  const none = { x: 0, y: 0, w: 0, h: 0 };
+  const c = l.clock ?? none;
+  const p = l.progress ?? none;
   return {
     "--panel-w": px(l.panel.w), "--panel-h": px(l.panel.h),
     "--char-x": px(l.char.x), "--char-y": px(l.char.y), "--char-w": px(l.char.w), "--char-h": px(l.char.h),
     "--bubble-x": px(l.bubble.x), "--bubble-y": px(l.bubble.y), "--bubble-w": px(l.bubble.w), "--bubble-h": px(l.bubble.h),
     "--hint-x": px(l.hint.x), "--hint-y": px(l.hint.y), "--hint-w": px(l.hint.w), "--hint-h": px(l.hint.h),
     "--clock-x": px(c.x), "--clock-y": px(c.y), "--clock-w": px(c.w), "--clock-h": px(c.h),
+    "--progress-x": px(p.x), "--progress-y": px(p.y), "--progress-w": px(p.w), "--progress-h": px(p.h),
   };
 }
 

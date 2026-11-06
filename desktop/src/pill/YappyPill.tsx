@@ -35,6 +35,9 @@ import { DURATION } from "./motion";
 // and the dock anchor all come from one pure module, so every art pixel lands
 // on whole device pixels at every dock and every backing scale.
 import { backingScale, dockCentreX, sceneBlit, toDevice } from "./pixelGrid";
+// yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
+// in the character box it places, and the bubble in the bubble box above it.
+import { capsuleCentre, currentPillLayout } from "./state";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -459,8 +462,14 @@ export default function YappyPill(
       // window is parked flush to that screen edge, so the capsule hugs it instead
       // of sitting mid-window. ONLY the anchor moves — capsule size and the camera
       // below are untouched, so the world keeps its aspect (never letterboxed).
-      const cx = dockCentreX(document.documentElement.dataset.dock, W, capW);
-      const cy = H * 0.56;
+      // yap-1106-one-pill — the anchor is the published layout's character box
+      // (pill/state.ts), the same box the clock, hint and bubble are placed
+      // against and the panel is sized around. Before the first layout lands
+      // (one frame at mount) the YV53 dock anchor stands in.
+      const lay = currentPillLayout();
+      const cc = lay ? capsuleCentre(lay, capW) : null;
+      const cx = cc ? cc.x : dockCentreX(document.documentElement.dataset.dock, W, capW);
+      const cy = cc ? cc.y : H * 0.56;
       const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
       // YV65 — the capsule IS the grab handle: publish exactly where it was just
       // drawn (canvas coords are logical points here — the DPR lives in the
@@ -497,8 +506,16 @@ export default function YappyPill(
       // speech bubble above the capsule — centred on it, but kept inside the
       // window so a docked (edge-hugging) capsule doesn't push it off-screen.
       const bw = bubble.classList.contains("show") ? bubble.offsetWidth : 0;
-      bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
-      bubble.style.top = (y0 - 10) + "px";
+      if (lay) {
+        // yap-1106-one-pill — kept inside its own reserved row: never over the
+        // character, the hint or the clock, and never outside the panel.
+        const bb = lay.bubble;
+        bubble.style.left = (bw ? Math.max(bb.x + bw / 2, Math.min(bb.x + bb.w - bw / 2, cx)) : cx) + "px";
+        bubble.style.top = (bb.y + bb.h) + "px";
+      } else {
+        bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
+        bubble.style.top = (y0 - 10) + "px";
+      }
     }
     // A parked loop paints one calm frame and stops scheduling; anything that
     // gives it something to draw again — a phase change (a take starting), the
@@ -558,7 +575,8 @@ export default function YappyPill(
   const art = YAPPY_PHASE_ART[gate];
 
   // yap24-NT7 fix — the meeting badge ("Notes ready — Open", the failure, the
-  // recording stop button) is pinned to the window's bottom edge, OUTSIDE the
+  // recording stop button) sits in the layout's clock slot (yap-1106-one-pill:
+  // beside or under Yappy, never pinned to the window's bottom edge), OUTSIDE the
   // canvas capsule this pill reports as its hitbox, so on a click-through panel
   // its clicks fell through to the app underneath. While a badge is mounted its
   // rect is unioned into the hitbox; a childList observer follows it as it

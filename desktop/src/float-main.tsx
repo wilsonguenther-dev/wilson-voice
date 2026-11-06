@@ -8,7 +8,7 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { Suspense, useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
@@ -54,6 +54,16 @@ import {
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
+import {
+  layoutVars,
+  meetingMode,
+  pillLayout,
+  publishPillLayout,
+  shrinkDelay,
+  type LayoutCharacter,
+  type MeetingMode,
+  type PillLayout,
+} from "./pill/state";
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
 import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
@@ -497,6 +507,13 @@ function Float() {
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
+  // yap-1106-one-pill — ONE layout for the whole panel, decided here from the
+  // same three inputs everything else above reads: the phase, the meeting and
+  // the dock (pill/state.ts). It places the clock, the hint and the bubble
+  // against the character's box and sizes the panel to their union.
+  const layoutCharacter: LayoutCharacter = Stage ? "yappy" : "legacy";
+  const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} />
@@ -532,6 +549,7 @@ function Float() {
     ?? phaseCopy(phase, chatTone);
   return (
     <>
+      <PanelFrameSync layout={target} />
       <div className="bar" {...bar}>
         {pill}
       </div>
@@ -556,6 +574,55 @@ function Float() {
       </div>
     </>
   );
+}
+
+/**
+ * yap-1106-one-pill — the layout, memoised on its geometric identity so a
+ * phase change inside the same class (listening → transcribing) is not a new
+ * layout.
+ */
+function usePanelLayout(phase: LivePhase, meeting: MeetingMode, dock: BarDock, character: LayoutCharacter): PillLayout {
+  const next = pillLayout({ phase, meeting, dock, character });
+  return useMemo(() => next, [next.key]);
+}
+
+/**
+ * yap-1106-one-pill — applies the layout: grows at once, shrinks after
+ * SHRINK_HOLD_MS (so Yappy's closing animation is never clipped), writes the
+ * slot positions float.css reads, publishes the layout for Yappy's draw loop
+ * and the pill matrix, and asks the backend for the matching panel frame.
+ * Renders nothing.
+ */
+function PanelFrameSync({ layout }: { layout: PillLayout }) {
+  const [shown, setShown] = useState<PillLayout>(layout);
+  useEffect(() => {
+    if (shown.key === layout.key) return;
+    const delay = shrinkDelay(shown, layout);
+    if (delay === 0) {
+      setShown(layout);
+      return;
+    }
+    const t = window.setTimeout(() => setShown(layout), delay);
+    return () => window.clearTimeout(t);
+  }, [layout, shown]);
+  useEffect(() => {
+    const de = document.documentElement;
+    de.dataset.onePill = shown.legacy ? "false" : "true";
+    de.dataset.pillMeeting = shown.meeting;
+    const vars = layoutVars(shown);
+    for (const [k, v] of Object.entries(vars)) {
+      if (shown.legacy) de.style.removeProperty(k);
+      else de.style.setProperty(k, v);
+    }
+    publishPillLayout(shown.legacy ? null : shown);
+    invoke("pill_set_panel_frame", {
+      w: shown.panel.w,
+      h: shown.panel.h,
+      anchorX: shown.anchor.x,
+      anchorY: shown.anchor.y,
+    }).catch((e) => console.warn("pill panel_frame failed", e));
+  }, [shown]);
+  return null;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

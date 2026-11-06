@@ -728,13 +728,21 @@ button.meeting-after:hover {
   display: none;
 }
 
-/* Yappy draws its capsule on a canvas, so the badge floats over it, anchored to
- * the same bottom-centre island the capsule is drawn on. */
+/* yap-1106-one-pill — Yappy draws his capsule on a canvas, so the clock is a DOM
+ * slot placed by the ONE layout (pill/state.ts): his trailing slot at the bottom
+ * dock, the row under him at a side dock. The old rule pinned it to the window's
+ * bottom-centre, 150 pt from him on a side dock; that free-floating path is gone. */
 .kami-stage .meeting-badge {
   position: absolute;
-  left: 50%;
-  bottom: 6px;
-  transform: translateX(-50%);
+  left: var(--clock-x, 50%);
+  top: var(--clock-y, auto);
+  box-sizing: border-box;
+  width: var(--clock-w, auto);
+  max-width: var(--clock-w, none);
+  height: var(--clock-h, auto);
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
   padding: 5px 8px;
   border-radius: 14px;
   background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
@@ -1499,3 +1507,44 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 }
 .pill-lang:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
 .pill-lang.has-notice { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
+
+/* ── yap-1106-one-pill — every DOM slot from the ONE layout ─────────────────
+ * float-main writes the layout (pill/state.ts `layoutVars`) onto <html> as
+ * custom properties and sets data-one-pill. Under it the hint, the bubble, the
+ * progress row and the trial chip are placed against Yappy's box, which the
+ * panel is sized around (float_pill.rs set_panel_frame), so nothing overlaps
+ * him and nothing sits outside the panel. The Classic (legacy) pill keeps the
+ * rules above. The selectors out-rank the dock rules on purpose. */
+html[data-one-pill="true"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  left: var(--hint-x);
+  top: var(--hint-y);
+  right: auto;
+  bottom: auto;
+  width: var(--hint-w);
+  max-width: var(--hint-w);
+  transform: none;
+  text-align: center;
+}
+html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  text-align: left;
+}
+html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  text-align: right;
+}
+html[data-one-pill="true"] .kami-bubble {
+  max-width: var(--bubble-w);
+}
+html[data-one-pill="true"] .kami-progress,
+html[data-one-pill="true"][data-dock="left"] .kami-progress,
+html[data-one-pill="true"][data-dock="right"] .kami-progress {
+  left: calc(var(--progress-x) + var(--progress-w) / 2);
+  top: var(--progress-y);
+  bottom: auto;
+  height: var(--progress-h);
+}
+html[data-one-pill="true"] .kami-license {
+  --lic-x: calc(var(--char-x) + var(--char-w) / 2);
+  top: calc(var(--char-y) + var(--char-h) / 2 - 32px);
+}
+html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
+html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
