@@ -22,7 +22,7 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
-import StyleChip from "./pill/StyleChip";
+import StyleChipButton from "./pill/StyleChipButton";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
@@ -604,7 +604,7 @@ function Float() {
           changes it for this app for 15 minutes. Listening only, and never
           when app-aware modes are off. A later sibling of .bar, so the side
           dock rules in float.css can place it like the phase line. */}
-      <StyleChip phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
+      <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
     </>
   );
 }

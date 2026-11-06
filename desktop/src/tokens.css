@@ -164,7 +164,7 @@
   --pill-text: #f5f5f7;
   --pill-bubble-surface: #20222e;
   --pill-bubble-text: #f7f1e6;
-  /* WF-20 — the per-app style chip under a listening pill (StyleChip.tsx). */
+  /* WF-20 — the per-app style chip under a listening pill (StyleChipButton.tsx). */
   --pill-chip-surface: rgba(255, 255, 255, 0.12);
   --pill-chip-surface-hover: rgba(255, 255, 255, 0.2);
   --pill-chip-text: rgba(255, 255, 255, 0.86);

@@ -22,7 +22,7 @@ import {
 
 const HITBOX_OWNER = "style-chip";
 
-export default function StyleChip({ phase, forced = null }: { phase: LivePhase; forced?: Chip | null }) {
+export default function StyleChipButton({ phase, forced = null }: { phase: LivePhase; forced?: Chip | null }) {
   const [chip, setChip] = useState<Chip>(forced ?? HIDDEN_CHIP);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);

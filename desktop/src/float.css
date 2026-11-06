@@ -1140,7 +1140,7 @@ html[data-dock="right"] .phase-strip {
 /* WF-20 — the per-app style chip ("Slack · casual"). It takes the hint row
    the layout reserves, which the plain listening phase leaves empty, and is
    placed exactly like .phase-strip at every dock. Clickable: unlike the strip
-   it takes pointer events, and StyleChip.tsx widens the hitbox to cover it. */
+   it takes pointer events, and StyleChipButton.tsx widens the hitbox to cover it. */
 .style-chip {
   position: fixed;
   z-index: 5;
