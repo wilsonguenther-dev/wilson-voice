@@ -1807,6 +1807,13 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
                 Ok(()) => log::info!("tray hide_meeting_titles toggled on={on}"),
                 Err(e) => {
                     log::warn!("tray hide_meeting_titles failed error={e:?}");
+                    // The check item flipped itself on the click; redraw the
+                    // rows from the unchanged snapshot so it reads true again.
+                    apply_upcoming_menu_on_main(
+                        app,
+                        state,
+                        meeting_detect::upcoming_snapshot().as_ref(),
+                    );
                     notify(app, "Yap", "Yap could not save that setting — try again");
                 }
             }

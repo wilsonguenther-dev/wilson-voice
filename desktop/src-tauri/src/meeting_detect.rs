@@ -389,6 +389,7 @@ fn evaluate_upcoming(db: &Database, s: &DetectSettings) {
         publish_upcoming(None);
         return;
     }
+    sys::keep_change_store_alive();
     let local = chrono::Local::now();
     let now = local.timestamp();
     let offset = local.offset().local_minus_utc();
@@ -897,6 +898,27 @@ mod sys {
         std::mem::forget(token);
     }
 
+    /// WF-07 — EventKit posts `EKEventStoreChangedNotification` only while
+    /// some EKEventStore instance is alive, and every read above uses a
+    /// short-lived fresh store. Keep ONE store for the rest of the process so
+    /// the menu (and the offer) refresh on a calendar edit instead of waiting
+    /// for the 30 s backstop. Called ONLY after the "Use my calendar" + full
+    /// access gate passed (`evaluate_upcoming`), so with the calendar off Yap
+    /// never touches EventKit at all; created after the grant, so its view is
+    /// live. Never prompts; never read from or written to. Once per process.
+    pub fn keep_change_store_alive() {
+        static KEPT: std::sync::Once = std::sync::Once::new();
+        KEPT.call_once(|| {
+            let Some(cls) = store_class() else {
+                return;
+            };
+            // SAFETY: +[EKEventStore new] -> retained EKEventStore.
+            let keep: Option<Retained<AnyObject>> = unsafe { msg_send![cls, new] };
+            log::info!("meeting_detect change_store kept={}", keep.is_some());
+            std::mem::forget(keep);
+        });
+    }
+
     /// EventKit's change notification + NSWorkspace launch/terminate. Each one
     /// only sends a wake; the watcher thread does the reading.
     pub fn observe_changes(tx: mpsc::Sender<()>) {
@@ -904,17 +926,6 @@ mod sys {
             // SAFETY: +[NSNotificationCenter defaultCenter] -> NSNotificationCenter*.
             let center: *mut AnyObject = unsafe { msg_send![nc, defaultCenter] };
             observe(center, "EKEventStoreChangedNotification", tx.clone());
-            // WF-07 — EventKit posts its change notification only while some
-            // EKEventStore instance is alive, and every read above uses a
-            // short-lived fresh store. Keep ONE store for the app's lifetime so
-            // the menu (and the offer) refresh on a calendar edit instead of
-            // waiting for the 30 s backstop. Creating a store never prompts and
-            // this one is never read from or written to.
-            if let Some(cls) = store_class() {
-                // SAFETY: +[EKEventStore new] -> retained EKEventStore.
-                let keep: Option<Retained<AnyObject>> = unsafe { msg_send![cls, new] };
-                std::mem::forget(keep);
-            }
         }
         if let Some(ws) = AnyClass::get(c"NSWorkspace") {
             // SAFETY: +[NSWorkspace sharedWorkspace] / -notificationCenter.
@@ -946,6 +957,7 @@ mod sys {
     pub fn events_between(_from: i64, _to: i64) -> Vec<CalendarEvent> {
         Vec::new()
     }
+    pub fn keep_change_store_alive() {}
     pub fn observe_changes(_tx: mpsc::Sender<()>) {}
 }
 
@@ -1217,6 +1229,21 @@ mod upcoming_tests {
         let read = body.find("sys::events_between(").expect("read");
         assert!(gate < read, "the gate must come before the EventKit read");
         assert!(body[..read].contains("publish_upcoming(None)"));
+        // The change-notification store is created behind the same gate, never
+        // at watcher start: with the calendar off Yap does not touch EventKit.
+        let keep = body
+            .find("sys::keep_change_store_alive(")
+            .expect("keep-alive call");
+        assert!(gate < keep && keep < read);
+        let obs_start = src
+            .find(&["pub fn observe", "_changes(tx"].concat())
+            .expect("observe_changes");
+        let obs = &src[obs_start..];
+        let obs = &obs[..obs.find("\n    }\n").expect("observe_changes end")];
+        assert!(
+            !obs.contains(&["msg_send![cls, ", "new]"].concat()),
+            "observe_changes must not create an EKEventStore"
+        );
         // Default: the calendar is off.
         assert!(!DetectSettings::default().use_calendar);
     }
