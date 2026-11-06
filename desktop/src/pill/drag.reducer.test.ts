@@ -24,6 +24,7 @@ import {
   type DragState,
   type PillDock,
 } from "./drag";
+import { matrixDragBlobScene } from "./forced";
 
 /** A 1440-point-wide primary monitor at the global origin. */
 const FRAME = { frameX: 0, frameW: 1440 };
@@ -183,6 +184,11 @@ describe("dock + matrix plumbing", () => {
     expect(currentDock(fakeRoot("right"))).toBe("right");
     expect(currentDock(fakeRoot("nonsense"))).toBe("bottom");
     expect(currentDock(null)).toBe("bottom");
+  });
+  it("the pill matrix photographs the blob scene (every dock x character x meeting)", () => {
+    const row = matrixDragBlobScene();
+    expect(row).toMatchObject({ id: "drag-blob", phase: "idle", query: "drag=blob", drag: "blob" });
+    expect(forcedDragScene("?phase=idle&" + row.query)).toBe("blob");
   });
   it("forcedDragScene pins the blob only for drag=blob", () => {
     expect(forcedDragScene("?phase=idle&drag=blob")).toBe("blob");
