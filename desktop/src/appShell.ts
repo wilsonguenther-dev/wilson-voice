@@ -20,7 +20,7 @@ import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
 import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
-import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, retryDeadlineMs, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
+import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, isEngineUnhealthy, retryAllSummary, retryDeadlineMs, runRetryAll, type RetryOutcome, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
 import type { MicList } from "./views/settings/parts/MicrophonePicker";
 
@@ -108,6 +108,8 @@ export function useAppShell() {
   // and the clock that ends the loading state on its own if the backend
   // never answers. See retryDictation.ts.
   const [retryPhase, setRetryPhase] = useState<RetryPhase | null>(null);
+  // yap-fx-07 — "Retry all": where the one-at-a-time queue is, or null when idle.
+  const [retryAll, setRetryAll] = useState<{ done: number; total: number } | null>(null);
   const retryWatchdog = useRef<RetryWatchdog | null>(null);
   // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
@@ -1082,8 +1084,12 @@ export function useAppShell() {
   // conversion), with the recovered text on the clipboard.
   // `keepPartial` — "Keep what was transcribed": convert on the words a failed
   // attempt already got, without decoding again (the backend deletes the clip).
-  async function retryFailed(id: string, keepPartial = false) {
-    if (retrying) return;
+  //
+  // yap-fx-07 — returns how the retry ended, so "Retry all" can move on after a
+  // clip that failed and stop on an unhealthy engine. `quiet` keeps the
+  // per-row toasts out of a Retry-all run, which ends with ONE summary.
+  async function retryFailed(id: string, keepPartial = false, quiet = false): Promise<RetryOutcome> {
+    if (retrying) return "skipped";
     setRetrying(id);
     setRetryPhase(null);
     // yap-1106-retry-failed-dictation — the loading state ends at the deadline
@@ -1095,7 +1101,7 @@ export function useAppShell() {
     const watchdog = createRetryWatchdog(() => {
       setRetrying(null);
       setRetryPhase(null);
-      toast(RETRY_DEADLINE_MESSAGE);
+      if (!quiet) toast(RETRY_DEADLINE_MESSAGE);
       void loadFailed().catch(() => {});
     });
     retryWatchdog.current?.clear();
@@ -1114,13 +1120,17 @@ export function useAppShell() {
       setHistory((h) =>
         [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
       );
-      toast(
-        keepPartial
-          ? `Saved ${entry.wordCount} words — copied to clipboard`
-          : `Recovered ${entry.wordCount} words — copied to clipboard`,
-      );
+      if (!quiet)
+        toast(
+          keepPartial
+            ? `Saved ${entry.wordCount} words — copied to clipboard`
+            : `Recovered ${entry.wordCount} words — copied to clipboard`,
+        );
       await refreshInsights();
+      return "recovered";
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const outcome: RetryOutcome = isEngineUnhealthy(message, watchdog.expired) ? "engine-busy" : "failed";
       if (keepPartial) {
         toastError(e);
         // The clip may have been dropped (audio gone) — resync either way.
@@ -1134,13 +1144,40 @@ export function useAppShell() {
           () => null,
         );
         if (rows) setFailed(rows);
-        toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
+        if (!quiet) toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
       }
+      return outcome;
     } finally {
       watchdog.clear();
       if (retryWatchdog.current === watchdog) retryWatchdog.current = null;
       setRetrying(null);
       setRetryPhase(null);
+    }
+  }
+
+  // yap-fx-07 — "Retry all": every kept clip, ONE AT A TIME (each retry is
+  // awaited before the next starts, so the one engine never queues two from
+  // here), stopping as soon as the engine is not healthy. One log line per
+  // run, one summary toast; the per-row toasts stay quiet.
+  async function retryAllFailed() {
+    if (retrying || retryAll) return;
+    const ids = failed.map((f) => f.id);
+    if (ids.length === 0) return;
+    const started = performance.now();
+    setRetryAll({ done: 0, total: ids.length });
+    try {
+      const result = await runRetryAll(
+        ids,
+        (id) => retryFailed(id, false, true),
+        (done, total) => setRetryAll({ done, total }),
+      );
+      console.info(
+        `retry_all done total=${ids.length} recovered=${result.recovered} failed=${result.failed} remaining=${result.remaining} engine_stopped=${result.stoppedForEngine} ms=${Math.round(performance.now() - started)}`,
+      );
+      toast(retryAllSummary(result));
+    } finally {
+      setRetryAll(null);
+      await loadFailed().catch(() => {});
     }
   }
 
@@ -1508,7 +1545,7 @@ export function useAppShell() {
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
-    refreshSystemAudio, replayOnboarding, retryFailed, retrying, retryPhase, runSystemAudioSetup,
+    refreshSystemAudio, replayOnboarding, retryAll, retryAllFailed, retryFailed, retrying, retryPhase, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCrashes, setDailySeries, setDictionary, setDiffId,

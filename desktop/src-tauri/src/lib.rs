@@ -4730,6 +4730,51 @@ fn adopt_recovered_takes(
     recovered
 }
 
+/// yap-fx-07 — the error an in-session orphaned capture spill carries in
+/// History: the take was cut off before it was transcribed (the 2026-11-06
+/// "arm while already capturing" case), and its audio is all there is.
+const ABORTED_TAKE_ERROR: &str = "recording cut off before it was transcribed";
+
+/// yap-fx-07 — how old (mtime) an aborted capture spill must be before the
+/// in-session scan adopts it. `SpillWriter::drop`'s copy fallback can still be
+/// writing a younger one; ten seconds is far past any copy of a take's audio.
+const ABORTED_SPILL_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// yap-fx-07 — "every kept clip is listed": adopt the capture spills a take
+/// aborted mid-session left in the recovery dir, so each gets a
+/// `failed_dictations` row (and a Retry) NOW rather than at the next launch —
+/// or is deleted, when it is silent (`record::is_silent_clip`). Runs before
+/// every History list and every hygiene pass. Never touches an in-flight
+/// `.decoding.wav` link (a live decode owns it) and never decodes or pastes.
+/// A row list that cannot be read skips the scan: it cannot tell an orphan
+/// from a kept clip without it. Returns how many rows were added.
+fn adopt_aborted_spills(db: &Database, dir: &Path) -> usize {
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>(),
+        Err(e) => {
+            log::warn!("recovery orphan_scan_skipped reason=rows_unreadable error={e}");
+            return 0;
+        }
+    };
+    let started = std::time::Instant::now();
+    let takes = record::recover_aborted_capture_spills(
+        dir,
+        &keep,
+        std::time::SystemTime::now(),
+        ABORTED_SPILL_MIN_AGE,
+    );
+    if takes.is_empty() {
+        return 0;
+    }
+    let adopted = adopt_recovered_takes(db, takes, ABORTED_TAKE_ERROR, "yap-fx-07 aborted spill");
+    log::info!(
+        "recovery orphan_spills_adopted count={adopted} ms={}",
+        started.elapsed().as_millis()
+    );
+    diagnostics::record_duration("recovery", "orphan_spills_adopted", adopted as u64);
+    adopted
+}
+
 /// DB-B — the launch sweep for a LONG take the app died in the middle of.
 ///
 /// While a take decodes, its finished clip is hard-linked into the recovery
@@ -4912,6 +4957,9 @@ fn run_leftovers_sweep(db: &Database) {
 
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
+    // yap-fx-07 — orphans become rows (or, silent, are deleted) BEFORE the
+    // keep-list below is read, so the sweep never sees one as row-less.
+    adopt_aborted_spills(db, &recovery_dir());
     // YV94 — same posture, one window later: expired meeting audio is dropped
     // before the orphan sweep runs, so the sweep never sees those WAVs as
     // "unreachable files I should think about".
@@ -6262,14 +6310,30 @@ fn correct_transcript(
 /// Expired ones are purged (audio included) before the list is built, so the
 /// UI can never offer a retry against a clip retention already removed.
 #[tauri::command]
-fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
-    purge_expired_failed_takes(&state.db);
-    Ok(state
-        .db
-        .list_failed_dictations()?
-        .into_iter()
-        .map(failed_row_for_display)
-        .collect())
+///
+/// yap-fx-07 — async, with the work on a blocking thread: adopting an aborted
+/// spill reads and rewrites its audio, which must never run on the main thread
+/// a sync command would hold.
+async fn list_failed_dictations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FailedDictation>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FailedDictation>, String> {
+        purge_expired_failed_takes(&state.db);
+        // yap-fx-07 — a spill a mid-session abort left behind is listed too.
+        adopt_aborted_spills(&state.db, &recovery_dir());
+        Ok(state
+            .db
+            .list_failed_dictations()?
+            .into_iter()
+            .map(failed_row_for_display)
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        log::error!("recovery list_failed worker failed: {e}");
+        "Couldn't load the kept clips — try again".to_string()
+    })?
 }
 
 /// yap-recovery-followups (f) — the row as History shows it. "Already
@@ -13004,6 +13068,62 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
+    /// recovery dir is LISTED (a `failed_dictations` row with a Retry) without
+    /// waiting for a relaunch; a silent one is deleted instead; a second pass
+    /// adds nothing.
+    #[test]
+    fn aborted_spill_is_listed_or_deleted_only_if_silent() {
+        let dir = temp_dir("fx07-adopt");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        std::fs::create_dir_all(&recovery).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        for (name, amp) in [
+            ("voiced.capture.wav", 0.3f32),
+            ("hiss.capture.wav", 0.002f32),
+        ] {
+            let path = recovery.join(name);
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..(16_000 * 3) {
+                let t = i as f32 / 16_000.0;
+                w.write_sample(amp * (2.0 * std::f32::consts::PI * 220.0 * t).sin())
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 1);
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(rows.len(), 1, "the voiced spill is listed");
+        assert_eq!(rows[0].error, super::ABORTED_TAKE_ERROR);
+        assert!(rows[0].wav_path.ends_with("voiced.wav"));
+        assert!(std::path::Path::new(&rows[0].wav_path).exists());
+        assert!((rows[0].speech_seconds - 3.0).abs() < 0.01);
+        assert!(!recovery.join("voiced.capture.wav").exists());
+        assert!(
+            !recovery.join("hiss.capture.wav").exists(),
+            "silent spill deleted"
+        );
+        assert!(!recovery.join("hiss.wav").exists());
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 0, "idempotent");
+        assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn take_stage_terminal_for_each_outcome() {
         use super::{terminal_stage, TakeOutcome};
