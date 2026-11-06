@@ -3514,3 +3514,31 @@ button.primary.big {
 .meeting-notes-section ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .meeting-notes-section li { line-height: 1.45; }
 .meeting-notes-note { font-size: 0.85rem; }
+
+/* WF-18 — an always-global action's extra shortcuts, under its main row. */
+.hotkey-extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-2) calc(130px + var(--space-2));
+}
+.hotkey-extras-list {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hotkey-extras-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.hotkey-extras-hint,
+.hotkey-extras-warning {
+  flex-basis: 100%;
+  margin: 0;
+}
+.hotkey-extras-warning {
+  color: var(--warn-ink);
+}
