@@ -304,12 +304,23 @@ export interface HotkeysStatus {
     | { state: "secureInput"; reason: string };
 }
 
+/** yap-1106-byom-cloud-fast-path — where the last job ran and why. */
+export interface CloudRouteChip {
+  route: "cloud" | "local";
+  reason: "online" | "offline" | "breaker" | "timeout" | "cap" | "user" | "error" | "constrained" | "no_key";
+  label: string;
+  tooltip: string;
+  job: "polish" | "format" | "notes";
+}
+
 export interface AppStatus {
   recording: boolean;
   busy: boolean;
   lastError: string | null;
   /** Y5-F — the catalogue code behind `lastError` (errors.ts). */
   lastErrorCode?: string | null;
+  /** yap-1106 — the last take's route: the pill chip "Cloud" / "On this Mac". */
+  cloudRoute?: CloudRouteChip | null;
   message: string;
   accessibility: boolean;
   /** The Carbon dictate chord's register result and the fn tap's delivery. */

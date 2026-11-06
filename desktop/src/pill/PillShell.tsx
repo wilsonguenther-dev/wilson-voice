@@ -30,6 +30,7 @@ import {
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
 import LanguageChip from "./LanguageChip";
+import RouteChip from "./RouteChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
@@ -484,6 +485,8 @@ export default function ClassicPill(
         {/* Y10-A · the language picker slot. At rest only: mid-take the
             language is already decided, and a blocked/gated pill has one job. */}
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
+        {/* yap-1106 · the route chip (Cloud / On this Mac), at rest only. */}
+        {!blocked && !gated && !live && !progress && !busy ? <RouteChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
           <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>

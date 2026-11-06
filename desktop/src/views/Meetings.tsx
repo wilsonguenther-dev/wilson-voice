@@ -533,7 +533,7 @@ export default function Meetings() {
               {openMeeting.meeting.summary && (
                 <div className="panel">
                   <h3>Notes</h3>
-                  <NotesView markdown={openMeeting.meeting.summary} />
+                  <NotesView markdown={openMeeting.meeting.summary} meetingId={openMeeting.meeting.id} />
                 </div>
               )}
 
