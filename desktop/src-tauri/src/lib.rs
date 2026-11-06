@@ -935,7 +935,8 @@ struct AppState {
     /// from [`license::tray_line`], the same decision the pill renders, so the
     /// menu bar and the pill cannot disagree about the trial.
     tray_license: PLMutex<Option<MenuItem<Wry>>>,
-    /// Y2-E — "Upgrade Yap — $29 once". Held so `sync_tray` can INSERT it into
+    /// Y2-E — the upgrade line (`license::upgrade_tray_label`: "See Yap pricing"
+    /// while checkout is closed). Held so `sync_tray` can INSERT it into
     /// and REMOVE it from the menu rather than grey it out: muda has no hidden
     /// item, and a disabled upgrade line is still the wrong sentence sitting in
     /// front of someone who already paid.
@@ -1595,6 +1596,7 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let license = state.license.status();
     let (license_line, urgent) = license::tray_line(&license);
     let offers_purchase = license::tray_offers_purchase(&license);
+    let upgrade_label = license::upgrade_tray_label(license.purchase_open);
     let license_item = state.tray_license.lock().clone();
     let upgrade_item = state.tray_upgrade.lock().clone();
     let tray_menu = state.tray_menu.lock().clone();
@@ -1647,6 +1649,9 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
         // separator, so the money line reads as part of the license block and
         // not as the first of the dictation controls.
         if let (Some(menu), Some(item)) = (tray_menu.as_ref(), upgrade_item.as_ref()) {
+            // yap-1106-lic-02 — the line reads `purchase_open`: "See Yap
+            // pricing" while checkout is closed, the price once it is open.
+            let _ = item.set_text(upgrade_label);
             if offers_purchase && !upgrade_shown {
                 let _ = menu.insert(item, 1);
             } else if !offers_purchase && upgrade_shown {
@@ -1804,14 +1809,14 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
 /// It must never open a browser, and it must never be the thing that shows a
 /// price: the $29 / $19-founding copy, the seats line and the keep-forever
 /// promise all live in `src/license/PurchasePrompt.tsx`, and dropping somebody
-/// into a Stripe checkout straight from a corner of their screen would put them
+/// onto the purchase page straight from a corner of their screen would put them
 /// in front of a payment form with none of that context.
 ///
 /// So the caller's job ends at "ask the main window". This command unminimizes
 /// and focuses `main` (`present_main_window`, the same activation path the tray
 /// uses) and emits `show_purchase`; `appShell.ts` listens and raises the sheet
 /// that already exists. No new money surface, no second price string, no second
-/// Payment Link.
+/// purchase URL.
 ///
 /// Y2-E's menu-bar "upgrade" item calls this same function. That item used to
 /// land on Settings -> License "until Y2-D's dedicated purchase sheet lands";
@@ -9181,33 +9186,44 @@ fn activate_license(
     }
 }
 
-/// YP3 — open Stripe's hosted checkout in the user's browser.
+/// YP3 / yap-1106-lic-02 — open the drivia.consulting Yap page in the user's
+/// browser. Every Buy lands there, never on a Stripe link: the page starts
+/// checkout once sales are open and says "not open yet" until then.
 ///
 /// Takes **no argument on purpose**. The destination is
-/// `license::PAYMENT_LINK_URL`, a compile-time constant, handed to `open(1)` as
+/// `license::PURCHASE_PAGE_URL`, a compile-time constant, handed to `open(1)` as
 /// one argv element — never a shell string, and never a URL the webview
 /// supplied. A command that accepted a URL would be a "open anything on this
 /// Mac" primitive reachable from any script that reaches the frontend.
 #[tauri::command]
 fn open_purchase_page() -> Result<(), String> {
+    let purchase_open = license::PURCHASE_OPEN;
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(license::PAYMENT_LINK_URL)
+        let result = std::process::Command::new("open")
+            .arg(license::PURCHASE_PAGE_URL)
             .spawn()
             .map(|_| ())
             .map_err(|e| {
                 format!(
-                    "Could not open your browser ({e}). The link is {}",
-                    license::PAYMENT_LINK_URL
+                    "Could not open your browser ({e}). The page is {}",
+                    license::PURCHASE_PAGE_URL
                 )
-            })
+            });
+        match &result {
+            Ok(()) => log::info!("license purchase_page_open ok purchase_open={purchase_open}"),
+            Err(_) => log::warn!(
+                "license purchase_page_open failure=spawn purchase_open={purchase_open}"
+            ),
+        }
+        result
     }
     #[cfg(not(target_os = "macos"))]
     {
+        log::warn!("license purchase_page_open failure=unsupported_os purchase_open={purchase_open}");
         Err(format!(
-            "Open {} in your browser to buy Yap.",
-            license::PAYMENT_LINK_URL
+            "Open {} in your browser to see Yap pricing.",
+            license::PURCHASE_PAGE_URL
         ))
     }
 }

@@ -5,15 +5,19 @@
 //! WHAT YAP SELLS
 //! --------------
 //! A $29 one-time lifetime license (a $19 `FOUNDING19` promo runs against the
-//! same SKU for the 30 days after launch, see [`founding_valid`]). There is no
-//! Yap account, no login, and no license-server call on
-//! the hot path: a license is a signed blob the customer pastes in, and this
-//! module verifies it against a public key compiled into the binary.
+//! same SKU for the 30 days after launch, see [`founding_valid`]), sold on
+//! [`PURCHASE_PAGE_URL`] (https://drivia.consulting/yap) and issued by the
+//! drivia.consulting licensing service as a compact token that
+//! `license_v2::verify_token` checks offline. There is no license-server call
+//! on the hot path: a license is a signed blob the customer pastes in, and this
+//! module verifies it against public keys compiled into the binary.
 //!
-//! THE WIRE FORMAT (must match the issuer exactly)
-//! ----------------------------------------------
-//! The issuer is `drivia-forge:server/src/yap-license.ts` (`signClaims`), live
-//! on the Forge box. It emits:
+//! THE LEGACY WIRE FORMAT (the two-segment blob below)
+//! ---------------------------------------------------
+//! The legacy issuer was `drivia-forge:server/src/yap-license.ts`
+//! (`signClaims`) on the Forge box. That box is DECOMMISSIONED and its signing
+//! key is lost, so no new legacy blob can be minted; the verifier stays only so
+//! a blob that already exists keeps being judged by its signature. It emitted:
 //!
 //! ```text
 //! <base64url(claimsJson)> "." <base64url(ed25519 signature)>
@@ -36,8 +40,9 @@
 //! WHAT THIS MODULE CAN AND CANNOT DO (read this before trusting it)
 //! ----------------------------------------------------------------
 //! * The **signature** is a real cryptographic boundary. Nobody can mint a
-//!   license without the private key that lives root-owned, mode 0400, on the
-//!   Forge box. Tampering with a stored license — claims, signature or the file
+//!   license without the issuer's private key (for the legacy format that key
+//!   was on the decommissioned Forge box and is gone; for tokens it is held by
+//!   the drivia.consulting licensing service, never by this app). Tampering with a stored license — claims, signature or the file
 //!   around them — fails verification on the very next read, because there is no
 //!   cached "licensed" boolean anywhere: entitlement is *recomputed from the
 //!   signature* every single time it is asked for.
@@ -73,8 +78,11 @@ use crate::license_v2::{self, TokenClaims, TokenError};
 
 // ─── Pinned issuer identity ──────────────────────────────────────────
 //
-// The public half of the Ed25519 signing key that the deployed issuer holds at
-// /etc/forge/yap/license-signing-ed25519.pem (root:root, 0400). Captured with
+// The public half of the Ed25519 signing key the LEGACY issuer held at
+// /etc/forge/yap/license-signing-ed25519.pem on the Forge box. That box is
+// decommissioned and the private half is lost: this key can still VERIFY a
+// legacy blob that already exists, and nothing can sign a new one. It was
+// captured (while the box was live) with
 //
 //   openssl pkey -in /etc/forge/yap/license-signing-ed25519.pem \
 //     -pubout -outform DER | base64 -w0
@@ -161,38 +169,32 @@ pub const GRACE_DEFAULT_DAYS: i64 = TRIAL_DAYS;
 // /api/v1/licensing) arrives through `LicenseTransport` below, never through
 // an HTTP crate imported here — `license_rs_has_no_http_client` pins that.
 
-/// Where "Buy Yap" goes — the **one** place this URL is written down in the
-/// app (YP3). The frontend never holds it: the Buy button invokes
-/// `open_purchase_page`, which hands this constant to `open(1)` as a single
-/// argv element, so no string the webview can influence ever reaches a process
-/// launch.
+/// Where every "Buy Yap" goes — the **one** place this URL is written down in
+/// the app (YP3, yap-1106-lic-02). The frontend never holds it: every Buy
+/// button (Settings → License, the license-required sheet, the menu bar's
+/// upgrade line through that sheet) invokes `open_purchase_page`, which hands
+/// this constant to `open(1)` as a single argv element, so no string the
+/// webview can influence ever reaches a process launch.
 ///
-/// Cited from the issuer's own record, `drivia-forge` `docs/YAP-LICENSING.md`
-/// § "Live objects": Payment Link `plink_1U2yNFBc7RJSrX28KrzOuXwk`, price
-/// `price_1U2yN4Bc7RJSrX287I33050v` ($29.00 one-time), product
-/// `prod_V34VzbYj8scmQC`, `allow_promotion_codes: true` so `FOUNDING19` (coupon
-/// `z8UZkIH2`, −$10, 500 redemptions, valid 30 days from FOUNDING_OPENED_AT
-/// (the launch), see founding_valid) applies at checkout.
-///
-/// The link is currently **`active: false`** on Stripe — deliberately
-/// deactivated until the delivery path is proven end to end (see that doc's
-/// "Why the link is deactivated"). Yap ships pointing at it anyway: this is the
-/// URL, and re-activating it in Stripe is what turns purchasing on, with no
-/// client change and no release. Until then the page says the link is not yet
-/// open, which is the honest state of the world and not a bug in Yap.
-pub const PAYMENT_LINK_URL: &str = "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602";
+/// It is the drivia.consulting Yap page, NEVER a Stripe Payment Link. The page
+/// owns the checkout: while sales are closed it says "not open yet" (and
+/// offers to notify), and on launch day it starts checkout. Opening or closing
+/// sales is a change on that page, not a client release; the app only words
+/// its button to match [`PURCHASE_OPEN`].
+pub const PURCHASE_PAGE_URL: &str = "https://drivia.consulting/yap";
 
 /// yap24-PILL1 — is checkout actually open? The ONE switch every in-app
 /// purchase CHIP on the pill reads, surfaced on [`LicenseStatus::purchase_open`]
 /// and consumed by `pillLicense` in `desktop/src/pill/license.ts`.
 ///
-/// `false` until launch day, and that is the honest value: the link above is
-/// `active: false` on Stripe and the issuer does not answer, so a Buy action on
+/// `false` until launch day, and that is the honest value: the page at
+/// [`PURCHASE_PAGE_URL`] says "not open yet" until then, so a Buy action on
 /// the pill would dead-end. While it is false the pill still COUNTS DOWN (the
-/// trial is never silent) but carries no purchase action at all. Wilson flips
-/// this in the same release that opens checkout. It governs the pill's purchase
-/// chip and, through [`founding_valid`], every line of founding-price copy; the
-/// Settings → License panel and the tray otherwise keep their own copy.
+/// trial is never silent) but carries no purchase action at all, and Settings →
+/// License, the license-required sheet and the tray word their button "See Yap
+/// pricing" (it still opens the page) and promise no checkout. Wilson flips
+/// this in the same release that opens checkout. It also governs, through
+/// [`founding_valid`], every line of founding-price copy.
 ///
 /// Flipping it REQUIRES [`FOUNDING_OPENED_AT`] in the same release: the const
 /// assertion below refuses to compile a build that opens checkout without
@@ -850,8 +852,10 @@ pub type LicenseProblem = (String, String);
 
 /// Turn (stored key, revocation list, trial) into an entitlement — the whole
 /// decision, as a pure function, with the verifier injected so tests can drive
-/// every branch with a throwaway signing key instead of needing the production
-/// private half (which lives root-only on the Forge box and is staying there).
+/// every branch with a throwaway signing key instead of needing a production
+/// private half (the legacy one was on the decommissioned Forge box and is
+/// lost; the token issuer's lives with the drivia.consulting licensing service
+/// and never in this repo).
 ///
 /// Order matters and is deliberate:
 ///   * a VALID license wins outright, whatever the trial says — that is what
@@ -1073,15 +1077,37 @@ pub fn tray_offers_purchase(status: &LicenseStatus) -> bool {
     }
 }
 
-/// The menu-bar upgrade line. The price lives HERE, next to the payment link it
-/// sends people to, and not in the tray-building code: the one-time $29 and the
-/// URL that charges it are one fact, and splitting them is how a label ends up
-/// quoting a price the link no longer takes.
+/// The menu-bar upgrade line while checkout is OPEN. The price lives HERE,
+/// next to the purchase page it sends people to, and not in the tray-building
+/// code: the one-time $29 and the page that charges it are one fact, and
+/// splitting them is how a label ends up quoting a price the page no longer
+/// takes.
 ///
 /// No file under `desktop/src/pill/` may carry a figure (see that directory's
 /// own rule); the menu bar is not the pill, it is a menu the user opened, and a
 /// money item with no number in it is a worse menu item.
-pub const UPGRADE_TRAY_LABEL: &str = "Upgrade Yap — $29 once";
+pub const UPGRADE_TRAY_LABEL_OPEN: &str = "Upgrade Yap — $29 once";
+
+/// yap-1106-lic-02 — the menu-bar upgrade line while checkout is CLOSED. It
+/// still raises the purchase sheet, whose button opens [`PURCHASE_PAGE_URL`]
+/// (which says "not open yet"); it promises no checkout.
+pub const UPGRADE_TRAY_LABEL_CLOSED: &str = "See Yap pricing";
+
+/// yap-1106-lic-02 — the upgrade line's words for a given `purchase_open`
+/// ([`LicenseStatus::purchase_open`]). `sync_tray` sets the item's text from
+/// this on every emit, so the tray reads the same switch as Settings and the
+/// sheet.
+pub const fn upgrade_tray_label(purchase_open: bool) -> &'static str {
+    if purchase_open {
+        UPGRADE_TRAY_LABEL_OPEN
+    } else {
+        UPGRADE_TRAY_LABEL_CLOSED
+    }
+}
+
+/// The label the tray is BUILT with (`tray_menu::TRAY_ITEMS`), for this build's
+/// [`PURCHASE_OPEN`]. `sync_tray` re-reads it from the status afterwards.
+pub const UPGRADE_TRAY_LABEL: &str = upgrade_tray_label(PURCHASE_OPEN);
 
 // ─── Manager ─────────────────────────────────────────────────────────
 
@@ -1107,7 +1133,8 @@ pub struct LicenseManager {
     now: NowFn,
     /// Always `verify_license` in the app. Injected only so tests can exercise
     /// the storage / revocation / gate paths with a throwaway signing key —
-    /// the production private key is root-only on the Forge box.
+    /// no production private key is ever in this repo (the legacy one was on
+    /// the decommissioned Forge box and is lost).
     verify: VerifyFn,
     /// yap-lic-01 — always `license_v2::verify_token` (EMBEDDED_KEYS only) in
     /// the app; injected only so `#[cfg(test)]` code can sign with a throwaway key.
@@ -2056,32 +2083,49 @@ mod tests {
         );
     }
 
-    /// YP3 — the Buy button's destination, pinned.
+    /// YP3 / yap-1106-lic-02 — the Buy button's destination, pinned.
     ///
     /// This is the one string in the app that decides where a customer's money
-    /// goes, and a typo in it is silent: the button opens, a Stripe page loads
-    /// (or 404s), and nothing in the build complains. So the value the issuer
-    /// documented is asserted verbatim, and its shape is asserted separately so
-    /// a future edit cannot quietly turn it into a non-Stripe or non-TLS URL.
+    /// goes, and a typo in it is silent: the button opens, a page loads (or
+    /// 404s), and nothing in the build complains. So the value is asserted
+    /// verbatim, its origin is pinned to https drivia.consulting separately, and
+    /// a Stripe Payment Link is refused outright: every Buy goes through the
+    /// drivia.consulting page, never straight to a checkout link.
     #[test]
-    fn payment_link_is_the_live_link_the_issuer_documented() {
+    fn purchase_page_is_the_drivia_consulting_yap_page() {
         assert_eq!(
-            PAYMENT_LINK_URL, "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602",
-            "the Buy button must point at plink_1U2yNFBc7RJSrX28KrzOuXwk — see \
-             drivia-forge docs/YAP-LICENSING.md § Live objects"
+            PURCHASE_PAGE_URL, "https://drivia.consulting/yap",
+            "every Buy button must open the drivia.consulting Yap page"
         );
         assert!(
-            PAYMENT_LINK_URL.starts_with("https://buy.stripe.com/"),
-            "checkout must be Stripe's own hosted page, over TLS"
+            PURCHASE_PAGE_URL.starts_with("https://drivia.consulting/"),
+            "the purchase page must be on the https drivia.consulting origin"
         );
         assert!(
-            !PAYMENT_LINK_URL.contains(char::is_whitespace),
+            !PURCHASE_PAGE_URL.contains(concat!("stripe", ".com")),
+            "the Buy button must never be a Stripe Payment Link"
+        );
+        assert!(
+            !PURCHASE_PAGE_URL.contains(char::is_whitespace),
             "a URL handed to open(1) must be a single argv element"
         );
     }
 
-    /// The end-to-end proof: a blob signed by the private key on the Forge box
-    /// verifies against the constant compiled into this binary.
+    /// yap-1106-lic-02 — the tray's upgrade line reads `purchase_open`: with
+    /// checkout closed it says "See Yap pricing" and quotes no checkout; open,
+    /// it carries the price. The build-time label follows this build's const.
+    #[test]
+    fn upgrade_tray_label_follows_purchase_open() {
+        assert_eq!(upgrade_tray_label(false), "See Yap pricing");
+        assert_eq!(upgrade_tray_label(true), "Upgrade Yap — $29 once");
+        assert!(!upgrade_tray_label(false).contains('$'));
+        assert!(!upgrade_tray_label(false).to_lowercase().contains("checkout"));
+        assert_eq!(UPGRADE_TRAY_LABEL, upgrade_tray_label(PURCHASE_OPEN));
+    }
+
+    /// The end-to-end proof: a blob signed (while it was live) by the legacy
+    /// issuer on the now-decommissioned Forge box verifies against the
+    /// constant compiled into this binary.
     #[test]
     fn license_verifies_a_signature_from_the_deployed_issuer() {
         let claims = verify_license(PRODUCTION_SIGNED_FIXTURE)
@@ -2399,19 +2443,19 @@ mod tests {
     }
 
     /// yap-lic-00: `license.rs` holds no HTTP client and names no host. The one
-    /// URL allowed is `PAYMENT_LINK_URL` (handed to open(1), never fetched).
+    /// URL allowed is `PURCHASE_PAGE_URL` (handed to open(1), never fetched).
     /// Needles are assembled with `concat!` so this test does not match itself.
     #[test]
     fn license_rs_has_no_http_client() {
         const SRC: &str = include_str!("license.rs");
-        let origin_end = PAYMENT_LINK_URL
+        let origin_end = PURCHASE_PAGE_URL
             .match_indices('/')
             .nth(2)
             .map(|(i, _)| i + 1)
-            .expect("payment link has an origin");
+            .expect("purchase page has an origin");
         let scrubbed = SRC
-            .replace(PAYMENT_LINK_URL, "")
-            .replace(&PAYMENT_LINK_URL[..origin_end], "");
+            .replace(PURCHASE_PAGE_URL, "")
+            .replace(&PURCHASE_PAGE_URL[..origin_end], "");
         let needles = [
             concat!("sslip", ".io"),
             concat!("req", "west"),
