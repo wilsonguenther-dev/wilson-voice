@@ -259,7 +259,10 @@ export function layoutVars(l: PillLayout): Record<string, string> {
     "--hint-x": px(l.hint.x), "--hint-y": px(l.hint.y), "--hint-w": px(l.hint.w), "--hint-h": px(l.hint.h),
     "--clock-x": px(c.x), "--clock-y": px(c.y), "--clock-w": px(c.w), "--clock-h": px(c.h),
     "--progress-x": px(p.x), "--progress-y": px(p.y), "--progress-w": px(p.w), "--progress-h": px(p.h),
-    "--card-x": px(k.x), "--card-y": px(k.y), "--card-w": px(k.w),
+    // With no card yet, a card that mounts is laid out at its real width (so
+    // the height it is measured at is the height it will have), then moved
+    // into the row the next layout reserves for it.
+    "--card-x": px(k.x), "--card-y": px(k.y), "--card-w": px(l.card ? k.w : CARD_W),
   };
 }
 
