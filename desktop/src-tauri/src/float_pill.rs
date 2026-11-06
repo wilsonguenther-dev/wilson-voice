@@ -446,7 +446,11 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             builder = builder.transparent(true);
         }
 
-        builder.build().map_err(|e| format!("float window: {e}"))?;
+        let win = builder.build().map_err(|e| format!("float window: {e}"))?;
+        // yap-call-1 — the pill and its recording dot are NEVER hidden from a
+        // screen share (`content_protected_for("float")` is false); only the
+        // call-offer window is.
+        crate::call_offer::apply_content_protection(&win);
     }
 
     // Convert / re-apply NSPanel HUD flags

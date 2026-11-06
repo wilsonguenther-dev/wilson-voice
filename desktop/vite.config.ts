@@ -69,6 +69,8 @@ export default defineConfig(async () => ({
         float: resolve(__dirname, "float.html"),
         // DB-D — the Scratchpad panel, its own React tree like the pill.
         scratchpad: resolve(__dirname, "scratchpad.html"),
+        // yap-call-1 — the call offer, its own content-protected window.
+        callOffer: resolve(__dirname, "call-offer.html"),
         ...(devTooling
           ? {
               licensePreview: resolve(__dirname, "dev/license-preview.html"),

@@ -471,6 +471,7 @@ fn evaluate_calls(
     use crate::call_signals;
     if !s.offer_detected {
         clear(app, Some(OfferSource::App));
+        crate::on_call_sighting(app, None);
         return;
     }
     #[cfg(target_os = "macos")]
@@ -506,6 +507,7 @@ fn evaluate_calls(
                 calls.last_error = Some(e);
             }
             clear(app, Some(OfferSource::App));
+            crate::on_call_sighting(app, None);
             return;
         }
     };
@@ -527,19 +529,17 @@ fn evaluate_calls(
         }
         calls.last_logged = logged;
     }
-    match candidate.filter(|c| c.offers()) {
-        Some(c) => {
-            let offer = MeetingOffer {
-                key: c.offer_key(),
-                title: Some(call_signals::offer_copy(&c, call_signals::catalog())),
-                source: OfferSource::App,
-            };
-            raise(app, db, false, offer);
-        }
-        None => {
-            clear(app, Some(OfferSource::App));
-        }
-    }
+    // yap-call-1 — an app/browser call goes to the call offer (its own,
+    // content-protected window: countdown, chip, Never per app). The pill's
+    // MeetingOffer slot keeps the calendar offer only.
+    let _ = db;
+    clear(app, Some(OfferSource::App));
+    crate::on_call_sighting(
+        app,
+        candidate
+            .filter(|c| c.offers())
+            .map(|c| crate::call_offer::Sighting::from_candidate(&c, call_signals::catalog())),
+    );
 }
 
 /// Start the watcher thread. `meeting_recording` is read on every wake.

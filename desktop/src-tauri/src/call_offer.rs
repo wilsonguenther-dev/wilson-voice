@@ -233,8 +233,11 @@ pub enum Input {
     Tick { now_ms: u64, app_input_running: Option<bool> },
     /// The user's answer for `offer_id`.
     User { choice: UserChoice, offer_id: String },
-    /// A recording started by any other path, or any recording stopped.
+    /// Any recording stopped.
     RecordingStopped,
+    /// The start behind [`Effect::StartRecording`] failed: back to the chip,
+    /// so the user sees the error and can press it again.
+    StartFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +333,14 @@ impl CallOfferMachine {
             Input::Seen { sighting, now_ms } => self.seen(sighting, now_ms, policy),
             Input::Tick { now_ms, app_input_running } => self.tick(now_ms, app_input_running),
             Input::User { choice, offer_id } => self.user(choice, &offer_id),
+            Input::StartFailed => {
+                if self.phase == Phase::Recording && self.live.is_some() {
+                    self.phase = Phase::Chip;
+                    vec![Effect::ShowChip]
+                } else {
+                    vec![]
+                }
+            }
             Input::RecordingStopped => {
                 self.quiet_since_ms = None;
                 self.end_prompt_answered = false;
