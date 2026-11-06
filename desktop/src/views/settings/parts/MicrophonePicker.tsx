@@ -188,8 +188,10 @@ export default function MicrophonePicker() {
   };
 
   const ready = load.kind === "ready" ? load.list : null;
-  const split = ready ? splitDevices(ready) : { mics: [], other: [] };
-  const rows = ready ? rankedRows(ready) : [];
+  const split: { mics: MicDevice[]; other: MicDevice[] } = ready
+    ? splitDevices(ready)
+    : { mics: [], other: [] };
+  const rows: RankRow[] = ready ? rankedRows(ready) : [];
 
   return (
     <div className="panel" data-row data-mic-picker>
