@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
+import { drawChick as drawChickArt } from "../sprites/art";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
@@ -200,37 +201,9 @@ export default function YappyPill(
     interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
 
     // the chick — front wing holds a pencil when noting / at the desk
-    function drawChick(cx: number, feetY: number, A: SP) {
-      const cy = feetY - 11 - A.hop; const rx = 11 + A.sx, ry = 11 + A.sy;
-      ell(cx + rx - 1, cy + 2, 4, 3, C.outline); ell(cx + rx - 1, cy + 2, 3, 2, C.dark);              // tail
-      ell(cx + rx - 2, cy + 1 - A.flap, 3, 4, C.outline); ell(cx + rx - 2, cy + 1 - A.flap, 2, 3, C.dark); // back wing
-      ell(cx, cy, rx + 1, ry + 1, C.outline); ell(cx, cy, rx, ry, C.body); ell(cx - 3, cy - 4, rx - 4, ry - 5, C.light); ell(cx, cy + 5, rx - 5, ry - 5, C.belly);
-      const sw = Math.round(A.sway);
-      // Y2-B — the tufts are his ears: upright at rest, folded flat once the
-      // trial is out. A POSE (different pixels, same frame), never an animation.
-      if (A.droop) { rct(cx - 3 + sw, cy - ry, 2, 1, C.sprout); rct(cx + 1 + sw, cy - ry - 1, 2, 1, C.sprout); }
-      else { rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout); }
-      const wy = cy + 1 - A.flap;
-      ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
-      if (A.pencil) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
-      const ex = 5, ey = cy + 1;
-      for (const s of [-1, 1]) { const eXc = cx + s * ex;
-        if (A.mood > .55) { rct(eXc - 2, ey - 1, 1, 1, C.eye); rct(eXc - 1, ey - 2, 1, 1, C.eye); rct(eXc, ey - 2, 1, 1, C.eye); rct(eXc + 1, ey - 1, 1, 1, C.eye); }
-        else if (A.blink > .5 || A.mood < -.5) { rct(eXc - 2, ey + (A.mood < -.5 ? 1 : 0), 4, 1, C.eye); }
-        else if (A.look === "down") { ell(eXc, ey + 1, 2.1, 2.3, C.eye); rct(eXc - 1, ey, 1, 1, C.white); }
-        else { ell(eXc, ey, 2.2, 2.7, C.eye); rct(eXc - 1, ey - 2, 1, 1, C.white); octx.globalAlpha = .7; rct(eXc + 1, ey + 1, 1, 1, C.white); octx.globalAlpha = 1; }
-      }
-      // reading glasses for the receptionist / essay personas
-      if (A.glasses) { rct(cx - ex - 3, ey - 1, 1, 4, C.glass); rct(cx - ex + 2, ey - 1, 1, 4, C.glass); rct(cx - ex - 3, ey - 1, 5, 1, C.glass); rct(cx - ex - 3, ey + 2, 5, 1, C.glass);
-        rct(cx + ex - 2, ey - 1, 1, 4, C.glass); rct(cx + ex + 3, ey - 1, 1, 4, C.glass); rct(cx + ex - 2, ey - 1, 5, 1, C.glass); rct(cx + ex - 2, ey + 2, 5, 1, C.glass); rct(cx - 2, ey, 4, 1, C.glass); }
-      const by = cy + 5, f = A.beakF;
-      rct(cx - 1, by - 1, 3, 1, C.beakD); rct(cx - 1, by, 3, 1, C.beak);
-      if (f === 1) { rct(cx, by + 1, 1, 1, C.cavity); rct(cx - 1, by + 2, 3, 1, C.beakD); }
-      else if (f >= 2) { rct(cx - 1, by + 1, 3, 1, C.cavity); rct(cx, by + 2, 1, 1, C.tongue); rct(cx - 1, by + 3, 3, 1, C.beakD); }
-      else { rct(cx, by + 1, 1, 1, C.beak); }
-      octx.globalAlpha = .7; rct(cx - rx + 2, cy + 3, 2, 1, C.blush); rct(cx + rx - 3, cy + 3, 2, 1, C.blush); octx.globalAlpha = 1;
-      rct(cx - 3, cy + ry - 1, 1, 2, C.foot); rct(cx + 3, cy + ry - 1, 1, 2, C.foot);
-    }
+    // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
+    // (sprites/art.snapshot.test.ts) pixel-checks the code the pill runs.
+    function drawChick(cx: number, feetY: number, A: SP) { drawChickArt(octx, cx, feetY, A); }
 
     function drawScene(A: SP) {
       octx.clearRect(0, 0, PW, PH);
