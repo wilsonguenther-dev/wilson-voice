@@ -3984,19 +3984,37 @@ mod tests {
     /// `None` rows are the ones that must never raise the toast.
     const WF06_CASES: &[(&str, Option<(&str, &str)>)] = &[
         ("coffee at 2 actually 3", Some(("2", "3"))),
-        ("standup is Tuesday actually Thursday", Some(("Tuesday", "Thursday"))),
-        ("meet at noon, scratch that, meet at one", Some(("meet at noon", "meet at one"))),
+        (
+            "standup is Tuesday actually Thursday",
+            Some(("Tuesday", "Thursday")),
+        ),
+        (
+            "meet at noon, scratch that, meet at one",
+            Some(("meet at noon", "meet at one")),
+        ),
         (
             "I'm free today, let's do noon, scratch that, let's do one",
             Some(("let's do noon", "let's do one")),
         ),
-        ("book the blue one, no wait, the red one", Some(("book the blue one", "the red one"))),
-        ("let's meet Tuesday, wait no, Friday", Some(("Tuesday", "Friday"))),
-        ("the invoice is due April, i mean, June", Some(("April", "June"))),
+        (
+            "book the blue one, no wait, the red one",
+            Some(("book the blue one", "the red one")),
+        ),
+        (
+            "let's meet Tuesday, wait no, Friday",
+            Some(("Tuesday", "Friday")),
+        ),
+        (
+            "the invoice is due April, i mean, June",
+            Some(("April", "June")),
+        ),
         ("um coffee at 2 actually 3", Some(("2", "3"))),
         // The [DOC] negative: "actually" the adverb is not a correction.
         ("I actually enjoyed it", None),
-        ("I actually think we should meet at the office tomorrow.", None),
+        (
+            "I actually think we should meet at the office tomorrow.",
+            None,
+        ),
         // Filler-only cleanup is cleanup, not a caught backtrack.
         ("um so I think we should uh go home", None),
         ("we need milk, like, and eggs", None),
@@ -4013,7 +4031,11 @@ mod tests {
                 .headline()
                 .map(|c| (c.dropped.as_str(), c.kept.as_str()));
             assert_eq!(got, *expected, "headline for {input:?}");
-            assert_eq!(report.caught(), expected.is_some(), "caught() for {input:?}");
+            assert_eq!(
+                report.caught(),
+                expected.is_some(),
+                "caught() for {input:?}"
+            );
         }
     }
 

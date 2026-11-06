@@ -1593,7 +1593,9 @@ export type PillMessageId =
   /** The Copy card: the paste had nowhere to land, the text is kept. */
   | "copy-card"
   /** The detected-meeting offer (it has its own switch in Settings › Meetings). */
-  | "meeting-offer";
+  | "meeting-offer"
+  /** WF-06 — "Backtrack caught": a spoken self-correction was applied; Undo pastes the raw take. */
+  | "backtrack-caught";
 
 /** THE table. One category per pill message; nothing shows without a row. */
 export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
@@ -1620,6 +1622,9 @@ export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
   "fn-hint": "recovery",
   "copy-card": "recovery",
   "meeting-offer": "status",
+  // WF-06 — a receipt that Yap changed the take, with its Undo. Not a tip:
+  // muting tips must never hide a change made to what the user said.
+  "backtrack-caught": "status",
   "nudge:no-text-field": "tip",
   "nudge:code-editor": "tip",
   "nudge:meetings": "news",

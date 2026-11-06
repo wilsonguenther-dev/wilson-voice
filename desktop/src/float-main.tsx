@@ -22,6 +22,8 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
+import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
   acceptProgress,
@@ -72,6 +74,7 @@ import type { ListenEstimate, SlotCtx } from "./pill/slots";
 import {
   forcedPill,
   matrixLanguageOfferScene,
+  matrixBacktrackCaughtScene,
   matrixLicenseScenes,
   matrixPhases,
   type ForcedPill,
@@ -201,6 +204,7 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     ...matrixLicenseScenes(),
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
+    matrixBacktrackCaughtScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
@@ -579,6 +583,11 @@ function Float() {
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
+      <BacktrackCaughtCard
+        forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
       {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}

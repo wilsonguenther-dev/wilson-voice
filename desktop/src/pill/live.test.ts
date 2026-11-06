@@ -1302,6 +1302,7 @@ describe("WF-17 pill message categories", () => {
     "fn-hint",
     "copy-card",
     "meeting-offer",
+    "backtrack-caught",
   ];
 
   it("every_pill_message_has_a_category: a message with none fails here", () => {

@@ -62,6 +62,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
