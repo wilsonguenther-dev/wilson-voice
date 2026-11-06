@@ -244,8 +244,8 @@ pub fn centered_default(work: Frame, scale: f64) -> Frame {
     let width = ((DEFAULT_LOGICAL_SIZE.0 * scale).round() as u32).min(work.width.max(1));
     let height = ((DEFAULT_LOGICAL_SIZE.1 * scale).round() as u32).min(work.height.max(1));
     Frame {
-        x: work.x + ((work.width - width) / 2) as i32,
-        y: work.y + ((work.height - height) / 2) as i32,
+        x: work.x + (work.width.saturating_sub(width) / 2) as i32,
+        y: work.y + (work.height.saturating_sub(height) / 2) as i32,
         width,
         height,
     }
