@@ -792,6 +792,12 @@ export function useAppShell() {
     listen<LicenseStatus>("license", (e) => setLicense(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
+    // yap-1106-lic-03 — the launch refresh check was told the seat or license
+    // is gone (revoked / expired / deactivated / reactivate). The token is
+    // already deleted; this says why, in the one sentence Rust wrote.
+    listen<{ code: string; message: string }>("license_notice", (e) => {
+      if (e.payload?.message) toast(e.payload.message);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<LicenseStatus>("license_required", (e) => {
       setLicense(e.payload);
       setBuyPrompt(true);

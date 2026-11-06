@@ -652,7 +652,7 @@ impl LicenseTransport for HttpTransport {
             if bytes.len() > MAX_REPLY_BYTES {
                 return Err("reply_too_large".to_string());
             }
-            Ok(TransportReply {
+            Ok::<TransportReply, String>(TransportReply {
                 status,
                 retry_after_s,
                 body: bytes.to_vec(),
