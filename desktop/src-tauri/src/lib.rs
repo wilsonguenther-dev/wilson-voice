@@ -485,6 +485,12 @@ pub struct AppSettings {
     /// (⌥) | off. Independent of `ptt_binding` so plain dictation is unaffected.
     #[serde(default = "default_command_binding")]
     pub command_binding: String,
+    /// WF-19 — a mouse button as push-to-talk: `""` (off, default), `middle`
+    /// or `button<N>` (N ≥ 3, the maker's number), plus `:hands_free` for
+    /// click-to-toggle. Left and right click are refused on save
+    /// (`ptt_macos::MouseBinding::parse`).
+    #[serde(default)]
+    pub ptt_mouse_binding: String,
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
@@ -779,6 +785,7 @@ impl Default for AppSettings {
             show_floating_pill: true,
             ptt_binding: "fn_control".into(),
             command_binding: "command".into(),
+            ptt_mouse_binding: String::new(),
             keep_cmd_shift_v: false,
             dictate_toggle: None,
             meeting_chord: None,
@@ -5369,6 +5376,19 @@ fn save_settings(
         "both" | "fn_or_fn_control" => "fn / fn⌃".into(),
         _ => "fn⌃".into(),
     };
+    // WF-19 — a mouse push-to-talk button. Left / right click (and anything
+    // that is not a real button) are refused here, before anything persists;
+    // an accepted value is stored in its canonical form.
+    #[cfg(target_os = "macos")]
+    {
+        match ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding) {
+            Ok(b) => next.ptt_mouse_binding = b.map(|b| b.to_settings()).unwrap_or_default(),
+            Err(why) => {
+                log::warn!("ptt_mouse bind_refused reason={why}");
+                return Err(CommandError::refused(why));
+            }
+        }
+    }
     let dictate_changed = state.settings.lock().dictate_toggle != next.dictate_toggle;
     if dictate_changed {
         // Validate BEFORE persisting: a refused rebind is an error the
@@ -5678,6 +5698,11 @@ fn save_settings(
         ptt_macos::set_command_binding(ptt_macos::CommandBinding::from_settings(
             &next.command_binding,
         ));
+        // WF-19 — validated above, so this parse cannot fail; off on the
+        // impossible error rather than a guess.
+        ptt_macos::set_mouse_binding(
+            ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding).unwrap_or(None),
+        );
     }
     // YV42: the login item follows the toggle immediately, not on next launch.
     apply_autostart(&app, next.autostart);
@@ -10213,6 +10238,16 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
     let command_binding = ptt_macos::CommandBinding::from_settings(
         &state.settings.lock().command_binding,
     );
+    // WF-19 — the mouse button rides the same tap. A stored value that no
+    // longer parses (hand-edited file) is logged and treated as off.
+    let mouse = match ptt_macos::MouseBinding::parse(&state.settings.lock().ptt_mouse_binding) {
+        Ok(b) => b,
+        Err(why) => {
+            log::warn!("ptt_mouse bind_refused at_launch reason={why}");
+            None
+        }
+    };
+    ptt_macos::set_mouse_binding(mouse);
     let st = state.clone();
     let h = app.clone();
     ptt_macos::start(

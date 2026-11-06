@@ -7,6 +7,7 @@ import { useAppCtx } from "../../appShell";
 import type { ChordSetting } from "../../appTypes";
 import { dictateLabel } from "../../hotkeyStatus";
 import ExtraBindings from "../../ExtraBindings";
+import MousePttPanel from "../../MousePttPanel";
 import { handsFreeLine, resetAllToDefault, resetToDefault, type EditableAction } from "../../shortcutEditor";
 
 const MODIFIER_CODES = new Set([
@@ -299,6 +300,8 @@ export default function Shortcut() {
                       doesn’t open emoji.
                     </p>
                   </div>
+                  {/* WF-19 — a mouse button as push-to-talk or hands-free. */}
+                  <MousePttPanel settings={settings} save={saveSettings} />
                   {/* YV49 — command mode: the same hold, plus one modifier,
                       edits the text you already selected instead of typing. */}
                   <div className="panel" data-row>
