@@ -1,5 +1,19 @@
 import { useAppCtx } from "../../appShell";
 
+/**
+ * The pill styles a user can pick. yap-1106-retire-classic-pill: Classic is
+ * retired, so it is not offered; a saved "classic" (or nothing saved) is
+ * migrated to "yappy" at launch and reads as Yappy here.
+ */
+export const PILL_STYLE_CHOICES = [
+  ["yappy", "Yappy", "A pixel pet in a little world"],
+] as const;
+
+/** The choice to highlight: the saved style when it is still offered, else Yappy. */
+export function activePillStyle(saved?: string | null): string {
+  return PILL_STYLE_CHOICES.some(([id]) => id === saved) ? (saved as string) : PILL_STYLE_CHOICES[0][0];
+}
+
 export default function Companion() {
   const {
     saveSettings, settings,
@@ -10,17 +24,12 @@ export default function Companion() {
                   <div className="panel" data-row>
                     <h3>Pill style</h3>
                     <div className="profile-row">
-                      {(
-                        [
-                          ["classic", "Classic", "A sleek waveform capsule"],
-                          ["yappy", "Yappy 🐥", "A pixel pet in a little world"],
-                        ] as const
-                      ).map(([id, label, blurb]) => (
+                      {PILL_STYLE_CHOICES.map(([id, label, blurb]) => (
                         <button
                           key={id}
                           type="button"
                           className={
-                            (settings.pillStyle ?? "classic") === id
+                            activePillStyle(settings.pillStyle) === id
                               ? "profile active"
                               : "profile"
                           }
@@ -33,7 +42,7 @@ export default function Companion() {
                         </button>
                       ))}
                     </div>
-                    <p className="settings-hint">It appears while you dictate and switches live, so try both.</p>
+                    <p className="settings-hint">It appears while you dictate.</p>
                   </div>
                   <div className="panel" data-row>
                     <h3>Screen position</h3>

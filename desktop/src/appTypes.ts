@@ -145,7 +145,7 @@ export interface AppSettings {
    * in its own field). Rust `shortcuts::editor` validates every save.
    */
   extraChords?: ExtraBinding[];
-  /** classic (obsidian capsule) | yappy (pixel pet) */
+  /** yappy (pixel pet). "classic" is retired and migrated to yappy at launch. */
   pillStyle?: string;
   /**
    * Where the pill docks on screen (backend `pill_position`, YV53): "bottom"

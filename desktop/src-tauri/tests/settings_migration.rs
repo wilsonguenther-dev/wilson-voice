@@ -34,7 +34,7 @@
 //! what happens to a store on disk at launch — including the atomic rewrite.
 
 use std::path::PathBuf;
-use wilson_voice_lib::load_settings;
+use wilson_voice_lib::{load_settings, retired_pill_style};
 
 /// A unique scratch directory per test — no shared fixture, no ordering.
 fn scratch(name: &str) -> PathBuf {
@@ -103,13 +103,16 @@ fn a_v1_store_with_light_loads_as_medium() {
     // The rewrite actually landed, so the next launch is a no-op rather than a
     // migration that runs forever.
     let on_disk = stored(&path);
-    assert_eq!(on_disk["schemaVersion"], 2, "store rewritten at v2");
+    assert_eq!(
+        on_disk["schemaVersion"], 3,
+        "store rewritten at the current schema (v3)"
+    );
     assert_eq!(on_disk["cleanupLevel"], "medium", "rewritten on disk");
 
     // Idempotent: loading the rewritten file again changes nothing.
     let again = load_settings(&path);
     assert_eq!(again.cleanup_level, "medium");
-    assert_eq!(stored(&path)["schemaVersion"], 2);
+    assert_eq!(stored(&path)["schemaVersion"], 3);
 }
 
 /// The other half of the contract: once provenance EXISTS, it is honoured.
@@ -164,4 +167,92 @@ fn an_explicit_user_choice_is_never_rewritten() {
         !none.formatting_notice_pending,
         "nothing was changed for this user, so no notice"
     );
+}
+
+// ── yap-1106-retire-classic-pill: v2 → v3 retires the Classic pill ──────────
+
+/// THE ITEM'S CENTRAL CLAIM. A store that saved `"classic"` comes back as
+/// `"yappy"`, is rewritten to disk at v3, and every other field rides through.
+#[test]
+fn a_saved_classic_pill_migrates_to_yappy() {
+    let dir = scratch("v2-classic");
+    let path = dir.join("settings.json");
+    write(
+        &path,
+        r#"{"schemaVersion":2,"pillStyle":"classic","pillPosition":"left","cleanupLevel":"light","cleanupLevelSetByUser":true}"#,
+    );
+
+    let settings = load_settings(&path);
+
+    assert_eq!(
+        settings.pill_style, "yappy",
+        "Classic is retired: a saved \"classic\" must load as Yappy"
+    );
+    assert_eq!(settings.pill_position, "left", "the dock edge is untouched");
+    assert_eq!(
+        settings.cleanup_level, "light",
+        "a v2 store's chosen cleanup level never re-enters the v1 → v2 arm"
+    );
+    let on_disk = stored(&path);
+    assert_eq!(on_disk["schemaVersion"], 3, "store rewritten at v3");
+    assert_eq!(on_disk["pillStyle"], "yappy", "rewritten on disk");
+
+    // Idempotent: the rewritten v3 store loads unchanged.
+    let again = load_settings(&path);
+    assert_eq!(again.pill_style, "yappy");
+    assert_eq!(stored(&path)["schemaVersion"], 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A store that never saved a style (no `pillStyle` key, at any older version)
+/// lands on Yappy and is written down as Yappy.
+#[test]
+fn no_saved_pill_style_migrates_to_yappy() {
+    for (name, json) in [
+        ("v0-none", r#"{"autoPaste":true}"#),
+        ("v1-none", r#"{"schemaVersion":1,"autoPaste":true}"#),
+        ("v2-null", r#"{"schemaVersion":2,"pillStyle":null}"#),
+        ("v2-empty", r#"{"schemaVersion":2,"pillStyle":"  "}"#),
+        ("v1-upper", r#"{"schemaVersion":1,"pillStyle":"Classic"}"#),
+    ] {
+        let dir = scratch(name);
+        let path = dir.join("settings.json");
+        write(&path, json);
+        let settings = load_settings(&path);
+        assert_eq!(settings.pill_style, "yappy", "{name}: must land on Yappy");
+        assert_eq!(
+            stored(&path)["pillStyle"],
+            "yappy",
+            "{name}: rewritten on disk"
+        );
+        assert_eq!(stored(&path)["schemaVersion"], 3, "{name}: rewritten at v3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A style that still ships is the user's choice and is kept.
+#[test]
+fn a_saved_yappy_pill_is_kept() {
+    let dir = scratch("v2-yappy");
+    let path = dir.join("settings.json");
+    write(&path, r#"{"schemaVersion":2,"pillStyle":"yappy"}"#);
+    assert_eq!(load_settings(&path).pill_style, "yappy");
+    assert_eq!(stored(&path)["schemaVersion"], 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The arm's predicate, on its own: what moves and what the log line calls it.
+#[test]
+fn retired_pill_style_names_what_moves() {
+    use serde_json::json;
+    assert_eq!(retired_pill_style(None), Some("unset"));
+    assert_eq!(retired_pill_style(Some(&json!(null))), Some("unset"));
+    assert_eq!(retired_pill_style(Some(&json!(""))), Some("unset"));
+    assert_eq!(retired_pill_style(Some(&json!(7))), Some("unset"));
+    assert_eq!(retired_pill_style(Some(&json!("classic"))), Some("classic"));
+    assert_eq!(
+        retired_pill_style(Some(&json!(" CLASSIC "))),
+        Some("classic")
+    );
+    assert_eq!(retired_pill_style(Some(&json!("yappy"))), None);
 }

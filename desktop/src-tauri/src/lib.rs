@@ -521,7 +521,9 @@ pub struct AppSettings {
     /// every save and again at launch. Empty = one shortcut per action.
     #[serde(default)]
     pub extra_chords: Vec<shortcuts::editor::ExtraBinding>,
-    /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
+    /// Floating pill style: "yappy" (pixel pet). "classic" (the obsidian
+    /// capsule) is retired: the v2 → v3 migration rewrites it to "yappy", and
+    /// the pill's character registry resolves any stale id to Yappy too.
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
     /// Where the pill docks on screen (YV53): "bottom" (centred island, the
@@ -718,7 +720,7 @@ pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
 /// arm in `apply_settings_migrations` that upgrades stores written at the
 /// previous version.
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 {
     CURRENT_SETTINGS_SCHEMA_VERSION
@@ -730,7 +732,7 @@ fn default_command_binding() -> String {
     "command".into()
 }
 fn default_pill_style() -> String {
-    "classic".into()
+    "yappy".into()
 }
 fn default_pill_position() -> String {
     "bottom".into()
@@ -796,7 +798,7 @@ impl Default for AppSettings {
             copy_last_chord: None,
             scratchpad_chord: None,
             extra_chords: Vec::new(),
-            pill_style: "classic".into(),
+            pill_style: default_pill_style(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
@@ -5191,8 +5193,34 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
         settings.formatting_notice_pending = true;
     }
 
+    // v2 → v3 (yap-1106-retire-classic-pill): the Classic pill is retired.
+    // A store that saved "classic", or never saved a style at all, moves to
+    // "yappy" — the one pill that docks the meeting timer. Read off the RAW
+    // store: serde has already defaulted a missing field, so the struct alone
+    // cannot tell "never saved" from "saved yappy".
+    if stored_version < 3 {
+        if let Some(from) = retired_pill_style(stored.get("pillStyle")) {
+            log::info!(
+                "settings pill_style_migrated from={from} to=yappy schema_from=v{stored_version}"
+            );
+            settings.pill_style = default_pill_style();
+        }
+    }
+
     settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     true
+}
+
+/// yap-1106-retire-classic-pill — the stored `pillStyle` the v2 → v3 arm must
+/// move, named for the log line: `"unset"` (missing, null, empty or not a
+/// string) or `"classic"` (any case). `None` = keep it: the user saved a style
+/// that still ships.
+pub fn retired_pill_style(stored: Option<&serde_json::Value>) -> Option<&'static str> {
+    match stored.and_then(|v| v.as_str()).map(str::trim) {
+        None | Some("") => Some("unset"),
+        Some(s) if s.eq_ignore_ascii_case("classic") => Some("classic"),
+        Some(_) => None,
+    }
 }
 
 /// yap-p0-insertion-bridge-fallback — the Copy card the pill should show (a
