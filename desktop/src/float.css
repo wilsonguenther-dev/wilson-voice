@@ -1605,3 +1605,15 @@ html[data-one-pill="true"][data-dock] .nudge-row {
   box-sizing: border-box;
   transform: none;
 }
+
+/* yap-1106-engine-owner — the engine's state takes the strip's one line only
+   while a decode is on screen (engineHealthTakesStrip). Same type as the
+   phase line; "Catching up…" and "Restarting…" are warm, not alarming. */
+.phase-strip .engine-health {
+  font: inherit;
+  color: inherit;
+}
+.phase-strip .engine-health[data-state="stuck"],
+.phase-strip .engine-health[data-state="restarting"] {
+  color: rgba(253, 230, 138, 0.9);
+}

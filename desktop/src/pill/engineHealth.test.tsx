@@ -7,10 +7,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EngineHealthChip } from "./EngineHealthChip";
 import {
   ENGINE_HEALTH_LABEL,
+  ENGINE_HEALTH_PHASES,
   ENGINE_HEALTH_STATES,
+  engineHealthTakesStrip,
   engineHealthVisible,
   parseEngineHealth,
 } from "./engineHealth";
+import { PHASE_ID } from "./live";
 
 describe("engine health chip", () => {
   it.each(ENGINE_HEALTH_STATES)("renders the %s state in plain words", (state) => {
@@ -41,5 +44,22 @@ describe("engine health chip", () => {
       "stuck",
       "restarting",
     ]);
+  });
+});
+
+describe("engine health in the pill strip", () => {
+  it("takes the strip only while a decode is on screen and the state needs saying", () => {
+    expect(engineHealthTakesStrip("stuck", "transcribing")).toBe(true);
+    expect(engineHealthTakesStrip("restarting", "transcribing")).toBe(true);
+    expect(engineHealthTakesStrip("loading", "model_loading")).toBe(true);
+    expect(engineHealthTakesStrip("ready", "transcribing")).toBe(false);
+    expect(engineHealthTakesStrip("busy", "transcribing")).toBe(false);
+    expect(engineHealthTakesStrip("stuck", "listening")).toBe(false);
+    expect(engineHealthTakesStrip("stuck", "error")).toBe(false);
+  });
+
+  it("every phase the chip may take is a real pill phase id", () => {
+    const ids = Object.values(PHASE_ID);
+    for (const id of ENGINE_HEALTH_PHASES) expect(ids).toContain(id);
   });
 });

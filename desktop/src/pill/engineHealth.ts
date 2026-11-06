@@ -46,3 +46,15 @@ export function parseEngineHealth(payload: unknown): EngineHealth {
 export function engineHealthLabel(state: EngineHealth): string {
   return ENGINE_HEALTH_LABEL[state];
 }
+
+/**
+ * Pill phases (their `data-phase` ids) in which the engine's state is the
+ * thing worth saying. Only there does the chip take the strip's one line; a
+ * listening, error or hands-free line is never displaced.
+ */
+export const ENGINE_HEALTH_PHASES: readonly string[] = ["transcribing", "model_loading"];
+
+/** Whether the pill's strip shows the engine chip instead of its phase line. */
+export function engineHealthTakesStrip(state: EngineHealth, phaseId: string): boolean {
+  return engineHealthVisible(state) && ENGINE_HEALTH_PHASES.includes(phaseId);
+}
