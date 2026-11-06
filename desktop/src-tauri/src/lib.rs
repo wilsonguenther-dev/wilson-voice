@@ -5467,24 +5467,10 @@ fn save_settings(
     // can put them back alongside every primary.
     let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
-        let aliases_now = hotkey_table::active_aliases();
-        if aliases_now != aliases_before {
-            let (re_reg, drop_now) = hotkey_table::alias_diff(&aliases_now, &aliases_before);
-            if smoke::global_hotkeys_allowed() {
-                let gs = app.global_shortcut();
-                for sc in drop_now {
-                    let _ = gs.unregister(sc);
-                }
-                for sc in re_reg {
-                    if !gs.is_registered(sc) {
-                        if let Err(e) = gs.register(sc) {
-                            log::warn!("shortcuts extra_rollback_failed ({e})");
-                        }
-                    }
-                }
-            }
-            hotkey_table::set_active_aliases(aliases_before.clone());
-        }
+        // fix-b2-1: the PRIMARIES are restored first and the extras last, so
+        // (a) the extras' drop plan sees the restored primaries and never
+        // unregisters a chord one of them holds, and (b) a primary swap-back
+        // that drops a chord a restored extra holds is re-registered below.
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -5506,6 +5492,40 @@ fn save_settings(
                 log::warn!("dictate chord rollback failed: {e}");
             }
         }
+        // Every extra held before this save is re-asserted, not only the
+        // diff: a primary swap-back above may have dropped one (a save that
+        // moved ⌃⌘J from an extra to a primary, refused in step 2b before the
+        // alias set changed, swaps the primary back and unregisters ⌃⌘J).
+        let aliases_now = hotkey_table::active_aliases();
+        let restored_primaries = live_primary_chords(dictate_toggle_chord(&prev).0);
+        let drop_now =
+            hotkey_table::alias_unregister_plan(&aliases_now, &aliases_before, &restored_primaries);
+        let mut restored = 0usize;
+        if smoke::global_hotkeys_allowed() {
+            let gs = app.global_shortcut();
+            for sc in &drop_now {
+                if gs.is_registered(*sc) {
+                    if let Err(e) = gs.unregister(*sc) {
+                        log::warn!("shortcuts extra_rollback_unregister_failed ({e})");
+                    }
+                }
+            }
+            for (_, sc, _) in &aliases_before {
+                if !gs.is_registered(*sc) {
+                    match gs.register(*sc) {
+                        Ok(()) => restored += 1,
+                        Err(e) => log::warn!("shortcuts extra_rollback_failed ({e})"),
+                    }
+                }
+            }
+        }
+        if aliases_now != aliases_before || restored > 0 {
+            log::info!(
+                "shortcuts extras_rolled_back restored={restored} dropped={}",
+                drop_now.len()
+            );
+        }
+        hotkey_table::set_active_aliases(aliases_before.clone());
         if let Err(e) = persist_settings(&prev) {
             log::warn!("settings rollback persist failed: {e}");
         }
@@ -5560,12 +5580,49 @@ fn save_settings(
             .map_err(CommandError::refused)?;
         let old_extras = hotkey_table::active_aliases();
         if new_extras != old_extras {
-            let (to_reg, to_unreg) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            let (to_reg, removed) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            // fix-b2-1: the primaries as they stand after step 2. A removed
+            // extra that one of them now holds (reset-all handing ⌃⌘J back to
+            // Open Scratchpad) stays registered — step 2's swap skipped its
+            // register because the extra already held it.
+            let live_primaries = live_primary_chords(dictate_toggle_chord(&next).0);
+            let to_unreg =
+                hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live_primaries);
+            let kept_for_primary = removed.len().saturating_sub(to_unreg.len());
+            if kept_for_primary > 0 {
+                log::info!("shortcuts extra_now_primary kept={kept_for_primary}");
+            }
+            // A NEW extra a live primary already holds passed the gate only by
+            // a bug (check_distinct refuses it): log it and refuse the save.
+            let conflicts =
+                hotkey_table::alias_register_conflicts(&old_extras, &new_extras, &live_primaries);
+            if let Some((action, _, label)) = conflicts.first() {
+                log::error!(
+                    "shortcuts extra_on_live_primary action={} label={label} count={}",
+                    action.title(),
+                    conflicts.len()
+                );
+                return Err(rollback(
+                    CommandError::refused(format!(
+                        "{label} is already another action's shortcut — pick a different one"
+                    )),
+                    dictate_applied,
+                    &applied,
+                ));
+            }
             if smoke::global_hotkeys_allowed() {
                 let gs = app.global_shortcut();
                 let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
                 for sc in &to_reg {
                     if gs.is_registered(*sc) {
+                        // Not a live primary (checked above), yet held: a
+                        // leftover registration. Keep it, but never silently.
+                        let who = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(a, ..)| a.title())
+                            .unwrap_or("unknown");
+                        log::warn!("shortcuts extra_already_registered action={who}");
                         continue;
                     }
                     if let Err(e) = gs.register(*sc) {
@@ -9954,6 +10011,24 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
         label,
         &mut AppHotkeySink,
     )
+}
+
+/// fix-b2-1 (WF-18) — every chord a PRIMARY holds right now: the
+/// always-global rebindable chords (Record meeting included), the dictate
+/// toggle `dictate`, and the cancel key while a take has it armed. The extras'
+/// unregister plan never drops one of these.
+fn live_primary_chords(
+    dictate: tauri_plugin_global_shortcut::Shortcut,
+) -> Vec<tauri_plugin_global_shortcut::Shortcut> {
+    let mut v: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+        .iter()
+        .map(|a| hotkey_table::active_chord(*a).0)
+        .collect();
+    v.push(dictate);
+    if let Some(c) = hotkey_table::armed_cancel() {
+        v.push(c);
+    }
+    v
 }
 
 /// The registered dictate chord: the Settings rebind when it is valid, else
