@@ -1101,17 +1101,13 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
 /// the sink's decision and the hop) and goes through the latch, so a mutation
 /// that fails is never recorded as shown.
 fn meeting_tray_sync_on_main(state: &AppState, status: &meeting_control::MeetingStatus) {
-    let want = tray_menu::tray_meeting_menu(
-        status,
-        state.meeting_stop_in_flight.load(Ordering::SeqCst),
-    );
-    match state
+    let want =
+        tray_menu::tray_meeting_menu(status, state.meeting_stop_in_flight.load(Ordering::SeqCst));
+    if let Err(e) = state
         .tray_meeting_menu
         .apply(want, |want, prev| apply_meeting_menu(state, want, prev))
     {
-        Ok(true) => {}
-        Ok(false) => {}
-        Err(e) => log::warn!("tray meeting_menu sync_failed err={e}"),
+        log::warn!("tray meeting_menu sync_failed err={e}");
     }
 }
 
@@ -1317,7 +1313,11 @@ fn toggle_meeting_off_thread(
     let app = app.clone();
     let app_on_spawn_failure = app.clone();
     let state = state.clone();
-    let module = if source.starts_with("the tray") { "tray" } else { "hotkey" };
+    let module = if source.starts_with("the tray") {
+        "tray"
+    } else {
+        "hotkey"
+    };
     // yap-1106 (e) — a press that lands while a stop is in flight is NOT a
     // second toggle: the controller would see "idle" and START a new meeting.
     if state.meeting_stop_in_flight.load(Ordering::SeqCst) {

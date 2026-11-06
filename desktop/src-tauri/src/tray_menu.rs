@@ -510,7 +510,11 @@ pub fn tray_meeting_menu(
             toggle_text: MEETING_STOPPING_LABEL.to_string(),
             toggle_enabled: false,
             kind_enabled: false,
-            header: if status.recording { header(status) } else { None },
+            header: if status.recording {
+                header(status)
+            } else {
+                None
+            },
         };
     }
     if status.recording {
@@ -600,7 +604,12 @@ mod meeting_menu_tests {
     use crate::meeting_control::MeetingStatus;
     use std::cell::RefCell;
 
-    fn status(recording: bool, available: bool, elapsed: u64, title: Option<&str>) -> MeetingStatus {
+    fn status(
+        recording: bool,
+        available: bool,
+        elapsed: u64,
+        title: Option<&str>,
+    ) -> MeetingStatus {
         MeetingStatus {
             recording,
             id: recording.then(|| "m1".to_string()),
