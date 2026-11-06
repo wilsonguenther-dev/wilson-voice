@@ -160,6 +160,8 @@ function __pillDetect(want) {
     if (de.dataset.phase !== wantPhase) bad.push("html[data-phase]=" + de.dataset.phase + " (asked " + wantPhase + ")");
     // yap24-PILL1 — a license scene must actually be on the page.
     if (want.license && de.dataset.license !== want.license) bad.push("html[data-license]=" + de.dataset.license + " (asked " + want.license + ")");
+    // WF-12 — an offer scene (lang-offer) must actually draw its card.
+    if (want.offer && !document.querySelector('[data-language-offer="' + want.offer + '"]')) bad.push("no [data-language-offer=" + want.offer + "] card");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
@@ -466,7 +468,7 @@ async function run() {
     let todo = phases;
     if (ARGS.only) {
       // A license scene (yap24-PILL1) rides the idle phase; `--only idle` means the plain idle row.
-      todo = phases.filter((p) => p.id === ARGS.only || (p.phase === ARGS.only && !p.license));
+      todo = phases.filter((p) => p.id === ARGS.only || (p.phase === ARGS.only && !p.license && !p.query));
       if (!todo.length) {
         console.error("pill-matrix: --only " + ARGS.only + " is not a phase. Known: " + phases.map((p) => p.id).join(", "));
         return 2;
@@ -479,14 +481,14 @@ async function run() {
       for (const character of CHARACTERS) {
         for (const dock of DOCKS) {
           for (const meeting of MEETINGS) {
-            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "");
+            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
             cdp.errors.set(s, []);
             await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
             await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, pill: character, dock, meeting }) + ")");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, pill: character, dock, meeting }) + ")");
             const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);

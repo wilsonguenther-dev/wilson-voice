@@ -294,6 +294,10 @@ pub struct LanguageTake {
     /// True when auto-detect chose outside the set and the take was decoded a
     /// second time as the primary.
     pub redecoded: bool,
+    /// WF-12 — a picker language the model heard that is NOT in the user's set
+    /// (see [`outside_language`]). The pill turns it into the "Sounded like
+    /// Spanish — Add Spanish?" card, rate-limited by [`LanguageOfferLedger`].
+    pub outside: Option<String>,
 }
 
 /// Decode one dictation take under the user's language prefs: plan off the
@@ -326,15 +330,27 @@ pub fn decode_in_set(
         observer,
     )?;
     let Some(samples) = keep else {
+        // WF-12: a hinted decode may still report what it heard. A failed read
+        // only costs the offer, never the take.
+        let heard = manager
+            .last_detected_language_on(model_id, model_path)
+            .ok()
+            .flatten();
+        // The hint itself is not a different language: an English-only model
+        // decoding a French-only set as English must not offer "Add English?".
+        let heard =
+            heard.filter(|h| plan.hint.as_deref() != Some(h.trim().to_ascii_lowercase().as_str()));
         return Ok(LanguageTake {
             take,
             language: plan.primary.clone(),
             mode: plan.mode,
             notice: plan.notice,
             redecoded: false,
+            outside: outside_language(prefs, heard.as_deref()),
         });
     };
     let detected = manager.last_detected_language_on(model_id, model_path)?;
+    let outside = outside_language(prefs, detected.as_deref());
     match resolve_detected(&plan, detected.as_deref()) {
         Resolution::Accept(language) => Ok(LanguageTake {
             take,
@@ -342,6 +358,7 @@ pub fn decode_in_set(
             mode: plan.mode,
             notice: plan.notice,
             redecoded: false,
+            outside,
         }),
         Resolution::Redecode(language) => {
             log::info!(
@@ -363,6 +380,7 @@ pub fn decode_in_set(
                 mode: plan.mode,
                 notice: plan.notice,
                 redecoded: true,
+                outside,
             })
         }
     }
@@ -475,5 +493,282 @@ pub fn language_options(
         mode: plan.mode,
         notice,
         max_set: MAX_LANGUAGE_SET,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WF-12 — "Speaking a different language?"
+// ---------------------------------------------------------------------------
+//
+// When a take is heard in a picker language the user has not selected, the
+// pill offers it: "Sounded like Spanish — Add Spanish?" with Add and Not now.
+// The DISCIPLINE is the feature: a language is offered at most once per
+// [`LANGUAGE_OFFER_QUIET_DAYS`], whatever the answer, and the ledger that
+// enforces it is one `settings_kv` row so it survives a relaunch. PRIVACY: the
+// ledger holds language codes and timestamps only, never text.
+
+/// The pill event that raises the card (payload: [`LanguageOffer`]).
+pub const LANGUAGE_OFFER_EVENT: &str = "language_offer";
+
+/// The `settings_kv` key of the offer ledger.
+pub const LANGUAGE_OFFER_LEDGER_KEY: &str = "language_offer_ledger_v1";
+
+/// A language is offered at most once in this many days; Not now silences it
+/// for the same span.
+pub const LANGUAGE_OFFER_QUIET_DAYS: i64 = 7;
+
+/// [`LANGUAGE_OFFER_QUIET_DAYS`] in milliseconds.
+pub const LANGUAGE_OFFER_QUIET_MS: i64 = LANGUAGE_OFFER_QUIET_DAYS * 24 * 60 * 60 * 1000;
+
+/// The picker language a take was heard in, when it is NOT in the user's set.
+/// `None` for no detection, a code outside [`PICKER_LANGUAGES`] (the picker
+/// could not add it anyway), or a language already in the set.
+pub fn outside_language(prefs: &LanguagePrefs, detected: Option<&str>) -> Option<String> {
+    let code = normalize_code(detected?)?;
+    (!prefs.set.contains(&code)).then_some(code)
+}
+
+/// When each language was last offered (or silenced), epoch ms by code.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageOfferLedger {
+    #[serde(default)]
+    pub last_offered_ms: std::collections::BTreeMap<String, i64>,
+}
+
+impl LanguageOfferLedger {
+    /// Parse the stored row; a missing or unreadable row is an empty ledger.
+    pub fn load(raw: Option<&str>) -> Self {
+        raw.and_then(|r| serde_json::from_str::<Self>(r).ok())
+            .unwrap_or_default()
+    }
+
+    /// True while `code` is inside its quiet window at `now_ms`.
+    pub fn is_quiet(&self, code: &str, now_ms: i64) -> bool {
+        self.last_offered_ms
+            .get(code)
+            .is_some_and(|at| now_ms.saturating_sub(*at) < LANGUAGE_OFFER_QUIET_MS)
+    }
+
+    /// Start (or restart) `code`'s quiet window at `now_ms`.
+    pub fn record(&mut self, code: &str, now_ms: i64) {
+        self.last_offered_ms.insert(code.to_string(), now_ms);
+    }
+}
+
+/// What the pill's card shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageOffer {
+    /// ISO 639-1 code, a [`PICKER_LANGUAGES`] member.
+    pub code: String,
+    /// Its English name ("Spanish").
+    pub name: String,
+    /// "Sounded like Spanish — Add Spanish?"
+    pub headline: String,
+}
+
+impl LanguageOffer {
+    pub fn new(code: &str) -> Self {
+        let name = language_name(code);
+        Self {
+            code: code.to_string(),
+            headline: format!("Sounded like {name} — Add {name}?"),
+            name,
+        }
+    }
+}
+
+/// Decide whether a take's outside language is offered now. Never when the
+/// set is full (Add could not keep its word), never inside the quiet window.
+/// Records the offer in the ledger when it returns `Some`, so a second take in
+/// the same language within the window offers nothing.
+pub fn offer_for(
+    prefs: &LanguagePrefs,
+    outside: Option<&str>,
+    ledger: &mut LanguageOfferLedger,
+    now_ms: i64,
+) -> Option<LanguageOffer> {
+    let code = normalize_code(outside?)?;
+    if prefs.set.contains(&code) || prefs.set.len() >= MAX_LANGUAGE_SET {
+        return None;
+    }
+    if ledger.is_quiet(&code, now_ms) {
+        return None;
+    }
+    ledger.record(&code, now_ms);
+    Some(LanguageOffer::new(&code))
+}
+
+/// The prefs after Add: `code` joins the set (after the existing members, the
+/// primary unchanged) and auto-detect turns on, because a two-language set
+/// without it would never decode the new language.
+pub fn prefs_with_added(prefs: &LanguagePrefs, code: &str) -> LanguagePrefs {
+    let mut set = prefs.set.clone();
+    if let Some(c) = normalize_code(code) {
+        if !set.contains(&c) {
+            set.push(c);
+        }
+    }
+    LanguagePrefs::from_settings(&prefs.primary, &set, true)
+}
+
+/// [`offer_for`] against the persisted ledger. A ledger write failure is
+/// logged and the offer withheld: an offer whose quiet window cannot be kept
+/// would come back on every take.
+pub fn take_offer(
+    db: &crate::db::Database,
+    prefs: &LanguagePrefs,
+    outside: Option<&str>,
+    now_ms: i64,
+) -> Option<LanguageOffer> {
+    outside?;
+    let mut ledger =
+        LanguageOfferLedger::load(db.setting_get(LANGUAGE_OFFER_LEDGER_KEY).as_deref());
+    let offer = offer_for(prefs, outside, &mut ledger, now_ms)?;
+    let json = serde_json::to_string(&ledger).ok()?;
+    if let Err(e) = db.setting_set(LANGUAGE_OFFER_LEDGER_KEY, &json) {
+        log::warn!(
+            "languages offer_ledger_write_failed code={} err={e}",
+            offer.code
+        );
+        return None;
+    }
+    log::info!("languages offer_shown code={}", offer.code);
+    Some(offer)
+}
+
+/// Not now: restart `code`'s quiet window from the click.
+pub fn snooze_offer(db: &crate::db::Database, code: &str, now_ms: i64) -> Result<(), String> {
+    let code = normalize_code(code).ok_or_else(|| format!("unknown language {code:?}"))?;
+    let mut ledger =
+        LanguageOfferLedger::load(db.setting_get(LANGUAGE_OFFER_LEDGER_KEY).as_deref());
+    ledger.record(&code, now_ms);
+    let json = serde_json::to_string(&ledger).map_err(|e| e.to_string())?;
+    db.setting_set(LANGUAGE_OFFER_LEDGER_KEY, &json)
+}
+
+#[cfg(test)]
+mod wf12_offer_tests {
+    use super::*;
+
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    fn english_only() -> LanguagePrefs {
+        LanguagePrefs::from_settings("en", &[], false)
+    }
+
+    #[test]
+    fn outside_language_is_a_picker_code_not_in_the_set() {
+        let prefs = english_only();
+        assert_eq!(outside_language(&prefs, Some("ES")), Some("es".to_string()));
+        assert_eq!(outside_language(&prefs, Some("en")), None);
+        assert_eq!(
+            outside_language(&prefs, Some("cy")),
+            None,
+            "not in the picker"
+        );
+        assert_eq!(outside_language(&prefs, None), None);
+    }
+
+    #[test]
+    fn offer_headline_names_the_language_twice() {
+        let o = LanguageOffer::new("es");
+        assert_eq!(o.name, "Spanish");
+        assert_eq!(o.headline, "Sounded like Spanish — Add Spanish?");
+    }
+
+    #[test]
+    fn offered_at_most_once_per_language_per_seven_days() {
+        let prefs = english_only();
+        let mut ledger = LanguageOfferLedger::default();
+        let t0 = 1_000_000;
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, t0).is_some());
+        // Every take in the next 7 days: nothing.
+        for at in [
+            t0 + 1,
+            t0 + DAY,
+            t0 + 6 * DAY,
+            t0 + LANGUAGE_OFFER_QUIET_MS - 1,
+        ] {
+            assert!(
+                offer_for(&prefs, Some("es"), &mut ledger, at).is_none(),
+                "at {at}"
+            );
+        }
+        // A different language has its own window.
+        assert!(offer_for(&prefs, Some("fr"), &mut ledger, t0 + DAY).is_some());
+        // Seven days on, Spanish may be offered again — once.
+        let t7 = t0 + LANGUAGE_OFFER_QUIET_MS;
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, t7).is_some());
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, t7 + 1).is_none());
+    }
+
+    #[test]
+    fn not_now_silences_the_language_for_seven_days_from_the_click() {
+        let prefs = english_only();
+        let mut ledger = LanguageOfferLedger::default();
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, 0).is_some());
+        // The user answers Not now three days later: the window restarts.
+        ledger.record("es", 3 * DAY);
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, 9 * DAY).is_none());
+        assert!(offer_for(&prefs, Some("es"), &mut ledger, 10 * DAY).is_some());
+    }
+
+    #[test]
+    fn the_ledger_survives_a_round_trip_and_bad_rows_are_empty() {
+        let mut ledger = LanguageOfferLedger::default();
+        ledger.record("es", 42);
+        let json = serde_json::to_string(&ledger).unwrap();
+        let back = LanguageOfferLedger::load(Some(&json));
+        assert_eq!(back, ledger);
+        assert!(back.is_quiet("es", 43));
+        assert_eq!(
+            LanguageOfferLedger::load(Some("not json")),
+            LanguageOfferLedger::default()
+        );
+        assert_eq!(
+            LanguageOfferLedger::load(None),
+            LanguageOfferLedger::default()
+        );
+    }
+
+    #[test]
+    fn no_offer_for_a_language_in_the_set_or_a_full_set() {
+        let mut ledger = LanguageOfferLedger::default();
+        let two = LanguagePrefs::from_settings("en", &["en".into(), "es".into()], true);
+        assert!(offer_for(&two, Some("es"), &mut ledger, 0).is_none());
+        let full = LanguagePrefs::from_settings(
+            "en",
+            &["en".into(), "es".into(), "fr".into(), "de".into()],
+            true,
+        );
+        assert_eq!(full.set.len(), MAX_LANGUAGE_SET);
+        assert!(offer_for(&full, Some("it"), &mut ledger, 0).is_none());
+        assert!(
+            ledger.last_offered_ms.is_empty(),
+            "a withheld offer records nothing"
+        );
+    }
+
+    #[test]
+    fn add_appends_the_language_and_turns_auto_on() {
+        let prefs = english_only();
+        let next = prefs_with_added(&prefs, "es");
+        assert_eq!(next.primary, "en");
+        assert_eq!(next.set, vec!["en".to_string(), "es".to_string()]);
+        assert!(next.auto);
+        // The picker then offers a choice, and auto-detect may pick Spanish.
+        let support = LanguageSupport {
+            supports_detect: true,
+            languages: Vec::new(),
+        };
+        let plan = plan_decode(&next, &support);
+        assert_eq!(plan.mode, DecodeMode::AutoWithinSet);
+        assert!(plan.candidates.contains(&"es".to_string()));
+        let opts = language_options(&next, Some(&support));
+        assert_eq!(opts.prefs.set, next.set);
+        // Adding twice is a no-op.
+        assert_eq!(prefs_with_added(&next, "es").set, next.set);
     }
 }

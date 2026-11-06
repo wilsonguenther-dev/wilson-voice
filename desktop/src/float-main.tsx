@@ -21,6 +21,8 @@ import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LanguageOfferCard from "./pill/LanguageOfferCard";
+import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
   acceptProgress,
   errorSentence,
@@ -66,7 +68,13 @@ import {
   type PillLayout,
 } from "./pill/state";
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
-import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
+import {
+  forcedPill,
+  matrixLanguageOfferScene,
+  matrixLicenseScenes,
+  matrixPhases,
+  type ForcedPill,
+} from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -187,7 +195,12 @@ const FORCED: ForcedPill | null =
 if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
-  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [...matrixPhases(), ...matrixLicenseScenes()];
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [
+    ...matrixPhases(),
+    ...matrixLicenseScenes(),
+    // WF-12 — the language-offer card over an idle pill.
+    matrixLanguageOfferScene(),
+  ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
 
@@ -563,6 +576,8 @@ function Float() {
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
+      {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
+      <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
       {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}

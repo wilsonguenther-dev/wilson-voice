@@ -3144,6 +3144,7 @@ fn transcribe_native(
         language,
         notice: language_notice,
         redecoded,
+        outside: language_outside,
         ..
     } = languages::decode_in_set(
         manager,
@@ -3181,6 +3182,7 @@ fn transcribe_native(
         degraded_reason: take.degraded_reason,
         language,
         language_notice,
+        language_outside,
     })
 }
 
@@ -3918,6 +3920,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 nudge::TAKE_CONTEXT_EVENT,
                 nudge::TakeContext::new(text_field_focused, source_app.as_deref(), outcome.pasted),
             );
+            // WF-12 — "Sounded like Spanish — Add Spanish?", at most once per
+            // language per 7 days (the ledger in `languages::take_offer`).
+            // Carries a language code, never text.
+            if asr.language_outside.is_some() {
+                let prefs = state2.settings.lock().language_prefs();
+                if let Some(offer) = languages::take_offer(
+                    &state2.db,
+                    &prefs,
+                    asr.language_outside.as_deref(),
+                    chrono::Utc::now().timestamp_millis(),
+                ) {
+                    let _ = app2.emit(languages::LANGUAGE_OFFER_EVENT, &offer);
+                }
+            }
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
@@ -5048,6 +5064,40 @@ fn set_dictation_languages(
     Ok(next)
 }
 
+/// WF-12 — the answer to the pill's "Sounded like Spanish — Add Spanish?"
+/// card. Add puts the language in the set (auto-detect on) through the ONE
+/// language writer, so Settings and the bar's picker update off the same
+/// `settings` event; Not now silences that language for
+/// `languages::LANGUAGE_OFFER_QUIET_DAYS` days from the click.
+#[tauri::command]
+fn language_offer_respond(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    code: String,
+    add: bool,
+) -> Result<AppSettings, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if !add {
+        if let Err(e) = languages::snooze_offer(&state.db, &code, now_ms) {
+            log::warn!("languages offer_snooze_failed err={e}");
+            return Err(format!("Yap couldn't snooze that suggestion: {e}"));
+        }
+        log::info!("languages offer_answered choice=not_now code={code}");
+        return Ok(state.settings.lock().clone());
+    }
+    let prefs = state.settings.lock().language_prefs();
+    let next = languages::prefs_with_added(&prefs, &code);
+    if !next.set.iter().any(|c| c.eq_ignore_ascii_case(code.trim())) {
+        log::warn!("languages offer_add_refused code={code} set_len={}", prefs.set.len());
+        return Err(format!(
+            "Yap couldn't add {} — remove a language in Settings first.",
+            languages::language_name(code.trim())
+        ));
+    }
+    log::info!("languages offer_answered choice=add code={code}");
+    set_dictation_languages(app, state, next.primary, next.set, next.auto)
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
@@ -5707,6 +5757,7 @@ fn recovered_only_output() -> transcription::AsrOutput {
     transcription::AsrOutput {
         language: "en".into(),
         language_notice: None,
+        language_outside: None,
         text: String::new(),
         backend: "recovered".to_string(),
         seconds: 0.0,
@@ -11089,6 +11140,7 @@ pub fn run() {
             save_settings,
             // Y10-A — the language picker (Settings + the bar).
             language_options,
+            language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
             pill_set_panel_frame,
@@ -13888,6 +13940,7 @@ mod tests {
         Ok(crate::transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: words.join(" "),
             backend: "native".into(),
             seconds: 0.1,
@@ -14719,6 +14772,7 @@ mod db_b_recovery_followups {
         transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: text.to_string(),
             backend: "stub".into(),
             seconds: 0.1,
