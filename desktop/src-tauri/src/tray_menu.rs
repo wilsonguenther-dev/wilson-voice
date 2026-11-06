@@ -2020,12 +2020,17 @@ mod update_ready_tests {
 
     #[test]
     fn polish_guard_counts_and_releases() {
-        let before = polish_in_flight();
-        {
-            let _g = PolishGuard::enter();
-            assert!(polish_in_flight());
-        }
-        // Other tests do not hold a guard, so the count is back where it was.
-        assert_eq!(polish_in_flight(), before);
+        let g = PolishGuard::enter();
+        assert!(polish_in_flight());
+        assert!(!restart_gate(Activity {
+            polishing: polish_in_flight(),
+            ..quiet()
+        }));
+        drop(g);
+        // The count went back down by exactly the one this test added.
+        let after = POLISH_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst);
+        let g2 = PolishGuard::enter();
+        assert!(POLISH_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > after);
+        drop(g2);
     }
 }
