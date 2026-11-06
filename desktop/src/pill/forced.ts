@@ -33,7 +33,12 @@ import {
 } from "./live";
 import { type LicenseStatus } from "../license/status";
 
-export const PILL_STYLES = ["classic", "yappy"] as const;
+/**
+ * yap-1106-retire-classic-pill — Classic is retired, so the matrix no longer
+ * forces it: `?pill=classic` is an unknown style (null) and the page falls back
+ * to settings, exactly like a stale setting falls back to Yappy.
+ */
+export const PILL_STYLES = ["yappy"] as const;
 export type PillStyle = (typeof PILL_STYLES)[number];
 export const PILL_DOCKS = ["bottom", "left", "right"] as const;
 export type PillDock = (typeof PILL_DOCKS)[number];
@@ -70,7 +75,7 @@ export interface ForcedPill {
 
 /**
  * yap24-PILL1 — license SCENES the matrix photographs on an idle pill, so a
- * PILL item's license treatment is looked at in 3 docks x 2 characters like any
+ * PILL item's license treatment is looked at in 3 docks x every character like any
  * phase: `float.html?phase=idle&license=trial-quiet`. Each scene is a payload
  * the backend could really send, with checkout closed (`PURCHASE_OPEN`).
  * `trial-quiet` uses day 14 because "14d" is the widest numeral the policy

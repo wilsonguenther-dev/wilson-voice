@@ -1267,15 +1267,16 @@ describe("yap24-PILL4 — hands-free looks different from hold", () => {
   it("the character seam (Y5-K) carries the bound key: a creature's copy and the full-window stage both get it", async () => {
     const { characters } = await import("./characters/registry");
     const { example } = await import("./characters/example");
+    const { shellBody } = await import("./characters/registry");
     const frame = { phase: "listening-locked" as const, tone: "friendly" as const, level: 0, box: { w: 120, h: 30 }, dock: "x" as const, reducedMotion: true, chordLabel: REBOUND };
-    const byId = Object.fromEntries([...characters(), example].map((c) => [c.id, c.render(frame)]));
-    // Classic and the example creature say the phase's sentence: with the REBOUND key, never fn.
+    const byId = Object.fromEntries([...characters(), example, shellBody()].map((c) => [c.id, c.render(frame)]));
+    // The shell body (retired Classic) and the example creature say the phase's sentence: with the REBOUND key, never fn.
     for (const id of ["classic", "example"]) {
       expect(byId[id]?.copy, id).toBe(`Hands-free — ${REBOUND} to stop`);
       expect(byId[id]?.copy, id).not.toContain("tap fn");
     }
     // Every creature has art for the latch, and it is its listening art (the lock is the shell's chip).
-    for (const c of [...characters(), example]) {
+    for (const c of [...characters(), example, shellBody()]) {
       expect(c.render(frame)?.art, c.id).toEqual(c.render({ ...frame, phase: "listening" })?.art);
     }
     // The shell hands the key to the frame and to a full-window stage (Yappy) alike.

@@ -54,7 +54,8 @@ function creatureSources(): Record<string, string> {
 
 describe("the character contract (Y5-K)", () => {
   it("every_registered_character_covers_every_phase_in_every_tone", () => {
-    expect(characters().map((c) => c.id)).toEqual(expect.arrayContaining(["classic", "yappy"]));
+    expect(characters().map((c) => c.id)).toEqual(expect.arrayContaining(["yappy"]));
+    expect(characters().map((c) => c.id)).not.toContain("classic");
     expect(CHARACTER_PHASES.length).toBeGreaterThanOrEqual(16);
     for (const c of characters()) {
       expect(c.label.trim().length, `${c.id} label`).toBeGreaterThan(0);
@@ -138,8 +139,8 @@ describe("the character contract (Y5-K)", () => {
   });
 
   it("a_new_creature_needs_no_shell_change", () => {
-    // 1. Before it is registered, its id is just an unknown pill-style setting: classic.
-    expect(resolveCharacter("example").id).toBe("classic");
+    // 1. Before it is registered, its id is just an unknown pill-style setting: yappy.
+    expect(resolveCharacter("example").id).toBe("yappy");
     // 2. Registering it is the WHOLE integration.
     registerCharacter(example);
     expect(resolveCharacter("example")).toBe(example);

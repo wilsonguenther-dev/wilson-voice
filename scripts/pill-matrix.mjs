@@ -5,7 +5,8 @@
  * The 2026-09-15 run's builders logged "NOT visually QA'd" on Y2-B, Y5-B, Y5-C
  * and Y5-D: a green gate cannot see a pill. This is the instrument that can.
  * It photographs float.html in EVERY phase x dock {bottom,left,right} x
- * character {classic,yappy}, and FAILS on three structural conditions:
+ * character {yappy} (Classic was retired by yap-1106-retire-classic-pill), and
+ * FAILS on three structural conditions:
  *
  *   empty-text    a text slot that is on screen but says nothing (the phase
  *                 line, a gate note, a progress numeral, a speech bubble)
@@ -14,7 +15,7 @@
  *   overflow      any visible box that leaves the float window
  *
  * yap-1106-one-pill adds the ONE-PILL checks, for every phase x {no meeting,
- * meeting recording} x dock (Yappy; the legacy Classic pill keeps 300x140):
+ * meeting recording} x dock (Yappy):
  *
  *   one-pill-overlap  the painted hint, bubble, clock or progress box overlaps
  *                     another, or the character box the layout published
@@ -90,7 +91,8 @@ const W = 300; // float_pill.rs PILL_W
 const H = 140; // float_pill.rs PILL_H
 const SCALE = 2;
 const DOCKS = ["bottom", "left", "right"];
-const CHARACTERS = ["classic", "yappy"];
+/* yap-1106-retire-classic-pill — Classic is retired; Yappy is the only pill. */
+const CHARACTERS = ["yappy"];
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
 const MEETINGS = ["none", "recording"];
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
@@ -124,7 +126,7 @@ const ARGS = parseArgs(process.argv.slice(2));
 /*
  * Runs before the bundle, after TAURI_SHIM's table is read — so it must set
  * __YAP_FIXTURES__ FIRST. The capsules keep a little state of their own off
- * `get_status` (ClassicPill's live/busy classes, Yappy's pose), so the status a
+ * `get_status` (the shell's live/busy classes, Yappy's pose), so the status a
  * phase answers is derived from its treatment TONE, which the page itself
  * published: no per-phase table lives here either.
  */
@@ -134,7 +136,7 @@ function fixtureScript(tones) {
   const q = new URLSearchParams(location.search);
   const tone = (${JSON.stringify(tones)})[q.get("phase")] || "calm";
   window.__YAP_FIXTURES__ = {
-    get_settings: { pillStyle: q.get("pill") || "classic", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
+    get_settings: { pillStyle: q.get("pill") || "yappy", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
     // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
     // layout makes (answered, so it is never an unhandled rejection).
@@ -581,10 +583,10 @@ async function selfTest(cdp, base, phases) {
   const expect = ["empty-text", "clipped-text", "overflow"];
   const p = phases[0];
   const s = await openPage(cdp, { [p.phase]: p.tone });
-  await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + p.phase + "&pill=classic&dock=bottom" }, s);
+  await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + p.phase + "&pill=yappy&dock=bottom" }, s);
   await settle(cdp, s, p.id);
   await evaluate(cdp, s, DETECTORS + ";true");
-  const before = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, pill: "classic", dock: "bottom" }) + ")");
+  const before = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, pill: "yappy", dock: "bottom" }) + ")");
   await evaluate(cdp, s, String.raw`(() => {
     const strip = document.querySelector(".phase-strip");
     strip.textContent = ""; strip.style.cssText = "opacity:1;transition:none;min-width:40px;min-height:10px;left:20px;top:10px;bottom:auto;transform:none";

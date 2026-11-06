@@ -6,6 +6,7 @@ import {
   matrixLicenseScenes,
   matrixPhases,
   matrixRailScene,
+  PILL_STYLES,
   resolvePhase,
   SAMPLE_PROGRESS,
   sceneLicense,
@@ -34,6 +35,12 @@ describe("forcedPill (yap24-UI3, dev-only matrix handle)", () => {
   it("carries pill and dock only when they are real values", () => {
     expect(forcedPill("?phase=done&pill=yappy&dock=right")).toMatchObject({ style: "yappy", dock: "right" });
     expect(forcedPill("?phase=done&pill=fancy&dock=top")).toMatchObject({ style: null, dock: null });
+  });
+
+  it("forces only the styles that ship: Classic is retired (yap-1106-retire-classic-pill)", () => {
+    expect([...PILL_STYLES]).toEqual(["yappy"]);
+    expect(forcedPill("?phase=idle&pill=classic")).toMatchObject({ style: null });
+    expect(forcedPill("?phase=idle&pill=yappy")).toMatchObject({ style: "yappy" });
   });
 
   it("seeds progress for transcribing only — the phase is never entered without it", () => {

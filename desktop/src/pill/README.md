@@ -4,8 +4,10 @@ Runtime pieces for the on-screen Dictate pill (the small always-on capsule that
 reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
 
 ## Pieces
-- `ClassicPill.tsx` — the original obsidian waveform capsule, kept as a
-  selectable pill style. Bars driven by a `--level` CSS var each rAF frame.
+- `PillShell.tsx` (+ `characters/classic/`) — the original obsidian waveform
+  capsule. RETIRED as a pill style (yap-1106-retire-classic-pill): a saved
+  `"classic"` migrates to `"yappy"` and the registry no longer lists it; its
+  art lives on only as the shell's neutral body (`shellBody()`).
 - `YappyPill.tsx` — the pixel-chick companion pill. A pull-back camera fills the
   capsule with the pixel world while dictating; longer prompts add props.
 - `live.ts` — the PURE live-commentary state machine: what Yappy reacts to WHILE
@@ -25,7 +27,7 @@ reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
 
 A green gate cannot see a pill. `node scripts/pill-matrix.mjs --out <scratch dir>`
 photographs float.html in every phase x dock {bottom,left,right} x character
-{classic,yappy} in headless Chrome (never the app, never a visible window) and
+{yappy} in headless Chrome (never the app, never a visible window) and
 fails on empty text, clipped text and overflow. A PILL item runs
 `--only <its phase>` and attaches the PNGs (plus `contact-sheet.png`) to its PR —
 never commits them. Phases come from `matrixPhases()` in `forced.ts`, so a new
