@@ -2112,8 +2112,8 @@ button.star.on {
   max-height: 300px;
   object-fit: contain;
   border-radius: 8px;
+  /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
-  image-rendering: crisp-edges;
   background: var(--retro-lcd-backdrop);
 }
 .yappy-house .yh-stats {
