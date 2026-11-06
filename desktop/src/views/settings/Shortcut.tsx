@@ -342,7 +342,7 @@ export default function Shortcut() {
                   </div>
                   {/* yap-uiux-2026-10-16-SETTINGS — the pane's reset sits in
                       the pinned footer, not inside the card it resets. */}
-                  {/* WF-18 — Reset to default: every chord back to its shipped
+                  {/* WF-18 — the reset button: every chord back to its shipped
                       key and every extra shortcut removed, in one save. */}
                   {anyCustom && (
                     <div className="settings-footer">

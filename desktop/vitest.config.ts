@@ -77,13 +77,14 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "scratchpad/notesModel.ts": { lines: 100, branches: 96, functions: 100, statements: 96 },
   "scratchpad/windowPrefs.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
+  "shortcutEditor.ts": { lines: 98, branches: 94, functions: 100, statements: 97 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
   "toast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
-  // FB-09 — initial floors set below the expected coverage (builders may not run the suite); the integrator raises them to the measured value.
-  "sprites/art.ts": { lines: 90, branches: 75, functions: 90, statements: 90 },
-  "sprites/crisp.ts": { lines: 70, branches: 60, functions: 60, statements: 70 },
-  "sprites/raster.ts": { lines: 85, branches: 70, functions: 90, statements: 85 },
+  // FB-09 — floors set by the batch-2 integrator from the measured run. crisp.ts's gap is domBuffer/paintSprite, the DOM-only app path.
+  "sprites/art.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
+  "sprites/crisp.ts": { lines: 74, branches: 50, functions: 50, statements: 74 },
+  "sprites/raster.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
   "writingSamples.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
