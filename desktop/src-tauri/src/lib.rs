@@ -5180,7 +5180,7 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
     // persists the whole `AppSettings` struct, so `cleanupLevel` is present in
     // every store the moment onboarding saves, and v1 records no provenance
     // anywhere. From v2 on, `cleanup_level_set_by_user` records it, and a v2
-    // store never re-enters this function at all (the early return above).
+    // store never re-enters this arm (it is guarded on `stored_version < 2`).
     //
     // Only "light" moves. "none" is verbatim mode — a real user need — and
     // "high" is already past the gate.

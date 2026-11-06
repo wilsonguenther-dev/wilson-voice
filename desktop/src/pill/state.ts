@@ -40,8 +40,9 @@ import type { MeetingAfterView, MeetingStatus } from "./meeting";
 export type MeetingMode = "none" | "recording" | "after";
 /**
  * `yappy` lays out from this module. `legacy` is any character that still owns
- * a full-window stage of its own (the Classic pill, being retired by
- * yap-1106-retire-classic-pill): it keeps the historical fixed panel.
+ * a full-window stage of its own (the shell-body path; the Classic pill that
+ * used it was retired by yap-1106-retire-classic-pill): it keeps the
+ * historical fixed panel.
  */
 export type LayoutCharacter = "yappy" | "legacy";
 
