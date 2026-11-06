@@ -387,6 +387,20 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 waited += step;
             }
             for id in rx {
+                // yap-1106-resource-governor: on a starved Mac the decode
+                // waits — in the queue, row still `transcribing`, the pill's
+                // chip saying why — until wall power / full, a "Run anyway",
+                // or quit. The recording is already safe on disk.
+                if wait_for_governor(&id, &|| quitting() || (deps.quit)()) {
+                    log::info!("meeting pipeline: {id} stays queued for next launch (quit while deferred)");
+                    let (lock, cv) = &*worker_pending;
+                    if let Ok(mut p) = lock.lock() {
+                        p.queued.remove(&id);
+                        p.in_flight = p.in_flight.saturating_sub(1);
+                    }
+                    cv.notify_all();
+                    continue;
+                }
                 // R2: the whole job body is panic-contained — one panic fails
                 // that row and the FIFO keeps going.
                 crate::diagnostics::set_state("meeting.state", "processing");
@@ -442,6 +456,33 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
         pending,
         sink,
     }
+}
+
+/// yap-1106-resource-governor — hold the decode for `id` while the installed
+/// governor defers heavy work. One INFO line per reason change, one at the
+/// end with how long it waited. Returns `true` when `quit` fired first.
+pub fn wait_for_governor(id: &str, quit: &dyn Fn() -> bool) -> bool {
+    use crate::resource_governor::{heavy_work_deferred, DEFER_TICK};
+    let started = Instant::now();
+    let mut last: Option<String> = None;
+    while let Some(reason) = heavy_work_deferred(id) {
+        if last.as_deref() != Some(reason.as_str()) {
+            log::info!("meeting pipeline: {id} deferred reason={reason} governor=1");
+            crate::diagnostics::set_state("meeting.state", "deferred");
+            last = Some(reason);
+        }
+        if quit() {
+            return true;
+        }
+        std::thread::sleep(DEFER_TICK);
+    }
+    if last.is_some() {
+        log::info!(
+            "meeting pipeline: {id} defer_end waited_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+    false
 }
 
 // ── yap-audit-meeting-timings: the lines that explain a slow meeting ────────

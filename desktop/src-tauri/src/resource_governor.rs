@@ -612,6 +612,9 @@ fn job_basename(job: &str) -> &str {
 
 // ──────────────────────────── the installed one ─────────────────────────────
 
+/// The Tauri event a changed view is emitted on (pill + main window).
+pub const GOVERNOR_EVENT: &str = "governor";
+
 static INSTALLED: OnceLock<Arc<Governor>> = OnceLock::new();
 
 /// Make `g` the process-wide governor. First call wins.
@@ -642,6 +645,17 @@ pub fn polish_plan_now(cloud_available: bool) -> PolishPlan {
 
 pub fn level_now() -> Level {
     INSTALLED.get().map(|g| g.level()).unwrap_or(Level::Full)
+}
+
+/// The installed governor's view (re-read when stale); a full view when none.
+pub fn view_now() -> GovernorView {
+    match INSTALLED.get() {
+        Some(g) => {
+            g.verdict(Duration::from_secs(5));
+            g.view()
+        }
+        None => Governor::view_of_parts(&Verdict::full(), &Readings::default(), DEFAULT_PAUSE_BELOW_PERCENT),
+    }
 }
 
 /// Start the 30 s UI tick on the installed governor, plus the memory-pressure

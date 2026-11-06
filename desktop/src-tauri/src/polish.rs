@@ -1338,6 +1338,23 @@ pub fn polish_llm_result(
 ) -> Result<String, &'static str> {
     // Drop any reason latched by an earlier take before this one can read it.
     let _ = take_polish_skip_reason();
+    // yap-1106-resource-governor: on a starved Mac the take ships as plain
+    // text. Dictation ASR already ran — that is the product; the polish
+    // model is the 2 GB that waits. (Cloud polish — BYOM item 22 — is not on
+    // main yet, so `light` skips rather than routes.)
+    match crate::resource_governor::polish_plan_now(false) {
+        crate::resource_governor::PolishPlan::Local
+        | crate::resource_governor::PolishPlan::Cloud => {}
+        crate::resource_governor::PolishPlan::Skip => {
+            log::info!(
+                "polish skipped reason={} level={}",
+                crate::resource_governor::POLISH_SKIP_TAG,
+                crate::resource_governor::level_now().as_str()
+            );
+            note_polish_skip(crate::resource_governor::POLISH_SKIP_TAG);
+            return Err(crate::resource_governor::POLISH_SKIP_TAG);
+        }
+    }
     let Some(outcome) = polish_llm_outcome(text, mode, cfg) else {
         note_polish_skip("no_model");
         return Err("no_model");
