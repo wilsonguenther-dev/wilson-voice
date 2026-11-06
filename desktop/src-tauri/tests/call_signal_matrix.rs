@@ -35,12 +35,35 @@ const TABLE: &[Row] = &[
         Some("Google Meet call — record it?"),
     ),
     ("chrome-youtube-playing", None, false, None, None),
+    // yap-call-2: Accessibility off = "site unknown", calendar-only offer.
     (
         "chrome-input-ax-unknown",
         Some("com.google.Chrome"),
+        false,
+        Some(Via::HelperParent),
+        None,
+    ),
+    (
+        "chrome-input-ax-unknown-calendar",
+        Some("com.google.Chrome"),
         true,
         Some(Via::HelperParent),
-        Some("Google Chrome call — record it?"),
+        Some("Browser call (site unknown) — record it?"),
+    ),
+    // yap-call-2: the front tab is all Yap reads; a background Meet is not offered.
+    (
+        "chrome-meet-background-tab",
+        Some("com.google.Chrome"),
+        false,
+        Some(Via::HelperParent),
+        None,
+    ),
+    (
+        "edge-teams-web-in-call",
+        Some("com.microsoft.edgemac"),
+        true,
+        Some(Via::HelperParent),
+        Some("Microsoft Teams call — record it?"),
     ),
     (
         "chrome-input-no-title-match",
@@ -50,13 +73,8 @@ const TABLE: &[Row] = &[
         None,
     ),
     ("safari-webkit-input-no-title", None, false, None, None),
-    (
-        "safari-meet-with-title",
-        Some("com.apple.Safari"),
-        true,
-        Some(Via::WebkitTitle),
-        Some("Google Meet call — record it?"),
-    ),
+    // yap-call-2: Safari / WebKit.GPU is deferred — never an offer, title or not.
+    ("safari-meet-with-title", None, false, None, None),
     (
         "facetime-daemon-input",
         Some("com.apple.FaceTime"),
