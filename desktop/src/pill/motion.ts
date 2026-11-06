@@ -118,6 +118,12 @@ export const DURATION = {
    * way OUT, not the oscillation fix — the 12 px margin below is (geometry).
    */
   hoverCollapse: 160,
+  /**
+   * yap-1106-fb-02-pill-first-click — how long pill/hitTargets.ts coalesces a
+   * burst of DOM/resize changes before it re-measures the controls' hit rects:
+   * about one frame, so a control that moves is clickable where it is drawn.
+   */
+  measureCoalesce: 16,
 } as const;
 
 /**
