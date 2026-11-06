@@ -32,7 +32,6 @@ export default function RouteChip() {
       title={model.title}
       aria-label={`${model.label} — ${model.title}`}
       role="status"
-      onPointerDown={(e) => e.stopPropagation()}
     >
       {model.label}
     </span>

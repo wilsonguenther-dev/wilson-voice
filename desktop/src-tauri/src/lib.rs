@@ -6993,6 +6993,7 @@ fn cloud_today() -> chrono::NaiveDate {
 /// Run `job` on the cloud route with `local` as the fallback. `cloud_text` is
 /// what the hosted model gets as the user turn; `accept` validates the
 /// complete answer. The chip is updated for every call, cloud or not.
+#[allow(clippy::too_many_arguments)]
 fn cloud_run<R>(
     app: &AppHandle,
     db: &Database,
