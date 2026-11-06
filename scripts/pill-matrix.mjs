@@ -13,6 +13,19 @@
  *                 300x140 float window
  *   overflow      any visible box that leaves the float window
  *
+ * yap-1106-one-pill adds the ONE-PILL checks, for every phase x {no meeting,
+ * meeting recording} x dock (Yappy; the legacy Classic pill keeps 300x140):
+ *
+ *   one-pill-overlap  the painted hint, bubble, clock or progress box overlaps
+ *                     another, or the character box the layout published
+ *   clock-detached    the clock box is more than 12 pt from the character box
+ *   panel-not-union   the window is not exactly the union of the layout's
+ *                     content boxes plus the 10 pt margin (pill/state.ts)
+ *   slot-off-layout   a painted slot is not inside the box the layout gave it
+ *
+ * The window is sized to the layout's panel (window.__YAP_PILL_LAYOUT__), the
+ * way float_pill.rs set_panel_frame sizes the NSPanel, before it is judged.
+ *
  * plus one INSTRUMENT check, phase-not-applied, so a typo or a stale bundle can
  * never pass as a photo of `idle`. Structural, never pixel equality: a
  * legitimate restyle must not have to relitigate a PNG.
@@ -67,6 +80,8 @@ const H = 140; // float_pill.rs PILL_H
 const SCALE = 2;
 const DOCKS = ["bottom", "left", "right"];
 const CHARACTERS = ["classic", "yappy"];
+/* yap-1106-one-pill — every capture also runs with and without a meeting. */
+const MEETINGS = ["none", "recording"];
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
 const CHROME =
   process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -110,6 +125,12 @@ function fixtureScript(tones) {
   window.__YAP_FIXTURES__ = {
     get_settings: { pillStyle: q.get("pill") || "classic", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
+    // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
+    // layout makes (answered, so it is never an unhandled rejection).
+    meeting_status: q.get("meeting") === "recording"
+      ? { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: 217, elapsedLabel: "00:03:37", captureAvailable: true }
+      : { recording: false, id: null, title: null, elapsedSeconds: 0, elapsedLabel: "00:00:00", captureAvailable: false },
+    pill_set_panel_frame: null,
   };
 })();
 `;
@@ -234,6 +255,38 @@ function __pillDetect(want) {
   }
   if (strays.length) out.push({ id: "overflow", detail: "box(es) outside the " + W + "x" + H + " window: " + strays.join("; ") });
 
+  /* 4 — yap-1106-one-pill: the ONE layout, judged against what was painted. */
+  const L = window.__YAP_PILL_LAYOUT__;
+  if (L && !L.legacy) {
+    const MARGIN = 10; // pill/state.ts PANEL_MARGIN
+    const REACH = 12;  // pill/state.ts CLOCK_REACH_PT
+    const rectBox = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+    const overlap = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
+    const gap = (a, b) => Math.hypot(Math.max(0, b.x - (a.x + a.w), a.x - (b.x + b.w)), Math.max(0, b.y - (a.y + a.h), a.y - (b.y + b.h)));
+    const inside = (a, b) => a.x >= b.x - 1 && a.y >= b.y - 1 && a.x + a.w <= b.x + b.w + 1 && a.y + a.h <= b.y + b.h + 1;
+    const painted = [["character", L.char, L.char]];
+    const slot = (n, sel, want) => { const el = document.querySelector(sel); if (el && shown(el)) painted.push([n, rectBox(el), want]); };
+    slot("hint", ".phase-strip", L.hint);
+    slot("bubble", ".kami-bubble", L.bubble);
+    slot("clock", "[data-pill-slot=clock]", L.clock);
+    slot("progress", ".kami-progress", L.progress);
+    const ov = [];
+    for (let i = 0; i < painted.length; i++) for (let j = i + 1; j < painted.length; j++)
+      if (overlap(painted[i][1], painted[j][1])) ov.push(painted[i][0] + "/" + painted[j][0] + " " + box({ left: painted[j][1].x, top: painted[j][1].y, width: painted[j][1].w, height: painted[j][1].h }));
+    if (ov.length) out.push({ id: "one-pill-overlap", detail: ov.join("; ") });
+    const off = painted.filter(([n, b, want]) => n !== "character" && (!want || !inside(b, want))).map(([n, b]) => n + " " + box({ left: b.x, top: b.y, width: b.w, height: b.h }));
+    if (off.length) out.push({ id: "slot-off-layout", detail: off.join("; ") });
+    const clock = painted.find((p) => p[0] === "clock");
+    if (want && want.meeting === "recording" && !clock) out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
+    if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
+    const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress].filter(Boolean);
+    const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
+    const uw = Math.max(...boxes.map((b) => b.x + b.w)) - ux, uh = Math.max(...boxes.map((b) => b.y + b.h)) - uy;
+    const wantW = Math.ceil(uw + 2 * MARGIN), wantH = Math.ceil(uh + 2 * MARGIN);
+    if (Math.abs(ux - MARGIN) > 0.5 || Math.abs(uy - MARGIN) > 0.5 || L.panel.w !== wantW || L.panel.h !== wantH || Math.abs(W - L.panel.w) > tol || Math.abs(H - L.panel.h) > tol)
+      out.push({ id: "panel-not-union", detail: "window " + W + "x" + H + ", layout panel " + L.panel.w + "x" + L.panel.h + ", union+margin " + wantW + "x" + wantH });
+  }
+
   const strip = document.querySelector(".phase-strip");
   return { findings: out, line: strip && shown(strip) ? (strip.innerText || "").trim() : "" };
 }
@@ -305,6 +358,16 @@ async function openPage(cdp, tones) {
   return s;
 }
 
+/* yap-1106-one-pill — size the window to the layout's panel, the way
+ * float_pill.rs set_panel_frame sizes the NSPanel, then let it re-lay out. */
+async function fitPanel(cdp, s) {
+  const panel = await evaluate(cdp, s, "(window.__YAP_PILL_LAYOUT__ && window.__YAP_PILL_LAYOUT__.panel) || null").catch(() => null);
+  if (!panel) return { w: W, h: H };
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: panel.w, height: panel.h, deviceScaleFactor: SCALE, mobile: false }, s);
+  await sleep(Math.min(SETTLE_MS, 400));
+  return { w: panel.w, h: panel.h };
+}
+
 async function settle(cdp, s, wantId) {
   const deadline = Date.now() + 8000;
   for (;;) {
@@ -327,22 +390,23 @@ async function shoot(cdp, s, file) {
 async function contactSheet(cdp, rows, outDir) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId: s } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
-  const cols = DOCKS.length * CHARACTERS.length;
-  const width = 24 + 150 + cols * (W + 12);
-  const height = 60 + Math.ceil(rows.length / cols) * (H + 30);
+  const cols = DOCKS.length * CHARACTERS.length * MEETINGS.length;
+  const CW = Math.max(W, ...rows.map((r) => r.w || W)), CH = Math.max(H, ...rows.map((r) => r.h || H));
+  const width = 24 + 150 + cols * (CW + 12);
+  const height = 60 + Math.ceil(rows.length / cols) * (CH + 30);
   await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }, s);
-  const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.map((d) => c + " · " + d))];
+  const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.flatMap((d) => MEETINGS.map((m) => c + " · " + d + (m === "none" ? "" : " · meeting"))))];
   const byPhase = new Map();
   for (const r of rows) (byPhase.get(r.id) || byPhase.set(r.id, []).get(r.id)).push(r);
   let html = '<html><body style="margin:12px;background:#1d1f24;color:#e6e6e6;font:12px -apple-system,system-ui,sans-serif">' +
     '<table style="border-collapse:separate;border-spacing:6px"><tr>' + head.map((h) => "<th>" + h + "</th>").join("") + "</tr>";
   for (const [id, list] of byPhase) {
     html += '<tr><td style="width:150px;vertical-align:middle"><b>' + id + "</b></td>";
-    for (const c of CHARACTERS) for (const d of DOCKS) {
-      const r = list.find((x) => x.character === c && x.dock === d);
+    for (const c of CHARACTERS) for (const d of DOCKS) for (const m of MEETINGS) {
+      const r = list.find((x) => x.character === c && x.dock === d && x.meeting === m);
       const img = r ? "data:image/png;base64," + readFileSync(r.shot).toString("base64") : "";
       const ring = r && r.findings.length ? "outline:2px solid #ef4444" : "";
-      html += '<td><img style="width:' + W + "px;height:" + H + "px;" + ring + '" src="' + img + '"></td>';
+      html += '<td style="vertical-align:top"><img style="width:' + (r ? r.w : W) + "px;height:" + (r ? r.h : H) + "px;" + ring + '" src="' + img + '"></td>';
     }
     html += "</tr>";
   }
@@ -410,24 +474,28 @@ async function run() {
     }
     const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
     s = await openPage(cdp, tones);
-    console.log("pill-matrix: " + todo.length + " phase(s) x " + DOCKS.length + " docks x " + CHARACTERS.length + " characters at " + W + "x" + H + "@" + SCALE + "x -> " + outDir);
+    console.log("pill-matrix: " + todo.length + " phase(s) x " + DOCKS.length + " docks x " + CHARACTERS.length + " characters x " + MEETINGS.length + " meeting states, legacy " + W + "x" + H + " / one-pill sized to its layout, @" + SCALE + "x -> " + outDir);
     for (const p of todo) {
       for (const character of CHARACTERS) {
         for (const dock of DOCKS) {
-          const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + (p.license ? "&license=" + encodeURIComponent(p.license) : "");
-          cdp.errors.set(s, []);
-          await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
-          await settle(cdp, s, p.phaseId || p.id);
-          await evaluate(cdp, s, DETECTORS + ";true");
-          const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, pill: character, dock }) + ")");
-          const file = join(outDir, p.id + "__" + character + "__" + dock + ".png");
-          await shoot(cdp, s, file);
-          const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
-          captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, line: res.line, findings: res.findings, pageErrors, shot: file });
-          const tag = res.findings.length ? "FAIL" : "ok  ";
-          console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + JSON.stringify(res.line).padEnd(34) + file);
-          for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
-          for (const e of pageErrors) console.log("       page: " + e.split("\n")[0]);
+          for (const meeting of MEETINGS) {
+            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "");
+            cdp.errors.set(s, []);
+            await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+            await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
+            await settle(cdp, s, p.phaseId || p.id);
+            const size = await fitPanel(cdp, s);
+            await evaluate(cdp, s, DETECTORS + ";true");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, pill: character, dock, meeting }) + ")");
+            const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
+            await shoot(cdp, s, file);
+            const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
+            captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, meeting, w: size.w, h: size.h, line: res.line, findings: res.findings, pageErrors, shot: file });
+            const tag = res.findings.length ? "FAIL" : "ok  ";
+            console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + meeting.padEnd(10) + (size.w + "x" + size.h).padEnd(8) + JSON.stringify(res.line).padEnd(34) + file);
+            for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
+            for (const e of pageErrors) console.log("       page: " + e.split("\n")[0]);
+          }
         }
       }
     }
@@ -485,7 +553,34 @@ async function selfTest(cdp, base, phases) {
     console.error("SELF-TEST VACUOUS — detector stayed blind to: " + missed.join(", "));
     return 9;
   }
-  console.error("self-test-must-fail: all " + expect.length + " detectors fired on the synthetic break; exiting 1 BY DESIGN.");
+  /* yap-1106-one-pill — the one-pill detectors, on a real Yappy capture with a
+     meeting: the clock dropped onto Yappy's face and a frame that is not the
+     union of the content. */
+  const expect2 = ["one-pill-overlap", "slot-off-layout", "panel-not-union"];
+  const s2 = await openPage(cdp, { [p.phase]: p.tone });
+  await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + p.phase + "&pill=yappy&dock=left&meeting=recording" }, s2);
+  await settle(cdp, s2, p.id);
+  await fitPanel(cdp, s2);
+  await evaluate(cdp, s2, DETECTORS + ";true");
+  const clean = await evaluate(cdp, s2, "__pillDetect(null)");
+  console.log("self-test: one-pill capture before the break: " + (clean.findings.length ? clean.findings.map((f) => f.id).join(", ") : "clean"));
+  await evaluate(cdp, s2, String.raw`(() => {
+    const L = window.__YAP_PILL_LAYOUT__;
+    if (!L) return false;
+    const c = document.querySelector("[data-pill-slot=clock]");
+    if (c) { c.style.left = L.char.x + "px"; c.style.top = L.char.y + "px"; }
+    window.__YAP_PILL_LAYOUT__ = Object.assign({}, L, { panel: { w: L.panel.w + 40, h: L.panel.h } });
+    return true;
+  })()`);
+  const res2 = await evaluate(cdp, s2, "__pillDetect(null)");
+  const got2 = res2.findings.map((f) => f.id);
+  for (const f of res2.findings) console.log("  detector fired: " + f.id + " — " + f.detail);
+  const missed2 = expect2.filter((e) => !got2.includes(e));
+  if (missed2.length) {
+    console.error("SELF-TEST VACUOUS — one-pill detector stayed blind to: " + missed2.join(", "));
+    return 9;
+  }
+  console.error("self-test-must-fail: all " + (expect.length + expect2.length) + " detectors fired on the synthetic breaks; exiting 1 BY DESIGN.");
   return 1;
 }
 
