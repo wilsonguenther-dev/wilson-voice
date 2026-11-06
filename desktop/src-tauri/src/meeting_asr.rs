@@ -2341,6 +2341,214 @@ pub fn meeting_availability_for(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// yap-audit-utterance-segments — a stored segment is an UTTERANCE, not a window
+// ---------------------------------------------------------------------------
+
+/// Raw cut, step one: a silence of at least this many seconds between two word
+/// rows ends an utterance on its own.
+pub const UTTERANCE_CUT_GAP_SECONDS: f64 = 0.6;
+/// Raw cut, step one: after a sentence end (`.`, `?`, `!`, `…`) a silence of
+/// this many seconds is enough.
+pub const UTTERANCE_SENTENCE_GAP_SECONDS: f64 = 0.25;
+/// Merge, step two: consecutive raw pieces of the same track re-join while the
+/// silence between them is SHORTER than this.
+pub const UTTERANCE_MERGE_GAP_SECONDS: f64 = 1.2;
+/// Merge, step two: no merge may produce a piece longer than this.
+pub const UTTERANCE_MAX_SECONDS: f64 = 20.0;
+/// Merge, step two: a piece shorter than this is a fragment, and joins a
+/// neighbour whenever the result stays under [`UTTERANCE_MAX_SECONDS`].
+pub const UTTERANCE_MIN_SECONDS: f64 = 3.0;
+
+/// One utterance cut out of a window's word rows: absolute seconds (the rows
+/// were shifted onto the meeting's timeline by [`ChunkOutcome::from_transcript`])
+/// and the words, space-joined. The item spec writes this as
+/// `(start, end, text)`; named fields so a caller cannot swap start and end.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Utterance {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+impl Utterance {
+    pub fn seconds(&self) -> f64 {
+        (self.end_seconds - self.start_seconds).max(0.0)
+    }
+}
+
+/// Does this word row end a sentence? Closing quotes and brackets after the
+/// terminal mark are ignored, the same way `mid_sentence_end_rate` judges a
+/// stored segment in the eval harness.
+pub fn ends_sentence(text: &str) -> bool {
+    let trimmed = text.trim_end_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '\u{201D}' | '\u{2019}')
+    });
+    matches!(
+        trimmed.chars().last(),
+        Some('.' | '?' | '!' | '\u{2026}')
+    )
+}
+
+/// Cut ONE track's word rows of one window into readable utterances.
+///
+/// Audit issue #4: every stored segment was 29.4–30.1 s long on every real
+/// meeting, because the pipeline kept one row per window and threw the word
+/// times away at insert. A two-person call therefore rendered as alternating
+/// 30 s paragraphs with one label each — unreadable as a conversation, and one
+/// MAP line per paragraph for the notes model.
+///
+/// **Why the rule is a merge and not a cut.** The raw gap rule alone (step one
+/// below) produced 440 pieces with a median of 1.8 s on a real 31-minute call:
+/// too fine to read, and too many lines for the 1.5B notes budget. So step two
+/// re-joins the fragments of the same track into 3–12 s turns (panel 3,
+/// 2026-10-26, both seats SOUND-WITH-CHANGES on exactly this rule).
+///
+/// 1. **Raw cut.** Between two consecutive rows, cut when the silence is at
+///    least [`UTTERANCE_CUT_GAP_SECONDS`], or when the previous row ends a
+///    sentence and the silence is at least [`UTTERANCE_SENTENCE_GAP_SECONDS`].
+///    The unit is the row, so a cut can never land inside a word.
+/// 2. **Merge.** Consecutive pieces re-join while the silence between them is
+///    under [`UTTERANCE_MERGE_GAP_SECONDS`] and the result is at most
+///    [`UTTERANCE_MAX_SECONDS`]. Then any piece under [`UTTERANCE_MIN_SECONDS`]
+///    joins the neighbour it is closest to (the other one when that does not
+///    fit), whenever the result stays under the cap. A short piece is kept on
+///    its own only when it is the whole window — or when no neighbour can take
+///    it under the cap, because the cap is a reading limit and dropping words
+///    is not an option.
+///
+/// Rows with empty text are ignored. Rows are taken in the order given; the
+/// caller passes the rows the window OWNS (after the seam rule), of one track.
+/// Windows whose decode carried no times never reach here: the pipeline keeps
+/// those whole (see `meeting_pipeline::chunk_segments`).
+pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
+    let rows: Vec<&TimedSpan> = spans.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Step one — raw cut on silence.
+    let mut pieces: Vec<Utterance> = Vec::new();
+    let mut current: Vec<&TimedSpan> = vec![rows[0]];
+    for pair in rows.windows(2) {
+        let (prev, next) = (pair[0], pair[1]);
+        let gap = (next.start_seconds - prev.end_seconds).max(0.0);
+        let cut = gap >= UTTERANCE_CUT_GAP_SECONDS
+            || (ends_sentence(&prev.text) && gap >= UTTERANCE_SENTENCE_GAP_SECONDS);
+        if cut {
+            pieces.push(piece_of(&current));
+            current.clear();
+        }
+        current.push(next);
+    }
+    pieces.push(piece_of(&current));
+
+    // Step two (a) — re-join neighbours across short silences, under the cap.
+    let mut merged: Vec<Utterance> = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        if let Some(last) = merged.last_mut() {
+            let gap = (piece.start_seconds - last.end_seconds).max(0.0);
+            let joined = piece.end_seconds - last.start_seconds;
+            if gap < UTTERANCE_MERGE_GAP_SECONDS && joined <= UTTERANCE_MAX_SECONDS {
+                join_into(last, &piece);
+                continue;
+            }
+        }
+        merged.push(piece);
+    }
+
+    // Step two (b) — fragments under the minimum join a neighbour that can
+    // take them. Left to right, repeated until nothing moves, so a run of
+    // fragments collapses into one turn rather than one fragment per pass.
+    loop {
+        let mut moved = false;
+        let mut i = 0;
+        while i < merged.len() {
+            if merged.len() > 1 && merged[i].seconds() < UTTERANCE_MIN_SECONDS {
+                let fits_prev = i > 0
+                    && merged[i].end_seconds - merged[i - 1].start_seconds <= UTTERANCE_MAX_SECONDS;
+                let fits_next = i + 1 < merged.len()
+                    && merged[i + 1].end_seconds - merged[i].start_seconds <= UTTERANCE_MAX_SECONDS;
+                let gap_prev = if i > 0 {
+                    merged[i].start_seconds - merged[i - 1].end_seconds
+                } else {
+                    f64::INFINITY
+                };
+                let gap_next = if i + 1 < merged.len() {
+                    merged[i + 1].start_seconds - merged[i].end_seconds
+                } else {
+                    f64::INFINITY
+                };
+                let into_prev = match (fits_prev, fits_next) {
+                    (true, true) => gap_prev <= gap_next,
+                    (true, false) => true,
+                    (false, true) => false,
+                    (false, false) => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                if into_prev {
+                    let piece = merged.remove(i);
+                    join_into(&mut merged[i - 1], &piece);
+                } else {
+                    let next = merged.remove(i + 1);
+                    join_into(&mut merged[i], &next);
+                }
+                moved = true;
+                continue;
+            }
+            i += 1;
+        }
+        if !moved {
+            break;
+        }
+    }
+    merged
+}
+
+fn piece_of(rows: &[&TimedSpan]) -> Utterance {
+    let first = rows.first().expect("a piece has at least one row");
+    let last = rows.last().expect("a piece has at least one row");
+    Utterance {
+        start_seconds: first.start_seconds,
+        end_seconds: last.end_seconds.max(first.start_seconds),
+        text: rows
+            .iter()
+            .map(|r| r.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn join_into(into: &mut Utterance, piece: &Utterance) {
+    into.start_seconds = into.start_seconds.min(piece.start_seconds);
+    into.end_seconds = into.end_seconds.max(piece.end_seconds);
+    if !piece.text.is_empty() {
+        if !into.text.is_empty() {
+            into.text.push(' ');
+        }
+        into.text.push_str(&piece.text);
+    }
+}
+
+/// Median length of `pieces` in seconds — the number audit issue #4 is scored
+/// on (3–12 s is readable), logged per window by the pipeline. 0.0 for none.
+pub fn median_utterance_seconds(pieces: &[Utterance]) -> f64 {
+    let mut lengths: Vec<f64> = pieces.iter().map(Utterance::seconds).collect();
+    if lengths.is_empty() {
+        return 0.0;
+    }
+    lengths.sort_by(|a, b| a.total_cmp(b));
+    let mid = lengths.len() / 2;
+    if lengths.len() % 2 == 1 {
+        lengths[mid]
+    } else {
+        (lengths[mid - 1] + lengths[mid]) / 2.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
