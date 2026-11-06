@@ -902,6 +902,18 @@ struct AppState {
     /// sure). Disabled while a meeting is recording, for the same reason the
     /// item above becomes "Stop meeting": there is nothing to pick a kind FOR.
     tray_meeting_kind: PLMutex<Option<Submenu<Wry>>>,
+    /// yap-1106 — the disabled "Recording · <title>" header and the separator
+    /// under it, INSERTED at the top of the menu while a meeting records and
+    /// removed when it stops (`apply_meeting_menu`).
+    tray_meeting_header: PLMutex<Option<MenuItem<Wry>>>,
+    tray_meeting_sep: PLMutex<Option<PredefinedMenuItem<Wry>>>,
+    /// yap-1106 — what the meeting block of the menu LAST SUCCESSFULLY showed.
+    /// Recorded only after the menu mutation returned Ok, so a failed hop is
+    /// retried by the next status instead of being latched as done.
+    tray_meeting_menu: tray_menu::MeetingMenuLatch,
+    /// yap-1106 (e) — a meeting stop was requested and has not returned. The
+    /// tray shows "Stopping…" disabled and a second toggle is refused while set.
+    meeting_stop_in_flight: AtomicBool,
     /// yap24-NT7 — "Meeting notes ready — Open". Built with the tray and held
     /// here so it can be INSERTED when a meeting's notes land and REMOVED when
     /// they are opened (or the next meeting starts) — muda has no hidden item.
@@ -1043,51 +1055,174 @@ impl AppState {
 /// string, so the clock cannot disagree with itself.
 ///
 /// OS-12 fix (1) lives here: this is called once per second by the controller's
-/// ticker, and the only thing it does per tick is emit. The tray label is
-/// touched on the recording EDGE only — a menu mutation is a main-thread hop,
-/// and 10,800 of them over a meeting is the exact cost this item exists to not
-/// pay.
+/// ticker, and the only thing it does per tick is emit. The tray is touched
+/// only when `tray_menu::tray_meeting_menu` says the menu's TEXT changes: on
+/// the recording edge, and once a minute for the clock on the Stop item — a
+/// menu mutation is a main-thread hop, and 10,800 of them over a meeting is
+/// the exact cost OS-12 exists to not pay.
+///
+/// yap-1106: the decision "is the menu already showing this?" is the
+/// `MeetingMenuLatch` in `AppState`, which records a state ONLY after the
+/// mutation succeeded on the main thread. The old process-wide `AtomicBool`
+/// flipped before the hop ran, so a hop that failed — or that found
+/// `tray_meeting` still `None`, because the controller (and a recovered
+/// meeting's first status) exists before the tray does — left "Record a
+/// meeting" on screen for the whole session with nothing to retry it.
 fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
-    static TRAY_SHOWS_RECORDING: AtomicBool = AtomicBool::new(false);
     Arc::new(move |status| {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
-        if TRAY_SHOWS_RECORDING.swap(status.recording, Ordering::SeqCst) == status.recording {
+        let Some(state) = app.try_state::<Arc<AppState>>() else {
+            return;
+        };
+        let want = tray_menu::tray_meeting_menu(
+            status,
+            state.meeting_stop_in_flight.load(Ordering::SeqCst),
+        );
+        if !state.tray_meeting_menu.needs(&want) {
             return;
         }
-        let recording = status.recording;
         let app_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
+        let status = status.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
             if let Some(state) = app_main.try_state::<Arc<AppState>>() {
-                if let Some(item) = state.tray_meeting.lock().clone() {
-                    let _ = item.set_text(if recording {
-                        "Stop meeting"
-                    } else {
-                        MEETING_TRAY_START_LABEL
-                    });
-                }
-                // YV125 — a kind is something you pick FOR a meeting you are
-                // about to start. While one is running there is nothing to pick
-                // it for, and a live submenu would read as "change this
-                // meeting's kind", which it is not.
-                if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
-                    let _ = submenu.set_enabled(!recording);
-                }
-                // yap24-NT7 — a new meeting supersedes the last one's "notes
-                // ready" line, exactly as it does on the pill.
-                if recording {
-                    clear_notes_ready_on_main(&state);
-                }
+                meeting_tray_sync_on_main(&state, &status);
             }
-        });
+        }) {
+            // Not latched: the next tick (≤ 1 s away) tries again.
+            log::warn!("tray meeting_menu hop_failed err={e}");
+        }
     })
 }
 
-/// The tray item's idle label. A verb and a noun, so the item reads the same way
-/// to somebody who has never heard of this feature — the acceptance line for
-/// this item is a user who has not read a changelog.
-const MEETING_TRAY_START_LABEL: &str = "Record a meeting";
+/// yap-1106 — bring the menu bar's meeting block in line with `status`.
+/// MAIN THREAD only. Re-reads the stop-in-flight flag here (it can flip between
+/// the sink's decision and the hop) and goes through the latch, so a mutation
+/// that fails is never recorded as shown.
+fn meeting_tray_sync_on_main(state: &AppState, status: &meeting_control::MeetingStatus) {
+    let want = tray_menu::tray_meeting_menu(
+        status,
+        state.meeting_stop_in_flight.load(Ordering::SeqCst),
+    );
+    match state
+        .tray_meeting_menu
+        .apply(want, |want, prev| apply_meeting_menu(state, want, prev))
+    {
+        Ok(true) => {}
+        Ok(false) => {}
+        Err(e) => log::warn!("tray meeting_menu sync_failed err={e}"),
+    }
+}
+
+/// yap-1106 — re-sync the meeting block from `controller.status()`: called
+/// after the tray is built and around a stop, from any thread.
+fn request_meeting_tray_sync(app: &AppHandle) {
+    let app_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            if let Some(controller) = state.meeting() {
+                meeting_tray_sync_on_main(&state, &controller.status());
+            }
+        }
+    });
+}
+
+/// yap-1106 — the ONE place the meeting block of the menu is mutated. MAIN
+/// THREAD only; called through `MeetingMenuLatch::apply`, so returning `Err`
+/// means "not shown, try again on the next status".
+///
+/// While recording the block moves to the TOP of the menu: the disabled
+/// "Recording · <title>" header, then "Stop meeting · 12:00", then a
+/// separator — so the way to stop is the first thing the user sees. On stop
+/// the three go back: header and separator out, the toggle item back above
+/// "Record a meeting as…". Structure is decided from the menu's CURRENT items
+/// (not from `prev`), so a retry after a half-applied failure is idempotent.
+fn apply_meeting_menu(
+    state: &AppState,
+    want: &tray_menu::MeetingMenu,
+    prev: Option<&tray_menu::MeetingMenu>,
+) -> Result<(), String> {
+    let item = state
+        .tray_meeting
+        .lock()
+        .clone()
+        .ok_or("tray not built yet")?;
+    let menu = state.tray_menu.lock().clone().ok_or("tray not built yet")?;
+    let header = state.tray_meeting_header.lock().clone();
+    let sep = state.tray_meeting_sep.lock().clone();
+    item.set_text(&want.toggle_text)
+        .map_err(|e| format!("set_text: {e}"))?;
+    item.set_enabled(want.toggle_enabled)
+        .map_err(|e| format!("set_enabled: {e}"))?;
+    // YV125 — a kind is something you pick FOR a meeting you are about to
+    // start. While one is running there is nothing to pick it for, and a live
+    // submenu would read as "change this meeting's kind", which it is not.
+    if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
+        submenu
+            .set_enabled(want.kind_enabled)
+            .map_err(|e| format!("kind set_enabled: {e}"))?;
+    }
+    let ids: Vec<String> = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .map(|k| k.id().as_ref().to_string())
+        .collect();
+    let header_shown = ids.iter().any(|id| id == tray_menu::ID_MEETING_HEADER);
+    match (&want.header, header, sep) {
+        (Some(text), Some(header), Some(sep)) => {
+            header
+                .set_text(text)
+                .map_err(|e| format!("header set_text: {e}"))?;
+            if !header_shown {
+                // yap24-NT7 — a new meeting supersedes the last one's "notes
+                // ready" line, exactly as it does on the pill.
+                clear_notes_ready_on_main(state);
+                let _ = menu.remove(&item);
+                menu.insert(&header, 0)
+                    .map_err(|e| format!("header insert: {e}"))?;
+                menu.insert(&item, 1)
+                    .map_err(|e| format!("toggle insert: {e}"))?;
+                menu.insert(&sep, 2)
+                    .map_err(|e| format!("separator insert: {e}"))?;
+            }
+        }
+        (None, Some(header), Some(sep)) if header_shown => {
+            let _ = menu.remove(&header);
+            let _ = menu.remove(&sep);
+            let _ = menu.remove(&item);
+            let at = menu
+                .items()
+                .map_err(|e| format!("items: {e}"))?
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_MEETING_KIND)
+                .unwrap_or(0);
+            menu.insert(&item, at)
+                .map_err(|e| format!("toggle reinsert: {e}"))?;
+        }
+        _ => {}
+    }
+    let edge = prev.map(|p| p.header.is_some()) != Some(want.header.is_some());
+    if edge {
+        log::info!(
+            "tray meeting_menu synced edge=true recording={} enabled={}",
+            want.header.is_some(),
+            want.toggle_enabled
+        );
+    } else {
+        log::debug!(
+            "tray meeting_menu synced edge=false text_changed=true enabled={}",
+            want.toggle_enabled
+        );
+    }
+    Ok(())
+}
+
+/// The tray item's idle label (`tray_menu::MEETING_START_LABEL`): a verb and a
+/// noun, so the item reads the same way to somebody who has never heard of
+/// this feature.
+const MEETING_TRAY_START_LABEL: &str = tray_menu::MEETING_START_LABEL;
 
 /// YV95 — every entry point (tray item, ⌃⌘M, the pill's stop control, the
 /// Meetings empty state) funnels through here, so all four do exactly one thing.
@@ -1108,6 +1243,17 @@ fn toggle_meeting(
 ) -> Result<meeting_control::MeetingStatus, String> {
     let controller = state.meeting().ok_or("Yap is still starting up")?;
     let was_recording = controller.is_recording();
+    // yap-1106 (e) — while the stop runs (ticker join, wav finalize, three
+    // SQLite rows) the tray shows "Stopping…" disabled and a second press is
+    // refused in `toggle_meeting_off_thread`. Cleared on every exit path.
+    let _stopping = was_recording.then(|| {
+        state.meeting_stop_in_flight.store(true, Ordering::SeqCst);
+        request_meeting_tray_sync(app);
+        StopInFlight {
+            app: app.clone(),
+            state: state.clone(),
+        }
+    });
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         meeting_detect::clear(app, None);
@@ -1127,6 +1273,22 @@ fn toggle_meeting(
         }
     }
     Ok(status)
+}
+
+/// yap-1106 (e) — clears `meeting_stop_in_flight` and re-syncs the tray when
+/// the stop returns, whichever way it returns.
+struct StopInFlight {
+    app: AppHandle,
+    state: Arc<AppState>,
+}
+
+impl Drop for StopInFlight {
+    fn drop(&mut self) {
+        self.state
+            .meeting_stop_in_flight
+            .store(false, Ordering::SeqCst);
+        request_meeting_tray_sync(&self.app);
+    }
 }
 
 /// YV95 — the same toggle, but never on the main thread.
@@ -1153,16 +1315,42 @@ fn toggle_meeting_off_thread(
     kind: meetings::MeetingKind,
 ) {
     let app = app.clone();
+    let app_on_spawn_failure = app.clone();
     let state = state.clone();
-    std::thread::Builder::new()
+    let module = if source.starts_with("the tray") { "tray" } else { "hotkey" };
+    // yap-1106 (e) — a press that lands while a stop is in flight is NOT a
+    // second toggle: the controller would see "idle" and START a new meeting.
+    if state.meeting_stop_in_flight.load(Ordering::SeqCst) {
+        log::info!(
+            "{module} meeting_toggle clicked recording_before=true result=ignored:stop_in_flight source=\"{source}\""
+        );
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
         .name("yap-meeting-toggle".into())
         .spawn(move || {
-            if let Err(e) = toggle_meeting(&app, &state, kind) {
-                log::warn!("meeting toggle from {source}: {e}");
-                notify(&app, "Yap", e);
+            let recording_before = state.meeting().is_some_and(|c| c.is_recording());
+            match toggle_meeting(&app, &state, kind) {
+                Ok(status) => log::info!(
+                    "{module} meeting_toggle clicked recording_before={recording_before} result={} source=\"{source}\"",
+                    if status.recording { "started" } else { "stopped" }
+                ),
+                Err(e) => {
+                    log::warn!(
+                        "{module} meeting_toggle clicked recording_before={recording_before} result=error:{e} source=\"{source}\""
+                    );
+                    notify(&app, "Yap", e);
+                }
             }
         })
-        .ok();
+    {
+        log::error!("{module} meeting_toggle clicked result=error:thread_spawn:{e} source=\"{source}\"");
+        notify(
+            &app_on_spawn_failure,
+            "Yap",
+            "Yap could not run that — try again".to_string(),
+        );
+    }
 }
 
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
@@ -9659,6 +9847,10 @@ pub fn run() {
         pill_hide: tray_menu::PillHide::new(),
         tray_meeting: PLMutex::new(None),
         tray_meeting_kind: PLMutex::new(None),
+        tray_meeting_header: PLMutex::new(None),
+        tray_meeting_sep: PLMutex::new(None),
+        tray_meeting_menu: tray_menu::MeetingMenuLatch::new(),
+        meeting_stop_in_flight: AtomicBool::new(false),
         tray_notes_ready: PLMutex::new(None),
         notes_ready_meeting: PLMutex::new(None),
         tray_license: PLMutex::new(None),
@@ -10508,6 +10700,17 @@ pub fn run() {
                     .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
                     .collect::<Vec<_>>(),
             )?;
+            // yap-1106 (b) — the disabled "Recording · <title>" header and the
+            // separator under it; both INSERTED at the top of the menu by
+            // `apply_meeting_menu` while a meeting records, never laid out.
+            let meeting_header_i = MenuItem::with_id(
+                app,
+                tm::ID_MEETING_HEADER,
+                tm::label(tm::ID_MEETING_HEADER),
+                false,
+                None::<&str>,
+            )?;
+            let meeting_sep_i = PredefinedMenuItem::separator(app)?;
             // Y2-E — the license header, seeded from the same decision
             // `sync_tray` refreshes it with, so the menu bar is already correct
             // the first time it is opened rather than after the first state
@@ -10650,10 +10853,20 @@ pub fn run() {
             *state.tray_show_pill.lock() = Some(show_pill_i);
             *state.tray_meeting.lock() = Some(meeting_i);
             *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
+            *state.tray_meeting_header.lock() = Some(meeting_header_i);
+            *state.tray_meeting_sep.lock() = Some(meeting_sep_i);
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
             *state.tray_menu.lock() = Some(menu.clone());
+            // yap-1106 (a) — the meeting block is re-synced from
+            // `controller.status()` whenever the tray is built, so a status that
+            // raced the build (the controller exists before the tray does; a
+            // recovered meeting emits at launch) is never lost.
+            state.tray_meeting_menu.reset();
+            if let Some(controller) = state.meeting() {
+                meeting_tray_sync_on_main(&state, &controller.status());
+            }
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -12414,6 +12627,10 @@ mod tests {
             pill_hide: crate::tray_menu::PillHide::new(),
             tray_meeting: super::PLMutex::new(None),
             tray_meeting_kind: super::PLMutex::new(None),
+            tray_meeting_header: super::PLMutex::new(None),
+            tray_meeting_sep: super::PLMutex::new(None),
+            tray_meeting_menu: crate::tray_menu::MeetingMenuLatch::new(),
+            meeting_stop_in_flight: std::sync::atomic::AtomicBool::new(false),
             tray_notes_ready: super::PLMutex::new(None),
             notes_ready_meeting: super::PLMutex::new(None),
             tray_license: super::PLMutex::new(None),

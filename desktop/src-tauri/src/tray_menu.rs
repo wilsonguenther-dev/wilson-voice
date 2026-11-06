@@ -143,6 +143,9 @@ pub const ID_COPY_LAST: &str = "copy_last";
 pub const ID_PASTE_RAW: &str = "paste_raw";
 pub const ID_NOTES_READY: &str = "meeting_notes_open";
 pub const ID_MEETING_TOGGLE: &str = "meeting_toggle";
+/// yap-1106 — the disabled "Recording · <title>" line shown above the Stop
+/// item while a meeting records.
+pub const ID_MEETING_HEADER: &str = "meeting_header";
 pub const ID_MEETING_KIND: &str = "meeting_kind";
 pub const ID_HANDS_FREE: &str = "hands_free";
 pub const ID_SHOW: &str = "show";
@@ -160,7 +163,7 @@ pub const ID_QUIT: &str = "quit";
 /// frontend's `Nav` union so the two cannot drift.
 pub const HISTORY_NAV: &str = "home";
 
-pub const TRAY_ITEMS: [TrayItem; 18] = [
+pub const TRAY_ITEMS: [TrayItem; 19] = [
     TrayItem {
         id: ID_LICENSE_HEADER,
         label: "Yap",
@@ -197,8 +200,13 @@ pub const TRAY_ITEMS: [TrayItem; 18] = [
         kind: ItemKind::Action(TrayCommand::OpenMeetingNotes),
     },
     TrayItem {
+        id: ID_MEETING_HEADER,
+        label: "Recording",
+        kind: ItemKind::StateLabel,
+    },
+    TrayItem {
         id: ID_MEETING_TOGGLE,
-        label: "Record a meeting",
+        label: MEETING_START_LABEL,
         kind: ItemKind::Action(TrayCommand::ToggleMeeting),
     },
     TrayItem {
@@ -295,8 +303,9 @@ pub const MENU_LAYOUT: [Slot; 23] = [
 /// Items that are built with the menu but placed by `sync_tray` /
 /// `announce_meeting_notes` only while they apply: the upgrade line (Y2-E,
 /// under the header while a purchase is on offer) and the notes-ready line
-/// (yap24-NT7, above "Record a meeting" once notes land).
-pub const INSERTED_ITEMS: [&str; 2] = [ID_UPGRADE, ID_NOTES_READY];
+/// (yap24-NT7, above "Record a meeting" once notes land) and the meeting
+/// header (yap-1106, at the top of the menu while a meeting records).
+pub const INSERTED_ITEMS: [&str; 3] = [ID_UPGRADE, ID_NOTES_READY, ID_MEETING_HEADER];
 
 /// The row for `id`, if the menu has one.
 pub fn item(id: &str) -> Option<&'static TrayItem> {
@@ -433,5 +442,284 @@ pub fn pill_menu_state(show_floating_pill: bool, hidden: bool) -> PillMenuState 
     PillMenuState {
         hide_enabled: show_floating_pill && !hidden,
         show_now_enabled: hidden,
+    }
+}
+
+// ─── The meeting item (yap-1106) ─────────────────────────────────────────────
+
+/// The tray item's idle label. A verb and a noun, so the item reads the same way
+/// to somebody who has never heard of this feature — the acceptance line for
+/// this item is a user who has not read a changelog.
+pub const MEETING_START_LABEL: &str = "Record a meeting";
+/// The label while a meeting records, followed by " · <clock>".
+pub const MEETING_STOP_LABEL: &str = "Stop meeting";
+/// The label while a stop is in flight. Disabled: a second press during a stop
+/// must never become a start (yap-1106 (e)).
+pub const MEETING_STOPPING_LABEL: &str = "Stopping…";
+
+/// Everything the menu bar shows for the meeting, decided from ONE status.
+/// `lib.rs` applies it; nothing here touches a menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeetingMenu {
+    /// The toggle item's text ("Record a meeting" / "Stop meeting · 12:00" /
+    /// "Stopping…" / "Record a meeting (unavailable)").
+    pub toggle_text: String,
+    pub toggle_enabled: bool,
+    /// The "Record a meeting as…" submenu: only while idle AND available.
+    pub kind_enabled: bool,
+    /// The disabled "Recording · <title>" header. `Some` exactly while the
+    /// toggle item sits at the top of the menu as "Stop meeting".
+    pub header: Option<String>,
+}
+
+/// The clock the Stop item carries, to the MINUTE: "12:00", "01:02:00". The
+/// item is refreshed when this string changes, so the menu is mutated at most
+/// once a minute (OS-12 still holds: no per-second menu mutation).
+pub fn tray_meeting_clock(elapsed_seconds: u64) -> String {
+    let minute = (elapsed_seconds / 60) * 60;
+    let full = crate::meetings::format_offset(minute as f64);
+    full.strip_prefix("00:").map(str::to_string).unwrap_or(full)
+}
+
+/// (text, enabled) for the tray's meeting item — the pure function the
+/// acceptance names. `stop_in_flight` is lib.rs's "a stop was requested and
+/// has not returned yet" flag (yap-1106 (e)).
+pub fn tray_meeting_label(
+    status: &meeting_control::MeetingStatus,
+    stop_in_flight: bool,
+) -> (String, bool) {
+    let m = tray_meeting_menu(status, stop_in_flight);
+    (m.toggle_text, m.toggle_enabled)
+}
+
+/// The whole meeting block of the menu for `status`.
+pub fn tray_meeting_menu(
+    status: &meeting_control::MeetingStatus,
+    stop_in_flight: bool,
+) -> MeetingMenu {
+    let header = |status: &meeting_control::MeetingStatus| {
+        let title = status.title.as_deref().unwrap_or("").trim();
+        Some(if title.is_empty() {
+            "Recording".to_string()
+        } else {
+            format!("Recording · {title}")
+        })
+    };
+    if stop_in_flight {
+        return MeetingMenu {
+            toggle_text: MEETING_STOPPING_LABEL.to_string(),
+            toggle_enabled: false,
+            kind_enabled: false,
+            header: if status.recording { header(status) } else { None },
+        };
+    }
+    if status.recording {
+        return MeetingMenu {
+            toggle_text: format!(
+                "{MEETING_STOP_LABEL} · {}",
+                tray_meeting_clock(status.elapsed_seconds)
+            ),
+            toggle_enabled: true,
+            kind_enabled: false,
+            header: header(status),
+        };
+    }
+    if !status.capture_available {
+        return MeetingMenu {
+            toggle_text: format!("{MEETING_START_LABEL} (unavailable)"),
+            toggle_enabled: false,
+            kind_enabled: false,
+            header: None,
+        };
+    }
+    MeetingMenu {
+        toggle_text: MEETING_START_LABEL.to_string(),
+        toggle_enabled: true,
+        kind_enabled: true,
+        header: None,
+    }
+}
+
+/// What the menu bar LAST SUCCESSFULLY showed for the meeting. The old latch
+/// was a process-wide `AtomicBool` flipped BEFORE the main-thread hop ran, so a
+/// hop that failed (or found no tray yet) left "Record a meeting" on screen for
+/// the rest of the session with nothing to retry it. This one records a state
+/// only after the setter returned `Ok`, so every later status re-tries.
+#[derive(Debug, Default)]
+pub struct MeetingMenuLatch {
+    shown: Mutex<Option<MeetingMenu>>,
+}
+
+impl MeetingMenuLatch {
+    pub const fn new() -> Self {
+        MeetingMenuLatch {
+            shown: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<MeetingMenu>> {
+        self.shown.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// What is on screen, if a set has ever succeeded.
+    pub fn shown(&self) -> Option<MeetingMenu> {
+        self.lock().clone()
+    }
+
+    /// Does showing `want` need a menu mutation? False when it is already up.
+    pub fn needs(&self, want: &MeetingMenu) -> bool {
+        self.lock().as_ref() != Some(want)
+    }
+
+    /// Forget what was shown — the tray was (re)built, so nothing is.
+    pub fn reset(&self) {
+        *self.lock() = None;
+    }
+
+    /// Show `want` through `set`, and record it ONLY if `set` succeeded.
+    /// `Ok(false)` = already shown, `set` not called; `Ok(true)` = set and
+    /// recorded; `Err` = `set` failed, the latch is unchanged and the next
+    /// status will try again.
+    pub fn apply<F>(&self, want: MeetingMenu, set: F) -> Result<bool, String>
+    where
+        F: FnOnce(&MeetingMenu, Option<&MeetingMenu>) -> Result<(), String>,
+    {
+        let mut shown = self.lock();
+        if shown.as_ref() == Some(&want) {
+            return Ok(false);
+        }
+        set(&want, shown.as_ref())?;
+        *shown = Some(want);
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod meeting_menu_tests {
+    use super::*;
+    use crate::meeting_control::MeetingStatus;
+    use std::cell::RefCell;
+
+    fn status(recording: bool, available: bool, elapsed: u64, title: Option<&str>) -> MeetingStatus {
+        MeetingStatus {
+            recording,
+            id: recording.then(|| "m1".to_string()),
+            title: title.map(str::to_string),
+            elapsed_seconds: elapsed,
+            elapsed_label: crate::meetings::format_offset(elapsed as f64),
+            capture_available: available,
+            unavailable_reason: (!available).then(|| "no capture engine".to_string()),
+            system_audio: None,
+        }
+    }
+
+    #[test]
+    fn tray_meeting_label_idle() {
+        let (text, enabled) = tray_meeting_label(&status(false, true, 0, None), false);
+        assert_eq!(text, "Record a meeting");
+        assert!(enabled);
+        let m = tray_meeting_menu(&status(false, true, 0, None), false);
+        assert!(m.kind_enabled);
+        assert_eq!(m.header, None);
+    }
+
+    #[test]
+    fn tray_meeting_label_recording() {
+        let s = status(true, true, 12 * 60 + 4, Some("Standup"));
+        let (text, enabled) = tray_meeting_label(&s, false);
+        assert_eq!(text, "Stop meeting · 12:00");
+        assert!(enabled);
+        let m = tray_meeting_menu(&s, false);
+        assert!(!m.kind_enabled, "no kind to pick for a meeting that runs");
+        assert_eq!(m.header.as_deref(), Some("Recording · Standup"));
+        // Over an hour keeps the hours; under a minute shows 00:00.
+        assert_eq!(tray_meeting_clock(3_725), "01:02:00");
+        assert_eq!(tray_meeting_clock(59), "00:00");
+        // Within one minute the menu text is STABLE (OS-12: no per-second mutation).
+        let a = tray_meeting_menu(&status(true, true, 120, None), false);
+        let b = tray_meeting_menu(&status(true, true, 179, None), false);
+        assert_eq!(a, b);
+        assert_eq!(a.header.as_deref(), Some("Recording"));
+    }
+
+    #[test]
+    fn tray_meeting_label_unavailable() {
+        let (text, enabled) = tray_meeting_label(&status(false, false, 0, None), false);
+        assert_eq!(text, "Record a meeting (unavailable)");
+        assert!(!enabled);
+        assert!(!tray_meeting_menu(&status(false, false, 0, None), false).kind_enabled);
+    }
+
+    /// The launch race the item is about: a status reaches the sink BEFORE the
+    /// tray exists (a recovered meeting, an early emit). The setter fails, the
+    /// latch records nothing, and the sync that runs once the tray is built
+    /// lands the idle label from `controller.status()`.
+    #[test]
+    fn tray_meeting_label_recovered_at_launch() {
+        let latch = MeetingMenuLatch::new();
+        let early = tray_meeting_menu(&status(false, true, 0, None), false);
+        let r = latch.apply(early.clone(), |_, _| Err("tray not built yet".into()));
+        assert!(r.is_err());
+        assert_eq!(latch.shown(), None, "a failed set must not be recorded");
+        assert!(latch.needs(&early), "the same state must be retried later");
+        // The tray is built: the retry succeeds and is recorded.
+        let applied = RefCell::new(Vec::new());
+        let r = latch.apply(early.clone(), |want, prev| {
+            assert_eq!(prev, None);
+            applied.borrow_mut().push(want.toggle_text.clone());
+            Ok(())
+        });
+        assert_eq!(r, Ok(true));
+        assert_eq!(applied.borrow().as_slice(), ["Record a meeting"]);
+        assert_eq!(latch.shown(), Some(early.clone()));
+        assert!(!latch.needs(&early));
+        // Already shown: the setter is not called again.
+        let r = latch.apply(early, |_, _| panic!("must not set an identical state"));
+        assert_eq!(r, Ok(false));
+    }
+
+    /// A stop in flight shows "Stopping…" disabled, whatever the status says,
+    /// and keeps the header until the stop lands.
+    #[test]
+    fn tray_meeting_label_stopping() {
+        let s = status(true, true, 30, Some("Standup"));
+        let (text, enabled) = tray_meeting_label(&s, true);
+        assert_eq!(text, "Stopping…");
+        assert!(!enabled);
+        let m = tray_meeting_menu(&s, true);
+        assert_eq!(m.header.as_deref(), Some("Recording · Standup"));
+        assert!(!m.kind_enabled);
+    }
+
+    /// The latch never records a label it failed to set — through an edge.
+    #[test]
+    fn tray_meeting_label_latch_never_records_a_failed_set() {
+        let latch = MeetingMenuLatch::new();
+        let idle = tray_meeting_menu(&status(false, true, 0, None), false);
+        assert_eq!(latch.apply(idle.clone(), |_, _| Ok(())), Ok(true));
+        let rec = tray_meeting_menu(&status(true, true, 0, Some("T")), false);
+        // The hop to the main thread failed: still idle on screen.
+        let r = latch.apply(rec.clone(), |_, _| Err("run_on_main_thread failed".into()));
+        assert_eq!(r, Err("run_on_main_thread failed".to_string()));
+        assert_eq!(latch.shown(), Some(idle.clone()));
+        assert!(latch.needs(&rec));
+        // The next tick retries and succeeds, seeing the real previous state.
+        let r = latch.apply(rec.clone(), |want, prev| {
+            assert_eq!(prev, Some(&idle));
+            assert_eq!(want.toggle_text, "Stop meeting · 00:00");
+            Ok(())
+        });
+        assert_eq!(r, Ok(true));
+        assert_eq!(latch.shown(), Some(rec));
+        // A rebuild forgets everything, so the next status re-syncs.
+        latch.reset();
+        assert_eq!(latch.shown(), None);
+    }
+
+    #[test]
+    fn tray_meeting_label_header_row_is_inserted_not_laid_out() {
+        assert!(INSERTED_ITEMS.contains(&ID_MEETING_HEADER));
+        assert_eq!(command_for(ID_MEETING_HEADER), None);
+        assert_eq!(label(ID_MEETING_TOGGLE), MEETING_START_LABEL);
     }
 }
