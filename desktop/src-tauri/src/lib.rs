@@ -8039,15 +8039,10 @@ fn summarize_meeting_blocking(
                     if cancel.is_cancelled() {
                         return Err(summary_jobs::NotesError::Cancelled);
                     }
-                    let now_segments = state.db.list_meeting_segments(id).unwrap_or_default();
-                    if !summary_jobs::same_transcript(&segments, &now_segments) {
-                        log::warn!("summary: meeting {id}'s transcript changed under its cloud notes — nothing stored");
-                        return Err(summary_jobs::NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
-                    }
-                    state
-                        .db
-                        .set_meeting_summary(id, &markdown, Some("cloud"))
-                        .map_err(summary_jobs::NotesError::Summary)?;
+                    // The ONE write of `meetings.summary` lives in
+                    // `store_meeting_summary`: it refuses an empty result and a
+                    // transcript that changed underneath, same as the local route.
+                    store_meeting_summary(&state.db, id, &segments, &markdown, "cloud")?;
                     if let Err(e) = state.db.setting_set(&format!("notes_route:{id}"), "cloud") {
                         log::warn!("byom notes_route_save_failed error={e}");
                     }
@@ -8159,20 +8154,7 @@ pub(crate) fn summarize_meeting_with(
                 .to_string(),
         ));
     }
-    // Fix round 4 (independent B1): store only if the transcript this summary
-    // read is still the meeting's transcript. A Retry that deleted and rebuilt
-    // it mid-summary makes these notes stale; the transcription hook's
-    // `submit_new_transcript` writes fresh ones over the finished transcript.
-    let now = db.get_meeting(id).map_err(NotesError::Summary)?;
-    let now_segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
-    if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
-        || !summary_jobs::same_transcript(&segments, &now_segments)
-    {
-        log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
-        return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
-    }
-    db.set_meeting_summary(id, &summary.markdown, Some(&summary.model))
-        .map_err(NotesError::Summary)?;
+    store_meeting_summary(db, id, &segments, &summary.markdown, &summary.model)?;
     log::info!(
         "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s), truncated={}",
         summary.chunks,
@@ -8181,6 +8163,47 @@ pub(crate) fn summarize_meeting_with(
         summary.truncated
     );
     Ok(summary.markdown)
+}
+
+/// The ONE write of `meetings.summary` (see `tests/summarize_empty_is_never_stored.rs`).
+///
+/// Every route that produces notes — the bundled model in
+/// [`summarize_meeting_with`], the cloud route in [`summarize_meeting_blocking`]
+/// — stores through here, so the two refusals below cannot be skipped by a
+/// caller that built its markdown some other way:
+///
+/// 1. an empty result never overwrites a good summary (the data loss this
+///    file's tripwire exists for);
+/// 2. (fix round 4, independent B1) the notes are stored only if the transcript
+///    they read is still the meeting's transcript. A Retry that deleted and
+///    rebuilt it mid-summary makes these notes stale; the transcription hook's
+///    `submit_new_transcript` writes fresh ones over the finished transcript.
+fn store_meeting_summary(
+    db: &Database,
+    id: &str,
+    read_segments: &[meetings::MeetingSegment],
+    markdown: &str,
+    model: &str,
+) -> Result<(), summary_jobs::NotesError> {
+    use summary_jobs::NotesError;
+    let summary = markdown.trim();
+    if summary.is_empty() {
+        log::warn!("summary: refusing to overwrite meetings.summary with an empty result");
+        return Err(NotesError::Summary(
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string(),
+        ));
+    }
+    let now = db.get_meeting(id).map_err(NotesError::Summary)?;
+    let now_segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
+    if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
+        || !summary_jobs::same_transcript(read_segments, &now_segments)
+    {
+        log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
+        return Err(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
+    }
+    db.set_meeting_summary(id, markdown, Some(model))
+        .map_err(NotesError::Summary)
 }
 
 /// Delete a meeting: rows, FTS entries, and the WAV.
