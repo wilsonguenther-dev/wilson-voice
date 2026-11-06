@@ -8680,9 +8680,10 @@ fn call_offer_reset(
             call_offer::PolicyMap::new()
         }
     };
-    log::info!("call_offer reset count={}", call_offer::never_rows(&map, crate::call_signals::catalog()).len());
+    let rows = call_offer::never_rows(&map, crate::call_signals::catalog());
+    log::info!("call_offer reset never_left={}", rows.len());
     meeting_detect::wake();
-    Ok(call_offer::never_rows(&map, crate::call_signals::catalog()))
+    Ok(rows)
 }
 
 /// Settings › Meetings — both toggles and where calendar access stands.

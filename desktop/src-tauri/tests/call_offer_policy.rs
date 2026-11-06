@@ -24,24 +24,37 @@ fn zoom() -> Sighting {
 }
 
 fn seen(s: Option<Sighting>, now_ms: u64) -> Input {
-    Input::Seen { sighting: s, now_ms }
+    Input::Seen {
+        sighting: s,
+        now_ms,
+    }
 }
 
 fn user(choice: UserChoice, id: &str) -> Input {
-    Input::User { choice, offer_id: id.to_string() }
+    Input::User {
+        choice,
+        offer_id: id.to_string(),
+    }
 }
 
 fn tick(now_ms: u64, running: Option<bool>) -> Input {
-    Input::Tick { now_ms, app_input_running: running }
+    Input::Tick {
+        now_ms,
+        app_input_running: running,
+    }
 }
 
 fn offering(m: &mut CallOfferMachine, policy: &PolicyMap) -> String {
-    assert_eq!(m.step(seen(Some(zoom()), 1_000), policy), vec![Effect::ShowOffer]);
+    assert_eq!(
+        m.step(seen(Some(zoom()), 1_000), policy),
+        vec![Effect::ShowOffer]
+    );
     m.live_offer_id().expect("live id").to_string()
 }
 
 fn starts(fx: &[Effect]) -> bool {
-    fx.iter().any(|e| matches!(e, Effect::StartRecording { .. }))
+    fx.iter()
+        .any(|e| matches!(e, Effect::StartRecording { .. }))
 }
 
 fn stops(fx: &[Effect]) -> bool {
@@ -81,7 +94,10 @@ fn expiry_shows_the_chip_and_records_nothing() {
     let policy = PolicyMap::new();
     let mut m = CallOfferMachine::default();
     offering(&mut m, &policy);
-    assert_eq!(m.step(tick(1_000 + OFFER_COUNTDOWN_MS - 1, None), &policy), vec![]);
+    assert_eq!(
+        m.step(tick(1_000 + OFFER_COUNTDOWN_MS - 1, None), &policy),
+        vec![]
+    );
     let fx = m.step(tick(1_000 + OFFER_COUNTDOWN_MS, None), &policy);
     assert_eq!(fx, vec![Effect::ShowChip]);
     assert_eq!(m.phase, Phase::Chip);
@@ -95,11 +111,16 @@ fn expiry_shows_the_chip_and_records_nothing() {
     // Not now == expiry.
     let mut m3 = CallOfferMachine::default();
     let id = offering(&mut m3, &policy);
-    assert_eq!(m3.step(user(UserChoice::NotNow, &id), &policy), vec![Effect::ShowChip]);
+    assert_eq!(
+        m3.step(user(UserChoice::NotNow, &id), &policy),
+        vec![Effect::ShowChip]
+    );
     // The chip stays for as long as the candidate lives.
     for t in 0..100u64 {
         assert!(m.step(tick(20_000 + t * 1_000, None), &policy).is_empty());
-        assert!(m.step(seen(Some(zoom()), 20_000 + t * 1_000), &policy).is_empty());
+        assert!(m
+            .step(seen(Some(zoom()), 20_000 + t * 1_000), &policy)
+            .is_empty());
     }
     assert_eq!(m.phase, Phase::Chip);
 }
@@ -166,7 +187,10 @@ fn a_second_call_by_the_same_app_is_a_new_candidate() {
     let first = offering(&mut m, &policy);
     m.step(user(UserChoice::NotNow, &first), &policy);
     m.step(seen(None, 60_000), &policy); // running_input dropped
-    assert_eq!(m.step(seen(Some(zoom()), 61_000), &policy), vec![Effect::ShowOffer]);
+    assert_eq!(
+        m.step(seen(Some(zoom()), 61_000), &policy),
+        vec![Effect::ShowOffer]
+    );
     let second = m.live_offer_id().unwrap().to_string();
     assert_ne!(first, second);
 }
@@ -179,7 +203,12 @@ fn never_answer_saves_and_withdraws() {
     let fx = m.step(user(UserChoice::Never, &id), &policy);
     assert_eq!(
         fx,
-        vec![Effect::SaveNever { bundle_id: "us.zoom.xos".into() }, Effect::Withdraw]
+        vec![
+            Effect::SaveNever {
+                bundle_id: "us.zoom.xos".into()
+            },
+            Effect::Withdraw
+        ]
     );
     assert!(!starts(&fx));
 }
@@ -195,19 +224,32 @@ fn ended_20s_prompts_and_never_stops() {
     // Unreadable is never evidence of an end; it resets the quiet clock.
     assert_eq!(m.step(tick(12_000, None), &policy), vec![]);
     assert_eq!(m.step(tick(13_000, Some(false)), &policy), vec![]);
-    assert_eq!(m.step(tick(13_000 + CALL_ENDED_QUIET_MS - 1_000, Some(false)), &policy), vec![]);
+    assert_eq!(
+        m.step(
+            tick(13_000 + CALL_ENDED_QUIET_MS - 1_000, Some(false)),
+            &policy
+        ),
+        vec![]
+    );
     let fx = m.step(tick(13_000 + CALL_ENDED_QUIET_MS, Some(false)), &policy);
     assert_eq!(fx, vec![Effect::ShowEndPrompt]);
     assert!(!stops(&fx));
     assert_eq!(m.phase, Phase::EndPrompt);
     // Silence forever after: still only the prompt, never a stop.
     for t in 0..120u64 {
-        assert!(!stops(&m.step(tick(40_000 + t * 1_000, Some(false)), &policy)));
+        assert!(!stops(
+            &m.step(tick(40_000 + t * 1_000, Some(false)), &policy)
+        ));
     }
     // Keep going: back to recording, and no second prompt for this call.
-    assert_eq!(m.step(user(UserChoice::KeepGoing, &id), &policy), vec![Effect::HideEndPrompt]);
+    assert_eq!(
+        m.step(user(UserChoice::KeepGoing, &id), &policy),
+        vec![Effect::HideEndPrompt]
+    );
     for t in 0..120u64 {
-        assert!(m.step(tick(200_000 + t * 1_000, Some(false)), &policy).is_empty());
+        assert!(m
+            .step(tick(200_000 + t * 1_000, Some(false)), &policy)
+            .is_empty());
     }
     assert_eq!(CALL_ENDED_QUIET_MS, 20_000);
 }
@@ -220,7 +262,10 @@ fn stop_on_the_end_prompt_is_the_only_stop() {
     m.step(user(UserChoice::Record, &id), &policy);
     m.step(tick(1_000, Some(false)), &policy);
     m.step(tick(1_000 + CALL_ENDED_QUIET_MS, Some(false)), &policy);
-    assert_eq!(m.step(user(UserChoice::Stop, &id), &policy), vec![Effect::StopRecording]);
+    assert_eq!(
+        m.step(user(UserChoice::Stop, &id), &policy),
+        vec![Effect::StopRecording]
+    );
     // The recording stopped: the machine goes idle and this call is spent.
     m.step(Input::RecordingStopped, &policy);
     assert_eq!(m.phase, Phase::Idle);
@@ -265,7 +310,11 @@ fn only_user_choice_record_yields_start_recording() {
             seen(Some(zoom()), now + 2),
         ];
         for (i, input) in inputs.into_iter().enumerate() {
-            let policy = if (round + i as u64) % 5 == 0 { &never } else { &empty };
+            let policy = if (round + i as u64) % 5 == 0 {
+                &never
+            } else {
+                &empty
+            };
             let fx = m.step(input, policy);
             assert!(!starts(&fx), "round {round} input {i}: {fx:?}");
             assert!(!stops(&fx), "round {round} input {i}: {fx:?}");
@@ -323,7 +372,10 @@ fn never_persists_in_settings_kv_and_reset_restores_offer() {
 #[test]
 fn meeting_row_stores_detected_app_and_via() {
     let db = wilson_voice_lib::db::Database::open_in_memory().expect("db");
-    assert_eq!(db.schema_version().unwrap(), wilson_voice_lib::meetings::SCHEMA_VERSION);
+    assert_eq!(
+        db.schema_version().unwrap(),
+        wilson_voice_lib::meetings::SCHEMA_VERSION
+    );
     // The columns exist (an UPDATE naming a missing column is an error).
     db.set_meeting_detection("no-such-meeting", "us.zoom.xos", "mic_in_use")
         .expect("detected_app / detected_via columns");
@@ -336,7 +388,13 @@ fn meeting_row_stores_detected_app_and_via() {
 // ─── copy ───────────────────────────────────────────────────────────────────
 
 fn candidate(bundle: &str, name: &str, via: Via) -> CallCandidate {
-    CallCandidate { bundle_id: bundle.into(), name: name.into(), confidence: 90, via, pid: 7 }
+    CallCandidate {
+        bundle_id: bundle.into(),
+        name: name.into(),
+        confidence: 90,
+        via,
+        pid: 7,
+    }
 }
 
 #[test]
@@ -344,7 +402,10 @@ fn sighting_copy_comes_from_offer_copy() {
     let z = Sighting::from_candidate(&candidate("us.zoom.xos", "Zoom", Via::Bundle), catalog());
     assert_eq!(z.copy, "Zoom call — record it?");
     assert!(!z.your_side_only);
-    let f = Sighting::from_candidate(&candidate("com.apple.FaceTime", "FaceTime", Via::Daemon), catalog());
+    let f = Sighting::from_candidate(
+        &candidate("com.apple.FaceTime", "FaceTime", Via::Daemon),
+        catalog(),
+    );
     assert_eq!(f.copy, "FaceTime call — record your side?");
     assert!(f.your_side_only);
     let b = Sighting::from_candidate(
@@ -365,7 +426,9 @@ fn sighting_copy_comes_from_offer_copy() {
     m.step(seen(Some(f), 0), &p);
     let id = m.live_offer_id().unwrap().to_string();
     let fx = m.step(user(UserChoice::Record, &id), &p);
-    assert!(matches!(&fx[..], [Effect::StartRecording { title, .. }] if title == "FaceTime call (your side)"));
+    assert!(
+        matches!(&fx[..], [Effect::StartRecording { title, .. }] if title == "FaceTime call (your side)")
+    );
 }
 
 // ─── content protection (no GUI launch) ─────────────────────────────────────
@@ -383,7 +446,9 @@ fn offer_window_is_content_protected_and_the_pill_never_is() {
     let float = include_str!("../src/float_pill.rs");
     let offer = include_str!("../src/call_offer.rs");
     // The offer window builder passes its label through the one rule.
-    let body = &lib[lib.find("fn ensure_call_offer_window(").expect("offer builder")..];
+    let body = &lib[lib
+        .find("fn ensure_call_offer_window(")
+        .expect("offer builder")..];
     let body = &body[..body.find("\n}\n").expect("end of fn")];
     assert!(body.contains("call_offer::CALL_OFFER_WINDOW"));
     assert!(body.contains("call_offer::apply_content_protection(&win)"));

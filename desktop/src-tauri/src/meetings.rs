@@ -50,6 +50,9 @@ use serde::{Deserialize, Serialize};
 /// 7 = Y9-B's `user_context` table (`db::MIGRATION_7_USER_CONTEXT`): the
 ///     user's writing samples and custom rules for the local style profile.
 ///
+/// 10 = yap-call-1's `detected_app` / `detected_via` on `meetings`
+///      ([`MIGRATION_10_DETECTED_CALL`]).
+///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
 pub const SCHEMA_VERSION: i64 = 10;

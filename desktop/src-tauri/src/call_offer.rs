@@ -191,7 +191,11 @@ impl Sighting {
         Self {
             key: c.offer_key(),
             bundle_id: c.bundle_id.clone(),
-            name: if browser_untitled { "Browser".to_string() } else { c.name.clone() },
+            name: if browser_untitled {
+                "Browser".to_string()
+            } else {
+                c.name.clone()
+            },
             copy,
             your_side_only,
             site_line: browser_untitled.then(|| "site unknown".to_string()),
@@ -228,11 +232,20 @@ impl UserChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     /// The call signal's best offering candidate (or none), at `now_ms`.
-    Seen { sighting: Option<Sighting>, now_ms: u64 },
+    Seen {
+        sighting: Option<Sighting>,
+        now_ms: u64,
+    },
     /// The 1 s meeting tick: is the detected app's mic input running?
-    Tick { now_ms: u64, app_input_running: Option<bool> },
+    Tick {
+        now_ms: u64,
+        app_input_running: Option<bool>,
+    },
     /// The user's answer for `offer_id`.
-    User { choice: UserChoice, offer_id: String },
+    User {
+        choice: UserChoice,
+        offer_id: String,
+    },
     /// Any recording stopped.
     RecordingStopped,
     /// The start behind [`Effect::StartRecording`] failed: back to the chip,
@@ -256,9 +269,13 @@ pub enum Effect {
         detected_via: DetectedVia,
     },
     /// The id was stale, invented, or nothing was offerable.
-    Rejected { reason: String },
+    Rejected {
+        reason: String,
+    },
     /// Persist Never for this app.
-    SaveNever { bundle_id: String },
+    SaveNever {
+        bundle_id: String,
+    },
     /// "Call ended — stop recording?"
     ShowEndPrompt,
     HideEndPrompt,
@@ -331,7 +348,10 @@ impl CallOfferMachine {
     pub fn step(&mut self, input: Input, policy: &PolicyMap) -> Vec<Effect> {
         match input {
             Input::Seen { sighting, now_ms } => self.seen(sighting, now_ms, policy),
-            Input::Tick { now_ms, app_input_running } => self.tick(now_ms, app_input_running),
+            Input::Tick {
+                now_ms,
+                app_input_running,
+            } => self.tick(now_ms, app_input_running),
             Input::User { choice, offer_id } => self.user(choice, &offer_id),
             Input::StartFailed => {
                 if self.phase == Phase::Recording && self.live.is_some() {
@@ -379,7 +399,10 @@ impl CallOfferMachine {
         if let Some(l) = &self.live {
             if l.sighting.key == s.key {
                 // Same call: keep its id, refresh the copy (a title may match late).
-                self.live = Some(Live { offer_id: l.offer_id.clone(), sighting: s });
+                self.live = Some(Live {
+                    offer_id: l.offer_id.clone(),
+                    sighting: s,
+                });
                 return if self.phase == Phase::Offering
                     && now_ms.saturating_sub(self.offered_at_ms) >= OFFER_COUNTDOWN_MS
                 {
@@ -458,7 +481,13 @@ impl CallOfferMachine {
                 vec![Effect::ShowChip]
             }
             (UserChoice::Never, Phase::Offering | Phase::Chip) => {
-                let bundle_id = self.live.as_ref().expect("is_live").sighting.bundle_id.clone();
+                let bundle_id = self
+                    .live
+                    .as_ref()
+                    .expect("is_live")
+                    .sighting
+                    .bundle_id
+                    .clone();
                 let mut fx = vec![Effect::SaveNever { bundle_id }];
                 fx.extend(self.withdraw());
                 fx
@@ -535,7 +564,9 @@ pub fn drive(input: Input, policy: &PolicyMap) -> (Vec<Effect>, CallOfferView, P
             (fx, view, phase)
         }
         Err(_) => (
-            vec![Effect::Rejected { reason: "call offer state is unavailable".into() }],
+            vec![Effect::Rejected {
+                reason: "call offer state is unavailable".into(),
+            }],
             CallOfferMachine::default().view(now),
             Phase::Idle,
         ),
@@ -553,7 +584,9 @@ pub fn current_view() -> CallOfferView {
 /// The detected app of the call being recorded, if a recording came from an offer.
 pub fn recording_bundle() -> Option<String> {
     machine().lock().ok().and_then(|m| match m.phase {
-        Phase::Recording | Phase::EndPrompt => m.live.as_ref().map(|l| l.sighting.bundle_id.clone()),
+        Phase::Recording | Phase::EndPrompt => {
+            m.live.as_ref().map(|l| l.sighting.bundle_id.clone())
+        }
         _ => None,
     })
 }
