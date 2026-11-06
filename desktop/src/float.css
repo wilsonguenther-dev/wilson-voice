@@ -1591,13 +1591,18 @@ html[data-one-pill="true"] .kami-license {
 }
 html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
 html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
-/* A card (copy card, "Record this meeting?", the nudge) takes the top row the
- * layout reserved for it; the panel grew to hold it. */
+/* A card (copy card, "Record this meeting?", WF-12's language offer, the
+ * nudge) takes the top row the layout reserved for it; the panel grew to hold
+ * it. The list here is CARD_CLASSES in pill/state.ts: a card on one list and
+ * not the other is measured but not placed, or placed but not measured. Two
+ * cards up at once stack: --card-stack-y is each one's place in the row
+ * (float-main.tsx useCardOnScreen). */
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
+html[data-one-pill="true"] .language-offer-wrap,
 html[data-one-pill="true"][data-dock] .nudge-row {
   left: var(--card-x);
-  top: var(--card-y);
+  top: calc(var(--card-y) + var(--card-stack-y, 0px));
   right: auto;
   bottom: auto;
   width: var(--card-w);
