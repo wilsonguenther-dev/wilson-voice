@@ -5854,7 +5854,9 @@ fn finish_preconditions<M>(
 /// yap-1106-retry-failed-dictation — `async` + `spawn_blocking`, because a
 /// plain `fn` command runs ON THE MAIN THREAD in Tauri, and this one decodes
 /// minutes of audio: that was the beach ball and the "wall of doom" Wilson
-/// saw on every Retry. The body is unchanged otherwise; the engine stage runs
+/// saw on every Retry. The body runs inside the `spawn_blocking` closure below,
+/// unchanged otherwise (kept inline so the finish-path tripwire in
+/// tests/long_take_recovery.rs reads the real pipeline); the engine stage runs
 /// through [`retry_decode_bounded`] (one engine, a queue, a deadline).
 #[tauri::command]
 async fn retry_failed_dictation(
@@ -5865,8 +5867,192 @@ async fn retry_failed_dictation(
     confirm: Option<bool>,
 ) -> Result<TranscriptEntry, String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        retry_failed_dictation_blocking(app, state, id, keep_partial, confirm)
+    tauri::async_runtime::spawn_blocking(move || -> Result<TranscriptEntry, String> {
+        let keep_partial = keep_partial.unwrap_or(false);
+        let settings = state.settings.lock().clone();
+        // Y9-B: read once per retry, same as a live take reads it once per take.
+        let style_profile = state.db.style_profile();
+        // Y10-A: set to the decoded take's language before the retry's cleanup.
+        let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
+        // Same cleanup pipeline as a live take, minus the caret context: the retry
+        // happens in Yap, so there is no cursor to join onto.
+        let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
+            let mode = dictation::resolve_mode(
+                &settings.dictation_mode,
+                row.source_app.as_deref().unwrap_or_default(),
+            );
+            // Y9-C: a retry matches rules by mode and language; its row stores no
+            // bundle id, so `app:` rules cannot match it (they never guess).
+            let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
+                state.db.matching_voice_preferences(&voice_prefs::TakeContext {
+                    mode,
+                    bundle_id: "",
+                    language: &settings.language,
+                }),
+            )
+            .with_profile(style_profile.clone());
+            // A retry has no live paste target (the row stores the app's title, not
+            // its bundle id), so it gets the conservative unknown-target format.
+            let structure_format = dictation::structure_format_for_take(
+                settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+                &settings.structure_app_overrides,
+                "",
+                mode,
+            );
+            let (text, _) = dictation::run_cleanup_for_language(
+                raw_text,
+                dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+                mode,
+                structure_format,
+                polish_config.style,
+                &[],
+                // Y10-A: the language the retry decoded in (the primary for a
+                // "keep what was transcribed", which decodes nothing).
+                &retry_language.borrow(),
+                |t| {
+                    state
+                        .db
+                        .apply_dictionary(t)
+                        .unwrap_or_else(|_| t.to_string())
+                },
+                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+            );
+            text
+        };
+        let result = if keep_partial {
+            match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
+                Ok(entry) => Ok(entry),
+                // A refusal is not a failure of the take: the row's reason stays.
+                Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
+                Err(RecoveryError::Failed(e)) => Err(e),
+            }
+        } else {
+            // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
+            let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
+                return Err(RecoveryRefusal::RetryInFlight.to_string());
+            };
+            // One closure, so every early `return Err` below lands in the label update.
+            (|| -> Result<TranscriptEntry, String> {
+                let row = state
+                    .db
+                    .get_failed_dictation(&id)?
+                    .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+                let wav = PathBuf::from(&row.wav_path);
+                let (model_id, model_path) = finish_preconditions(
+                    &state.db,
+                    &row,
+                    wav.exists(),
+                    native_model_ready(&settings.native_model),
+                )?;
+                let samples = record::read_wav_16k_mono(&wav)?;
+                // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
+                // recovered mid-decode already has words in `take_chunks` and an
+                // `end_sample` saying how far into its audio they go, so decode the
+                // REMAINDER and keep what exists (`finish_recovered_decode`, called by
+                // `decode_failed_take`).
+                let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+                        None
+                    }
+                };
+                // The recovered words and the freshly decoded remainder are ONE
+                // transcript from here down. Everything after this line — the
+                // hallucination gate, the dictionary, the cleanup pipeline, the polish
+                // pass — sees exactly what it would have seen had the take never been
+                // interrupted. A decode with ANY failed window comes back `Err` here,
+                // so the row and the clip are never converted or deleted for it.
+                let (partial_text, resume_sample) = match row.take_id.as_deref() {
+                    Some(take_id) => (
+                        row.partial_text.clone(),
+                        state.db.take_resume_sample(take_id),
+                    ),
+                    None => (None, Ok(0)),
+                };
+                // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
+                // read off the samples the retry really decodes (a resume decodes
+                // less, and gets the same allowance: the engine, not the audio,
+                // is what the deadline guards against).
+                let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+                let deadline = retry_deadline(clip_secs);
+                let deadline_ms = deadline.as_millis() as u64;
+                let mut on_phase = |phase: RetryPhase| {
+                    let payload = RetryPhasePayload {
+                        id: id.clone(),
+                        phase: match phase {
+                            RetryPhase::Queued => "queued",
+                            RetryPhase::Decoding => "decoding",
+                        },
+                        deadline_ms,
+                    };
+                    if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
+                        log::warn!("retry_dictation id={id} phase event not delivered: {e}");
+                    }
+                };
+                let manager = state.transcription.clone();
+                let language_prefs = settings.language_prefs();
+                let (raw_text, asr) = decode_failed_take(
+                    &state.db,
+                    &row,
+                    partial_text,
+                    resume_sample,
+                    &samples,
+                    |remaining| {
+                        let (decode_manager, model_id, model_path) =
+                            (manager.clone(), model_id.clone(), model_path.clone());
+                        retry_decode_bounded(
+                            &manager,
+                            &id,
+                            clip_secs,
+                            deadline,
+                            &mut on_phase,
+                            move || {
+                                transcribe_native(
+                                    &decode_manager,
+                                    &model_id,
+                                    &model_path,
+                                    remaining,
+                                    &language_prefs,
+                                    bias_prompt,
+                                    // A retry or recovery from History has no live pill to fill:
+                                    // the user is looking at the history row, not at a recording
+                                    // indicator.
+                                    &mut transcribe_progress::NoObserver,
+                                )
+                            },
+                        )
+                    },
+                )?;
+                if raw_text.trim().is_empty() {
+                    return Err("There is nothing left to transcribe in this take".into());
+                }
+                *retry_language.borrow_mut() = asr.language.clone();
+                let text = cleanup(&row, &raw_text);
+                convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
+            })()
+        };
+        match result {
+            Ok(entry) => {
+                // The entry's text: on a merge that kept a longer live entry, that
+                // is what history holds, so that is what goes on the clipboard.
+                let text = entry.text.clone();
+                let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+                log::info!(
+                    "YV52 recovery: retry succeeded words={} ({})",
+                    entry.word_count,
+                    outcome.message
+                );
+                let _ = app.emit("transcript", &entry);
+                Ok(entry)
+            }
+            Err(e) => {
+                // The row's reason is the CURRENT failure, not the original one (a
+                // no-op when the row was converted or dropped).
+                let _ = state.db.note_failed_retry(&id, &e, None);
+                Err(e)
+            }
+        }
     })
     .await
     .map_err(|e| {
@@ -6001,201 +6187,6 @@ fn retry_decode_bounded(
     };
     report(&result);
     result
-}
-
-/// The body of [`retry_failed_dictation`], on a blocking thread.
-fn retry_failed_dictation_blocking(
-    app: AppHandle,
-    state: Arc<AppState>,
-    id: String,
-    keep_partial: Option<bool>,
-    confirm: Option<bool>,
-) -> Result<TranscriptEntry, String> {
-    let keep_partial = keep_partial.unwrap_or(false);
-    let settings = state.settings.lock().clone();
-    // Y9-B: read once per retry, same as a live take reads it once per take.
-    let style_profile = state.db.style_profile();
-    // Y10-A: set to the decoded take's language before the retry's cleanup.
-    let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
-    // Same cleanup pipeline as a live take, minus the caret context: the retry
-    // happens in Yap, so there is no cursor to join onto.
-    let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
-        let mode = dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        );
-        // Y9-C: a retry matches rules by mode and language; its row stores no
-        // bundle id, so `app:` rules cannot match it (they never guess).
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
-            state.db.matching_voice_preferences(&voice_prefs::TakeContext {
-                mode,
-                bundle_id: "",
-                language: &settings.language,
-            }),
-        )
-        .with_profile(style_profile.clone());
-        // A retry has no live paste target (the row stores the app's title, not
-        // its bundle id), so it gets the conservative unknown-target format.
-        let structure_format = dictation::structure_format_for_take(
-            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-            &settings.structure_app_overrides,
-            "",
-            mode,
-        );
-        let (text, _) = dictation::run_cleanup_for_language(
-            raw_text,
-            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-            mode,
-            structure_format,
-            polish_config.style,
-            &[],
-            // Y10-A: the language the retry decoded in (the primary for a
-            // "keep what was transcribed", which decodes nothing).
-            &retry_language.borrow(),
-            |t| {
-                state
-                    .db
-                    .apply_dictionary(t)
-                    .unwrap_or_else(|_| t.to_string())
-            },
-            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-        );
-        text
-    };
-    let result = if keep_partial {
-        match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
-            Ok(entry) => Ok(entry),
-            // A refusal is not a failure of the take: the row's reason stays.
-            Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
-            Err(RecoveryError::Failed(e)) => Err(e),
-        }
-    } else {
-        // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
-        let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
-            return Err(RecoveryRefusal::RetryInFlight.to_string());
-        };
-        // One closure, so every early `return Err` below lands in the label update.
-        (|| -> Result<TranscriptEntry, String> {
-            let row = state
-                .db
-                .get_failed_dictation(&id)?
-                .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-            let wav = PathBuf::from(&row.wav_path);
-            let (model_id, model_path) = finish_preconditions(
-                &state.db,
-                &row,
-                wav.exists(),
-                native_model_ready(&settings.native_model),
-            )?;
-            let samples = record::read_wav_16k_mono(&wav)?;
-            // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
-            // recovered mid-decode already has words in `take_chunks` and an
-            // `end_sample` saying how far into its audio they go, so decode the
-            // REMAINDER and keep what exists (`finish_recovered_decode`, called by
-            // `decode_failed_take`).
-            let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
-                Ok(terms) => asr_engine::build_bias_prompt(&terms),
-                Err(e) => {
-                    log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
-                    None
-                }
-            };
-            // The recovered words and the freshly decoded remainder are ONE
-            // transcript from here down. Everything after this line — the
-            // hallucination gate, the dictionary, the cleanup pipeline, the polish
-            // pass — sees exactly what it would have seen had the take never been
-            // interrupted. A decode with ANY failed window comes back `Err` here,
-            // so the row and the clip are never converted or deleted for it.
-            let (partial_text, resume_sample) = match row.take_id.as_deref() {
-                Some(take_id) => (
-                    row.partial_text.clone(),
-                    state.db.take_resume_sample(take_id),
-                ),
-                None => (None, Ok(0)),
-            };
-            // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
-            // read off the samples the retry really decodes (a resume decodes
-            // less, and gets the same allowance: the engine, not the audio,
-            // is what the deadline guards against).
-            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
-            let deadline = retry_deadline(clip_secs);
-            let deadline_ms = deadline.as_millis() as u64;
-            let mut on_phase = |phase: RetryPhase| {
-                let payload = RetryPhasePayload {
-                    id: id.clone(),
-                    phase: match phase {
-                        RetryPhase::Queued => "queued",
-                        RetryPhase::Decoding => "decoding",
-                    },
-                    deadline_ms,
-                };
-                if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
-                    log::warn!("retry_dictation id={id} phase event not delivered: {e}");
-                }
-            };
-            let manager = state.transcription.clone();
-            let language_prefs = settings.language_prefs();
-            let (raw_text, asr) = decode_failed_take(
-                &state.db,
-                &row,
-                partial_text,
-                resume_sample,
-                &samples,
-                |remaining| {
-                    let (decode_manager, model_id, model_path) =
-                        (manager.clone(), model_id.clone(), model_path.clone());
-                    retry_decode_bounded(
-                        &manager,
-                        &id,
-                        clip_secs,
-                        deadline,
-                        &mut on_phase,
-                        move || {
-                            transcribe_native(
-                                &decode_manager,
-                                &model_id,
-                                &model_path,
-                                remaining,
-                                &language_prefs,
-                                bias_prompt,
-                                // A retry or recovery from History has no live pill to fill:
-                                // the user is looking at the history row, not at a recording
-                                // indicator.
-                                &mut transcribe_progress::NoObserver,
-                            )
-                        },
-                    )
-                },
-            )?;
-            if raw_text.trim().is_empty() {
-                return Err("There is nothing left to transcribe in this take".into());
-            }
-            *retry_language.borrow_mut() = asr.language.clone();
-            let text = cleanup(&row, &raw_text);
-            convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
-        })()
-    };
-    match result {
-        Ok(entry) => {
-            // The entry's text: on a merge that kept a longer live entry, that
-            // is what history holds, so that is what goes on the clipboard.
-            let text = entry.text.clone();
-            let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-            log::info!(
-                "YV52 recovery: retry succeeded words={} ({})",
-                entry.word_count,
-                outcome.message
-            );
-            let _ = app.emit("transcript", &entry);
-            Ok(entry)
-        }
-        Err(e) => {
-            // The row's reason is the CURRENT failure, not the original one (a
-            // no-op when the row was converted or dropped).
-            let _ = state.db.note_failed_retry(&id, &e, None);
-            Err(e)
-        }
-    }
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
