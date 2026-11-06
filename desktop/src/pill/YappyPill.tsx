@@ -114,7 +114,13 @@ export default function YappyPill(
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
   // hit-box is published from the draw loop below, not from a DOM rect.
-  const drag = usePillDrag();
+  // yap-wf-01-click-the-pill-to — WF-01: the same gesture is also the CLICK.
+  // `usePillDrag` classifies every release (pill/press.ts: under 4 points and
+  // under 300 ms) and calls `tap` only for a click, so a drag or a long hold
+  // never toggles a take. The handler is assigned below, once the routes it
+  // shares with the overlay buttons exist; the hook reads it at call time.
+  const tapRef = useRef<() => void>(() => {});
+  const drag = usePillDrag({ tap: () => tapRef.current() });
   // PERM-C — set by the draw effect; called when the gate prop changes.
   const applyGateRef = useRef<(g: LivePhase) => void>(() => {});
   // Y3-C — decode progress reaches the mount-once scene the same way the gate
@@ -150,6 +156,19 @@ export default function YappyPill(
     emit("navigate", "settings").catch(() => {});
     emit("settings-tab", "license").catch(() => {});
   }, [drag, licenseRoute]);
+  // WF-01 — a click on the canvas capsule. A refused pill routes exactly where
+  // its overlay button does (licence first when gated, then the mic fix);
+  // otherwise the backend toggles a HANDS-FREE take, and on the stop click it
+  // hands focus back to the app that had it before the click, then pastes.
+  // The backend also owns the busy guard (a click mid-transcription is a no-op)
+  // and logs every outcome (`pill click action=…`).
+  tapRef.current = () => {
+    if (gated) { openPurchase(); return; }
+    if (blocked) { openPermissions(); return; }
+    invoke("pill_click_toggle").catch(() => {
+      // A refused start (trial over) already raised its own toast backend-side.
+    });
+  };
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
   // ambient tick open for the whole session. The draw loop lives in a mount-once
