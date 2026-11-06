@@ -3,7 +3,7 @@ import { ModelPicker, PolishModelPicker } from "../../ModelSetup";
 import { checkForUpdate } from "../../updater";
 import { type AppSettings } from "../../appTypes";
 import { useAppCtx } from "../../appShell";
-import PowerPanel from "./PowerPanel";
+import PowerPanel from "../../PowerPanel";
 
 export default function Advanced() {
   const {

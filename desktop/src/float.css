@@ -1509,10 +1509,10 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #e0b341;
+  background: hsl(var(--accent-busy));
   flex: none;
 }
-.governor-chip.minimal .governor-dot { background: #e5673f; }
+.governor-chip.minimal .governor-dot { background: hsl(var(--accent-meeting)); }
 .governor-run {
   margin-left: 2px;
   padding: 0 6px;

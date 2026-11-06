@@ -3,9 +3,9 @@
 // user can move, and "Run anyway" when something is being held.
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useAppCtx } from "../../appShell";
-import { useGovernor, runWaitingJobsAnyway } from "../../pill/GovernorChip";
-import { governorSentence, pauseBelowFromInput, type GovernorView } from "../../pill/governor";
+import { useAppCtx } from "./appShell";
+import { useGovernor, runWaitingJobsAnyway } from "./pill/GovernorChip";
+import { governorSentence, pauseBelowFromInput, type GovernorView } from "./pill/governor";
 
 export default function PowerPanel() {
   const { toastError } = useAppCtx();
