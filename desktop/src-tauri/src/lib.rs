@@ -14640,6 +14640,10 @@ mod retry_replay {
             return;
         };
         let dir = PathBuf::from(dir);
+        // The engine's own log lines (loads, window timeouts, the
+        // `retry_dictation` line) on stderr under RUST_LOG=info.
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
         let model_id = default_native_model();
         let model = models::catalog_model(&model_id).expect("default model is in the catalog");
         let filename = model.default_file().expect("default file").filename.clone();
