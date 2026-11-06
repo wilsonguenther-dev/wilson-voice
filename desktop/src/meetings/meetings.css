@@ -222,8 +222,8 @@
   padding: 6px 10px;
   border-radius: var(--radius-sm);
 }
-.export-menu-list [role="menuitem"]:hover,
-.export-menu-list [role="menuitem"]:focus-visible {
+/* Focus rings come from focus.css, once, globally (Y5-J). */
+.export-menu-list [role="menuitem"]:hover {
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
