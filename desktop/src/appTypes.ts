@@ -29,6 +29,7 @@ export type SettingsTab =
   | "meetings"
   | "privacy"
   | "diagnostics"
+  | "notifications"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -40,6 +41,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "snippets", label: "Snippets" },
   { id: "audio", label: "Audio" },
   { id: "companion", label: "Companion" },
+  // WF-17 — quiet mode: which of the pill's soft messages show.
+  { id: "notifications", label: "Notifications" },
   { id: "advanced", label: "Advanced" },
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },
@@ -146,6 +149,13 @@ export interface AppSettings {
    * by YappyPill (settings event) and YappyHouse (prop). Curse filter stays on.
    */
   companionTone?: string;
+  /**
+   * WF-17 — quiet mode (backend `muted_pill_categories`): the pill-message
+   * categories switched off in Settings › Notifications. Only "tip", "news"
+   * and "milestone" are honoured; errors, permission problems and recovery
+   * lines always show (`pill/live.ts` `PILL_MESSAGES`).
+   */
+  mutedPillCategories?: string[];
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**

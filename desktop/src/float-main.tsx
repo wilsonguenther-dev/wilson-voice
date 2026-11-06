@@ -46,6 +46,7 @@ import {
   GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
+  parseMutedCategories,
   type BlindState,
   type BlindStatusSlice,
   type LivePhase,
@@ -84,6 +85,8 @@ interface Settings {
    * it reads as off and `SCRATCHPAD_WINDOW_LANDED` keeps the slot hidden.
    */
   scratchpadOnBar?: boolean;
+  /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
+  mutedPillCategories?: string[];
 }
 
 /**
@@ -245,6 +248,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // WF-17 — quiet mode, read live off the settings payload like the tone.
+  const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -423,6 +428,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -559,7 +565,7 @@ function Float() {
       <MeetingOfferCard />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}

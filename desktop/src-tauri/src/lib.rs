@@ -667,6 +667,27 @@ pub struct AppSettings {
     /// so the store is written in a stable order.
     #[serde(default)]
     pub structure_app_overrides: std::collections::BTreeMap<String, String>,
+    /// WF-17 — quiet mode: the pill-message categories the user switched off
+    /// in Settings › Notifications. Only `tip`, `news` and `milestone` can be
+    /// stored ([`sanitize_muted_pill_categories`]): errors, permission problems
+    /// and recovery messages always show. The category table is
+    /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
+    #[serde(default)]
+    pub muted_pill_categories: Vec<String>,
+}
+
+/// WF-17 — the pill-message categories a user may mute. Mirrors
+/// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
+pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
+
+/// WF-17 — keep only mutable categories, once each, in table order. A stored
+/// `"error"` (or anything unknown) is dropped: an error can never be muted.
+pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
+    MUTABLE_PILL_CATEGORIES
+        .iter()
+        .filter(|c| raw.iter().any(|r| r == *c))
+        .map(|c| (*c).to_string())
+        .collect()
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -776,6 +797,7 @@ impl Default for AppSettings {
             legacy_json_migrated: false,
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
+            muted_pill_categories: Vec::new(),
         }
     }
 }
@@ -4766,7 +4788,14 @@ fn nudge_ledger(state: State<'_, Arc<AppState>>) -> nudge::NudgeLedger {
 /// launch. `Ok(false)` = it was already recorded (or not a valid slug).
 #[tauri::command]
 fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Result<bool, String> {
-    nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
+    let res = nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis());
+    // WF-17 — one line per pill note shown (the condition is a short slug,
+    // never user text): how often tips actually reach people.
+    match &res {
+        Ok(stored) => log::info!("nudge shown condition_len={} stored={stored}", condition.len()),
+        Err(e) => log::warn!("nudge mark_failed err={e}"),
+    }
+    res
 }
 
 /// Y10-A — the language picker's view (Settings and the bar): the prefs, the
@@ -4869,6 +4898,16 @@ fn save_settings(
         // Y6-A: proof that a take pasted is a fact, not a preference — a
         // frontend save carrying a stale `false` must not erase it.
         next.dictation_proven = live.dictation_proven || next.dictation_proven;
+        // WF-17 — quiet mode: only tips, feature news and milestones can be
+        // muted; anything else a frontend sends is dropped before it is stored.
+        next.muted_pill_categories = sanitize_muted_pill_categories(&next.muted_pill_categories);
+        if next.muted_pill_categories != live.muted_pill_categories {
+            log::info!(
+                "settings pill_quiet_changed muted={} count={}",
+                next.muted_pill_categories.join(","),
+                next.muted_pill_categories.len()
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {

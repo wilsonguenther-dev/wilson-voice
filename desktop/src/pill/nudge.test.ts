@@ -13,6 +13,22 @@ import {
   type TakeContextPayload,
 } from "./nudge";
 import { NUDGE_LINES } from "./tone";
+import {
+  MILESTONE_AT,
+  MILESTONE_IDS,
+  TIP_MAX_SHOWS,
+  TIP_MIN_GAP_DAYS,
+  dayIndex,
+  milestone,
+  nextMilestone,
+  recordTipShown,
+  tipFrequencyAllows,
+  tipHistoryFromLedger,
+  tipShownSlug,
+  type TipHistory,
+} from "./nudge";
+import { MILESTONE_LINES } from "./tone";
+import { MUTABLE_CATEGORIES } from "./live";
 import { PHASE_COPY, fitsSideDockStrip, type ChatTone } from "./live";
 import nudgeRs from "../../src-tauri/src/nudge.rs?raw";
 import libRs from "../../src-tauri/src/lib.rs?raw";
@@ -169,5 +185,116 @@ describe("Y8-D coaching nudges — the caps are the feature", () => {
     const lib = libRs;
     expect(lib).toMatch(/nudge::TAKE_CONTEXT_EVENT/);
     expect(lib).toMatch(/generate_handler!\[[\s\S]*\bnudge_ledger,[\s\S]*\bnudge_mark_shown,/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WF-17 — quiet mode: muted categories never reach the pill, each tip shows at
+// most once every 3 days and 3 times in total, and milestones exist to mute.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("WF-17 quiet mode in the nudge engine", () => {
+  const takeFor = (id: string): TakeContextPayload =>
+    id === "no-text-field" ? noTarget : id === "code-editor" ? inEditor : inField;
+  const ctxFor = (id: string): NudgeContext =>
+    ctx({ lastTake: takeFor(id), takesSoFar: 5, unusedFeatures: id === "meetings" ? ["meetings"] : [] });
+  const withHistory = (history: Map<string, TipHistory>, today: number, muted?: Set<string>): NudgeShown => ({
+    thisSession: 0,
+    ever: new Set(),
+    history,
+    today,
+    muted,
+  });
+
+  it("the frequency caps are the numbers the item promises", () => {
+    expect(TIP_MIN_GAP_DAYS).toBe(3);
+    expect(TIP_MAX_SHOWS).toBe(3);
+    expect(dayIndex(0)).toBe(0);
+    expect(dayIndex(86_400_000 * 5 + 1)).toBe(5);
+  });
+
+  it("muted_categories_never_reach_the_pill: a muted tip or news nudge never fires", () => {
+    for (const id of NUDGE_IDS) {
+      const c = ctxFor(id);
+      expect(nextNudge(c, fresh())?.id, `${id} unmuted`).toBe(id);
+      const cat = nudge(id).category;
+      expect(nextNudge(c, { ...fresh(), muted: new Set([cat]) }), `${id} with ${cat} muted`).toBeNull();
+      // Muting a DIFFERENT category leaves it alone.
+      const other = MUTABLE_CATEGORIES.find((m) => m !== cat)!;
+      expect(nextNudge(c, { ...fresh(), muted: new Set([other]) })?.id).toBe(id);
+    }
+    // A muted lesson gives way to the next unmuted one, never to nothing-then-it.
+    const crowded = ctx({ lastTake: noTarget, takesSoFar: 5, unusedFeatures: ["meetings"] });
+    expect(nextNudge(crowded, { ...fresh(), muted: new Set(["tip"]) })?.id).toBe("meetings");
+    expect(nextNudge(crowded, { ...fresh(), muted: new Set(["tip", "news"]) })).toBeNull();
+  });
+
+  it("a_tip_shows_at_most_once_every_3_days_and_3_times_in_total", () => {
+    const c = ctxFor("no-text-field");
+    const history = new Map<string, TipHistory>();
+    const days: number[] = [];
+    // Walk 30 days; the session cap resets daily (thisSession: 0 each call).
+    for (let day = 100; day < 130; day += 1) {
+      const n = nextNudge(c, withHistory(history, day));
+      if (n?.id === "no-text-field") {
+        days.push(day);
+        history.set(n.id, recordTipShown(history.get(n.id), day));
+      }
+    }
+    expect(days).toEqual([100, 103, 106]);
+    expect(tipFrequencyAllows({ count: 1, lastDay: 10 }, 12)).toBe(false);
+    expect(tipFrequencyAllows({ count: 1, lastDay: 10 }, 13)).toBe(true);
+    expect(tipFrequencyAllows({ count: TIP_MAX_SHOWS, lastDay: 0 }, 1_000)).toBe(false);
+    expect(tipFrequencyAllows(undefined, 0)).toBe(true);
+  });
+
+  it("the ledger carries the history across a relaunch, legacy entries included", () => {
+    const slug = tipShownSlug("no-text-field", 20398);
+    expect(slug).toBe("no-text-field-20398");
+    // nudge.rs `mark` only stores [a-z0-9-] slugs of at most MAX_CONDITION_LEN (40).
+    for (const id of NUDGE_IDS) expect(tipShownSlug(id, 99_999)).toMatch(/^[a-z0-9-]{1,40}$/);
+    expect(nudgeRs).toMatch(/pub const MAX_CONDITION_LEN: usize = 40;/);
+    const h = tipHistoryFromLedger(["no-text-field", "no-text-field-20400", "code-editor-20390", "code-editor-x", "takes-100"]);
+    expect(h.get("no-text-field")).toEqual({ count: 2, lastDay: 20400 });
+    expect(h.get("code-editor")).toEqual({ count: 1, lastDay: 20390 });
+    expect(h.has("meetings")).toBe(false);
+    // A pre-WF-17 bare entry counts as one showing on an unknown (long-ago) day.
+    expect(tipHistoryFromLedger(["meetings"]).get("meetings")).toEqual({ count: 1, lastDay: null });
+    expect(nextNudge(ctxFor("meetings"), withHistory(tipHistoryFromLedger(["meetings"]), 5))?.id).toBe("meetings");
+  });
+
+  it("milestones: the highest reached, once ever, muteable, never during a take", () => {
+    const at = (takesSoFar: number, over: Partial<NudgeContext> = {}) => ctx({ takesSoFar, ...over });
+    expect(nextMilestone(at(MILESTONE_AT["takes-100"] - 1), fresh())).toBeNull();
+    expect(nextMilestone(at(100), fresh())?.id).toBe("takes-100");
+    // They are for fluent users: the 7-day window and the fluency cap do not apply.
+    expect(nextMilestone(at(100, { daysSinceInstall: NUDGE_WINDOW_DAYS + 30 }), fresh())?.id).toBe("takes-100");
+    expect(nextMilestone(at(1500), fresh())?.id).toBe("takes-1000");
+    expect(nextMilestone(at(1500), { thisSession: 0, ever: new Set(["takes-1000"]) })).toBeNull();
+    expect(nextMilestone(at(150), { thisSession: 0, ever: new Set(["takes-100"]) })).toBeNull();
+    expect(nextMilestone(at(100), { ...fresh(), muted: new Set(["milestone"]) })).toBeNull();
+    expect(nextMilestone(at(100, { takeLive: true }), fresh())).toBeNull();
+    expect(nextMilestone(at(100), { thisSession: MAX_NUDGES_PER_SESSION, ever: new Set() })).toBeNull();
+    for (const id of MILESTONE_IDS) expect(milestone(id).category).toBe("milestone");
+  });
+
+  it("milestone copy obeys the nudge line rules", () => {
+    expect(Object.keys(MILESTONE_LINES).sort()).toEqual([...MILESTONE_IDS].sort());
+    for (const id of MILESTONE_IDS) {
+      const n = milestone(id);
+      for (const t of TONES) {
+        expect(n.copy[t].trim().length, `${id}/${t}`).toBeGreaterThan(0);
+        expect(fitsSideDockStrip(n.copy[t]), `${id}/${t} fits the side-dock strip`).toBe(true);
+        expect(n.copy[t], `${id}/${t}`).not.toMatch(/\bfn\b|⌃|⌘|⌥|hold /i);
+        expect(n.copy[t], `${id}/${t}`).not.toMatch(MONEY);
+      }
+      expect(new Set(TONES.map((t) => n.copy[t])).size).toBe(3);
+    }
+  });
+
+  it("the mutable list matches lib.rs and save_settings sanitises it (no compiler checks this seam)", () => {
+    expect(libRs).toMatch(/pub const MUTABLE_PILL_CATEGORIES: \[&str; 3\] = \["tip", "news", "milestone"\];/);
+    expect([...MUTABLE_CATEGORIES]).toEqual(["tip", "news", "milestone"]);
+    expect(libRs).toMatch(/next\.muted_pill_categories = sanitize_muted_pill_categories\(&next\.muted_pill_categories\);/);
+    expect(libRs).toMatch(/pub muted_pill_categories: Vec<String>,/);
   });
 });
