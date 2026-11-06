@@ -90,37 +90,88 @@ fn offer_text(snap: &CallSnapshot) -> Option<String> {
 fn call_browser_titles_fixture_titles_match_each_service() {
     // (front-tab title, pattern id, offer text)
     let table: &[(&str, &str, &str)] = &[
-        ("Meet - abc-defg-hij", "meet", "Google Meet call — record it?"),
-        ("meet.google.com/abc-defg-hij", "meet", "Google Meet call — record it?"),
+        (
+            "Meet - abc-defg-hij",
+            "meet",
+            "Google Meet call — record it?",
+        ),
+        (
+            "meet.google.com/abc-defg-hij",
+            "meet",
+            "Google Meet call — record it?",
+        ),
         ("Zoom Meeting", "zoom_web", "Zoom call — record it?"),
-        ("Weekly sync | Microsoft Teams", "teams_web", "Microsoft Teams call — record it?"),
-        ("teams.microsoft.com", "teams_web", "Microsoft Teams call — record it?"),
-        ("Huddle: #eng - Acme - Slack", "slack_huddle", "Slack call — record it?"),
-        ("#general | Acme - Discord", "discord_web", "Discord call — record it?"),
-        ("Standup room - Whereby", "whereby", "Whereby call — record it?"),
-        ("Cisco Webex Meeting", "webex_web", "Webex call — record it?"),
+        (
+            "Weekly sync | Microsoft Teams",
+            "teams_web",
+            "Microsoft Teams call — record it?",
+        ),
+        (
+            "teams.microsoft.com",
+            "teams_web",
+            "Microsoft Teams call — record it?",
+        ),
+        (
+            "Huddle: #eng - Acme - Slack",
+            "slack_huddle",
+            "Slack call — record it?",
+        ),
+        (
+            "#general | Acme - Discord",
+            "discord_web",
+            "Discord call — record it?",
+        ),
+        (
+            "Standup room - Whereby",
+            "whereby",
+            "Whereby call — record it?",
+        ),
+        (
+            "Cisco Webex Meeting",
+            "webex_web",
+            "Webex call — record it?",
+        ),
         ("Around | standup", "around", "Around call — record it?"),
         // Case-insensitive.
-        ("MEET - ABC-DEFG-HIJ", "meet", "Google Meet call — record it?"),
+        (
+            "MEET - ABC-DEFG-HIJ",
+            "meet",
+            "Google Meet call — record it?",
+        ),
     ];
     let browsers = [
         ("com.google.Chrome", "com.google.Chrome.helper"),
         ("com.microsoft.edgemac", "com.microsoft.edgemac.helper"),
         ("com.brave.Browser", "com.brave.Browser.helper"),
-        ("company.thebrowser.Browser", "company.thebrowser.browser.helper"),
+        (
+            "company.thebrowser.Browser",
+            "company.thebrowser.browser.helper",
+        ),
     ];
     for (browser, helper) in browsers {
         for (title, id, text) in table {
             let (snap, read, _) = observe(browser_snap(browser, helper, true), true, &[title]);
-            assert_eq!(read, vec![2000], "{browser}: the browser holding the mic is read once");
+            assert_eq!(
+                read,
+                vec![2000],
+                "{browser}: the browser holding the mic is read once"
+            );
             let obs = snap.browser_titles.as_ref().expect("AX granted");
             assert_eq!(obs.len(), 1);
-            assert_eq!(obs[0].pattern_id.as_deref(), Some(*id), "{browser}: {title}");
+            assert_eq!(
+                obs[0].pattern_id.as_deref(),
+                Some(*id),
+                "{browser}: {title}"
+            );
             assert_eq!(obs[0].len, title.chars().count());
             let c = score(&snap, catalog(), &CallMemory::default()).expect("candidate");
             assert_eq!(c.bundle_id, browser);
             assert_eq!(c.via, Via::HelperParent);
-            assert_eq!(offer_text(&snap).as_deref(), Some(*text), "{browser}: {title}");
+            assert_eq!(
+                offer_text(&snap).as_deref(),
+                Some(*text),
+                "{browser}: {title}"
+            );
         }
     }
 }
@@ -130,7 +181,11 @@ fn call_browser_titles_every_pattern_ships_unverified_and_chromium_rows_carry_al
     let mut chromium = 0;
     for app in &catalog().apps {
         for p in &app.title_patterns {
-            assert!(!p.verified, "{} {}: verified only by a Wilson walk", app.bundle_id, p.id);
+            assert!(
+                !p.verified,
+                "{} {}: verified only by a Wilson walk",
+                app.bundle_id, p.id
+            );
         }
         if is_chromium_browser(app) {
             chromium += 1;
@@ -153,7 +208,9 @@ fn call_browser_titles_every_pattern_ships_unverified_and_chromium_rows_carry_al
         }
     }
     assert_eq!(chromium, 4, "Chrome, Edge, Brave, Arc");
-    assert!(!is_chromium_browser(catalog().app("com.apple.Safari").unwrap()));
+    assert!(!is_chromium_browser(
+        catalog().app("com.apple.Safari").unwrap()
+    ));
 }
 
 #[test]
@@ -161,7 +218,10 @@ fn call_browser_titles_ax_off_is_site_unknown_and_needs_a_calendar_match() {
     let (snap, read, lines) = observe(chrome(true), false, &["Meet - abc-defg-hij"]);
     assert_eq!(snap.browser_titles, None, "AX off = titles None");
     assert!(read.is_empty(), "nothing is read without Accessibility");
-    assert!(lines.iter().any(|l| l.contains("site=unknown")), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("site=unknown")),
+        "{lines:?}"
+    );
     // No calendar match: no offer.
     assert_eq!(offer_text(&snap), None);
     // A calendar event with a call link in its window: "site unknown" offer.
@@ -198,10 +258,17 @@ fn call_browser_titles_meet_in_a_background_tab_is_not_offered() {
     snap.calendar = Some(CalendarHint {
         linked_event_in_window: true,
     });
-    assert_eq!(offer_text(&snap), None, "a background-tab call is the safe failure");
+    assert_eq!(
+        offer_text(&snap),
+        None,
+        "a background-tab call is the safe failure"
+    );
     // Bring the Meet tab to the front: now it is offered.
     let (snap, _, _) = observe(chrome(true), true, &["Meet - abc-defg-hij"]);
-    assert_eq!(offer_text(&snap).as_deref(), Some("Google Meet call — record it?"));
+    assert_eq!(
+        offer_text(&snap).as_deref(),
+        Some("Google Meet call — record it?")
+    );
     assert!(FRONT_TAB_LINE.contains("front tab"));
 }
 
@@ -209,7 +276,10 @@ fn call_browser_titles_meet_in_a_background_tab_is_not_offered() {
 fn call_browser_titles_browser_without_the_mic_is_never_read() {
     // Chrome holds no mic: no candidate, no AX read at all.
     let (snap, read, lines) = observe(chrome(false), true, &["Meet - abc-defg-hij"]);
-    assert!(read.is_empty(), "titles are read only for a browser holding the mic");
+    assert!(
+        read.is_empty(),
+        "titles are read only for a browser holding the mic"
+    );
     assert!(lines.is_empty());
     assert_eq!(snap.browser_titles, Some(Vec::new()));
     assert_eq!(offer_text(&snap), None);
@@ -236,7 +306,10 @@ fn call_browser_titles_safari_webkit_gpu_input_never_offers() {
             linked_event_in_window: true,
         }),
     };
-    assert!(title_candidates(&snap, catalog()).is_empty(), "Safari is never read");
+    assert!(
+        title_candidates(&snap, catalog()).is_empty(),
+        "Safari is never read"
+    );
     assert_eq!(offer_text(&snap), None, "AX off");
     // Even a Safari title match (from an older probe) is deferred.
     snap.browser_titles = Some(vec![TitleObs {
@@ -273,7 +346,10 @@ fn call_browser_titles_a_title_is_never_written_to_the_log_or_the_db() {
     // serialized. No text, no raw_title key.
     assert!(obs.iter().all(|o| o.raw_title.is_none()));
     let json = serde_json::to_string(&snap).unwrap();
-    assert!(!json.contains("layoffs") && !json.contains("Payroll"), "{json}");
+    assert!(
+        !json.contains("layoffs") && !json.contains("Payroll"),
+        "{json}"
+    );
     assert!(!json.contains("raw_title"));
     let c = score(&snap, catalog(), &CallMemory::default()).unwrap();
     let cj = serde_json::to_string(&c).unwrap();
@@ -285,7 +361,10 @@ fn call_browser_titles_a_title_is_never_written_to_the_log_or_the_db() {
     .unwrap();
     for line in src.lines().filter(|l| l.contains("log::")) {
         let rest = line.replace("call_titles", "");
-        assert!(!rest.contains("title"), "a log line formats a title: {line}");
+        assert!(
+            !rest.contains("title"),
+            "a log line formats a title: {line}"
+        );
     }
 }
 
@@ -301,5 +380,7 @@ fn call_browser_titles_reads_titles_only_never_urls_or_window_lists() {
     assert!(src.contains("\"AXWindows\"") && src.contains("\"AXTitle\""));
     assert!(src.contains(AX_OFF_LINE));
     // Never prompts for Accessibility from here.
-    assert!(!src.contains("request_accessibility") && !src.contains("AXIsProcessTrustedWithOptions"));
+    assert!(
+        !src.contains("request_accessibility") && !src.contains("AXIsProcessTrustedWithOptions")
+    );
 }

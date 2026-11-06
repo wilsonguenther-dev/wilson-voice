@@ -28,7 +28,7 @@
 //! (docs/loop/DEFERRED.md): a WebKit.GPU input never produces an offer.
 
 use crate::call_signals::{
-    bundle_input_running, observe_title, AppKind, CatalogApp, CallCatalog, CallSnapshot, TitleObs,
+    bundle_input_running, observe_title, AppKind, CallCatalog, CallSnapshot, CatalogApp, TitleObs,
 };
 
 /// What the offer calls a browser call whose site Yap cannot read.
@@ -38,7 +38,8 @@ pub const SITE_UNKNOWN_COPY: &str = "Browser call (site unknown) — record it?"
 /// Settings > Meetings, when Accessibility is off.
 pub const AX_OFF_LINE: &str = "Turn on Accessibility so Yap can tell which site the call is on";
 /// Settings > Meetings, always: the front-tab limit.
-pub const FRONT_TAB_LINE: &str = "Yap reads the front tab's title; a call in a background tab is not offered";
+pub const FRONT_TAB_LINE: &str =
+    "Yap reads the front tab's title; a call in a background tab is not offered";
 
 /// A browser row whose window titles Yap may read: Chromium family only.
 /// Safari (`helper_needs_title`) is deferred and never read here.
@@ -163,7 +164,8 @@ pub mod sys {
         let key = CFString::new("AXWindows");
         let mut val: CFTypeRef = std::ptr::null_mut();
         // SAFETY: a live AX element and a CFString key; +1 on success.
-        let err = unsafe { AXUIElementCopyAttributeValue(app, key.as_concrete_TypeRef(), &mut val) };
+        let err =
+            unsafe { AXUIElementCopyAttributeValue(app, key.as_concrete_TypeRef(), &mut val) };
         if err == 0 && !val.is_null() {
             // SAFETY: AXWindows is a CFArray of AXUIElement; create rule.
             let windows: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(val as _) };
