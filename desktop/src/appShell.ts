@@ -20,6 +20,7 @@ import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
 import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
+import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, retryDeadlineMs, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
 
 /**
@@ -98,6 +99,12 @@ export function useAppShell() {
   // toast carries "Retry" for one of them as its action (`arg` = the row id).
   const [failed, setFailed] = useState<FailedDictation[]>([]);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // yap-1106-retry-failed-dictation — where the running retry is ("queued"
+  // behind a live dictation, or "decoding"), from the backend's phase event,
+  // and the clock that ends the loading state on its own if the backend
+  // never answers. See retryDictation.ts.
+  const [retryPhase, setRetryPhase] = useState<RetryPhase | null>(null);
+  const retryWatchdog = useRef<RetryWatchdog | null>(null);
   // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
   // launch toast below (once per launch, never a modal).
@@ -681,6 +688,17 @@ export function useAppShell() {
     // the History recovery section until it is retried or discarded.
     // Y5-F — the payload carries the take path's CODE (take_error.rs); the
     // line and the action come from the catalogue, never the raw string.
+    // yap-1106-retry-failed-dictation — the retry's phase, and the backend's
+    // own deadline for it: the watchdog is re-armed to THAT plus grace, so the
+    // UI gives up a beat after the backend would, never before it.
+    listen<RetryPhaseEvent>(RETRY_PHASE_EVENT, (e) => {
+      const p = e.payload;
+      if (!p || typeof p.id !== "string") return;
+      setRetryPhase(p.phase === "queued" ? "queued" : "decoding");
+      if (typeof p.deadlineMs === "number" && p.deadlineMs > 0) {
+        retryWatchdog.current?.arm(p.deadlineMs + RETRY_WATCHDOG_GRACE_MS);
+      }
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<{ code?: string | null; message: string; failed?: FailedDictation | null }>(
       "transcript_error",
       (e) => {
@@ -1058,6 +1076,22 @@ export function useAppShell() {
   async function retryFailed(id: string, keepPartial = false) {
     if (retrying) return;
     setRetrying(id);
+    setRetryPhase(null);
+    // yap-1106-retry-failed-dictation — the loading state ends at the deadline
+    // no matter what: armed here from the row's own length, re-armed from the
+    // backend's deadline when its phase event lands, cleared when it answers.
+    // A backend that never answers (the hang this item is about) still leaves
+    // a usable button and one plain sentence.
+    const row = failed.find((x) => x.id === id);
+    const watchdog = createRetryWatchdog(() => {
+      setRetrying(null);
+      setRetryPhase(null);
+      toast(RETRY_DEADLINE_MESSAGE);
+      void loadFailed().catch(() => {});
+    });
+    retryWatchdog.current?.clear();
+    retryWatchdog.current = watchdog;
+    if (!keepPartial) watchdog.arm(retryDeadlineMs(row?.speechSeconds ?? 0) + RETRY_WATCHDOG_GRACE_MS);
     try {
       // `confirm` — the backend refuses Keep without it (yap-recovery-followups
       // (b)); it is only ever true here after the user said yes to the dialog.
@@ -1094,7 +1128,10 @@ export function useAppShell() {
         toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
       }
     } finally {
+      watchdog.clear();
+      if (retryWatchdog.current === watchdog) retryWatchdog.current = null;
       setRetrying(null);
+      setRetryPhase(null);
     }
   }
 
@@ -1462,7 +1499,7 @@ export function useAppShell() {
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
-    refreshSystemAudio, replayOnboarding, retryFailed, retrying, runSystemAudioSetup,
+    refreshSystemAudio, replayOnboarding, retryFailed, retrying, retryPhase, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCrashes, setDailySeries, setDictionary, setDiffId,

@@ -6080,166 +6080,343 @@ fn finish_preconditions<M>(
 /// `keep_partial` + `confirm` ("Keep what was transcribed"): see
 /// [`keep_what_was_transcribed`]. The backend requires `confirm: true` there in
 /// ADDITION to the UI's confirm dialog (yap-recovery-followups (b)).
+///
+/// yap-1106-retry-failed-dictation — `async` + `spawn_blocking`, because a
+/// plain `fn` command runs ON THE MAIN THREAD in Tauri, and this one decodes
+/// minutes of audio: that was the beach ball and the "wall of doom" Wilson
+/// saw on every Retry. The body runs inside the `spawn_blocking` closure below,
+/// unchanged otherwise (kept inline so the finish-path tripwire in
+/// tests/long_take_recovery.rs reads the real pipeline); the engine stage runs
+/// through [`retry_decode_bounded`] (one engine, a queue, a deadline).
 #[tauri::command]
-fn retry_failed_dictation(
+async fn retry_failed_dictation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
     keep_partial: Option<bool>,
     confirm: Option<bool>,
 ) -> Result<TranscriptEntry, String> {
-    let keep_partial = keep_partial.unwrap_or(false);
-    let settings = state.settings.lock().clone();
-    // Y9-B: read once per retry, same as a live take reads it once per take.
-    let style_profile = state.db.style_profile();
-    // Y10-A: set to the decoded take's language before the retry's cleanup.
-    let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
-    // Same cleanup pipeline as a live take, minus the caret context: the retry
-    // happens in Yap, so there is no cursor to join onto.
-    let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
-        let mode = dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        );
-        // Y9-C: a retry matches rules by mode and language; its row stores no
-        // bundle id, so `app:` rules cannot match it (they never guess).
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
-            state.db.matching_voice_preferences(&voice_prefs::TakeContext {
-                mode,
-                bundle_id: "",
-                language: &settings.language,
-            }),
-        )
-        .with_profile(style_profile.clone());
-        // A retry has no live paste target (the row stores the app's title, not
-        // its bundle id), so it gets the conservative unknown-target format.
-        let structure_format = dictation::structure_format_for_take(
-            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-            &settings.structure_app_overrides,
-            "",
-            mode,
-        );
-        let (text, _) = dictation::run_cleanup_for_language(
-            raw_text,
-            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-            mode,
-            structure_format,
-            polish_config.style,
-            &[],
-            // Y10-A: the language the retry decoded in (the primary for a
-            // "keep what was transcribed", which decodes nothing).
-            &retry_language.borrow(),
-            |t| {
-                state
-                    .db
-                    .apply_dictionary(t)
-                    .unwrap_or_else(|_| t.to_string())
-            },
-            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-        );
-        text
-    };
-    let result = if keep_partial {
-        match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
-            Ok(entry) => Ok(entry),
-            // A refusal is not a failure of the take: the row's reason stays.
-            Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
-            Err(RecoveryError::Failed(e)) => Err(e),
-        }
-    } else {
-        // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
-        let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
-            return Err(RecoveryRefusal::RetryInFlight.to_string());
-        };
-        // One closure, so every early `return Err` below lands in the label update.
-        (|| -> Result<TranscriptEntry, String> {
-            let row = state
-                .db
-                .get_failed_dictation(&id)?
-                .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-            let wav = PathBuf::from(&row.wav_path);
-            let (model_id, model_path) = finish_preconditions(
-                &state.db,
-                &row,
-                wav.exists(),
-                native_model_ready(&settings.native_model),
-            )?;
-            let samples = record::read_wav_16k_mono(&wav)?;
-            // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
-            // recovered mid-decode already has words in `take_chunks` and an
-            // `end_sample` saying how far into its audio they go, so decode the
-            // REMAINDER and keep what exists (`finish_recovered_decode`, called by
-            // `decode_failed_take`).
-            let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
-                Ok(terms) => asr_engine::build_bias_prompt(&terms),
-                Err(e) => {
-                    log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
-                    None
-                }
-            };
-            // The recovered words and the freshly decoded remainder are ONE
-            // transcript from here down. Everything after this line — the
-            // hallucination gate, the dictionary, the cleanup pipeline, the polish
-            // pass — sees exactly what it would have seen had the take never been
-            // interrupted. A decode with ANY failed window comes back `Err` here,
-            // so the row and the clip are never converted or deleted for it.
-            let (partial_text, resume_sample) = match row.take_id.as_deref() {
-                Some(take_id) => (
-                    row.partial_text.clone(),
-                    state.db.take_resume_sample(take_id),
-                ),
-                None => (None, Ok(0)),
-            };
-            let (raw_text, asr) = decode_failed_take(
-                &state.db,
-                &row,
-                partial_text,
-                resume_sample,
-                &samples,
-                |remaining| {
-                    transcribe_native(
-                        &state.transcription,
-                        &model_id,
-                        &model_path,
-                        remaining,
-                        &settings.language_prefs(),
-                        bias_prompt,
-                        // A retry or recovery from History has no live pill to fill:
-                        // the user is looking at the history row, not at a recording
-                        // indicator.
-                        &mut transcribe_progress::NoObserver,
-                    )
-                },
-            )?;
-            if raw_text.trim().is_empty() {
-                return Err("There is nothing left to transcribe in this take".into());
-            }
-            *retry_language.borrow_mut() = asr.language.clone();
-            let text = cleanup(&row, &raw_text);
-            convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
-        })()
-    };
-    match result {
-        Ok(entry) => {
-            // The entry's text: on a merge that kept a longer live entry, that
-            // is what history holds, so that is what goes on the clipboard.
-            let text = entry.text.clone();
-            let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-            log::info!(
-                "YV52 recovery: retry succeeded words={} ({})",
-                entry.word_count,
-                outcome.message
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<TranscriptEntry, String> {
+        let keep_partial = keep_partial.unwrap_or(false);
+        let settings = state.settings.lock().clone();
+        // Y9-B: read once per retry, same as a live take reads it once per take.
+        let style_profile = state.db.style_profile();
+        // Y10-A: set to the decoded take's language before the retry's cleanup.
+        let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
+        // Same cleanup pipeline as a live take, minus the caret context: the retry
+        // happens in Yap, so there is no cursor to join onto.
+        let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
+            let mode = dictation::resolve_mode(
+                &settings.dictation_mode,
+                row.source_app.as_deref().unwrap_or_default(),
             );
-            let _ = app.emit("transcript", &entry);
-            Ok(entry)
+            // Y9-C: a retry matches rules by mode and language; its row stores no
+            // bundle id, so `app:` rules cannot match it (they never guess).
+            let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
+                state.db.matching_voice_preferences(&voice_prefs::TakeContext {
+                    mode,
+                    bundle_id: "",
+                    language: &settings.language,
+                }),
+            )
+            .with_profile(style_profile.clone());
+            // A retry has no live paste target (the row stores the app's title, not
+            // its bundle id), so it gets the conservative unknown-target format.
+            let structure_format = dictation::structure_format_for_take(
+                settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+                &settings.structure_app_overrides,
+                "",
+                mode,
+            );
+            let (text, _) = dictation::run_cleanup_for_language(
+                raw_text,
+                dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+                mode,
+                structure_format,
+                polish_config.style,
+                &[],
+                // Y10-A: the language the retry decoded in (the primary for a
+                // "keep what was transcribed", which decodes nothing).
+                &retry_language.borrow(),
+                |t| {
+                    state
+                        .db
+                        .apply_dictionary(t)
+                        .unwrap_or_else(|_| t.to_string())
+                },
+                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+            );
+            text
+        };
+        let result = if keep_partial {
+            match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
+                Ok(entry) => Ok(entry),
+                // A refusal is not a failure of the take: the row's reason stays.
+                Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
+                Err(RecoveryError::Failed(e)) => Err(e),
+            }
+        } else {
+            // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
+            let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
+                return Err(RecoveryRefusal::RetryInFlight.to_string());
+            };
+            // One closure, so every early `return Err` below lands in the label update.
+            (|| -> Result<TranscriptEntry, String> {
+                let row = state
+                    .db
+                    .get_failed_dictation(&id)?
+                    .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+                let wav = PathBuf::from(&row.wav_path);
+                let (model_id, model_path) = finish_preconditions(
+                    &state.db,
+                    &row,
+                    wav.exists(),
+                    native_model_ready(&settings.native_model),
+                )?;
+                let samples = record::read_wav_16k_mono(&wav)?;
+                // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
+                // recovered mid-decode already has words in `take_chunks` and an
+                // `end_sample` saying how far into its audio they go, so decode the
+                // REMAINDER and keep what exists (`finish_recovered_decode`, called by
+                // `decode_failed_take`).
+                let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+                        None
+                    }
+                };
+                // The recovered words and the freshly decoded remainder are ONE
+                // transcript from here down. Everything after this line — the
+                // hallucination gate, the dictionary, the cleanup pipeline, the polish
+                // pass — sees exactly what it would have seen had the take never been
+                // interrupted. A decode with ANY failed window comes back `Err` here,
+                // so the row and the clip are never converted or deleted for it.
+                let (partial_text, resume_sample) = match row.take_id.as_deref() {
+                    Some(take_id) => (
+                        row.partial_text.clone(),
+                        state.db.take_resume_sample(take_id),
+                    ),
+                    None => (None, Ok(0)),
+                };
+                // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
+                // read off the samples the retry really decodes (a resume decodes
+                // less, and gets the same allowance: the engine, not the audio,
+                // is what the deadline guards against).
+                let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+                let deadline = retry_deadline(clip_secs);
+                let deadline_ms = deadline.as_millis() as u64;
+                let mut on_phase = |phase: RetryPhase| {
+                    let payload = RetryPhasePayload {
+                        id: id.clone(),
+                        phase: match phase {
+                            RetryPhase::Queued => "queued",
+                            RetryPhase::Decoding => "decoding",
+                        },
+                        deadline_ms,
+                    };
+                    if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
+                        log::warn!("retry_dictation id={id} phase event not delivered: {e}");
+                    }
+                };
+                let manager = state.transcription.clone();
+                let language_prefs = settings.language_prefs();
+                let (raw_text, asr) = decode_failed_take(
+                    &state.db,
+                    &row,
+                    partial_text,
+                    resume_sample,
+                    &samples,
+                    |remaining| {
+                        let (decode_manager, model_id, model_path) =
+                            (manager.clone(), model_id.clone(), model_path.clone());
+                        retry_decode_bounded(
+                            &manager,
+                            &id,
+                            clip_secs,
+                            deadline,
+                            &mut on_phase,
+                            move || {
+                                transcribe_native(
+                                    &decode_manager,
+                                    &model_id,
+                                    &model_path,
+                                    remaining,
+                                    &language_prefs,
+                                    bias_prompt,
+                                    // A retry or recovery from History has no live pill to fill:
+                                    // the user is looking at the history row, not at a recording
+                                    // indicator.
+                                    &mut transcribe_progress::NoObserver,
+                                )
+                            },
+                        )
+                    },
+                )?;
+                if raw_text.trim().is_empty() {
+                    return Err("There is nothing left to transcribe in this take".into());
+                }
+                *retry_language.borrow_mut() = asr.language.clone();
+                let text = cleanup(&row, &raw_text);
+                convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
+            })()
+        };
+        match result {
+            Ok(entry) => {
+                // The entry's text: on a merge that kept a longer live entry, that
+                // is what history holds, so that is what goes on the clipboard.
+                let text = entry.text.clone();
+                let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+                log::info!(
+                    "YV52 recovery: retry succeeded words={} ({})",
+                    entry.word_count,
+                    outcome.message
+                );
+                let _ = app.emit("transcript", &entry);
+                Ok(entry)
+            }
+            Err(e) => {
+                // The row's reason is the CURRENT failure, not the original one (a
+                // no-op when the row was converted or dropped).
+                let _ = state.db.note_failed_retry(&id, &e, None);
+                Err(e)
+            }
         }
-        Err(e) => {
-            // The row's reason is the CURRENT failure, not the original one (a
-            // no-op when the row was converted or dropped).
-            let _ = state.db.note_failed_retry(&id, &e, None);
-            Err(e)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("retry_dictation worker failed: {e}");
+        RETRY_DEADLINE_ERROR.to_string()
+    })?
+}
+
+/// yap-1106-retry-failed-dictation — the deadline a retry gets, scaled to the
+/// clip: a fixed allowance plus one second per second of audio, never under
+/// [`RETRY_DEADLINE_MIN_SECS`] and never over [`RETRY_DEADLINE_MAX_SECS`]. A
+/// healthy engine decodes a minute of audio in a few seconds, so the deadline
+/// is a backstop against a stuck engine, not a budget a good decode spends.
+/// Mirrored in `desktop/src/retryDictation.ts` (`retryDeadlineMs`).
+fn retry_deadline(clip_secs: f64) -> Duration {
+    let secs = (RETRY_DEADLINE_BASE_SECS + clip_secs.max(0.0))
+        .clamp(RETRY_DEADLINE_MIN_SECS, RETRY_DEADLINE_MAX_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+const RETRY_DEADLINE_BASE_SECS: f64 = 15.0;
+const RETRY_DEADLINE_MIN_SECS: f64 = 30.0;
+const RETRY_DEADLINE_MAX_SECS: f64 = 180.0;
+/// The one plain sentence the UI shows when a retry ran out of time. The clip
+/// stays kept; the button says Try again.
+const RETRY_DEADLINE_ERROR: &str = "Couldn't transcribe this clip — Try again";
+/// A retry that queued behind a live dictation and never got its turn.
+const RETRY_ENGINE_BUSY_ERROR: &str =
+    "The speech engine stayed busy with a live dictation — Try again";
+/// The event the retry emits as it moves through its phases, so the Retry
+/// button can say "Waiting for the speech engine…" while it queues and arm
+/// its own watchdog on the same deadline the backend holds itself to.
+const RETRY_PHASE_EVENT: &str = "retry-dictation";
+
+/// Where a retry is right now, as the UI sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RetryPhase {
+    /// The engine is leased to a live take or still loading; the retry waits.
+    Queued,
+    /// The retry holds (or is about to hold) the engine.
+    Decoding,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RetryPhasePayload {
+    id: String,
+    phase: &'static str,
+    /// The whole retry's deadline, in ms from when the retry was admitted.
+    deadline_ms: u64,
+}
+
+/// yap-1106-retry-failed-dictation — THE ENGINE STAGE OF A RETRY. One engine,
+/// never two: the retry is admitted only onto the engine dictation uses.
+///
+/// * An engine a timed-out lease abandoned is still running: fail fast with
+///   [`transcription::ENGINE_STUCK`]. Nothing loads.
+/// * The engine is leased to a live take or loading: QUEUE (`on_phase(Queued)`,
+///   `result=queued` logged) and wait for it to come back, up to the deadline.
+/// * Then decode on a worker thread and wait at most what is left of the
+///   deadline. Past it the caller gets [`RETRY_DEADLINE_ERROR`] and the row
+///   and clip stay; the decode is not killed (that would mean cancelling a
+///   latch a live take shares), it simply finishes unobserved and the engine
+///   goes back to the slot when it does.
+///
+/// Logs exactly one `retry_dictation … result=<ok|error:…>` line at the end
+/// (plus one `result=queued` line when it queued), with the wall time and the
+/// number of engine loads that happened meanwhile — 0 is the whole point.
+fn retry_decode_bounded(
+    manager: &transcription::TranscriptionManager,
+    id: &str,
+    clip_secs: f64,
+    deadline: Duration,
+    on_phase: &mut dyn FnMut(RetryPhase),
+    decode: impl FnOnce() -> Result<transcription::AsrOutput, String> + Send + 'static,
+) -> Result<transcription::AsrOutput, String> {
+    let started = std::time::Instant::now();
+    let loads_before = manager.engine_loads();
+    let report = |result: &Result<transcription::AsrOutput, String>| {
+        let outcome = match result {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("error:{}", e.replace('\n', " ")),
+        };
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            started.elapsed().as_millis(),
+            manager.engine_loads().saturating_sub(loads_before)
+        );
+    };
+    if manager.abandoned_engines() > 0 {
+        let r = Err(transcription::ENGINE_STUCK.to_string());
+        report(&r);
+        return r;
+    }
+    if manager.is_busy() {
+        on_phase(RetryPhase::Queued);
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result=queued wall_ms={} engine_loads_during=0",
+            started.elapsed().as_millis()
+        );
+        if !manager.wait_until_idle(deadline) {
+            let r = Err(RETRY_ENGINE_BUSY_ERROR.to_string());
+            report(&r);
+            return r;
+        }
+        // The decode the retry waited on may itself have timed out and left
+        // its engine running — the same refusal as above, one check later.
+        if manager.abandoned_engines() > 0 {
+            let r = Err(transcription::ENGINE_STUCK.to_string());
+            report(&r);
+            return r;
         }
     }
+    on_phase(RetryPhase::Decoding);
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode());
+    });
+    let result = match rx.recv_timeout(remaining) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::warn!(
+                "retry_dictation id={id} deadline_s={:.0} passed — the decode is left to finish unobserved",
+                deadline.as_secs_f64()
+            );
+            Err(RETRY_DEADLINE_ERROR.to_string())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("The speech engine stopped unexpectedly — Try again".to_string())
+        }
+    };
+    report(&result);
+    result
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
@@ -14626,5 +14803,331 @@ mod hands_free_stop_label_tests {
             hands_free_stop_label(false, true, "fn / fn⌃", "⌃⌘H"),
             "fn / fn⌃"
         );
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the engine stage of a retry, with fake
+/// engines that hang or dawdle. Wilson's words: "I've never pressed retry and
+/// it worked, ever. It always infinitely loads." Every case here ends inside
+/// its deadline, and none of them loads a second engine.
+#[cfg(test)]
+mod retry_engine_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A throwaway directory for the fake model file, removed on drop.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "yap-retry-engine-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `Result<AsrOutput, _>` has no `Debug`; the error, or a panic.
+    fn err_of(r: Result<transcription::AsrOutput, String>) -> String {
+        match r {
+            Ok(out) => panic!("expected an error, got a transcript of {} chars", out.text.len()),
+            Err(e) => e,
+        }
+    }
+
+    /// Decodes forever — until `release` is raised. The 2026-11-06 stuck
+    /// engine: no cancel hook, never returns on its own.
+    struct HangingEngine {
+        release: Arc<AtomicBool>,
+    }
+
+    impl transcription::Transcriber for HangingEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("released at last".into())
+        }
+    }
+
+    /// Takes `decode` of real time, then answers. The live take a retry queues
+    /// behind.
+    struct SlowEngine {
+        decode: Duration,
+    }
+
+    impl transcription::Transcriber for SlowEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.decode);
+            Ok("slow but sure".into())
+        }
+    }
+
+    fn manager(
+        loader: impl Fn() -> Box<dyn transcription::Transcriber> + Send + Sync + 'static,
+        timeout: Duration,
+    ) -> (transcription::TranscriptionManager, PathBuf, ScratchDir) {
+        let dir = ScratchDir::new();
+        let path = dir.0.join("fake.gguf");
+        std::fs::write(&path, b"not a model").unwrap();
+        let m = transcription::TranscriptionManager::with_loader(
+            Arc::new(move |_p: &Path| Ok(loader())),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            timeout,
+        );
+        (m, path, dir)
+    }
+
+    fn retry(
+        m: &transcription::TranscriptionManager,
+        deadline: Duration,
+        phases: &mut Vec<RetryPhase>,
+    ) -> (Result<transcription::AsrOutput, String>, Duration) {
+        let decode_mgr = m.clone();
+        let started = Instant::now();
+        let r = retry_decode_bounded(
+            m,
+            "row-1",
+            5.0,
+            deadline,
+            &mut |p| phases.push(p),
+            move || {
+                decode_mgr
+                    .transcribe(vec![0.01; 16_000], None, None)
+                    .map(|text| transcription::AsrOutput {
+                        text,
+                        ..recovered_only_output()
+                    })
+            },
+        );
+        (r, started.elapsed())
+    }
+
+    #[test]
+    fn retry_deadline_scales_with_the_clip_between_30_and_180_seconds() {
+        assert_eq!(retry_deadline(5.0), Duration::from_secs(30));
+        assert_eq!(retry_deadline(82.3), Duration::from_secs_f64(97.3));
+        assert_eq!(retry_deadline(153.1), Duration::from_secs_f64(168.1));
+        assert_eq!(retry_deadline(900.0), Duration::from_secs(180));
+        assert_eq!(retry_deadline(-1.0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_retry_fails_fast_while_an_abandoned_engine_is_still_running_and_loads_nothing() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_millis(100),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        // The live take that hung: the lease times out and the engine is left
+        // on its worker thread, exactly the state Retry was pressed in.
+        let err = m.transcribe(vec![0.01; 16_000], None, None).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert_eq!(m.abandoned_engines(), 1);
+        assert!(!m.is_busy(), "the lease is released at the timeout");
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
+        assert_eq!(err_of(result), transcription::ENGINE_STUCK);
+        assert!(wall < Duration::from_secs(1), "fail fast, not at the deadline: {wall:?}");
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        assert!(phases.is_empty(), "it never queued and never decoded: {phases:?}");
+
+        // When the stuck engine finally returns it is counted out, not reused.
+        release.store(true, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while m.abandoned_engines() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(m.abandoned_engines(), 0);
+        assert!(!m.is_loaded(), "the abandoned engine is dropped, never put back");
+    }
+
+    #[test]
+    fn a_retry_queues_behind_a_busy_engine_then_completes_on_it() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(400),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        // Let the live take lease the engine.
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(m.is_busy());
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(10), &mut phases);
+        assert_eq!(result.unwrap().text, "slow but sure");
+        assert_eq!(phases, vec![RetryPhase::Queued, RetryPhase::Decoding]);
+        assert!(wall >= Duration::from_millis(350), "it waited its turn: {wall:?}");
+        assert_eq!(m.engine_loads(), 1, "one engine, shared — never a second load");
+        assert_eq!(live_take.join().unwrap().unwrap(), "slow but sure");
+    }
+
+    #[test]
+    fn a_retry_whose_decode_hangs_comes_back_at_its_deadline_with_the_plain_sentence() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        // The manager's own per-decode wall is LONGER than the retry's deadline
+        // (production: 120 s per window vs 30–180 s per retry), so the retry's
+        // clock is what ends the wait.
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_secs(30),
+        );
+        m.load("fake", &path).unwrap();
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(300), &mut phases);
+        assert_eq!(err_of(result), RETRY_DEADLINE_ERROR);
+        assert!(
+            wall >= Duration::from_millis(300) && wall < Duration::from_secs(3),
+            "at the deadline, not forever: {wall:?}"
+        );
+        assert_eq!(phases, vec![RetryPhase::Decoding]);
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_retry_that_queues_past_its_deadline_gives_up_in_plain_words() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_secs(2),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(200), &mut phases);
+        assert_eq!(err_of(result), RETRY_ENGINE_BUSY_ERROR);
+        assert!(wall < Duration::from_secs(1), "{wall:?}");
+        assert_eq!(phases, vec![RetryPhase::Queued]);
+        assert_eq!(m.engine_loads(), 1);
+        live_take.join().unwrap().unwrap();
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the headless replay of the two clips
+/// Wilson's 2026-11-06 session kept (82.3 s bb865dde… and 153.1 s 6c97f34c…)
+/// through the REAL retry engine stage. The clips are private data: the test
+/// reads them from a COPY whose directory `YAP_RETRY_REPLAY_DIR` names, and
+/// is `#[ignore]`d so CI (which has neither the clips nor the model) stays
+/// green. The model is read from the same directory (`<file>` of the default
+/// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
+///
+///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
+///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+#[cfg(test)]
+mod retry_replay {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
+            eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        // The engine's own log lines (loads, window timeouts, the
+        // `retry_dictation` line) on stderr under RUST_LOG=info.
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let model_id = default_native_model();
+        let model = models::catalog_model(&model_id).expect("default model is in the catalog");
+        let filename = model.default_file().expect("default file").filename.clone();
+        let model_path = std::env::var("YAP_RETRY_REPLAY_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dir.join(&filename));
+        assert!(model_path.is_file(), "model missing at {}", model_path.display());
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        wavs.sort();
+        assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+
+        let manager = transcription::TranscriptionManager::new();
+        let prefs = AppSettings::default().language_prefs();
+        for wav in wavs {
+            let name = wav.file_name().unwrap().to_string_lossy().to_string();
+            let samples = record::read_wav_16k_mono(&wav).unwrap();
+            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+            let deadline = retry_deadline(clip_secs);
+            let (m, id, path, p) = (manager.clone(), model_id.clone(), model_path.clone(), prefs.clone());
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &manager,
+                &name,
+                clip_secs,
+                deadline,
+                &mut |ph| phases.push(ph),
+                move || {
+                    transcribe_native(&m, &id, &path, samples, &p, None, &mut transcribe_progress::NoObserver)
+                },
+            );
+            let wall = started.elapsed();
+            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+            let words = out.text.split_whitespace().count();
+            println!(
+                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
+                deadline.as_secs_f64(),
+                out.chunks,
+                out.chunks_failed,
+                wall.as_millis(),
+                manager.engine_loads()
+            );
+            assert!(words > 0, "{name}: empty transcript");
+            assert!(wall < deadline, "{name}: {wall:?} over the deadline {deadline:?}");
+        }
+        assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
     }
 }
