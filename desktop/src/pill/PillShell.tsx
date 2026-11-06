@@ -35,7 +35,7 @@ import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeti
 import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
 import { resolveCharacter } from "./characters/registry";
 import type { Character, CharacterFrame, CharacterPaint } from "./characters/types";
-import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
+import { FlowBarSlots, layoutSlots, slotById, SlotTip, tooltipSide, type SlotCtx } from "./slots";
 
 /** Y8-B — the centre slot: the capsule's own mic/stop control is the Dictate slot. */
 const DICTATE = slotById("dictate");
@@ -102,6 +102,9 @@ export default function ClassicPill(
   // while hover-expanded. Measured for both the hover reducer and the hitbox.
   const hotElRef = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<HoverPhase>("collapsed");
+  // yap-1106-pill-notes-and-meeting / WF-03 — keyboard focus opens the rail
+  // exactly as hover does, so every rail button is reachable with Tab.
+  const [focusWithin, setFocusWithin] = useState(false);
   const hoverRef = useRef<HoverState>(initialHover());
   const prevBusy = useRef(false);
   const doneTimer = useRef<number | null>(null);
@@ -379,14 +382,21 @@ export default function ClassicPill(
   }, [blocked, gated, busy, transcribing, drag, openLicenseSurface]);
   // Y8-B — the bar's slots. The capsule owns WHERE they sit (lead · centre ·
   // trail along the length axis); `pill/slots.tsx` owns whether each is shown.
-  const slotCtx: SlotCtx = slots ?? {
-    phase: gate,
-    // No `document` under a server render (ClassicPill.mark.test): bottom dock.
-    dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
-    meetingOnScreen: meeting.recording || meetingAfter !== null,
-    progress,
-    listen: { estWords: 0, sec: 0 },
-    scratchpadOnBar: false,
+  const slotCtx: SlotCtx = {
+    ...(slots ?? {
+      phase: gate,
+      // No `document` under a server render (ClassicPill.mark.test): bottom dock.
+      dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
+      meetingOnScreen: meeting.recording || meetingAfter !== null,
+      progress,
+      listen: { estWords: 0, sec: 0 },
+      scratchpadOnBar: false,
+      meetingRecording: meeting.recording,
+      stopKey: chordLabel,
+    }),
+    // The CAPSULE owns hover and focus, so it alone opens the rail (a forced
+    // matrix scene, `slots.railOpen`, holds it open without a pointer).
+    railOpen: !!slots?.railOpen || hover === "expanded" || focusWithin,
   };
   const barAxis = layoutSlots(slotCtx).axis;
   const tipSide = tooltipSide(slotCtx.dock);
@@ -416,7 +426,7 @@ export default function ClassicPill(
   return (
     <div className="stage">
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
-      <div ref={hotElRef} className="pill-hot" data-hover={hover}>
+      <div ref={hotElRef} className="pill-hot" data-hover={slots?.railOpen ? "expanded" : hover}>
       <div
         ref={pillRef}
         className={cls}
@@ -434,6 +444,11 @@ export default function ClassicPill(
         style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
         title={blocked ? visual.label : gated ? GATED_TITLE : undefined}
         {...drag.handlers}
+        onFocus={() => setFocusWithin(true)}
+        onBlur={(e) => {
+          // Moving focus between the capsule and its own rail keeps it open.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false);
+        }}
         onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
@@ -486,7 +501,11 @@ export default function ClassicPill(
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
-          <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>
+          <SlotTip
+            text={DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}
+            keycap={DICTATE.keycap?.({ ...slotCtx, phase: live ? "listening" : slotCtx.phase }) ?? null}
+            side={tipSide}
+          />
         </button>
         {blocked ? (
           <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
