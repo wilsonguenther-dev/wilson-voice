@@ -1548,3 +1548,17 @@ html[data-one-pill="true"] .kami-license {
 }
 html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
 html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
+/* A card (copy card, "Record this meeting?", the nudge) takes the top row the
+ * layout reserved for it; the panel grew to hold it. */
+html[data-one-pill="true"] .copy-card,
+html[data-one-pill="true"] .meeting-offer-wrap,
+html[data-one-pill="true"][data-dock] .nudge-row {
+  left: var(--card-x);
+  top: var(--card-y);
+  right: auto;
+  bottom: auto;
+  width: var(--card-w);
+  max-width: var(--card-w);
+  box-sizing: border-box;
+  transform: none;
+}

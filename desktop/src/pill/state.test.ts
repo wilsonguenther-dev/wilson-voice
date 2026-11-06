@@ -62,6 +62,7 @@ describe("pill/state — one pill, one layout", () => {
   it("the_panel_frame_equals_the_union_of_its_content_boxes_plus_margin", () => {
     every((l) => {
       const boxes = [l.char, l.bubble, l.hint, ...(l.clock ? [l.clock] : []), ...(l.progress ? [l.progress] : [])];
+      expect(l.card).toBeNull();
       const u = unionBox(boxes);
       expect(u.x).toBeCloseTo(PANEL_MARGIN, 5);
       expect(u.y).toBeCloseTo(PANEL_MARGIN, 5);
@@ -174,6 +175,19 @@ describe("pill/state — one pill, one layout", () => {
     const v = layoutVars(pillLayout({ phase: "transcribing", meeting: "recording", dock: "right" }));
     for (const k of ["--panel-w", "--char-x", "--char-y", "--char-w", "--char-h", "--bubble-y", "--hint-x", "--hint-y", "--hint-w", "--clock-x", "--clock-y", "--clock-w", "--progress-y"]) {
       expect(v[k]).toMatch(/^-?\d+(\.\d+)?px$/);
+    }
+  });
+
+  it("a_card_on_screen_gets_its_own_row_and_grows_the_panel", () => {
+    for (const dock of BAR_DOCKS) {
+      const bare = pillLayout({ phase: "idle", meeting: "recording", dock });
+      const l = pillLayout({ phase: "idle", meeting: "recording", dock, card: { h: 96 } });
+      expect(l.card).not.toBeNull();
+      expect(l.card!.h).toBe(96);
+      expect(l.card!.y + l.card!.h).toBeLessThanOrEqual(l.hint.y);
+      expect(l.panel.h).toBeGreaterThan(bare.panel.h);
+      expect(l.key).not.toBe(bare.key);
+      expect(layoutProblems(l)).toEqual([]);
     }
   });
 

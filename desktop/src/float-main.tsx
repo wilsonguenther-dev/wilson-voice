@@ -513,7 +513,8 @@ function Float() {
   // against the character's box and sizes the panel to their union.
   const layoutCharacter: LayoutCharacter = Stage ? "yappy" : "legacy";
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
-  const target = usePanelLayout(phase, mMode, dock, layoutCharacter);
+  const cardH = useCardOnScreen();
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} />
@@ -581,9 +582,55 @@ function Float() {
  * phase change inside the same class (listening → transcribing) is not a new
  * layout.
  */
-function usePanelLayout(phase: LivePhase, meeting: MeetingMode, dock: BarDock, character: LayoutCharacter): PillLayout {
-  const next = pillLayout({ phase, meeting, dock, character });
+function usePanelLayout(
+  phase: LivePhase,
+  meeting: MeetingMode,
+  dock: BarDock,
+  character: LayoutCharacter,
+  cardH: number | null,
+): PillLayout {
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
   return useMemo(() => next, [next.key]);
+}
+
+/** The cards that take the panel's top row while they are on screen. */
+const CARD_SELECTOR = ".copy-card, .meeting-offer-wrap, .nudge-row";
+
+/**
+ * yap-1106-one-pill — the height of the card on screen (copy card, meeting
+ * offer, coaching nudge), or null. The cards mount and unmount themselves, so
+ * the shell watches the DOM for them rather than re-deciding when they show;
+ * the panel then makes room for the card instead of clipping it.
+ */
+function useCardOnScreen(): number | null {
+  const [h, setH] = useState<number | null>(null);
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return;
+    let el: HTMLElement | null = null;
+    const measure = () => {
+      const next = el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
+      setH(next > 0 ? next : null);
+    };
+    const ro = new ResizeObserver(measure);
+    const track = () => {
+      const found = root.querySelector<HTMLElement>(CARD_SELECTOR);
+      if (found !== el) {
+        if (el) ro.unobserve(el);
+        el = found;
+        if (el) ro.observe(el);
+      }
+      measure();
+    };
+    track();
+    const mo = new MutationObserver(track);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+    };
+  }, []);
+  return h;
 }
 
 /**

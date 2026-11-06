@@ -54,6 +54,11 @@ export interface PillInput {
   character?: LayoutCharacter;
   /** Lines the hint reserves; defaults to 3 for `blind` (it wraps), else 1. */
   hintLines?: number;
+  /**
+   * A card on screen (the copy card, "Record this meeting?", the coaching
+   * nudge), with its measured height. It gets the top row of the panel.
+   */
+  card?: { h: number } | null;
 }
 
 export interface PillLayout {
@@ -73,6 +78,8 @@ export interface PillLayout {
   clock: Box | null;
   /** The decode progress row under Yappy (transcribing only). */
   progress: Box | null;
+  /** A card's row above everything else, when one is on screen. */
+  card: Box | null;
   /** The character's centre inside the panel (float_pill.rs parks by it). */
   anchor: { x: number; y: number };
 }
@@ -103,6 +110,8 @@ export const PROGRESS_W = 100;
 export const PROGRESS_H = 14;
 /** The phase that carries the determinate progress row. */
 export const PROGRESS_PHASE: LivePhase = "transcribing";
+/** A card's width: the old 300 pt panel less its 8 pt insets. */
+export const CARD_W = 284;
 /** The historical fixed panel (float_pill.rs PILL_W x PILL_H) a legacy character keeps. */
 export const LEGACY_PANEL = { w: 300, h: 140 } as const;
 /** Phases Yappy draws as the small resting capsule; every other phase opens him. */
@@ -122,13 +131,13 @@ const shift = (b: Box, dx: number, dy: number): Box => ({ x: b.x + dx, y: b.y + 
 export function pillLayout(input: PillInput): PillLayout {
   const { phase, meeting, dock } = input;
   const character: LayoutCharacter = input.character ?? "yappy";
-  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}`;
+  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}|${input.card ? `c${Math.ceil(input.card.h)}` : ""}`;
   if (character === "legacy") {
     const w = LEGACY_PANEL.w, h = LEGACY_PANEL.h;
     const char = { x: 0, y: 0, w, h };
     return {
       key, phase, meeting, dock, character, legacy: true, panel: { w, h }, char,
-      bubble: char, hint: char, clock: null, progress: null, anchor: { x: w / 2, y: h / 2 },
+      bubble: char, hint: char, clock: null, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
   const env = RESTING_PHASES.has(phase) ? CHARACTER_REST : CHARACTER_OPEN;
@@ -157,8 +166,10 @@ export function pillLayout(input: PillInput): PillLayout {
     phase === PROGRESS_PHASE ? { x: alignX(PROGRESS_W), y: below, w: PROGRESS_W, h: PROGRESS_H } : null;
   const bubble0: Box = { x: alignX(BUBBLE_W), y: -BUBBLE_LIFT - BUBBLE_H, w: BUBBLE_W, h: BUBBLE_H };
   const hint0: Box = { x: alignX(HINT_W), y: bubble0.y - SLOT_GAP - hintH, w: HINT_W, h: hintH };
+  const cardH = input.card ? Math.max(1, Math.ceil(input.card.h)) : 0;
+  const card0: Box | null = cardH ? { x: alignX(CARD_W), y: hint0.y - SLOT_GAP - cardH, w: CARD_W, h: cardH } : null;
   // 2 — the union, then translate it PANEL_MARGIN in from the panel's top-left.
-  const all = [char0, bubble0, hint0, ...(clock0 ? [clock0] : []), ...(progress0 ? [progress0] : [])];
+  const all = [char0, bubble0, hint0, ...(clock0 ? [clock0] : []), ...(progress0 ? [progress0] : []), ...(card0 ? [card0] : [])];
   const minX = Math.min(...all.map((b) => b.x));
   const minY = Math.min(...all.map((b) => b.y));
   const maxX = Math.max(...all.map(right));
@@ -173,6 +184,7 @@ export function pillLayout(input: PillInput): PillLayout {
     hint: shift(hint0, dx, dy),
     clock: clock0 ? shift(clock0, dx, dy) : null,
     progress: progress0 ? shift(progress0, dx, dy) : null,
+    card: card0 ? shift(card0, dx, dy) : null,
     anchor: { x: char.x + char.w / 2, y: char.y + char.h / 2 },
   };
 }
@@ -213,6 +225,7 @@ export function layoutProblems(l: PillLayout): string[] {
   const named: Array<[string, Box]> = [["character", l.char], ["bubble", l.bubble], ["hint", l.hint]];
   if (l.clock) named.push(["clock", l.clock]);
   if (l.progress) named.push(["progress", l.progress]);
+  if (l.card) named.push(["card", l.card]);
   for (let i = 0; i < named.length; i++) {
     for (let j = i + 1; j < named.length; j++) {
       if (boxesOverlap(named[i][1], named[j][1])) out.push(`overlap ${named[i][0]}/${named[j][0]}`);
@@ -238,6 +251,7 @@ export function layoutVars(l: PillLayout): Record<string, string> {
   const none = { x: 0, y: 0, w: 0, h: 0 };
   const c = l.clock ?? none;
   const p = l.progress ?? none;
+  const k = l.card ?? none;
   return {
     "--panel-w": px(l.panel.w), "--panel-h": px(l.panel.h),
     "--char-x": px(l.char.x), "--char-y": px(l.char.y), "--char-w": px(l.char.w), "--char-h": px(l.char.h),
@@ -245,6 +259,7 @@ export function layoutVars(l: PillLayout): Record<string, string> {
     "--hint-x": px(l.hint.x), "--hint-y": px(l.hint.y), "--hint-w": px(l.hint.w), "--hint-h": px(l.hint.h),
     "--clock-x": px(c.x), "--clock-y": px(c.y), "--clock-w": px(c.w), "--clock-h": px(c.h),
     "--progress-x": px(p.x), "--progress-y": px(p.y), "--progress-w": px(p.w), "--progress-h": px(p.h),
+    "--card-x": px(k.x), "--card-y": px(k.y), "--card-w": px(k.w),
   };
 }
 
