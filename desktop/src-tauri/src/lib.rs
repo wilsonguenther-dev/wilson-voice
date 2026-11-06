@@ -12744,7 +12744,10 @@ mod tests {
             sample_format: hound::SampleFormat::Float,
         };
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-        for (name, amp) in [("voiced.capture.wav", 0.3f32), ("hiss.capture.wav", 0.002f32)] {
+        for (name, amp) in [
+            ("voiced.capture.wav", 0.3f32),
+            ("hiss.capture.wav", 0.002f32),
+        ] {
             let path = recovery.join(name);
             let mut w = hound::WavWriter::create(&path, spec).unwrap();
             for i in 0..(16_000 * 3) {
@@ -12769,7 +12772,10 @@ mod tests {
         assert!(std::path::Path::new(&rows[0].wav_path).exists());
         assert!((rows[0].speech_seconds - 3.0).abs() < 0.01);
         assert!(!recovery.join("voiced.capture.wav").exists());
-        assert!(!recovery.join("hiss.capture.wav").exists(), "silent spill deleted");
+        assert!(
+            !recovery.join("hiss.capture.wav").exists(),
+            "silent spill deleted"
+        );
         assert!(!recovery.join("hiss.wav").exists());
 
         assert_eq!(super::adopt_aborted_spills(&db, &recovery), 0, "idempotent");

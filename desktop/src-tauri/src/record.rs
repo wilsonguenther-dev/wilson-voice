@@ -1415,7 +1415,10 @@ pub fn recover_aborted_capture_spills(
     let mut recovered = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(id) = name.strip_suffix(const_spill_suffix()).filter(|id| !id.is_empty()) else {
+        let Some(id) = name
+            .strip_suffix(const_spill_suffix())
+            .filter(|id| !id.is_empty())
+        else {
             continue;
         };
         let spill = entry.path();
@@ -1423,10 +1426,7 @@ pub fn recover_aborted_capture_spills(
             continue;
         }
         // An unreadable mtime counts as "just written": it can only defer.
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(now);
+        let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(now);
         if now.duration_since(modified).unwrap_or_default() < min_age {
             continue;
         }
@@ -4312,7 +4312,9 @@ mod tests {
         assert!(is_silent_clip(&hiss));
         assert!(is_silent_clip(&vec![0.0; rate * 3]));
         // Speech-level signal (0.06) is never silent.
-        let speech: Vec<f32> = (0..rate * 2).map(|i| if i % 2 == 0 { 0.06 } else { -0.06 }).collect();
+        let speech: Vec<f32> = (0..rate * 2)
+            .map(|i| if i % 2 == 0 { 0.06 } else { -0.06 })
+            .collect();
         assert!(!is_silent_clip(&speech));
         // Nine silent seconds and ONE loud one: kept.
         let mut mostly_pause = vec![0.0f32; rate * 9];
