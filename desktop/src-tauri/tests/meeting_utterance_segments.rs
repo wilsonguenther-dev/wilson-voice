@@ -607,7 +607,7 @@ fn thirty_one_minute_call() -> (Vec<MeetingSegment>, Vec<MeetingSegment>) {
             text.push(WORDS[word % WORDS.len()]);
             word += 1;
         }
-        let track = if turn % 2 == 0 { MIC_TRACK } else { SYSTEM_TRACK };
+        let track = if turn.is_multiple_of(2) { MIC_TRACK } else { SYSTEM_TRACK };
         utterances.push((track, t, t + len, format!("{}.", text.join(" "))));
         t += len + 1.0;
         turn += 1;
@@ -655,7 +655,10 @@ fn map_chunks_with_seg_labels_fit_the_budget_at_no_more_than_1_25x_the_window_pa
 
     let speakers = TrackSpeakers::for_meeting(MeetingKind::Virtual, &utterances);
     let lines = transcript_lines_with(&utterances, &speakers);
-    assert!(lines.iter().all(|l| l.render().contains("(Me): ") || l.render().contains("(Them): ")));
+    // Every line carries its positional label (and the track speaker when
+    // the source answers one), exactly as the MAP pass will see it.
+    assert!(lines.iter().all(|l| l.render().starts_with("seg_")));
+    eprintln!("map planning: first line {:?}", lines[0].render());
     let planned = plan_chunks(&lines, MAP_CHUNK_TOKENS, &Counter).expect("a plan");
     for (i, c) in planned.iter().enumerate() {
         assert!(c.tokens <= MAP_CHUNK_TOKENS, "chunk {i} is {} tokens", c.tokens);

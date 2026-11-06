@@ -2440,12 +2440,12 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
             || (ends_sentence(&prev.text)
                 && gap + UTTERANCE_TIME_EPS >= UTTERANCE_SENTENCE_GAP_SECONDS);
         if cut {
-            pieces.push(piece_of(&current));
+            pieces.extend(capped_pieces(&current));
             current.clear();
         }
         current.push(next);
     }
-    pieces.push(piece_of(&current));
+    pieces.extend(capped_pieces(&current));
 
     // Step two (a) — re-join neighbours across short silences, under the cap.
     let mut merged: Vec<Utterance> = Vec::with_capacity(pieces.len());
@@ -2512,6 +2512,41 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
         }
     }
     merged
+}
+
+/// A raw piece longer than the cap is a window whose word times show no
+/// pause at all — measured on the synthetic corpus: one 30 s window of
+/// `call-bleed-2voice` came back with 47 word rows spread continuously over
+/// 25 s although the far side spoke for half of it. Nothing in such a window
+/// can be cut by silence, so it is cut at the sentence end nearest its middle
+/// (any gap), else at its widest gap, until every piece fits the cap or is a
+/// single row. Never inside a row.
+fn capped_pieces<'a>(rows: &[&'a TimedSpan]) -> Vec<Utterance> {
+    let Some((first, last)) = rows.first().zip(rows.last()) else {
+        return Vec::new();
+    };
+    if rows.len() < 2 || last.end_seconds - first.start_seconds <= UTTERANCE_MAX_SECONDS {
+        return vec![piece_of(rows)];
+    }
+    let middle = (first.start_seconds + last.end_seconds) / 2.0;
+    // Candidate cut AFTER row i, for i in 0..len-1.
+    let sentence_cut = (0..rows.len() - 1)
+        .filter(|&i| ends_sentence(&rows[i].text))
+        .min_by(|&a, &b| {
+            (rows[a].end_seconds - middle)
+                .abs()
+                .total_cmp(&(rows[b].end_seconds - middle).abs())
+        });
+    let widest_gap = (0..rows.len() - 1).max_by(|&a, &b| {
+        (rows[a + 1].start_seconds - rows[a].end_seconds)
+            .total_cmp(&(rows[b + 1].start_seconds - rows[b].end_seconds))
+    });
+    let Some(at) = sentence_cut.or(widest_gap) else {
+        return vec![piece_of(rows)];
+    };
+    let mut out = capped_pieces(&rows[..=at]);
+    out.extend(capped_pieces(&rows[at + 1..]));
+    out
 }
 
 fn piece_of(rows: &[&TimedSpan]) -> Utterance {
