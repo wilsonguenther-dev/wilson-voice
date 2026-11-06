@@ -1543,8 +1543,8 @@ impl LicenseManager {
             .clone()
             .or_else(|| self.store.get(DB_KEY_DISPUTED_HOLD))
             .filter(|m| !m.trim().is_empty());
-        let held_while_licensed =
-            stored_token.is_some() && matches!(entitlement, Entitlement::Licensed { .. });
+        let held_while_licensed = stored_token.is_some()
+            && matches!(entitlement, Entitlement::Licensed { .. });
         let (entitlement, problem) = match hold {
             Some(message) if held_while_licensed => (
                 Entitlement::LicenseRequired {
@@ -1781,7 +1781,10 @@ impl LicenseManager {
     pub fn client_record(&self) -> ClientRecord {
         let file = self.file.lock();
         ClientRecord {
-            token: file.license_token.clone().filter(|t| !t.trim().is_empty()),
+            token: file
+                .license_token
+                .clone()
+                .filter(|t| !t.trim().is_empty()),
             device_id: file.device_id.clone(),
             last_refresh_at_ms: file.last_refresh_at_ms,
             retry_after_until_ms: file.retry_after_until_ms,
