@@ -111,6 +111,12 @@ pub fn select_stale_temp_files(files: &[FileStat], cutoff: SystemTime) -> Vec<Pa
 /// own expiry is `purge_expired_failed_takes`' job, and it deletes the wav
 /// itself). Only `.wav` is considered: a live take's `.spill.pcm` and
 /// `.in_progress.json` belong to the YV63 crash-journal path.
+///
+/// yap-fx-07 — an UNADOPTED spill (`<id>.capture.wav`, `<id>.decoding.wav`)
+/// is never a candidate either, however old: it is audio no row points at
+/// YET, and the recovery scans (`record::recover_orphaned_spills` at launch,
+/// `record::recover_aborted_capture_spills` in session) turn it into a row or
+/// delete it only when it is silent. Age alone must never be what loses it.
 pub fn select_orphan_recovery_wavs(
     files: &[FileStat],
     keep: &[String],
@@ -119,10 +125,21 @@ pub fn select_orphan_recovery_wavs(
     files
         .iter()
         .filter(|f| has_extension(&f.path, "wav"))
+        .filter(|f| !is_unadopted_spill(&f.path))
         .filter(|f| f.modified < cutoff)
         .filter(|f| !keep.iter().any(|k| Path::new(k) == f.path))
         .map(|f| f.path.clone())
         .collect()
+}
+
+/// yap-fx-07 — does this path name a spill the recovery scans still have to
+/// adopt (`<id>.capture.wav` or `<id>.decoding.wav`, case-insensitive)?
+pub fn is_unadopted_spill(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let lower = name.to_string_lossy().to_ascii_lowercase();
+    lower.ends_with(".capture.wav") || lower.ends_with(".decoding.wav")
 }
 
 /// Rotated logs to drop, OLDEST FIRST, until the directory fits `budget`.
@@ -404,6 +421,29 @@ mod tests {
             size,
             modified: now.checked_sub(age).expect("test clock underflow"),
         }
+    }
+
+    /// yap-fx-07 — an orphaned spill is adopted (a row) or deleted only when
+    /// silent, by the recovery scans; the AGE sweep never takes one, however
+    /// old, while a plain row-less WAV past the window still goes.
+    #[test]
+    fn gc_never_age_sweeps_an_unadopted_spill() {
+        let now = SystemTime::UNIX_EPOCH + DAY * 400;
+        let cutoff = retention_cutoff(now);
+        let files = vec![
+            stat("/r/45aeb6d4.capture.wav", 430_000, DAY * 30, now),
+            stat("/r/abc.CAPTURE.WAV", 430_000, DAY * 30, now),
+            stat("/r/def.decoding.wav", 2_600_000, DAY * 30, now),
+            stat("/r/orphan.wav", 40_000, DAY * 9, now),
+        ];
+        assert_eq!(
+            select_orphan_recovery_wavs(&files, &[], cutoff),
+            vec![PathBuf::from("/r/orphan.wav")],
+        );
+        assert!(is_unadopted_spill(Path::new("/r/x.capture.wav")));
+        assert!(is_unadopted_spill(Path::new("/r/x.decoding.wav")));
+        assert!(!is_unadopted_spill(Path::new("/r/x.wav")));
+        assert!(!is_unadopted_spill(Path::new("/")));
     }
 
     /// The download sweep takes interrupted downloads past the retention window
