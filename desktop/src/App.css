@@ -2834,6 +2834,43 @@ button.star.on {
   color: hsl(38 92% 62%);
 }
 
+/* yap-1106-call-audio-truth — the live "Call audio" chip in the recording bar
+   and the tracks line in the meeting header. */
+.rec-call-audio {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+  margin-top: 0.2rem;
+}
+.rec-call-audio .ghost {
+  padding: 0.1rem 0.5rem;
+  font-size: inherit;
+}
+.call-audio-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid hsl(38 92% 50% / 0.5);
+  background: hsl(38 92% 50% / 0.16);
+  color: var(--text);
+  white-space: nowrap;
+}
+.call-audio-chip.is-on {
+  border-color: hsl(142 60% 40% / 0.55);
+  background: hsl(142 60% 40% / 0.16);
+}
+.call-audio-chip.is-off {
+  border-color: hsl(0 0% 55% / 0.45);
+  background: hsl(0 0% 55% / 0.14);
+}
+.meeting-tracks-why {
+  margin: -0.25rem 0 0.75rem;
+  color: var(--text-muted, inherit);
+}
+
 .rec-clock {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;

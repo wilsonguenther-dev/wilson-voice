@@ -9,6 +9,7 @@ import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type Meeti
 import TranscriptList from "../meetings/TranscriptList";
 import LiveTranscript from "../meetings/LiveTranscript";
 import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
+import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meetings/callAudio";
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
 import { formatMeetingDuration, formatTime } from "../appTypes";
@@ -23,8 +24,10 @@ export default function Meetings() {
     meetingQuery, meetingStatus, meetings, modelSetup, openMeeting, openMeetingDetail,
     openModelSettings, setConfirmDeleteMeeting,
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting,
-    toast, toastError,
+    runSystemAudioSetup, sysAudioBusy, toast, toastError,
   } = useAppCtx();
+  // yap-1106-call-audio-truth — the live chip, decided once in callAudio.ts.
+  const callAudio = callAudioChip(meetingStatus);
   const { meetingProgress: progress, retryMeeting: retry, retryNotes, cancelNotes } = useAppCtx();
   const retryMeeting = async (id: string) => {
     try {
@@ -170,6 +173,26 @@ export default function Meetings() {
                     {systemAudioBadge(meetingStatus) && (
                       <span className="tiny rec-sysaudio-note">
                         {systemAudioBadge(meetingStatus)}
+                      </span>
+                    )}
+                    {/* yap-1106-call-audio-truth — is the call's sound landing?
+                        on / silent / off, from YV104's "ever delivered a
+                        non-zero sample" bit, with the one action when the tap
+                        never delivered and the grant is unproven. */}
+                    {callAudio && (
+                      <span className="tiny rec-call-audio" data-call-audio={callAudio.state}>
+                        <span className={`call-audio-chip is-${callAudio.state}`}>{callAudio.label}</span>
+                        <span>{callAudio.detail}</span>
+                        {callAudio.action === "turn-on" && (
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={sysAudioBusy}
+                            onClick={() => void runSystemAudioSetup()}
+                          >
+                            {CALL_AUDIO_ACTION_LABEL}
+                          </button>
+                        )}
                       </span>
                     )}
                     {/* yap-notetaker-notes — the light live transcript. */}
@@ -528,7 +551,17 @@ export default function Meetings() {
                         insights?.meetings?.audioRetentionDays ?? 7
                       } days`}
                 </span>
+                {/* yap-1106-call-audio-truth — which tracks this meeting has. */}
+                <span
+                  className="meeting-tracks"
+                  data-meeting-tracks={recordedTracks(openMeeting.meeting).twoTrack ? "two" : "mic"}
+                >
+                  {recordedTracks(openMeeting.meeting).label}
+                </span>
               </p>
+              {recordedTracks(openMeeting.meeting).detail && (
+                <p className="tiny meeting-tracks-why">{recordedTracks(openMeeting.meeting).detail}</p>
+              )}
 
               {openMeeting.meeting.summary && (
                 <div className="panel">

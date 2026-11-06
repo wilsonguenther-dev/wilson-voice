@@ -587,6 +587,10 @@ export interface Meeting {
   processedThroughSeconds?: number;
   audioKept: boolean;
   micWavPath?: string | null;
+  /** YV106 — the call's track, when one was recorded. Its absence is "mic only". */
+  sysWavPath?: string | null;
+  /** YV104 — the tap's rebuild log as JSON, when the meeting needed one. */
+  tapRebuilds?: string | null;
   summary?: string | null;
   summaryModel?: string | null;
   createdAt: string;

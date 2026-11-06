@@ -602,6 +602,18 @@ body,
   white-space: nowrap;
 }
 
+/* yap-1106-call-audio-truth — the chip's three states. Amber is the YV110
+   default above; "on" goes green, "off" goes neutral so a mic-only meeting
+   is a fact rather than an alarm. */
+.rec-sysaudio.is-on {
+  background: hsl(142 60% 45% / 0.22);
+  border-color: hsl(142 60% 45% / 0.5);
+}
+.rec-sysaudio.is-off {
+  background: hsl(0 0% 60% / 0.18);
+  border-color: hsl(0 0% 60% / 0.4);
+}
+
 .rec-stop {
   display: grid;
   place-items: center;

@@ -33,6 +33,7 @@ import {
   type MeetingProgressEvent,
   type MeetingStatus,
 } from "./meeting";
+import { callAudioChip } from "../meetings/callAudio";
 
 interface MeetingPillState {
   status: MeetingStatus;
@@ -122,14 +123,29 @@ export default function MeetingBadge({
   // banner: one dot of colour and one short sentence, never a dialog, because
   // the meeting is still recording and nothing here needs an answer.
   const systemAudio = systemAudioBadge(status);
+  // yap-1106-call-audio-truth — the live chip: one word in the pill (space is
+  // pixels there), the sentence on the tooltip and the accessible label. A
+  // backend without the field falls back to YV110's two-word "mic only".
+  const callAudio = callAudioChip(status);
   return (
     <div className="meeting-badge" role="status" aria-live="off">
       <span className="rec-dot" aria-hidden />
       <span className="rec-time">{elapsedLabel(status)}</span>
-      {systemAudio && (
-        <span className="rec-sysaudio" title={systemAudio} aria-label={systemAudio}>
-          mic only
+      {callAudio ? (
+        <span
+          className={`rec-sysaudio call-audio-chip is-${callAudio.state}`}
+          data-call-audio={callAudio.state}
+          title={systemAudio ? `${callAudio.detail} ${systemAudio}` : callAudio.detail}
+          aria-label={`${callAudio.label}. ${callAudio.detail}`}
+        >
+          call {callAudio.state}
         </span>
+      ) : (
+        systemAudio && (
+          <span className="rec-sysaudio" title={systemAudio} aria-label={systemAudio}>
+            mic only
+          </span>
+        )
       )}
       <button
         type="button"
