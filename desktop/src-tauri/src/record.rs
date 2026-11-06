@@ -5631,8 +5631,8 @@ mod tests {
 
     #[test]
     fn the_worker_ticks_fast_only_while_audio_is_wanted() {
-        assert!(ARMED_TICK < IDLE_TICK);
-        assert!(FAILED_RETRY < WATCHDOG_TICK);
+        assert_eq!(ARMED_TICK.cmp(&IDLE_TICK), std::cmp::Ordering::Less);
+        assert_eq!(FAILED_RETRY.cmp(&WATCHDOG_TICK), std::cmp::Ordering::Less);
         let code = include_str!("record.rs");
         assert!(code.contains("let failed_due"));
         assert!(code.contains("clear_mid_take_note();"));

@@ -103,7 +103,6 @@ pub struct MicDevice {
     pub is_system_default: bool,
     /// WF-10 — a virtual / loopback / aggregate input ([`classify`]). Listed
     /// under "Other devices" and never picked automatically.
-    #[serde(default)]
     pub is_virtual: bool,
 }
 
@@ -192,7 +191,6 @@ impl<D> Resolution<D> {
 /// WF-09's two-rule decision (pin, else system default), by STABLE id. The
 /// live path is [`resolve_ranked`] since WF-10; this stays as the reference its
 /// tests pin the id-matching rules against.
-#[allow(dead_code)]
 ///
 /// `wanted` is the saved id (`None` = System Default), `available` every input
 /// device plugged in now as `(stable id, device)`, `default` the system default
