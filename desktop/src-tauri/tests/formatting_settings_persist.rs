@@ -143,6 +143,7 @@ fn fully_populated() -> AppSettings {
         calibration_sample: Some("the quick brown fox".into()),
         native_model: "ggml-small.en".into(),
         preload_model: true,
+        meeting_export_dir: Some("/tmp/yap-exports".to_string()),
         autostart: true,
         check_updates: false,
         skipped_update_version: Some("9.9.9".into()),

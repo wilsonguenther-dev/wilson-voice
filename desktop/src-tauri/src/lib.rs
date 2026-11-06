@@ -8146,7 +8146,7 @@ fn reveal_meeting_export(state: State<'_, Arc<AppState>>, id: String) -> Result<
         log::info!("meetings reveal target=file");
         return Ok(RevealResult { path: path.display().to_string(), target: "file".into() });
     }
-    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| app_paths::default_meeting_export_dir());
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(app_paths::default_meeting_export_dir);
     open_folder(&dir, "meetings reveal")?;
     log::info!("meetings reveal target=folder");
     Ok(RevealResult { path: dir.display().to_string(), target: "folder".into() })
