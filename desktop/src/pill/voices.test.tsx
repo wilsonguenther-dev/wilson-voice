@@ -172,7 +172,15 @@ describe("curse mode (Badass only, off by default)", () => {
   });
   it("says the strongest word at most once a day", () => {
     const keys = runTakes("badass", 400, { curse: true, today: "2026-11-06" }).keys;
-    expect(keys.filter(isStrongest).length).toBe(1);
+    expect(keys.filter(isStrongest).length).toBeLessThanOrEqual(1);
+    const pick = (strongDay: string | null) =>
+      Array.from({ length: 100 }, (_, i) =>
+        pickTakeLine(30, "badass", { recent: [], strongDay }, { nonce: i * CURSE_EVERY, curse: true, today: "2026-11-06" }).key);
+    expect(pick(null).some(isStrongest)).toBe(true);            // available on a fresh day
+    expect(pick("2026-11-05").some(isStrongest)).toBe(true);    // yesterday's does not count
+    expect(pick("2026-11-06").some(isStrongest)).toBe(false);   // already said today
+    const after = rememberTakeLine({ recent: [], strongDay: null }, { key: VOICES.badass.curse![9] }, "2026-11-06");
+    expect(after.strongDay).toBe("2026-11-06");
   });
 });
 
