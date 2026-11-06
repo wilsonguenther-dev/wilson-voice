@@ -91,6 +91,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // FB-09 — floors set by the batch-2 integrator from the measured run. crisp.ts's gap is domBuffer/paintSprite, the DOM-only app path.
   "sprites/art.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "sprites/crisp.ts": { lines: 74, branches: 50, functions: 50, statements: 74 },
+  // yap-1106-friends-art-hd — floor set by the builder WITHOUT a run (no-compile rule); the integrator re-measures and may only raise it.
+  "sprites/friends.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "sprites/raster.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
