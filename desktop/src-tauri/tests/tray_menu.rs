@@ -77,7 +77,10 @@ fn every_menu_item_maps_to_a_registered_command() {
                 "{:?} does not dispatch to the command its row names",
                 item.id
             ),
-            ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => assert_eq!(
+            ItemKind::StateLabel
+            | ItemKind::KindSubmenu
+            | ItemKind::UpcomingSubmenu
+            | ItemKind::MicrophoneSubmenu => assert_eq!(
                 command_for(item.id),
                 None,
                 "{:?} is not an action and must not dispatch",
@@ -142,6 +145,8 @@ fn every_menu_item_maps_to_a_registered_command() {
             .unwrap_or_else(|| match name {
                 // WF-07 — the "Today's Meetings" children.
                 "record_upcoming" => "RecordUpcoming".to_string(),
+                // WF-09 — the "Microphone" children.
+                "pick_microphone" => "PickMicrophone".to_string(),
                 _ => "RecordMeetingAs".to_string(),
             });
         assert!(
@@ -193,6 +198,7 @@ fn no_item_is_unreachable() {
             ItemKind::Action(c) => c.name() == name,
             ItemKind::KindSubmenu => name == "record_meeting_as" && !KIND_PICKER.is_empty(),
             ItemKind::UpcomingSubmenu => name == "record_upcoming",
+            ItemKind::MicrophoneSubmenu => name == "pick_microphone",
             ItemKind::StateLabel => false,
         });
         assert!(reachable, "command {name} has no menu item");
@@ -228,6 +234,18 @@ fn no_item_is_unreachable() {
     assert_eq!(
         command_for("upcoming_record_2"),
         Some(TrayCommand::RecordUpcoming(2))
+    );
+    // WF-09 — the Microphone submenu is anchored on Hands-free, placed by ONE
+    // function, filled by the device-list watcher, and its children dispatch
+    // through the registry.
+    let place = fn_body(&lib, "place_microphone_submenu");
+    assert!(place.contains("tray_menu::ID_MICROPHONE"));
+    assert!(place.contains("tray_menu::ID_HANDS_FREE"));
+    assert!(lib.contains("mic_select::start_watch("));
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_MICROPHONE));
+    assert_eq!(
+        command_for("mic_pick_1"),
+        Some(TrayCommand::PickMicrophone(1))
     );
 }
 

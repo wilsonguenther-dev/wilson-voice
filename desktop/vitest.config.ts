@@ -62,14 +62,17 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   // yap-call-1 — the call offer's copy, surface and countdown rules.
   "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
+  "views/settings/browserCalls.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },

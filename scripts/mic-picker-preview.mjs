@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+/**
+ * mic-picker-preview.mjs — before/after PNGs for WF-09 (microphone picker).
+ *
+ * Two surfaces, both drawn in headless Chrome (--headless=new via
+ * scripts/headless-chrome.mjs; never a visible window, never the real app):
+ *
+ *   1. the menu bar's Dictation group, before (no Microphone submenu) and
+ *      after ("Microphone ▸" under Hands-free, opened), in three states:
+ *      nothing picked, a USB mic picked, the picked mic unplugged;
+ *   2. Settings › Audio › Microphone in every lifecycle state: loading,
+ *      ready, picked-but-unplugged, no device at all, and the list error.
+ *
+ * The menu rows follow `tray_menu::microphone_menu` and the Settings copy
+ * follows `views/settings/parts/MicrophonePicker.tsx`; the format strings are
+ * checked against those sources so a preview cannot silently drift. Devices
+ * are fixtures. Colours come from desktop/src/tokens.css.
+ *
+ *   node scripts/mic-picker-preview.mjs --out <dir> [--self-test]
+ *
+ * NO npm DEPENDENCIES. Cleans up its Chrome process and profile dir on exit.
+ */
+
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { evaluate, openChrome, sleep } from "./headless-chrome.mjs";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CHROME =
+  process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const TRAY_RS = readFileSync(join(ROOT, "desktop/src-tauri/src/tray_menu.rs"), "utf8");
+const PICKER_TSX = readFileSync(join(ROOT, "desktop/src/views/settings/parts/MicrophonePicker.tsx"), "utf8");
+const TOKENS = readFileSync(join(ROOT, "desktop/src/tokens.css"), "utf8");
+
+function assertSourcesMatch() {
+  const need = [
+    [TRAY_RS, 'label: "Microphone"'],
+    [TRAY_RS, "Not Connected"],
+    [TRAY_RS, "ID_HANDS_FREE"],
+    [PICKER_TSX, "Looking for microphones…"],
+    [PICKER_TSX, "isn't connected, so Yap uses the system default until it's back."],
+    [PICKER_TSX, "No microphone is connected. Plug one in and it shows up here."],
+    [PICKER_TSX, "Yap couldn't list your microphones."],
+    [PICKER_TSX, "Your next take records from "],
+  ];
+  for (const [src, s] of need) if (!src.includes(s)) throw new Error("preview drifted from source: " + JSON.stringify(s));
+}
+
+const BUILT_IN = "MacBook Pro Microphone";
+const MV7 = "Shure MV7";
+
+const DICTATION = [
+  { label: "Start Dictation" },
+  { label: "Hands-free", checked: false },
+  { label: "Paste Last Transcript" },
+  { label: "Copy Last Transcript" },
+  { label: "Undo AI Edit (Paste Raw)" },
+];
+
+function micRows(state) {
+  const def = { label: `System Default (${BUILT_IN})`, checked: state === "default" || state === "unplugged" };
+  const rows = [def, { label: BUILT_IN, checked: false }];
+  if (state !== "unplugged") rows.push({ label: MV7, checked: state === "picked" });
+  if (state === "unplugged") rows.push({ label: `${MV7} — Not Connected`, disabled: true });
+  return rows;
+}
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function menuHtml(title, withMic, state) {
+  const row = (r) =>
+    `<div class="row${r.disabled ? " off" : ""}"><span class="ck">${r.checked ? "✓" : ""}</span>${esc(r.label)}${r.sub ? '<span class="arrow">›</span>' : ""}</div>`;
+  const rows = [...DICTATION];
+  if (withMic) rows.splice(2, 0, { label: "Microphone", sub: true, open: true });
+  const body = rows
+    .map((r) => (r.open ? `<div class="row hot"><span class="ck"></span>${esc(r.label)}<span class="arrow">›</span></div>` : row(r)))
+    .join("");
+  const sub = withMic ? `<div class="menu sub">${micRows(state).map(row).join("")}</div>` : "";
+  return page(title, `<div class="wrap"><div class="menu">${body}</div>${sub}</div>`);
+}
+
+function settingsHtml(title, state) {
+  const opts = (sel, missing) =>
+    [`System Default (${BUILT_IN})`, BUILT_IN, MV7]
+      .map((o, i) => `<option${i === sel ? " selected" : ""}>${esc(o)}</option>`)
+      .join("") + (missing ? `<option selected disabled>${MV7} — not connected</option>` : "");
+  let inner;
+  if (state === "loading") inner = `<p class="hint">Looking for microphones…</p>`;
+  else if (state === "error")
+    inner = `<p class="hint">Yap couldn't list your microphones.</p><button class="ghost">Try again</button>`;
+  else if (state === "empty")
+    inner = `<label class="field"><span>Record from</span><select><option>System Default</option></select></label><p class="hint">No microphone is connected. Plug one in and it shows up here.</p>`;
+  else if (state === "unplugged")
+    inner = `<label class="field"><span>Record from</span><select>${opts(-1, true)}</select></label><p class="hint">${MV7} isn't connected, so Yap uses the system default until it's back.</p>`;
+  else
+    inner = `<label class="field"><span>Record from</span><select>${opts(2, false)}</select></label><p class="hint">Your next take records from ${MV7}.</p>`;
+  return page(title, `<section class="panel"><h3>Microphone</h3>${inner}</section>`);
+}
+
+function page(title, body) {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${TOKENS}
+  body{margin:0;padding:24px;background:var(--surface);color:var(--text-primary);font:13px -apple-system,system-ui,sans-serif}
+  h1{font-size:12px;color:var(--text-muted);font-weight:500;margin:0 0 12px}
+  .wrap{display:flex;align-items:flex-start;gap:2px}
+  .menu{background:var(--surface-raised);border:1px solid var(--border-subtle);border-radius:8px;padding:5px;min-width:240px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+  .sub{margin-top:30px}
+  .row{display:flex;align-items:center;padding:4px 10px 4px 4px;border-radius:4px}
+  .row.hot{background:var(--accent-action);color:var(--text-on-accent)}
+  .row.off{color:var(--text-muted)}
+  .ck{width:18px;text-align:center}
+  .arrow{margin-left:auto;padding-left:16px}
+  .panel{background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:12px;padding:16px 18px;max-width:520px}
+  .panel h3{margin:0 0 10px;font-size:14px}
+  .field{display:flex;align-items:center;gap:12px}
+  .field select{font:inherit;padding:5px 8px;min-width:280px}
+  .hint{color:var(--text-muted);margin:10px 0 0}
+  .ghost{margin-top:10px;font:inherit;background:none;border:1px solid var(--border-subtle);border-radius:6px;padding:5px 12px;color:var(--text-primary)}
+  </style></head><body><h1>${esc(title)}</h1>${body}</body></html>`;
+}
+
+const JOBS = [
+  { file: "mic-menu-before.png", html: () => menuHtml("before: Dictation group (no microphone choice)", false) },
+  { file: "mic-menu-after-default.png", html: () => menuHtml("after: Microphone ▸ — nothing picked", true, "default") },
+  { file: "mic-menu-after-picked.png", html: () => menuHtml("after: Microphone ▸ — Shure MV7 picked", true, "picked") },
+  { file: "mic-menu-after-unplugged.png", html: () => menuHtml("after: Microphone ▸ — picked mic unplugged", true, "unplugged") },
+  { file: "mic-settings-after-loading.png", html: () => settingsHtml("after: Settings › Audio — loading", "loading") },
+  { file: "mic-settings-after-ready.png", html: () => settingsHtml("after: Settings › Audio — ready", "ready") },
+  { file: "mic-settings-after-unplugged.png", html: () => settingsHtml("after: Settings › Audio — picked mic unplugged", "unplugged") },
+  { file: "mic-settings-after-empty.png", html: () => settingsHtml("after: Settings › Audio — no microphone", "empty") },
+  { file: "mic-settings-after-error.png", html: () => settingsHtml("after: Settings › Audio — list failed", "error") },
+];
+
+async function shoot(cdp, file, doc) {
+  const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+  const { sessionId: s } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+  await cdp.send("Page.enable", {}, s);
+  await cdp.send("Runtime.enable", {}, s);
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 640, height: 400, deviceScaleFactor: 2, mobile: false }, s);
+  const { frameTree } = await cdp.send("Page.getFrameTree", {}, s);
+  await cdp.send("Page.setDocumentContent", { frameId: frameTree.frame.id, html: doc }, s);
+  await evaluate(cdp, s, "document.fonts.ready.then(() => true)");
+  await sleep(150);
+  const h = await evaluate(cdp, s, "Math.ceil(document.body.scrollHeight)");
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 640, height: Math.max(160, h), deviceScaleFactor: 2, mobile: false }, s);
+  const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
+  writeFileSync(file, Buffer.from(shot.data, "base64"));
+  await cdp.send("Target.closeTarget", { targetId });
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const selfTest = argv.includes("--self-test");
+  const outAt = argv.indexOf("--out");
+  const out = outAt >= 0 ? argv[outAt + 1] : null;
+  assertSourcesMatch();
+  if (selfTest) {
+    for (const st of ["default", "picked", "unplugged"]) {
+      console.log("# Microphone ▸ (" + st + ")");
+      for (const r of micRows(st)) console.log("  " + (r.checked ? "✓ " : "  ") + r.label + (r.disabled ? "  [disabled]" : ""));
+    }
+    return;
+  }
+  if (!out) throw new Error("--out <dir> is required");
+  mkdirSync(out, { recursive: true });
+  const { proc, cdp, ws, profile } = await openChrome(CHROME, "yap-mic-picker");
+  try {
+    for (const j of JOBS) {
+      await shoot(cdp, join(out, j.file), j.html());
+      console.log("wrote " + join(out, j.file));
+    }
+  } finally {
+    try { ws.close(); } catch {}
+    proc.kill("SIGKILL");
+    await sleep(200);
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error("mic-picker-preview: " + e.message);
+    process.exit(1);
+  });
+}
