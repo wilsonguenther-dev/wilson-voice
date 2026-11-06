@@ -184,6 +184,24 @@ export interface MatrixOfferRow extends MatrixPhase {
   offer: string;
 }
 
+/**
+ * WF-06 — the "Backtrack caught" toast scene (`float.html?phase=idle&backtrack=1`,
+ * the sample in `backtrackCaught.ts`). `offer` is empty: the matrix detector's
+ * language-offer check does not apply to this card.
+ */
+export function matrixBacktrackCaughtScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "backtrack-caught",
+    phaseId: PHASE_ID.idle,
+    query: "backtrack=1",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
 export function matrixLanguageOfferScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return {
