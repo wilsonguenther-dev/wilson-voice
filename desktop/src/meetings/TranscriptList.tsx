@@ -35,6 +35,21 @@ export function echoHiddenLine(count: number): string | null {
   return `${count} ${count === 1 ? "line" : "lines"} hidden as speaker echo`;
 }
 
+/**
+ * yap-1106-transcript-grid — the rows the list draws: `segments`, or, once the
+ * reader pressed Show, the segments and the hidden echo rows interleaved in
+ * time order. Pure, so the two-track decision below is testable without a DOM.
+ */
+export function shownRows<S extends TranscriptSegment>(
+  segments: readonly S[],
+  hidden: readonly S[] | undefined,
+  showEcho: boolean,
+): readonly S[] {
+  return showEcho && hidden && hidden.length > 0
+    ? [...segments, ...hidden].sort((a, b) => a.startSeconds - b.startSeconds)
+    : segments;
+}
+
 export default function TranscriptList<S extends TranscriptSegment>({
   segments,
   hidden,
@@ -54,12 +69,13 @@ export default function TranscriptList<S extends TranscriptSegment>({
   kind?: string | null;
 }) {
   const [showEcho, setShowEcho] = useState(false);
-  const twoTrack = isTwoTrack(segments);
   const echoLine = echoHiddenLine(hidden?.length ?? 0);
-  const shown =
-    showEcho && hidden && hidden.length > 0
-      ? [...segments, ...hidden].sort((a, b) => a.startSeconds - b.startSeconds)
-      : segments;
+  const shown = shownRows(segments, hidden, showEcho);
+  // yap-1106-transcript-grid — the class and the speaker cells are decided by
+  // the rows that are DRAWN, not by `segments` alone: once Show adds the echo
+  // rows, the list may gain (or already hold) a second track, and a row whose
+  // label is missing lands in the wrong grid column.
+  const twoTrack = isTwoTrack(shown);
   return (
     <>
     {echoLine && (
@@ -88,7 +104,10 @@ export default function TranscriptList<S extends TranscriptSegment>({
             </span>
           )}
           {/* The line's collapsed text, never `segment.text` — the export
-              renders the collapsed form and the screen must not differ. */}
+              renders the collapsed form and the screen must not differ. It is
+              ALWAYS the row's last child: App.css pins `.seg-text` to the last
+              grid column, so a row with no speaker cell cannot push its prose
+              into the 2.6 rem speaker gutter (yap-1106-transcript-grid). */}
           <span className="seg-text">{text}</span>
         </li>
       ))}

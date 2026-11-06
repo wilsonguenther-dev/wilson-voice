@@ -13,8 +13,9 @@
  */
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import TranscriptList, { echoHiddenLine } from "./TranscriptList";
+import TranscriptList, { echoHiddenLine, shownRows } from "./TranscriptList";
 import {
+  isTwoTrack,
   MIC_TRACK,
   SYSTEM_TRACK,
   UNCLUSTERED_SPEAKER_LABEL,
@@ -28,6 +29,14 @@ function seg(id: string, startSeconds: number, track: number, text: string) {
 /** How many `<li>` rows the list actually drew. */
 function rows(html: string): number {
   return html.split("<li>").length - 1;
+}
+
+/** The class of the LAST `<span>` in each `<li>` row, in document order. */
+function lastCellClasses(html: string): string[] {
+  return [...html.matchAll(/<li>(.*?)<\/li>/gs)].map(([, row]) => {
+    const spans = [...row.matchAll(/<span class="([^"]*)"/g)];
+    return spans.length ? spans[spans.length - 1][1] : "";
+  });
 }
 
 describe("TranscriptList", () => {
@@ -117,6 +126,63 @@ describe("TranscriptList", () => {
     expect(order).toEqual([...order].sort((x, y) => x - y));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect(html).toContain('<span class="seg-time">00:00:04</span>');
+  });
+
+  /**
+   * yap-1106-transcript-grid — the prose is the LAST cell of every row, with or
+   * without a speaker cell before it, because App.css pins `.seg-text` to the
+   * last grid column. A single-track list draws no `.seg-who` at all, so its
+   * rows are time + text and nothing else — the shape the two-column template
+   * is written for. (The crush this guards against — 36 px lines of
+   * "unde / rstan / d" — is a layout fact; `scripts/transcript-layout.mjs`
+   * measures it in headless WebKit.)
+   */
+  it("keeps .seg-text as the last cell of every row, and draws no speaker cell on one track", () => {
+    const room = [
+      seg("a", 0.0, MIC_TRACK, "hold on, we used to understand this part"),
+      seg("b", 4.0, MIC_TRACK, "and the release checklist is the long one"),
+      seg("c", 9.5, MIC_TRACK, "friday works if the signing cert lands"),
+    ];
+    const single = renderToStaticMarkup(<TranscriptList kind="in_person" segments={room} />);
+    expect(rows(single)).toBe(3);
+    expect(lastCellClasses(single)).toEqual(["seg-text", "seg-text", "seg-text"]);
+    expect(single).not.toContain("seg-who");
+    expect(single).toContain('<ol class="transcript">');
+
+    const call = [...room, seg("d", 6.0, SYSTEM_TRACK, "sounds right")];
+    const two = renderToStaticMarkup(<TranscriptList kind="virtual" segments={call} />);
+    expect(rows(two)).toBe(4);
+    expect(lastCellClasses(two)).toEqual(["seg-text", "seg-text", "seg-text", "seg-text"]);
+    expect(two).toContain('<ol class="transcript two-track">');
+    // Every two-track row carries its speaker cell BEFORE the text.
+    expect([...two.matchAll(/<li>/g)].length).toBe([...two.matchAll(/class="seg-who/g)].length);
+  });
+
+  /**
+   * yap-1106-transcript-grid — two-track is decided by the rows that are
+   * DRAWN. A call whose every mic row was hidden as echo is one track until
+   * Show; after Show it is two, and the speaker cells must come back with it
+   * (or the labelless mic rows would land in the speaker column).
+   */
+  it("decides two-track from the drawn rows, echo rows included", () => {
+    const room = [seg("m1", 0.0, MIC_TRACK, "can you hear me"), seg("m2", 5.0, MIC_TRACK, "good")];
+    // Today's echo rule only ever hides mic rows, so Show cannot change the
+    // answer: hidden mic rows join the list and it stays one track.
+    const micEcho = [seg("m3", 2.0, MIC_TRACK, "yes loud and clear")];
+    expect(shownRows(room, micEcho, false)).toBe(room);
+    expect(isTwoTrack(shownRows(room, micEcho, true))).toBe(false);
+    expect(shownRows(room, micEcho, true).map((s) => s.id)).toEqual(["m1", "m3", "m2"]);
+    // But the decision is made on what is DRAWN: a hidden row that carries
+    // the far side makes the list two-track the moment it is shown, and the
+    // `<ol>` class follows the same rows.
+    const farEcho = [seg("s1", 2.0, SYSTEM_TRACK, "yes loud and clear")];
+    expect(isTwoTrack(shownRows(room, farEcho, false))).toBe(false);
+    expect(isTwoTrack(shownRows(room, farEcho, true))).toBe(true);
+    expect(renderToStaticMarkup(<TranscriptList kind="virtual" segments={room} hidden={farEcho} />)).toContain(
+      '<ol class="transcript">',
+    );
+    expect(shownRows(room, undefined, true)).toBe(room);
+    expect(shownRows(room, [], true)).toBe(room);
   });
 
   /**
