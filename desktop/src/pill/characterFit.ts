@@ -249,6 +249,31 @@ export function capsuleForDock(size: Size, dock: FitDock): Size {
   return dock === "side-tall" ? { w: size.h, h: size.w } : { w: size.w, h: size.h };
 }
 
+export interface CharacterPlacement {
+  /** "scene": Yappy's world through `pillCamera`; "sprite": the character's own sprite through `placeSprite`. */
+  route: "scene" | "sprite";
+  cell: number;
+  /** The character's bounding box on screen, device px. */
+  char: FitBox;
+  stadium: FitBox;
+  fits: boolean;
+}
+
+/**
+ * Where `name` is drawn in a capsule at `dock`. Yappy on a horizontal capsule
+ * is his landscape world (`pillCamera`, what YappyPill draws); a tall side
+ * scene, and every companion, is the character's own sprite (`placeSprite`) —
+ * the landscape world strip is never stood on its end.
+ */
+export function placeCharacter(name: SpriteName, dock: FitDock, capsule: CssRect, dprRaw: number): CharacterPlacement {
+  if (name === "yappy" && dock !== "side-tall") {
+    const c = pillCamera(capsule, dprRaw);
+    return { route: "scene", cell: c.blit.cell, char: c.char, stadium: c.stadium, fits: c.fits };
+  }
+  const p = placeSprite(capsule, characterArt(name), dprRaw);
+  return { route: "sprite", cell: p.cell, char: p.box, stadium: p.stadium, fits: p.fits };
+}
+
 /** One structured line when a placement does not fit (never expected; the matrix test pins it). */
 export function cropWarning(who: string, capsule: Size, dpr: number): string {
   return `pill character-cropped character=${who} capW=${Math.round(capsule.w)} capH=${Math.round(capsule.h)} dpr=${dpr}`;

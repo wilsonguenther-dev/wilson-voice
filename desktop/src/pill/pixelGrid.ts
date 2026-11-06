@@ -215,6 +215,12 @@ export function sceneBlit(o: {
   /** The scene buffer's size, in art px — the only pixels `src` may read. */
   buffer: Size;
   dpr: number;
+  /**
+   * yap-1106-fb-10 — the cell the caller already fitted (characterFit's
+   * `pillCamera`: the largest one that keeps the whole character visible).
+   * Still never below the cell at which the buffer covers the window.
+   */
+  cell?: number;
 }): SceneBlit {
   const dpr = backingScale(o.dpr);
   const clip = snapRect(o.rect, dpr);
@@ -222,7 +228,8 @@ export function sceneBlit(o: {
   const gridH = Math.max(1, Math.round(o.view.h));
   const bufW = Math.max(1, Math.round(o.buffer.w));
   const bufH = Math.max(1, Math.round(o.buffer.h));
-  const cell = Math.max(fitCell(clip.w, clip.h, gridW, gridH), coverCell(clip.w, clip.h, bufW, bufH));
+  const asked = typeof o.cell === "number" && Number.isFinite(o.cell) && o.cell >= 1 ? Math.floor(o.cell) : fitCell(clip.w, clip.h, gridW, gridH);
+  const cell = Math.max(asked, coverCell(clip.w, clip.h, bufW, bufH));
   // One axis: the art coordinate at the window's leading edge (centred on the
   // camera, clamped into the buffer — `cell` guarantees bufLen*cell >= clipLen),
   // split into a whole art px `s` and a whole-device-px lead-in before the window.
