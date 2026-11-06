@@ -169,7 +169,7 @@ function bandsByDistance(band: TakeBand): TakeBand[] {
 /** Typing time saved at 40 words a minute, as "45 s" or "5 min". */
 export function typingSaved(words: number): string {
   const sec = Math.round((Math.max(0, words) / 40) * 60);
-  return sec < 60 ? `${sec} s` : `${Math.max(1, Math.round(sec / 60))} min`;
+  return sec < 120 ? `${sec} s` : `${Math.max(1, Math.round(sec / 60))} min`;
 }
 
 /** Fill `{w}` and `{saved}` with the take's real numbers. */
