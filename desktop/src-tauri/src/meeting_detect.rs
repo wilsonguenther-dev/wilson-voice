@@ -238,6 +238,174 @@ pub fn calendar_signal_enabled(s: &DetectSettings, calendar_full_access: bool) -
     s.offer_detected && s.use_calendar && calendar_full_access
 }
 
+// ─── WF-07: upcoming meetings in the menu bar ───────────────────────────────
+
+/// `settings_kv` — the tray's "Hide meeting titles" toggle (default OFF). When
+/// on, the menu says "Next meeting 2:00 PM" instead of naming the event.
+pub const HIDE_MEETING_TITLES_KEY: &str = "meeting_menu_hide_titles_v1";
+/// At most this many of today's meetings are listed in the tray submenu.
+pub const UPCOMING_MAX: usize = 8;
+
+/// The menu bar reads the calendar only when "Use my calendar" is on AND
+/// EventKit already reports full access. Unlike [`calendar_signal_enabled`] it
+/// does not need "Offer to record": listing today's meetings never raises an
+/// offer. It never asks for access.
+pub fn menu_calendar_enabled(s: &DetectSettings, calendar_full_access: bool) -> bool {
+    s.use_calendar && calendar_full_access
+}
+
+pub fn load_hide_titles(db: &Database) -> bool {
+    flag(db.setting_get(HIDE_MEETING_TITLES_KEY), false)
+}
+
+/// Persist the tray toggle and wake the watcher so the menu is re-published.
+pub fn save_hide_titles(db: &Database, on: bool) -> Result<(), String> {
+    db.setting_set(HIDE_MEETING_TITLES_KEY, flag_str(on))?;
+    wake();
+    Ok(())
+}
+
+/// One of today's remaining meetings, as the tray lists it. Holds only what
+/// the menu shows (title, start) plus the occurrence key Record snoozes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpcomingMeeting {
+    /// [`CalendarEvent::offer_key`] — Record from the menu snoozes the pill
+    /// offer for this same occurrence.
+    pub key: String,
+    pub title: Option<String>,
+    pub start_unix: i64,
+    /// Carries a conferencing link (the recording is started as Virtual).
+    pub has_link: bool,
+}
+
+/// What the watcher hands the tray. `None` from [`upcoming_snapshot`] means
+/// the calendar is not in use and the menu shows no calendar rows at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpcomingSnapshot {
+    pub meetings: Vec<UpcomingMeeting>,
+    pub hide_titles: bool,
+    /// Local UTC offset when the snapshot was taken, for the "2:00 PM" text.
+    pub utc_offset_secs: i32,
+}
+
+/// The Unix second at which the local day containing `now_unix` ends.
+pub fn local_day_end(now_unix: i64, utc_offset_secs: i32) -> i64 {
+    let off = i64::from(utc_offset_secs);
+    ((now_unix + off).div_euclid(86_400) + 1) * 86_400 - off
+}
+
+/// Today's remaining meetings: started less than [`IN_PROGRESS_SECS`] ago (so
+/// one that just began can still be recorded) through the end of the local
+/// day, earliest first, one row per occurrence, at most [`UPCOMING_MAX`].
+pub fn upcoming_today(
+    events: &[CalendarEvent],
+    now_unix: i64,
+    day_end_unix: i64,
+) -> Vec<UpcomingMeeting> {
+    let mut seen = HashSet::new();
+    let mut list: Vec<&CalendarEvent> = events
+        .iter()
+        .filter(|e| e.start_unix > now_unix - IN_PROGRESS_SECS && e.start_unix < day_end_unix)
+        .collect();
+    list.sort_by(|a, b| a.start_unix.cmp(&b.start_unix).then(a.id.cmp(&b.id)));
+    list.into_iter()
+        .filter(|e| seen.insert(e.offer_key()))
+        .take(UPCOMING_MAX)
+        .map(|e| UpcomingMeeting {
+            key: e.offer_key(),
+            title: e
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string),
+            start_unix: e.start_unix,
+            has_link: e.has_link(),
+        })
+        .collect()
+}
+
+type UpcomingSink = Box<dyn Fn(Option<UpcomingSnapshot>) + Send + Sync>;
+
+fn upcoming_sink() -> &'static OnceLock<UpcomingSink> {
+    static SINK: OnceLock<UpcomingSink> = OnceLock::new();
+    &SINK
+}
+
+fn upcoming_last() -> &'static Mutex<Option<Option<UpcomingSnapshot>>> {
+    static LAST: Mutex<Option<Option<UpcomingSnapshot>>> = Mutex::new(None);
+    &LAST
+}
+
+/// `lib.rs` registers the tray's applier ONCE, before [`start_watch`]. The
+/// sink is called from the watcher thread, only when the snapshot CHANGED.
+pub fn set_upcoming_sink(sink: impl Fn(Option<UpcomingSnapshot>) + Send + Sync + 'static) {
+    if upcoming_sink().set(Box::new(sink)).is_err() {
+        log::warn!("meeting_detect upcoming_sink_set_twice");
+    }
+}
+
+/// The last snapshot the watcher published (`None` = calendar not in use or
+/// nothing published yet). The tray re-applies it after a rebuild.
+pub fn upcoming_snapshot() -> Option<UpcomingSnapshot> {
+    upcoming_last()
+        .lock()
+        .ok()
+        .and_then(|l| l.clone())
+        .flatten()
+}
+
+/// Hand `snap` to the tray if it differs from the last one. Returns whether it
+/// changed (the sink, once registered, is called exactly then). A steady
+/// calendar mutates the menu zero times.
+pub fn publish_upcoming(snap: Option<UpcomingSnapshot>) -> bool {
+    {
+        let Ok(mut last) = upcoming_last().lock() else {
+            return false;
+        };
+        if last.as_ref() == Some(&snap) {
+            return false;
+        }
+        *last = Some(snap.clone());
+    }
+    match &snap {
+        Some(s) => log::info!(
+            "meeting_detect upcoming_published count={} hide_titles={}",
+            s.meetings.len(),
+            s.hide_titles
+        ),
+        None => log::info!("meeting_detect upcoming_published calendar=off"),
+    }
+    if let Some(sink) = upcoming_sink().get() {
+        sink(snap);
+    }
+    true
+}
+
+/// The menu half of one watcher wake. Reads EventKit (read-only, a fresh
+/// store) ONLY when [`menu_calendar_enabled`]; otherwise publishes "off".
+fn evaluate_upcoming(db: &Database, s: &DetectSettings) {
+    if !menu_calendar_enabled(s, calendar_full_access()) {
+        publish_upcoming(None);
+        return;
+    }
+    let local = chrono::Local::now();
+    let now = local.timestamp();
+    let offset = local.offset().local_minus_utc();
+    let started = std::time::Instant::now();
+    let events = sys::events_between(now - IN_PROGRESS_SECS, local_day_end(now, offset));
+    crate::diagnostics::record_duration(
+        "meeting_detect",
+        "upcoming_read_ms",
+        started.elapsed().as_millis() as u64,
+    );
+    publish_upcoming(Some(UpcomingSnapshot {
+        meetings: upcoming_today(&events, now, local_day_end(now, offset)),
+        hide_titles: load_hide_titles(db),
+        utc_offset_secs: offset,
+    }));
+}
+
 /// May `offer` be shown right now?
 pub fn may_raise(
     s: &DetectSettings,
@@ -407,6 +575,9 @@ pub fn settings_view(db: &Database) -> DetectSettingsView {
 /// One evaluation of both signals. The calendar leads: when it raised an
 /// offer (it carries the event title) the app signal does not replace it.
 fn evaluate(app: &AppHandle, db: &Database, meeting_recording: bool, calls: &mut CallWatch) {
+    // WF-07 — the tray's upcoming meetings, refreshed on every wake (EventKit's
+    // change notification or the 30 s backstop), also while a meeting records.
+    evaluate_upcoming(db, &load_settings(db));
     if meeting_recording {
         clear(app, None);
         return;
@@ -561,7 +732,12 @@ pub fn start_watch(
                 evaluate(&app, &db, meeting_recording(), &mut calls);
                 // The ONE backstop timer, off while "Offer to record" is off;
                 // the listeners and notifications still wake the thread.
-                let woke = if crate::call_signals::timer_enabled(load_settings(&db).offer_detected)
+                // WF-07: the same 30 s timer also runs while the menu lists
+                // today's meetings, so a meeting that passed drops off. Never
+                // faster than POLL_INTERVAL.
+                let wake_settings = load_settings(&db);
+                let woke = if crate::call_signals::timer_enabled(wake_settings.offer_detected)
+                    || menu_calendar_enabled(&wake_settings, calendar_full_access())
                 {
                     rx.recv_timeout(POLL_INTERVAL)
                 } else {
@@ -728,6 +904,17 @@ mod sys {
             // SAFETY: +[NSNotificationCenter defaultCenter] -> NSNotificationCenter*.
             let center: *mut AnyObject = unsafe { msg_send![nc, defaultCenter] };
             observe(center, "EKEventStoreChangedNotification", tx.clone());
+            // WF-07 — EventKit posts its change notification only while some
+            // EKEventStore instance is alive, and every read above uses a
+            // short-lived fresh store. Keep ONE store for the app's lifetime so
+            // the menu (and the offer) refresh on a calendar edit instead of
+            // waiting for the 30 s backstop. Creating a store never prompts and
+            // this one is never read from or written to.
+            if let Some(cls) = store_class() {
+                // SAFETY: +[EKEventStore new] -> retained EKEventStore.
+                let keep: Option<Retained<AnyObject>> = unsafe { msg_send![cls, new] };
+                std::mem::forget(keep);
+            }
         }
         if let Some(ws) = AnyClass::get(c"NSWorkspace") {
             // SAFETY: +[NSWorkspace sharedWorkspace] / -notificationCenter.
@@ -928,5 +1115,173 @@ mod contract_tests {
         }
         let lib = include_str!("lib.rs");
         assert!(lib.contains("fn meeting_offer_respond("));
+    }
+}
+
+#[cfg(test)]
+mod upcoming_tests {
+    //! WF-07 — the tray's upcoming meetings: what is listed, when the
+    //! calendar may be read at all, and how often the menu can change.
+    use super::*;
+
+    fn ev(id: &str, title: Option<&str>, start: i64, url: Option<&str>) -> CalendarEvent {
+        CalendarEvent {
+            id: id.to_string(),
+            title: title.map(str::to_string),
+            start_unix: start,
+            url: url.map(str::to_string),
+            location: None,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn upcoming_today_lists_remaining_meetings_in_order() {
+        let now = 1_800_000_000;
+        let end = now + 6 * 3600;
+        let events = vec![
+            ev("late", Some("Retro"), now + 3 * 3600, None),
+            ev("past", Some("Breakfast"), now - 3600, None),
+            ev(
+                "soon",
+                Some("  Standup  "),
+                now + 600,
+                Some("https://zoom.us/j/1"),
+            ),
+            ev("just", None, now - 60, None),
+            ev("tomorrow", Some("Planning"), end + 60, None),
+            // The same occurrence twice (two calendars sharing it) is one row.
+            ev("soon", Some("Standup"), now + 600, None),
+        ];
+        let list = upcoming_today(&events, now, end);
+        let keys: Vec<&str> = list.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                format!("cal:just:{}", now - 60),
+                format!("cal:soon:{}", now + 600),
+                format!("cal:late:{}", now + 3 * 3600),
+            ]
+        );
+        assert_eq!(list[0].title, None, "an untitled event stays untitled");
+        assert_eq!(list[1].title.as_deref(), Some("Standup"));
+        assert!(list[1].has_link);
+        assert!(!list[2].has_link);
+        // Capped.
+        let many: Vec<CalendarEvent> = (0..20)
+            .map(|i| ev(&format!("e{i}"), Some("M"), now + 60 * (i + 1), None))
+            .collect();
+        assert_eq!(upcoming_today(&many, now, end).len(), UPCOMING_MAX);
+        assert!(upcoming_today(&[], now, end).is_empty());
+    }
+
+    #[test]
+    fn upcoming_local_day_end_respects_the_offset() {
+        // A UTC noon.
+        let noon_utc = 1_800_014_400 - (1_800_014_400 % 86_400) + 43_200;
+        let midnight_utc = noon_utc - 43_200 + 86_400;
+        assert_eq!(local_day_end(noon_utc, 0), midnight_utc);
+        // UTC-6: local noon-6h = 06:00 local; the day ends at 06:00Z next day.
+        assert_eq!(local_day_end(noon_utc, -6 * 3600), midnight_utc + 6 * 3600);
+        // UTC+9: 21:00 local; the day ends at 15:00Z today.
+        assert_eq!(local_day_end(noon_utc, 9 * 3600), midnight_utc - 9 * 3600);
+        assert!(local_day_end(noon_utc, -6 * 3600) > noon_utc);
+    }
+
+    /// Acceptance: EventKit is read only when "Use my calendar" is on (and
+    /// access is already granted). "Offer to record" does not matter here.
+    #[test]
+    fn upcoming_menu_reads_calendar_only_when_use_my_calendar_is_on() {
+        for offer_detected in [true, false] {
+            let off = DetectSettings {
+                offer_detected,
+                use_calendar: false,
+            };
+            assert!(!menu_calendar_enabled(&off, true));
+            assert!(!menu_calendar_enabled(&off, false));
+            let on = DetectSettings {
+                offer_detected,
+                use_calendar: true,
+            };
+            assert!(menu_calendar_enabled(&on, true));
+            assert!(!menu_calendar_enabled(&on, false), "no grant, no read");
+        }
+        // The reader is gated: evaluate_upcoming publishes "off" BEFORE any
+        // events_between call when the gate is shut.
+        let src = include_str!("meeting_detect.rs");
+        let body_start = src
+            .find(&["fn evaluate", "_upcoming(db"].concat())
+            .expect("evaluate_upcoming");
+        let body = &src[body_start..];
+        let gate = body.find("menu_calendar_enabled(").expect("gate");
+        let read = body.find("sys::events_between(").expect("read");
+        assert!(gate < read, "the gate must come before the EventKit read");
+        assert!(body[..read].contains("publish_upcoming(None)"));
+        // Default: the calendar is off.
+        assert!(!DetectSettings::default().use_calendar);
+    }
+
+    /// Acceptance: the menu refreshes on EventKit's change notification, and
+    /// the only timer is the 30 s backstop.
+    #[test]
+    fn upcoming_menu_refresh_is_event_driven_never_faster_than_30s() {
+        assert!(POLL_INTERVAL >= Duration::from_secs(30));
+        let src = include_str!("meeting_detect.rs");
+        assert!(src.contains("\"EKEventStoreChangedNotification\""));
+        let eval = &src[src.find("fn evaluate(app").expect("evaluate")..];
+        let upcoming = eval
+            .find("evaluate_upcoming(")
+            .expect("menu evaluated per wake");
+        let early = eval.find("if meeting_recording").expect("early return");
+        assert!(
+            upcoming < early,
+            "the menu refreshes while a meeting records"
+        );
+        let timer = ["recv_", "timeout("].concat();
+        let timed = [timer.as_str(), "POLL_INTERVAL)"].concat();
+        assert_eq!(
+            src.matches(&timer).count(),
+            src.matches(&timed).count(),
+            "every timed wait is POLL_INTERVAL"
+        );
+    }
+
+    #[test]
+    fn upcoming_publish_only_on_change_and_hide_titles_persists() {
+        let snap = UpcomingSnapshot {
+            meetings: vec![UpcomingMeeting {
+                key: "cal:x:1".into(),
+                title: Some("Standup".into()),
+                start_unix: 1,
+                has_link: true,
+            }],
+            hide_titles: false,
+            utc_offset_secs: 0,
+        };
+        publish_upcoming(Some(snap.clone()));
+        assert_eq!(upcoming_snapshot(), Some(snap.clone()));
+        assert!(
+            !publish_upcoming(Some(snap.clone())),
+            "same snapshot, no change"
+        );
+        assert!(publish_upcoming(None));
+        assert_eq!(upcoming_snapshot(), None);
+        assert!(!publish_upcoming(None));
+        assert!(publish_upcoming(Some(snap)));
+
+        let dir = std::env::temp_dir().join(format!(
+            "yap-meeting-upcoming-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(dir.join("wilson_voice.db")).unwrap();
+        assert!(!load_hide_titles(&db), "titles show by default");
+        save_hide_titles(&db, true).unwrap();
+        assert!(load_hide_titles(&db));
+        save_hide_titles(&db, false).unwrap();
+        assert!(!load_hide_titles(&db));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

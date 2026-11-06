@@ -22,6 +22,11 @@
 //!
 //! "Done" for the card = full access granted AND at least one calendar
 //! readable ([`CalendarAccess::connected`]).
+//!
+//! WF-07 — the menu bar's "Next meeting" / "Today's Meetings" rows read events
+//! through `meeting_detect::sys::events_between` (the same read-only fresh
+//! store), gated by `meeting_detect::menu_calendar_enabled`: "Use my calendar"
+//! on AND full access already granted. Nothing on that path asks for access.
 
 use serde::Serialize;
 
