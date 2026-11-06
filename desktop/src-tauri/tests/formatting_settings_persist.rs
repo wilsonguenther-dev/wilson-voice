@@ -54,7 +54,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
-const APP_SETTINGS_FIELD_COUNT: usize = 46;
+// WF-19: +1 (ptt_mouse_binding).
+const APP_SETTINGS_FIELD_COUNT: usize = 47;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -157,6 +158,8 @@ fn fully_populated() -> AppSettings {
         )]),
         // WF-17 — non-default: two of the three quiet-mode switches off.
         muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
+        // WF-19 — non-default: side button 4 as click-to-toggle hands-free.
+        ptt_mouse_binding: "button4:hands_free".into(),
         // WF-18 — non-default: one extra binding on Copy last.
         extra_chords: vec![wilson_voice_lib::shortcuts::editor::ExtraBinding {
             action: wilson_voice_lib::hotkey_table::BindingAction::CopyLast,
