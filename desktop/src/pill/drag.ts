@@ -19,9 +19,14 @@
 import { useMemo, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { beginPress, CLICK_SLOP, endPress, trackPress, type PressKind } from "./press";
 
-/** Travel (logical points) past which a press is a DRAG, not a click. */
-const DRAG_SLOP = 3;
+/**
+ * Travel (logical points) past which a press is a DRAG, not a click. WF-01 —
+ * the SAME 4 points the click classifier uses (pill/press.ts), so the panel
+ * never starts sliding on a press that would still count as a click.
+ */
+const DRAG_SLOP = CLICK_SLOP;
 
 export interface PillDrag {
   /** Spread onto the element the user grabs (the capsule). */
@@ -37,6 +42,12 @@ export interface PillDrag {
    * (dictation). Cleared by the next pointer-down.
    */
   dragged: () => boolean;
+  /**
+   * yap-wf-01-click-the-pill-to — how the LAST completed press classified
+   * (pill/press.ts: under 4 points and under 300 ms is a click). `null` before
+   * the first release, and for a press the system cancelled.
+   */
+  lastPress: () => PressKind | null;
 }
 
 /**
@@ -52,10 +63,18 @@ export interface PillGestureFeedback {
   press?(): void;
   release?(): void;
   dock?(): void;
+  /**
+   * yap-wf-01-click-the-pill-to — WF-01: the press was a CLICK (a pointer-up
+   * under 4 points of travel and under 300 ms). Never called for a drag, a
+   * long hold, or a cancelled pointer.
+   */
+  tap?(): void;
 }
 
 export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
   const st = useRef({ down: false, moved: false, x: 0, y: 0 });
+  const press = useRef(beginPress(0, 0, 0));
+  const last = useRef<PressKind | null>(null);
   const fb = useRef(feedback);
   fb.current = feedback;
   return useMemo<PillDrag>(() => {
@@ -63,6 +82,11 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
       const s = st.current;
       if (!s.down) return;
       s.down = false;
+      // WF-01 — classify BEFORE anything else reacts. A cancel is never a
+      // click: the system took the pointer, the user did not let go.
+      const kind: PressKind | null =
+        e.type === "pointercancel" ? null : endPress(press.current, e.screenX, e.screenY, performance.now());
+      last.current = kind;
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch {
@@ -73,12 +97,14 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
       // that never moved is a plain click, so it just rebounds.
       if (s.moved) fb.current.dock?.();
       else fb.current.release?.();
+      if (kind === "click") fb.current.tap?.();
     };
     return {
       handlers: {
         onPointerDown: (e) => {
           if (e.button !== 0) return; // left button only; right/middle are not a grab
           st.current = { down: true, moved: false, x: e.screenX, y: e.screenY };
+          press.current = beginPress(e.screenX, e.screenY, performance.now());
           try {
             // Capture so the gesture keeps reporting once the panel slides out
             // from under the pointer.
@@ -94,6 +120,7 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
           if (!s.down) return;
           const dx = e.screenX - s.x;
           const dy = e.screenY - s.y;
+          trackPress(press.current, e.screenX, e.screenY);
           if (!s.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
           s.moved = true;
           invoke("pill_drag_move", { dx, dy }).catch(() => {});
@@ -102,6 +129,7 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
         onPointerCancel: end,
       },
       dragged: () => st.current.moved,
+      lastPress: () => last.current,
     };
   }, []);
 }
