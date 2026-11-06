@@ -60,6 +60,9 @@ import {
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
+  CARD_SELECTOR,
+  CARD_STACK_VAR,
+  stackCards,
   layoutVars,
   meetingMode,
   pillLayout,
@@ -624,36 +627,50 @@ function usePanelLayout(
   return useMemo(() => next, [next.key]);
 }
 
-/** The cards that take the panel's top row while they are on screen. */
-const CARD_SELECTOR = ".copy-card, .meeting-offer-wrap, .nudge-row";
-
 /**
- * yap-1106-one-pill — the height of the card on screen (copy card, meeting
- * offer, coaching nudge), or null. The cards mount and unmount themselves, so
- * the shell watches the DOM for them rather than re-deciding when they show;
- * the panel then makes room for the card instead of clipping it.
+ * yap-1106-one-pill, fix-b1-2 — the height of the card row: every card on
+ * screen that CARD_SELECTOR (pill/state.ts) names — the copy card
+ * `.copy-card`, "Record this meeting?" `.meeting-offer-wrap`, WF-12's
+ * "Sounded like Spanish — Add Spanish?" `.language-offer-wrap` and the
+ * coaching nudge `.nudge-row` — or null when none is up. The cards mount and
+ * unmount themselves, so the shell watches the DOM for them rather than
+ * re-deciding when they show; the panel then makes room for them instead of
+ * clipping them or drawing them over Yappy. Two cards up at once (a nudge and
+ * a language offer) are STACKED, not the first match taken: each card gets
+ * its place in the row as CARD_STACK_VAR, which float.css adds to --card-y,
+ * and the layout reserves the whole stack.
  */
 function useCardOnScreen(): number | null {
   const [h, setH] = useState<number | null>(null);
   useEffect(() => {
     const root = document.getElementById("root");
     if (!root) return;
-    let el: HTMLElement | null = null;
+    let els: HTMLElement[] = [];
+    let lastCount = -1;
     const measure = () => {
-      const next = el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
-      setH(next > 0 ? next : null);
+      const live = els.filter((el) => el.isConnected);
+      const { offsets, total } = stackCards(live.map((el) => el.getBoundingClientRect().height));
+      live.forEach((el, i) => el.style.setProperty(CARD_STACK_VAR, `${offsets[i]}px`));
+      if (live.length !== lastCount) {
+        // One line per change in the card count, never per resize.
+        console.info(`pill card_row cards=${live.length} h=${total}`);
+        lastCount = live.length;
+      }
+      setH(total > 0 ? total : null);
     };
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => measure());
     const track = () => {
-      const found = root.querySelector<HTMLElement>(CARD_SELECTOR);
-      if (found !== el) {
-        if (el) ro.unobserve(el);
-        el = found;
-        if (el) ro.observe(el);
+      const found = Array.from(root.querySelectorAll<HTMLElement>(CARD_SELECTOR));
+      if (found.length !== els.length || found.some((el, i) => el !== els[i])) {
+        for (const el of els) ro.unobserve(el);
+        els = found;
+        for (const el of els) ro.observe(el);
       }
       measure();
     };
     track();
+    // childList only: the stack offsets this hook writes are style attributes,
+    // so writing them never re-triggers the observer.
     const mo = new MutationObserver(track);
     mo.observe(root, { childList: true, subtree: true });
     return () => {

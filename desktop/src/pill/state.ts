@@ -64,8 +64,10 @@ export interface PillInput {
   /** Lines the hint reserves; defaults to 3 for `blind` (it wraps), else 1. */
   hintLines?: number;
   /**
-   * A card on screen (the copy card, "Record this meeting?", the coaching
-   * nudge), with its measured height. It gets the top row of the panel.
+   * A card on screen (the copy card, "Record this meeting?", WF-12's
+   * "Sounded like Spanish — Add Spanish?", the coaching nudge), with its
+   * measured height — the whole stack's, when more than one is up. It gets
+   * the top row of the panel.
    */
   card?: { h: number } | null;
 }
@@ -121,6 +123,40 @@ export const PROGRESS_H = 14;
 export const PROGRESS_PHASE: LivePhase = "transcribing";
 /** A card's width: the old 300 pt panel less its 8 pt insets. */
 export const CARD_W = 284;
+/**
+ * fix-b1-2 — every card that takes the panel's top row while it is on
+ * screen: the copy card, "Record this meeting?", WF-12's language offer and
+ * the coaching nudge. float-main measures EVERY match (not the first), stacks
+ * them in DOM order with `stackCards`, and hands the stack's height to
+ * `pillLayout` as `card`; float.css places each one in that row. A card left
+ * off this list is neither measured nor placed, so it is drawn over Yappy.
+ */
+export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row"] as const;
+export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
+/** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
+export const CARD_STACK_VAR = "--card-stack-y";
+
+/**
+ * fix-b1-2 — two cards can be up at once (a nudge and a language offer), so
+ * the card row is a STACK: each card's top inside the row, SLOT_GAP apart,
+ * and the row's total height. A card with no height (not laid out yet) takes
+ * no room and no gap.
+ */
+export function stackCards(heights: readonly number[]): { offsets: number[]; total: number } {
+  const offsets: number[] = [];
+  let y = 0;
+  for (const raw of heights) {
+    const h = Math.max(0, Math.ceil(raw));
+    if (h === 0) {
+      offsets.push(y);
+      continue;
+    }
+    if (y > 0) y += SLOT_GAP;
+    offsets.push(y);
+    y += h;
+  }
+  return { offsets, total: y };
+}
 /** The historical fixed panel (float_pill.rs PILL_W x PILL_H) a legacy character keeps. */
 export const LEGACY_PANEL = { w: 300, h: 140 } as const;
 /** Phases Yappy draws as the small resting capsule; every other phase opens him. */
@@ -282,9 +318,19 @@ export function layoutVars(l: PillLayout): Record<string, string> {
  * has to thread into the loop. float-main is the only writer.
  */
 let published: PillLayout | null = null;
+/**
+ * fix-b1-2 — fired on `window` each time a layout is applied, AFTER the slot
+ * positions are written: a card that holds the window's hitbox re-takes it
+ * from its real box here, since the layout MOVES the card (into the row it
+ * reserved) without resizing it, and a ResizeObserver never sees a move.
+ */
+export const PILL_LAYOUT_EVENT = "yap-pill-layout";
 export function publishPillLayout(l: PillLayout | null): void {
   published = l;
-  if (typeof window !== "undefined") (window as unknown as { __YAP_PILL_LAYOUT__?: PillLayout | null }).__YAP_PILL_LAYOUT__ = l;
+  if (typeof window !== "undefined") {
+    (window as unknown as { __YAP_PILL_LAYOUT__?: PillLayout | null }).__YAP_PILL_LAYOUT__ = l;
+    window.dispatchEvent(new Event(PILL_LAYOUT_EVENT));
+  }
 }
 export function currentPillLayout(): PillLayout | null {
   return published;

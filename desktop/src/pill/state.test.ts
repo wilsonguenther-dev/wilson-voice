@@ -7,11 +7,12 @@
  * panel frame equals the union of its content boxes plus the margin. The
  * painted version of the same checks is scripts/pill-matrix.mjs.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ALL_LIVE_PHASES } from "./live";
 import { BAR_DOCKS } from "./dock";
 import {
   layoutCharacterFor,
+  CARD_CLASSES, CARD_SELECTOR, CARD_STACK_VAR, PILL_LAYOUT_EVENT, SLOT_GAP, stackCards,
   CHARACTER_OPEN, CHARACTER_REST, CLOCK_REACH_PT, LEGACY_PANEL, PANEL_MARGIN, SHRINK_HOLD_MS,
   boxGap, boxesOverlap, capsuleCentre, currentPillLayout, layoutProblems, layoutVars, meetingMode, pillLayout,
   publishPillLayout, shrinkDelay, unionBox, type MeetingMode, type PillLayout,
@@ -189,6 +190,70 @@ describe("pill/state — one pill, one layout", () => {
       expect(l.panel.h).toBeGreaterThan(bare.panel.h);
       expect(l.key).not.toBe(bare.key);
       expect(layoutProblems(l)).toEqual([]);
+    }
+  });
+
+  it("a_72pt_language_card_never_covers_yappy_and_lies_inside_the_panel", () => {
+    // fix-b1-2 — WF-12's card (~70 pt, taller with an error line) at every
+    // dock, with and without a meeting, resting and open.
+    let n = 0;
+    for (const dock of BAR_DOCKS) for (const meeting of MEETINGS) for (const phase of ["idle", "listening"] as const) {
+      const l = pillLayout({ phase, meeting, dock, card: { h: 72 } });
+      const where = `${phase}/${meeting}/${dock}`;
+      expect(l.card, where).not.toBeNull();
+      expect(l.card!.h, where).toBe(72);
+      expect(boxesOverlap(l.card!, l.char), `${where}: card over the character`).toBe(false);
+      expect(boxesOverlap(l.card!, l.bubble), `${where}: card over the bubble`).toBe(false);
+      expect(boxesOverlap(l.card!, l.hint), `${where}: card over the hint`).toBe(false);
+      if (l.clock) expect(boxesOverlap(l.card!, l.clock), `${where}: card over the clock`).toBe(false);
+      expect(l.card!.x, where).toBeGreaterThanOrEqual(0);
+      expect(l.card!.y, where).toBeGreaterThanOrEqual(0);
+      expect(l.card!.x + l.card!.w, where).toBeLessThanOrEqual(l.panel.w);
+      expect(l.card!.y + l.card!.h, where).toBeLessThanOrEqual(l.panel.h);
+      expect(layoutProblems(l), where).toEqual([]);
+      n += 1;
+    }
+    expect(n).toBe(BAR_DOCKS.length * MEETINGS.length * 2);
+  });
+
+  it("card_selector_names_every_card_including_the_language_offer", () => {
+    expect(CARD_CLASSES).toContain("language-offer-wrap");
+    for (const c of ["copy-card", "meeting-offer-wrap", "nudge-row"]) expect(CARD_CLASSES).toContain(c);
+    expect(CARD_SELECTOR.split(",").map((s) => s.trim())).toEqual(CARD_CLASSES.map((c) => `.${c}`));
+    expect(CARD_STACK_VAR.startsWith("--")).toBe(true);
+  });
+
+  it("two_cards_up_at_once_stack_and_the_row_holds_both", () => {
+    expect(stackCards([])).toEqual({ offsets: [], total: 0 });
+    expect(stackCards([72])).toEqual({ offsets: [0], total: 72 });
+    // a nudge (32) over a language offer (71.4 -> 72): one gap between them
+    const two = stackCards([32, 71.4]);
+    expect(two).toEqual({ offsets: [0, 32 + SLOT_GAP], total: 32 + SLOT_GAP + 72 });
+    // a card not laid out yet takes no room and no gap
+    expect(stackCards([0, 40, 0, 20])).toEqual({ offsets: [0, 0, 40, 40 + SLOT_GAP], total: 40 + SLOT_GAP + 20 });
+    // the stacked row is laid out like one card: never over Yappy, inside the panel
+    for (const dock of BAR_DOCKS) {
+      const l = pillLayout({ phase: "idle", meeting: "recording", dock, card: { h: two.total } });
+      expect(boxesOverlap(l.card!, l.char)).toBe(false);
+      expect(layoutProblems(l)).toEqual([]);
+    }
+  });
+
+  it("applying_a_layout_tells_the_cards_to_retake_their_hitbox", () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    try {
+      let fired = 0;
+      target.addEventListener(PILL_LAYOUT_EVENT, () => { fired += 1; });
+      const l = pillLayout({ phase: "idle", meeting: "none", dock: "bottom", card: { h: 72 } });
+      publishPillLayout(l);
+      expect(fired).toBe(1);
+      expect((target as unknown as { __YAP_PILL_LAYOUT__?: PillLayout | null }).__YAP_PILL_LAYOUT__).toBe(l);
+      publishPillLayout(null);
+      expect(fired).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+      publishPillLayout(null);
     }
   });
 
