@@ -26,7 +26,6 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { CONTROLS_OWNER, extendPillHitboxRects, type Rect4 } from "./drag";
-import { DURATION } from "./motion";
 
 /** The smallest hit area any pill control gets, in logical points. */
 export const MIN_HIT_PT = 24;
@@ -116,7 +115,7 @@ export function startPillControlTargets(doc: Document = document): () => void {
     extendPillHitboxRects(measureControls(doc), CONTROLS_OWNER);
   };
   function schedule() {
-    if (timer === null) timer = setTimeout(push, DURATION.measureCoalesce);
+    if (timer === null) timer = setTimeout(push, 16);
   }
   const mo = new MutationObserver(() => schedule());
   mo.observe(doc.documentElement, {
