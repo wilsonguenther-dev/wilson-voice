@@ -353,13 +353,16 @@ fn load_in_process(_model_path: &Path) -> Result<Box<dyn Transcriber>, String> {
 /// `in-process-asr` and no helper staged it reads them in process instead.
 pub fn probe_capabilities(model_path: &Path) -> Result<asr_engine::ModelCapabilities, String> {
     if let Some(bin) = helper_binary() {
+        log::info!("engine probe via=helper");
+        // `engine` drops at the end of this block: the helper is asked to
+        // exit, then killed by its PID past the cap.
         let engine = HelperEngine::spawn(&bin, model_path)?;
         return engine
             .caps
             .clone()
             .ok_or_else(|| "the speech helper did not report its capabilities".to_string());
-        // `engine` drops here: the helper is asked to exit, then killed by PID.
     }
+    log::info!("engine probe via=in_process");
     probe_in_process(model_path)
 }
 
