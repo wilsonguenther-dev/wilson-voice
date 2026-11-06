@@ -5504,7 +5504,13 @@ mod tests {
     #[test]
     fn capture_opens_the_picked_device_not_the_raw_default() {
         let src = include_str!("record.rs");
-        let code: String = src
+        // Production code only: the assertions below must not be satisfied by
+        // their own string literals in this test module.
+        let prod = src
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("record.rs has a body");
+        let code: String = prod
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()

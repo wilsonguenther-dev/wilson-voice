@@ -368,7 +368,8 @@ fn wake() -> &'static (Mutex<bool>, Condvar) {
     WAKE.get_or_init(|| (Mutex::new(false), Condvar::new()))
 }
 
-/// Ask the watcher to re-enumerate now instead of at its next tick.
+/// Ask the watcher to re-enumerate and republish now instead of at its next
+/// tick.
 pub fn poke() {
     let (lock, cv) = wake();
     *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
@@ -393,9 +394,13 @@ pub fn start_watch(publish: impl Fn(&MicList) + Send + 'static) {
         .name("wv-mic-watch".into())
         .spawn(move || {
             let mut last: Option<MicList> = None;
+            // A poke (a pick from either picker) always republishes, even when
+            // the snapshot is unchanged: re-picking the checked tray row
+            // un-checks it natively, and only a redraw puts the check back.
+            let mut forced = false;
             loop {
                 let next = list();
-                if should_publish(last.as_ref(), &next) {
+                if forced || should_publish(last.as_ref(), &next) {
                     log::info!(
                         "mic_select list_changed devices={} chosen={} chosen_missing={}",
                         next.devices.len(),
@@ -413,6 +418,7 @@ pub fn start_watch(publish: impl Fn(&MicList) + Send + 'static) {
                         .map(|(g, _)| g)
                         .unwrap_or_else(|p| p.into_inner().0);
                 }
+                forced = *woken;
                 *woken = false;
             }
         });
