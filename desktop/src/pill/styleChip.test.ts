@@ -70,4 +70,14 @@ describe("WF-20 style chip matrix scene", () => {
     expect(forcedStyleChip("?phase=listening")).toBe(null);
     expect(chipShows(SAMPLE_STYLE_CHIP, "listening")).toBe(true);
   });
+
+  it("the matrix row is a listening pill that must carry the sample chip", async () => {
+    const { matrixStyleChipScene } = await import("./forced");
+    const { SAMPLE_STYLE_CHIP } = await import("./styleChip");
+    const row = matrixStyleChipScene();
+    expect(row.id).toBe("style-chip");
+    expect(row.phase).toBe("listening");
+    expect(row.query).toBe("styleChip=1");
+    expect(row.chip).toBe(SAMPLE_STYLE_CHIP.mode);
+  });
 });
