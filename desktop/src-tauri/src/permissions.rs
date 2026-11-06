@@ -217,7 +217,7 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
         report.probe.listen_event_hid == GrantState::Authorized,
         report.input_monitoring,
     );
-    report.duplicate_bundles = crate::perm_truth::duplicate_bundles().to_vec();
+    report.duplicate_bundles = crate::perm_truth::duplicate_bundles();
     report
 }
 
