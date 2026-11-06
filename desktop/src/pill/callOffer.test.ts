@@ -13,7 +13,6 @@ import {
   ACCEPT_CALL_OFFER,
   CALL_OFFER_CHOOSE,
   COUNTDOWN_MS,
-  type CallOfferChoice,
   type CallOfferView,
 } from "./callOfferModel";
 
@@ -103,7 +102,7 @@ describe("CallOffer — yap-call-1", () => {
   });
 
   it("Never persists: it goes to call_offer_choose with choice never for this offer", async () => {
-    const onChoose = vi.fn<(c: CallOfferChoice) => void>();
+    const onChoose = vi.fn();
     button(surface(ZOOM, 0, vi.fn(), onChoose), "call-offer-never").props.onClick();
     expect(onChoose).toHaveBeenCalledWith("never");
     const call = vi.fn().mockResolvedValue(null);
