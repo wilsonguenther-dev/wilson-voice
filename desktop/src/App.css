@@ -2621,11 +2621,20 @@ button.star.on {
 
 .transcript li {
   display: grid;
-  grid-template-columns: 4.6rem 2.6rem 1fr;
+  grid-template-columns: 4.6rem 2.6rem minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
+}
+/* yap-1106-transcript-grid · a single-track row has NO speaker cell (in person,
+   or a call whose tap sent nothing), so it gets a two-column template. With
+   the three-column one, auto-placement dropped the prose into the 2.6 rem
+   speaker column and `word-break` let it wrap inside words: 36 px lines of
+   "unde / rstan / d". Measured in headless WebKit: .seg-text 36x434 px before,
+   672x22 px after. */
+.transcript:not(.two-track) li {
+  grid-template-columns: 4.6rem minmax(0, 1fr);
 }
 .transcript li:hover {
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
@@ -2650,7 +2659,7 @@ button.star.on {
    left edge of the text stays a single vertical line, so a long meeting still
    scans as one column of prose instead of a zig-zag. */
 .transcript.two-track li {
-  grid-template-columns: 4.6rem 3.4rem 1fr;
+  grid-template-columns: 4.6rem 3.4rem minmax(0, 1fr);
 }
 .transcript.two-track .seg-who {
   font-weight: 600;
@@ -2660,7 +2669,14 @@ button.star.on {
 }
 .seg-text {
   line-height: 1.55;
-  word-break: break-word;
+  /* The LAST column, however many cells precede it — the template, not the
+     cell count, decides where the prose goes. `minmax(0, 1fr)` on that track
+     (not `1fr`, whose minimum is the content's min-content) is what lets a
+     long unbroken token shrink the column instead of widening the row. */
+  grid-column: -2 / -1;
+  /* `overflow-wrap`, not `word-break`: a word is only split when it alone is
+     wider than the line, so the min-content width stays a whole word. */
+  overflow-wrap: break-word;
 }
 
 /* The Insights strip: a full-width panel above the existing grid, with its own
@@ -2678,8 +2694,11 @@ button.star.on {
    transcript that drops attribution to save 2.6rem is a worse transcript. */
 @media (max-width: 900px) {
   .transcript li {
-    grid-template-columns: 4.2rem 2.4rem 1fr;
+    grid-template-columns: 4.2rem 2.4rem minmax(0, 1fr);
     gap: 8px;
+  }
+  .transcript:not(.two-track) li {
+    grid-template-columns: 4.2rem minmax(0, 1fr);
   }
   .meeting-strip .stats-row {
     grid-template-columns: repeat(2, 1fr);
