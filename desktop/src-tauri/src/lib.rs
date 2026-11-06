@@ -141,6 +141,8 @@ pub mod meeting_echo;
 // AVAuthorizationStatus discriminants and the call-site sweep without a
 // microphone, a grant or a window server.
 pub mod mic_auth;
+// WF-09 — the microphone picker: pinned input device, resolved by stable id.
+pub mod mic_select;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
@@ -1825,6 +1827,12 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         TrayCommand::RecordUpcoming(index) => {
             record_upcoming_meeting(app, state, index);
         }
+        // WF-09 — pick a microphone from the submenu. Resolved against the rows
+        // ON SCREEN; saved off the main thread; the device watcher is woken by
+        // `mic_select::choose` and redraws the submenu with the new check.
+        TrayCommand::PickMicrophone(index) => {
+            pick_microphone_from_tray(app, index);
+        }
         // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
         // and re-publishes, which redraws the calendar rows.
         TrayCommand::ToggleHideMeetingTitles => {
@@ -1901,6 +1909,115 @@ fn record_upcoming_meeting(app: &AppHandle, state: &Arc<AppState>, index: usize)
             "Yap could not run that — try again".to_string(),
         );
     }
+}
+
+/// WF-09 — the tray half of a microphone pick. A disabled row (a pinned mic
+/// that is not connected) never dispatches; any other row saves its choice.
+fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
+    let Some(row) = tray_menu::microphone_row(index) else {
+        log::warn!("tray pick_microphone stale_row index={index}");
+        return;
+    };
+    if !row.enabled {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("wv-mic-pick".into())
+        .spawn(move || {
+            if mic_select::choose(row.choice.clone(), row.name.clone(), "tray").is_err() {
+                // The check item flipped itself on the click; the watcher's next
+                // publish (poked by a later pick, or the device list moving)
+                // redraws it — and the user is told now.
+                mic_select::poke();
+                notify(&app, "Yap", "Yap could not save that microphone — try again");
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("tray pick_microphone spawn_failed error={e}");
+    }
+}
+
+/// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
+/// The submenu is found by id and replaced whole, so a retry after a
+/// half-applied failure is idempotent; what was drawn is recorded in
+/// `tray_menu::MIC_SHOWN` only on success.
+fn apply_microphone_menu_on_main(app: &AppHandle, state: &AppState, list: &mic_select::MicList) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray microphone_menu skipped reason=tray_not_built");
+        return;
+    };
+    let plan = tray_menu::microphone_menu(list);
+    match place_microphone_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray microphone_menu synced rows={} chosen={} chosen_missing={}",
+                plan.rows.len(),
+                list.chosen_id.is_some(),
+                list.chosen_missing
+            );
+            tray_menu::MIC_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray microphone_menu apply_failed error={e}");
+            tray_menu::MIC_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_microphone_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::MicMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, directly under Hands-free: the Dictation group.
+    let at = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the microphone submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| {
+            CheckMenuItem::with_id(
+                app,
+                r.id.as_str(),
+                &r.text,
+                r.enabled,
+                r.checked,
+                None::<&str>,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_MICROPHONE,
+        tray_menu::label(tray_menu::ID_MICROPHONE),
+        true,
+        &children
+            .iter()
+            .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
 }
 
 /// WF-07 — the ONE place the calendar rows of the menu are mutated. MAIN
@@ -5581,6 +5698,26 @@ fn request_microphone(app: AppHandle) -> String {
 #[tauri::command]
 fn microphone_status() -> String {
     mic_auth::authorization_status().as_str().to_string()
+}
+
+/// WF-09 — Settings → Audio → Microphone: every input device plugged in now,
+/// the saved pick and the device the next take opens. `async` so the HAL
+/// enumeration never runs on the main thread.
+#[tauri::command]
+async fn list_microphones() -> Result<mic_select::MicList, String> {
+    Ok(mic_select::list())
+}
+
+/// WF-09 — save the pick (`id: null` = System Default). Used by the NEXT take;
+/// the watcher re-publishes so the tray submenu and every open picker redraw.
+#[tauri::command]
+async fn set_microphone(
+    id: Option<String>,
+    name: Option<String>,
+) -> Result<mic_select::MicList, String> {
+    mic_select::choose(id, name, "settings")
+        .map_err(|_| "Yap could not save that microphone. Try again.".to_string())?;
+    Ok(mic_select::list())
 }
 
 #[tauri::command]
@@ -11204,6 +11341,8 @@ pub fn run() {
             relaunch_app,
             request_microphone,
             microphone_status,
+            list_microphones,
+            set_microphone,
             get_insights,
             daily_series,
             monthly_series,
@@ -11963,6 +12102,23 @@ pub fn run() {
                 state.db.clone(),
                 float_pill::meeting_recording,
             );
+            // WF-09 — the device-list watcher fills the Microphone submenu at
+            // launch and redraws it (and tells every open Settings picker)
+            // whenever a mic is plugged in, unplugged, or picked.
+            let mic_app = app.handle().clone();
+            mic_select::start_watch(move |list| {
+                let _ = mic_app.emit(mic_select::CHANGED_EVENT, list);
+                let app_main = mic_app.clone();
+                let list = list.clone();
+                let hop = mic_app.run_on_main_thread(move || {
+                    if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                        apply_microphone_menu_on_main(&app_main, &state, &list);
+                    }
+                });
+                if let Err(e) = hop {
+                    log::warn!("tray microphone_menu hop_failed error={e}");
+                }
+            });
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
