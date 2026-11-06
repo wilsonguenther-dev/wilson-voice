@@ -62,6 +62,7 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -616,7 +617,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />

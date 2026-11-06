@@ -31,6 +31,8 @@
 // a leaf dependency and no cycle.
 import { GATED_HEADLINE } from "./license";
 import type { MilestoneId, NudgeId } from "./nudge";
+// yap-1106-voice-modes — the voices table is a leaf (imports nothing from here).
+import { duringLines, type VoiceId } from "./voices";
 
 /** The user's companion tone (YV27). Anything unknown reads as friendly. */
 export type ChatTone = "rude" | "friendly" | "rose";
@@ -198,6 +200,12 @@ export function advanceLive(
   level: number,
   tone: ChatTone,
   cfg: LiveTuning = DEFAULT_LIVE,
+  /**
+   * yap-1106-voice-modes — when given, the during-take lines come from this
+   * voice (voices.ts: Best friend, Badass, Professional, Rose) instead of the
+   * tone tables below. Omitted, behaviour is exactly as before.
+   */
+  voice?: VoiceId,
 ): LiveFrame {
   s.wallT += dt;
 
@@ -226,14 +234,19 @@ export function advanceLive(
   if (idx > s.said) {
     // crossed into a new tier — react to it immediately
     s.said = idx;
-    const line = LIVE_LINE[tier];
-    if (line) { say = line[tone]; s.chatterN = 0; }
+    if (voice) {
+      // A voice speaks its own tier slice; quick stays quiet on entry like LIVE_LINE.
+      if (tier !== "quick") { say = duringLines(voice, idx, LIVE_TIERS.length)[0] ?? null; s.chatterN = 1; }
+    } else {
+      const line = LIVE_LINE[tier];
+      if (line) { say = line[tone]; s.chatterN = 0; }
+    }
     s.chatterT = CHATTER_GAP[tier];
   } else {
     // ── repeating chatter ── the take keeps running, so Yappy keeps talking.
     s.chatterT -= dt;
     if (s.chatterT <= 0) {
-      const pool = LIVE_WORK[tier][tone];
+      const pool = voice ? duringLines(voice, idx, LIVE_TIERS.length) : LIVE_WORK[tier][tone];
       say = pool[s.chatterN % pool.length];
       s.chatterN++;
       s.chatterT = CHATTER_GAP[tier];

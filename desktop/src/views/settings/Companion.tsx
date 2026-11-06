@@ -1,4 +1,5 @@
 import { useAppCtx } from "../../appShell";
+import { VOICE_OPTIONS, VOICES, voiceFor } from "../../pill/voices";
 
 /**
  * The pill styles a user can pick. yap-1106-retire-classic-pill: Classic is
@@ -74,33 +75,32 @@ export default function Companion() {
                     <p className="settings-hint">The side docks pin it halfway down that edge, out of the way of your text.</p>
                   </div>
                   <div className="panel" data-row>
-                    <h3>Companion tone</h3>
-                    <div className="profile-row">
-                      {(
-                        [
-                          ["friendly", "Friendly", "Warm and encouraging"],
-                          ["rude", "Rude 😏", "Sassy — teases when you ramble"],
-                          ["rose", "Rose 🌹", "Sweet and adoring"],
-                        ] as const
-                      ).map(([id, label, blurb]) => (
-                        <button
-                          key={id}
-                          type="button"
-                          className={
-                            (settings.companionTone ?? "friendly") === id
-                              ? "profile active"
-                              : "profile"
-                          }
-                          onClick={() =>
-                            saveSettings({ ...settings, companionTone: id })
-                          }
-                        >
-                          <strong>{label}</strong>
-                          <span>{blurb}</span>
-                        </button>
-                      ))}
+                    <h3 id="yappy-voice-heading">Yappy's voice</h3>
+                    {/* yap-1106-voice-modes — Best friend, Badass, Professional, plus
+                        Rose as a fourth. The stored ids stay friendly/rude/rose so an
+                        existing choice carries over; "professional" is new. */}
+                    <div className="profile-row" role="group" aria-labelledby="yappy-voice-heading">
+                      {VOICE_OPTIONS.map(([id, voice]) => {
+                        const selected = voiceFor(settings.companionTone) === voice;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            aria-pressed={selected}
+                            data-voice={voice}
+                            className={selected ? "profile active" : "profile"}
+                            onClick={() => {
+                              console.info(`settings voice_set voice=${voice}`);
+                              saveSettings({ ...settings, companionTone: id });
+                            }}
+                          >
+                            <strong>{VOICES[voice].name}</strong>
+                            <span>{VOICES[voice].blurb}</span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <p className="settings-hint">How Yappy reacts when you finish, whichever companion you picked.</p>
+                    <p className="settings-hint">What Yappy says while you talk and when you finish. It applies to whichever companion sits in the pill.</p>
                   </div>
                   <div className="panel" data-row>
                   <h3>Always on screen</h3>
