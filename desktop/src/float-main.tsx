@@ -63,6 +63,7 @@ import {
   pillLayout,
   publishPillLayout,
   shrinkDelay,
+  layoutCharacterFor,
   type LayoutCharacter,
   type MeetingMode,
   type PillLayout,
@@ -530,7 +531,7 @@ function Float() {
   // same three inputs everything else above reads: the phase, the meeting and
   // the dock (pill/state.ts). It places the clock, the hint and the bubble
   // against the character's box and sizes the panel to their union.
-  const layoutCharacter: LayoutCharacter = Stage ? "yappy" : "legacy";
+  const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
   const cardH = useCardOnScreen();
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);

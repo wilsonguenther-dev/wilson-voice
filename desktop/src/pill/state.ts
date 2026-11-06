@@ -45,6 +45,15 @@ export type MeetingMode = "none" | "recording" | "after";
  */
 export type LayoutCharacter = "yappy" | "legacy";
 
+/**
+ * Which layout a mounted character gets, from whether it declares a `stage`.
+ * Lives here so the mount point (float-main.tsx) never names a creature
+ * (characters.test.ts a_new_creature_needs_no_shell_change).
+ */
+export function layoutCharacterFor(hasStage: boolean): LayoutCharacter {
+  return hasStage ? "yappy" : "legacy";
+}
+
 export interface Box { x: number; y: number; w: number; h: number }
 
 export interface PillInput {

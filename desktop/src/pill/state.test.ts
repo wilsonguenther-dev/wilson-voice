@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { ALL_LIVE_PHASES } from "./live";
 import { BAR_DOCKS } from "./dock";
 import {
+  layoutCharacterFor,
   CHARACTER_OPEN, CHARACTER_REST, CLOCK_REACH_PT, LEGACY_PANEL, PANEL_MARGIN, SHRINK_HOLD_MS,
   boxGap, boxesOverlap, capsuleCentre, currentPillLayout, layoutProblems, layoutVars, meetingMode, pillLayout,
   publishPillLayout, shrinkDelay, unionBox, type MeetingMode, type PillLayout,
@@ -222,5 +223,12 @@ describe("pill/state — one pill, one layout", () => {
     const good = pillLayout({ phase: "idle", meeting: "recording", dock: "bottom" });
     const out: PillLayout = { ...good, hint: { ...good.hint, x: -40 } };
     expect(layoutProblems(out).join(";")).toMatch(/hint outside the panel/);
+  });
+});
+
+describe("layoutCharacterFor", () => {
+  it("a character with its own stage lays out as yappy, one without as legacy", () => {
+    expect(layoutCharacterFor(true)).toBe("yappy");
+    expect(layoutCharacterFor(false)).toBe("legacy");
   });
 });
