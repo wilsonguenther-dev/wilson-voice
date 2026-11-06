@@ -1300,10 +1300,8 @@ mod tests {
         let err = got.expect_err("no installed model must refuse");
         assert_eq!(calls, 0, "--bench called the downloader");
         assert!(err.contains("yap-bench-state"), "names the data dir: {err}");
-        assert!(
-            !err.contains(root.to_string_lossy().as_ref()),
-            "no full path: {err}"
-        );
+        let root_str = root.to_string_lossy().into_owned();
+        assert!(!err.contains(root_str.as_str()), "no full path: {err}");
         assert!(err.contains("never downloads"), "{err}");
         assert_eq!(err.matches(". ").count(), 0, "one sentence: {err}");
         assert!(
