@@ -339,7 +339,8 @@ function __pillDetect(want) {
     const off = painted.filter(([n, b, want]) => n !== "character" && (!want || !inside(b, want))).map(([n, b]) => n + " " + box({ left: b.x, top: b.y, width: b.w, height: b.h }));
     if (off.length) out.push({ id: "slot-off-layout", detail: off.join("; ") });
     const clock = painted.find((p) => p[0] === "clock");
-    if (want && want.meeting === "recording" && !clock) out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
+    // WF-02 — a dragged pill is the blob, Yappy's face and nothing else: the clock steps aside by design.
+    if (want && want.meeting === "recording" && !clock && want.drag !== "blob") out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
     if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
     const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
