@@ -124,6 +124,7 @@ describe("window shortcuts", () => {
     expect(k("+")).toBe("bigger");
     expect(k("-")).toBe("smaller");
     expect(k("_")).toBe("smaller");
+    expect(k("−")).toBe("smaller");
     expect(k("e")).toBe("toggleRail");
     expect(k("E")).toBe("toggleRail");
   });
