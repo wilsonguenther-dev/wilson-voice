@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppCtx } from "../../appShell";
+import { browserCallsLines } from "./browserCalls";
 
 /** Mirrors `meeting_detect::DetectSettingsView`. */
 interface DetectSettingsView {
@@ -25,7 +26,7 @@ interface MeetingExportLocation {
 }
 
 export default function Meetings() {
-  const { toast, toastError } = useAppCtx();
+  const { toast, toastError, perms, setNav } = useAppCtx();
   const [view, setView] = useState<DetectSettingsView | null>(null);
   // yap-1106 — the export folder: shown, openable, changeable.
   const [exportLoc, setExportLoc] = useState<MeetingExportLocation | null>(null);
@@ -130,6 +131,28 @@ export default function Meetings() {
           starts recording on its own.
         </p>
       </div>
+      {(() => {
+        // yap-call-2 — calls in a browser: the front-tab limit, and the one
+        // Accessibility line (links the Permissions view; never prompts).
+        const lines = browserCallsLines(perms ? perms.accessibility : null);
+        return (
+          <div className="panel" data-row data-settings-row="browser-calls">
+            <h3>Calls in a browser</h3>
+            <p className="settings-hint">{lines.intro}</p>
+            <p className="settings-hint" data-front-tab-limit>
+              {lines.frontTab}
+            </p>
+            {lines.axOff && (
+              <p className="settings-hint" data-browser-calls-ax-off>
+                <button type="button" className="linklike" onClick={() => setNav("permissions")}>
+                  {lines.axOff}
+                </button>
+              </p>
+            )}
+            <p className="settings-hint">{lines.safari}</p>
+          </div>
+        );
+      })()}
       <div className="panel" data-row data-settings-row="call-offer-never">
         <h3>Never offer for</h3>
         {never.length === 0 ? (

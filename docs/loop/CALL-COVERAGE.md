@@ -27,8 +27,8 @@ How a column gets filled:
 | Discord | `com.hnc.Discord` | UNVERIFIED: not installed | UNVERIFIED (expected: a Discord helper) | UNVERIFIED | Discord call — record it? | UNVERIFIED | |
 | WhatsApp | `net.whatsapp.WhatsApp` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | WhatsApp call — record it? | UNVERIFIED | |
 | Webex | `Cisco-Systems.Spark` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | Webex call — record it? | UNVERIFIED | |
-| Chrome-family Meet (Chrome) | `com.google.Chrome` | yes (`defaults read`) | UNVERIFIED (expected: `com.google.Chrome.helper`, ppid = Chrome) | UNVERIFIED | Google Meet call — record it? (title match) / Google Chrome call — record it? (AX unknown) | UNVERIFIED | browser: verified only from a walk with ax_source "yap" |
-| Chrome-family Meet (Edge) | `com.microsoft.edgemac` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | Google Meet call — record it? | UNVERIFIED | browser |
-| Chrome-family Meet (Brave) | `com.brave.Browser` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | Google Meet call — record it? | UNVERIFIED | browser |
-| Chrome-family Meet (Arc) | `company.thebrowser.Browser` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | Google Meet call — record it? | UNVERIFIED | browser |
-| Safari | `com.apple.Safari` | yes (`defaults read`) | UNVERIFIED (expected: `com.apple.WebKit.GPU`, ppid 1) | UNVERIFIED | Google Meet call — record it? (title match only) | UNVERIFIED | WebKit.GPU is attributed ONLY with a Safari window-title match |
+| Chrome-family calls (Chrome) | `com.google.Chrome` | yes (`defaults read`) | UNVERIFIED (expected: `com.google.Chrome.helper`, ppid = Chrome) | UNVERIFIED | Google Meet / Zoom / Microsoft Teams / Slack / Discord / Whereby / Webex / Around call — record it? (front-tab title match) / Browser call (site unknown) — record it? (AX off, calendar match only) | UNVERIFIED | browser: verified only from a walk with ax_source "yap" |
+| Chrome-family calls (Edge) | `com.microsoft.edgemac` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | same title patterns as Chrome (yap-call-2) | UNVERIFIED | browser |
+| Chrome-family calls (Brave) | `com.brave.Browser` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | same title patterns as Chrome (yap-call-2) | UNVERIFIED | browser |
+| Chrome-family calls (Arc) | `company.thebrowser.Browser` | UNVERIFIED: not installed | UNVERIFIED | UNVERIFIED | same title patterns as Chrome (yap-call-2) | UNVERIFIED | browser |
+| Safari | `com.apple.Safari` | yes (`defaults read`) | UNVERIFIED (expected: `com.apple.WebKit.GPU`, ppid 1) | UNVERIFIED | none — DEFERRED (yap-call-2 Safari + Firefox, docs/loop/DEFERRED.md) | UNVERIFIED | WebKit.GPU never produces an offer this release |
