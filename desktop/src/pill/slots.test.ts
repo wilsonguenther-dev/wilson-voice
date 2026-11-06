@@ -15,9 +15,11 @@ vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn(() => Promise.resolve()) }
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: vi.fn() } }));
 
 import GEOMETRY from "./dock-geometry.json";
+import { invoke } from "@tauri-apps/api/core";
 import {
-  FLOW_BAR_SLOTS, FlowBarSlots, layoutSlots, pressSlot, SCRATCHPAD_WINDOW_LANDED, SLOT_GAP_PX,
-  slotById, slotLength, tooltipSide, wordReadout, type SlotCtx,
+  FLOW_BAR_SLOTS, FlowBarSlots, layoutSlots, meetingNoteTitle, pressSlot, railFailed, railKeysFrom,
+  railLogLine, railShown, SCRATCHPAD_WINDOW_LANDED, SLOT_GAP_PX, slotAxis, slotById, slotLength,
+  subscribeRailFailure, tooltipSide, wordReadout, type RailBindingRow, type SlotCtx,
 } from "./slots";
 import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
@@ -46,8 +48,10 @@ const render = (ctx: SlotCtx) =>
     )).join("");
 
 describe("Y8-B flow-bar slots", () => {
-  it("is exactly the five slots the spec names, Dictate in the centre, and no trial numeral", () => {
-    expect(FLOW_BAR_SLOTS.map((s) => s.id).sort()).toEqual(["cancel", "dictate", "menu", "scratchpad", "wpm"]);
+  it("is the five take-time slots plus item 18's rail, Dictate in the centre, and no trial numeral", () => {
+    expect(FLOW_BAR_SLOTS.map((s) => s.id).sort()).toEqual([
+      "cancel", "dictate", "hands-free-stop", "meeting", "meeting-stop", "menu", "note", "scratchpad", "wpm",
+    ]);
     expect(FLOW_BAR_SLOTS.filter((s) => s.group === "centre").map((s) => s.id)).toEqual(["dictate"]);
     // Y2-B's numeral rides the capsule, never the slot row.
     expect(FLOW_BAR_SLOTS.some((s) => /trial|license|numeral/i.test(s.id))).toBe(false);
@@ -145,5 +149,138 @@ describe("Y8-B flow-bar slots", () => {
     expect(pressSlot(slotById("cancel"), ctxOf({ phase: "idle" }), noop, false)).toBe(false);
     // No slot handles pointerdown: the capsule's drag handlers receive it.
     expect(render(ctx)).not.toMatch(/pointerdown/i);
+  });
+});
+
+// ── yap-1106-pill-notes-and-meeting / WF-03 — the resting rail ──────────────
+
+const rows = (scratch: string, meeting: string, hold = "fn"): RailBindingRow[] => [
+  { action: "dictate_hold", key: hold, liveKey: hold },
+  { action: "open_scratchpad", key: scratch, liveKey: scratch },
+  { action: "record_meeting", key: meeting, liveKey: null },
+];
+const railCtx = (over: Partial<SlotCtx> = {}): SlotCtx =>
+  ctxOf({ phase: "idle", railOpen: true, keys: railKeysFrom(rows("⌃⌘J", "⌃⌘M")), ...over });
+const ids = (ctx: SlotCtx) => layoutSlots(ctx).placements.map((p) => p.id);
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe("item 18 / WF-03 pill rail", () => {
+  it("rail_shows_dictate_scratchpad_meeting_at_rest_and_note_stop_while_recording", () => {
+    // Closed (no hover, no focus): the resting pill is the seed alone, as before.
+    expect(ids(ctxOf({ phase: "idle" }))).toEqual(["dictate"]);
+    expect(railShown(ctxOf({ phase: "idle" }))).toBe(false);
+    // Hover/focus at rest: ONE rail — Scratchpad · Dictate · Meeting.
+    expect(ids(railCtx())).toEqual(["scratchpad", "dictate", "meeting"]);
+    // A meeting recording: Start gives way to Note and Stop meeting.
+    expect(ids(railCtx({ meetingRecording: true, meetingOnScreen: true }))).toEqual(
+      ["scratchpad", "dictate", "note", "meeting-stop"],
+    );
+    // Mid-take the rail never opens: the take owns the bar.
+    expect(railShown(railCtx({ phase: "listening" }))).toBe(false);
+    expect(ids(railCtx({ phase: "listening" }))).not.toContain("meeting");
+  });
+
+  it("tooltip_keycap_follows_a_rebind_without_restart", () => {
+    const before = render(railCtx());
+    expect(before).toContain('<kbd class="keycap">⌃⌘J</kbd>');
+    expect(before).toContain('<kbd class="keycap">⌃⌘M</kbd>');
+    // The user rebinds the Scratchpad: the next `hotkey_bindings` read is the
+    // next render's keys. Same mount, same module, no restart.
+    const after = render(railCtx({ keys: railKeysFrom(rows("⌥⌘N", "⌃⌘M")) }));
+    expect(after).toContain('<kbd class="keycap">⌥⌘N</kbd>');
+    expect(after).not.toContain("⌃⌘J");
+    // Dictate's keycap is the live hold key.
+    expect(slotById("dictate").keycap?.(railCtx({ keys: railKeysFrom(rows("x", "y", "fn⌃")) }))).toBe("fn⌃");
+  });
+
+  it("rail_keys_prefer_the_live_key_and_never_invent_one", () => {
+    expect(railKeysFrom([{ action: "open_scratchpad", key: "⌃⌘J", liveKey: "⌃⌥J" }]).scratchpad).toBe("⌃⌥J");
+    expect(railKeysFrom([{ action: "record_meeting", key: "⌃⌘M", liveKey: null }]).meeting).toBe("⌃⌘M");
+    expect(railKeysFrom([{ action: "record_meeting", key: "  ", liveKey: null }]).meeting).toBeNull();
+    expect(railKeysFrom(null)).toEqual({ dictate: null, scratchpad: null, meeting: null });
+    // No key: no keycap drawn at all.
+    expect(render(railCtx({ keys: railKeysFrom([]) }))).not.toContain("keycap");
+  });
+
+  it("rail_buttons_are_keyboard_reachable", () => {
+    for (const ctx of [railCtx(), railCtx({ meetingRecording: true, meetingOnScreen: true })]) {
+      const html = render(ctx);
+      const buttons = [...html.matchAll(/<button[^>]*>/g)].map((m) => m[0]);
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const b of buttons) {
+        expect(b).toContain('type="button"');
+        expect(b).not.toContain('tabindex="-1"');
+        expect(b).toMatch(/aria-label="[^"]+"/);
+      }
+    }
+    expect(render(railCtx())).toContain('aria-keyshortcuts="⌃⌘J"');
+    // Enter/Space on a focused rail button is handled by the button itself
+    // (FlowBarSlots onKeyDown -> pressSlot), the same path as a click.
+    expect(pressSlot(slotById("meeting"), railCtx(), noop, false)).toBe(true);
+  });
+
+  it("rail_rotates_on_left_and_right_docks", () => {
+    expect(slotAxis(railCtx({ dock: "bottom" }))).toBe("row");
+    expect(slotAxis(railCtx({ dock: "left" }))).toBe("column");
+    expect(slotAxis(railCtx({ dock: "right" }))).toBe("column");
+    // The meeting banner stays a row at every dock (dock-geometry.json).
+    expect(slotAxis(railCtx({ dock: "left", meetingRecording: true, meetingOnScreen: true }))).toBe("row");
+    for (const dock of DOCKS) {
+      const html = render(railCtx({ dock }));
+      const sides = new Set([...html.matchAll(/data-tip-side="(\w+)"/g)].map((m) => m[1]));
+      expect(sides).toEqual(new Set([tooltipSide(dock)]));
+      expect(html).toContain('data-rail="open"');
+      expect(html).toContain(`data-bar-axis="${dock === "bottom" ? "row" : "column"}"`);
+    }
+  });
+
+  it("rail_actions_reach_the_backend_commands", async () => {
+    const inv = vi.mocked(invoke);
+    inv.mockClear();
+    pressSlot(slotById("scratchpad"), railCtx(), noop, false);
+    pressSlot(slotById("meeting-stop"), railCtx({ meetingRecording: true }), noop, false);
+    pressSlot(slotById("note"), railCtx({ meetingRecording: true, meetingClock: "12:34", meetingTitle: "Standup" }), noop, false);
+    await flush();
+    await flush();
+    const names = inv.mock.calls.map((c) => c[0]);
+    expect(names).toContain("open_scratchpad");
+    expect(names).toContain("stop_meeting");
+    expect(inv).toHaveBeenCalledWith("save_note_draft", {
+      id: null,
+      title: "Meeting note · Standup · 12:34",
+      content: "[12:34] ",
+    });
+    // Start meeting asks the backend's own kind picker first.
+    inv.mockClear();
+    pressSlot(slotById("meeting"), railCtx(), noop, false);
+    await flush();
+    expect(inv.mock.calls.map((c) => c[0])).toContain("meeting_kind_choices");
+  });
+
+  it("hands_free_has_a_clickable_stop_with_its_key", () => {
+    const ctx = ctxOf({ phase: "listening-locked", stopKey: "⌃⌥Space" });
+    const stop = slotById("hands-free-stop");
+    expect(stop.visible(ctx)).toBe(true);
+    expect(stop.visible(ctxOf({ phase: "listening" }))).toBe(false);
+    expect(render(ctx)).toContain('<kbd class="keycap">⌃⌥Space</kbd>');
+    const toggle = vi.fn();
+    expect(pressSlot(stop, ctx, { toggleDictation: toggle }, false)).toBe(true);
+    expect(toggle).toHaveBeenCalledTimes(1);
+    // It fits the 30 px side-dock strip like every other take-time slot.
+    expect(stop.acrossPx(ctxOf({ phase: "listening-locked", dock: "left" }))).toBeLessThanOrEqual(GEOMETRY.strip_px);
+  });
+
+  it("note_title_and_telemetry_carry_no_text", () => {
+    expect(meetingNoteTitle("3:05")).toBe("Meeting note · 3:05");
+    expect(meetingNoteTitle(null, "  ")).toBe("Meeting note · 0:00");
+    expect(railLogLine("meeting_start", { kind: "in_person", dock: "left", ms: 12 })).toBe(
+      "pill_rail meeting_start kind=in_person dock=left ms=12",
+    );
+    const seen: string[] = [];
+    const un = subscribeRailFailure((s) => seen.push(s));
+    railFailed("meeting_stop", "boom", "Meeting didn't stop — use Stop in the menu bar.");
+    un();
+    railFailed("meeting_stop", "boom", "ignored after unsubscribe");
+    expect(seen).toEqual(["Meeting didn't stop — use Stop in the menu bar."]);
   });
 });

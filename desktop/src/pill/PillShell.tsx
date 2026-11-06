@@ -384,15 +384,15 @@ export default function ClassicPill(
   // trail along the length axis); `pill/slots.tsx` owns whether each is shown.
   const slotCtx: SlotCtx = {
     ...(slots ?? {
-    phase: gate,
-    // No `document` under a server render (ClassicPill.mark.test): bottom dock.
-    dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
-    meetingOnScreen: meeting.recording || meetingAfter !== null,
-    progress,
-    listen: { estWords: 0, sec: 0 },
-    scratchpadOnBar: false,
-    meetingRecording: meeting.recording,
-    stopKey: chordLabel,
+      phase: gate,
+      // No `document` under a server render (ClassicPill.mark.test): bottom dock.
+      dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
+      meetingOnScreen: meeting.recording || meetingAfter !== null,
+      progress,
+      listen: { estWords: 0, sec: 0 },
+      scratchpadOnBar: false,
+      meetingRecording: meeting.recording,
+      stopKey: chordLabel,
     }),
     // The CAPSULE owns hover and focus, so it alone opens the rail (a forced
     // matrix scene, `slots.railOpen`, holds it open without a pointer).

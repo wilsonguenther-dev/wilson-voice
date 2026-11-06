@@ -299,7 +299,8 @@ interface KindChoice {
  */
 async function startMeetingMenu(dock: BarDock): Promise<void> {
   railLog("meeting_menu", { dock });
-  const choices = await invoke<KindChoice[]>("meeting_kind_choices").catch(() => [] as KindChoice[]);
+  const got = await invoke<KindChoice[] | null>("meeting_kind_choices").catch(() => null);
+  const choices = Array.isArray(got) ? got.filter((c) => c && c.kind && c.label) : [];
   const start = (kind: string | null) => {
     const t0 = Date.now();
     invoke("start_meeting", { title: null, kind })
