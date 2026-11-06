@@ -619,6 +619,7 @@ mod meeting_menu_tests {
             capture_available: available,
             unavailable_reason: (!available).then(|| "no capture engine".to_string()),
             system_audio: None,
+            call_audio: None,
         }
     }
 

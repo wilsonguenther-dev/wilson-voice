@@ -2261,6 +2261,12 @@ pub struct TapDelivery {
     /// **The bit.** Set by the first sample that is not exactly zero, and never
     /// cleared. Once true, this session can never be reported as denied.
     pub ever_nonzero: bool,
+    /// yap-1106-call-audio-truth — per-channel frames that arrived in a block
+    /// carrying at least one non-zero sample. `nonzero_frames ÷ sample rate` is
+    /// the "seconds the call was audible" figure the stop line reports
+    /// (`meeting_control::meeting_tracks_line`), and it is what tells a tap
+    /// that delivered three hours of exact zeros from one that heard a call.
+    pub nonzero_frames: u64,
 }
 
 impl TapDelivery {
@@ -2268,8 +2274,11 @@ impl TapDelivery {
     pub fn observe(&mut self, anchor: &CaptureAnchor, samples: &[f32]) {
         self.callbacks += 1;
         self.frames += u64::from(anchor.frames);
-        if !self.ever_nonzero {
-            self.ever_nonzero = samples.iter().any(|s| *s != 0.0);
+        // Consumer-side, same as `fold_block`: a short-circuiting scan, so a
+        // live call costs one comparison and only silence reads the block.
+        if samples.iter().any(|s| *s != 0.0) {
+            self.ever_nonzero = true;
+            self.nonzero_frames = self.nonzero_frames.saturating_add(u64::from(anchor.frames));
         }
     }
 
@@ -2950,6 +2959,15 @@ impl MeetingTap {
     /// Everything the pump saw of other processes' output.
     pub fn output_evidence(&self) -> OutputEvidence {
         self.state.lock().output
+    }
+
+    /// yap-1106-call-audio-truth — seconds the tap delivered at all, and the
+    /// seconds of it that carried sound (blocks with a non-zero sample), in the
+    /// tap's own format. The stop line's `sys_s` / `sys_nonzero_s`.
+    pub fn delivered_seconds(&self) -> (f64, f64) {
+        let rate = f64::from(self.format.sample_rate.max(1));
+        let d = self.state.lock().delivery;
+        (d.frames as f64 / rate, d.nonzero_frames as f64 / rate)
     }
 
     /// This meeting's own verdict — [`meeting_permission_verdict`] over what

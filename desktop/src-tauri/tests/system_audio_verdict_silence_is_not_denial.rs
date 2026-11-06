@@ -26,6 +26,7 @@ fn zeros() -> TapDelivery {
         callbacks: 10_000,
         frames: 5_000_000,
         ever_nonzero: false,
+        nonzero_frames: 0,
     }
 }
 

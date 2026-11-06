@@ -66,6 +66,28 @@ export interface MeetingStatus {
    * phase is about.
    */
   systemAudio?: string | null;
+  /**
+   * yap-1106-call-audio-truth — the live "Call audio" chip's inputs, every
+   * tick of a running meeting. Absent on a backend that predates it; `null`
+   * when nothing is recording. Rendered through `meetings/callAudio.ts` only.
+   */
+  callAudio?: CallAudioLive | null;
+}
+
+/** Mirrors `meeting_control::CallAudioLive` (serde camelCase). */
+export interface CallAudioLive {
+  /** Was a system-audio tap wanted (a call, not an in-person room)? */
+  planned: boolean;
+  /** Is a tap open for this meeting? */
+  attached: boolean;
+  /** YV104's discriminator: has the tap EVER delivered a non-zero sample? */
+  everNonzero: boolean;
+  /** Seconds since the last non-zero sample (since start when none ever came). */
+  silentSeconds: number;
+  /** The ghost watchdog gave the track up. */
+  lost: boolean;
+  /** The setup row holds no proof of the System Audio Recording grant. */
+  grantUnknown: boolean;
 }
 
 export const IDLE_MEETING: MeetingStatus = {

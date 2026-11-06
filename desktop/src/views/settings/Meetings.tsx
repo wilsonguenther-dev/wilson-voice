@@ -65,6 +65,16 @@ export default function Meetings() {
           starts recording on its own.
         </p>
       </div>
+      {/* yap-1106-call-audio-truth — the one sentence that explains the
+          mechanism: a tap on this Mac's own sound, not a bot, not a plug-in. */}
+      <div className="panel" data-row data-settings-row="call-audio">
+        <h3>Call audio</h3>
+        <p className="settings-hint">
+          Yap records the call's sound from your Mac. No bot joins your call,
+          nothing to install. While a meeting records, the recording bar and
+          the pill show whether call audio is on, silent, or off.
+        </p>
+      </div>
     </section>
   );
 }

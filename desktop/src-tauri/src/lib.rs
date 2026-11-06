@@ -7306,6 +7306,10 @@ async fn run_system_audio_setup(
     let db = Arc::clone(&state.db);
     tauri::async_runtime::spawn_blocking(move || {
         let verdict = prewarm_system_audio();
+        // yap-1106-call-audio-truth — one line per run: this is also the chip's
+        // "Turn on call audio" action, and a run that lands here without a
+        // `granted` is the next thing a Diagnostics reader asks about.
+        log::info!("meeting system_audio_setup ran verdict={verdict:?}");
         db.record_system_audio_setup(verdict)
     })
     .await
