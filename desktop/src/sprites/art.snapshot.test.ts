@@ -9,7 +9,9 @@
  * drifted sprite fails CI, and so does an edit to the approved copy (sha256).
  */
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { createHash } from "node:crypto";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { CHICK_BOX, FRIENDS, H, SPRITE_FRAMES, SPRITE_NAMES, drawChick, type ChickPose, type Helpers, type PixelCtx, type SpriteName, type SpriteOpt } from "./art";
 import { Raster, snapDiff } from "./raster";

@@ -5,8 +5,11 @@
  * each art pixel a solid block of exactly its approved colour (no blur).
  */
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync, readdirSync, statSync } from "node:fs";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { join } from "node:path";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { fileURLToPath } from "node:url";
 import { FRIENDS, H, SPRITE_NAMES, type FriendSprite } from "./art";
 import { crispPlan, paintCrisp, type ArtBuffer, type CrispSurface } from "./crisp";
@@ -111,7 +114,7 @@ describe("paintCrisp — on screen the sprite is the approved art, block for blo
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 function walk(dir: string): string[] {
-  return readdirSync(dir).flatMap((f) => {
+  return (readdirSync(dir) as string[]).flatMap((f: string) => {
     const p = join(dir, f);
     if (statSync(p).isDirectory()) return f === "node_modules" || f === "approved" ? [] : walk(p);
     return [p];
