@@ -76,6 +76,11 @@ pub enum TrayCommand {
     /// WF-11 — "Language Settings…" at the bottom of the Languages submenu:
     /// Settings, on the Dictation sub-tab where "Languages I speak" lives.
     OpenLanguageSettings,
+    /// WF-14 — "Update ready — Restart to update". Restarts into the release
+    /// `install_update` already put on disk, but only through the quiet gate
+    /// ([`restart_click`]): while a take, a polish or a meeting runs the click
+    /// arms a deferred restart instead, and a second click cancels it.
+    RestartToUpdate,
     /// `app.exit(0)` — reaches `RunEvent::Exit` and its one bounded teardown
     /// (`lifecycle::quit_plan`), which drains the ASR engine, waits for the
     /// in-flight take and finalizes a live meeting. Never `process::exit`.
@@ -108,6 +113,7 @@ impl TrayCommand {
             TrayCommand::PickMicrophone(_) => "pick_microphone",
             TrayCommand::PickLanguage(_) => "pick_language",
             TrayCommand::OpenLanguageSettings => "open_language_settings",
+            TrayCommand::RestartToUpdate => "restart_to_update",
             TrayCommand::Quit => "quit",
         }
     }
@@ -115,7 +121,7 @@ impl TrayCommand {
 
 /// Every [`TrayCommand::name`]. The test walks this to prove no command is
 /// unreachable from the menu.
-pub const COMMAND_NAMES: [&str; 22] = [
+pub const COMMAND_NAMES: [&str; 23] = [
     "toggle_dictation",
     "paste_last_transcript",
     "copy_last_transcript",
@@ -137,6 +143,7 @@ pub const COMMAND_NAMES: [&str; 22] = [
     "pick_microphone",
     "pick_language",
     "open_language_settings",
+    "restart_to_update",
     "quit",
 ];
 
@@ -221,6 +228,11 @@ pub const LANGUAGE_AUTO_LABEL: &str = "Auto-detect";
 /// The Settings sub-tab "Language Settings…" lands on (the `SettingsTab` that
 /// renders `LanguageSettings`, see `desktop/src/views/settings/Dictation.tsx`).
 pub const LANGUAGE_SETTINGS_TAB: &str = "dictation";
+/// WF-14 — the "Update ready" line, inserted under the status header only
+/// while a downloaded release is waiting for a restart.
+pub const ID_UPDATE_READY: &str = "update_ready";
+/// WF-14 — the line's label while Yap is quiet and a click restarts at once.
+pub const UPDATE_READY_LABEL: &str = "Update ready \u{2014} Restart to update";
 
 /// The `navigate` payload that lands on the transcript history. Yap's history
 /// lives on the Home view (`desktop/src/views/Home.tsx`); there is no separate
@@ -228,7 +240,7 @@ pub const LANGUAGE_SETTINGS_TAB: &str = "dictation";
 /// frontend's `Nav` union so the two cannot drift.
 pub const HISTORY_NAV: &str = "home";
 
-pub const TRAY_ITEMS: [TrayItem; 24] = [
+pub const TRAY_ITEMS: [TrayItem; 25] = [
     TrayItem {
         id: ID_LICENSE_HEADER,
         label: "Yap",
@@ -349,6 +361,11 @@ pub const TRAY_ITEMS: [TrayItem; 24] = [
         label: "Languages",
         kind: ItemKind::LanguageSubmenu,
     },
+    TrayItem {
+        id: ID_UPDATE_READY,
+        label: UPDATE_READY_LABEL,
+        kind: ItemKind::Action(TrayCommand::RestartToUpdate),
+    },
 ];
 
 /// One slot of the menu as it is BUILT.
@@ -413,8 +430,10 @@ pub const MENU_LAYOUT: [Slot; 22] = [
 /// Hands-free once the device watcher has enumerated the inputs — it is
 /// rebuilt whenever a device is plugged in or the pick changes), and the
 /// "Languages" submenu (WF-11, under Microphone — or Hands-free before the
-/// device list lands — rebuilt on every language write from any surface).
-pub const INSERTED_ITEMS: [&str; 8] = [
+/// device list lands — rebuilt on every language write from any surface), and
+/// the "Update ready" line (WF-14, under the header — below the upgrade line
+/// when that shows — only while a downloaded release waits for a restart).
+pub const INSERTED_ITEMS: [&str; 9] = [
     ID_UPGRADE,
     ID_NOTES_READY,
     ID_MEETING_HEADER,
@@ -423,6 +442,7 @@ pub const INSERTED_ITEMS: [&str; 8] = [
     ID_HIDE_MEETING_TITLES,
     ID_MICROPHONE,
     ID_LANGUAGES,
+    ID_UPDATE_READY,
 ];
 
 /// The row for `id`, if the menu has one.
@@ -1621,5 +1641,391 @@ mod meeting_menu_tests {
         assert!(INSERTED_ITEMS.contains(&ID_MEETING_HEADER));
         assert_eq!(command_for(ID_MEETING_HEADER), None);
         assert_eq!(label(ID_MEETING_TOGGLE), MEETING_START_LABEL);
+    }
+}
+
+// ─── WF-14: "Update ready" and the quiet gate ───────────────────────────────
+
+/// What Yap is doing right now, as far as a restart is concerned. Filled in by
+/// `lib.rs::update_activity` from the live state on every `sync_tray`; pure
+/// here so the gate is testable without an app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Activity {
+    /// The microphone is open for a dictation (push-to-talk or hands-free).
+    pub dictating: bool,
+    /// A take is still being transcribed / pasted after the key came up.
+    pub take_in_flight: bool,
+    /// The polish step is rewriting a take ([`PolishGuard`]).
+    pub polishing: bool,
+    /// Meeting notes are queued or being written.
+    pub notes: bool,
+    /// A meeting is recording.
+    pub meeting: bool,
+}
+
+/// Why a restart has to wait. One reason is shown, the one that will take the
+/// longest to clear: a meeting, then polishing (take polish or notes), then a
+/// dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    Meeting,
+    Polish,
+    Take,
+}
+
+impl Busy {
+    /// Stable name for the log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Busy::Meeting => "meeting",
+            Busy::Polish => "polish",
+            Busy::Take => "take",
+        }
+    }
+}
+
+/// The reason a restart must wait, or `None` when Yap is quiet.
+pub fn restart_blocker(a: Activity) -> Option<Busy> {
+    if a.meeting {
+        Some(Busy::Meeting)
+    } else if a.polishing || a.notes {
+        Some(Busy::Polish)
+    } else if a.dictating || a.take_in_flight {
+        Some(Busy::Take)
+    } else {
+        None
+    }
+}
+
+/// THE restart gate: `true` only when nothing the user is doing would be cut
+/// off by a relaunch.
+pub fn restart_gate(a: Activity) -> bool {
+    restart_blocker(a).is_none()
+}
+
+/// The label of [`ID_UPDATE_READY`]. Quiet: "Update ready — Restart to
+/// update". Busy and not yet clicked: what a click will do ("Restart after
+/// this meeting"). Busy and clicked: the promise ("Will restart after this
+/// meeting"), with the way out — a second click cancels.
+pub fn update_ready_label(blocker: Option<Busy>, armed: bool) -> &'static str {
+    match (blocker, armed) {
+        (None, _) => UPDATE_READY_LABEL,
+        (Some(Busy::Meeting), false) => "Update ready \u{2014} Restart after this meeting",
+        (Some(Busy::Polish), false) => "Update ready \u{2014} Restart after polishing",
+        (Some(Busy::Take), false) => "Update ready \u{2014} Restart after this dictation",
+        (Some(Busy::Meeting), true) => "Will restart after this meeting \u{00b7} Cancel",
+        (Some(Busy::Polish), true) => "Will restart after polishing \u{00b7} Cancel",
+        (Some(Busy::Take), true) => "Will restart after this dictation \u{00b7} Cancel",
+    }
+}
+
+/// What one click on [`ID_UPDATE_READY`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartAction {
+    /// No release is waiting (a stale click): nothing.
+    Nothing,
+    /// Quiet — restart into the new release now.
+    RestartNow,
+    /// Busy — remember the request; restart the moment it is quiet.
+    Arm,
+    /// Busy and already armed — the user changed their mind.
+    Disarm,
+}
+
+/// The click decision. A restart is NEVER the answer while the gate is shut.
+pub fn restart_click(ready: bool, armed: bool, a: Activity) -> RestartAction {
+    if !ready {
+        RestartAction::Nothing
+    } else if restart_gate(a) {
+        RestartAction::RestartNow
+    } else if armed {
+        RestartAction::Disarm
+    } else {
+        RestartAction::Arm
+    }
+}
+
+/// The deferred half: on every state transition (`sync_tray`), restart now?
+/// Only for a release that is waiting, a user who asked, and a quiet Yap.
+pub fn restart_when_quiet(ready: bool, armed: bool, a: Activity) -> bool {
+    ready && armed && restart_gate(a)
+}
+
+/// Is the line in the menu? Only while a release NEWER than the running build
+/// is on disk. After the restart the new process runs that version, so the
+/// line is gone (and the in-memory [`UpdateReady`] starts empty anyway). An
+/// unparseable version is shown — a release we cannot compare is still one the
+/// user installed.
+pub fn update_item_visible(ready_version: Option<&str>, running_version: &str) -> bool {
+    let Some(ready) = ready_version else {
+        return false;
+    };
+    let parse = |v: &str| semver::Version::parse(v.trim().trim_start_matches('v')).ok();
+    match (parse(ready), parse(running_version)) {
+        (Some(r), Some(cur)) => r > cur,
+        _ => ready.trim().trim_start_matches('v') != running_version.trim().trim_start_matches('v'),
+    }
+}
+
+/// The downloaded-and-waiting release, held in THIS process's memory only.
+/// It survives nothing: a restart (the whole point) or a plain quit starts the
+/// next process with no line, because the release is already the running build.
+#[derive(Debug, Default)]
+pub struct UpdateReady {
+    inner: Mutex<UpdateReadyInner>,
+}
+
+#[derive(Debug, Default)]
+struct UpdateReadyInner {
+    version: Option<String>,
+    armed: bool,
+    shown: bool,
+}
+
+impl UpdateReady {
+    pub const fn new() -> Self {
+        Self {
+            inner: Mutex::new(UpdateReadyInner {
+                version: None,
+                armed: false,
+                shown: false,
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, UpdateReadyInner> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `install_update` finished: `version` is on disk and applies on relaunch.
+    /// A newer install replaces an older one; an armed request is kept.
+    pub fn mark_ready(&self, version: &str) {
+        self.lock().version = Some(version.to_string());
+    }
+
+    /// The waiting release, if any.
+    pub fn version(&self) -> Option<String> {
+        self.lock().version.clone()
+    }
+
+    pub fn is_armed(&self) -> bool {
+        self.lock().armed
+    }
+
+    pub fn set_armed(&self, armed: bool) {
+        self.lock().armed = armed;
+    }
+
+    /// Record whether the line is in the menu now; returns the previous value
+    /// so the caller inserts / removes only on an edge.
+    pub fn swap_shown(&self, shown: bool) -> bool {
+        std::mem::replace(&mut self.lock().shown, shown)
+    }
+
+    /// The tray was rebuilt: nothing is in the new menu yet.
+    pub fn reset_shown(&self) {
+        self.lock().shown = false;
+    }
+}
+
+/// The one process-wide [`UpdateReady`].
+pub static UPDATE_READY: UpdateReady = UpdateReady::new();
+
+/// How many polish passes are running right now (take polish). Read by the
+/// quiet gate; counted by [`PolishGuard`].
+static POLISH_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Held for the duration of one polish pass. Drop (including on a panic
+/// unwind or an early `?`) releases it, so the count can never stick high.
+#[must_use]
+pub struct PolishGuard(());
+
+impl PolishGuard {
+    pub fn enter() -> Self {
+        POLISH_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        PolishGuard(())
+    }
+}
+
+impl Drop for PolishGuard {
+    fn drop(&mut self) {
+        POLISH_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Is a polish pass running right now?
+pub fn polish_in_flight() -> bool {
+    POLISH_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
+#[cfg(test)]
+mod update_ready_tests {
+    use super::*;
+
+    fn quiet() -> Activity {
+        Activity::default()
+    }
+
+    /// Every busy state, one at a time.
+    fn each_busy_state() -> [(&'static str, Activity, Busy); 5] {
+        [
+            (
+                "dictating",
+                Activity {
+                    dictating: true,
+                    ..quiet()
+                },
+                Busy::Take,
+            ),
+            (
+                "take_in_flight",
+                Activity {
+                    take_in_flight: true,
+                    ..quiet()
+                },
+                Busy::Take,
+            ),
+            (
+                "polishing",
+                Activity {
+                    polishing: true,
+                    ..quiet()
+                },
+                Busy::Polish,
+            ),
+            (
+                "notes",
+                Activity {
+                    notes: true,
+                    ..quiet()
+                },
+                Busy::Polish,
+            ),
+            (
+                "meeting",
+                Activity {
+                    meeting: true,
+                    ..quiet()
+                },
+                Busy::Meeting,
+            ),
+        ]
+    }
+
+    #[test]
+    fn restart_gate_is_false_in_each_busy_state() {
+        assert!(restart_gate(quiet()), "a quiet Yap may restart");
+        for (name, a, why) in each_busy_state() {
+            assert!(!restart_gate(a), "restart gate open while {name}");
+            assert_eq!(restart_blocker(a), Some(why), "{name}");
+            // A click while busy never restarts: it arms, or disarms.
+            assert_eq!(restart_click(true, false, a), RestartAction::Arm, "{name}");
+            assert_eq!(
+                restart_click(true, true, a),
+                RestartAction::Disarm,
+                "{name}"
+            );
+            assert!(!restart_when_quiet(true, true, a), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_meeting_outranks_every_other_busy_state() {
+        let all = Activity {
+            dictating: true,
+            take_in_flight: true,
+            polishing: true,
+            notes: true,
+            meeting: true,
+        };
+        assert_eq!(restart_blocker(all), Some(Busy::Meeting));
+        assert_eq!(
+            update_ready_label(restart_blocker(all), true),
+            "Will restart after this meeting \u{00b7} Cancel"
+        );
+        let polish_and_take = Activity {
+            polishing: true,
+            take_in_flight: true,
+            ..quiet()
+        };
+        assert_eq!(restart_blocker(polish_and_take), Some(Busy::Polish));
+    }
+
+    #[test]
+    fn quiet_click_restarts_now_and_an_armed_request_fires_on_quiet() {
+        assert_eq!(
+            restart_click(true, false, quiet()),
+            RestartAction::RestartNow
+        );
+        assert_eq!(restart_click(false, false, quiet()), RestartAction::Nothing);
+        assert!(restart_when_quiet(true, true, quiet()));
+        assert!(!restart_when_quiet(true, false, quiet()), "nobody asked");
+        assert!(!restart_when_quiet(false, true, quiet()), "nothing waiting");
+    }
+
+    #[test]
+    fn labels_say_what_happens() {
+        assert_eq!(
+            update_ready_label(None, false),
+            "Update ready \u{2014} Restart to update"
+        );
+        assert_eq!(update_ready_label(None, true), UPDATE_READY_LABEL);
+        assert_eq!(
+            update_ready_label(Some(Busy::Meeting), true),
+            "Will restart after this meeting \u{00b7} Cancel"
+        );
+        assert_eq!(
+            update_ready_label(Some(Busy::Meeting), false),
+            "Update ready \u{2014} Restart after this meeting"
+        );
+        assert_eq!(label(ID_UPDATE_READY), UPDATE_READY_LABEL);
+        assert_eq!(
+            command_for(ID_UPDATE_READY),
+            Some(TrayCommand::RestartToUpdate)
+        );
+        assert!(INSERTED_ITEMS.contains(&ID_UPDATE_READY));
+        assert!(!MENU_LAYOUT.contains(&Slot::Item(ID_UPDATE_READY)));
+    }
+
+    #[test]
+    fn update_item_disappears_after_a_successful_restart() {
+        // Before: 1.4.0 is on disk, 1.3.2 is running — the line shows.
+        let before = UpdateReady::new();
+        before.mark_ready("1.4.0");
+        assert!(update_item_visible(before.version().as_deref(), "1.3.2"));
+        // After the restart: a NEW process (fresh in-memory state) running the
+        // installed build — no line, whichever way it is asked.
+        let after = UpdateReady::new();
+        assert_eq!(after.version(), None);
+        assert!(!after.is_armed());
+        assert!(!update_item_visible(after.version().as_deref(), "1.4.0"));
+        assert!(!update_item_visible(Some("1.4.0"), "1.4.0"));
+        assert!(!update_item_visible(Some("v1.4.0"), "1.4.0"));
+        assert!(
+            !update_item_visible(Some("1.3.0"), "1.4.0"),
+            "never offer a downgrade"
+        );
+    }
+
+    #[test]
+    fn update_ready_shown_latch_reports_edges() {
+        let u = UpdateReady::new();
+        assert!(!u.swap_shown(true));
+        assert!(u.swap_shown(true));
+        u.reset_shown();
+        assert!(!u.swap_shown(false));
+        u.set_armed(true);
+        assert!(u.is_armed());
+    }
+
+    #[test]
+    fn polish_guard_counts_and_releases() {
+        let before = polish_in_flight();
+        {
+            let _g = PolishGuard::enter();
+            assert!(polish_in_flight());
+        }
+        // Other tests do not hold a guard, so the count is back where it was.
+        assert_eq!(polish_in_flight(), before);
     }
 }
