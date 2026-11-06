@@ -362,18 +362,15 @@ fn opening_the_scratchpad_does_not_steal_focus() {
     }
     assert!(OpenStep::ActivateApp.steals_focus() && OpenStep::PresentMainWindow.steals_focus());
 
-    // 2. The window is declared hidden and unfocused, so launch never shows it
-    //    or takes focus with it.
-    let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-    let win = conf["app"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["label"] == scratchpad::WINDOW_LABEL)
-        .expect("a `scratchpad` window in tauri.conf.json");
-    assert_eq!(win["url"], "scratchpad.html");
-    assert_eq!(win["visible"], false);
-    assert_eq!(win["focus"], false);
+    // 2. yap-1106-one-pill — the window is made on FIRST USE, hidden and
+    //    unfocused (scratchpad::ensure_window), so launch never shows it or
+    //    takes focus with it. See launch_opens_two_windows_and_the_scratchpad_lazily.
+    let sp_src = include_str!("../src/scratchpad.rs");
+    let ensure = &sp_src[sp_src.find("pub fn ensure_window").expect("ensure_window")..];
+    let ensure = &ensure[..ensure.find("\n}\n").unwrap()];
+    for want in ["\"scratchpad.html\"", ".visible(false)", ".focused(false)"] {
+        assert!(ensure.contains(want), "ensure_window lacks `{want}`");
+    }
 
     // 3. The chord is wired to the panel, not to the main window.
     let lib = include_str!("../src/lib.rs");
@@ -399,4 +396,45 @@ fn opening_the_scratchpad_does_not_steal_focus() {
         assert!(!body.contains(banned), "open_on_main calls `{banned}`");
     }
     assert!(body.contains("nonactivating_panel()"));
+}
+
+/// yap-1106-one-pill — two windows at launch (main + the one pill panel), the
+/// Scratchpad created lazily on first use, and the launch count logged as
+/// `windows open=<n>` so a live run shows it.
+#[test]
+fn launch_opens_two_windows_and_the_scratchpad_lazily() {
+    // Only the main window is declared; the pill panel is built in setup by
+    // float_pill::ensure_float. The Scratchpad is not declared at all.
+    let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let labels: Vec<&str> = conf["app"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["label"].as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["main"],
+        "launch declares only main: {labels:?}"
+    );
+    assert!(!labels.contains(&scratchpad::WINDOW_LABEL));
+
+    // The one launch-time builder besides main is the pill panel.
+    let pill = include_str!("../src/float_pill.rs");
+    assert!(pill.contains("WebviewWindowBuilder::new(app, \"float\""));
+
+    // The opener makes the window when it is missing, never errors on it.
+    let sp_src = include_str!("../src/scratchpad.rs");
+    let open = &sp_src[sp_src.find("pub fn open(").expect("open")..];
+    let open = &open[..open.find("\n}\n").unwrap()];
+    assert!(open.contains("ensure_window(app)?"), "{open}");
+    // ...and installs the close-hides / blur-drops-target handling with it.
+    let ensure = &sp_src[sp_src.find("pub fn ensure_window").unwrap()..];
+    let ensure = &ensure[..ensure.find("\n}\n").unwrap()];
+    assert!(ensure.contains("prevent_close()") && ensure.contains("set_focused_note(false, None)"));
+
+    // Launch logs the count, and no launch path touches the Scratchpad window.
+    let lib = include_str!("../src/lib.rs");
+    assert!(lib.contains("\"lifecycle launch windows open={} labels={} scratchpad_lazy={}\""));
+    assert!(!lib.contains("get_webview_window(scratchpad::WINDOW_LABEL)"));
 }
