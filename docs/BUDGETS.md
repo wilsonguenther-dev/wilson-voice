@@ -281,6 +281,15 @@ the quit's step deadlines (`lifecycle::QuitStep::deadline`, summing to `QUIT_BUD
 is a one-shot bound on a wait that only happens at quit, not a polling interval; the 10 ms
 `EXIT_WAIT_POLL` that the take wait loops on was already in the row.
 
+Row change (2026-11-06, yap-1106-retry-failed-dictation): transcription.rs `50:3 -> 50:4` is
+`ENGINE_IDLE_POLL`, the interval a queued retry re-checks `TranscriptionManager::is_busy` while a
+live take still owns the single engine. It is bounded by the clip-scaled retry deadline (30 s floor,
+clip + 15 s, 180 s ceiling) and only runs while a retry is queued behind a live take — background
+work waiting its turn, coarser than the 10 ms handback poll on purpose. lib.rs grows to
+`{5:5, 10:2, 50:1, 100:2, 150:2, 200:1, 300:2, 350:1, 400:2, 500:1, 600:1, 900:1}`; every added
+literal is inside `#[cfg(test)] mod retry_engine_tests` (fake-engine decode durations, test
+deadlines, and 5/10 ms sleeps in test-only wait loops). No production wakeup was added to lib.rs.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a
