@@ -1330,7 +1330,7 @@ describe("WF-17 pill message categories", () => {
     expect(PILL_MESSAGES["copy-card"]).toBe("recovery");
     expect(PILL_MESSAGES["nudge:no-text-field"]).toBe("tip");
     expect(PILL_MESSAGES["nudge:meetings"]).toBe("news");
-    for (const id of MILESTONE_IDS) expect(PILL_MESSAGES[`milestone:${id}`]).toBe("milestone");
+    for (const id of MILESTONE_IDS) expect(PILL_MESSAGES[`milestone:${id}` as const]).toBe("milestone");
   });
 
   it("muted_categories_never_reach_the_pill", () => {
@@ -1354,7 +1354,7 @@ describe("WF-17 pill message categories", () => {
   });
 
   it("an untagged id is refused, never shown uncategorised", () => {
-    expect(pillMessageAllowed("nudge:not-a-real-one" as PillMessageId, new Set())).toBe(false);
+    expect(pillMessageAllowed("nudge:not-a-real-one" as unknown as PillMessageId, new Set())).toBe(false);
   });
 
   it("parseMutedCategories and withMuted are total and keep table order", () => {

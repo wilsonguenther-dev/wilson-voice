@@ -125,7 +125,7 @@ export function nextNudge(ctx: NudgeContext, shown: NudgeShown): Nudge | null {
   const muted = shown.muted ?? NOTHING_MUTED;
   for (const id of NUDGE_IDS) {
     // WF-17 — a muted category never reaches the pill.
-    if (!pillMessageAllowed(`nudge:${id}`, muted)) continue;
+    if (!pillMessageAllowed(`nudge:${id}` as const, muted)) continue;
     if (shown.history) {
       if (!tipFrequencyAllows(shown.history.get(id), shown.today ?? 0)) continue;
     } else if (shown.ever.has(id)) continue;
@@ -216,11 +216,11 @@ export const MILESTONE_AT: Record<MilestoneId, number> = { "takes-100": 100, "ta
  */
 export function nextMilestone(ctx: NudgeContext, shown: NudgeShown): Nudge | null {
   if (ctx.takeLive || shown.thisSession >= MAX_NUDGES_PER_SESSION) return null;
-  for (let i = MILESTONE_IDS.length - 1; i >= 0; i -= 1) {
-    const id = MILESTONE_IDS[i];
+  // Highest first: only the top milestone reached is ever a candidate.
+  for (const id of [...MILESTONE_IDS].reverse()) {
     if (ctx.takesSoFar < MILESTONE_AT[id]) continue;
     if (shown.ever.has(id)) return null;
-    if (!pillMessageAllowed(`milestone:${id}`, shown.muted ?? NOTHING_MUTED)) return null;
+    if (!pillMessageAllowed(`milestone:${id}` as const, shown.muted ?? NOTHING_MUTED)) return null;
     return milestone(id);
   }
   return null;
@@ -230,7 +230,7 @@ export function nextMilestone(ctx: NudgeContext, shown: NudgeShown): Nudge | nul
 export function milestone(id: MilestoneId): Nudge {
   return {
     id,
-    category: PILL_MESSAGES[`milestone:${id}`],
+    category: PILL_MESSAGES[`milestone:${id}` as const],
     copy: {
       rude: milestoneLine(id, "rude"),
       friendly: milestoneLine(id, "friendly"),
@@ -243,7 +243,7 @@ export function milestone(id: MilestoneId): Nudge {
 export function nudge(id: NudgeId): Nudge {
   return {
     id,
-    category: PILL_MESSAGES[`nudge:${id}`],
+    category: PILL_MESSAGES[`nudge:${id}` as const],
     copy: {
       rude: nudgeLine(id, "rude"),
       friendly: nudgeLine(id, "friendly"),
