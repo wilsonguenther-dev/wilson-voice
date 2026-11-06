@@ -60,6 +60,12 @@ export interface ForcedPill {
   blind: BlindState | null;
   /** yap24-PILL1 — a forced license payload (`&license=<scene>`), or null. */
   license: LicenseStatus | null;
+  /**
+   * yap-1106-pill-notes-and-meeting / WF-03 — `&rail=open` draws the resting
+   * pill with its hover rail out, so the matrix photographs the rail at every
+   * dock without a pointer.
+   */
+  rail: boolean;
 }
 
 /**
@@ -123,6 +129,7 @@ export function forcedPill(search: string): ForcedPill | null {
     progress: phase === "transcribing" ? SAMPLE_PROGRESS : null,
     blind: phase === "blind" ? SAMPLE_BLIND : null,
     license: sceneLicense(q.get("license")),
+    rail: q.get("rail") === "open",
   };
 }
 
@@ -235,6 +242,26 @@ export function matrixStyleChipScene(): MatrixChipRow {
     phaseId: PHASE_ID.listening,
     query: "styleChip=1",
     chip: "casual",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
+/**
+ * yap-1106-pill-notes-and-meeting / WF-03 — the hover rail's matrix row: an
+ * idle pill with the rail forced out (`float.html?phase=idle&rail=open`). The
+ * matrix crosses it with {no meeting, meeting recording} x 3 docks, which is
+ * exactly the rail's two sets (Scratchpad · Dictate · Meeting, and
+ * Scratchpad · Dictate · Note · Stop meeting) rotated at every dock.
+ */
+export function matrixRailScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "rail",
+    phaseId: PHASE_ID.idle,
+    query: "rail=open",
+    offer: "",
     tone: v.tone,
     label: v.label,
   };
