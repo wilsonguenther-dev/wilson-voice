@@ -25,6 +25,10 @@ const DIARIZE_CARGO_TOML: &str = include_str!("../../yap-diarize/Cargo.toml");
 /// The workspace lockfile — the file that decides which code actually links,
 /// as opposed to which ranges the manifests would accept (YV100).
 const CARGO_LOCK: &str = include_str!("../../Cargo.lock");
+/// yap-1106-engine-owner — the speech helper's manifest and the workspace.
+const ASR_CARGO_TOML: &str = include_str!("../../yap-asr/Cargo.toml");
+const WORKSPACE_CARGO_TOML: &str = include_str!("../../Cargo.toml");
+const TRANSCRIPTION_RS: &str = include_str!("../src/transcription.rs");
 
 /// The CSP has to exist, and has to be the policy this app was verified
 /// against. Every allowance below is something the frontend genuinely loads
@@ -956,4 +960,64 @@ fn aec3_is_pinned_exactly_and_adds_one_crate() {
     for banned in ["webrtc-audio-processing", "webrtc-audio-processing-sys"] {
         assert!(!app.contains(banned), "{banned} is a second native C library and is rejected");
     }
+}
+
+/// yap-1106-engine-owner: the speech model lives in the `yap-asr` helper.
+///
+/// The helper is a workspace member, is bundled as an `externalBin`, links the
+/// SAME `transcribe-cpp` version as the app with the Metal backend on macOS,
+/// and the app's production loader goes through `engine_owner::load_engine`
+/// (the one construction site) rather than loading a model in process.
+#[test]
+fn asr_helper_is_bundled_and_owns_the_speech_model() {
+    assert!(
+        WORKSPACE_CARGO_TOML.contains("\"yap-asr\""),
+        "yap-asr must be a workspace member"
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let external: Vec<&str> = config["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        external.contains(&"binaries/yap-asr"),
+        "yap-asr must be bundled as a sidecar, got {external:?}"
+    );
+    let helper_lines: Vec<&str> = ASR_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("transcribe-cpp"))
+        .collect();
+    assert!(
+        helper_lines.iter().any(|l| l.contains("\"metal\"")),
+        "yap-asr must build transcribe-cpp with the metal backend: {helper_lines:?}"
+    );
+    let app_version = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("transcribe-cpp"))
+        .and_then(|l| l.split("version = \"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .expect("the app names a transcribe-cpp version");
+    for line in &helper_lines {
+        assert!(
+            line.contains(&format!("version = \"{app_version}\"")),
+            "yap-asr must link the same transcribe-cpp as the app ({app_version}): {line}"
+        );
+    }
+    assert!(
+        !ASR_CARGO_TOML.contains("llama-cpp") && !ASR_CARGO_TOML.contains("sherpa-onnx"),
+        "yap-asr must not share a link line with another vendored ggml/onnxruntime"
+    );
+    assert!(
+        CARGO_LOCK.contains("name = \"yap-asr\""),
+        "Cargo.lock must carry the yap-asr package"
+    );
+    assert!(
+        TRANSCRIPTION_RS.contains("engine_owner::load_engine"),
+        "TranscriptionManager's production loader must go through the engine owner"
+    );
 }

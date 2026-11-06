@@ -628,9 +628,9 @@ impl TranscriptionManager {
     /// Production manager: real transcribe-cpp loads, Handy's idle timeout.
     pub fn new() -> Self {
         Self::with_loader(
-            Arc::new(|path: &Path| {
-                asr_engine::load(path).map(|e| Box::new(e) as Box<dyn Transcriber>)
-            }),
+            // yap-1106-engine-owner: the one construction site — the `yap-asr`
+            // helper process, never a model inside the app.
+            Arc::new(|path: &Path| crate::engine_owner::load_engine(path)),
             IDLE_UNLOAD_AFTER,
             IDLE_CHECK_INTERVAL,
             TRANSCRIBE_TIMEOUT,

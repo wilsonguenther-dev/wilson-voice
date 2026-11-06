@@ -141,7 +141,7 @@ fn print_capabilities() -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
     match ensure_model().and_then(|(id, path)| {
-        let engine = asr_engine::load(&path)?;
+        let engine = crate::engine_owner::load_probe_engine(&path)?;
         Ok((id, asr_engine::capabilities(&engine)))
     }) {
         Ok((id, caps)) => {

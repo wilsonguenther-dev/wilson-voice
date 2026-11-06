@@ -20,4 +20,11 @@
 # sidecar via `bundle.externalBin`.
 [workspace]
 resolver = "2"
-members = ["src-tauri", "yap-polish", "yap-diarize"]
+#
+# yap-1106-engine-owner adds a FOURTH member, `yap-asr`: the speech model
+# (transcribe-cpp / ggml-metal) runs in its own process so a hung decode can be
+# killed by PID (macOS frees its GPU memory with it) and the app's `exit()`
+# never runs ggml static destructors. It is its own link unit for the same
+# duplicate-ggml reason as `yap-polish`: it must never share a link line with
+# llama-cpp-sys-2. Protocol: `src-tauri/src/asr_protocol.rs`.
+members = ["src-tauri", "yap-polish", "yap-diarize", "yap-asr"]
