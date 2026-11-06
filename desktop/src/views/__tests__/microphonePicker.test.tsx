@@ -15,6 +15,9 @@ import Audio from "../settings/Audio";
 import MicrophonePicker, {
   MICROPHONES_CHANGED,
   micHint,
+  moveRank,
+  rankedRows,
+  splitDevices,
   systemDefaultLabel,
   type MicList,
 } from "../settings/parts/MicrophonePicker";
@@ -71,5 +74,53 @@ describe("WF-09 microphone picker", () => {
     expect(html).toContain("Looking for microphones");
     const audio = render(<Audio />, { settings: {}, saveSettings: () => undefined });
     expect(audio).toContain("data-mic-picker");
+  });
+});
+
+describe("WF-10 microphone fallback order", () => {
+  const airpods = { id: "coreaudio:AirPods", name: "AirPods Pro", isSystemDefault: false };
+  const blackhole = { id: "coreaudio:BlackHole", name: "BlackHole 2ch", isSystemDefault: false, isVirtual: true };
+
+  it("virtual_inputs_sit_under_other_devices", () => {
+    const { mics, other } = splitDevices(list({ devices: [builtIn, mv7, blackhole] }));
+    expect(mics.map((d) => d.id)).toEqual([builtIn.id, mv7.id]);
+    expect(other.map((d) => d.id)).toEqual([blackhole.id]);
+  });
+
+  it("ranked_rows_keep_the_saved_order_and_never_list_a_virtual_input", () => {
+    const rows = rankedRows(
+      list({
+        devices: [builtIn, airpods, blackhole],
+        order: [
+          { id: mv7.id, name: "Shure MV7" },
+          { id: blackhole.id, name: "BlackHole 2ch" },
+          { id: airpods.id, name: "AirPods Pro" },
+        ],
+      }),
+    );
+    expect(rows.map((r) => r.id)).toEqual([mv7.id, airpods.id, builtIn.id]);
+    expect(rows[0]).toEqual({ id: mv7.id, name: "Shure MV7", connected: false });
+    expect(rows.every((r) => r.id !== blackhole.id)).toBe(true);
+  });
+
+  it("move_rank_reorders_and_clamps", () => {
+    const ids = ["a", "b", "c"];
+    expect(moveRank(ids, 2, 0)).toEqual(["c", "a", "b"]);
+    expect(moveRank(ids, 0, 9)).toEqual(["b", "c", "a"]);
+    expect(moveRank(ids, 5, 0)).toEqual(ids);
+  });
+
+  it("an_unplugged_pick_names_the_next_mic_in_the_order", () => {
+    const hint = micHint(
+      list({
+        devices: [builtIn, airpods],
+        chosenId: mv7.id,
+        chosenName: mv7.name,
+        chosenMissing: true,
+        inUseId: airpods.id,
+        inUseName: airpods.name,
+      }),
+    );
+    expect(hint).toBe("Shure MV7 isn't connected, so Yap uses AirPods Pro, next in your order, until it's back.");
   });
 });
