@@ -11,9 +11,48 @@ interface DetectSettingsView {
   calendarAccess: string;
 }
 
+/** yap-1106 — mirrors `MeetingExportLocation` in lib.rs. */
+interface MeetingExportLocation {
+  path: string;
+  isDefault: boolean;
+  defaultPath: string;
+}
+
 export default function Meetings() {
-  const { toastError } = useAppCtx();
+  const { toast, toastError } = useAppCtx();
   const [view, setView] = useState<DetectSettingsView | null>(null);
+  // yap-1106 — the export folder: shown, openable, changeable.
+  const [exportLoc, setExportLoc] = useState<MeetingExportLocation | null>(null);
+  const [draftDir, setDraftDir] = useState("");
+  useEffect(() => {
+    let dead = false;
+    invoke<MeetingExportLocation>("meeting_export_location")
+      .then((v) => {
+        if (dead) return;
+        setExportLoc(v);
+        setDraftDir(v.path);
+      })
+      .catch((e) => toastError(e, "Couldn't read the export folder setting."));
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function saveExportDir(path: string | null) {
+    try {
+      const v = await invoke<MeetingExportLocation>("set_meeting_export_dir", { path });
+      setExportLoc(v);
+      setDraftDir(v.path);
+      toast(v.isDefault ? "Exports go to the default folder" : "Export folder saved");
+    } catch (e) {
+      toastError(e, "That folder couldn't be used. Pick one you can write to.");
+    }
+  }
+  async function openExportDir() {
+    try {
+      await invoke<string>("open_meeting_export_dir");
+    } catch (e) {
+      toastError(e, "Couldn't open the meetings folder.");
+    }
+  }
   useEffect(() => {
     let dead = false;
     invoke<DetectSettingsView>("meeting_detect_settings")
@@ -74,6 +113,41 @@ export default function Meetings() {
           nothing to install. While a meeting records, the recording bar and
           the pill show whether call audio is on, silent, or off.
         </p>
+      </div>
+      <div className="panel" data-row data-meeting-exports>
+        <h3>Meeting exports</h3>
+        <p className="settings-hint">
+          Export Markdown and Show in Finder use this folder. Files are named
+          by date and title. Everything stays on this Mac.
+        </p>
+        <label className="field">
+          <span>Folder</span>
+          <input
+            type="text"
+            value={draftDir}
+            placeholder={exportLoc?.defaultPath ?? "~/Documents/Yap/Meetings"}
+            aria-label="Export folder"
+            onChange={(e) => setDraftDir(e.target.value)}
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={() => void openExportDir()}>
+            Open meetings folder
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!exportLoc || draftDir.trim() === exportLoc.path}
+            onClick={() => void saveExportDir(draftDir)}
+          >
+            Save folder
+          </button>
+          {exportLoc && !exportLoc.isDefault && (
+            <button type="button" className="ghost" onClick={() => void saveExportDir(null)}>
+              Use default
+            </button>
+          )}
+        </div>
       </div>
     </section>
   );

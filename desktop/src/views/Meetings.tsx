@@ -5,6 +5,7 @@ import {
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
 import NotesView from "../meetings/NotesView";
+import ExportMenu, { type ExportAction } from "../meetings/ExportMenu";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
 import LiveTranscript from "../meetings/LiveTranscript";
@@ -78,9 +79,44 @@ export default function Meetings() {
       );
       toast(`Exported → ${path}`);
     } catch (e) {
-      toastError(e);
+      toastError(e, "Couldn't export this meeting. Check the export folder in Settings › Meetings.");
     } finally {
       setMeetingBusy(false);
+    }
+  }
+  // yap-1106 — the three export actions, from the row menu and the detail
+  // header alike. Each one is a Rust command that logs its own outcome; the
+  // toast here is the one sentence the person sees.
+  async function copyMeeting(id: string) {
+    try {
+      await invoke<number>("copy_meeting_markdown", { id });
+      toast("Copied as Markdown");
+    } catch (e) {
+      toastError(e, "Couldn't copy this meeting. Try Export Markdown instead.");
+    }
+  }
+  async function revealMeeting(id: string) {
+    try {
+      const r = await invoke<{ path: string; target: "file" | "folder" }>(
+        "reveal_meeting_export",
+        { id },
+      );
+      if (r.target === "folder") toast("No export yet — opened the meetings folder");
+    } catch (e) {
+      toastError(e, "Couldn't open the export in Finder. Export it first from this menu.");
+    }
+  }
+  function onExportAction(action: ExportAction, id: string) {
+    switch (action) {
+      case "export":
+        void exportMeeting(id);
+        break;
+      case "copy":
+        void copyMeeting(id);
+        break;
+      case "reveal":
+        void revealMeeting(id);
+        break;
     }
   }
   async function toggleMeetingRecording() {
@@ -451,13 +487,11 @@ export default function Meetings() {
                                 : retryNotesLabel(progress[m.id])}
                             </button>
                           )}
-                          <button
-                            className="ghost"
+                          <ExportMenu
+                            meetingId={m.id}
                             disabled={meetingBusy}
-                            onClick={() => exportMeeting(m.id)}
-                          >
-                            Export
-                          </button>
+                            onAction={onExportAction}
+                          />
                           <button
                             className="ghost danger"
                             disabled={meetingBusy}
@@ -501,13 +535,12 @@ export default function Meetings() {
                     Retry
                   </button>
                 )}
-                <button
-                  className="primary"
+                <ExportMenu
+                  meetingId={openMeeting.meeting.id}
                   disabled={meetingBusy}
-                  onClick={() => exportMeeting(openMeeting.meeting.id)}
-                >
-                  Export Markdown
-                </button>
+                  primary
+                  onAction={onExportAction}
+                />
                 <button
                   className="ghost danger"
                   disabled={meetingBusy}

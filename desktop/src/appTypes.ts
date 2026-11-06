@@ -261,6 +261,12 @@ export interface AppSettings {
    */
   preloadModel?: boolean;
   /**
+   * yap-1106 — where meeting Markdown exports are written (backend
+   * `meeting_export_dir`). `null` = the default `~/Documents/Yap/Meetings`.
+   * Changed through `set_meeting_export_dir`, never by the whole-settings save.
+   */
+  meetingExportDir?: string | null;
+  /**
    * Launch Yap at login (backend `autostart`, YV42). Installs a macOS
    * LaunchAgent through tauri-plugin-autostart. Default off — the backend
    * applies it the moment this saves, and re-applies it on every launch.

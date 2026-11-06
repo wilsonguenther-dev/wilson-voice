@@ -2648,6 +2648,20 @@ impl Database {
         Ok(out)
     }
 
+    /// yap-1106 — every meeting id in one state (the leftovers sweep asks for
+    /// `complete` to release their resume ledgers). Ids only: no segments, no
+    /// summaries, so it is cheap at launch however long the history is.
+    pub fn meeting_ids_in_state(&self, state: &str) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM meetings WHERE state = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![state], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
     pub fn get_meeting(&self, id: &str) -> Result<Option<Meeting>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
