@@ -1568,6 +1568,12 @@ fn build_status(state: &AppState) -> AppStatus {
         ptt: &ptt,
         session_cap_warned: *state.session_cap_warned.lock(),
     });
+    // WF-10 — the mic vanished mid-take and capture carried on on the next
+    // one: the live take's line says so (the ceiling notice still outranks it).
+    let message = match record::mid_take_mic_note() {
+        Some(note) if recording && !*state.session_cap_warned.lock() => note,
+        _ => message,
+    };
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::still_recording_message(&chord_label)
@@ -2931,9 +2937,16 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             let state_lv = state.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
+                // WF-10 — redraw the pill when the take moves to another mic.
+                let mut mic_switch_seen = record::mic_switch_seq();
                 loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
+                    let mic_switch_now = record::mic_switch_seq();
+                    if mic_switch_now != mic_switch_seen {
+                        mic_switch_seen = mic_switch_now;
+                        emit_status(&app_lv, &state_lv);
+                    }
                     let warned = *state_lv.session_cap_warned.lock();
                     match record::session_cap_tick(started.elapsed(), warned) {
                         record::SessionCapAction::Continue => {}
@@ -6413,6 +6426,16 @@ async fn set_microphone(
     mic_select::choose(id, name, "settings")
         .map_err(|_| "Yap could not save that microphone. Try again.".to_string())?;
     Ok(mic_select::list())
+}
+
+/// WF-10 — save the fallback ranking (stable ids, best first) from Settings.
+/// When the chosen mic disappears — before a take or in the middle of one —
+/// Yap continues on the first ranked mic still plugged in. Virtual inputs are
+/// never auto-picked, ranked or not.
+#[tauri::command]
+async fn set_microphone_order(ids: Vec<String>) -> Result<mic_select::MicList, String> {
+    mic_select::set_order(ids)
+        .map_err(|_| "Yap could not save the microphone order. Try again.".to_string())
 }
 
 #[tauri::command]
@@ -12214,6 +12237,7 @@ pub fn run() {
             microphone_status,
             list_microphones,
             set_microphone,
+            set_microphone_order,
             get_insights,
             daily_series,
             monthly_series,
