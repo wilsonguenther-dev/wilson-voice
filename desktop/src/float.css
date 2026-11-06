@@ -1752,6 +1752,11 @@ html[data-one-pill="true"][data-dock] .nudge-row {
 .hands-free-hint .keycap {
   margin-left: 0;
   margin-right: 4px;
+  /* 10px + the 1px/2px borders = 13px, top-aligned, so the keycap fits the
+     hint's one 14px line (pill/state.ts HINT_LINE_H) instead of growing it to
+     17px and leaving the box the layout reserved (pill-matrix slot-off-layout). */
+  line-height: 10px;
+  vertical-align: top;
 }
 /* A failed rail action's one sentence holds the strip for a few seconds. */
 html[data-rail-error="true"] .phase-strip { opacity: 1; color: rgba(252, 165, 165, 0.92); }

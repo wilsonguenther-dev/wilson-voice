@@ -262,6 +262,9 @@ describe("item 18 / WF-03 pill rail", () => {
     const stop = slotById("hands-free-stop");
     expect(stop.visible(ctx)).toBe(true);
     expect(stop.visible(ctxOf({ phase: "listening" }))).toBe(false);
+    // Integrator batch 5: a row only — a side dock's column has no room for it.
+    expect(stop.visible(ctxOf({ phase: "listening-locked", dock: "left" }))).toBe(false);
+    expect(stop.visible(ctxOf({ phase: "listening-locked", dock: "right" }))).toBe(false);
     expect(render(ctx)).toContain('<kbd class="keycap">⌃⌥Space</kbd>');
     const toggle = vi.fn();
     expect(pressSlot(stop, ctx, { toggleDictation: toggle }, false)).toBe(true);

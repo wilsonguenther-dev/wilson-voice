@@ -499,7 +499,10 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     glyph: () => <Square fill="currentColor" strokeWidth={0} />,
     tooltip: () => "Stop hands-free",
     keycap: (ctx) => (ctx.stopKey ?? "").trim() || null,
-    visible: (ctx) => ctx.phase === "listening-locked",
+    // A row only: on a side dock's column the Classic window (300x140) has no
+    // room for a third trail slot — pill-matrix found the column pushed past
+    // both window edges. There the key (and the capsule) still stop it.
+    visible: (ctx) => ctx.phase === "listening-locked" && slotAxis(ctx) === "row",
     onPress: (ctx, act) => { railLog("hands_free_stop", { dock: ctx.dock }); act.toggleDictation(); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
