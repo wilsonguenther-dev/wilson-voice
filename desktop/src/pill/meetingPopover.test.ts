@@ -12,9 +12,9 @@ import {
 const WITH_MEETINGS = {
   state: "meetings",
   meetings: [
-    { key: "cal:a:1", label: "Standup", clock: "2:00 PM", hasLink: true },
-    { key: "cal:b:2", label: "Meeting", clock: "2:30 PM", hasLink: false },
-    { key: "cal:c:3", label: "Design review", clock: "3:00 PM", hasLink: false },
+    { key: "cal:a:1", title: "Standup", clock: "2:00 PM", hasLink: true },
+    { key: "cal:b:2", title: null, clock: "2:30 PM", hasLink: false },
+    { key: "cal:c:3", title: "Design review", clock: "3:00 PM", hasLink: false },
   ],
   emptyText: null,
   connectText: null,
@@ -46,9 +46,9 @@ describe("WF-08 meeting popover", () => {
   it("connected with meetings: three Record rows, then Record now with the kind picker", () => {
     const rows = popoverEntries(parseMeetingPopover(WITH_MEETINGS), KINDS);
     expect(rows).toEqual([
-      { type: "record", key: "cal:a:1", text: "Record Standup · 2:00 PM" },
-      { type: "record", key: "cal:b:2", text: "Record Meeting · 2:30 PM" },
-      { type: "record", key: "cal:c:3", text: "Record Design review · 3:00 PM" },
+      { type: "record", key: "cal:a:1", text: "Record \u201cStandup\u201d \u00b7 2:00 PM" },
+      { type: "record", key: "cal:b:2", text: "Record Meeting at 2:30 PM" },
+      { type: "record", key: "cal:c:3", text: "Record \u201cDesign review\u201d \u00b7 3:00 PM" },
       { type: "separator" },
       { type: "record-now", text: "Record now", kinds: KINDS },
     ]);
@@ -86,23 +86,26 @@ describe("WF-08 meeting popover", () => {
       state: "meetings",
       meetings: [
         null,
-        { key: "", label: "no key" },
-        { key: "k1", label: " One ", clock: " 9:00 AM ", hasLink: "yes" },
-        { key: "k2", label: "Two" },
-        { key: "k3", label: "Three", clock: "11:00 AM" },
-        { key: "k4", label: "Four", clock: "noon" },
+        { key: "", title: "no key" },
+        { key: "k1", title: " One ", clock: " 9:00 AM ", hasLink: "yes" },
+        { key: "k2", title: "Two" },
+        { key: "k3", title: "  ", clock: "11:00 AM" },
+        { key: "k4", title: "Four", clock: "noon" },
       ],
       connect: { nav: "", tab: "x" },
     };
     const p = parseMeetingPopover(many)!;
     expect(p.meetings).toHaveLength(MAX_POPOVER_MEETINGS);
-    expect(p.meetings[0]).toEqual({ key: "k1", label: "One", clock: "9:00 AM", hasLink: false });
+    expect(p.meetings[0]).toEqual({ key: "k1", title: "One", clock: "9:00 AM", hasLink: false });
     expect(p.meetings[1].clock).toBe("");
+    expect(p.meetings[2].title).toBeNull();
+    expect(recordRowText(p.meetings[2])).toBe("Record Meeting at 11:00 AM");
+    expect(recordRowText({ key: "k", title: null, clock: "", hasLink: false })).toBe("Record Meeting");
     expect(p.connect).toBeNull();
     expect(p.emptyText).toBeNull();
     expect(p.connectText).toBeNull();
     expect(p.recordNowText).toBe(RECORD_NOW_TEXT);
-    expect(recordRowText(p.meetings[1])).toBe("Record Two");
+    expect(recordRowText(p.meetings[1])).toBe("Record \u201cTwo\u201d");
   });
 
   it("falls back to its own words when the answer leaves a line out", () => {

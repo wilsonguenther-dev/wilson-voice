@@ -285,14 +285,14 @@ describe("item 18 / WF-03 pill rail", () => {
     answer({
       state: "meetings",
       meetings: [
-        { key: "cal:a:1", label: "Standup", clock: "2:00 PM", hasLink: true },
-        { key: "cal:b:2", label: "Meeting", clock: "2:30 PM", hasLink: false },
+        { key: "cal:a:1", title: "Standup", clock: "2:00 PM", hasLink: true },
+        { key: "cal:b:2", title: null, clock: "2:30 PM", hasLink: false },
       ],
       emptyText: null, connectText: null, connect: null, recordNowText: "Record now",
     });
     let items = await open();
     expect(items.map((i) => i.text ?? i.item)).toEqual([
-      "Record Standup \u00b7 2:00 PM", "Record Meeting \u00b7 2:30 PM", "Separator", "Record now",
+      "Record \u201cStandup\u201d \u00b7 2:00 PM", "Record Meeting at 2:30 PM", "Separator", "Record now",
     ]);
     expect(items[3].items?.map((i) => i.text)).toEqual(["In person", "Virtual"]);
     inv.mockClear();

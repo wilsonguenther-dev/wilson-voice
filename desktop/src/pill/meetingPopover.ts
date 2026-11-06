@@ -16,7 +16,8 @@
 /** One Record row (`calendar::PopoverMeeting`, serde camelCase). */
 export interface PopoverMeeting {
   key: string;
-  label: string;
+  /** `null` = titles hidden in the menu bar, or an untitled event. */
+  title: string | null;
   clock: string;
   hasLink: boolean;
 }
@@ -72,11 +73,11 @@ export function parseMeetingPopover(raw: unknown): MeetingPopover | null {
   if (!STATES.includes(o.state as PopoverState) || !Array.isArray(o.meetings)) return null;
   const meetings: PopoverMeeting[] = o.meetings
     .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
-    .filter((m) => str(m.key) && str(m.label))
+    .filter((m) => str(m.key))
     .slice(0, MAX_POPOVER_MEETINGS)
     .map((m) => ({
       key: m.key as string,
-      label: (m.label as string).trim(),
+      title: str(m.title) ? m.title.trim() : null,
       clock: str(m.clock) ? m.clock.trim() : "",
       hasLink: m.hasLink === true,
     }));
@@ -93,9 +94,14 @@ export function parseMeetingPopover(raw: unknown): MeetingPopover | null {
   };
 }
 
-/** "Record Standup · 2:00 PM" — the row says what a click does. */
+/**
+ * The row says what a click does, in the tray's exact words
+ * (`tray_menu::upcoming_menu`): "Record \u201cStandup\u201d \u00b7 2:00 PM", or
+ * "Record Meeting at 2:00 PM" when the title is hidden or missing.
+ */
 export function recordRowText(m: PopoverMeeting): string {
-  return m.clock ? `Record ${m.label} · ${m.clock}` : `Record ${m.label}`;
+  if (m.title) return m.clock ? `Record \u201c${m.title}\u201d \u00b7 ${m.clock}` : `Record \u201c${m.title}\u201d`;
+  return m.clock ? `Record Meeting at ${m.clock}` : "Record Meeting";
 }
 
 /**

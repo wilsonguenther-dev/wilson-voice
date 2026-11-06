@@ -342,8 +342,6 @@ pub const POPOVER_EMPTY_LABEL: &str = "No upcoming meetings";
 pub const POPOVER_CONNECT_LABEL: &str = "Connect calendar";
 /// Start a recording right now, no calendar event needed.
 pub const POPOVER_RECORD_NOW_LABEL: &str = "Record now";
-/// A row whose title the user hid in the menu bar, or an untitled event.
-pub const POPOVER_UNTITLED_LABEL: &str = "Meeting";
 /// `meeting_popover_record` for a row that left today's list after it opened.
 pub const POPOVER_STALE_ERROR: &str =
     "That meeting is no longer on today's list — use Record now instead.";
@@ -360,8 +358,10 @@ pub struct PopoverMeeting {
     /// The occurrence key (`meeting_detect::UpcomingMeeting::key`) handed back
     /// to `meeting_popover_record`; Record snoozes the pill offer for it.
     pub key: String,
-    /// The event title, or [`POPOVER_UNTITLED_LABEL`] when it is hidden/empty.
-    pub label: String,
+    /// The event title to show. `None` when the user hid titles in the menu
+    /// bar ("Hide Meeting Titles") or the event has none; the row then reads
+    /// "Record Meeting at 2:00 PM", exactly like the tray's row.
+    pub title: Option<String>,
     /// "2:00 PM", the same text the menu bar shows.
     pub clock: String,
     /// Carries a conferencing link (recorded as Virtual).
@@ -444,12 +444,11 @@ pub fn meeting_popover(
         .take(POPOVER_MAX)
         .map(|m| PopoverMeeting {
             key: m.key.clone(),
-            label: if snap.hide_titles {
+            title: if snap.hide_titles {
                 None
             } else {
                 m.title.clone()
-            }
-            .unwrap_or_else(|| POPOVER_UNTITLED_LABEL.to_string()),
+            },
             clock: crate::tray_menu::meeting_clock(m.start_unix, snap.utc_offset_secs),
             has_link: m.has_link,
         })
@@ -521,11 +520,11 @@ mod popover_tests {
         let p = meeting_popover(Some(&s), TWO_PM - 600, true);
         assert_eq!(p.state, POPOVER_STATE_MEETINGS);
         assert_eq!(p.meetings.len(), POPOVER_MAX);
-        assert_eq!(p.meetings[0].label, "Standup");
+        assert_eq!(p.meetings[0].title.as_deref(), Some("Standup"));
         assert_eq!(p.meetings[0].clock, "2:00 PM");
         assert!(p.meetings[0].has_link);
         assert_eq!(p.meetings[0].key, "cal:a:1");
-        assert_eq!(p.meetings[1].label, POPOVER_UNTITLED_LABEL);
+        assert_eq!(p.meetings[1].title, None);
         assert_eq!(p.meetings[1].clock, "2:30 PM");
         assert_eq!(p.meetings[2].key, "cal:c:3");
         assert_eq!(p.empty_text, None);
@@ -541,7 +540,7 @@ mod popover_tests {
             vec![meeting("cal:a:1", Some("Standup"), TWO_PM, false)],
         );
         let p = meeting_popover(Some(&s), TWO_PM - 60, false);
-        assert_eq!(p.meetings[0].label, POPOVER_UNTITLED_LABEL);
+        assert_eq!(p.meetings[0].title, None);
         assert_eq!(p.meetings[0].clock, "2:00 PM");
     }
 
@@ -624,7 +623,7 @@ mod popover_tests {
         assert_eq!(
             pop.meetings
                 .iter()
-                .map(|m| m.label.as_str())
+                .map(|m| m.title.as_deref().unwrap_or(""))
                 .collect::<Vec<_>>(),
             vec!["Standup", "Design review", "1:1"]
         );
