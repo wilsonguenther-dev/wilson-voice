@@ -2281,7 +2281,12 @@ impl Database {
         conn.query_row(
             "SELECT detected_app, detected_via FROM meetings WHERE id = ?1",
             params![id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
         )
         .ok()
     }

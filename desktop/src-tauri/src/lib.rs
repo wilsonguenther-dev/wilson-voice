@@ -128,9 +128,9 @@ pub mod meeting_control;
 /// yap-notetaker-detect — notice a meeting, offer to record it (never auto-records).
 pub mod meeting_detect;
 // yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
-pub mod call_signals;
 /// yap-call-1 — the call offer: countdown, chip, Offer / Never per app, Call ended.
 pub mod call_offer;
+pub mod call_signals;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
@@ -4994,7 +4994,10 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
     // WF-17 — one line per pill note shown (the condition is a short slug,
     // never user text): how often tips actually reach people.
     match &res {
-        Ok(stored) => log::info!("nudge shown condition_len={} stored={stored}", condition.len()),
+        Ok(stored) => log::info!(
+            "nudge shown condition_len={} stored={stored}",
+            condition.len()
+        ),
         Err(e) => log::warn!("nudge mark_failed err={e}"),
     }
     res
@@ -5088,7 +5091,10 @@ fn language_offer_respond(
     let prefs = state.settings.lock().language_prefs();
     let next = languages::prefs_with_added(&prefs, &code);
     if !next.set.iter().any(|c| c.eq_ignore_ascii_case(code.trim())) {
-        log::warn!("languages offer_add_refused code={code} set_len={}", prefs.set.len());
+        log::warn!(
+            "languages offer_add_refused code={code} set_len={}",
+            prefs.set.len()
+        );
         return Err(format!(
             "Yap couldn't add {} — remove a language in Settings first.",
             languages::language_name(code.trim())
@@ -6402,14 +6408,16 @@ async fn retry_failed_dictation(
             );
             // Y9-C: a retry matches rules by mode and language; its row stores no
             // bundle id, so `app:` rules cannot match it (they never guess).
-            let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
-                state.db.matching_voice_preferences(&voice_prefs::TakeContext {
-                    mode,
-                    bundle_id: "",
-                    language: &settings.language,
-                }),
-            )
-            .with_profile(style_profile.clone());
+            let polish_config =
+                polish::PolishConfig::from_settings(&settings, mode)
+                    .with_preferences(state.db.matching_voice_preferences(
+                        &voice_prefs::TakeContext {
+                            mode,
+                            bundle_id: "",
+                            language: &settings.language,
+                        },
+                    ))
+                    .with_profile(style_profile.clone());
             // A retry has no live paste target (the row stores the app's title, not
             // its bundle id), so it gets the conservative unknown-target format.
             let structure_format = dictation::structure_format_for_take(
@@ -8909,14 +8917,13 @@ fn ensure_call_offer_window(app: &AppHandle) -> Result<tauri::WebviewWindow, Str
     {
         builder = builder.transparent(true);
     }
-    let win = builder.build().map_err(|e| format!("call-offer window: {e}"))?;
+    let win = builder
+        .build()
+        .map_err(|e| format!("call-offer window: {e}"))?;
     call_offer::apply_content_protection(&win);
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     // Park it just above the pill (bottom-centre of the pill's monitor).
-    if let (Some(pill), Ok(Some(mon))) = (
-        app.get_webview_window("float"),
-        win.current_monitor(),
-    ) {
+    if let (Some(pill), Ok(Some(mon))) = (app.get_webview_window("float"), win.current_monitor()) {
         if let Ok(pos) = pill.outer_position() {
             let scale = mon.scale_factor();
             let x = pos.x as f64 / scale;
@@ -8952,7 +8959,12 @@ fn apply_call_offer_effects(
                     let _ = w.hide();
                 }
             }
-            Effect::StartRecording { offer_id, bundle_id, title, detected_via } => {
+            Effect::StartRecording {
+                offer_id,
+                bundle_id,
+                title,
+                detected_via,
+            } => {
                 log::info!(
                     "call_offer record bundle={bundle_id} via={} offer={offer_id}",
                     detected_via.as_str()
@@ -8961,7 +8973,8 @@ fn apply_call_offer_effects(
                     Ok(status) => {
                         if let Some(id) = status.id.as_deref() {
                             if let Err(e) =
-                                st.db.set_meeting_detection(id, &bundle_id, detected_via.as_str())
+                                st.db
+                                    .set_meeting_detection(id, &bundle_id, detected_via.as_str())
                             {
                                 log::warn!("call_offer detection_store_failed err={e}");
                             }
@@ -8990,9 +9003,11 @@ fn apply_call_offer_effects(
             }
             Effect::SaveNever { bundle_id } => {
                 log::info!("call_offer never bundle={bundle_id}");
-                if let Err(e) =
-                    call_offer::set_app_policy(&st.db, &bundle_id, Some(call_offer::AppPolicy::Never))
-                {
+                if let Err(e) = call_offer::set_app_policy(
+                    &st.db,
+                    &bundle_id,
+                    Some(call_offer::AppPolicy::Never),
+                ) {
                     log::warn!("call_offer never_save_failed err={e}");
                     error = Some(format!("Couldn't save Never for this app: {e}"));
                 }
@@ -9026,7 +9041,10 @@ pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sig
     let st = st.inner().clone();
     let policy = call_offer::load_policy(&st.db);
     let (fx, _, _) = call_offer::drive(
-        call_offer::Input::Seen { sighting, now_ms: call_offer::now_ms() },
+        call_offer::Input::Seen {
+            sighting,
+            now_ms: call_offer::now_ms(),
+        },
         &policy,
     );
     if !fx.is_empty() {
@@ -9061,14 +9079,21 @@ fn call_offer_meeting_tick(app: &AppHandle, recording: bool) {
         )
         .ok()
         .map(|snap| {
-            crate::call_signals::bundle_input_running(&snap, crate::call_signals::catalog(), &bundle)
+            crate::call_signals::bundle_input_running(
+                &snap,
+                crate::call_signals::catalog(),
+                &bundle,
+            )
         });
         #[cfg(not(target_os = "macos"))]
         let running: Option<bool> = {
             let _ = &bundle;
             None
         };
-        call_offer::Input::Tick { now_ms: call_offer::now_ms(), app_input_running: running }
+        call_offer::Input::Tick {
+            now_ms: call_offer::now_ms(),
+            app_input_running: running,
+        }
     };
     let (fx, _, _) = call_offer::drive(input, &policy);
     if !fx.is_empty() {
@@ -9091,7 +9116,10 @@ fn accept_call_offer(
     let st = state.inner().clone();
     let policy = call_offer::load_policy(&st.db);
     let (fx, _, _) = call_offer::drive(
-        call_offer::Input::User { choice: call_offer::UserChoice::Record, offer_id },
+        call_offer::Input::User {
+            choice: call_offer::UserChoice::Record,
+            offer_id,
+        },
         &policy,
     );
     apply_call_offer_effects(&app, &st, fx)
@@ -9126,7 +9154,10 @@ fn call_offer_state() -> call_offer::CallOfferView {
 /// yap-call-1 — Settings › Meetings: the apps set to Never.
 #[tauri::command]
 fn call_offer_never_list(state: State<'_, Arc<AppState>>) -> Vec<call_offer::NeverRow> {
-    call_offer::never_rows(&call_offer::load_policy(&state.db), crate::call_signals::catalog())
+    call_offer::never_rows(
+        &call_offer::load_policy(&state.db),
+        crate::call_signals::catalog(),
+    )
 }
 
 /// yap-call-1 — Reset one app (or every app when `bundle_id` is absent) to Offer.
@@ -9138,7 +9169,9 @@ fn call_offer_reset(
     let map = match bundle_id {
         Some(b) => call_offer::set_app_policy(&state.db, &b, None)?,
         None => {
-            state.db.setting_set(call_offer::CALL_OFFER_POLICY_KEY, "{}")?;
+            state
+                .db
+                .setting_set(call_offer::CALL_OFFER_POLICY_KEY, "{}")?;
             call_offer::PolicyMap::new()
         }
     };
@@ -15434,7 +15467,10 @@ mod retry_engine_tests {
     /// `Result<AsrOutput, _>` has no `Debug`; the error, or a panic.
     fn err_of(r: Result<transcription::AsrOutput, String>) -> String {
         match r {
-            Ok(out) => panic!("expected an error, got a transcript of {} chars", out.text.len()),
+            Ok(out) => panic!(
+                "expected an error, got a transcript of {} chars",
+                out.text.len()
+            ),
             Err(e) => e,
         }
     }
@@ -15547,9 +15583,15 @@ mod retry_engine_tests {
         let mut phases = Vec::new();
         let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
         assert_eq!(err_of(result), transcription::ENGINE_STUCK);
-        assert!(wall < Duration::from_secs(1), "fail fast, not at the deadline: {wall:?}");
+        assert!(
+            wall < Duration::from_secs(1),
+            "fail fast, not at the deadline: {wall:?}"
+        );
         assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
-        assert!(phases.is_empty(), "it never queued and never decoded: {phases:?}");
+        assert!(
+            phases.is_empty(),
+            "it never queued and never decoded: {phases:?}"
+        );
 
         // When the stuck engine finally returns it is counted out, not reused.
         release.store(true, Ordering::SeqCst);
@@ -15558,7 +15600,10 @@ mod retry_engine_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(m.abandoned_engines(), 0);
-        assert!(!m.is_loaded(), "the abandoned engine is dropped, never put back");
+        assert!(
+            !m.is_loaded(),
+            "the abandoned engine is dropped, never put back"
+        );
     }
 
     #[test]
@@ -15585,8 +15630,15 @@ mod retry_engine_tests {
         let (result, wall) = retry(&m, Duration::from_secs(10), &mut phases);
         assert_eq!(result.unwrap().text, "slow but sure");
         assert_eq!(phases, vec![RetryPhase::Queued, RetryPhase::Decoding]);
-        assert!(wall >= Duration::from_millis(350), "it waited its turn: {wall:?}");
-        assert_eq!(m.engine_loads(), 1, "one engine, shared — never a second load");
+        assert!(
+            wall >= Duration::from_millis(350),
+            "it waited its turn: {wall:?}"
+        );
+        assert_eq!(
+            m.engine_loads(),
+            1,
+            "one engine, shared — never a second load"
+        );
         assert_eq!(live_take.join().unwrap().unwrap(), "slow but sure");
     }
 
@@ -15675,7 +15727,11 @@ mod retry_replay {
         let model_path = std::env::var("YAP_RETRY_REPLAY_MODEL")
             .map(PathBuf::from)
             .unwrap_or_else(|_| dir.join(&filename));
-        assert!(model_path.is_file(), "model missing at {}", model_path.display());
+        assert!(
+            model_path.is_file(),
+            "model missing at {}",
+            model_path.display()
+        );
         let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -15691,7 +15747,12 @@ mod retry_replay {
             let samples = record::read_wav_16k_mono(&wav).unwrap();
             let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
             let deadline = retry_deadline(clip_secs);
-            let (m, id, path, p) = (manager.clone(), model_id.clone(), model_path.clone(), prefs.clone());
+            let (m, id, path, p) = (
+                manager.clone(),
+                model_id.clone(),
+                model_path.clone(),
+                prefs.clone(),
+            );
             let mut phases = Vec::new();
             let started = Instant::now();
             let out = retry_decode_bounded(
@@ -15701,7 +15762,15 @@ mod retry_replay {
                 deadline,
                 &mut |ph| phases.push(ph),
                 move || {
-                    transcribe_native(&m, &id, &path, samples, &p, None, &mut transcribe_progress::NoObserver)
+                    transcribe_native(
+                        &m,
+                        &id,
+                        &path,
+                        samples,
+                        &p,
+                        None,
+                        &mut transcribe_progress::NoObserver,
+                    )
                 },
             );
             let wall = started.elapsed();
@@ -15716,7 +15785,10 @@ mod retry_replay {
                 manager.engine_loads()
             );
             assert!(words > 0, "{name}: empty transcript");
-            assert!(wall < deadline, "{name}: {wall:?} over the deadline {deadline:?}");
+            assert!(
+                wall < deadline,
+                "{name}: {wall:?} over the deadline {deadline:?}"
+            );
         }
         assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
     }
