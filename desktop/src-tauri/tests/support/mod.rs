@@ -332,7 +332,7 @@ impl ActiveCapture for FakeCapture {
                 std::fs::write(&self.path, b"RIFF....WAVEfake").map_err(|e| e.to_string())?;
                 let partial = mode == FAKE_PARTIAL;
                 Ok(CaptureOutcome {
-                    tracks: wilson_voice_lib::meeting_control::TrackEvidence::default(),
+                tracks: wilson_voice_lib::meeting_control::TrackEvidence::default(),
                     wav_path: Some(self.path.clone()),
                     sys_wav_path: None,
                     tap_rebuilds: None,
