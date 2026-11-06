@@ -1874,4 +1874,64 @@ mod engine_owner_tests {
             "only engine_owner.rs may construct a speech engine: {offenders:?}"
         );
     }
+
+    // (g), unit level: quitting while the helper is mid-decode. A fake
+    // `yap-asr` (a shell script speaking the real wire protocol) comes up,
+    // "loads", takes a decode and then hangs in it. The quit path's
+    // `kill_spawned_helpers` must kill exactly the PID the owner spawned, the
+    // in-flight job must come back with an error well inside the exit cap,
+    // and the process must be gone (macOS frees its GPU memory with it).
+    #[test]
+    fn quit_while_the_helper_is_mid_decode_kills_it_by_pid() {
+        use std::os::unix::fs::PermissionsExt;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("yap-fake-asr-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let ready = serde_json::to_string(&AsrReady::now(0)).expect("ready line");
+        let loaded = serde_json::to_string(&AsrResponse::ok(1)).expect("load reply");
+        let script = dir.join(ASR_HELPER_BIN);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho '{ready}'\nread _load\necho '{loaded}'\nread _job\nexec sleep 600\n"
+            ),
+        )
+        .expect("write fake helper");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake helper");
+
+        let mut engine =
+            HelperEngine::spawn(&script, &dir.join("never-read.gguf")).expect("fake helper up");
+        let pid = engine.proc_.as_ref().expect("helper process").pid;
+        assert!(spawned_helper_pids().contains(&pid));
+
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = engine.transcribe(&[0.0f32; 16_000], None, None);
+            let _ = tx.send(result);
+            drop(engine);
+        });
+        // Let the decode request reach the helper; either way (sent or not)
+        // the job must fail once its helper is gone.
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        assert!(kill_spawned_helpers() >= 1, "the quit path killed nothing");
+        let result = rx
+            .recv_timeout(HELPER_EXIT_CAP * 4)
+            .expect("the mid-decode job returned after its helper was killed");
+        assert!(result.is_err(), "a killed helper cannot have transcribed");
+        assert!(started.elapsed() < HELPER_EXIT_CAP * 4);
+        worker.join().expect("worker thread");
+        assert!(
+            !spawned_helper_pids().contains(&pid),
+            "the killed helper is reaped and unregistered"
+        );
+        // SAFETY: signal 0 only probes; the PID was ours and is now reaped.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        assert!(!alive, "helper pid {pid} must be gone after quit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
