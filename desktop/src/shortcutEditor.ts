@@ -92,8 +92,10 @@ export function checkAdd(s: Partial<AppSettings>, action: EditableAction, candid
   if (current.some((c) => sameChord(c, candidate))) {
     return { kind: "refused", text: `${label} is already one of ${sp.title}'s shortcuts` };
   }
+  const keys = [candidate.ctrl, candidate.alt, candidate.shift, candidate.cmd].filter(Boolean).length + 1;
   const reserved = reservedChordReason(candidate, false);
   if (reserved) return { kind: "refused", text: reserved };
+  if (keys > 3) return { kind: "refused", text: `${label} is ${keys} keys — a shortcut is at most 3` };
   if (FIXED.some((c) => sameChord(c, candidate))) {
     return { kind: "refused", text: `${label} is already a Yap shortcut — pick another chord` };
   }

@@ -4920,9 +4920,12 @@ fn save_settings(
             .iter()
             .map(|a| (*a, chord_setting(&next, *a)))
             .collect();
-        let extras = shortcuts::editor::validate_extras(&primaries, &next.extra_chords)
-            .map_err(|why| {
-                log::warn!("shortcuts extra_refused count={} reason={why}", next.extra_chords.len());
+        let extras =
+            shortcuts::editor::validate_extras(&primaries, &next.extra_chords).map_err(|why| {
+                log::warn!(
+                    "shortcuts extra_refused count={} reason={why}",
+                    next.extra_chords.len()
+                );
                 CommandError::refused(why)
             })?;
         all.extend(extras);

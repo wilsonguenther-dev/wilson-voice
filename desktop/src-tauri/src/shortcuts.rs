@@ -997,10 +997,9 @@ pub mod editor {
                     }
                     kept.push(e.clone());
                 }
-                Err(why) => log::warn!(
-                    "shortcuts extra_dropped action={:?} reason={why}",
-                    e.action
-                ),
+                Err(why) => {
+                    log::warn!("shortcuts extra_dropped action={:?} reason={why}", e.action)
+                }
             }
         }
         out
