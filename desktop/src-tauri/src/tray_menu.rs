@@ -8,9 +8,10 @@
 //! a new command without a handler is a compile error, and a new row without a
 //! place in [`MENU_LAYOUT`] (or [`INSERTED_ITEMS`]) fails `tests/tray_menu.rs`.
 //!
-//! What is deliberately NOT here (Y6-B "what not to do"): no Languages and no
-//! Formatting submenus. Multi-language is Y10, and an empty submenu is worse
-//! than no submenu.
+//! What is deliberately NOT here (Y6-B "what not to do"): no Formatting
+//! submenu — an empty submenu is worse than no submenu. The Languages submenu
+//! (WF-11) arrived with Y10's multi-language set and is never empty: it always
+//! carries "Language Settings…".
 //!
 //! `sync_tray` in `lib.rs` stays the only place the tray is mutated after it is
 //! built; this module holds no tray handles, only decisions.
@@ -68,6 +69,13 @@ pub enum TrayCommand {
     /// WF-09 — pick an input device, by its row index in the "Microphone"
     /// submenu ([`microphone_row`]); row 0 is "System Default".
     PickMicrophone(usize),
+    /// WF-11 — pick Auto-detect or one language of the set, by its row index
+    /// in the "Languages" submenu ([`language_row`]). Written through the ONE
+    /// language writer the bar's chip and Settings use.
+    PickLanguage(usize),
+    /// WF-11 — "Language Settings…" at the bottom of the Languages submenu:
+    /// Settings, on the Dictation sub-tab where "Languages I speak" lives.
+    OpenLanguageSettings,
     /// `app.exit(0)` — reaches `RunEvent::Exit` and its one bounded teardown
     /// (`lifecycle::quit_plan`), which drains the ASR engine, waits for the
     /// in-flight take and finalizes a live meeting. Never `process::exit`.
@@ -98,6 +106,8 @@ impl TrayCommand {
             TrayCommand::RecordUpcoming(_) => "record_upcoming",
             TrayCommand::ToggleHideMeetingTitles => "toggle_hide_meeting_titles",
             TrayCommand::PickMicrophone(_) => "pick_microphone",
+            TrayCommand::PickLanguage(_) => "pick_language",
+            TrayCommand::OpenLanguageSettings => "open_language_settings",
             TrayCommand::Quit => "quit",
         }
     }
@@ -105,7 +115,7 @@ impl TrayCommand {
 
 /// Every [`TrayCommand::name`]. The test walks this to prove no command is
 /// unreachable from the menu.
-pub const COMMAND_NAMES: [&str; 20] = [
+pub const COMMAND_NAMES: [&str; 22] = [
     "toggle_dictation",
     "paste_last_transcript",
     "copy_last_transcript",
@@ -125,6 +135,8 @@ pub const COMMAND_NAMES: [&str; 20] = [
     "record_upcoming",
     "toggle_hide_meeting_titles",
     "pick_microphone",
+    "pick_language",
+    "open_language_settings",
     "quit",
 ];
 
@@ -143,6 +155,10 @@ pub enum ItemKind {
     /// WF-09 — the "Microphone" submenu; its children are built from
     /// [`microphone_menu`] and dispatch [`TrayCommand::PickMicrophone`].
     MicrophoneSubmenu,
+    /// WF-11 — the "Languages" submenu; its children are built from
+    /// [`language_menu`] and dispatch [`TrayCommand::PickLanguage`], with
+    /// [`ID_LANGUAGE_SETTINGS`] (→ [`TrayCommand::OpenLanguageSettings`]) last.
+    LanguageSubmenu,
 }
 
 /// One row of the menu bar.
@@ -190,6 +206,21 @@ pub const ID_MICROPHONE: &str = "microphone";
 /// WF-09 — prefix of each child of [`ID_MICROPHONE`]; the suffix is the row
 /// index (0 = "System Default").
 pub const MIC_PICK_PREFIX: &str = "mic_pick_";
+/// WF-11 — the "Languages" submenu (Dictation group, under Microphone).
+pub const ID_LANGUAGES: &str = "languages";
+/// WF-11 — prefix of each pick child of [`ID_LANGUAGES`]; the suffix is the
+/// row index.
+pub const LANG_PICK_PREFIX: &str = "lang_pick_";
+/// WF-11 — the "Language Settings…" child, always the last row of
+/// [`ID_LANGUAGES`].
+pub const ID_LANGUAGE_SETTINGS: &str = "language_settings";
+/// The label of [`ID_LANGUAGE_SETTINGS`].
+pub const LANGUAGE_SETTINGS_LABEL: &str = "Language Settings\u{2026}";
+/// The label of the Auto-detect row.
+pub const LANGUAGE_AUTO_LABEL: &str = "Auto-detect";
+/// The Settings sub-tab "Language Settings…" lands on (the `SettingsTab` that
+/// renders `LanguageSettings`, see `desktop/src/views/settings/Dictation.tsx`).
+pub const LANGUAGE_SETTINGS_TAB: &str = "dictation";
 
 /// The `navigate` payload that lands on the transcript history. Yap's history
 /// lives on the Home view (`desktop/src/views/Home.tsx`); there is no separate
@@ -197,7 +228,7 @@ pub const MIC_PICK_PREFIX: &str = "mic_pick_";
 /// frontend's `Nav` union so the two cannot drift.
 pub const HISTORY_NAV: &str = "home";
 
-pub const TRAY_ITEMS: [TrayItem; 23] = [
+pub const TRAY_ITEMS: [TrayItem; 24] = [
     TrayItem {
         id: ID_LICENSE_HEADER,
         label: "Yap",
@@ -313,6 +344,11 @@ pub const TRAY_ITEMS: [TrayItem; 23] = [
         label: "Microphone",
         kind: ItemKind::MicrophoneSubmenu,
     },
+    TrayItem {
+        id: ID_LANGUAGES,
+        label: "Languages",
+        kind: ItemKind::LanguageSubmenu,
+    },
 ];
 
 /// One slot of the menu as it is BUILT.
@@ -375,8 +411,10 @@ pub const MENU_LAYOUT: [Slot; 22] = [
 /// three calendar rows (WF-07, under the kind picker while "Use my calendar"
 /// is on and access is granted), and the "Microphone" submenu (WF-09, under
 /// Hands-free once the device watcher has enumerated the inputs — it is
-/// rebuilt whenever a device is plugged in or the pick changes).
-pub const INSERTED_ITEMS: [&str; 7] = [
+/// rebuilt whenever a device is plugged in or the pick changes), and the
+/// "Languages" submenu (WF-11, under Microphone — or Hands-free before the
+/// device list lands — rebuilt on every language write from any surface).
+pub const INSERTED_ITEMS: [&str; 8] = [
     ID_UPGRADE,
     ID_NOTES_READY,
     ID_MEETING_HEADER,
@@ -384,6 +422,7 @@ pub const INSERTED_ITEMS: [&str; 7] = [
     ID_UPCOMING,
     ID_HIDE_MEETING_TITLES,
     ID_MICROPHONE,
+    ID_LANGUAGES,
 ];
 
 /// The row for `id`, if the menu has one.
@@ -409,8 +448,15 @@ pub fn command_for(id: &str) -> Option<TrayCommand> {
             ItemKind::StateLabel
             | ItemKind::KindSubmenu
             | ItemKind::UpcomingSubmenu
-            | ItemKind::MicrophoneSubmenu => None,
+            | ItemKind::MicrophoneSubmenu
+            | ItemKind::LanguageSubmenu => None,
         };
+    }
+    if id == ID_LANGUAGE_SETTINGS {
+        return Some(TrayCommand::OpenLanguageSettings);
+    }
+    if let Some(index) = language_index_for_menu_id(id) {
+        return Some(TrayCommand::PickLanguage(index));
     }
     if let Some(index) = upcoming_index_for_menu_id(id) {
         return Some(TrayCommand::RecordUpcoming(index));
@@ -433,6 +479,15 @@ pub fn upcoming_index_for_menu_id(id: &str) -> Option<usize> {
 /// The row index a "Microphone" child id carries (`mic_pick_2` → 2).
 pub fn microphone_index_for_menu_id(id: &str) -> Option<usize> {
     let digits = id.strip_prefix(MIC_PICK_PREFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The row index a "Languages" child id carries (`lang_pick_1` → 1).
+pub fn language_index_for_menu_id(id: &str) -> Option<usize> {
+    let digits = id.strip_prefix(LANG_PICK_PREFIX)?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -954,6 +1009,282 @@ pub static MIC_SHOWN: MicLatch = MicLatch::new();
 /// [`MIC_SHOWN`]`.row(index)`.
 pub fn microphone_row(index: usize) -> Option<MicRow> {
     MIC_SHOWN.row(index)
+}
+
+// ─── WF-11 — the Languages submenu ───────────────────────────────────────────
+
+/// What the bar's chip calls "auto" (`languagePicker.ts` `AUTO`).
+pub const LANGUAGE_PICK_AUTO: &str = "auto";
+
+/// One pick child of "Languages".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageRow {
+    /// `lang_pick_<index>` — resolved by [`command_for`].
+    pub id: String,
+    pub text: String,
+    /// `"auto"` or a language code — the same value as the chip's
+    /// `currentPick` (`languagePicker.ts`).
+    pub pick: String,
+    /// The check: what the next take uses (the chip's label).
+    pub checked: bool,
+    /// What clicking writes through the one language writer.
+    pub prefs: crate::languages::LanguagePrefs,
+}
+
+/// The pick children of "Languages", decided from ONE picker view. The
+/// "Language Settings…" row ([`ID_LANGUAGE_SETTINGS`]) is always appended
+/// after them by `lib.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageMenu {
+    pub rows: Vec<LanguageRow>,
+}
+
+impl LanguageMenu {
+    /// The pick that carries the check (`"auto"` or a code), if any row does.
+    pub fn checked_pick(&self) -> Option<&str> {
+        self.rows
+            .iter()
+            .find(|r| r.checked)
+            .map(|r| r.pick.as_str())
+    }
+}
+
+/// The pick the next take uses — mirror of `languagePicker.ts` `currentPick`.
+pub fn current_language_pick(o: &crate::languages::LanguageOptions) -> String {
+    if o.mode == crate::languages::DecodeMode::AutoWithinSet {
+        LANGUAGE_PICK_AUTO.to_string()
+    } else {
+        o.prefs.primary.clone()
+    }
+}
+
+/// The prefs a pick writes — mirror of `languagePicker.ts` `pickPrefs`, the
+/// same function the chip's click uses, so the tray and the chip can never
+/// write two different things for the same choice.
+pub fn prefs_for_pick(
+    prefs: &crate::languages::LanguagePrefs,
+    pick: &str,
+) -> crate::languages::LanguagePrefs {
+    if pick == LANGUAGE_PICK_AUTO {
+        crate::languages::LanguagePrefs {
+            auto: true,
+            ..prefs.clone()
+        }
+    } else {
+        crate::languages::LanguagePrefs {
+            primary: pick.to_string(),
+            set: prefs.set.clone(),
+            auto: false,
+        }
+    }
+}
+
+/// THE decision for the Languages submenu — the same list, in the same order,
+/// as the chip's click cycle (`languagePicker.ts` `pickCycle`): Auto-detect
+/// first (only when the set has a choice in it and the model is not known to
+/// be unable to detect), then each language of the set in the picker's own
+/// order. The check sits on what the chip shows.
+pub fn language_menu(o: &crate::languages::LanguageOptions) -> LanguageMenu {
+    let rank = |code: &str| {
+        o.offered
+            .iter()
+            .position(|c| c.code == code)
+            .unwrap_or(o.offered.len())
+    };
+    let mut langs: Vec<String> = o.prefs.set.clone();
+    langs.sort_by_key(|c| rank(c.as_str()));
+    let mut picks: Vec<String> = Vec::with_capacity(langs.len() + 1);
+    if o.prefs.set.len() > 1 && o.supports_detect != Some(false) {
+        picks.push(LANGUAGE_PICK_AUTO.to_string());
+    }
+    picks.extend(langs);
+    let current = current_language_pick(o);
+    let rows = picks
+        .into_iter()
+        .enumerate()
+        .map(|(i, pick)| {
+            let text = if pick == LANGUAGE_PICK_AUTO {
+                LANGUAGE_AUTO_LABEL.to_string()
+            } else {
+                o.offered
+                    .iter()
+                    .find(|c| c.code == pick)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| crate::languages::language_name(&pick))
+            };
+            LanguageRow {
+                id: format!("{LANG_PICK_PREFIX}{i}"),
+                text,
+                checked: pick == current,
+                prefs: prefs_for_pick(&o.prefs, &pick),
+                pick,
+            }
+        })
+        .collect();
+    LanguageMenu { rows }
+}
+
+/// What the Languages submenu LAST SUCCESSFULLY showed, plus the last probed
+/// model support — a click on `lang_pick_<i>` resolves against the rows on
+/// screen, and a tray redraw never loads the speech model just to draw a
+/// check (it reuses what the last `language_options` probe found).
+#[derive(Debug, Default)]
+pub struct LanguageLatch {
+    shown: Mutex<Option<LanguageMenu>>,
+    support: Mutex<Option<crate::languages::LanguageSupport>>,
+}
+
+impl LanguageLatch {
+    pub const fn new() -> Self {
+        LanguageLatch {
+            shown: Mutex::new(None),
+            support: Mutex::new(None),
+        }
+    }
+
+    pub fn set(&self, shown: Option<LanguageMenu>) {
+        *self.shown.lock().unwrap_or_else(|p| p.into_inner()) = shown;
+    }
+
+    pub fn row(&self, index: usize) -> Option<LanguageRow> {
+        self.shown
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .and_then(|m| m.rows.get(index).cloned())
+    }
+
+    /// Record the probe `language_options` just ran (`None` = no model).
+    pub fn remember_support(&self, support: Option<crate::languages::LanguageSupport>) {
+        *self.support.lock().unwrap_or_else(|p| p.into_inner()) = support;
+    }
+
+    pub fn support(&self) -> Option<crate::languages::LanguageSupport> {
+        self.support
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+/// The process's one Languages latch.
+pub static LANG_SHOWN: LanguageLatch = LanguageLatch::new();
+
+/// [`LANG_SHOWN`]`.row(index)`.
+pub fn language_row(index: usize) -> Option<LanguageRow> {
+    LANG_SHOWN.row(index)
+}
+
+#[cfg(test)]
+mod language_menu_tests {
+    use super::*;
+    use crate::languages::{DecodeMode, LanguageChoice, LanguageOptions, LanguagePrefs};
+
+    fn offered() -> Vec<LanguageChoice> {
+        [("en", "English"), ("es", "Spanish"), ("fr", "French")]
+            .iter()
+            .map(|(c, n)| LanguageChoice {
+                code: (*c).into(),
+                name: (*n).into(),
+            })
+            .collect()
+    }
+
+    fn opts(primary: &str, set: &[&str], auto: bool, mode: DecodeMode) -> LanguageOptions {
+        LanguageOptions {
+            prefs: LanguagePrefs {
+                primary: primary.into(),
+                set: set.iter().map(|s| (*s).to_string()).collect(),
+                auto,
+            },
+            offered: offered(),
+            supports_detect: Some(true),
+            mode,
+            notice: None,
+            max_set: 4,
+        }
+    }
+
+    #[test]
+    fn auto_then_each_language_with_the_check_on_auto() {
+        let m = language_menu(&opts("es", &["es", "en"], true, DecodeMode::AutoWithinSet));
+        let texts: Vec<&str> = m.rows.iter().map(|r| r.text.as_str()).collect();
+        // Picker order (English before Spanish), whichever is primary.
+        assert_eq!(texts, ["Auto-detect", "English", "Spanish"]);
+        assert_eq!(m.checked_pick(), Some("auto"));
+        assert_eq!(m.rows.iter().filter(|r| r.checked).count(), 1);
+        assert_eq!(
+            command_for(&m.rows[2].id),
+            Some(TrayCommand::PickLanguage(2))
+        );
+    }
+
+    #[test]
+    fn the_active_language_carries_the_check() {
+        let m = language_menu(&opts("es", &["es", "en"], false, DecodeMode::Single));
+        assert_eq!(m.checked_pick(), Some("es"));
+        assert!(m.rows[2].checked && !m.rows[0].checked && !m.rows[1].checked);
+    }
+
+    #[test]
+    fn a_pick_writes_what_the_chip_would() {
+        let o = opts("en", &["en", "es"], true, DecodeMode::AutoWithinSet);
+        let m = language_menu(&o);
+        assert_eq!(
+            m.rows[2].prefs,
+            LanguagePrefs {
+                primary: "es".into(),
+                set: vec!["en".into(), "es".into()],
+                auto: false
+            }
+        );
+        let single = opts("es", &["en", "es"], false, DecodeMode::Single);
+        let back = language_menu(&single);
+        assert_eq!(back.rows[0].pick, "auto");
+        assert!(back.rows[0].prefs.auto);
+        assert_eq!(back.rows[0].prefs.primary, "es");
+    }
+
+    #[test]
+    fn no_auto_row_when_the_model_cannot_detect_or_the_set_has_one_language() {
+        let mut o = opts("en", &["en", "es"], true, DecodeMode::FallbackNoDetect);
+        o.supports_detect = Some(false);
+        let m = language_menu(&o);
+        assert!(m.rows.iter().all(|r| r.pick != "auto"));
+        assert_eq!(m.checked_pick(), Some("en"));
+        let one = language_menu(&opts("en", &["en"], true, DecodeMode::Single));
+        assert_eq!(one.rows.len(), 1);
+        assert_eq!(one.rows[0].text, "English");
+        assert!(one.rows[0].checked);
+    }
+
+    #[test]
+    fn language_ids_round_trip_and_settings_row_dispatches() {
+        assert_eq!(language_index_for_menu_id("lang_pick_0"), Some(0));
+        assert_eq!(language_index_for_menu_id("lang_pick_3"), Some(3));
+        assert_eq!(language_index_for_menu_id("lang_pick_"), None);
+        assert_eq!(language_index_for_menu_id("lang_pick_x"), None);
+        assert_eq!(command_for(ID_LANGUAGES), None);
+        assert_eq!(
+            command_for(ID_LANGUAGE_SETTINGS),
+            Some(TrayCommand::OpenLanguageSettings)
+        );
+        assert_eq!(
+            command_for("lang_pick_1"),
+            Some(TrayCommand::PickLanguage(1))
+        );
+    }
+
+    #[test]
+    fn the_latch_resolves_against_what_was_shown() {
+        let latch = LanguageLatch::new();
+        assert_eq!(latch.row(0), None);
+        let m = language_menu(&opts("en", &["en", "es"], true, DecodeMode::AutoWithinSet));
+        latch.set(Some(m.clone()));
+        assert_eq!(latch.row(1), Some(m.rows[1].clone()));
+        latch.set(None);
+        assert_eq!(latch.row(1), None);
+    }
 }
 
 #[cfg(test)]
