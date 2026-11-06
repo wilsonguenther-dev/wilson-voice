@@ -1189,7 +1189,7 @@ mod tests {
             matches!(&s.entitlement, Entitlement::LicenseRequired { reason } if reason == "disputed")
         );
         assert_eq!(s.license_problem.as_deref(), Some("disputed"));
-        assert!(s.license_problem_message.unwrap().contains("on hold"));
+        assert!(s.license_problem_message.as_deref().unwrap_or("").contains("on hold"));
         assert!(!s.allows_new_dictation());
     }
 
