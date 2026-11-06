@@ -438,3 +438,91 @@ fn launch_opens_two_windows_and_the_scratchpad_lazily() {
     assert!(lib.contains("\"lifecycle launch windows open={} labels={} scratchpad_lazy={}\""));
     assert!(!lib.contains("get_webview_window(scratchpad::WINDOW_LABEL)"));
 }
+
+// --- WF-15 window controls: the expand/collapse frame math ---
+
+#[test]
+fn expand_fills_the_work_area_including_the_title_bar() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 50,
+        width: 3024,
+        height: 1800,
+    };
+    let f = scratchpad::fill_frame(work, (0, 56));
+    assert_eq!(
+        f,
+        scratchpad::Frame {
+            x: 0,
+            y: 50,
+            width: 3024,
+            height: 1744
+        }
+    );
+}
+
+#[test]
+fn expand_on_a_second_screen_keeps_its_origin() {
+    let work = scratchpad::Frame {
+        x: -1920,
+        y: -200,
+        width: 1920,
+        height: 1080,
+    };
+    let f = scratchpad::fill_frame(work, (0, 28));
+    assert_eq!((f.x, f.y), (-1920, -200));
+    assert_eq!((f.width, f.height), (1920, 1052));
+}
+
+#[test]
+fn collapse_returns_to_the_remembered_frame() {
+    let prior = scratchpad::Frame {
+        x: 300,
+        y: 200,
+        width: 1520,
+        height: 1040,
+    };
+    let fallback = scratchpad::Frame {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    };
+    assert_eq!(scratchpad::restore_frame(Some(prior), fallback), prior);
+}
+
+#[test]
+fn collapse_without_a_remembered_frame_centres_the_declared_default() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 50,
+        width: 3024,
+        height: 1800,
+    };
+    let f = scratchpad::centered_default(work, 2.0);
+    assert_eq!((f.width, f.height), (1520, 1040));
+    assert_eq!((f.x, f.y), (752, 430));
+    assert_eq!(scratchpad::restore_frame(None, f), f);
+}
+
+#[test]
+fn the_default_never_overflows_a_small_screen() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 0,
+        width: 600,
+        height: 400,
+    };
+    let f = scratchpad::centered_default(work, 1.0);
+    assert_eq!(
+        f,
+        scratchpad::Frame {
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 400
+        }
+    );
+    let odd = scratchpad::centered_default(work, f64::NAN);
+    assert_eq!(odd, f, "a bad scale factor falls back to 1.0");
+}

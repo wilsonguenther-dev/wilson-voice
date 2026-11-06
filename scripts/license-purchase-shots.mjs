@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+/**
+ * yap-1106-lic-02 — before/after PNGs of every Buy surface, both
+ * `purchase_open` states, from the license preview harness. Headless only
+ * (scripts/headless-chrome.mjs, --headless=new); no npm dependencies.
+ *
+ * The INTEGRATOR runs this once per batch against a bundle it already built:
+ *
+ *   (cd desktop && YAP_DEV_TOOLING=1 npm run build)
+ *   node scripts/license-purchase-shots.mjs --dist desktop/dist --out <dir>
+ *
+ * Scenes (desktop/src/license/preview.tsx):
+ *   trial        Settings → License, checkout CLOSED  → button "See Yap pricing"
+ *   open         Settings → License, checkout OPEN    → "Buy Yap — $29 once"
+ *   prompt       license-required sheet, CLOSED       → "See Yap pricing"
+ *   prompt-open  license-required sheet, OPEN         → "Buy Yap — $29 once"
+ *
+ * Each capture also asserts the button text, so a PNG is never the only proof.
+ * Exit 0 all good, 1 a scene showed the wrong words, 3 instrument failure.
+ * Everything it starts (a localhost static server, Chrome, its temp profile)
+ * is stopped/deleted before it exits.
+ */
+import { createServer } from "node:http";
+import { readFileSync, rmSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
+import { extname, join, resolve, normalize } from "node:path";
+import { evaluate, openChrome, sleep } from "./headless-chrome.mjs";
+
+const arg = (k, d) => {
+  const i = process.argv.indexOf(k);
+  return i > 0 ? process.argv[i + 1] : d;
+};
+const DIST = resolve(arg("--dist", "desktop/dist"));
+const OUT = resolve(arg("--out", "license-purchase-shots"));
+const CHROME =
+  process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const SCENES = [
+  ["trial", "See Yap pricing"],
+  ["open", "Buy Yap — $29 once"],
+  ["prompt", "See Yap pricing"],
+  ["prompt-open", "Buy Yap — $29 once"],
+];
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".svg": "image/svg+xml" };
+
+async function main() {
+  const page = join(DIST, "dev", "license-preview.html");
+  if (!existsSync(page)) {
+    console.error(`license-purchase-shots: ${page} missing — build with YAP_DEV_TOOLING=1 first (INSTRUMENT failure)`);
+    return 3;
+  }
+  mkdirSync(OUT, { recursive: true });
+  const server = createServer((req, res) => {
+    const rel = normalize(decodeURIComponent((req.url || "/").split("?")[0])).replace(/^(\.\.[/\\])+/, "");
+    const file = join(DIST, rel);
+    if (!file.startsWith(DIST) || !existsSync(file) || statSync(file).isDirectory()) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream" });
+    res.end(readFileSync(file));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let chrome;
+  try {
+    chrome = await openChrome(CHROME, "yap-license-shots");
+  } catch (e) {
+    server.close();
+    console.error("license-purchase-shots: " + e.message);
+    return 3;
+  }
+  const { proc, cdp, ws, profile } = chrome;
+  let failed = 0;
+  try {
+    for (const [scene, want] of SCENES) {
+      const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+      const { sessionId: s } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+      await cdp.send("Page.enable", {}, s);
+      await cdp.send("Runtime.enable", {}, s);
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1100, height: 820, deviceScaleFactor: 2, mobile: false }, s);
+      await cdp.send("Page.navigate", { url: `${base}/dev/license-preview.html#${scene}` }, s);
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        const ready = await evaluate(cdp, s, "document.readyState === 'complete' && !!document.querySelector('button.primary')").catch(() => false);
+        if (ready) break;
+        await sleep(100);
+      }
+      await evaluate(cdp, s, "document.fonts.ready.then(() => true)");
+      await sleep(300);
+      const texts = await evaluate(cdp, s, "[...document.querySelectorAll('button[data-purchase-open]')].map(b => b.textContent.trim())");
+      const ok = Array.isArray(texts) && texts.length > 0 && texts.every((t) => t === want);
+      if (!ok) failed++;
+      console.log(`license-purchase-shots ${scene} ${ok ? "ok" : "WRONG"} buttons=${JSON.stringify(texts)} want=${JSON.stringify(want)}`);
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
+      writeFileSync(join(OUT, `license-${scene}.png`), Buffer.from(shot.data, "base64"));
+      await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+    }
+  } finally {
+    await cdp.send("Browser.close").catch(() => {});
+    ws.close();
+    await sleep(300);
+    if (proc.exitCode === null) proc.kill("SIGKILL");
+    rmSync(profile, { recursive: true, force: true });
+    server.close();
+  }
+  return failed ? 1 : 0;
+}
+
+main().then(
+  (code) => process.exit(code),
+  (e) => {
+    console.error("license-purchase-shots: " + (e?.stack || e));
+    process.exit(3);
+  },
+);

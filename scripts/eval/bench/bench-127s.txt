@@ -1,0 +1,7 @@
+Okay, so here is where things stand on the product side, and I want to get this down while it is still fresh in my head. The biggest change this month is that dictation now feels instant on short notes. You hold the key, you talk, you let go, and the words are already in the document before you have moved your hands back to the keyboard. That was the whole goal for this release, and I think we hit it.
+
+The second thing is long recordings. People are starting to use the app for real meetings and for long voice memos, and those are a different problem. A ten second note can be decoded in one pass, but a four minute ramble needs to be cut into windows so that one slow window does not hold up the whole take. We built that, and it works, but I want real numbers before I say it is done. That means a bench we can run on any machine, the same three recordings every time, and a table that shows whether we got faster or slower.
+
+Third, the cleanup step. Removing filler words and fixing the punctuation should cost almost nothing, a few milliseconds at most. If it ever starts costing more than the decode itself, something has gone wrong and I want the bench to tell us before a user does.
+
+Finally, a note on process. Every change to the speed of the app should come with a row in the budget table. No row, no merge. It sounds strict, but it is the only way we stop guessing about performance and start measuring it. If you have questions about any of this, grab me after lunch tomorrow and we can walk through it together.

@@ -6,6 +6,8 @@ import { recorderPrompt, type HotkeyBindingsReport } from "../../hotkeyRecorder"
 import { useAppCtx } from "../../appShell";
 import type { ChordSetting } from "../../appTypes";
 import { dictateLabel } from "../../hotkeyStatus";
+import ExtraBindings from "../../ExtraBindings";
+import { handsFreeLine, resetAllToDefault, resetToDefault, type EditableAction } from "../../shortcutEditor";
 
 const MODIFIER_CODES = new Set([
   "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight",
@@ -46,6 +48,12 @@ export default function Shortcut() {
     };
   }, [status, settings]);
   const rowFor = (a: string) => report?.rows.find((r) => r.action === a);
+  // WF-18 — does `a` carry extra shortcuts (then its row is not "default")?
+  const extrasOf = (a: EditableAction) => (settings?.extraChords ?? []).some((e) => e.action === a);
+  const anyCustom =
+    !!settings &&
+    !!(settings.dictateToggle || settings.meetingChord || settings.cancelChord || settings.handsFreeChord ||
+      settings.copyLastChord || settings.scratchpadChord || (settings.extraChords ?? []).length > 0);
   const save = async (next: typeof settings) => {
     setTableError(null);
     try {
@@ -136,6 +144,10 @@ export default function Shortcut() {
                       onCapture={(s) => s.kind === "hold" && applyBinding(s.binding)}
                       onReset={() => applyBinding("fn_control")}
                     />
+                    {/* WF-18 — the live hands-free line, naming the hold key in use. */}
+                    <p className="settings-hint" data-testid="hands-free-line">
+                      {handsFreeLine(settings.pttBinding)}
+                    </p>
                     <HotkeyRecorder
                       title="Dictate (toggle)"
                       keyLabel={dictateLabel(status)}
@@ -161,12 +173,13 @@ export default function Shortcut() {
                       title="Record meeting"
                       keyLabel={rowFor("record_meeting")?.key ?? "⌃⌘M"}
                       defaultLabel="⌃⌘M"
-                      isDefault={!settings.meetingChord}
+                      isDefault={!settings.meetingChord && !extrasOf("record_meeting")}
                       mode="chord"
                       row={rowFor("record_meeting")}
                       onCapture={(s) => s.kind === "chord" && save({ ...settings, meetingChord: s.chord })}
-                      onReset={() => save({ ...settings, meetingChord: null })}
+                      onReset={() => save(resetToDefault(settings, "record_meeting"))}
                     />
+                    <ExtraBindings action="record_meeting" title="Record meeting" settings={settings} save={save} />
                     {/* Y8-A — the chords that complete the suite. Same capture
                         control, same save path: the backend applies the rules
                         (at most 3 keys, ⌃/⌥/⌘ required) and the error lands in
@@ -175,32 +188,35 @@ export default function Shortcut() {
                       title="Hands-free (toggle)"
                       keyLabel={rowFor("hands_free_toggle")?.key ?? "⌃⌘H"}
                       defaultLabel="⌃⌘H"
-                      isDefault={!settings.handsFreeChord}
+                      isDefault={!settings.handsFreeChord && !extrasOf("hands_free_toggle")}
                       mode="chord"
                       row={rowFor("hands_free_toggle")}
                       onCapture={(s) => s.kind === "chord" && save({ ...settings, handsFreeChord: s.chord })}
-                      onReset={() => save({ ...settings, handsFreeChord: null })}
+                      onReset={() => save(resetToDefault(settings, "hands_free_toggle"))}
                     />
+                    <ExtraBindings action="hands_free_toggle" title="Hands-free (toggle)" settings={settings} save={save} />
                     <HotkeyRecorder
                       title="Copy last transcript"
                       keyLabel={rowFor("copy_last")?.key ?? "⌃⌘C"}
                       defaultLabel="⌃⌘C"
-                      isDefault={!settings.copyLastChord}
+                      isDefault={!settings.copyLastChord && !extrasOf("copy_last")}
                       mode="chord"
                       row={rowFor("copy_last")}
                       onCapture={(s) => s.kind === "chord" && save({ ...settings, copyLastChord: s.chord })}
-                      onReset={() => save({ ...settings, copyLastChord: null })}
+                      onReset={() => save(resetToDefault(settings, "copy_last"))}
                     />
+                    <ExtraBindings action="copy_last" title="Copy last transcript" settings={settings} save={save} />
                     <HotkeyRecorder
                       title="Open Scratchpad"
                       keyLabel={rowFor("open_scratchpad")?.key ?? "⌃⌘J"}
                       defaultLabel="⌃⌘J"
-                      isDefault={!settings.scratchpadChord}
+                      isDefault={!settings.scratchpadChord && !extrasOf("open_scratchpad")}
                       mode="chord"
                       row={rowFor("open_scratchpad")}
                       onCapture={(s) => s.kind === "chord" && save({ ...settings, scratchpadChord: s.chord })}
-                      onReset={() => save({ ...settings, scratchpadChord: null })}
+                      onReset={() => save(resetToDefault(settings, "open_scratchpad"))}
                     />
+                    <ExtraBindings action="open_scratchpad" title="Open Scratchpad" settings={settings} save={save} />
                     {tableError && <p className="error">{tableError}</p>}
                   </div>
                   <div className="panel" data-row>
@@ -326,14 +342,17 @@ export default function Shortcut() {
                   </div>
                   {/* yap-uiux-2026-10-16-SETTINGS — the pane's reset sits in
                       the pinned footer, not inside the card it resets. */}
-                  {settings.dictateToggle && (
+                  {/* WF-18 — the reset button: every chord back to its shipped
+                      key and every extra shortcut removed, in one save. */}
+                  {anyCustom && (
                     <div className="settings-footer">
                       <button
                         type="button"
                         className="ghost"
-                        onClick={() => saveSettings({ ...settings, dictateToggle: null })}
+                        data-testid="shortcuts-reset-all"
+                        onClick={() => save(resetAllToDefault(settings))}
                       >
-                        Reset to ⌃⌥⌘Space
+                        Reset to default
                       </button>
                     </div>
                   )}

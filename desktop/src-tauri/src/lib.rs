@@ -502,6 +502,11 @@ pub struct AppSettings {
     /// Y8-A — the Open Scratchpad chord rebind. `None` = ⌃⌘J.
     #[serde(default)]
     pub scratchpad_chord: Option<hotkeys::ChordSetting>,
+    /// WF-18 — each always-global action's 2nd … 4th shortcut (the primary
+    /// stays in its own field above). Validated by `shortcuts::editor` on
+    /// every save and again at launch. Empty = one shortcut per action.
+    #[serde(default)]
+    pub extra_chords: Vec<shortcuts::editor::ExtraBinding>,
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
@@ -769,6 +774,7 @@ impl Default for AppSettings {
             hands_free_chord: None,
             copy_last_chord: None,
             scratchpad_chord: None,
+            extra_chords: Vec::new(),
             pill_style: "classic".into(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
@@ -959,7 +965,8 @@ struct AppState {
     /// from [`license::tray_line`], the same decision the pill renders, so the
     /// menu bar and the pill cannot disagree about the trial.
     tray_license: PLMutex<Option<MenuItem<Wry>>>,
-    /// Y2-E — "Upgrade Yap — $29 once". Held so `sync_tray` can INSERT it into
+    /// Y2-E — the upgrade line (`license::upgrade_tray_label`: "See Yap pricing"
+    /// while checkout is closed). Held so `sync_tray` can INSERT it into
     /// and REMOVE it from the menu rather than grey it out: muda has no hidden
     /// item, and a disabled upgrade line is still the wrong sentence sitting in
     /// front of someone who already paid.
@@ -1621,6 +1628,7 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let license = state.license.status();
     let (license_line, urgent) = license::tray_line(&license);
     let offers_purchase = license::tray_offers_purchase(&license);
+    let upgrade_label = license::upgrade_tray_label(license.purchase_open);
     let license_item = state.tray_license.lock().clone();
     let upgrade_item = state.tray_upgrade.lock().clone();
     let tray_menu = state.tray_menu.lock().clone();
@@ -1673,6 +1681,9 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
         // separator, so the money line reads as part of the license block and
         // not as the first of the dictation controls.
         if let (Some(menu), Some(item)) = (tray_menu.as_ref(), upgrade_item.as_ref()) {
+            // yap-1106-lic-02 — the line reads `purchase_open`: "See Yap
+            // pricing" while checkout is closed, the price once it is open.
+            let _ = item.set_text(upgrade_label);
             if offers_purchase && !upgrade_shown {
                 let _ = menu.insert(item, 1);
             } else if !offers_purchase && upgrade_shown {
@@ -2016,14 +2027,14 @@ fn place_upcoming_rows(
 /// It must never open a browser, and it must never be the thing that shows a
 /// price: the $29 / $19-founding copy, the seats line and the keep-forever
 /// promise all live in `src/license/PurchasePrompt.tsx`, and dropping somebody
-/// into a Stripe checkout straight from a corner of their screen would put them
+/// onto the purchase page straight from a corner of their screen would put them
 /// in front of a payment form with none of that context.
 ///
 /// So the caller's job ends at "ask the main window". This command unminimizes
 /// and focuses `main` (`present_main_window`, the same activation path the tray
 /// uses) and emits `show_purchase`; `appShell.ts` listens and raises the sheet
 /// that already exists. No new money surface, no second price string, no second
-/// Payment Link.
+/// purchase URL.
 ///
 /// Y2-E's menu-bar "upgrade" item calls this same function. That item used to
 /// land on Settings -> License "until Y2-D's dedicated purchase sheet lands";
@@ -3552,6 +3563,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let db_ref: &Database = &db;
             let mut persist = PersistTakeChunks::new(&mut progress, db_ref, take_id.as_deref());
             take_stages.emit(take_stage::TakeStage::Decoding, None);
+            // SP-03 — the decoded audio's length, read before `rec.samples`
+            // moves into the decode, for the latency line's rolling RTF.
+            let decoded_audio_s = rec.samples.len() as f64 / f64::from(record::TARGET_RATE);
             let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -3937,6 +3951,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
+            // SP-03 — this take's decode RTF joins the session's rolling window.
+            let (rtf_p50, rtf_last) = latency::record_decode_rtf(asr.decode_ms, decoded_audio_s);
             // YV40: the whole take as disjoint spans in one stable key=value
             // line (see `latency`) — press side, capture, DSP finalize, ASR load
             // vs decode, cleanup, paste — instead of the old cumulative mix.
@@ -3953,6 +3969,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     paste_ms,
                     backend: &asr.backend,
                     pasted: outcome.pasted,
+                    rtf_p50,
+                    rtf_last,
                 }
                 .summary_line()
             );
@@ -5193,7 +5211,25 @@ fn save_settings(
             let (sc, label) = hotkey_table::resolve(a, chord_setting(&next, a));
             all.push((a, sc, label));
         }
-        hotkey_table::check_distinct(&all).map_err(CommandError::refused)?;
+        // WF-18 — every extra shortcut passes the same gate as a primary and
+        // joins the distinctness check, so no two actions share a chord.
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let extras =
+            shortcuts::editor::validate_extras(&primaries, &next.extra_chords).map_err(|why| {
+                log::warn!(
+                    "shortcuts extra_refused count={} reason={why}",
+                    next.extra_chords.len()
+                );
+                CommandError::refused(why)
+            })?;
+        all.extend(extras);
+        hotkey_table::check_distinct(&all).map_err(|why| {
+            log::warn!("shortcuts overlap_refused reason={why}");
+            CommandError::refused(why)
+        })?;
     }
     // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
     // PERSIST, then APPLY the chords; an apply that fails rolls back every
@@ -5251,7 +5287,28 @@ fn save_settings(
     // (the chord is taken) or an uncatalogued `command_failed` (anything else,
     // which the toast never shows verbatim). Only Yap's own constant sentences
     // ("finish the current take …") are built as `refused` here directly.
+    // WF-18 — the extra shortcuts held before this save, so a later refusal
+    // can put them back alongside every primary.
+    let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
+        let aliases_now = hotkey_table::active_aliases();
+        if aliases_now != aliases_before {
+            let (re_reg, drop_now) = hotkey_table::alias_diff(&aliases_now, &aliases_before);
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                for sc in drop_now {
+                    let _ = gs.unregister(sc);
+                }
+                for sc in re_reg {
+                    if !gs.is_registered(sc) {
+                        if let Err(e) = gs.register(sc) {
+                            log::warn!("shortcuts extra_rollback_failed ({e})");
+                        }
+                    }
+                }
+            }
+            hotkey_table::set_active_aliases(aliases_before.clone());
+        }
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -5315,6 +5372,60 @@ fn save_settings(
         log::info!("{} chord → {new_label}", a.title());
         hotkey_table::set_active_chord(a, (new_chord, new_label));
         applied.push((a, old));
+    }
+    // 2b. WF-18 — the extra shortcuts: register the new ones first, drop the
+    // ones this save removed only after that, roll back on a refusal.
+    {
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let new_extras = shortcuts::editor::validate_extras(&primaries, &next.extra_chords)
+            .map_err(CommandError::refused)?;
+        let old_extras = hotkey_table::active_aliases();
+        if new_extras != old_extras {
+            let (to_reg, to_unreg) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
+                for sc in &to_reg {
+                    if gs.is_registered(*sc) {
+                        continue;
+                    }
+                    if let Err(e) = gs.register(*sc) {
+                        let label = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(.., l)| l.clone())
+                            .unwrap_or_default();
+                        log::warn!("shortcuts extra_register_failed label={label}");
+                        for d in &done {
+                            let _ = gs.unregister(*d);
+                        }
+                        return Err(rollback(
+                            chord_rebind_error(&label, &e.to_string()),
+                            dictate_applied,
+                            &applied,
+                        ));
+                    }
+                    done.push(*sc);
+                }
+                for sc in &to_unreg {
+                    if gs.is_registered(*sc) {
+                        if let Err(e) = gs.unregister(*sc) {
+                            log::warn!("shortcuts extra_unregister_failed ({e})");
+                        }
+                    }
+                }
+            }
+            log::info!(
+                "shortcuts extras_saved count={} added={} removed={}",
+                new_extras.len(),
+                to_reg.len(),
+                to_unreg.len()
+            );
+            hotkey_table::set_active_aliases(new_extras);
+        }
     }
     let meeting_applied = applied
         .iter()
@@ -6899,6 +7010,38 @@ fn hide_scratchpad(app: AppHandle) {
 #[tauri::command]
 fn scratchpad_focus(focused: bool, note_id: Option<String>) {
     scratchpad::set_focused_note(focused, note_id);
+}
+
+/// WF-15 — the Scratchpad's floating Copy: the whole note as plain text, with
+/// the transient marker so clipboard managers skip it. `async` so the
+/// sequenced copy runs OFF the main thread (it waits on it).
+#[tauri::command]
+async fn copy_note_transient(app: AppHandle, text: String) -> Result<usize, String> {
+    let chars = text.chars().count();
+    tauri::async_runtime::spawn_blocking(move || paste::copy_text_transient(&app, &text))
+        .await
+        .map_err(|e| format!("copy task join failed: {e}"))?
+        .map_err(|e| {
+            log::warn!("scratchpad copy failed chars={chars} err={e}");
+            "Couldn't put the note on the clipboard. Select the text and press ⌘C instead."
+                .to_string()
+        })?;
+    log::info!("scratchpad copy ok chars={chars}");
+    diagnostics::bump("scratchpad", "copy_note");
+    Ok(chars)
+}
+
+/// WF-15 — the Scratchpad's expand button: fill the current screen's work
+/// area, or go back to the frame it had before. Returns the new state.
+#[tauri::command]
+fn scratchpad_set_expanded(app: AppHandle, expanded: bool) -> Result<bool, String> {
+    let now = scratchpad::set_expanded(&app, expanded).map_err(|e| {
+        log::warn!("scratchpad expand failed expanded={expanded} err={e}");
+        format!("Couldn't resize the Scratchpad ({e}). Drag its edge instead.")
+    })?;
+    log::info!("scratchpad expand ok expanded={now}");
+    diagnostics::bump("scratchpad", if now { "expand" } else { "collapse" });
+    Ok(now)
 }
 
 #[tauri::command]
@@ -9947,33 +10090,46 @@ fn activate_license(
     }
 }
 
-/// YP3 — open Stripe's hosted checkout in the user's browser.
+/// YP3 / yap-1106-lic-02 — open the drivia.consulting Yap page in the user's
+/// browser. Every Buy lands there, never on a Stripe link: the page starts
+/// checkout once sales are open and says "not open yet" until then.
 ///
 /// Takes **no argument on purpose**. The destination is
-/// `license::PAYMENT_LINK_URL`, a compile-time constant, handed to `open(1)` as
+/// `license::PURCHASE_PAGE_URL`, a compile-time constant, handed to `open(1)` as
 /// one argv element — never a shell string, and never a URL the webview
 /// supplied. A command that accepted a URL would be a "open anything on this
 /// Mac" primitive reachable from any script that reaches the frontend.
 #[tauri::command]
 fn open_purchase_page() -> Result<(), String> {
+    let purchase_open = license::PURCHASE_OPEN;
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(license::PAYMENT_LINK_URL)
+        let result = std::process::Command::new("open")
+            .arg(license::PURCHASE_PAGE_URL)
             .spawn()
             .map(|_| ())
             .map_err(|e| {
                 format!(
-                    "Could not open your browser ({e}). The link is {}",
-                    license::PAYMENT_LINK_URL
+                    "Could not open your browser ({e}). The page is {}",
+                    license::PURCHASE_PAGE_URL
                 )
-            })
+            });
+        match &result {
+            Ok(()) => log::info!("license purchase_page_open ok purchase_open={purchase_open}"),
+            Err(_) => {
+                log::warn!("license purchase_page_open failure=spawn purchase_open={purchase_open}")
+            }
+        }
+        result
     }
     #[cfg(not(target_os = "macos"))]
     {
+        log::warn!(
+            "license purchase_page_open failure=unsupported_os purchase_open={purchase_open}"
+        );
         Err(format!(
-            "Open {} in your browser to buy Yap.",
-            license::PAYMENT_LINK_URL
+            "Open {} in your browser to see Yap pricing.",
+            license::PURCHASE_PAGE_URL
         ))
     }
 }
@@ -11237,6 +11393,8 @@ pub fn run() {
             open_scratchpad,
             hide_scratchpad,
             scratchpad_focus,
+            copy_note_transient,
+            scratchpad_set_expanded,
             list_notes,
             search_notes,
             save_note_draft,
@@ -12099,6 +12257,29 @@ pub fn run() {
                             Err(e) => log::warn!("{} ({}) register failed: {e}", resolved.1, a.title()),
                         }
                         hotkey_table::set_chord_status(a, hotkeys::CarbonStatus::from_result(&r));
+                    }
+                    // WF-18 — each action's extra shortcuts, re-validated (a
+                    // stored extra a rule now refuses is dropped and logged).
+                    {
+                        let extras = {
+                            let settings = st.settings.lock();
+                            let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+                                .iter()
+                                .map(|a| (*a, chord_setting(&settings, *a)))
+                                .collect();
+                            shortcuts::editor::resolve_extras_lenient(&primaries, &settings.extra_chords)
+                        };
+                        let mut live = Vec::new();
+                        for (a, sc, label) in extras {
+                            match h.global_shortcut().register(sc) {
+                                Ok(()) => {
+                                    log::info!("shortcuts extra_registered action={a:?} label={label}");
+                                    live.push((a, sc, label));
+                                }
+                                Err(e) => log::warn!("shortcuts extra_register_failed action={a:?} label={label} ({e})"),
+                            }
+                        }
+                        hotkey_table::set_active_aliases(live);
                     }
                     {
                         // The binding table at launch, once the tap thread has

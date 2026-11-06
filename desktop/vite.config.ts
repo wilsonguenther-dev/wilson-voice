@@ -103,6 +103,12 @@ export default defineConfig(async () => ({
                 __dirname,
                 "dev/system-audio-preview.html",
               ),
+              // WF-18 — the extra-shortcuts editor (several / full /
+              // overlap) for the batch's headless before/after PNGs.
+              shortcutsEditorPreview: resolve(
+                __dirname,
+                "dev/shortcuts-editor-preview.html",
+              ),
             }
           : {}),
       },
