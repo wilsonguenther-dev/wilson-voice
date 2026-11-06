@@ -308,17 +308,7 @@ pub fn load_engine(model_path: &Path) -> Result<Box<dyn Transcriber>, String> {
         Some(bin) => {
             HelperEngine::spawn(&bin, model_path).map(|e| Box::new(e) as Box<dyn Transcriber>)
         }
-        None => {
-            log::warn!("engine helper missing — loading in process (dev/test build only)");
-            LIVE.acquire(MAX_LIVE_ENGINES).and_then(|token| {
-                asr_engine::load(model_path).map(|inner| {
-                    Box::new(LocalEngine {
-                        inner,
-                        _live: token,
-                    }) as Box<dyn Transcriber>
-                })
-            })
-        }
+        None => load_in_process(model_path),
     };
     match &result {
         Ok(_) => publish(EngineHealth::Ready, "loaded", "none"),
@@ -330,26 +320,88 @@ pub fn load_engine(model_path: &Path) -> Result<Box<dyn Transcriber>, String> {
     result
 }
 
-/// `wilson-voice --asr-capabilities` only: a short-lived CLI process that
-/// prints what the model can do and exits. Never the app's runtime engine.
-pub fn load_probe_engine(model_path: &Path) -> Result<asr_engine::AsrEngine, String> {
-    asr_engine::load(model_path)
+/// Said when there is no helper and the in-process engine is not compiled in
+/// (every shipped build): a plain sentence, never a crash.
+pub const HELPER_MISSING: &str =
+    "Yap's speech helper is missing from this install, so it cannot transcribe. Reinstall Yap to fix it.";
+
+/// The dev/test fallback: an in-process engine, counted like any other. Only
+/// compiled with `--features in-process-asr`; the shipped app has no way to
+/// put ggml/Metal state into its own process.
+#[cfg(feature = "in-process-asr")]
+fn load_in_process(model_path: &Path) -> Result<Box<dyn Transcriber>, String> {
+    log::warn!("engine helper missing — loading in process (in-process-asr dev build only)");
+    LIVE.acquire(MAX_LIVE_ENGINES).and_then(|token| {
+        asr_engine::load(model_path).map(|inner| {
+            Box::new(LocalEngine {
+                inner,
+                _live: token,
+            }) as Box<dyn Transcriber>
+        })
+    })
 }
 
-/// The staged helper, next to the app executable (where Tauri puts an
-/// `externalBin`, and where a workspace build puts it in dev).
+#[cfg(not(feature = "in-process-asr"))]
+fn load_in_process(_model_path: &Path) -> Result<Box<dyn Transcriber>, String> {
+    log::warn!("engine helper missing and in-process-asr not built — no engine");
+    Err(HELPER_MISSING.to_string())
+}
+
+/// `wilson-voice --asr-capabilities` only: a short-lived CLI process that
+/// asks the model what it can do and exits. Goes through the helper like the
+/// app does (the helper reports its capabilities on load); with
+/// `in-process-asr` and no helper staged it reads them in process instead.
+pub fn probe_capabilities(model_path: &Path) -> Result<asr_engine::ModelCapabilities, String> {
+    if let Some(bin) = helper_binary() {
+        let engine = HelperEngine::spawn(&bin, model_path)?;
+        return engine
+            .caps
+            .clone()
+            .ok_or_else(|| "the speech helper did not report its capabilities".to_string());
+        // `engine` drops here: the helper is asked to exit, then killed by PID.
+    }
+    probe_in_process(model_path)
+}
+
+#[cfg(feature = "in-process-asr")]
+fn probe_in_process(model_path: &Path) -> Result<asr_engine::ModelCapabilities, String> {
+    let engine = asr_engine::load(model_path)?;
+    Ok(asr_engine::capabilities(&engine))
+}
+
+#[cfg(not(feature = "in-process-asr"))]
+fn probe_in_process(_model_path: &Path) -> Result<asr_engine::ModelCapabilities, String> {
+    Err(HELPER_MISSING.to_string())
+}
+
+/// The staged helper: next to the executable (where Tauri puts an
+/// `externalBin`, and where a workspace build puts it in dev), or one level up
+/// for a test binary in `target/<profile>/deps/` (the workspace build puts
+/// `yap-asr` in `target/<profile>/`).
 fn helper_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.join(ASR_HELPER_BIN);
-    path.is_file().then_some(path)
+    let dir = exe.parent()?;
+    let here = dir.join(ASR_HELPER_BIN);
+    if here.is_file() {
+        return Some(here);
+    }
+    if dir.file_name().map(|n| n == "deps").unwrap_or(false) {
+        let up = dir.parent()?.join(ASR_HELPER_BIN);
+        if up.is_file() {
+            return Some(up);
+        }
+    }
+    None
 }
 
 /// An in-process engine (fallback only), counted like any other.
+#[cfg(feature = "in-process-asr")]
 struct LocalEngine {
     inner: asr_engine::AsrEngine,
     _live: LiveToken,
 }
 
+#[cfg(feature = "in-process-asr")]
 impl Transcriber for LocalEngine {
     fn transcribe(
         &mut self,
@@ -383,6 +435,7 @@ impl Transcriber for LocalEngine {
     }
 }
 
+#[cfg(feature = "in-process-asr")]
 impl Drop for LocalEngine {
     fn drop(&mut self) {
         log::info!(

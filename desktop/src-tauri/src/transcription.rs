@@ -354,6 +354,10 @@ pub trait Transcriber: Send + 'static {
     }
 }
 
+// yap-1106-engine-owner: the in-process engine exists only with
+// `--features in-process-asr`; shipped builds decode in the `yap-asr` helper
+// (`engine_owner::HelperEngine`).
+#[cfg(feature = "in-process-asr")]
 impl Transcriber for asr_engine::AsrEngine {
     fn transcribe(
         &mut self,
