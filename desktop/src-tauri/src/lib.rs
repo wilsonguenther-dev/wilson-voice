@@ -62,6 +62,8 @@ pub mod diarize_protocol;
 // `tests/pill_idle_tick_during_recording.rs` drives it directly rather than
 // trying to infer a sleep duration from the outside.
 pub mod float_pill;
+/// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
+mod pill_click;
 pub mod focus;
 /// Y4-H — the formatting screen's copy, derived from the pipeline's own
 /// `runs_*` predicates so it cannot drift from what the pipeline does.
@@ -5398,7 +5400,81 @@ fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, an
 /// re-park loop for the duration of the gesture.
 #[tauri::command]
 fn pill_drag_start(app: AppHandle) {
+    // yap-wf-01-click-the-pill-to — every press is also a potential CLICK, so
+    // latch the app that has focus right now (never Yap itself): a stop click
+    // hands focus back to it before the paste target is read.
+    pill_click::PRESS.lock().press(
+        pill_click::frontmost(),
+        &app.config().identifier,
+        std::process::id() as i32,
+        hotkeys::now_ms(),
+    );
     float_pill::drag_start(&app);
+}
+
+/// yap-wf-01-click-the-pill-to — WF-01: a CLICK on the pill (pointer-down and
+/// pointer-up under 4 px and 300 ms, classified in pill/drag.ts) toggles a
+/// hands-free take. The start half is license-gated exactly like
+/// `manual_toggle`; the stop half never is. On stop, focus is returned to the
+/// pre-click app (latched by `pill_drag_start`) BEFORE `stop_take` reads the
+/// paste target, so the text lands where the user was typing.
+#[tauri::command]
+fn pill_click_toggle(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), CommandError> {
+    let state = state.inner();
+    if !*state.recording.lock() {
+        if *state.busy.lock() {
+            log::info!("pill click action=ignored reason=busy");
+            return Ok(());
+        }
+        if !license_allows_new_dictation(&app, state) {
+            log::info!("pill click action=refused reason=license");
+            return Err(CommandError::license_required());
+        }
+        start_recording(&app, state);
+        if *state.recording.lock() {
+            // A click take is hands-free: nothing is held, so key release or
+            // an fn edge must not finalize it. The next click (or any stop)
+            // ends it through `stop_take`, which clears this latch.
+            *state.hands_free.lock() = true;
+            *state.hands_free_by_chord.lock() = false;
+            log::info!("pill click action=start hands_free=true");
+        } else {
+            log::warn!("pill click action=start_failed reason=take_did_not_start");
+        }
+        emit_status(&app, state);
+        return Ok(());
+    }
+    let pre = pill_click::PRESS.lock().pre_click(hotkeys::now_ms()).cloned();
+    match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
+        pill_click::PasteTarget::Keep => {
+            log::info!("pill click action=stop refocus=false");
+            stop_take(&app, state, StopOrigin::OnScreen);
+        }
+        pill_click::PasteTarget::Refocus(target) => {
+            // Activation lands through the main run loop, so the wait for it
+            // runs OFF the main thread; the stop follows once the pre-click
+            // app is frontmost (or the bounded wait gives up).
+            let app = app.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                let asked = pill_click::refocus(&target);
+                let front = asked && pill_click::wait_until_front(&target);
+                if !front {
+                    log::warn!("pill click refocus_failed asked={asked}");
+                }
+                log::info!(
+                    "pill click action=stop refocus=true front={front} wait_ms={}",
+                    t0.elapsed().as_millis()
+                );
+                stop_take(&app, &state, StopOrigin::OnScreen);
+            });
+        }
+    }
+    Ok(())
 }
 
 /// YV65 — live move. `dx`/`dy` are the cursor's total travel since
@@ -11191,6 +11267,7 @@ pub fn run() {
             meeting_detect_settings,
             set_meeting_detect_settings,
             pill_drag_start,
+            pill_click_toggle,
             pill_drag_move,
             pill_drag_end,
             get_history,
