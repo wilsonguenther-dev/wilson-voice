@@ -432,8 +432,16 @@ pub fn snap_position(release: (f64, f64), screen_frame: (f64, f64, f64, f64)) ->
 
 /// The pill webview reports the capsule's rect inside the float window, in
 /// logical points (YV65). See [`start_hover_watch`] for why this exists.
+///
+/// fb-02 — once the webview has published the precise LIST
+/// (`pill_set_hitboxes`), this legacy single-rect call (the bounding union,
+/// still sent for older listeners) is ignored: it must never widen the list
+/// back into one box that covers the empty glass between controls.
 pub fn set_hitbox(x: f64, y: f64, w: f64, h: f64) {
-    set_hitboxes(&[HitRect { x, y, w, h }]);
+    if HIT_LIST_PUBLISHED.load(Ordering::SeqCst) {
+        return;
+    }
+    store_hitboxes(&[HitRect { x, y, w, h }]);
 }
 
 /// yap-1106-fb-02-pill-first-click — the smallest hit area any pill control
@@ -465,6 +473,8 @@ static HIT_RECTS: Mutex<Vec<(f64, f64, f64, f64)>> = Mutex::new(Vec::new());
 /// Unix ms of the last pointer-down the webview reported on a control (0 = no
 /// press held). See [`press_hold_live`].
 static PRESS_HELD_AT: AtomicU64 = AtomicU64::new(0);
+/// Has the webview ever published the precise rect list? See [`set_hitbox`].
+static HIT_LIST_PUBLISHED: AtomicBool = AtomicBool::new(false);
 
 /// One rect as the pill webview publishes it (`pill_set_hitboxes`).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
@@ -527,6 +537,11 @@ pub fn point_in_hitboxes(point: (f64, f64), rects: &[(f64, f64, f64, f64)]) -> b
 /// were kept. The bounding box also lands in `HIT_*`, which the off-main
 /// proximity check reads through [`refresh_capsule_screen_rect`].
 pub fn set_hitboxes(rects: &[HitRect]) -> usize {
+    HIT_LIST_PUBLISHED.store(true, Ordering::SeqCst);
+    store_hitboxes(rects)
+}
+
+fn store_hitboxes(rects: &[HitRect]) -> usize {
     let clean = sanitize_hit_rects(rects);
     let (bx, by, bw, bh) = bounding_rect(&clean).unwrap_or((0.0, 0.0, 0.0, 0.0));
     // Floor the origin and ceil the far edge: the integer box may only ever
