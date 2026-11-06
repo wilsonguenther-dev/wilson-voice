@@ -336,6 +336,10 @@ pub fn decode_in_set(
             .last_detected_language_on(model_id, model_path)
             .ok()
             .flatten();
+        // The hint itself is not a different language: an English-only model
+        // decoding a French-only set as English must not offer "Add English?".
+        let heard =
+            heard.filter(|h| plan.hint.as_deref() != Some(h.trim().to_ascii_lowercase().as_str()));
         return Ok(LanguageTake {
             take,
             language: plan.primary.clone(),

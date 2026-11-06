@@ -411,6 +411,9 @@ pub struct AsrOutput {
     /// Y10-A — what the user must be told about the language plan (e.g. the
     /// model cannot detect languages), or `None`.
     pub language_notice: Option<String>,
+    /// WF-12 — a picker language the take was heard in that is not in the
+    /// user's set (`languages::outside_language`); the pill may offer it.
+    pub language_outside: Option<String>,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
