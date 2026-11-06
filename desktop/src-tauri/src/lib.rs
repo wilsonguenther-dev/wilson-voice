@@ -7194,9 +7194,8 @@ fn set_cloud_daily_cap(
     state: State<'_, Arc<AppState>>,
     usd: f64,
 ) -> Result<CloudRouteView, String> {
-    cloud_route::set_daily_cap(&*state.db, usd).map_err(|e| {
+    cloud_route::set_daily_cap(&*state.db, usd).inspect_err(|_| {
         log::warn!("byom cap_refused reason=invalid");
-        e
     })?;
     Ok(cloud_route_view_for(&app, &state.db))
 }
