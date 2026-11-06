@@ -193,7 +193,8 @@ export function barThickness(ctx: SlotCtx): number {
  * strip it grew out of (WF-03: Dictate, Scratchpad, Meeting stacked).
  */
 export function slotAxis(ctx: SlotCtx): "row" | "column" {
-  if (railShown(ctx)) return ctx.dock === "bottom" ? "row" : "column";
+  // A meeting's banner stays a row at every dock (dock-geometry.json), rail or not.
+  if (railShown(ctx) && !ctx.meetingOnScreen) return ctx.dock === "bottom" ? "row" : "column";
   return barAxis(shellBarPhase(ctx.phase, ctx.meetingOnScreen), ctx.dock);
 }
 
@@ -259,18 +260,27 @@ export function railLogLine(event: string, fields: Record<string, string | numbe
 function railLog(event: string, fields: Record<string, string | number | boolean> = {}): void {
   console.info(railLogLine(event, fields));
 }
-/** A rail action failed: one log line, and the one sentence a person can act on. */
-function railFailed(action: string, err: unknown, sentence: string): void {
+const railFailureListeners = new Set<(sentence: string) => void>();
+/**
+ * The shell (float-main) shows a failed rail action's sentence in its phase
+ * strip — the pill's one line of text — because the main window's toast host
+ * (toast.ts) lives in another window. Returns the unsubscribe.
+ */
+export function subscribeRailFailure(cb: (sentence: string) => void): () => void {
+  railFailureListeners.add(cb);
+  return () => { railFailureListeners.delete(cb); };
+}
+/** A rail action failed: one log line, and the one sentence (with its way forward) a person can act on. */
+export function railFailed(action: string, err: unknown, sentence: string): void {
   console.warn(railLogLine("failed", { action, error: typeof err === "string" ? err.slice(0, 80) : "error" }));
-  // The main window's toast host (appShell.ts) listens for this; the pill has no toast of its own.
-  emit("toast", { kind: "error", text: sentence }).catch(() => {});
+  railFailureListeners.forEach((cb) => cb(sentence));
 }
 
 /** The Scratchpad window (DB-D) — the rail's Scratchpad, and Note when no meeting runs. */
 async function openScratchpad(dock: BarDock): Promise<void> {
   railLog("scratchpad_open", { dock });
   await invoke("open_scratchpad").catch((e) => {
-    railFailed("scratchpad", e, "Yap could not open the Scratchpad.");
+    railFailed("scratchpad", e, "Scratchpad didn't open here, so it opened in Yap.");
     openMain("scratchpad");
   });
 }
@@ -294,7 +304,7 @@ async function startMeetingMenu(dock: BarDock): Promise<void> {
     const t0 = Date.now();
     invoke("start_meeting", { title: null, kind })
       .then(() => railLog("meeting_start", { kind: kind ?? "unknown", dock, ms: Date.now() - t0 }))
-      .catch((e) => railFailed("meeting_start", e, typeof e === "string" && e ? e : "Yap could not start the meeting."));
+      .catch((e) => railFailed("meeting_start", e, typeof e === "string" && e ? e : "Meeting didn't start — try Record in the menu bar."));
   };
   if (choices.length === 0) { start(null); return; }
   const menu = await Menu.new({
@@ -307,7 +317,7 @@ async function stopMeeting(dock: BarDock): Promise<void> {
   const t0 = Date.now();
   await invoke("stop_meeting")
     .then(() => railLog("meeting_stop", { dock, ms: Date.now() - t0 }))
-    .catch((e) => railFailed("meeting_stop", e, "Yap could not stop the meeting. Try the menu bar."));
+    .catch((e) => railFailed("meeting_stop", e, "Meeting didn't stop — use Stop in the menu bar."));
 }
 
 /** "Meeting note · 12:34" — the note's timestamp is the meeting's own clock. */
@@ -331,7 +341,7 @@ async function takeNote(ctx: SlotCtx): Promise<void> {
     await invoke("save_note_draft", { id: null, title: meetingNoteTitle(at, ctx.meetingTitle), content: `[${at}] ` });
     railLog("meeting_note", { dock: ctx.dock });
   } catch (e) {
-    railFailed("meeting_note", e, "Yap could not save the note.");
+    railFailed("meeting_note", e, "Note didn't save — open the Scratchpad and type it there.");
     return;
   }
   await openScratchpad(ctx.dock);
@@ -358,8 +368,9 @@ async function openBarMenu(): Promise<void> {
 const fixedAcross = () => SLOT_PX;
 
 /**
- * THE FIVE. Order within a group is order along the bar. Exactly five, per the
- * spec, and no empty ones: every row here draws something real when visible.
+ * THE FIVE take-time slots (Y8-B), plus item 18 / WF-03's rail: Meeting, Note,
+ * Stop meeting at rest, and the hands-free Stop. Order within a group is order
+ * along the bar; no empty ones: every row here draws something real when visible.
  */
 export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
   {
@@ -416,7 +427,7 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     tooltip: () => "Record a meeting",
     keycap: (ctx) => ctx.keys?.meeting ?? null,
     visible: (ctx) => railShown(ctx) && !ctx.meetingRecording,
-    onPress: (ctx) => { startMeetingMenu(ctx.dock).catch((e) => railFailed("meeting_menu", e, "Yap could not open the meeting picker.")); },
+    onPress: (ctx) => { startMeetingMenu(ctx.dock).catch((e) => railFailed("meeting_menu", e, "Meeting picker didn't open — try Record in the menu bar.")); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
   },

@@ -68,7 +68,10 @@ import {
   type MeetingMode,
   type PillLayout,
 } from "./pill/state";
-import type { ListenEstimate, SlotCtx } from "./pill/slots";
+import {
+  NO_RAIL_KEYS, railKeysFrom, subscribeRailFailure,
+  type ListenEstimate, type RailBindingRow, type RailKeys, type SlotCtx,
+} from "./pill/slots";
 import {
   forcedPill,
   matrixLanguageOfferScene,
@@ -97,6 +100,33 @@ interface Settings {
   /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
   mutedPillCategories?: string[];
 }
+
+/**
+ * WF-03 — the rail's keycaps, read from the backend's LIVE hotkey table
+ * (`hotkey_bindings`, the same rows Settings › Shortcut draws). Re-read on
+ * every `settings` broadcast — a rebind is saved through `save_settings`, which
+ * broadcasts — so a tooltip follows a rebind with no restart. A failed read
+ * keeps the last good keys and logs once; it never invents a default.
+ */
+function useRailKeys(): RailKeys {
+  const [keys, setKeys] = useState<RailKeys>(NO_RAIL_KEYS);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const read = () => {
+      invoke<{ rows?: RailBindingRow[] }>("hotkey_bindings")
+        .then((r) => { if (!dead) setKeys(railKeysFrom(r?.rows)); })
+        .catch(() => console.warn("pill_rail keys_failed source=hotkey_bindings"));
+    };
+    read();
+    listen("settings", read).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  return keys;
+}
+
+/** How long a failed rail action's sentence holds the phase strip. */
+const RAIL_ERROR_MS = 5000;
 
 /**
  * Y8-B — the WPM slot's numbers while LISTENING: an estimate off voiced
@@ -514,6 +544,18 @@ function Float() {
   // input: the phase, the dock, the meeting, Y3-C's real progress and the
   // listening estimate. The capsule lays the slots out; it decides none of it.
   const listenEst = useListenEstimate(isListening(phase));
+  const railKeys = useRailKeys();
+  // A failed rail action says so in the strip, once, then the strip returns.
+  const [railError, setRailError] = useState<string | null>(null);
+  useEffect(() => subscribeRailFailure(setRailError), []);
+  useEffect(() => {
+    if (!railError) return undefined;
+    const t = window.setTimeout(() => setRailError(null), RAIL_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [railError]);
+  useEffect(() => {
+    document.documentElement.dataset.railError = railError ? "true" : "false";
+  }, [railError]);
   const slots: SlotCtx = {
     phase,
     dock,
@@ -521,6 +563,12 @@ function Float() {
     progress,
     listen: listenEst,
     scratchpadOnBar,
+    // yap-1106-pill-notes-and-meeting — the rail's inputs (the capsule adds `railOpen`).
+    meetingRecording: meeting.status.recording,
+    meetingClock: meeting.status.elapsedLabel ?? null,
+    meetingTitle: meeting.status.title ?? null,
+    keys: railKeys,
+    stopKey: chordLabel,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
   // unknown id falls back to classic. The shell never branches on an id: a
@@ -564,7 +612,8 @@ function Float() {
   // built from the key the user bound (`chordLabel`), and it wears the shell's
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
-  const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+  const line = railError
+    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
@@ -593,7 +642,14 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {stripLine(line, stillRecording, fnHint, chordLabel)}
+        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+          // Item 18 — the hands-free hint, shorter: the key as a keycap and two
+          // words. The full sentence stays the accessible name and the
+          // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
+          <span className="hands-free-hint" title={line ?? undefined}>
+            <kbd className="keycap">{chordLabel.trim() || DEFAULT_STOP_KEY}</kbd> to stop
+          </span>
+        ) : stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
     </>
   );

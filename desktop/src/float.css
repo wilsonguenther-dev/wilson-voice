@@ -1605,3 +1605,53 @@ html[data-one-pill="true"][data-dock] .nudge-row {
   box-sizing: border-box;
   transform: none;
 }
+
+/* ── yap-1106-pill-notes-and-meeting / WF-03 — the resting rail ──
+ * Hover (or keyboard focus) on a resting pill grows it into the radio pill
+ * (Y5-E above) and draws the rail inside it: Scratchpad · Dictate · Meeting,
+ * or Scratchpad · Dictate · Note · Stop meeting while one records. At a side
+ * dock the rail rotates with the strip it grew from: `slotAxis` says column, so
+ * the expanded pill stands up instead of reaching 200 px off the screen edge. */
+.pill-hot[data-hover="expanded"] > .pill[data-bar-axis="column"]:not(.live):not(.busy):not(.done):not(.blocked):not(.meeting),
+.pill-hot > .pill[data-bar-axis="column"]:focus-within:not(.live):not(.busy):not(.done):not(.blocked):not(.meeting) {
+  flex-direction: column;
+  height: auto;
+  min-width: 0;
+  width: 44px;
+  gap: 8px;
+  padding: 10px 0;
+}
+/* Keyboard focus opens the rail the way hover does, so the control shows too. */
+.pill-hot > .pill:focus-within:not(.live):not(.busy):not(.done):not(.blocked):not(.meeting) .ctrl {
+  display: grid;
+}
+.slots[data-rail="open"] .slot {
+  background: rgba(255, 255, 255, 0.1);
+}
+/* The live key, drawn as a keycap inside a tooltip or the hands-free hint. */
+.keycap {
+  display: inline-block;
+  min-width: 14px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom-width: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.hands-free-hint .keycap {
+  margin-left: 0;
+  margin-right: 4px;
+}
+/* A failed rail action's one sentence holds the strip for a few seconds. */
+html[data-rail-error="true"] .phase-strip { opacity: 1; color: rgba(252, 165, 165, 0.92); }
+@media (prefers-reduced-motion: reduce) {
+  .slots[data-rail="open"] .slot { transition: none; }
+}
