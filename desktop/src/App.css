@@ -695,6 +695,12 @@ code {
   margin-bottom: 8px;
 }
 
+/* yap-fx-07 — Retry all sits at the end of the heading row. */
+.failed-retry-all {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .failed-head h3 {
   margin: 0;
   font-size: 0.9rem;

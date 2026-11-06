@@ -94,3 +94,88 @@ export function createRetryWatchdog(onExpire: () => void): RetryWatchdog {
     },
   };
 }
+
+// ── yap-fx-07 — "Retry all" ────────────────────────────────────────────────
+
+/** How one row's retry ended, as the Retry-all queue needs to know it. */
+export type RetryOutcome =
+  /** The clip transcribed; the row is now a history entry. */
+  | "recovered"
+  /** This clip failed (no speech, a bad clip). The next one may still work. */
+  | "failed"
+  /** The engine is not healthy (stuck on an earlier clip, or a retry ran out of time). Stop. */
+  | "engine-busy"
+  /** Another retry was already running; nothing was done. */
+  | "skipped";
+
+/**
+ * The backend's ENGINE_STUCK sentence (transcription.rs), matched on its stable
+ * opening so a reworded tail cannot silently turn a sick engine into "try the
+ * next clip".
+ */
+export const ENGINE_STUCK_PREFIX = "The speech engine is still busy";
+
+/** Does a retry's error say the ENGINE is unhealthy (as opposed to this clip)? */
+export function isEngineUnhealthy(message: string, watchdogExpired = false): boolean {
+  return watchdogExpired || message.startsWith(ENGINE_STUCK_PREFIX);
+}
+
+export interface RetryAllResult {
+  recovered: number;
+  failed: number;
+  /** Rows the queue never reached (stopped for the engine, or cancelled). */
+  remaining: number;
+  /** True when the queue stopped because the engine was not healthy. */
+  stoppedForEngine: boolean;
+}
+
+/**
+ * Retry every row, ONE AT A TIME: each retry is awaited before the next is
+ * started, so the one speech engine never has two clips queued from here. A
+ * clip that fails moves on to the next; an unhealthy engine stops the queue —
+ * piling more clips onto a stuck engine is the 2026-11-06 pile-up again.
+ * `onProgress(done, total)` fires before each row; `cancelled()` is checked
+ * between rows.
+ */
+export async function runRetryAll(
+  ids: readonly string[],
+  retryOne: (id: string) => Promise<RetryOutcome>,
+  onProgress: (done: number, total: number) => void = () => {},
+  cancelled: () => boolean = () => false,
+): Promise<RetryAllResult> {
+  const result: RetryAllResult = { recovered: 0, failed: 0, remaining: 0, stoppedForEngine: false };
+  for (let i = 0; i < ids.length; i++) {
+    if (cancelled()) {
+      result.remaining = ids.length - i;
+      return result;
+    }
+    onProgress(i, ids.length);
+    const outcome = await retryOne(ids[i]);
+    if (outcome === "recovered") result.recovered++;
+    else if (outcome === "failed") result.failed++;
+    else {
+      // engine-busy, or another retry holds the engine: this row and the rest wait.
+      result.stoppedForEngine = outcome === "engine-busy";
+      result.remaining = ids.length - i;
+      return result;
+    }
+  }
+  return result;
+}
+
+/** The Retry-all button's label. */
+export function retryAllLabel(a: { running: boolean; done: number; total: number }): string {
+  if (!a.running) return "Retry all";
+  return `Retrying ${Math.min(a.done + 1, a.total)} of ${a.total}…`;
+}
+
+/** The one sentence a finished Retry all shows — what happened and what to do next. */
+export function retryAllSummary(r: RetryAllResult): string {
+  const parts: string[] = [];
+  if (r.recovered > 0) parts.push(`Recovered ${r.recovered} ${r.recovered === 1 ? "clip" : "clips"}`);
+  if (r.failed > 0) parts.push(`${r.failed} couldn't be transcribed`);
+  const head = parts.length > 0 ? parts.join(", ") : "Nothing was recovered";
+  if (r.stoppedForEngine) return `${head}. The speech engine is busy — Retry all again in a minute`;
+  if (r.remaining > 0) return `${head}. ${r.remaining} still waiting — Retry all to continue`;
+  return `${head}.`;
+}

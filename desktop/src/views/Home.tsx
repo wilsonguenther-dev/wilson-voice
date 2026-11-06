@@ -6,7 +6,7 @@ import { type TranscriptEntry, retainedClipsLabel, undoAiEditText, type DictCand
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
-import { retryButtonLabel } from "../retryDictation";
+import { retryAllLabel, retryButtonLabel } from "../retryDictation";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
@@ -14,7 +14,7 @@ export default function Home() {
     bootError, bootErrors, booting, retryBoot, clearAll, clearing, deleteAllRecordings, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, loadOlderHistory, historyHasMore, loadingOlder, pasteText, perms, query, queryRef, refreshInsights,
-    retryFailed, retrying, retryPhase, setActiveNoteId, setCandidates, setDiffId, setFailed,
+    retryAll, retryAllFailed, retryFailed, retrying, retryPhase, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
     setNoteTitle, setQuery, dropRetry, setScratchComposing, settings, status, toast, toastError,
     toggleRecord,
@@ -221,6 +221,23 @@ export default function Home() {
                       Finish or retry when the engine is ready; nothing here is
                       pasted for you. Clear removes them with your history.
                     </span>
+                    {/* yap-fx-07 — every kept clip, one click: retried one at
+                        a time, stopping if the speech engine is not healthy. */}
+                    {failed.length > 1 ? (
+                      <button
+                        className="ghost failed-retry-all"
+                        data-testid="retry-all"
+                        disabled={retryAll !== null || retrying !== null}
+                        aria-busy={retryAll !== null}
+                        onClick={() => void retryAllFailed()}
+                      >
+                        {retryAllLabel({
+                          running: retryAll !== null,
+                          done: retryAll?.done ?? 0,
+                          total: retryAll?.total ?? failed.length,
+                        })}
+                      </button>
+                    ) : null}
                   </div>
                   <ul className="feed">
                     {failed.map((f) => (
@@ -250,8 +267,8 @@ export default function Home() {
                         <div className="actions">
                           <button
                             className="primary"
-                            disabled={retrying === f.id}
-                            onClick={() => retryFailed(f.id)}
+                            disabled={retrying === f.id || retryAll !== null}
+                            onClick={() => void retryFailed(f.id)}
                           >
                             {retryButtonLabel({
                               retrying: retrying === f.id,

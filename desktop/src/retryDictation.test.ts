@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ENGINE_STUCK_PREFIX,
+  type RetryOutcome,
+  isEngineUnhealthy,
+  retryAllLabel,
+  retryAllSummary,
+  runRetryAll,
   RETRY_DEADLINE_MESSAGE,
   RETRY_QUEUED_LABEL,
   RETRY_WATCHDOG_GRACE_MS,
@@ -105,5 +112,123 @@ describe("the retry watchdog: the button never stays loading past the deadline",
     watchdog.clear();
     watchdog.clear();
     expect(watchdog.expired).toBe(true);
+  });
+});
+
+// ── yap-fx-07 — Retry all ──────────────────────────────────────────────────
+
+describe("isEngineUnhealthy", () => {
+  it("matches the backend's ENGINE_STUCK sentence, verbatim from transcription.rs", () => {
+    const rs = readFileSync(new URL("../src-tauri/src/transcription.rs", import.meta.url), "utf8") as string;
+    expect(rs).toContain(`"${ENGINE_STUCK_PREFIX}`);
+    expect(isEngineUnhealthy(`${ENGINE_STUCK_PREFIX} with an earlier clip — try again in a minute`)).toBe(true);
+  });
+  it("treats a clip's own failure as the clip's, and a watchdog expiry as the engine's", () => {
+    expect(isEngineUnhealthy("No speech detected in that clip")).toBe(false);
+    expect(isEngineUnhealthy("No speech detected in that clip", true)).toBe(true);
+  });
+});
+
+describe("runRetryAll runs one at a time on a healthy engine", () => {
+  it("awaits each retry before starting the next", async () => {
+    const order: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const progress: Array<[number, number]> = [];
+    const result = await runRetryAll(
+      ["b1d90963", "882c587d", "c3"],
+      async (id) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        order.push(`start ${id}`);
+        await new Promise((r) => setTimeout(r, 1));
+        order.push(`end ${id}`);
+        inFlight--;
+        return "recovered";
+      },
+      (done, total) => progress.push([done, total]),
+    );
+    expect(maxInFlight).toBe(1);
+    expect(order).toEqual([
+      "start b1d90963",
+      "end b1d90963",
+      "start 882c587d",
+      "end 882c587d",
+      "start c3",
+      "end c3",
+    ]);
+    expect(progress).toEqual([
+      [0, 3],
+      [1, 3],
+      [2, 3],
+    ]);
+    expect(result).toEqual({ recovered: 3, failed: 0, remaining: 0, stoppedForEngine: false });
+  });
+
+  it("moves past a clip that fails", async () => {
+    const outcomes: Record<string, RetryOutcome> = { a: "failed", b: "recovered" };
+    const result = await runRetryAll(["a", "b"], async (id) => outcomes[id]);
+    expect(result).toEqual({ recovered: 1, failed: 1, remaining: 0, stoppedForEngine: false });
+  });
+
+  it("stops the queue when the engine is not healthy", async () => {
+    const seen: string[] = [];
+    const result = await runRetryAll(["a", "b", "c"], async (id) => {
+      seen.push(id);
+      return id === "b" ? "engine-busy" : "recovered";
+    });
+    expect(seen).toEqual(["a", "b"]);
+    expect(result).toEqual({ recovered: 1, failed: 0, remaining: 2, stoppedForEngine: true });
+  });
+
+  it("stops without blaming the engine when another retry holds it", async () => {
+    const result = await runRetryAll(["a", "b"], async () => "skipped");
+    expect(result).toEqual({ recovered: 0, failed: 0, remaining: 2, stoppedForEngine: false });
+  });
+
+  it("stops between rows when cancelled", async () => {
+    let calls = 0;
+    const result = await runRetryAll(
+      ["a", "b", "c"],
+      async () => {
+        calls++;
+        return "recovered";
+      },
+      undefined,
+      () => calls >= 1,
+    );
+    expect(calls).toBe(1);
+    expect(result).toEqual({ recovered: 1, failed: 0, remaining: 2, stoppedForEngine: false });
+  });
+
+  it("does nothing for an empty list", async () => {
+    expect(await runRetryAll([], async () => "recovered")).toEqual({
+      recovered: 0,
+      failed: 0,
+      remaining: 0,
+      stoppedForEngine: false,
+    });
+  });
+});
+
+describe("retryAllLabel / retryAllSummary", () => {
+  it("labels the idle and running button", () => {
+    expect(retryAllLabel({ running: false, done: 0, total: 3 })).toBe("Retry all");
+    expect(retryAllLabel({ running: true, done: 0, total: 3 })).toBe("Retrying 1 of 3…");
+    expect(retryAllLabel({ running: true, done: 3, total: 3 })).toBe("Retrying 3 of 3…");
+  });
+  it("is one sentence with one next step", () => {
+    const base = { recovered: 0, failed: 0, remaining: 0, stoppedForEngine: false };
+    expect(retryAllSummary({ ...base, recovered: 1 })).toBe("Recovered 1 clip.");
+    expect(retryAllSummary({ ...base, recovered: 2, failed: 1 })).toBe(
+      "Recovered 2 clips, 1 couldn't be transcribed.",
+    );
+    expect(retryAllSummary({ ...base, failed: 2 })).toBe("2 couldn't be transcribed.");
+    expect(retryAllSummary({ ...base, remaining: 2, stoppedForEngine: true })).toBe(
+      "Nothing was recovered. The speech engine is busy — Retry all again in a minute",
+    );
+    expect(retryAllSummary({ ...base, recovered: 1, remaining: 2 })).toBe(
+      "Recovered 1 clip. 2 still waiting — Retry all to continue",
+    );
   });
 });
