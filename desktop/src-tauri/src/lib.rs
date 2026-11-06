@@ -6901,6 +6901,38 @@ fn scratchpad_focus(focused: bool, note_id: Option<String>) {
     scratchpad::set_focused_note(focused, note_id);
 }
 
+/// WF-15 — the Scratchpad's floating Copy: the whole note as plain text, with
+/// the transient marker so clipboard managers skip it. `async` so the
+/// sequenced copy runs OFF the main thread (it waits on it).
+#[tauri::command]
+async fn copy_note_transient(app: AppHandle, text: String) -> Result<usize, String> {
+    let chars = text.chars().count();
+    tauri::async_runtime::spawn_blocking(move || paste::copy_text_transient(&app, &text))
+        .await
+        .map_err(|e| format!("copy task join failed: {e}"))?
+        .map_err(|e| {
+            log::warn!("scratchpad copy failed chars={chars} err={e}");
+            "Couldn't put the note on the clipboard. Select the text and press ⌘C instead."
+                .to_string()
+        })?;
+    log::info!("scratchpad copy ok chars={chars}");
+    diagnostics::bump("scratchpad", "copy_note");
+    Ok(chars)
+}
+
+/// WF-15 — the Scratchpad's expand button: fill the current screen's work
+/// area, or go back to the frame it had before. Returns the new state.
+#[tauri::command]
+fn scratchpad_set_expanded(app: AppHandle, expanded: bool) -> Result<bool, String> {
+    let now = scratchpad::set_expanded(&app, expanded).map_err(|e| {
+        log::warn!("scratchpad expand failed expanded={expanded} err={e}");
+        format!("Couldn't resize the Scratchpad ({e}). Drag its edge instead.")
+    })?;
+    log::info!("scratchpad expand ok expanded={now}");
+    diagnostics::bump("scratchpad", if now { "expand" } else { "collapse" });
+    Ok(now)
+}
+
 #[tauri::command]
 fn list_notes(state: State<'_, Arc<AppState>>) -> Result<Vec<db::Note>, String> {
     state.db.list_notes()
@@ -11237,6 +11269,8 @@ pub fn run() {
             open_scratchpad,
             hide_scratchpad,
             scratchpad_focus,
+            copy_note_transient,
+            scratchpad_set_expanded,
             list_notes,
             search_notes,
             save_note_draft,

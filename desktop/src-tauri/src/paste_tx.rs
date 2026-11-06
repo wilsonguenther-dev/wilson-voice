@@ -296,6 +296,46 @@ pub fn copy_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> 
         .map_err(|e| format!("clipboard write: {e}"))
 }
 
+/// WF-15 — the plain-text pasteboard type every copy declares.
+pub const PLAIN_TEXT_TYPE: &str = "public.utf8-plain-text";
+
+/// WF-15 — the nspasteboard.org marker that tells well-behaved clipboard
+/// managers (Maccy, Paste, Raycast, …) "this write is transient, do not file
+/// it in your history". The Scratchpad's Copy declares it: a whole note is
+/// often private and long, and it should not live on in a history list.
+pub const TRANSIENT_MARKER: &str = "org.nspasteboard.TransientType";
+
+/// WF-15 — the exact pasteboard types a transient copy declares, in order:
+/// the text first (so a reader that takes the first type gets the note), then
+/// the marker. Pure, so the contract is tested off-macOS.
+pub fn transient_copy_types() -> [&'static str; 2] {
+    [PLAIN_TEXT_TYPE, TRANSIENT_MARKER]
+}
+
+/// WF-15 — a sequenced copy (see [`copy_sequenced`]) that also carries the
+/// [`TRANSIENT_MARKER`]. Blocks until the main thread has done it; never call
+/// it from main.
+#[cfg(target_os = "macos")]
+pub fn copy_transient_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    let app_main = app.clone();
+    let text = text.to_string();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(mac::settle_then_copy_transient(&app_main, text));
+    })
+    .map_err(|e| format!("schedule main-thread copy: {e}"))?;
+    rx.recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "copy timed out waiting for main thread".to_string())?
+}
+
+/// Off macOS there is no pasteboard marker convention: a plain copy.
+#[cfg(not(target_os = "macos"))]
+pub fn copy_transient_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
+    copy_sequenced(app, text)
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn publish_and_paste(_app: &tauri::AppHandle, _text: &str) -> Result<PasteHandle, String> {
     Err("paste only implemented on macOS".into())
@@ -308,6 +348,7 @@ mod mac {
     use std::time::{Duration, Instant};
 
     use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
     use objc2_foundation::{NSArray, NSInteger, NSObject, NSString};
@@ -515,6 +556,39 @@ mod mac {
             .map_err(|e| format!("clipboard write: {e}"))
     }
 
+    /// WF-15 — main-thread half of `copy_transient_sequenced`: settle any open
+    /// paste, then put the text on the general pasteboard as real data (no
+    /// owner, no promise) together with the transient marker.
+    pub fn settle_then_copy_transient(app: &AppHandle, text: String) -> Result<(), String> {
+        // A pending paste restore must not land after (and clobber) this copy.
+        flush_pending(app);
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let names: Vec<Retained<NSString>> = super::transient_copy_types()
+            .iter()
+            .map(|t| NSString::from_str(t))
+            .collect();
+        let types = NSArray::from_retained_slice(&names);
+        let no_owner: Option<&AnyObject> = None;
+        let change_count: NSInteger =
+            unsafe { msg_send![&*pasteboard, declareTypes: &*types, owner: no_owner] };
+        if change_count <= 0 {
+            return Err("declareTypes:owner: failed".into());
+        }
+        let body = NSString::from_str(&text);
+        let wrote: bool =
+            unsafe { msg_send![&*pasteboard, setString: &*body, forType: &*names[0]] };
+        if !wrote {
+            return Err("the pasteboard refused the note text".into());
+        }
+        // The marker's presence is the signal; its payload is empty.
+        let empty = NSString::from_str("");
+        for marker in &names[1..] {
+            let _: bool =
+                unsafe { msg_send![&*pasteboard, setString: &*empty, forType: &**marker] };
+        }
+        Ok(())
+    }
+
     /// Main-thread half: publish the promise, post ⌘V, arm the waiter. The
     /// transaction state travels back to the caller (YV74) so it can wait for
     /// the read receipt before claiming the paste landed.
@@ -577,6 +651,20 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_copy_declares_text_first_then_the_transient_marker() {
+        let types = transient_copy_types();
+        assert_eq!(
+            types[0], "public.utf8-plain-text",
+            "the note text is the first type"
+        );
+        assert_eq!(types[1], "org.nspasteboard.TransientType");
+        assert!(
+            types.contains(&TRANSIENT_MARKER),
+            "clipboard managers skip only what carries the marker"
+        );
+    }
 
     fn published_ago(ago: Duration) -> TxState {
         let mut s = TxState::new();

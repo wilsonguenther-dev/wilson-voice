@@ -221,7 +221,7 @@ pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("scratchpad.html".into()),
     )
     .title("Scratchpad")
-    .inner_size(760.0, 520.0)
+    .inner_size(DEFAULT_LOGICAL_SIZE.0, DEFAULT_LOGICAL_SIZE.1)
     .min_inner_size(480.0, 320.0)
     .resizable(true)
     .fullscreen(false)
@@ -250,6 +250,107 @@ pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
         app.webview_windows().len()
     );
     Ok(())
+}
+
+/// WF-15 — a window frame in physical pixels: the OUTER top-left (what
+/// `set_position` moves) and the INNER (content) size (what `set_size` sets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The size `ensure_window` builds the Scratchpad with (logical
+/// points). Collapsing with no remembered frame (expanded across a relaunch)
+/// goes back to this, centred on the screen it is on.
+pub const DEFAULT_LOGICAL_SIZE: (f64, f64) = (760.0, 520.0);
+
+/// The frame the panel had before Expand; `None` while it is not expanded.
+static PRIOR_FRAME: Mutex<Option<Frame>> = Mutex::new(None);
+
+/// WF-15 — the frame that fills a screen's work area (menu bar and Dock
+/// excluded). `chrome` = outer size − inner size (the title bar), so the whole
+/// window, title bar included, fits the work area exactly.
+pub fn fill_frame(work: Frame, chrome: (u32, u32)) -> Frame {
+    Frame {
+        x: work.x,
+        y: work.y,
+        width: work.width.saturating_sub(chrome.0).max(1),
+        height: work.height.saturating_sub(chrome.1).max(1),
+    }
+}
+
+/// WF-15 — the declared default size at `scale`, centred in `work`, never
+/// larger than the work area.
+pub fn centered_default(work: Frame, scale: f64) -> Frame {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let width = ((DEFAULT_LOGICAL_SIZE.0 * scale).round() as u32).min(work.width.max(1));
+    let height = ((DEFAULT_LOGICAL_SIZE.1 * scale).round() as u32).min(work.height.max(1));
+    Frame {
+        x: work.x + (work.width.saturating_sub(width) / 2) as i32,
+        y: work.y + (work.height.saturating_sub(height) / 2) as i32,
+        width,
+        height,
+    }
+}
+
+/// WF-15 — where Collapse goes: the remembered frame, else the default.
+pub fn restore_frame(prior: Option<Frame>, fallback: Frame) -> Frame {
+    prior.unwrap_or(fallback)
+}
+
+/// WF-15 — Expand (fill the current screen) or collapse (back to the frame
+/// before). Expanding twice keeps the FIRST remembered frame, so a persisted
+/// "expanded" re-applied on show never forgets where the panel was.
+pub fn set_expanded(app: &AppHandle, expanded: bool) -> Result<bool, String> {
+    let w = app
+        .get_webview_window(WINDOW_LABEL)
+        .ok_or_else(|| "the Scratchpad window does not exist".to_string())?;
+    let monitor = w
+        .current_monitor()
+        .map_err(|e| format!("current monitor: {e}"))?
+        .ok_or_else(|| "no screen under the Scratchpad".to_string())?;
+    let area = monitor.work_area();
+    let work = Frame {
+        x: area.position.x,
+        y: area.position.y,
+        width: area.size.width,
+        height: area.size.height,
+    };
+    let mut prior = PRIOR_FRAME.lock().unwrap_or_else(|p| p.into_inner());
+    let target = if expanded {
+        let pos = w
+            .outer_position()
+            .map_err(|e| format!("outer position: {e}"))?;
+        let inner = w.inner_size().map_err(|e| format!("inner size: {e}"))?;
+        let outer = w.outer_size().map_err(|e| format!("outer size: {e}"))?;
+        if prior.is_none() {
+            *prior = Some(Frame {
+                x: pos.x,
+                y: pos.y,
+                width: inner.width,
+                height: inner.height,
+            });
+        }
+        let chrome = (
+            outer.width.saturating_sub(inner.width),
+            outer.height.saturating_sub(inner.height),
+        );
+        fill_frame(work, chrome)
+    } else {
+        restore_frame(prior.take(), centered_default(work, monitor.scale_factor()))
+    };
+    w.set_size(tauri::PhysicalSize::new(target.width, target.height))
+        .map_err(|e| format!("set size: {e}"))?;
+    w.set_position(tauri::PhysicalPosition::new(target.x, target.y))
+        .map_err(|e| format!("set position: {e}"))?;
+    Ok(expanded)
 }
 
 /// Hide the panel and drop the dictation target with it.

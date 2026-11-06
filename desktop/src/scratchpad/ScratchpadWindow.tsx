@@ -12,6 +12,11 @@
  *  - VERSIONS: typing autosaves (`save_note_draft`, no version row); a
  *    FINALIZE (`finalize_note`, one version row) happens on blur, tab switch,
  *    close, ⌘S, Esc and every dictated take — only when the note changed.
+ *
+ * WF-15 window controls (state + rules in `windowPrefs.ts`): Aa / ⌘+ / ⌘−
+ * text size, Expand to fill the current screen and back, a floating Copy of
+ * the whole note (transient-marked, so clipboard managers skip it) and ⌘E to
+ * show or hide the notes rail. Size, expand and rail state persist.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,8 +32,37 @@ import {
   type Note,
   type NoteVersion,
 } from "./notesModel";
+import {
+  canCopy,
+  copyNote,
+  cycleFontSize,
+  FONT_LABEL,
+  FONT_PX,
+  loadPrefs,
+  savePrefs,
+  setExpanded,
+  stepFontSize,
+  windowShortcut,
+  type Invoker,
+  type PrefsStore,
+  type WindowPrefs,
+} from "./windowPrefs";
 
 type Draft = { title: string; content: string };
+
+/** `localStorage`, or `null` where reading it throws (storage disabled). */
+function prefsStore(): PrefsStore | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const run: Invoker = (cmd, args) => invoke(cmd, args);
+
+/** How long the floating Copy says "Copied" before it reads "Copy" again. */
+const COPIED_MS = 1500;
 
 function upsert(notes: Note[], n: Note): Note[] {
   const rest = notes.filter((x) => x.id !== n.id);
@@ -56,6 +90,13 @@ export default function ScratchpadWindow() {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<number | undefined>(undefined);
+  /** WF-15 — text size, expand and rail state; persisted on every change. */
+  const [prefs, setPrefs] = useState<WindowPrefs>(() => loadPrefs(prefsStore()));
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const [copyState, setCopyState] = useState<"idle" | "busy" | "copied">("idle");
+  const copiedTimer = useRef<number | undefined>(undefined);
+  const [resizing, setResizing] = useState(false);
 
   const setDraft = useCallback((id: string, d: Draft) => {
     const next = { ...draftsRef.current, [id]: d };
@@ -137,6 +178,28 @@ export default function ScratchpadWindow() {
       void un.then((f) => f());
     };
   }, [refresh]);
+
+  // WF-15 — persist the window prefs whenever they change.
+  useEffect(() => {
+    savePrefs(prefsStore(), prefs);
+  }, [prefs]);
+
+  // WF-15 — a persisted Expand is re-applied each time the panel opens (the
+  // backend remembers the frame to go back to; a relaunch falls back to the
+  // declared size, centred).
+  useEffect(() => {
+    const apply = () => {
+      if (!prefsRef.current.expanded) return;
+      setExpanded(run, true).catch((e) => setError(String(e)));
+    };
+    // A panel created hidden at launch waits for its first "shown".
+    if (!document.hidden) apply();
+    const un = listen("scratchpad-shown", apply);
+    return () => {
+      void un.then((f) => f());
+      window.clearTimeout(copiedTimer.current);
+    };
+  }, []);
 
   // FOCUS contract — the dictation target.
   useEffect(() => {
@@ -284,8 +347,57 @@ export default function ScratchpadWindow() {
     }
   }
 
+  // --- WF-15 window controls ---
+
+  function setFontSize(fontSize: WindowPrefs["fontSize"]) {
+    setPrefs((p) => (p.fontSize === fontSize ? p : { ...p, fontSize }));
+  }
+
+  /** ⌘E. Hiding the rail never strands focus inside it: it goes to the note. */
+  function toggleRail() {
+    const hiding = !prefsRef.current.railHidden;
+    setPrefs((p) => ({ ...p, railHidden: hiding }));
+    if (hiding) requestAnimationFrame(() => textRef.current?.focus());
+  }
+
+  async function toggleExpanded() {
+    if (resizing) return;
+    const want = !prefsRef.current.expanded;
+    setResizing(true);
+    try {
+      const now = await setExpanded(run, want);
+      setPrefs((p) => ({ ...p, expanded: now }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setResizing(false);
+    }
+  }
+
+  async function copyWholeNote(content: string) {
+    if (!canCopy(content) || copyState === "busy") return;
+    setCopyState("busy");
+    window.clearTimeout(copiedTimer.current);
+    try {
+      await copyNote(run, content);
+      setCopyState("copied");
+      copiedTimer.current = window.setTimeout(() => setCopyState("idle"), COPIED_MS);
+    } catch (e) {
+      setCopyState("idle");
+      setError(String(e));
+    }
+  }
+
   function onKeyDown(e: React.KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
+    const chord = windowShortcut(e);
+    if (chord) {
+      e.preventDefault();
+      if (chord === "bigger") setFontSize(stepFontSize(prefsRef.current.fontSize, 1));
+      else if (chord === "smaller") setFontSize(stepFontSize(prefsRef.current.fontSize, -1));
+      else toggleRail();
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       void hide();
@@ -300,7 +412,13 @@ export default function ScratchpadWindow() {
       void close(activeRef.current);
     } else if (mod && e.key.toLowerCase() === "f") {
       e.preventDefault();
-      searchRef.current?.focus();
+      // Search lives in the rail: ⌘F brings a hidden rail back first.
+      if (prefsRef.current.railHidden) {
+        setPrefs((p) => ({ ...p, railHidden: false }));
+        requestAnimationFrame(() => searchRef.current?.focus());
+      } else {
+        searchRef.current?.focus();
+      }
     }
   }
 
@@ -310,8 +428,12 @@ export default function ScratchpadWindow() {
   const draft = active ? drafts[active] : undefined;
 
   return (
-    <div className="sp" onKeyDown={onKeyDown}>
-      <aside className="sp-rail" aria-label="Notes">
+    <div
+      className={prefs.railHidden ? "sp rail-hidden" : "sp"}
+      onKeyDown={onKeyDown}
+      style={{ ["--sp-text-size" as string]: `${FONT_PX[prefs.fontSize]}px` } as React.CSSProperties}
+    >
+      <aside className="sp-rail" id="sp-rail" aria-label="Notes" hidden={prefs.railHidden}>
         <input
           ref={searchRef}
           className="sp-search"
@@ -347,17 +469,51 @@ export default function ScratchpadWindow() {
         )}
       </aside>
       <main className="sp-main">
-        <div className="sp-tabs" role="tablist" aria-label="Open notes">
-          {tabs.map((id) => (
-            <div key={id} className={id === active ? "sp-tab on" : "sp-tab"} role="tab" aria-selected={id === active}>
-              <button type="button" className="sp-tab-name" onClick={() => void select(id)}>
-                {(drafts[id]?.title ?? byId.get(id)?.title) || UNTITLED}
-              </button>
-              <button type="button" className="sp-tab-close" aria-label="Close tab" onClick={() => void close(id)}>
-                ×
-              </button>
-            </div>
-          ))}
+        <div className="sp-bar">
+          <div className="sp-tabs" role="tablist" aria-label="Open notes">
+            {tabs.map((id) => (
+              <div key={id} className={id === active ? "sp-tab on" : "sp-tab"} role="tab" aria-selected={id === active}>
+                <button type="button" className="sp-tab-name" onClick={() => void select(id)}>
+                  {(drafts[id]?.title ?? byId.get(id)?.title) || UNTITLED}
+                </button>
+                <button type="button" className="sp-tab-close" aria-label="Close tab" onClick={() => void close(id)}>
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="sp-controls" role="toolbar" aria-label="Window">
+            <button
+              type="button"
+              className="sp-ctl"
+              aria-controls="sp-rail"
+              aria-expanded={!prefs.railHidden}
+              title={prefs.railHidden ? "Show notes (⌘E)" : "Hide notes (⌘E)"}
+              onClick={toggleRail}
+            >
+              {prefs.railHidden ? "Show notes" : "Hide notes"}
+            </button>
+            <button
+              type="button"
+              className="sp-ctl sp-aa"
+              aria-label={`Text size, ${prefs.fontSize}`}
+              title={`${FONT_LABEL[prefs.fontSize]} (⌘+ / ⌘−)`}
+              data-size={prefs.fontSize}
+              onClick={() => setFontSize(cycleFontSize(prefs.fontSize))}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className="sp-ctl"
+              aria-pressed={prefs.expanded}
+              disabled={resizing}
+              title={prefs.expanded ? "Back to the previous size" : "Fill this screen"}
+              onClick={() => void toggleExpanded()}
+            >
+              {prefs.expanded ? "Shrink" : "Expand"}
+            </button>
+          </div>
         </div>
         {active && draft ? (
           <>
@@ -404,14 +560,28 @@ export default function ScratchpadWindow() {
                 ))}
               </ol>
             )}
-            <textarea
-              ref={textRef}
-              className="sp-text"
-              aria-label="Note"
-              value={draft.content}
-              placeholder="Type, or hold your dictation key — the words land here, not in the app behind."
-              onChange={(e) => edit(active, { content: e.target.value })}
-            />
+            <div className="sp-editor">
+              <textarea
+                ref={textRef}
+                className="sp-text"
+                aria-label="Note"
+                value={draft.content}
+                placeholder="Type, or hold your dictation key — the words land here, not in the app behind."
+                onChange={(e) => edit(active, { content: e.target.value })}
+              />
+              <button
+                type="button"
+                className={copyState === "copied" ? "sp-copy done" : "sp-copy"}
+                disabled={!canCopy(draft.content) || copyState === "busy"}
+                title="Copy the whole note as plain text"
+                onClick={() => void copyWholeNote(draft.content)}
+              >
+                {copyState === "copied" ? "Copied" : "Copy"}
+              </button>
+              <span className="sp-sr" role="status" aria-live="polite">
+                {copyState === "copied" ? "Note copied to the clipboard" : ""}
+              </span>
+            </div>
           </>
         ) : (
           <div className="sp-blank">
@@ -421,7 +591,7 @@ export default function ScratchpadWindow() {
           </div>
         )}
         <footer className="sp-foot">
-          Plain text and markdown · Esc hides · ⌘N new · ⌘W close tab · ⌘F search
+          Plain text and markdown · Esc hides · ⌘N new · ⌘W close tab · ⌘F search · ⌘E notes · ⌘+ ⌘− size
         </footer>
         {error && (
           <p className="sp-error" role="alert">
