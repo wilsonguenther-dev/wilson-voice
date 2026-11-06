@@ -252,9 +252,154 @@ pub fn pill_origin_on_visible_screen(
     Some(clamp_to_screen(origin, win, s))
 }
 
-/// The float window's size in logical points (the pill sits centred in it).
+/// The float window's size in logical points: the frame the pill webview last
+/// asked for (yap-1106-one-pill), or the historical 300x140 before it has.
 pub fn float_window_size_pt() -> (f64, f64) {
-    (PILL_W, PILL_H)
+    let f = panel_frame();
+    (f.w, f.h)
+}
+
+/// yap-1106-one-pill — the panel is sized to its content. The pill webview's
+/// one layout (desktop/src/pill/state.ts `pillLayout`) is the union of the
+/// character, the clock, the hint and the bubble plus a margin; it sends that
+/// size and the point the character sits at inside it (`anchor_*`), all in
+/// logical points. Nothing is drawn outside this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelFrame {
+    pub w: f64,
+    pub h: f64,
+    pub anchor_x: f64,
+    pub anchor_y: f64,
+}
+
+/// The smallest and largest frame a request may set (points). A request
+/// outside is clamped, never trusted: a bad layout must not make a panel that
+/// covers the screen or vanishes.
+pub const PANEL_MIN_PT: (f64, f64) = (40.0, 30.0);
+pub const PANEL_MAX_PT: (f64, f64) = (640.0, 400.0);
+
+impl PanelFrame {
+    /// The fixed panel every build before yap-1106-one-pill used, centred.
+    pub const LEGACY: PanelFrame = PanelFrame {
+        w: PILL_W,
+        h: PILL_H,
+        anchor_x: 150.0,
+        anchor_y: 70.0,
+    };
+
+    /// Pure: a webview request made safe. `None` for a non-finite number; the
+    /// size is clamped to [`PANEL_MIN_PT`]..[`PANEL_MAX_PT`] and the anchor
+    /// into the frame.
+    pub fn sanitize(w: f64, h: f64, anchor_x: f64, anchor_y: f64) -> Option<PanelFrame> {
+        if !(w.is_finite() && h.is_finite() && anchor_x.is_finite() && anchor_y.is_finite()) {
+            return None;
+        }
+        let w = w.round().clamp(PANEL_MIN_PT.0, PANEL_MAX_PT.0);
+        let h = h.round().clamp(PANEL_MIN_PT.1, PANEL_MAX_PT.1);
+        Some(PanelFrame {
+            w,
+            h,
+            anchor_x: anchor_x.clamp(0.0, w),
+            anchor_y: anchor_y.clamp(0.0, h),
+        })
+    }
+}
+
+static PANEL_FRAME: Mutex<PanelFrame> = Mutex::new(PanelFrame::LEGACY);
+
+/// The current panel frame (logical points).
+pub fn panel_frame() -> PanelFrame {
+    PANEL_FRAME.lock().map(|f| *f).unwrap_or(PanelFrame::LEGACY)
+}
+
+/// Store a new panel frame and, if it changed, resize the panel and re-park it
+/// by its anchor on the main thread. One log line per change.
+pub fn set_panel_frame(app: &AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
+    let Some(next) = PanelFrame::sanitize(w, h, anchor_x, anchor_y) else {
+        log::warn!("pill panel_frame rejected reason=non_finite");
+        return;
+    };
+    let changed = match PANEL_FRAME.lock() {
+        Ok(mut cur) => {
+            let changed = *cur != next;
+            *cur = next;
+            changed
+        }
+        Err(_) => {
+            log::warn!("pill panel_frame rejected reason=lock_poisoned");
+            return;
+        }
+    };
+    if !changed {
+        return;
+    }
+    log::info!(
+        "pill panel_frame w={} h={} anchor={:.0}x{:.0} dock={:?}",
+        next.w,
+        next.h,
+        next.anchor_x,
+        next.anchor_y,
+        PillPosition::from_u8(POSITION.load(Ordering::SeqCst))
+    );
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        if let Some(win) = app2.get_webview_window("float") {
+            if let Err(e) = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: next.w,
+                height: next.h,
+            })) {
+                log::warn!("pill panel_frame resize_failed err={e}");
+            }
+        }
+        park_pill(&app2);
+    }) {
+        log::warn!("pill panel_frame dispatch_failed err={e}");
+    }
+}
+
+/// Pure (yap-1106-one-pill): the panel's top-left, in physical px, parked so
+/// the CHARACTER (at `anchor` inside the window, physical px) sits where the
+/// fixed panel used to centre it: the bottom dock centres him horizontally, a
+/// side dock centres him vertically, flush to that edge. So when the clock
+/// slot appears and the panel grows around him, Yappy does not move.
+fn panel_origin_anchored(
+    mon_pos: (i32, i32),
+    mon_size: (i32, i32),
+    win_size: (i32, i32),
+    anchor: (i32, i32),
+    margin: i32,
+    pos: PillPosition,
+) -> (i32, i32) {
+    let (mon_x, mon_y) = mon_pos;
+    let (mon_w, mon_h) = mon_size;
+    let (win_w, win_h) = win_size;
+    let (ax, ay) = anchor;
+    match pos {
+        PillPosition::Bottom => (mon_x + mon_w / 2 - ax, mon_y + mon_h - win_h - margin),
+        PillPosition::Left => (mon_x, mon_y + mon_h / 2 - ay),
+        PillPosition::Right => (mon_x + mon_w - win_w, mon_y + mon_h / 2 - ay),
+    }
+}
+
+/// Pure (yap-1106-one-pill): [`pill_origin_on_visible_screen`] for a panel
+/// frame with an anchor — picks a screen that exists, parks by the anchor and
+/// clamps the whole frame onto that screen.
+pub fn pill_origin_for_frame(
+    screens: &[ScreenRect],
+    primary: Option<ScreenRect>,
+    frame: PanelFrame,
+    margin_pt: f64,
+    pos: PillPosition,
+) -> Option<(i32, i32)> {
+    let s = pill_screen(screens, primary)?;
+    let win = ((frame.w * s.scale) as i32, (frame.h * s.scale) as i32);
+    let anchor = (
+        (frame.anchor_x * s.scale) as i32,
+        (frame.anchor_y * s.scale) as i32,
+    );
+    let margin = (margin_pt * s.scale) as i32;
+    let origin = panel_origin_anchored((s.x, s.y), (s.w, s.h), win, anchor, margin, pos);
+    Some(clamp_to_screen(origin, win, s))
 }
 
 /// Pure (Y6-D): does the pill come up at launch? Only once onboarding is done.
@@ -352,10 +497,12 @@ fn park_pill(app: &AppHandle) {
         .map(|m| rect(&m));
     // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
     // taller window) then floats ~50pt up with shadow room below it.
-    let Some((x, y)) = pill_origin_on_visible_screen(
+    // yap-1106-one-pill — parked by the character's anchor inside the frame
+    // the webview sized to its content (PanelFrame::LEGACY until it asks).
+    let Some((x, y)) = pill_origin_for_frame(
         &screens,
         primary,
-        float_window_size_pt(),
+        panel_frame(),
         14.0,
         PillPosition::from_u8(POSITION.load(Ordering::SeqCst)),
     ) else {
@@ -431,7 +578,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         );
         let mut builder = WebviewWindowBuilder::new(app, "float", url)
             .title("")
-            .inner_size(PILL_W, PILL_H)
+            .inner_size(float_window_size_pt().0, float_window_size_pt().1)
             .resizable(false)
             .decorations(false)
             .shadow(false) // no NSWindow shadow → only the pill's CSS shadow shows (kills the grey box)
@@ -1299,5 +1446,98 @@ mod tests {
         }
         // Any unexpected byte reads as the default.
         assert_eq!(PillPosition::from_u8(9), PillPosition::Bottom);
+    }
+}
+
+#[cfg(test)]
+mod one_pill_frame_tests {
+    use super::*;
+
+    const SCREEN: ScreenRect = ScreenRect {
+        x: 0,
+        y: 0,
+        w: 2880,
+        h: 1800,
+        scale: 2.0,
+    };
+
+    #[test]
+    fn legacy_frame_parks_exactly_where_the_fixed_panel_did() {
+        for pos in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            let old =
+                pill_origin_on_visible_screen(&[SCREEN], Some(SCREEN), (PILL_W, PILL_H), 14.0, pos);
+            let new = pill_origin_for_frame(&[SCREEN], Some(SCREEN), PanelFrame::LEGACY, 14.0, pos);
+            assert_eq!(old, new, "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn a_grown_frame_keeps_the_character_where_he_was() {
+        // The clock slot widens the frame to the right; the character's centre
+        // (the anchor) stays on the screen's centre line at the bottom dock.
+        let narrow = PanelFrame {
+            w: 212.0,
+            h: 140.0,
+            anchor_x: 106.0,
+            anchor_y: 110.0,
+        };
+        let wide = PanelFrame {
+            w: 352.0,
+            h: 140.0,
+            anchor_x: 106.0,
+            anchor_y: 110.0,
+        };
+        let a = pill_origin_for_frame(&[SCREEN], Some(SCREEN), narrow, 14.0, PillPosition::Bottom)
+            .unwrap();
+        let b = pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Bottom)
+            .unwrap();
+        assert_eq!(a.0 + 212, b.0 + 212, "the anchor's screen x must not move");
+        assert_eq!(a.0 + (106.0 * 2.0) as i32, SCREEN.w / 2);
+        // A side dock: flush to the edge, the character centred vertically.
+        let l =
+            pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Left).unwrap();
+        assert_eq!(l.0, 0);
+        assert_eq!(l.1 + (110.0 * 2.0) as i32, SCREEN.h / 2);
+        let r = pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Right)
+            .unwrap();
+        assert_eq!(r.0 + (352.0 * 2.0) as i32, SCREEN.w);
+    }
+
+    #[test]
+    fn a_frame_request_is_clamped_never_trusted() {
+        assert_eq!(PanelFrame::sanitize(f64::NAN, 10.0, 0.0, 0.0), None);
+        assert_eq!(PanelFrame::sanitize(10.0, f64::INFINITY, 0.0, 0.0), None);
+        let tiny = PanelFrame::sanitize(1.0, 1.0, 50.0, 50.0).unwrap();
+        assert_eq!((tiny.w, tiny.h), PANEL_MIN_PT);
+        assert!(tiny.anchor_x <= tiny.w && tiny.anchor_y <= tiny.h);
+        let huge = PanelFrame::sanitize(5000.0, 5000.0, -3.0, 9000.0).unwrap();
+        assert_eq!((huge.w, huge.h), PANEL_MAX_PT);
+        assert_eq!(huge.anchor_x, 0.0);
+        assert_eq!(huge.anchor_y, PANEL_MAX_PT.1);
+        let ok = PanelFrame::sanitize(290.4, 139.6, 100.0, 90.0).unwrap();
+        assert_eq!((ok.w, ok.h), (290.0, 140.0));
+    }
+
+    #[test]
+    fn the_frame_never_leaves_the_screen() {
+        let f = PanelFrame {
+            w: 400.0,
+            h: 200.0,
+            anchor_x: 390.0,
+            anchor_y: 5.0,
+        };
+        for pos in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            let (x, y) = pill_origin_for_frame(&[SCREEN], Some(SCREEN), f, 14.0, pos).unwrap();
+            assert!(x >= 0 && y >= 0, "{pos:?}");
+            assert!(x + 800 <= SCREEN.w && y + 400 <= SCREEN.h, "{pos:?}");
+        }
     }
 }

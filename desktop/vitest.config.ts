@@ -69,6 +69,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
+  "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },
   "polishOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

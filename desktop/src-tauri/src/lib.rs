@@ -5104,6 +5104,15 @@ fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
 }
 
+/// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
+/// asks for the panel frame that is exactly the union of its content boxes plus
+/// a margin, and the point the character sits at inside it. The panel is
+/// resized to it and re-parked by that anchor, so Yappy stays put on screen.
+#[tauri::command]
+fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
+    float_pill::set_panel_frame(&app, w, h, anchor_x, anchor_y);
+}
+
 /// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
 /// re-park loop for the duration of the gesture.
 #[tauri::command]
@@ -10857,6 +10866,7 @@ pub fn run() {
             language_options,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_set_panel_frame,
             pending_copy_card,
             dismiss_copy_card,
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
@@ -11083,20 +11093,9 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
-            // DB-D — the Scratchpad panel's red X HIDES it (its notes and the
-            // webview survive), and a panel that loses key drops the dictation
-            // target so a take started elsewhere goes to the app guard.
-            if let Some(sp) = app.get_webview_window(scratchpad::WINDOW_LABEL) {
-                let sp2 = sp.clone();
-                sp.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
-                        api.prevent_close();
-                        scratchpad::hide(sp2.app_handle());
-                    } else if let WindowEvent::Focused(false) = e {
-                        scratchpad::set_focused_note(false, None);
-                    }
-                });
-            }
+            // DB-D — the Scratchpad's close/blur handling now rides with the
+            // window itself: yap-1106-one-pill makes it on first use
+            // (scratchpad::ensure_window), never here at launch.
             if let Some(win) = app.get_webview_window("main") {
                 if smoke::release_armed() {
                     // yap-p0-release-smoke: the run inserts into TextEdit, so
@@ -11601,6 +11600,19 @@ pub fn run() {
                 }
             } else {
                 float_pill::hide_float(app.handle());
+            }
+            // yap-1106-one-pill — the launch window count, as a log line the
+            // acceptance reads: main + the one pill panel, the Scratchpad is
+            // made on first use (scratchpad::ensure_window).
+            {
+                let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+                labels.sort();
+                log::info!(
+                    "lifecycle launch windows open={} labels={} scratchpad_lazy={}",
+                    labels.len(),
+                    labels.join(","),
+                    !labels.iter().any(|l| l == scratchpad::WINDOW_LABEL)
+                );
             }
             if show_setting {
                 // Idle while the pill is hidden (it reads `is_shown` first), so
