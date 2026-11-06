@@ -2521,7 +2521,7 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
 /// can be cut by silence, so it is cut at the sentence end nearest its middle
 /// (any gap), else at its widest gap, until every piece fits the cap or is a
 /// single row. Never inside a row.
-fn capped_pieces<'a>(rows: &[&'a TimedSpan]) -> Vec<Utterance> {
+fn capped_pieces(rows: &[&TimedSpan]) -> Vec<Utterance> {
     let Some((first, last)) = rows.first().zip(rows.last()) else {
         return Vec::new();
     };

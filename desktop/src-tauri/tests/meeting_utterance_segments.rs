@@ -96,36 +96,48 @@ fn lengths(pieces: &[Utterance]) -> Vec<f64> {
 
 #[test]
 fn a_silence_of_the_cut_threshold_cuts_and_a_hair_under_does_not() {
-    // Two 12 s runs: joined they are over the 20 s cap, so step two cannot
-    // undo the cut and the raw rule is observable on its own.
-    let mut rows = run(0.0, 12.0, "w");
-    rows.extend(run(12.0 + UTTERANCE_CUT_GAP_SECONDS, 24.6, "w"));
+    // A(0–10, with a decoy sentence end at 3 s that no silence follows) and
+    // B(10.6–20.6). Joined they pass the 20 s cap, so step two cannot undo a
+    // raw cut; and when the raw rule does NOT fire, the cap fallback cuts at
+    // the decoy instead — so the two outcomes are distinguishable.
+    let mut rows = run(0.0, 3.0, "x.");
+    rows.extend(run(3.1, 10.0, "w"));
+    rows.extend(run(10.0 + UTTERANCE_CUT_GAP_SECONDS, 20.6, "w"));
     let pieces = split_utterances(&rows);
-    assert_eq!(lengths(&pieces), vec![12.0, 12.0], "{pieces:?}");
+    assert_eq!(lengths(&pieces), vec![10.0, 10.0], "{pieces:?}");
 
-    let mut rows = run(0.0, 12.0, "w");
-    rows.extend(run(12.0 + UTTERANCE_CUT_GAP_SECONDS - 0.01, 24.59, "w"));
+    let mut rows = run(0.0, 3.0, "x.");
+    rows.extend(run(3.1, 10.0, "w"));
+    rows.extend(run(10.0 + UTTERANCE_CUT_GAP_SECONDS - 0.01, 20.59, "w"));
     let pieces = split_utterances(&rows);
-    assert_eq!(pieces.len(), 1, "0.59 s is not a cut: {pieces:?}");
+    assert_eq!(lengths(&pieces), vec![3.0, 17.49], "0.59 s is not a cut: {pieces:?}");
 }
 
 #[test]
 fn a_sentence_end_lowers_the_cut_threshold_to_a_quarter_second() {
-    let mut rows = run(0.0, 12.0, "done.");
-    rows.extend(run(12.0 + UTTERANCE_SENTENCE_GAP_SECONDS, 24.25, "w"));
+    // A(0–8 "done.") · gap · B(8.25–24.25) with a decoy sentence end at 16 s.
+    // A raw cut at 8 gives [8, 16]; no raw cut gives one 24 s piece that the
+    // cap fallback cuts at the sentence end nearest the middle — 16 s.
+    let mut rows = run(0.0, 8.0, "done.");
+    rows.extend(run(8.0 + UTTERANCE_SENTENCE_GAP_SECONDS, 16.0, "x."));
+    rows.extend(run(16.1, 24.25, "w"));
     let pieces = split_utterances(&rows);
-    assert_eq!(lengths(&pieces), vec![12.0, 12.0], "{pieces:?}");
+    assert_eq!(lengths(&pieces), vec![8.0, 16.0], "{pieces:?}");
     assert_eq!(pieces[0].text.split_whitespace().last(), Some("done."));
 
     // The same silence without a sentence end is nothing.
-    let mut rows = run(0.0, 12.0, "done");
-    rows.extend(run(12.0 + UTTERANCE_SENTENCE_GAP_SECONDS, 24.25, "w"));
-    assert_eq!(split_utterances(&rows).len(), 1);
+    let mut rows = run(0.0, 8.0, "done");
+    rows.extend(run(8.0 + UTTERANCE_SENTENCE_GAP_SECONDS, 16.0, "x."));
+    rows.extend(run(16.1, 24.25, "w"));
+    let pieces = split_utterances(&rows);
+    assert_eq!(lengths(&pieces), vec![16.0, 8.15], "{pieces:?}");
 
     // A hair under the sentence threshold is nothing, sentence end or not.
-    let mut rows = run(0.0, 12.0, "done?");
-    rows.extend(run(12.0 + UTTERANCE_SENTENCE_GAP_SECONDS - 0.01, 24.24, "w"));
-    assert_eq!(split_utterances(&rows).len(), 1);
+    let mut rows = run(0.0, 8.0, "done?");
+    rows.extend(run(8.0 + UTTERANCE_SENTENCE_GAP_SECONDS - 0.01, 16.0, "x."));
+    rows.extend(run(16.1, 24.25, "w"));
+    let pieces = split_utterances(&rows);
+    assert_eq!(lengths(&pieces), vec![16.0, 8.15], "{pieces:?}");
 
     // Closing quotes after the mark still count as a sentence end.
     assert!(ends_sentence("done.\""));
