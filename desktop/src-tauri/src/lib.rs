@@ -127,6 +127,7 @@ pub mod meeting_detect;
 // yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
 pub mod call_signals;
 pub mod meeting_energy;
+pub mod resource_governor;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
 // (`tests/support/eval_metrics.rs`) and the notes echo-owner guard share it.
