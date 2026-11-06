@@ -50,7 +50,7 @@ const render = (ctx: SlotCtx) =>
 describe("Y8-B flow-bar slots", () => {
   it("is the five take-time slots plus item 18's rail, Dictate in the centre, and no trial numeral", () => {
     expect(FLOW_BAR_SLOTS.map((s) => s.id).sort()).toEqual([
-      "cancel", "dictate", "hands-free-stop", "meeting", "meeting-stop", "menu", "note", "scratchpad", "wpm",
+      "cancel", "dictate", "hands-free-stop", "meeting-start", "meeting-stop", "menu", "note", "scratchpad", "wpm",
     ]);
     expect(FLOW_BAR_SLOTS.filter((s) => s.group === "centre").map((s) => s.id)).toEqual(["dictate"]);
     // Y2-B's numeral rides the capsule, never the slot row.
@@ -170,14 +170,14 @@ describe("item 18 / WF-03 pill rail", () => {
     expect(ids(ctxOf({ phase: "idle" }))).toEqual(["dictate"]);
     expect(railShown(ctxOf({ phase: "idle" }))).toBe(false);
     // Hover/focus at rest: ONE rail — Scratchpad · Dictate · Meeting.
-    expect(ids(railCtx())).toEqual(["scratchpad", "dictate", "meeting"]);
+    expect(ids(railCtx())).toEqual(["scratchpad", "dictate", "meeting-start"]);
     // A meeting recording: Start gives way to Note and Stop meeting.
     expect(ids(railCtx({ meetingRecording: true, meetingOnScreen: true }))).toEqual(
       ["scratchpad", "dictate", "note", "meeting-stop"],
     );
     // Mid-take the rail never opens: the take owns the bar.
     expect(railShown(railCtx({ phase: "listening" }))).toBe(false);
-    expect(ids(railCtx({ phase: "listening" }))).not.toContain("meeting");
+    expect(ids(railCtx({ phase: "listening" }))).not.toContain("meeting-start");
   });
 
   it("tooltip_keycap_follows_a_rebind_without_restart", () => {
@@ -216,7 +216,7 @@ describe("item 18 / WF-03 pill rail", () => {
     expect(render(railCtx())).toContain('aria-keyshortcuts="⌃⌘J"');
     // Enter/Space on a focused rail button is handled by the button itself
     // (FlowBarSlots onKeyDown -> pressSlot), the same path as a click.
-    expect(pressSlot(slotById("meeting"), railCtx(), noop, false)).toBe(true);
+    expect(pressSlot(slotById("meeting-start"), railCtx(), noop, false)).toBe(true);
   });
 
   it("rail_rotates_on_left_and_right_docks", () => {
@@ -252,7 +252,7 @@ describe("item 18 / WF-03 pill rail", () => {
     });
     // Start meeting asks the backend's own kind picker first.
     inv.mockClear();
-    pressSlot(slotById("meeting"), railCtx(), noop, false);
+    pressSlot(slotById("meeting-start"), railCtx(), noop, false);
     await flush();
     expect(inv.mock.calls.map((c) => c[0])).toContain("meeting_kind_choices");
   });

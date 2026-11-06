@@ -50,7 +50,7 @@ export type SlotId =
   | "wpm"
   | "menu"
   // yap-1106-pill-notes-and-meeting / WF-03 — the hover rail and the hands-free stop.
-  | "meeting"
+  | "meeting-start"
   | "note"
   | "meeting-stop"
   | "hands-free-stop";
@@ -422,7 +422,7 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
   },
   {
     // Item 18 — Start meeting, WITH its kind (native picker). Hidden once one records.
-    id: "meeting",
+    id: "meeting-start",
     group: "trail",
     glyph: () => <Users strokeWidth={2.2} />,
     tooltip: () => "Record a meeting",
