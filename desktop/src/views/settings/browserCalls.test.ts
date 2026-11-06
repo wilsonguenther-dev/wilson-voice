@@ -1,8 +1,10 @@
+// No @types/node in this project (see pill/live.test.ts for the same shape).
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AX_OFF_LINE, FRONT_TAB_LINE, SITE_UNKNOWN_NAME, browserCallsLines } from "./browserCalls";
 
-const rust = readFileSync(new URL("../../../src-tauri/src/call_titles.rs", import.meta.url), "utf8");
+const rust = readFileSync(new URL("../../../src-tauri/src/call_titles.rs", import.meta.url), "utf8") as string;
 
 describe("yap-call-2 browser calls copy", () => {
   it("states the front-tab limit always", () => {
