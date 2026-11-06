@@ -7,7 +7,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import CallOffer from "./pill/CallOffer";
-import "./pill/call-offer.css";
+import "./call-offer.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
