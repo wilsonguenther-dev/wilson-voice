@@ -18,7 +18,8 @@ import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
-import { reactiveLine, DEFAULT_TONE, bucketFor } from "./tone";
+import { bucketFor } from "./tone";
+import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
@@ -52,6 +53,20 @@ const WORK = YAPPY_CHATTER;
 // The tone is read LIVE off the settings the float already subscribes to.
 const chatty = (tone: ChatTone, w: number) => { const o = WORK[tone][bucketFor(w)]; return !!(o && o.length); };
 const workLine = (tone: ChatTone, w: number, n: number) => { const o = WORK[tone][bucketFor(w)]; return o && o.length ? o[n % o.length] : ""; };
+// yap-1106-voice-modes — take-line memory persistence (see `doneLine` below).
+const TAKE_MEMORY_KEY = "yap.voice.recentTakes";
+function loadTakeMemory(): TakeLineMemory {
+  try { return parseMemory(globalThis.localStorage?.getItem(TAKE_MEMORY_KEY)); }
+  catch (e) { console.warn("pill voice_memory load_failed", e); return parseMemory(null); }
+}
+function saveTakeMemory(m: TakeLineMemory): void {
+  try { globalThis.localStorage?.setItem(TAKE_MEMORY_KEY, JSON.stringify(m)); }
+  catch (e) { console.warn("pill voice_memory save_failed", e); }
+}
+const localDay = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 // prop/persona keyed off the transcript word count
 const propFor = (w: number): Prop => { const b = bucketFor(w); return b === "medium" ? "pad" : (b === "long" || b === "epic") ? "desk" : "none"; };
 
@@ -75,10 +90,16 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
+    /**
+     * yap-1106-voice-modes — Yappy's voice, decided by the shell from the same
+     * setting as `tone`. Omitted, it follows `tone` (friendly → Best friend,
+     * rude → Badass, rose → Rose).
+     */
+    voice?: VoiceId;
     /**
      * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
      * decided by the SHELL. Only the accessible name and the announcement read
@@ -111,6 +132,11 @@ export default function YappyPill(
   toneRef.current = tone;
   const toneSink = useRef<(t: ChatTone) => void>(() => {});
   useEffect(() => { toneSink.current(tone); }, [tone]);
+  const voiceNow: VoiceId = voice ?? voiceFor(tone);
+  const voiceSink = useRef<(v: VoiceId) => void>(() => {});
+  const voiceRef = useRef<VoiceId>(voiceNow);
+  voiceRef.current = voiceNow;
+  useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
@@ -287,6 +313,23 @@ export default function YappyPill(
     // already emits on save, so a tone change takes effect without a remount.
     let chatTone: ChatTone = toneRef.current;
     toneSink.current = (t) => { chatTone = t; };
+    // yap-1106-voice-modes — the voice and the take-line memory. The memory is
+    // the last 20 finished-take lines (no repeats inside it), kept in this
+    // webview's localStorage so it survives a restart; storage failing only
+    // costs the memory, never the line.
+    let liveVoice: VoiceId = voiceRef.current;
+    voiceSink.current = (v) => { liveVoice = v; };
+    let takeMemory: TakeLineMemory = loadTakeMemory();
+    let takeCount = takeMemory.recent.length;
+    const doneLine = (w: number): string => {
+      const today = localDay();
+      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today });
+      takeCount++;
+      takeMemory = rememberTakeLine(takeMemory, picked, today);
+      saveTakeMemory(takeMemory);
+      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} recent=${takeMemory.recent.length}`);
+      return picked.text;
+    };
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
@@ -325,7 +368,7 @@ export default function YappyPill(
       wake();
       if (p === "listening") { moodT = 0; hop(1); say(""); resetLive(live); }
       else if (p === "thinking") { moodT = 0; say(chatty(chatTone, words) ? workLine(chatTone, words, 0) : ""); }
-      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, { tone: chatTone, curseFilter: DEFAULT_TONE.curseFilter }, words)); }
+      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
       else { moodT = 0; say(""); }
     }
     const sparkle: Array<{ x: number; y: number; vx: number; vy: number; life: number; heart: boolean }> = [];
@@ -411,7 +454,7 @@ export default function YappyPill(
       // prop and WHEN Yappy says something (it keeps reacting for the whole take,
       // measuring speech against this take's own room tone); the canvas renders it.
       if (phase === "listening") {
-        const f = advanceLive(live, wallDt, level, chatTone);
+        const f = advanceLive(live, wallDt, level, chatTone, undefined, liveVoice);
         liveProp = f.prop;
         if (f.say) say(f.say);
       }
