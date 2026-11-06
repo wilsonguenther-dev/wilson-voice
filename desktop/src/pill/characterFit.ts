@@ -18,7 +18,8 @@
  * wings — the matrix test measures the painted pixels against it), and the
  * camera / placement picks the largest WHOLE number of device px per art px at
  * which that box, centred, sits inside the capsule's visible stadium (the
- * rounded clip, inset one device px for rounding). The resting capsule is sized
+ * rounded clip, inset one device px for rounding) with POSITION_GUARD to spare.
+ * The resting capsule is sized
  * from the same boxes, so the smallest pill state still holds the largest
  * character at one CSS px per art px on a 1x display.
  *
@@ -51,6 +52,12 @@ export type FitDock = (typeof FIT_DOCKS)[number];
 export const CAPSULE_BORDER = 1;
 /** Device px kept clear inside the clip, for the rounding of a fractional capsule edge. */
 export const ROUNDING_GUARD = 1;
+/**
+ * Device px of play a fitted box is checked with: the scene camera lands the
+ * box within one device px of the ideal centre (whole-px origins), so a fit
+ * that holds with this much clearance holds wherever the rounding puts it.
+ */
+export const POSITION_GUARD = 2;
 /** The resting capsule is never narrower than the historical 72 pt pill. */
 export const REST_MIN_W = 72;
 
@@ -150,11 +157,16 @@ function centred(s: FitBox, art: Size, cell: number): FitBox {
   return { x: s.x + Math.floor((s.w - w) / 2), y: s.y + Math.floor((s.h - h) / 2), w, h };
 }
 
-/** The largest whole cell (device px per art px) at which `art`, centred, sits inside `s`; 0 if none. */
-export function largestFittingCell(s: FitBox, art: Size): number {
+/**
+ * The largest whole cell (device px per art px) at which `art`, centred
+ * exactly, sits inside `s` with `guard` device px to spare; 0 if none.
+ */
+export function largestFittingCell(s: FitBox, art: Size, guard = 0): number {
   if (!(art.w > 0 && art.h > 0)) return 0;
-  for (let c = Math.floor(Math.min(s.w / art.w, s.h / art.h)); c >= 1; c--) {
-    if (stadiumContains(s, centred(s, art, c))) return c;
+  const t = inset(s, guard);
+  for (let c = Math.floor(Math.min(t.w / art.w, t.h / art.h)); c >= 1; c--) {
+    const w = art.w * c, h = art.h * c;
+    if (stadiumContains(t, { x: t.x + (t.w - w) / 2, y: t.y + (t.h - h) / 2, w, h })) return c;
   }
   return 0;
 }
@@ -172,7 +184,7 @@ export interface SpritePlacement {
 /** Place a companion sprite (art `w x h`) in a capsule at the largest whole cell that keeps all of it visible. */
 export function placeSprite(capsule: CssRect, art: Size, dprRaw: number): SpritePlacement {
   const { stadium } = capsuleStadium(capsule, dprRaw);
-  const cell = largestFittingCell(stadium, art);
+  const cell = largestFittingCell(stadium, art, POSITION_GUARD);
   const box = centred(stadium, art, Math.max(1, cell));
   return { cell: Math.max(1, cell), box, stadium, fits: cell >= 1 && stadiumContains(stadium, box) };
 }
@@ -196,7 +208,7 @@ export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
   const dpr = backingScale(dprRaw);
   const { clip, stadium } = capsuleStadium(capsule, dpr);
   const env = chickBox();
-  const fit = Math.max(1, largestFittingCell(stadium, env));
+  const fit = Math.max(1, largestFittingCell(stadium, env, POSITION_GUARD));
   const cell = Math.max(fit, coverCell(clip.w, clip.h, PILL_SCENE.w, PILL_SCENE.h));
   const blit = sceneBlit({
     rect: inset(capsule, CAPSULE_BORDER),
@@ -232,7 +244,7 @@ export function restCapsuleFor(arts: readonly Size[]): Size {
   for (let h = 22; h <= 120; h++) {
     for (let w = REST_MIN_W; w <= 240; w++) {
       const { stadium } = capsuleStadium({ x: 0, y: 0, w, h }, 1);
-      if (arts.every((a) => largestFittingCell(stadium, a) >= 1)) {
+      if (arts.every((a) => largestFittingCell(stadium, a, POSITION_GUARD) >= 1)) {
         if (!best || w * h < best.w * best.h) best = { w, h };
         break;
       }

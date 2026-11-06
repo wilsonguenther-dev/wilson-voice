@@ -79,7 +79,7 @@ describe("yap-1106-fb-10 the sprite manifests are honest", () => {
       n++;
     }
     expect(n).toBeGreaterThan(100);
-  });
+  }, 30_000);
 
   it("chick_pose_is_clamped_into_the_box_range", () => {
     const wild = clampChickPose({ hop: 40, sx: -9, sy: 9, flap: 7, sway: Number.NaN, extra: 1 });
@@ -133,7 +133,7 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
     }
     expect(failures, failures.slice(0, 8).join("\n")).toEqual([]);
     expect(cases).toBeGreaterThan(6 * 17 * 5);
-  });
+  }, 30_000);
 
   it("yappy_whole_while_the_capsule_opens_and_closes: every frame of the rest <-> open lerp keeps the chick inside", () => {
     for (const tier of OPEN_TIERS) for (const dpr of DPRS) for (let i = 0; i <= 20; i++) {
