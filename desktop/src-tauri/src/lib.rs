@@ -5850,10 +5850,163 @@ fn finish_preconditions<M>(
 /// `keep_partial` + `confirm` ("Keep what was transcribed"): see
 /// [`keep_what_was_transcribed`]. The backend requires `confirm: true` there in
 /// ADDITION to the UI's confirm dialog (yap-recovery-followups (b)).
+///
+/// yap-1106-retry-failed-dictation — `async` + `spawn_blocking`, because a
+/// plain `fn` command runs ON THE MAIN THREAD in Tauri, and this one decodes
+/// minutes of audio: that was the beach ball and the "wall of doom" Wilson
+/// saw on every Retry. The body is unchanged otherwise; the engine stage runs
+/// through [`retry_decode_bounded`] (one engine, a queue, a deadline).
 #[tauri::command]
-fn retry_failed_dictation(
+async fn retry_failed_dictation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    id: String,
+    keep_partial: Option<bool>,
+    confirm: Option<bool>,
+) -> Result<TranscriptEntry, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        retry_failed_dictation_blocking(app, state, id, keep_partial, confirm)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("retry_dictation worker failed: {e}");
+        RETRY_DEADLINE_ERROR.to_string()
+    })?
+}
+
+/// yap-1106-retry-failed-dictation — the deadline a retry gets, scaled to the
+/// clip: a fixed allowance plus one second per second of audio, never under
+/// [`RETRY_DEADLINE_MIN_SECS`] and never over [`RETRY_DEADLINE_MAX_SECS`]. A
+/// healthy engine decodes a minute of audio in a few seconds, so the deadline
+/// is a backstop against a stuck engine, not a budget a good decode spends.
+/// Mirrored in `desktop/src/retryDictation.ts` (`retryDeadlineMs`).
+fn retry_deadline(clip_secs: f64) -> Duration {
+    let secs = (RETRY_DEADLINE_BASE_SECS + clip_secs.max(0.0))
+        .clamp(RETRY_DEADLINE_MIN_SECS, RETRY_DEADLINE_MAX_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+const RETRY_DEADLINE_BASE_SECS: f64 = 15.0;
+const RETRY_DEADLINE_MIN_SECS: f64 = 30.0;
+const RETRY_DEADLINE_MAX_SECS: f64 = 180.0;
+/// The one plain sentence the UI shows when a retry ran out of time. The clip
+/// stays kept; the button says Try again.
+const RETRY_DEADLINE_ERROR: &str = "Couldn't transcribe this clip — Try again";
+/// A retry that queued behind a live dictation and never got its turn.
+const RETRY_ENGINE_BUSY_ERROR: &str =
+    "The speech engine stayed busy with a live dictation — Try again";
+/// The event the retry emits as it moves through its phases, so the Retry
+/// button can say "Waiting for the speech engine…" while it queues and arm
+/// its own watchdog on the same deadline the backend holds itself to.
+const RETRY_PHASE_EVENT: &str = "retry-dictation";
+
+/// Where a retry is right now, as the UI sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RetryPhase {
+    /// The engine is leased to a live take or still loading; the retry waits.
+    Queued,
+    /// The retry holds (or is about to hold) the engine.
+    Decoding,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RetryPhasePayload {
+    id: String,
+    phase: &'static str,
+    /// The whole retry's deadline, in ms from when the retry was admitted.
+    deadline_ms: u64,
+}
+
+/// yap-1106-retry-failed-dictation — THE ENGINE STAGE OF A RETRY. One engine,
+/// never two: the retry is admitted only onto the engine dictation uses.
+///
+/// * An engine a timed-out lease abandoned is still running: fail fast with
+///   [`transcription::ENGINE_STUCK`]. Nothing loads.
+/// * The engine is leased to a live take or loading: QUEUE (`on_phase(Queued)`,
+///   `result=queued` logged) and wait for it to come back, up to the deadline.
+/// * Then decode on a worker thread and wait at most what is left of the
+///   deadline. Past it the caller gets [`RETRY_DEADLINE_ERROR`] and the row
+///   and clip stay; the decode is not killed (that would mean cancelling a
+///   latch a live take shares), it simply finishes unobserved and the engine
+///   goes back to the slot when it does.
+///
+/// Logs exactly one `retry_dictation … result=<ok|error:…>` line at the end
+/// (plus one `result=queued` line when it queued), with the wall time and the
+/// number of engine loads that happened meanwhile — 0 is the whole point.
+fn retry_decode_bounded(
+    manager: &transcription::TranscriptionManager,
+    id: &str,
+    clip_secs: f64,
+    deadline: Duration,
+    on_phase: &mut dyn FnMut(RetryPhase),
+    decode: impl FnOnce() -> Result<transcription::AsrOutput, String> + Send + 'static,
+) -> Result<transcription::AsrOutput, String> {
+    let started = std::time::Instant::now();
+    let loads_before = manager.engine_loads();
+    let report = |result: &Result<transcription::AsrOutput, String>| {
+        let outcome = match result {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("error:{}", e.replace('\n', " ")),
+        };
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            started.elapsed().as_millis(),
+            manager.engine_loads().saturating_sub(loads_before)
+        );
+    };
+    if manager.abandoned_engines() > 0 {
+        let r = Err(transcription::ENGINE_STUCK.to_string());
+        report(&r);
+        return r;
+    }
+    if manager.is_busy() {
+        on_phase(RetryPhase::Queued);
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result=queued wall_ms={} engine_loads_during=0",
+            started.elapsed().as_millis()
+        );
+        if !manager.wait_until_idle(deadline) {
+            let r = Err(RETRY_ENGINE_BUSY_ERROR.to_string());
+            report(&r);
+            return r;
+        }
+        // The decode the retry waited on may itself have timed out and left
+        // its engine running — the same refusal as above, one check later.
+        if manager.abandoned_engines() > 0 {
+            let r = Err(transcription::ENGINE_STUCK.to_string());
+            report(&r);
+            return r;
+        }
+    }
+    on_phase(RetryPhase::Decoding);
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode());
+    });
+    let result = match rx.recv_timeout(remaining) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::warn!(
+                "retry_dictation id={id} deadline_s={:.0} passed — the decode is left to finish unobserved",
+                deadline.as_secs_f64()
+            );
+            Err(RETRY_DEADLINE_ERROR.to_string())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("The speech engine stopped unexpectedly — Try again".to_string())
+        }
+    };
+    report(&result);
+    result
+}
+
+/// The body of [`retry_failed_dictation`], on a blocking thread.
+fn retry_failed_dictation_blocking(
+    app: AppHandle,
+    state: Arc<AppState>,
     id: String,
     keep_partial: Option<bool>,
     confirm: Option<bool>,
@@ -5960,6 +6113,28 @@ fn retry_failed_dictation(
                 ),
                 None => (None, Ok(0)),
             };
+            // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
+            // read off the samples the retry really decodes (a resume decodes
+            // less, and gets the same allowance: the engine, not the audio,
+            // is what the deadline guards against).
+            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+            let deadline = retry_deadline(clip_secs);
+            let deadline_ms = deadline.as_millis() as u64;
+            let mut on_phase = |phase: RetryPhase| {
+                let payload = RetryPhasePayload {
+                    id: id.clone(),
+                    phase: match phase {
+                        RetryPhase::Queued => "queued",
+                        RetryPhase::Decoding => "decoding",
+                    },
+                    deadline_ms,
+                };
+                if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
+                    log::warn!("retry_dictation id={id} phase event not delivered: {e}");
+                }
+            };
+            let manager = state.transcription.clone();
+            let language_prefs = settings.language_prefs();
             let (raw_text, asr) = decode_failed_take(
                 &state.db,
                 &row,
@@ -5967,17 +6142,28 @@ fn retry_failed_dictation(
                 resume_sample,
                 &samples,
                 |remaining| {
-                    transcribe_native(
-                        &state.transcription,
-                        &model_id,
-                        &model_path,
-                        remaining,
-                        &settings.language_prefs(),
-                        bias_prompt,
-                        // A retry or recovery from History has no live pill to fill:
-                        // the user is looking at the history row, not at a recording
-                        // indicator.
-                        &mut transcribe_progress::NoObserver,
+                    let (decode_manager, model_id, model_path) =
+                        (manager.clone(), model_id.clone(), model_path.clone());
+                    retry_decode_bounded(
+                        &manager,
+                        &id,
+                        clip_secs,
+                        deadline,
+                        &mut on_phase,
+                        move || {
+                            transcribe_native(
+                                &decode_manager,
+                                &model_id,
+                                &model_path,
+                                remaining,
+                                &language_prefs,
+                                bias_prompt,
+                                // A retry or recovery from History has no live pill to fill:
+                                // the user is looking at the history row, not at a recording
+                                // indicator.
+                                &mut transcribe_progress::NoObserver,
+                            )
+                        },
                     )
                 },
             )?;
