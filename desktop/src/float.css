@@ -728,13 +728,21 @@ button.meeting-after:hover {
   display: none;
 }
 
-/* Yappy draws its capsule on a canvas, so the badge floats over it, anchored to
- * the same bottom-centre island the capsule is drawn on. */
+/* yap-1106-one-pill — Yappy draws his capsule on a canvas, so the clock is a DOM
+ * slot placed by the ONE layout (pill/state.ts): his trailing slot at the bottom
+ * dock, the row under him at a side dock. The old rule pinned it to the window's
+ * bottom-centre, 150 pt from him on a side dock; that free-floating path is gone. */
 .kami-stage .meeting-badge {
   position: absolute;
-  left: 50%;
-  bottom: 6px;
-  transform: translateX(-50%);
+  left: var(--clock-x, 50%);
+  top: var(--clock-y, auto);
+  box-sizing: border-box;
+  width: var(--clock-w, auto);
+  max-width: var(--clock-w, none);
+  height: var(--clock-h, auto);
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
   padding: 5px 8px;
   border-radius: 14px;
   background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
@@ -1351,6 +1359,44 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 }
 .meeting-offer-actions .meeting-offer-record { background: var(--overlay-action-urgent); color: var(--overlay-text-on-action); }
 /* Y5-J — focus ring for .meeting-offer-actions buttons: drawn once, globally, by src/a11y/focus.css. */
+/* WF-12 — "Sounded like Spanish — Add Spanish?" (LanguageOfferCard.tsx).
+   Same glass card and top band as the meeting offer; Add is the ordinary
+   primary action (--overlay-action), not the urgent red Record carries. No
+   motion: it appears and leaves, so reduce-motion has nothing to turn off. */
+.language-offer-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.language-offer {
+  box-sizing: border-box;
+  padding: 7px 9px 7px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: var(--overlay-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.language-offer p { margin: 0; }
+.language-offer-headline { font-weight: 600; }
+.language-offer-error { margin-top: 2px; font-size: 11px; color: var(--overlay-text-urgent); }
+.language-offer-actions { display: flex; gap: 6px; margin-top: 5px; }
+.language-offer-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+}
+.language-offer-actions .language-offer-add { background: var(--overlay-action); color: var(--overlay-text-on-action); }
+.language-offer-actions button:disabled { opacity: 0.6; cursor: default; }
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
  * capsule says which way that runs (a column only for a strip phase at a side
@@ -1499,3 +1545,63 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 }
 .pill-lang:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
 .pill-lang.has-notice { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
+
+/* ── yap-1106-one-pill — every DOM slot from the ONE layout ─────────────────
+ * float-main writes the layout (pill/state.ts `layoutVars`) onto <html> as
+ * custom properties and sets data-one-pill. Under it the hint, the bubble, the
+ * progress row and the trial chip are placed against Yappy's box, which the
+ * panel is sized around (float_pill.rs set_panel_frame), so nothing overlaps
+ * him and nothing sits outside the panel. The Classic (legacy) pill keeps the
+ * rules above. The selectors out-rank the dock rules on purpose. */
+html[data-one-pill="true"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  left: var(--hint-x);
+  top: var(--hint-y);
+  right: auto;
+  bottom: auto;
+  width: var(--hint-w);
+  max-width: var(--hint-w);
+  transform: none;
+  text-align: center;
+}
+html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  text-align: left;
+}
+html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
+  text-align: right;
+}
+/* No free-floating clock: until the first layout has placed it (one frame at
+ * mount), Yappy's clock slot is not painted anywhere. */
+html:not([data-one-pill="true"]) .kami-stage .meeting-badge {
+  visibility: hidden;
+}
+html[data-one-pill="true"] .kami-bubble {
+  max-width: var(--bubble-w);
+}
+html[data-one-pill="true"] .kami-progress,
+html[data-one-pill="true"][data-dock="left"] .kami-progress,
+html[data-one-pill="true"][data-dock="right"] .kami-progress {
+  left: calc(var(--progress-x) + var(--progress-w) / 2);
+  top: var(--progress-y);
+  bottom: auto;
+  height: var(--progress-h);
+}
+html[data-one-pill="true"] .kami-license {
+  --lic-x: calc(var(--char-x) + var(--char-w) / 2);
+  top: calc(var(--char-y) + var(--char-h) / 2 - 32px);
+}
+html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
+html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
+/* A card (copy card, "Record this meeting?", the nudge) takes the top row the
+ * layout reserved for it; the panel grew to hold it. */
+html[data-one-pill="true"] .copy-card,
+html[data-one-pill="true"] .meeting-offer-wrap,
+html[data-one-pill="true"][data-dock] .nudge-row {
+  left: var(--card-x);
+  top: var(--card-y);
+  right: auto;
+  bottom: auto;
+  width: var(--card-w);
+  max-width: var(--card-w);
+  box-sizing: border-box;
+  transform: none;
+}

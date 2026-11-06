@@ -1,7 +1,9 @@
 //! DB-D — the Scratchpad as a real second window.
 //!
-//! The window is declared in `tauri.conf.json` (label [`WINDOW_LABEL`], entry
-//! `scratchpad.html`, hidden, unfocused) and converted ONCE to a
+//! The window is made on FIRST USE by [`ensure_window`] (label
+//! [`WINDOW_LABEL`], entry `scratchpad.html`, hidden, unfocused; yap-1106-one-pill
+//! moved it out of `tauri.conf.json` so launch opens two windows, main and the
+//! pill panel) and converted ONCE to a
 //! non-activating `NSPanel` the first time it opens — the same mechanism the
 //! Dictate pill uses (`float_pill.rs`). A non-activating panel can become the
 //! KEY window, so you can type and dictate into it, while the app you were in
@@ -129,9 +131,7 @@ tauri_nspanel::tauri_panel! {
 /// Open the Scratchpad without activating Yap. Safe from any thread: AppKit
 /// panel calls are dispatched to the main thread.
 pub fn open(app: &AppHandle) -> Result<(), String> {
-    if app.get_webview_window(WINDOW_LABEL).is_none() {
-        return Err("the Scratchpad window is missing from tauri.conf.json".into());
-    }
+    ensure_window(app)?;
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         if let Err(e) = open_on_main(&app2) {
@@ -200,6 +200,55 @@ fn open_on_main(app: &AppHandle) -> Result<(), String> {
         .ok_or_else(|| "scratchpad webview missing".to_string())?;
     w.show().map_err(|e| e.to_string())?;
     let _ = app.emit_to(WINDOW_LABEL, SHOWN_EVENT, ());
+    Ok(())
+}
+
+/// yap-1106-one-pill — make the Scratchpad window the first time it is
+/// needed, never at launch (the target is two windows at launch: main and the
+/// one pill panel). Same shape the old `tauri.conf.json` entry declared, and
+/// the same close/blur handling the launch path used to install: the red X
+/// HIDES it (its notes and the webview survive), and losing key drops the
+/// dictation target so a take started elsewhere goes to the app guard.
+/// Idempotent: a window that already exists is left alone.
+pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window(WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+    let t0 = std::time::Instant::now();
+    let w = tauri::WebviewWindowBuilder::new(
+        app,
+        WINDOW_LABEL,
+        tauri::WebviewUrl::App("scratchpad.html".into()),
+    )
+    .title("Scratchpad")
+    .inner_size(760.0, 520.0)
+    .min_inner_size(480.0, 320.0)
+    .resizable(true)
+    .fullscreen(false)
+    .center()
+    .decorations(true)
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| {
+        log::warn!("scratchpad create_failed err={e}");
+        format!("scratchpad window: {e}")
+    })?;
+    let w2 = w.clone();
+    w.on_window_event(move |e| match e {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            hide(w2.app_handle());
+        }
+        tauri::WindowEvent::Focused(false) => set_focused_note(false, None),
+        _ => {}
+    });
+    log::info!(
+        "scratchpad created_lazily ms={} windows_open={}",
+        t0.elapsed().as_millis(),
+        app.webview_windows().len()
+    );
     Ok(())
 }
 

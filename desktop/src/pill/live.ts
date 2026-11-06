@@ -30,6 +30,7 @@
 // only `../license/status` (both pure, neither imports this file), so this adds
 // a leaf dependency and no cycle.
 import { GATED_HEADLINE } from "./license";
+import type { MilestoneId, NudgeId } from "./nudge";
 
 /** The user's companion tone (YV27). Anything unknown reads as friendly. */
 export type ChatTone = "rude" | "friendly" | "rose";
@@ -1528,3 +1529,148 @@ export function withBlind(phase: LivePhase, blind: BlindState | null): LivePhase
 
 /** The sample a forced `blind` matrix capture draws (forced.ts). */
 export const SAMPLE_BLIND: BlindState = { cause: "secure-input", app: "Google Chrome", chord: "⌃⌥⌘Space" };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WF-17 — quiet mode for tips, feature news and milestones.
+//
+// Wispr sorts its toasts into Suggestions, Announcements and Milestones, each
+// with a mute switch, and its errors can never be muted. Yap does the same with
+// ONE table: every message the pill can say is tagged with exactly one
+// category here, Settings › Notifications mutes the three soft ones, and
+// `pillMessageAllowed` is the single gate every soft message passes through.
+// Errors, permission problems and recovery lines are not in MUTABLE_CATEGORIES,
+// so no stored setting — not even a hand-edited "error" — can hide them.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What kind of thing a pill message is. Exactly one per message. */
+export type PillCategory =
+  /** The pill saying what it is doing right now (listening, done, …). */
+  | "status"
+  /** A take failed, or produced nothing, and the user has to know. */
+  | "error"
+  /** macOS is blocking something Yap needs. */
+  | "permission"
+  /** Yap is telling the user how to get out of a jam (fn misfire, paste fell back). */
+  | "recovery"
+  /** A lesson about the take just done (`nudge.ts`). Mutable. */
+  | "tip"
+  /** A feature the user has not tried yet. Mutable. */
+  | "news"
+  /** A count worth celebrating. Mutable. */
+  | "milestone";
+
+export const PILL_CATEGORIES: readonly PillCategory[] = [
+  "status",
+  "error",
+  "permission",
+  "recovery",
+  "tip",
+  "news",
+  "milestone",
+];
+
+/** The only categories a user may mute. Mirrors lib.rs `MUTABLE_PILL_CATEGORIES`. */
+export const MUTABLE_CATEGORIES = ["tip", "news", "milestone"] as const;
+export type MutableCategory = (typeof MUTABLE_CATEGORIES)[number];
+
+export const isMutableCategory = (c: string): c is MutableCategory =>
+  (MUTABLE_CATEGORIES as readonly string[]).includes(c);
+
+/**
+ * Every message the pill can show, by id. Phases are `phase:<LivePhase>`, the
+ * coaching nudges `nudge:<NudgeId>`, milestones `milestone:<MilestoneId>`. The
+ * `Record` over this union is the compile-time half of the "every message has
+ * a category" rule; `live.test.ts` is the runtime half.
+ */
+export type PillMessageId =
+  | `phase:${LivePhase}`
+  | `nudge:${NudgeId}`
+  | `milestone:${MilestoneId}`
+  /** `stillRecordingLine` — the take outlived the key that started it. */
+  | "still-recording"
+  /** `FN_HINT_LINE` — fn pressed without its modifier. */
+  | "fn-hint"
+  /** The Copy card: the paste had nowhere to land, the text is kept. */
+  | "copy-card"
+  /** The detected-meeting offer (it has its own switch in Settings › Meetings). */
+  | "meeting-offer";
+
+/** THE table. One category per pill message; nothing shows without a row. */
+export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
+  "phase:idle": "status",
+  "phase:listening": "status",
+  "phase:listening-locked": "status",
+  "phase:thinking": "status",
+  "phase:transcribing": "status",
+  "phase:polishing": "status",
+  "phase:pasting": "status",
+  "phase:model-loading": "status",
+  "phase:done": "status",
+  "phase:sleepy": "status",
+  "phase:cancelled": "status",
+  // Trial over: a refused take is something the user must hear about.
+  "phase:gated": "status",
+  "phase:error": "error",
+  "phase:empty": "error",
+  "phase:blocked": "permission",
+  "phase:waiting": "permission",
+  // Secure Input deafens fn; the line names the chord that still works.
+  "phase:blind": "recovery",
+  "still-recording": "recovery",
+  "fn-hint": "recovery",
+  "copy-card": "recovery",
+  "meeting-offer": "status",
+  "nudge:no-text-field": "tip",
+  "nudge:code-editor": "tip",
+  "nudge:meetings": "news",
+  "milestone:takes-100": "milestone",
+  "milestone:takes-1000": "milestone",
+};
+
+/** The category of `id`, straight out of the table. */
+export const pillMessageCategory = (id: PillMessageId): PillCategory => PILL_MESSAGES[id];
+
+/**
+ * The muted set out of the settings payload (`mutedPillCategories`). Anything
+ * that is not a mutable category is dropped, so a stored "error" mutes nothing.
+ */
+export function parseMutedCategories(raw: unknown): ReadonlySet<MutableCategory> {
+  const out = new Set<MutableCategory>();
+  if (!Array.isArray(raw)) return out;
+  for (const v of raw) if (typeof v === "string" && isMutableCategory(v)) out.add(v);
+  return out;
+}
+
+/** Toggle `cat` in a muted list, returned in table order (what Settings saves). */
+export function withMuted(
+  current: readonly string[] | null | undefined,
+  cat: MutableCategory,
+  muted: boolean,
+): MutableCategory[] {
+  const set = new Set(parseMutedCategories(current ?? []));
+  if (muted) set.add(cat);
+  else set.delete(cat);
+  return MUTABLE_CATEGORIES.filter((c) => set.has(c));
+}
+
+/**
+ * THE gate. A message may reach the pill unless its category is mutable AND
+ * muted. An unknown id (a message nobody tagged) is refused rather than shown
+ * uncategorised — the table, not the caller, decides what is soft.
+ */
+export function pillMessageAllowed(id: PillMessageId, muted: ReadonlySet<string>): boolean {
+  const cat = PILL_MESSAGES[id] as PillCategory | undefined;
+  if (!cat) return false;
+  return !(isMutableCategory(cat) && muted.has(cat));
+}
+
+/** How a soft message introduces itself to a screen reader ("Tip: …"). */
+export const CATEGORY_NOUN: Record<PillCategory, string> = {
+  status: "Status",
+  error: "Error",
+  permission: "Permission",
+  recovery: "Heads up",
+  tip: "Tip",
+  news: "New",
+  milestone: "Milestone",
+};

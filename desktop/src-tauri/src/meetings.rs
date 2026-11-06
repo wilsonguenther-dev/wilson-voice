@@ -50,9 +50,12 @@ use serde::{Deserialize, Serialize};
 /// 7 = Y9-B's `user_context` table (`db::MIGRATION_7_USER_CONTEXT`): the
 ///     user's writing samples and custom rules for the local style profile.
 ///
+/// 10 = yap-call-1's `detected_app` / `detected_via` on `meetings`
+///      ([`MIGRATION_10_DETECTED_CALL`]).
+///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -893,6 +896,14 @@ ALTER TABLE meetings ADD COLUMN asr_model TEXT;
 /// `list_meeting_segments`, which filters it).
 pub const MIGRATION_9_SUPPRESSED_AS_ECHO: &str = r#"
 ALTER TABLE meeting_segments ADD COLUMN suppressed_as_echo INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// yap-call-1 — a recording started from a call offer remembers which app
+/// (bundle id) and how it was found (`mic_in_use` | `title` | `calendar` |
+/// `manual`). Additive and nullable: every older row reads NULL.
+pub const MIGRATION_10_DETECTED_CALL: &str = r#"
+ALTER TABLE meetings ADD COLUMN detected_app TEXT;
+ALTER TABLE meetings ADD COLUMN detected_via TEXT;
 "#;
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one

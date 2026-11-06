@@ -61,6 +61,13 @@ pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// string compared against a literal in another module is a bug waiting for
 /// someone to reword the message.
 pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
+/// yap-1106-retry-failed-dictation — a decode was asked for while an engine
+/// this manager gave up on (a timed-out lease) is STILL running on its worker
+/// thread. Loading a second engine next to it is exactly the pile-up of the
+/// 2026-11-06 forensics (root cause 2: 7 loads, 3 frees, a starved GPU), so
+/// the retry path refuses instead of reloading. Plain words: the UI shows it.
+pub const ENGINE_STUCK: &str =
+    "The speech engine is still busy with an earlier clip — try again in a minute";
 
 /// yap24-NT2 fix round 2 — how many times one dictation decode may reload its
 /// own model after finding another model (a meeting's pinned one) resident.
@@ -154,6 +161,11 @@ pub const ENGINE_HANDBACK_WAIT: Duration =
     Duration::from_secs(MAX_SANCTIONED_CHUNK_DECODE_SECONDS as u64);
 /// How often that wait re-checks the slot.
 const ENGINE_HANDBACK_POLL: Duration = Duration::from_millis(5);
+/// yap-1106-retry-failed-dictation — how often a queued retry re-checks
+/// [`TranscriptionManager::is_busy`]. Coarser than the handback poll: a retry
+/// is background work waiting on a live take, not a live take waiting on a
+/// chunk.
+const ENGINE_IDLE_POLL: Duration = Duration::from_millis(50);
 
 // ---------------------------------------------------------------------------
 // Y3-B — DICTATION CHUNKING: the 120 s wall becomes a PER-CHUNK budget
@@ -411,6 +423,9 @@ pub struct AsrOutput {
     /// Y10-A — what the user must be told about the language plan (e.g. the
     /// model cannot detect languages), or `None`.
     pub language_notice: Option<String>,
+    /// WF-12 — a picker language the take was heard in that is not in the
+    /// user's set (`languages::outside_language`); the pill may offer it.
+    pub language_outside: Option<String>,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
@@ -478,6 +493,18 @@ enum Discard {
     UserCancel,
 }
 
+/// yap-1106-retry-failed-dictation — what became of one lease's engine, agreed
+/// between the caller and the worker thread under one lock (see `leased_on`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LeaseFate {
+    /// The caller is still waiting on the channel.
+    Waiting,
+    /// The worker finished and sent the engine back.
+    Returned,
+    /// The caller timed out; the worker owns the engine until it returns.
+    Abandoned,
+}
+
 /// The decode holding the engine right now.
 struct InFlight {
     /// Its cancel hook, if the engine has one (YV70).
@@ -505,6 +532,21 @@ struct Inner {
     /// back to zero only once that engine is BACK (in the slot, or dropped), so
     /// a zero lease means nothing is holding a live Metal device (YV70).
     leases: AtomicU64,
+    /// yap-1106-retry-failed-dictation — engines this manager has STORED (a
+    /// completed `load`), ever. The retry path reads it before and after a
+    /// decode and logs the difference as `engine_loads_during`, which is how
+    /// "the retry never triggered a second model load" is observable.
+    loads: AtomicU64,
+    /// yap-1106-retry-failed-dictation — engines a lease timed out on that are
+    /// STILL inside their worker thread (the thread owns the engine and drops
+    /// it whenever the native call finally returns). `leases` goes back to
+    /// zero at the timeout, so without this counter an abandoned engine is
+    /// indistinguishable from no engine, and the next caller loads a second
+    /// one beside it (forensics 2026-11-06, root cause 2). Shared with every
+    /// worker thread by `Arc` rather than through `Inner`, so a hung worker
+    /// keeps nothing of the manager alive. The engine-owner item
+    /// (yap-1106-engine-owner) is meant to grow its supervisor on this seam.
+    abandoned_live: Arc<AtomicU64>,
     /// YV70 — set once the app is on its way out. Nothing loads after this, and
     /// a transcription that finishes now drops its engine instead of putting a
     /// live device back into the slot the exit drain has already emptied.
@@ -609,6 +651,8 @@ impl TranscriptionManager {
                 loader,
                 generation: AtomicU64::new(0),
                 leases: AtomicU64::new(0),
+                loads: AtomicU64::new(0),
+                abandoned_live: Arc::new(AtomicU64::new(0)),
                 exiting: AtomicBool::new(false),
                 in_flight: Mutex::new(None),
                 load_gate: Mutex::new(()),
@@ -859,8 +903,53 @@ impl TranscriptionManager {
         }
         self.inner.loading.store(false, Ordering::Release);
         self.touch();
-        log::info!("ASR model '{model_id}' loaded and warm");
+        let loads = self.inner.loads.fetch_add(1, Ordering::AcqRel) + 1;
+        log::info!(
+            "ASR model '{model_id}' loaded and warm loads={loads} abandoned_live={}",
+            self.abandoned_engines()
+        );
         Ok(())
+    }
+
+    /// yap-1106-retry-failed-dictation — how many engines this manager has
+    /// stored so far (see `Inner::loads`). A caller reads it before and after
+    /// its work to tell whether that work loaded anything.
+    pub fn engine_loads(&self) -> u64 {
+        self.inner.loads.load(Ordering::Acquire)
+    }
+
+    /// yap-1106-retry-failed-dictation — engines a timed-out lease gave up on
+    /// that are still running on their worker thread (see
+    /// `Inner::abandoned_live`). Nonzero means the GPU is already busy with
+    /// work nobody is waiting for; loading another engine beside it is what
+    /// the retry path refuses to do.
+    pub fn abandoned_engines(&self) -> u64 {
+        self.inner.abandoned_live.load(Ordering::Acquire)
+    }
+
+    /// yap-1106-retry-failed-dictation — is the one engine spoken for right
+    /// now: leased to a decode, or being built? Read straight off the atomics
+    /// (no slot lock) so a waiter can poll it.
+    pub fn is_busy(&self) -> bool {
+        self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
+    }
+
+    /// yap-1106-retry-failed-dictation — wait, polling, until the engine is
+    /// neither leased nor loading, or `max` has passed. `true` means idle.
+    /// This is the "queue" a retry sits in while a live dictation holds the
+    /// engine: it never takes the engine off anyone and never loads a second
+    /// one, it only waits its turn.
+    pub fn wait_until_idle(&self, max: Duration) -> bool {
+        let started = Instant::now();
+        loop {
+            if !self.is_busy() {
+                return true;
+            }
+            if started.elapsed() >= max {
+                return false;
+            }
+            std::thread::sleep(ENGINE_IDLE_POLL);
+        }
     }
 
     /// Load off the main thread. Tauri commands call this so a cold load never
@@ -948,6 +1037,18 @@ impl TranscriptionManager {
         loop {
             let run = job.clone();
             match self.leased_on(false, Some(model_id), move |engine| run(engine)) {
+                // yap-1106-retry-failed-dictation — the slot is empty because a
+                // timed-out lease still holds the engine on its worker thread.
+                // Reloading here is what stacked engines on the GPU in the
+                // 2026-11-06 session; this window fails fast instead, and the
+                // windowed take reports it like any other failed window.
+                Err(e) if e == NO_ENGINE_LOADED && self.abandoned_engines() > 0 => {
+                    log::warn!(
+                        "dictation window refused: an abandoned engine is still running abandoned_live={}",
+                        self.abandoned_engines()
+                    );
+                    return Err(ENGINE_STUCK.into());
+                }
                 Err(e) if e == NO_ENGINE_LOADED && reloads < DICTATION_MODEL_RELOADS => {
                     reloads += 1;
                     log::info!(
@@ -1251,6 +1352,16 @@ impl TranscriptionManager {
         }
 
         let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<R, String>)>();
+        // yap-1106-retry-failed-dictation — the handshake that keeps
+        // `abandoned_live` exact. The caller and the worker both lock the fate
+        // before acting, so exactly one of two things happens: the worker
+        // finds `Waiting` and sends (the caller then receives), or the caller
+        // finds `Waiting` at its timeout and marks `Abandoned` (the worker
+        // then counts the engine out when it finally returns, and never sends).
+        let fate = Arc::new(Mutex::new(LeaseFate::Waiting));
+        let abandoned_live = Arc::clone(&self.inner.abandoned_live);
+        let worker_fate = Arc::clone(&fate);
+        let worker_abandoned = Arc::clone(&abandoned_live);
         std::thread::spawn(move || {
             let mut engine = engine;
             // Panic containment: on unwind the engine is dropped instead of
@@ -1262,12 +1373,45 @@ impl TranscriptionManager {
                     Err(format!("ASR engine panicked: {}", panic_message(&p))),
                 ),
             };
-            // A send failure means the caller timed out; `sent` (and with it the
-            // engine) drops right here.
+            let mut fate = worker_fate.lock();
+            if *fate == LeaseFate::Abandoned {
+                // The caller gave up on this engine long ago. It dies here,
+                // and the count of engines nobody is waiting for goes down.
+                let left = worker_abandoned.fetch_sub(1, Ordering::AcqRel) - 1;
+                log::warn!(
+                    "ASR engine returned after its lease was abandoned — dropping it abandoned_live={left}"
+                );
+                drop(sent);
+                return;
+            }
+            *fate = LeaseFate::Returned;
+            // A send failure means the caller is gone (it never happens under
+            // `Returned`, which is only ever set with the receiver alive).
             let _ = tx.send(sent);
         });
 
-        let outcome = rx.recv_timeout(self.inner.transcribe_timeout);
+        let mut outcome = rx.recv_timeout(self.inner.transcribe_timeout);
+        if matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)) {
+            let mut f = fate.lock();
+            match *f {
+                // The worker beat the timeout by a hair: its result is in the
+                // channel and the engine with it. Take it, nothing is lost.
+                LeaseFate::Returned => {
+                    if let Ok(late) = rx.try_recv() {
+                        outcome = Ok(late);
+                    }
+                }
+                LeaseFate::Waiting => {
+                    *f = LeaseFate::Abandoned;
+                    let live = abandoned_live.fetch_add(1, Ordering::AcqRel) + 1;
+                    log::warn!(
+                        "ASR decode timed out after {}s — engine abandoned to its worker thread abandoned_live={live}",
+                        self.inner.transcribe_timeout.as_secs()
+                    );
+                }
+                LeaseFate::Abandoned => {}
+            }
+        }
         let result = match outcome {
             Ok((engine, result)) => {
                 if let Some(engine) = engine {

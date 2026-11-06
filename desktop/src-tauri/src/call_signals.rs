@@ -408,6 +408,17 @@ pub fn score(
     best
 }
 
+/// yap-call-1 — is `bundle_id`'s call still holding the microphone? Any
+/// process attributed to that catalog row (helpers included) whose
+/// `running_input` READ true. Read off the 1 s meeting tick for "Call ended".
+pub fn bundle_input_running(snap: &CallSnapshot, catalog: &CallCatalog, bundle_id: &str) -> bool {
+    snap.others().any(|p| {
+        p.running_input == Some(true)
+            && attribute(p, snap, catalog)
+                .is_some_and(|(app, _, _)| app.bundle_id.eq_ignore_ascii_case(bundle_id))
+    })
+}
+
 /// The offer text. The far side of FaceTime / Phone is NOT measured, so an
 /// unverified system-daemon row never claims it.
 pub fn offer_copy(candidate: &CallCandidate, catalog: &CallCatalog) -> String {

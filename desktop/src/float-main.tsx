@@ -8,7 +8,7 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { Suspense, useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
@@ -21,6 +21,8 @@ import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LanguageOfferCard from "./pill/LanguageOfferCard";
+import { forcedLanguageOffer } from "./pill/languageOffer";
 import {
   acceptProgress,
   errorSentence,
@@ -46,6 +48,7 @@ import {
   GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
+  parseMutedCategories,
   type BlindState,
   type BlindStatusSlice,
   type LivePhase,
@@ -54,8 +57,25 @@ import {
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
+import {
+  layoutVars,
+  meetingMode,
+  pillLayout,
+  publishPillLayout,
+  shrinkDelay,
+  layoutCharacterFor,
+  type LayoutCharacter,
+  type MeetingMode,
+  type PillLayout,
+} from "./pill/state";
 import type { ListenEstimate, SlotCtx } from "./pill/slots";
-import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
+import {
+  forcedPill,
+  matrixLanguageOfferScene,
+  matrixLicenseScenes,
+  matrixPhases,
+  type ForcedPill,
+} from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -74,6 +94,8 @@ interface Settings {
    * it reads as off and `SCRATCHPAD_WINDOW_LANDED` keeps the slot hidden.
    */
   scratchpadOnBar?: boolean;
+  /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
+  mutedPillCategories?: string[];
 }
 
 /**
@@ -174,7 +196,12 @@ const FORCED: ForcedPill | null =
 if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
-  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [...matrixPhases(), ...matrixLicenseScenes()];
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [
+    ...matrixPhases(),
+    ...matrixLicenseScenes(),
+    // WF-12 — the language-offer card over an idle pill.
+    matrixLanguageOfferScene(),
+  ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
 }
 
@@ -235,6 +262,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // WF-17 — quiet mode, read live off the settings payload like the tone.
+  const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -413,6 +442,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -497,6 +527,14 @@ function Float() {
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
+  // yap-1106-one-pill — ONE layout for the whole panel, decided here from the
+  // same three inputs everything else above reads: the phase, the meeting and
+  // the dock (pill/state.ts). It places the clock, the hint and the bubble
+  // against the character's box and sizes the panel to their union.
+  const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
+  const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
+  const cardH = useCardOnScreen();
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} />
@@ -532,15 +570,18 @@ function Float() {
     ?? phaseCopy(phase, chatTone);
   return (
     <>
+      <PanelFrameSync layout={target} />
       <div className="bar" {...bar}>
         {pill}
       </div>
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
+      {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
+      <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
@@ -556,6 +597,101 @@ function Float() {
       </div>
     </>
   );
+}
+
+/**
+ * yap-1106-one-pill — the layout, memoised on its geometric identity so a
+ * phase change inside the same class (listening → transcribing) is not a new
+ * layout.
+ */
+function usePanelLayout(
+  phase: LivePhase,
+  meeting: MeetingMode,
+  dock: BarDock,
+  character: LayoutCharacter,
+  cardH: number | null,
+): PillLayout {
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  return useMemo(() => next, [next.key]);
+}
+
+/** The cards that take the panel's top row while they are on screen. */
+const CARD_SELECTOR = ".copy-card, .meeting-offer-wrap, .nudge-row";
+
+/**
+ * yap-1106-one-pill — the height of the card on screen (copy card, meeting
+ * offer, coaching nudge), or null. The cards mount and unmount themselves, so
+ * the shell watches the DOM for them rather than re-deciding when they show;
+ * the panel then makes room for the card instead of clipping it.
+ */
+function useCardOnScreen(): number | null {
+  const [h, setH] = useState<number | null>(null);
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return;
+    let el: HTMLElement | null = null;
+    const measure = () => {
+      const next = el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
+      setH(next > 0 ? next : null);
+    };
+    const ro = new ResizeObserver(measure);
+    const track = () => {
+      const found = root.querySelector<HTMLElement>(CARD_SELECTOR);
+      if (found !== el) {
+        if (el) ro.unobserve(el);
+        el = found;
+        if (el) ro.observe(el);
+      }
+      measure();
+    };
+    track();
+    const mo = new MutationObserver(track);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+    };
+  }, []);
+  return h;
+}
+
+/**
+ * yap-1106-one-pill — applies the layout: grows at once, shrinks after
+ * SHRINK_HOLD_MS (so Yappy's closing animation is never clipped), writes the
+ * slot positions float.css reads, publishes the layout for Yappy's draw loop
+ * and the pill matrix, and asks the backend for the matching panel frame.
+ * Renders nothing.
+ */
+function PanelFrameSync({ layout }: { layout: PillLayout }) {
+  const [shown, setShown] = useState<PillLayout>(layout);
+  useEffect(() => {
+    if (shown.key === layout.key) return;
+    const delay = shrinkDelay(shown, layout);
+    if (delay === 0) {
+      setShown(layout);
+      return;
+    }
+    const t = window.setTimeout(() => setShown(layout), delay);
+    return () => window.clearTimeout(t);
+  }, [layout, shown]);
+  useEffect(() => {
+    const de = document.documentElement;
+    de.dataset.onePill = shown.legacy ? "false" : "true";
+    de.dataset.pillMeeting = shown.meeting;
+    const vars = layoutVars(shown);
+    for (const [k, v] of Object.entries(vars)) {
+      if (shown.legacy) de.style.removeProperty(k);
+      else de.style.setProperty(k, v);
+    }
+    publishPillLayout(shown.legacy ? null : shown);
+    invoke("pill_set_panel_frame", {
+      w: shown.panel.w,
+      h: shown.panel.h,
+      anchorX: shown.anchor.x,
+      anchorY: shown.anchor.y,
+    }).catch((e) => console.warn("pill panel_frame failed", e));
+  }, [shown]);
+  return null;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

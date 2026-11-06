@@ -128,6 +128,8 @@ pub mod meeting_control;
 /// yap-notetaker-detect — notice a meeting, offer to record it (never auto-records).
 pub mod meeting_detect;
 // yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
+/// yap-call-1 — the call offer: countdown, chip, Offer / Never per app, Call ended.
+pub mod call_offer;
 pub mod call_signals;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
@@ -665,6 +667,27 @@ pub struct AppSettings {
     /// so the store is written in a stable order.
     #[serde(default)]
     pub structure_app_overrides: std::collections::BTreeMap<String, String>,
+    /// WF-17 — quiet mode: the pill-message categories the user switched off
+    /// in Settings › Notifications. Only `tip`, `news` and `milestone` can be
+    /// stored ([`sanitize_muted_pill_categories`]): errors, permission problems
+    /// and recovery messages always show. The category table is
+    /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
+    #[serde(default)]
+    pub muted_pill_categories: Vec<String>,
+}
+
+/// WF-17 — the pill-message categories a user may mute. Mirrors
+/// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
+pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
+
+/// WF-17 — keep only mutable categories, once each, in table order. A stored
+/// `"error"` (or anything unknown) is dropped: an error can never be muted.
+pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
+    MUTABLE_PILL_CATEGORIES
+        .iter()
+        .filter(|c| raw.iter().any(|r| r == *c))
+        .map(|c| (*c).to_string())
+        .collect()
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -774,6 +797,7 @@ impl Default for AppSettings {
             legacy_json_migrated: false,
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
+            muted_pill_categories: Vec::new(),
         }
     }
 }
@@ -1082,6 +1106,8 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
+        // yap-call-1 — "Call ended" reads off THIS tick (no new timer).
+        call_offer_meeting_tick(&app, status.recording);
         let Some(state) = app.try_state::<Arc<AppState>>() else {
             return;
         };
@@ -1795,7 +1821,193 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
                 start_recording(app, state);
             }
         }
+        // WF-07 — Record one of today's calendar meetings from the submenu.
+        TrayCommand::RecordUpcoming(index) => {
+            record_upcoming_meeting(app, state, index);
+        }
+        // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
+        // and re-publishes, which redraws the calendar rows.
+        TrayCommand::ToggleHideMeetingTitles => {
+            let on = !meeting_detect::load_hide_titles(&state.db);
+            match meeting_detect::save_hide_titles(&state.db, on) {
+                Ok(()) => log::info!("tray hide_meeting_titles toggled on={on}"),
+                Err(e) => {
+                    log::warn!("tray hide_meeting_titles failed error={e:?}");
+                    // The check item flipped itself on the click; redraw the
+                    // rows from the unchanged snapshot so it reads true again.
+                    apply_upcoming_menu_on_main(
+                        app,
+                        state,
+                        meeting_detect::upcoming_snapshot().as_ref(),
+                    );
+                    notify(app, "Yap", "Yap could not save that setting — try again");
+                }
+            }
+        }
     }
+}
+
+/// WF-07 — start a recording for the "Today's Meetings" row the user clicked,
+/// named after the event (the hidden-titles toggle only hides it in the menu).
+/// Off the main thread, like every tray meeting start. Recording it snoozes
+/// the pill offer for the same occurrence.
+fn record_upcoming_meeting(app: &AppHandle, state: &Arc<AppState>, index: usize) {
+    let Some(row) = tray_menu::upcoming_row(index) else {
+        log::warn!("tray upcoming_record clicked index={index} result=ignored:stale_row");
+        return;
+    };
+    if state.meeting_stop_in_flight.load(Ordering::SeqCst)
+        || state.meeting().is_some_and(|c| c.is_recording())
+    {
+        log::info!("tray upcoming_record clicked index={index} result=ignored:meeting_running");
+        notify(app, "Yap", "A meeting is already recording — stop it first");
+        return;
+    }
+    let app = app.clone();
+    let app_on_spawn_failure = app.clone();
+    let st = state.clone();
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("yap-meeting-upcoming".into())
+        .spawn(move || {
+            let has_title = row.title.is_some();
+            match begin_meeting(&app, &st, row.title.clone(), kind) {
+                Ok(status) => {
+                    log::info!(
+                        "tray upcoming_record clicked index={index} result={} has_title={has_title} linked={}",
+                        if status.recording { "started" } else { "not_started" },
+                        row.has_link
+                    );
+                    if meeting_detect::respond(&row.key).is_some() {
+                        meeting_detect::emit_clear(&app);
+                        release_offer_pill(&app);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("tray upcoming_record clicked index={index} result=error:{e}");
+                    notify(&app, "Yap", e);
+                }
+            }
+        })
+    {
+        log::error!("tray upcoming_record clicked result=error:thread_spawn:{e}");
+        notify(
+            &app_on_spawn_failure,
+            "Yap",
+            "Yap could not run that — try again".to_string(),
+        );
+    }
+}
+
+/// WF-07 — the ONE place the calendar rows of the menu are mutated. MAIN
+/// THREAD only. `snap == None` (calendar off, or no grant) removes them. The
+/// rows are found by id, so a retry after a half-applied failure is
+/// idempotent; what was drawn is recorded in `tray_menu::UPCOMING_SHOWN` only
+/// on success, so a click always resolves against the rows on screen.
+fn apply_upcoming_menu_on_main(
+    app: &AppHandle,
+    state: &AppState,
+    snap: Option<&meeting_detect::UpcomingSnapshot>,
+) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray upcoming_menu skipped reason=tray_not_built");
+        return;
+    };
+    let plan = snap.map(tray_menu::upcoming_menu);
+    match place_upcoming_rows(app, &menu, plan.as_ref()) {
+        Ok(()) => {
+            log::info!(
+                "tray upcoming_menu synced calendar={} rows={}",
+                plan.is_some(),
+                plan.as_ref().map_or(0, |p| p.rows.len())
+            );
+            tray_menu::UPCOMING_SHOWN.set(plan);
+        }
+        Err(e) => {
+            log::warn!("tray upcoming_menu apply_failed error={e}");
+            // Whatever is left on screen must not resolve a click to a row
+            // that is gone; the next publish redraws.
+            tray_menu::UPCOMING_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_upcoming_rows(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: Option<&tray_menu::UpcomingMenu>,
+) -> Result<(), String> {
+    // Out with the old rows.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| tray_menu::is_upcoming_row(k.id().as_ref()))
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    // In, directly under "Record a meeting as…": the Meeting group.
+    let mut at = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MEETING_KIND)
+        .map(|i| i + 1)
+        .ok_or("tray: no kind picker to anchor the calendar rows")?;
+    let next = MenuItem::with_id(
+        app,
+        tray_menu::ID_NEXT_MEETING,
+        &plan.next_text,
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| format!("next item: {e}"))?;
+    menu.insert(&next, at)
+        .map_err(|e| format!("next insert: {e}"))?;
+    at += 1;
+    if !plan.rows.is_empty() {
+        let children = plan
+            .rows
+            .iter()
+            .map(|r| MenuItem::with_id(app, r.id.as_str(), &r.text, true, None::<&str>))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row item: {e}"))?;
+        let submenu = Submenu::with_id_and_items(
+            app,
+            tray_menu::ID_UPCOMING,
+            tray_menu::label(tray_menu::ID_UPCOMING),
+            true,
+            &children
+                .iter()
+                .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| format!("submenu: {e}"))?;
+        menu.insert(&submenu, at)
+            .map_err(|e| format!("submenu insert: {e}"))?;
+        at += 1;
+    }
+    let hide = CheckMenuItem::with_id(
+        app,
+        tray_menu::ID_HIDE_MEETING_TITLES,
+        tray_menu::label(tray_menu::ID_HIDE_MEETING_TITLES),
+        true,
+        plan.hide_titles,
+        None::<&str>,
+    )
+    .map_err(|e| format!("hide item: {e}"))?;
+    menu.insert(&hide, at)
+        .map_err(|e| format!("hide insert: {e}"))?;
+    Ok(())
 }
 
 /// Y2-D — the ONE way the pill (and the menu bar) asks for the purchase SHEET.
@@ -2932,6 +3144,7 @@ fn transcribe_native(
         language,
         notice: language_notice,
         redecoded,
+        outside: language_outside,
         ..
     } = languages::decode_in_set(
         manager,
@@ -2969,6 +3182,7 @@ fn transcribe_native(
         degraded_reason: take.degraded_reason,
         language,
         language_notice,
+        language_outside,
     })
 }
 
@@ -3706,6 +3920,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 nudge::TAKE_CONTEXT_EVENT,
                 nudge::TakeContext::new(text_field_focused, source_app.as_deref(), outcome.pasted),
             );
+            // WF-12 — "Sounded like Spanish — Add Spanish?", at most once per
+            // language per 7 days (the ledger in `languages::take_offer`).
+            // Carries a language code, never text.
+            if asr.language_outside.is_some() {
+                let prefs = state2.settings.lock().language_prefs();
+                if let Some(offer) = languages::take_offer(
+                    &state2.db,
+                    &prefs,
+                    asr.language_outside.as_deref(),
+                    chrono::Utc::now().timestamp_millis(),
+                ) {
+                    let _ = app2.emit(languages::LANGUAGE_OFFER_EVENT, &offer);
+                }
+            }
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
@@ -4762,7 +4990,17 @@ fn nudge_ledger(state: State<'_, Arc<AppState>>) -> nudge::NudgeLedger {
 /// launch. `Ok(false)` = it was already recorded (or not a valid slug).
 #[tauri::command]
 fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Result<bool, String> {
-    nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
+    let res = nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis());
+    // WF-17 — one line per pill note shown (the condition is a short slug,
+    // never user text): how often tips actually reach people.
+    match &res {
+        Ok(stored) => log::info!(
+            "nudge shown condition_len={} stored={stored}",
+            condition.len()
+        ),
+        Err(e) => log::warn!("nudge mark_failed err={e}"),
+    }
+    res
 }
 
 /// Y10-A — the language picker's view (Settings and the bar): the prefs, the
@@ -4829,6 +5067,43 @@ fn set_dictation_languages(
     Ok(next)
 }
 
+/// WF-12 — the answer to the pill's "Sounded like Spanish — Add Spanish?"
+/// card. Add puts the language in the set (auto-detect on) through the ONE
+/// language writer, so Settings and the bar's picker update off the same
+/// `settings` event; Not now silences that language for
+/// `languages::LANGUAGE_OFFER_QUIET_DAYS` days from the click.
+#[tauri::command]
+fn language_offer_respond(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    code: String,
+    add: bool,
+) -> Result<AppSettings, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if !add {
+        if let Err(e) = languages::snooze_offer(&state.db, &code, now_ms) {
+            log::warn!("languages offer_snooze_failed err={e}");
+            return Err(format!("Yap couldn't snooze that suggestion: {e}"));
+        }
+        log::info!("languages offer_answered choice=not_now code={code}");
+        return Ok(state.settings.lock().clone());
+    }
+    let prefs = state.settings.lock().language_prefs();
+    let next = languages::prefs_with_added(&prefs, &code);
+    if !next.set.iter().any(|c| c.eq_ignore_ascii_case(code.trim())) {
+        log::warn!(
+            "languages offer_add_refused code={code} set_len={}",
+            prefs.set.len()
+        );
+        return Err(format!(
+            "Yap couldn't add {} — remove a language in Settings first.",
+            languages::language_name(code.trim())
+        ));
+    }
+    log::info!("languages offer_answered choice=add code={code}");
+    set_dictation_languages(app, state, next.primary, next.set, next.auto)
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
@@ -4865,6 +5140,16 @@ fn save_settings(
         // Y6-A: proof that a take pasted is a fact, not a preference — a
         // frontend save carrying a stale `false` must not erase it.
         next.dictation_proven = live.dictation_proven || next.dictation_proven;
+        // WF-17 — quiet mode: only tips, feature news and milestones can be
+        // muted; anything else a frontend sends is dropped before it is stored.
+        next.muted_pill_categories = sanitize_muted_pill_categories(&next.muted_pill_categories);
+        if next.muted_pill_categories != live.muted_pill_categories {
+            log::info!(
+                "settings pill_quiet_changed muted={} count={}",
+                next.muted_pill_categories.join(","),
+                next.muted_pill_categories.len()
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -5098,6 +5383,15 @@ fn save_settings(
 #[tauri::command]
 fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
+}
+
+/// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
+/// asks for the panel frame that is exactly the union of its content boxes plus
+/// a margin, and the point the character sits at inside it. The panel is
+/// resized to it and re-parked by that anchor, so Yappy stays put on screen.
+#[tauri::command]
+fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
+    float_pill::set_panel_frame(&app, w, h, anchor_x, anchor_y);
 }
 
 /// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
@@ -5469,6 +5763,7 @@ fn recovered_only_output() -> transcription::AsrOutput {
     transcription::AsrOutput {
         language: "en".into(),
         language_notice: None,
+        language_outside: None,
         text: String::new(),
         backend: "recovered".to_string(),
         seconds: 0.0,
@@ -6080,166 +6375,345 @@ fn finish_preconditions<M>(
 /// `keep_partial` + `confirm` ("Keep what was transcribed"): see
 /// [`keep_what_was_transcribed`]. The backend requires `confirm: true` there in
 /// ADDITION to the UI's confirm dialog (yap-recovery-followups (b)).
+///
+/// yap-1106-retry-failed-dictation — `async` + `spawn_blocking`, because a
+/// plain `fn` command runs ON THE MAIN THREAD in Tauri, and this one decodes
+/// minutes of audio: that was the beach ball and the "wall of doom" Wilson
+/// saw on every Retry. The body runs inside the `spawn_blocking` closure below,
+/// unchanged otherwise (kept inline so the finish-path tripwire in
+/// tests/long_take_recovery.rs reads the real pipeline); the engine stage runs
+/// through [`retry_decode_bounded`] (one engine, a queue, a deadline).
 #[tauri::command]
-fn retry_failed_dictation(
+async fn retry_failed_dictation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
     keep_partial: Option<bool>,
     confirm: Option<bool>,
 ) -> Result<TranscriptEntry, String> {
-    let keep_partial = keep_partial.unwrap_or(false);
-    let settings = state.settings.lock().clone();
-    // Y9-B: read once per retry, same as a live take reads it once per take.
-    let style_profile = state.db.style_profile();
-    // Y10-A: set to the decoded take's language before the retry's cleanup.
-    let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
-    // Same cleanup pipeline as a live take, minus the caret context: the retry
-    // happens in Yap, so there is no cursor to join onto.
-    let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
-        let mode = dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        );
-        // Y9-C: a retry matches rules by mode and language; its row stores no
-        // bundle id, so `app:` rules cannot match it (they never guess).
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
-            state.db.matching_voice_preferences(&voice_prefs::TakeContext {
-                mode,
-                bundle_id: "",
-                language: &settings.language,
-            }),
-        )
-        .with_profile(style_profile.clone());
-        // A retry has no live paste target (the row stores the app's title, not
-        // its bundle id), so it gets the conservative unknown-target format.
-        let structure_format = dictation::structure_format_for_take(
-            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-            &settings.structure_app_overrides,
-            "",
-            mode,
-        );
-        let (text, _) = dictation::run_cleanup_for_language(
-            raw_text,
-            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-            mode,
-            structure_format,
-            polish_config.style,
-            &[],
-            // Y10-A: the language the retry decoded in (the primary for a
-            // "keep what was transcribed", which decodes nothing).
-            &retry_language.borrow(),
-            |t| {
-                state
-                    .db
-                    .apply_dictionary(t)
-                    .unwrap_or_else(|_| t.to_string())
-            },
-            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-        );
-        text
-    };
-    let result = if keep_partial {
-        match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
-            Ok(entry) => Ok(entry),
-            // A refusal is not a failure of the take: the row's reason stays.
-            Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
-            Err(RecoveryError::Failed(e)) => Err(e),
-        }
-    } else {
-        // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
-        let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
-            return Err(RecoveryRefusal::RetryInFlight.to_string());
-        };
-        // One closure, so every early `return Err` below lands in the label update.
-        (|| -> Result<TranscriptEntry, String> {
-            let row = state
-                .db
-                .get_failed_dictation(&id)?
-                .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-            let wav = PathBuf::from(&row.wav_path);
-            let (model_id, model_path) = finish_preconditions(
-                &state.db,
-                &row,
-                wav.exists(),
-                native_model_ready(&settings.native_model),
-            )?;
-            let samples = record::read_wav_16k_mono(&wav)?;
-            // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
-            // recovered mid-decode already has words in `take_chunks` and an
-            // `end_sample` saying how far into its audio they go, so decode the
-            // REMAINDER and keep what exists (`finish_recovered_decode`, called by
-            // `decode_failed_take`).
-            let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
-                Ok(terms) => asr_engine::build_bias_prompt(&terms),
-                Err(e) => {
-                    log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
-                    None
-                }
-            };
-            // The recovered words and the freshly decoded remainder are ONE
-            // transcript from here down. Everything after this line — the
-            // hallucination gate, the dictionary, the cleanup pipeline, the polish
-            // pass — sees exactly what it would have seen had the take never been
-            // interrupted. A decode with ANY failed window comes back `Err` here,
-            // so the row and the clip are never converted or deleted for it.
-            let (partial_text, resume_sample) = match row.take_id.as_deref() {
-                Some(take_id) => (
-                    row.partial_text.clone(),
-                    state.db.take_resume_sample(take_id),
-                ),
-                None => (None, Ok(0)),
-            };
-            let (raw_text, asr) = decode_failed_take(
-                &state.db,
-                &row,
-                partial_text,
-                resume_sample,
-                &samples,
-                |remaining| {
-                    transcribe_native(
-                        &state.transcription,
-                        &model_id,
-                        &model_path,
-                        remaining,
-                        &settings.language_prefs(),
-                        bias_prompt,
-                        // A retry or recovery from History has no live pill to fill:
-                        // the user is looking at the history row, not at a recording
-                        // indicator.
-                        &mut transcribe_progress::NoObserver,
-                    )
-                },
-            )?;
-            if raw_text.trim().is_empty() {
-                return Err("There is nothing left to transcribe in this take".into());
-            }
-            *retry_language.borrow_mut() = asr.language.clone();
-            let text = cleanup(&row, &raw_text);
-            convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
-        })()
-    };
-    match result {
-        Ok(entry) => {
-            // The entry's text: on a merge that kept a longer live entry, that
-            // is what history holds, so that is what goes on the clipboard.
-            let text = entry.text.clone();
-            let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-            log::info!(
-                "YV52 recovery: retry succeeded words={} ({})",
-                entry.word_count,
-                outcome.message
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<TranscriptEntry, String> {
+        let keep_partial = keep_partial.unwrap_or(false);
+        let settings = state.settings.lock().clone();
+        // Y9-B: read once per retry, same as a live take reads it once per take.
+        let style_profile = state.db.style_profile();
+        // Y10-A: set to the decoded take's language before the retry's cleanup.
+        let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
+        // Same cleanup pipeline as a live take, minus the caret context: the retry
+        // happens in Yap, so there is no cursor to join onto.
+        let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
+            let mode = dictation::resolve_mode(
+                &settings.dictation_mode,
+                row.source_app.as_deref().unwrap_or_default(),
             );
-            let _ = app.emit("transcript", &entry);
-            Ok(entry)
+            // Y9-C: a retry matches rules by mode and language; its row stores no
+            // bundle id, so `app:` rules cannot match it (they never guess).
+            let polish_config =
+                polish::PolishConfig::from_settings(&settings, mode)
+                    .with_preferences(state.db.matching_voice_preferences(
+                        &voice_prefs::TakeContext {
+                            mode,
+                            bundle_id: "",
+                            language: &settings.language,
+                        },
+                    ))
+                    .with_profile(style_profile.clone());
+            // A retry has no live paste target (the row stores the app's title, not
+            // its bundle id), so it gets the conservative unknown-target format.
+            let structure_format = dictation::structure_format_for_take(
+                settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+                &settings.structure_app_overrides,
+                "",
+                mode,
+            );
+            let (text, _) = dictation::run_cleanup_for_language(
+                raw_text,
+                dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+                mode,
+                structure_format,
+                polish_config.style,
+                &[],
+                // Y10-A: the language the retry decoded in (the primary for a
+                // "keep what was transcribed", which decodes nothing).
+                &retry_language.borrow(),
+                |t| {
+                    state
+                        .db
+                        .apply_dictionary(t)
+                        .unwrap_or_else(|_| t.to_string())
+                },
+                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+            );
+            text
+        };
+        let result = if keep_partial {
+            match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
+                Ok(entry) => Ok(entry),
+                // A refusal is not a failure of the take: the row's reason stays.
+                Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
+                Err(RecoveryError::Failed(e)) => Err(e),
+            }
+        } else {
+            // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
+            let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
+                return Err(RecoveryRefusal::RetryInFlight.to_string());
+            };
+            // One closure, so every early `return Err` below lands in the label update.
+            (|| -> Result<TranscriptEntry, String> {
+                let row = state
+                    .db
+                    .get_failed_dictation(&id)?
+                    .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+                let wav = PathBuf::from(&row.wav_path);
+                let (model_id, model_path) = finish_preconditions(
+                    &state.db,
+                    &row,
+                    wav.exists(),
+                    native_model_ready(&settings.native_model),
+                )?;
+                let samples = record::read_wav_16k_mono(&wav)?;
+                // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
+                // recovered mid-decode already has words in `take_chunks` and an
+                // `end_sample` saying how far into its audio they go, so decode the
+                // REMAINDER and keep what exists (`finish_recovered_decode`, called by
+                // `decode_failed_take`).
+                let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+                        None
+                    }
+                };
+                // The recovered words and the freshly decoded remainder are ONE
+                // transcript from here down. Everything after this line — the
+                // hallucination gate, the dictionary, the cleanup pipeline, the polish
+                // pass — sees exactly what it would have seen had the take never been
+                // interrupted. A decode with ANY failed window comes back `Err` here,
+                // so the row and the clip are never converted or deleted for it.
+                let (partial_text, resume_sample) = match row.take_id.as_deref() {
+                    Some(take_id) => (
+                        row.partial_text.clone(),
+                        state.db.take_resume_sample(take_id),
+                    ),
+                    None => (None, Ok(0)),
+                };
+                // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
+                // read off the samples the retry really decodes (a resume decodes
+                // less, and gets the same allowance: the engine, not the audio,
+                // is what the deadline guards against).
+                let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+                let deadline = retry_deadline(clip_secs);
+                let deadline_ms = deadline.as_millis() as u64;
+                let mut on_phase = |phase: RetryPhase| {
+                    let payload = RetryPhasePayload {
+                        id: id.clone(),
+                        phase: match phase {
+                            RetryPhase::Queued => "queued",
+                            RetryPhase::Decoding => "decoding",
+                        },
+                        deadline_ms,
+                    };
+                    if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
+                        log::warn!("retry_dictation id={id} phase event not delivered: {e}");
+                    }
+                };
+                let manager = state.transcription.clone();
+                let language_prefs = settings.language_prefs();
+                let (raw_text, asr) = decode_failed_take(
+                    &state.db,
+                    &row,
+                    partial_text,
+                    resume_sample,
+                    &samples,
+                    |remaining| {
+                        let (decode_manager, model_id, model_path) =
+                            (manager.clone(), model_id.clone(), model_path.clone());
+                        retry_decode_bounded(
+                            &manager,
+                            &id,
+                            clip_secs,
+                            deadline,
+                            &mut on_phase,
+                            move || {
+                                transcribe_native(
+                                    &decode_manager,
+                                    &model_id,
+                                    &model_path,
+                                    remaining,
+                                    &language_prefs,
+                                    bias_prompt,
+                                    // A retry or recovery from History has no live pill to fill:
+                                    // the user is looking at the history row, not at a recording
+                                    // indicator.
+                                    &mut transcribe_progress::NoObserver,
+                                )
+                            },
+                        )
+                    },
+                )?;
+                if raw_text.trim().is_empty() {
+                    return Err("There is nothing left to transcribe in this take".into());
+                }
+                *retry_language.borrow_mut() = asr.language.clone();
+                let text = cleanup(&row, &raw_text);
+                convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
+            })()
+        };
+        match result {
+            Ok(entry) => {
+                // The entry's text: on a merge that kept a longer live entry, that
+                // is what history holds, so that is what goes on the clipboard.
+                let text = entry.text.clone();
+                let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+                log::info!(
+                    "YV52 recovery: retry succeeded words={} ({})",
+                    entry.word_count,
+                    outcome.message
+                );
+                let _ = app.emit("transcript", &entry);
+                Ok(entry)
+            }
+            Err(e) => {
+                // The row's reason is the CURRENT failure, not the original one (a
+                // no-op when the row was converted or dropped).
+                let _ = state.db.note_failed_retry(&id, &e, None);
+                Err(e)
+            }
         }
-        Err(e) => {
-            // The row's reason is the CURRENT failure, not the original one (a
-            // no-op when the row was converted or dropped).
-            let _ = state.db.note_failed_retry(&id, &e, None);
-            Err(e)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("retry_dictation worker failed: {e}");
+        RETRY_DEADLINE_ERROR.to_string()
+    })?
+}
+
+/// yap-1106-retry-failed-dictation — the deadline a retry gets, scaled to the
+/// clip: a fixed allowance plus one second per second of audio, never under
+/// [`RETRY_DEADLINE_MIN_SECS`] and never over [`RETRY_DEADLINE_MAX_SECS`]. A
+/// healthy engine decodes a minute of audio in a few seconds, so the deadline
+/// is a backstop against a stuck engine, not a budget a good decode spends.
+/// Mirrored in `desktop/src/retryDictation.ts` (`retryDeadlineMs`).
+fn retry_deadline(clip_secs: f64) -> Duration {
+    let secs = (RETRY_DEADLINE_BASE_SECS + clip_secs.max(0.0))
+        .clamp(RETRY_DEADLINE_MIN_SECS, RETRY_DEADLINE_MAX_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+const RETRY_DEADLINE_BASE_SECS: f64 = 15.0;
+const RETRY_DEADLINE_MIN_SECS: f64 = 30.0;
+const RETRY_DEADLINE_MAX_SECS: f64 = 180.0;
+/// The one plain sentence the UI shows when a retry ran out of time. The clip
+/// stays kept; the button says Try again.
+const RETRY_DEADLINE_ERROR: &str = "Couldn't transcribe this clip — Try again";
+/// A retry that queued behind a live dictation and never got its turn.
+const RETRY_ENGINE_BUSY_ERROR: &str =
+    "The speech engine stayed busy with a live dictation — Try again";
+/// The event the retry emits as it moves through its phases, so the Retry
+/// button can say "Waiting for the speech engine…" while it queues and arm
+/// its own watchdog on the same deadline the backend holds itself to.
+const RETRY_PHASE_EVENT: &str = "retry-dictation";
+
+/// Where a retry is right now, as the UI sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RetryPhase {
+    /// The engine is leased to a live take or still loading; the retry waits.
+    Queued,
+    /// The retry holds (or is about to hold) the engine.
+    Decoding,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RetryPhasePayload {
+    id: String,
+    phase: &'static str,
+    /// The whole retry's deadline, in ms from when the retry was admitted.
+    deadline_ms: u64,
+}
+
+/// yap-1106-retry-failed-dictation — THE ENGINE STAGE OF A RETRY. One engine,
+/// never two: the retry is admitted only onto the engine dictation uses.
+///
+/// * An engine a timed-out lease abandoned is still running: fail fast with
+///   [`transcription::ENGINE_STUCK`]. Nothing loads.
+/// * The engine is leased to a live take or loading: QUEUE (`on_phase(Queued)`,
+///   `result=queued` logged) and wait for it to come back, up to the deadline.
+/// * Then decode on a worker thread and wait at most what is left of the
+///   deadline. Past it the caller gets [`RETRY_DEADLINE_ERROR`] and the row
+///   and clip stay; the decode is not killed (that would mean cancelling a
+///   latch a live take shares), it simply finishes unobserved and the engine
+///   goes back to the slot when it does.
+///
+/// Logs exactly one `retry_dictation … result=<ok|error:…>` line at the end
+/// (plus one `result=queued` line when it queued), with the wall time and the
+/// number of engine loads that happened meanwhile — 0 is the whole point.
+fn retry_decode_bounded(
+    manager: &transcription::TranscriptionManager,
+    id: &str,
+    clip_secs: f64,
+    deadline: Duration,
+    on_phase: &mut dyn FnMut(RetryPhase),
+    decode: impl FnOnce() -> Result<transcription::AsrOutput, String> + Send + 'static,
+) -> Result<transcription::AsrOutput, String> {
+    let started = std::time::Instant::now();
+    let loads_before = manager.engine_loads();
+    let report = |result: &Result<transcription::AsrOutput, String>| {
+        let outcome = match result {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("error:{}", e.replace('\n', " ")),
+        };
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            started.elapsed().as_millis(),
+            manager.engine_loads().saturating_sub(loads_before)
+        );
+    };
+    if manager.abandoned_engines() > 0 {
+        let r = Err(transcription::ENGINE_STUCK.to_string());
+        report(&r);
+        return r;
+    }
+    if manager.is_busy() {
+        on_phase(RetryPhase::Queued);
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result=queued wall_ms={} engine_loads_during=0",
+            started.elapsed().as_millis()
+        );
+        if !manager.wait_until_idle(deadline) {
+            let r = Err(RETRY_ENGINE_BUSY_ERROR.to_string());
+            report(&r);
+            return r;
+        }
+        // The decode the retry waited on may itself have timed out and left
+        // its engine running — the same refusal as above, one check later.
+        if manager.abandoned_engines() > 0 {
+            let r = Err(transcription::ENGINE_STUCK.to_string());
+            report(&r);
+            return r;
         }
     }
+    on_phase(RetryPhase::Decoding);
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode());
+    });
+    let result = match rx.recv_timeout(remaining) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::warn!(
+                "retry_dictation id={id} deadline_s={:.0} passed — the decode is left to finish unobserved",
+                deadline.as_secs_f64()
+            );
+            Err(RETRY_DEADLINE_ERROR.to_string())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("The speech engine stopped unexpectedly — Try again".to_string())
+        }
+    };
+    report(&result);
+    result
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
@@ -8415,6 +8889,298 @@ pub(crate) fn release_offer_pill(app: &AppHandle) {
     float_pill::after_recording(app, float_pill::pill_visible_after_card(show, in_flight));
 }
 
+// ── yap-call-1 · the call offer ─────────────────────────────────────────────
+
+/// Create (once) the small offer window, content-protected so a screen share
+/// never shows it. The pill (`float`) and its recording dot stay visible.
+fn ensure_call_offer_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+        return Ok(w);
+    }
+    let (w, h) = (340.0, 176.0);
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        call_offer::CALL_OFFER_WINDOW,
+        tauri::WebviewUrl::App("call-offer.html".into()),
+    )
+    .title("")
+    .inner_size(w, h)
+    .resizable(false)
+    .decorations(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .visible_on_all_workspaces(true);
+    #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
+    {
+        builder = builder.transparent(true);
+    }
+    let win = builder
+        .build()
+        .map_err(|e| format!("call-offer window: {e}"))?;
+    call_offer::apply_content_protection(&win);
+    let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    // Park it just above the pill (bottom-centre of the pill's monitor).
+    if let (Some(pill), Ok(Some(mon))) = (app.get_webview_window("float"), win.current_monitor()) {
+        if let Ok(pos) = pill.outer_position() {
+            let scale = mon.scale_factor();
+            let x = pos.x as f64 / scale;
+            let y = (pos.y as f64 / scale - h - 8.0).max(0.0);
+            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+        }
+    }
+    Ok(win)
+}
+
+/// Apply the machine's effects. The ONE place a call offer becomes a recording
+/// (`Effect::StartRecording`, only ever produced by `UserChoice::Record`).
+fn apply_call_offer_effects(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    effects: Vec<call_offer::Effect>,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    use call_offer::Effect;
+    let mut started = None;
+    let mut error = None;
+    for fx in effects {
+        match fx {
+            Effect::ShowOffer | Effect::ShowChip | Effect::ShowEndPrompt => {
+                match ensure_call_offer_window(app) {
+                    Ok(w) => {
+                        let _ = w.show();
+                    }
+                    Err(e) => log::warn!("call_offer window_failed err={e}"),
+                }
+            }
+            Effect::Withdraw | Effect::HideEndPrompt => {
+                if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                    let _ = w.hide();
+                }
+            }
+            Effect::StartRecording {
+                offer_id,
+                bundle_id,
+                title,
+                detected_via,
+            } => {
+                log::info!(
+                    "call_offer record bundle={bundle_id} via={} offer={offer_id}",
+                    detected_via.as_str()
+                );
+                match begin_meeting(app, st, Some(title), meetings::MeetingKind::Virtual) {
+                    Ok(status) => {
+                        if let Some(id) = status.id.as_deref() {
+                            if let Err(e) =
+                                st.db
+                                    .set_meeting_detection(id, &bundle_id, detected_via.as_str())
+                            {
+                                log::warn!("call_offer detection_store_failed err={e}");
+                            }
+                        }
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        crate::diagnostics::bump("call_offer", "recorded");
+                        started = Some(status);
+                    }
+                    Err(e) => {
+                        log::warn!("call_offer start_failed bundle={bundle_id} err={e}");
+                        let (more, _, _) = call_offer::drive(
+                            call_offer::Input::StartFailed,
+                            &call_offer::load_policy(&st.db),
+                        );
+                        // StartFailed only ever yields ShowChip: keep the window up.
+                        let _ = more;
+                        error = Some(e);
+                    }
+                }
+            }
+            Effect::Rejected { reason } => {
+                log::info!("call_offer rejected reason={reason:?}");
+                error = Some(reason);
+            }
+            Effect::SaveNever { bundle_id } => {
+                log::info!("call_offer never bundle={bundle_id}");
+                if let Err(e) = call_offer::set_app_policy(
+                    &st.db,
+                    &bundle_id,
+                    Some(call_offer::AppPolicy::Never),
+                ) {
+                    log::warn!("call_offer never_save_failed err={e}");
+                    error = Some(format!("Couldn't save Never for this app: {e}"));
+                }
+            }
+            Effect::StopRecording => {
+                log::info!("call_offer stop_after_call_ended");
+                if let Some(c) = st.meeting() {
+                    if c.is_recording() {
+                        if let Err(e) = c.stop("call ended, user stopped") {
+                            error = Some(e);
+                        } else if !*st.recording.lock() {
+                            float_pill::after_recording(app, idle_pill_on(st));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = app.emit(call_offer::CALL_OFFER_EVENT, call_offer::current_view());
+    match error {
+        Some(e) => Err(e),
+        None => Ok(started),
+    }
+}
+
+/// Feed the call signal into the machine (`meeting_detect::evaluate_calls`).
+pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sighting>) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::Seen {
+            sighting,
+            now_ms: call_offer::now_ms(),
+        },
+        &policy,
+    );
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowOffer) {
+            log::info!("call_offer offered");
+            crate::diagnostics::bump("call_offer", "offered");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// The 1 s meeting tick (no new timer): "Call ended" while recording a
+/// detected call, and "the recording stopped" for the machine.
+fn call_offer_meeting_tick(app: &AppHandle, recording: bool) {
+    let Some(bundle) = call_offer::recording_bundle() else {
+        return;
+    };
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let input = if !recording {
+        call_offer::Input::RecordingStopped
+    } else {
+        #[cfg(target_os = "macos")]
+        let running = crate::call_signals::sys::snapshot(
+            crate::call_signals::catalog(),
+            crate::call_signals::AxSource::Unknown,
+            false,
+            None,
+        )
+        .ok()
+        .map(|snap| {
+            crate::call_signals::bundle_input_running(
+                &snap,
+                crate::call_signals::catalog(),
+                &bundle,
+            )
+        });
+        #[cfg(not(target_os = "macos"))]
+        let running: Option<bool> = {
+            let _ = &bundle;
+            None
+        };
+        call_offer::Input::Tick {
+            now_ms: call_offer::now_ms(),
+            app_input_running: running,
+        }
+    };
+    let (fx, _, _) = call_offer::drive(input, &policy);
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowEndPrompt) {
+            log::info!("call_offer call_ended_prompt bundle={bundle}");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// yap-call-1 — [Record] on the offer or the chip. Starts ONLY if `offer_id`
+/// is the LIVE candidate's id; a stale or invented id is rejected here, in the
+/// backend, whatever the webview sends.
+#[tauri::command]
+fn accept_call_offer(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::User {
+            choice: call_offer::UserChoice::Record,
+            offer_id,
+        },
+        &policy,
+    );
+    apply_call_offer_effects(&app, &st, fx)
+}
+
+/// yap-call-1 — Not now (also the countdown's expiry), Never for <App>,
+/// and the "Call ended" prompt's Stop / Keep going.
+#[tauri::command]
+fn call_offer_choose(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+    choice: String,
+) -> Result<(), String> {
+    let choice = call_offer::UserChoice::parse(&choice)
+        .filter(|c| *c != call_offer::UserChoice::Record)
+        .ok_or_else(|| format!("unknown call offer choice: {choice}"))?;
+    log::info!("call_offer choose choice={choice:?}");
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(call_offer::Input::User { choice, offer_id }, &policy);
+    apply_call_offer_effects(&app, &st, fx).map(|_| ())
+}
+
+/// yap-call-1 — what the offer window should draw (for a webview that mounted
+/// after the emit).
+#[tauri::command]
+fn call_offer_state() -> call_offer::CallOfferView {
+    call_offer::current_view()
+}
+
+/// yap-call-1 — Settings › Meetings: the apps set to Never.
+#[tauri::command]
+fn call_offer_never_list(state: State<'_, Arc<AppState>>) -> Vec<call_offer::NeverRow> {
+    call_offer::never_rows(
+        &call_offer::load_policy(&state.db),
+        crate::call_signals::catalog(),
+    )
+}
+
+/// yap-call-1 — Reset one app (or every app when `bundle_id` is absent) to Offer.
+#[tauri::command]
+fn call_offer_reset(
+    state: State<'_, Arc<AppState>>,
+    bundle_id: Option<String>,
+) -> Result<Vec<call_offer::NeverRow>, String> {
+    let map = match bundle_id {
+        Some(b) => call_offer::set_app_policy(&state.db, &b, None)?,
+        None => {
+            state
+                .db
+                .setting_set(call_offer::CALL_OFFER_POLICY_KEY, "{}")?;
+            call_offer::PolicyMap::new()
+        }
+    };
+    let rows = call_offer::never_rows(&map, crate::call_signals::catalog());
+    log::info!("call_offer reset never_left={}", rows.len());
+    meeting_detect::wake();
+    Ok(rows)
+}
+
 /// Settings › Meetings — both toggles and where calendar access stands.
 #[tauri::command]
 fn meeting_detect_settings(state: State<'_, Arc<AppState>>) -> meeting_detect::DetectSettingsView {
@@ -10407,13 +11173,21 @@ pub fn run() {
             save_settings,
             // Y10-A — the language picker (Settings + the bar).
             language_options,
+            language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_set_panel_frame,
             pending_copy_card,
             dismiss_copy_card,
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
             pending_meeting_offer,
             meeting_offer_respond,
+            // yap-call-1 — the call offer window's commands.
+            accept_call_offer,
+            call_offer_choose,
+            call_offer_state,
+            call_offer_never_list,
+            call_offer_reset,
             meeting_detect_settings,
             set_meeting_detect_settings,
             pill_drag_start,
@@ -10629,20 +11403,9 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
-            // DB-D — the Scratchpad panel's red X HIDES it (its notes and the
-            // webview survive), and a panel that loses key drops the dictation
-            // target so a take started elsewhere goes to the app guard.
-            if let Some(sp) = app.get_webview_window(scratchpad::WINDOW_LABEL) {
-                let sp2 = sp.clone();
-                sp.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
-                        api.prevent_close();
-                        scratchpad::hide(sp2.app_handle());
-                    } else if let WindowEvent::Focused(false) = e {
-                        scratchpad::set_focused_note(false, None);
-                    }
-                });
-            }
+            // DB-D — the Scratchpad's close/blur handling now rides with the
+            // window itself: yap-1106-one-pill makes it on first use
+            // (scratchpad::ensure_window), never here at launch.
             if let Some(win) = app.get_webview_window("main") {
                 if smoke::release_armed() {
                     // yap-p0-release-smoke: the run inserts into TextEdit, so
@@ -11091,6 +11854,13 @@ pub fn run() {
             if let Some(controller) = state.meeting() {
                 meeting_tray_sync_on_main(&state, &controller.status());
             }
+            // WF-07 — and the calendar rows from the last published snapshot
+            // (none at first launch: the watcher starts after the tray).
+            apply_upcoming_menu_on_main(
+                app.handle(),
+                &state,
+                meeting_detect::upcoming_snapshot().as_ref(),
+            );
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -11148,6 +11918,19 @@ pub fn run() {
             } else {
                 float_pill::hide_float(app.handle());
             }
+            // yap-1106-one-pill — the launch window count, as a log line the
+            // acceptance reads: main + the one pill panel, the Scratchpad is
+            // made on first use (scratchpad::ensure_window).
+            {
+                let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+                labels.sort();
+                log::info!(
+                    "lifecycle launch windows open={} labels={} scratchpad_lazy={}",
+                    labels.len(),
+                    labels.join(","),
+                    !labels.iter().any(|l| l == scratchpad::WINDOW_LABEL)
+                );
+            }
             if show_setting {
                 // Idle while the pill is hidden (it reads `is_shown` first), so
                 // a pill shown after onboarding still gets re-parked.
@@ -11160,6 +11943,21 @@ pub fn run() {
             float_pill::start_hover_watch(app.handle().clone());
             // yap-notetaker-detect — event-driven + one 30 s timer; reads the
             // calendar only when "Use my calendar" is on AND access is granted.
+            // WF-07 — the watcher hands the tray today's meetings (only when
+            // "Use my calendar" is on and access is granted), and only when
+            // they changed; the rows are redrawn on the main thread.
+            let upcoming_app = app.handle().clone();
+            meeting_detect::set_upcoming_sink(move |snap| {
+                let app_main = upcoming_app.clone();
+                let hop = upcoming_app.run_on_main_thread(move || {
+                    if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                        apply_upcoming_menu_on_main(&app_main, &state, snap.as_ref());
+                    }
+                });
+                if let Err(e) = hop {
+                    log::warn!("tray upcoming_menu hop_failed error={e}");
+                }
+            });
             meeting_detect::start_watch(
                 app.handle().clone(),
                 state.db.clone(),
@@ -13175,6 +13973,7 @@ mod tests {
         Ok(crate::transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: words.join(" "),
             backend: "native".into(),
             seconds: 0.1,
@@ -14006,6 +14805,7 @@ mod db_b_recovery_followups {
         transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: text.to_string(),
             backend: "stub".into(),
             seconds: 0.1,
@@ -14626,5 +15426,370 @@ mod hands_free_stop_label_tests {
             hands_free_stop_label(false, true, "fn / fn⌃", "⌃⌘H"),
             "fn / fn⌃"
         );
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the engine stage of a retry, with fake
+/// engines that hang or dawdle. Wilson's words: "I've never pressed retry and
+/// it worked, ever. It always infinitely loads." Every case here ends inside
+/// its deadline, and none of them loads a second engine.
+#[cfg(test)]
+mod retry_engine_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A throwaway directory for the fake model file, removed on drop.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "yap-retry-engine-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `Result<AsrOutput, _>` has no `Debug`; the error, or a panic.
+    fn err_of(r: Result<transcription::AsrOutput, String>) -> String {
+        match r {
+            Ok(out) => panic!(
+                "expected an error, got a transcript of {} chars",
+                out.text.len()
+            ),
+            Err(e) => e,
+        }
+    }
+
+    /// Decodes forever — until `release` is raised. The 2026-11-06 stuck
+    /// engine: no cancel hook, never returns on its own.
+    struct HangingEngine {
+        release: Arc<AtomicBool>,
+    }
+
+    impl transcription::Transcriber for HangingEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("released at last".into())
+        }
+    }
+
+    /// Takes `decode` of real time, then answers. The live take a retry queues
+    /// behind.
+    struct SlowEngine {
+        decode: Duration,
+    }
+
+    impl transcription::Transcriber for SlowEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.decode);
+            Ok("slow but sure".into())
+        }
+    }
+
+    fn manager(
+        loader: impl Fn() -> Box<dyn transcription::Transcriber> + Send + Sync + 'static,
+        timeout: Duration,
+    ) -> (transcription::TranscriptionManager, PathBuf, ScratchDir) {
+        let dir = ScratchDir::new();
+        let path = dir.0.join("fake.gguf");
+        std::fs::write(&path, b"not a model").unwrap();
+        let m = transcription::TranscriptionManager::with_loader(
+            Arc::new(move |_p: &Path| Ok(loader())),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            timeout,
+        );
+        (m, path, dir)
+    }
+
+    fn retry(
+        m: &transcription::TranscriptionManager,
+        deadline: Duration,
+        phases: &mut Vec<RetryPhase>,
+    ) -> (Result<transcription::AsrOutput, String>, Duration) {
+        let decode_mgr = m.clone();
+        let started = Instant::now();
+        let r = retry_decode_bounded(
+            m,
+            "row-1",
+            5.0,
+            deadline,
+            &mut |p| phases.push(p),
+            move || {
+                decode_mgr
+                    .transcribe(vec![0.01; 16_000], None, None)
+                    .map(|text| transcription::AsrOutput {
+                        text,
+                        ..recovered_only_output()
+                    })
+            },
+        );
+        (r, started.elapsed())
+    }
+
+    #[test]
+    fn retry_deadline_scales_with_the_clip_between_30_and_180_seconds() {
+        assert_eq!(retry_deadline(5.0), Duration::from_secs(30));
+        assert_eq!(retry_deadline(82.3), Duration::from_secs_f64(97.3));
+        assert_eq!(retry_deadline(153.1), Duration::from_secs_f64(168.1));
+        assert_eq!(retry_deadline(900.0), Duration::from_secs(180));
+        assert_eq!(retry_deadline(-1.0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_retry_fails_fast_while_an_abandoned_engine_is_still_running_and_loads_nothing() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_millis(100),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        // The live take that hung: the lease times out and the engine is left
+        // on its worker thread, exactly the state Retry was pressed in.
+        let err = m.transcribe(vec![0.01; 16_000], None, None).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert_eq!(m.abandoned_engines(), 1);
+        assert!(!m.is_busy(), "the lease is released at the timeout");
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
+        assert_eq!(err_of(result), transcription::ENGINE_STUCK);
+        assert!(
+            wall < Duration::from_secs(1),
+            "fail fast, not at the deadline: {wall:?}"
+        );
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        assert!(
+            phases.is_empty(),
+            "it never queued and never decoded: {phases:?}"
+        );
+
+        // When the stuck engine finally returns it is counted out, not reused.
+        release.store(true, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while m.abandoned_engines() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(m.abandoned_engines(), 0);
+        assert!(
+            !m.is_loaded(),
+            "the abandoned engine is dropped, never put back"
+        );
+    }
+
+    #[test]
+    fn a_retry_queues_behind_a_busy_engine_then_completes_on_it() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(400),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        // Let the live take lease the engine.
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(m.is_busy());
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(10), &mut phases);
+        assert_eq!(result.unwrap().text, "slow but sure");
+        assert_eq!(phases, vec![RetryPhase::Queued, RetryPhase::Decoding]);
+        assert!(
+            wall >= Duration::from_millis(350),
+            "it waited its turn: {wall:?}"
+        );
+        assert_eq!(
+            m.engine_loads(),
+            1,
+            "one engine, shared — never a second load"
+        );
+        assert_eq!(live_take.join().unwrap().unwrap(), "slow but sure");
+    }
+
+    #[test]
+    fn a_retry_whose_decode_hangs_comes_back_at_its_deadline_with_the_plain_sentence() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        // The manager's own per-decode wall is LONGER than the retry's deadline
+        // (production: 120 s per window vs 30–180 s per retry), so the retry's
+        // clock is what ends the wait.
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_secs(30),
+        );
+        m.load("fake", &path).unwrap();
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(300), &mut phases);
+        assert_eq!(err_of(result), RETRY_DEADLINE_ERROR);
+        assert!(
+            wall >= Duration::from_millis(300) && wall < Duration::from_secs(3),
+            "at the deadline, not forever: {wall:?}"
+        );
+        assert_eq!(phases, vec![RetryPhase::Decoding]);
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_retry_that_queues_past_its_deadline_gives_up_in_plain_words() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_secs(2),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(200), &mut phases);
+        assert_eq!(err_of(result), RETRY_ENGINE_BUSY_ERROR);
+        assert!(wall < Duration::from_secs(1), "{wall:?}");
+        assert_eq!(phases, vec![RetryPhase::Queued]);
+        assert_eq!(m.engine_loads(), 1);
+        live_take.join().unwrap().unwrap();
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the headless replay of the two clips
+/// Wilson's 2026-11-06 session kept (82.3 s bb865dde… and 153.1 s 6c97f34c…)
+/// through the REAL retry engine stage. The clips are private data: the test
+/// reads them from a COPY whose directory `YAP_RETRY_REPLAY_DIR` names, and
+/// is `#[ignore]`d so CI (which has neither the clips nor the model) stays
+/// green. The model is read from the same directory (`<file>` of the default
+/// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
+///
+///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
+///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+#[cfg(test)]
+mod retry_replay {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
+            eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        // The engine's own log lines (loads, window timeouts, the
+        // `retry_dictation` line) on stderr under RUST_LOG=info.
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let model_id = default_native_model();
+        let model = models::catalog_model(&model_id).expect("default model is in the catalog");
+        let filename = model.default_file().expect("default file").filename.clone();
+        let model_path = std::env::var("YAP_RETRY_REPLAY_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dir.join(&filename));
+        assert!(
+            model_path.is_file(),
+            "model missing at {}",
+            model_path.display()
+        );
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        wavs.sort();
+        assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+
+        let manager = transcription::TranscriptionManager::new();
+        let prefs = AppSettings::default().language_prefs();
+        for wav in wavs {
+            let name = wav.file_name().unwrap().to_string_lossy().to_string();
+            let samples = record::read_wav_16k_mono(&wav).unwrap();
+            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+            let deadline = retry_deadline(clip_secs);
+            let (m, id, path, p) = (
+                manager.clone(),
+                model_id.clone(),
+                model_path.clone(),
+                prefs.clone(),
+            );
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &manager,
+                &name,
+                clip_secs,
+                deadline,
+                &mut |ph| phases.push(ph),
+                move || {
+                    transcribe_native(
+                        &m,
+                        &id,
+                        &path,
+                        samples,
+                        &p,
+                        None,
+                        &mut transcribe_progress::NoObserver,
+                    )
+                },
+            );
+            let wall = started.elapsed();
+            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+            let words = out.text.split_whitespace().count();
+            println!(
+                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
+                deadline.as_secs_f64(),
+                out.chunks,
+                out.chunks_failed,
+                wall.as_millis(),
+                manager.engine_loads()
+            );
+            assert!(words > 0, "{name}: empty transcript");
+            assert!(
+                wall < deadline,
+                "{name}: {wall:?} over the deadline {deadline:?}"
+            );
+        }
+        assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
     }
 }

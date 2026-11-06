@@ -11,6 +11,12 @@ interface DetectSettingsView {
   calendarAccess: string;
 }
 
+/** yap-call-1 — mirrors `call_offer::NeverRow`: an app set to Never. */
+interface NeverRow {
+  bundleId: string;
+  name: string;
+}
+
 /** yap-1106 — mirrors `MeetingExportLocation` in lib.rs. */
 interface MeetingExportLocation {
   path: string;
@@ -63,6 +69,26 @@ export default function Meetings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // yap-call-1 — the apps the user said "Never for <App>" to. Exactly two
+  // states per app (offer / never); Reset puts an app back to offer.
+  const [never, setNever] = useState<NeverRow[]>([]);
+  useEffect(() => {
+    let dead = false;
+    invoke<NeverRow[]>("call_offer_never_list")
+      .then((rows) => { if (!dead) setNever(rows); })
+      .catch((e) => toastError(e, "Couldn't read the apps Yap never offers for."));
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function resetNever(bundleId: string | null) {
+    try {
+      setNever(await invoke<NeverRow[]>("call_offer_reset", { bundleId }));
+      toast(bundleId ? "Yap will offer for that app again." : "Yap will offer for every app again.");
+    } catch (e) {
+      toastError(e, "Couldn't reset that app.");
+    }
+  }
+
   async function save(patch: { offerDetected?: boolean; useCalendar?: boolean }) {
     try {
       setView(await invoke<DetectSettingsView>("set_meeting_detect_settings", patch));
@@ -103,6 +129,35 @@ export default function Meetings() {
           Yap can notice a meeting and ask if you want to record it. It never
           starts recording on its own.
         </p>
+      </div>
+      <div className="panel" data-row data-settings-row="call-offer-never">
+        <h3>Never offer for</h3>
+        {never.length === 0 ? (
+          <p className="settings-hint">
+            Yap offers for every call app. Choose “Never for” on an offer to
+            stop offering for that app.
+          </p>
+        ) : (
+          <>
+            <ul className="settings-list" aria-label="Apps Yap never offers to record">
+              {never.map((row) => (
+                <li key={row.bundleId}>
+                  <span>{row.name}</span>
+                  <button type="button" className="ghost" onClick={() => void resetNever(row.bundleId)}>
+                    Reset
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {never.length > 1 && (
+              <div className="actions">
+                <button type="button" className="ghost" onClick={() => void resetNever(null)}>
+                  Reset all
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
       {/* yap-1106-call-audio-truth — the one sentence that explains the
           mechanism: a tap on this Mac's own sound, not a bot, not a plug-in. */}

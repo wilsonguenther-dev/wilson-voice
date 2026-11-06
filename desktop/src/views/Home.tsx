@@ -6,6 +6,7 @@ import { type TranscriptEntry, retainedClipsLabel, undoAiEditText, type DictCand
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
+import { retryButtonLabel } from "../retryDictation";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
@@ -13,7 +14,7 @@ export default function Home() {
     bootError, bootErrors, booting, retryBoot, clearAll, clearing, deleteAllRecordings, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, loadOlderHistory, historyHasMore, loadingOlder, pasteText, perms, query, queryRef, refreshInsights,
-    retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
+    retryFailed, retrying, retryPhase, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
     setNoteTitle, setQuery, dropRetry, setScratchComposing, settings, status, toast, toastError,
     toggleRecord,
@@ -252,13 +253,11 @@ export default function Home() {
                             disabled={retrying === f.id}
                             onClick={() => retryFailed(f.id)}
                           >
-                            {retrying === f.id
-                              ? f.partialText
-                                ? "Finishing…"
-                                : "Retrying…"
-                              : f.partialText
-                                ? "Finish transcribing"
-                                : "Retry"}
+                            {retryButtonLabel({
+                              retrying: retrying === f.id,
+                              phase: retryPhase ?? null,
+                              resumable: !!f.partialText,
+                            })}
                           </button>
                           {f.attemptText ? (
                             <button
