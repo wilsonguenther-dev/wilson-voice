@@ -60,6 +60,11 @@ pub enum TrayCommand {
     Upgrade,
     /// Open the new-issue page.
     SendFeedback,
+    /// WF-07 — record one of today's calendar meetings, by its row index in
+    /// the "Today's meetings" submenu ([`upcoming_row`]).
+    RecordUpcoming(usize),
+    /// WF-07 — "Hide meeting titles" (persisted by `meeting_detect`).
+    ToggleHideMeetingTitles,
     /// `app.exit(0)` — reaches `RunEvent::Exit` and its one bounded teardown
     /// (`lifecycle::quit_plan`), which drains the ASR engine, waits for the
     /// in-flight take and finalizes a live meeting. Never `process::exit`.
@@ -87,6 +92,8 @@ impl TrayCommand {
             TrayCommand::ShowPillNow => "show_pill_now",
             TrayCommand::Upgrade => "upgrade",
             TrayCommand::SendFeedback => "send_feedback",
+            TrayCommand::RecordUpcoming(_) => "record_upcoming",
+            TrayCommand::ToggleHideMeetingTitles => "toggle_hide_meeting_titles",
             TrayCommand::Quit => "quit",
         }
     }
@@ -94,7 +101,7 @@ impl TrayCommand {
 
 /// Every [`TrayCommand::name`]. The test walks this to prove no command is
 /// unreachable from the menu.
-pub const COMMAND_NAMES: [&str; 17] = [
+pub const COMMAND_NAMES: [&str; 19] = [
     "toggle_dictation",
     "paste_last_transcript",
     "copy_last_transcript",
@@ -111,6 +118,8 @@ pub const COMMAND_NAMES: [&str; 17] = [
     "show_pill_now",
     "upgrade",
     "send_feedback",
+    "record_upcoming",
+    "toggle_hide_meeting_titles",
     "quit",
 ];
 
@@ -123,6 +132,9 @@ pub enum ItemKind {
     StateLabel,
     /// A submenu whose children are `meeting_control::KIND_PICKER`.
     KindSubmenu,
+    /// WF-07 — the "Today's meetings" submenu; its children are built from
+    /// [`upcoming_menu`] and dispatch [`TrayCommand::RecordUpcoming`].
+    UpcomingSubmenu,
 }
 
 /// One row of the menu bar.
@@ -156,6 +168,15 @@ pub const ID_HIDE_PILL: &str = "hide_pill_hour";
 pub const ID_SHOW_PILL: &str = "show_pill_now";
 pub const ID_FEEDBACK: &str = "feedback";
 pub const ID_QUIT: &str = "quit";
+/// WF-07 — the disabled "Next: <title> · 2:00 PM" line (calendar connected).
+pub const ID_NEXT_MEETING: &str = "upcoming_next";
+/// WF-07 — the "Today's meetings" submenu.
+pub const ID_UPCOMING: &str = "upcoming_today";
+/// WF-07 — the "Hide meeting titles" toggle.
+pub const ID_HIDE_MEETING_TITLES: &str = "upcoming_hide_titles";
+/// WF-07 — prefix of each "Record …" child of [`ID_UPCOMING`]; the suffix is
+/// the row index.
+pub const UPCOMING_RECORD_PREFIX: &str = "upcoming_record_";
 
 /// The `navigate` payload that lands on the transcript history. Yap's history
 /// lives on the Home view (`desktop/src/views/Home.tsx`); there is no separate
@@ -163,7 +184,7 @@ pub const ID_QUIT: &str = "quit";
 /// frontend's `Nav` union so the two cannot drift.
 pub const HISTORY_NAV: &str = "home";
 
-pub const TRAY_ITEMS: [TrayItem; 19] = [
+pub const TRAY_ITEMS: [TrayItem; 22] = [
     TrayItem {
         id: ID_LICENSE_HEADER,
         label: "Yap",
@@ -259,6 +280,21 @@ pub const TRAY_ITEMS: [TrayItem; 19] = [
         label: "Quit Yap",
         kind: ItemKind::Action(TrayCommand::Quit),
     },
+    TrayItem {
+        id: ID_NEXT_MEETING,
+        label: "Next meeting",
+        kind: ItemKind::StateLabel,
+    },
+    TrayItem {
+        id: ID_UPCOMING,
+        label: "Today’s Meetings",
+        kind: ItemKind::UpcomingSubmenu,
+    },
+    TrayItem {
+        id: ID_HIDE_MEETING_TITLES,
+        label: "Hide Meeting Titles",
+        kind: ItemKind::Action(TrayCommand::ToggleHideMeetingTitles),
+    },
 ];
 
 /// One slot of the menu as it is BUILT.
@@ -270,31 +306,44 @@ pub enum Slot {
 
 /// The menu, top to bottom, as `lib.rs` builds it. `lib.rs` iterates THIS
 /// list, so the order lives in one place.
-pub const MENU_LAYOUT: [Slot; 23] = [
-    // State header (Y2-E's license line; the upgrade line is inserted under it).
+///
+/// yap-1106-menubar-redesign — grouped by what the user came to do:
+///   1. the status header (license line; while a meeting records the
+///      "Recording · <title>" header and "Stop meeting · 12:00" sit above it),
+///   2. Meeting — Start (or Stop) first, then the kind picker; with the
+///      calendar connected (WF-07) the next meeting, "Today's Meetings ▸" and
+///      "Hide Meeting Titles" are inserted directly under the picker,
+///   3. Dictation — the toggle, hands-free, then the last transcript,
+///   4. Open — Yap, history, settings, shortcuts,
+///   5. Pill — hide / show,
+///   6. Feedback and Quit.
+pub const MENU_LAYOUT: [Slot; 22] = [
+    // 1. Status header (Y2-E's license line; the upgrade line is inserted
+    // under it).
     Slot::Item(ID_LICENSE_HEADER),
     Slot::Separator,
-    // The dictation control, then the last transcript.
+    // 2. Meeting: Start or Stop first.
+    Slot::Item(ID_MEETING_TOGGLE),
+    Slot::Item(ID_MEETING_KIND),
+    Slot::Separator,
+    // 3. Dictation, then the last transcript.
     Slot::Item(ID_TOGGLE),
+    Slot::Item(ID_HANDS_FREE),
     Slot::Item(ID_PASTE_LAST),
     Slot::Item(ID_COPY_LAST),
     Slot::Item(ID_PASTE_RAW),
     Slot::Separator,
-    Slot::Item(ID_MEETING_TOGGLE),
-    Slot::Item(ID_MEETING_KIND),
-    Slot::Separator,
-    Slot::Item(ID_HANDS_FREE),
-    Slot::Separator,
-    // Where things live.
+    // 4. Open: where things live.
     Slot::Item(ID_SHOW),
     Slot::Item(ID_HISTORY),
     Slot::Item(ID_SETTINGS),
     Slot::Item(ID_SHORTCUTS),
     Slot::Separator,
-    // The pill.
+    // 5. The pill.
     Slot::Item(ID_HIDE_PILL),
     Slot::Item(ID_SHOW_PILL),
     Slot::Separator,
+    // 6. Feedback, then Quit last.
     Slot::Item(ID_FEEDBACK),
     Slot::Separator,
     Slot::Item(ID_QUIT),
@@ -304,8 +353,17 @@ pub const MENU_LAYOUT: [Slot; 23] = [
 /// `announce_meeting_notes` only while they apply: the upgrade line (Y2-E,
 /// under the header while a purchase is on offer) and the notes-ready line
 /// (yap24-NT7, above "Record a meeting" once notes land) and the meeting
-/// header (yap-1106, at the top of the menu while a meeting records).
-pub const INSERTED_ITEMS: [&str; 3] = [ID_UPGRADE, ID_NOTES_READY, ID_MEETING_HEADER];
+/// header (yap-1106, at the top of the menu while a meeting records), and the
+/// three calendar rows (WF-07, under the kind picker while "Use my calendar"
+/// is on and access is granted).
+pub const INSERTED_ITEMS: [&str; 6] = [
+    ID_UPGRADE,
+    ID_NOTES_READY,
+    ID_MEETING_HEADER,
+    ID_NEXT_MEETING,
+    ID_UPCOMING,
+    ID_HIDE_MEETING_TITLES,
+];
 
 /// The row for `id`, if the menu has one.
 pub fn item(id: &str) -> Option<&'static TrayItem> {
@@ -327,10 +385,27 @@ pub fn command_for(id: &str) -> Option<TrayCommand> {
     if let Some(i) = item(id) {
         return match i.kind {
             ItemKind::Action(c) => Some(c),
-            ItemKind::StateLabel | ItemKind::KindSubmenu => None,
+            ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => None,
         };
     }
+    if let Some(index) = upcoming_index_for_menu_id(id) {
+        return Some(TrayCommand::RecordUpcoming(index));
+    }
     meeting_control::kind_for_menu_id(id).map(TrayCommand::RecordMeetingAs)
+}
+
+/// The row index a "Record …" child id carries (`upcoming_record_3` → 3).
+pub fn upcoming_index_for_menu_id(id: &str) -> Option<usize> {
+    let digits = id.strip_prefix(UPCOMING_RECORD_PREFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Is `id` one of the WF-07 calendar rows `lib.rs` inserts and removes?
+pub fn is_upcoming_row(id: &str) -> bool {
+    id == ID_NEXT_MEETING || id == ID_UPCOMING || id == ID_HIDE_MEETING_TITLES
 }
 
 // ─── Hide the pill for one hour ──────────────────────────────────────────────
@@ -595,6 +670,262 @@ impl MeetingMenuLatch {
         set(&want, shown.as_ref())?;
         *shown = Some(want);
         Ok(true)
+    }
+}
+
+// ─── Upcoming meetings (WF-07) ───────────────────────────────────────────────
+
+/// The disabled line when the calendar is connected but today is clear.
+pub const NO_MORE_MEETINGS_LABEL: &str = "No more meetings today";
+
+/// One "Record …" child of "Today's Meetings".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpcomingRow {
+    /// `upcoming_record_<index>` — resolved by [`command_for`].
+    pub id: String,
+    pub text: String,
+    /// The occurrence key Record snoozes (`meeting_detect::CalendarEvent::offer_key`).
+    pub key: String,
+    /// The real event title, used to name the recording (never shown when the
+    /// user hid titles).
+    pub title: Option<String>,
+    pub has_link: bool,
+}
+
+/// The calendar rows of the menu, decided from ONE snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpcomingMenu {
+    /// "Next: Standup · 2:00 PM" / "Next meeting 2:00 PM" / "No more meetings today".
+    pub next_text: String,
+    /// Empty = no "Today's Meetings" submenu.
+    pub rows: Vec<UpcomingRow>,
+    /// The "Hide Meeting Titles" check.
+    pub hide_titles: bool,
+}
+
+/// "2:00 PM" for `start_unix` at `utc_offset_secs`.
+pub fn meeting_clock(start_unix: i64, utc_offset_secs: i32) -> String {
+    let offset = chrono::FixedOffset::east_opt(utc_offset_secs)
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("UTC is a valid offset"));
+    match chrono::DateTime::from_timestamp(start_unix, 0) {
+        Some(t) => t.with_timezone(&offset).format("%-I:%M %p").to_string(),
+        None => String::new(),
+    }
+}
+
+/// THE decision for the calendar rows. Titles are shown only when the user has
+/// not hidden them AND the event has one; a hidden title reads "Next meeting
+/// 2:00 PM", exactly as WF-07 asks.
+pub fn upcoming_menu(snap: &crate::meeting_detect::UpcomingSnapshot) -> UpcomingMenu {
+    let shown_title = |m: &crate::meeting_detect::UpcomingMeeting| {
+        if snap.hide_titles {
+            None
+        } else {
+            m.title.clone()
+        }
+    };
+    let next_text = match snap.meetings.first() {
+        None => NO_MORE_MEETINGS_LABEL.to_string(),
+        Some(m) => {
+            let clock = meeting_clock(m.start_unix, snap.utc_offset_secs);
+            match shown_title(m) {
+                Some(t) => format!("Next: {t} \u{b7} {clock}"),
+                None => format!("Next meeting {clock}"),
+            }
+        }
+    };
+    let rows = snap
+        .meetings
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let clock = meeting_clock(m.start_unix, snap.utc_offset_secs);
+            UpcomingRow {
+                id: format!("{UPCOMING_RECORD_PREFIX}{i}"),
+                text: match shown_title(m) {
+                    Some(t) => format!("Record \u{201c}{t}\u{201d} \u{b7} {clock}"),
+                    None => format!("Record Meeting at {clock}"),
+                },
+                key: m.key.clone(),
+                title: m.title.clone(),
+                has_link: m.has_link,
+            }
+        })
+        .collect();
+    UpcomingMenu {
+        next_text,
+        rows,
+        hide_titles: snap.hide_titles,
+    }
+}
+
+/// What the calendar rows LAST SUCCESSFULLY showed — the click on
+/// `upcoming_record_<i>` resolves against THIS, never against a newer snapshot
+/// the menu has not drawn yet, so Record always records the row the user saw.
+#[derive(Debug, Default)]
+pub struct UpcomingLatch {
+    shown: Mutex<Option<UpcomingMenu>>,
+}
+
+impl UpcomingLatch {
+    pub const fn new() -> Self {
+        UpcomingLatch {
+            shown: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<UpcomingMenu>> {
+        self.shown.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Record what the menu now shows (`None` = no calendar rows).
+    pub fn set(&self, shown: Option<UpcomingMenu>) {
+        *self.lock() = shown;
+    }
+
+    pub fn shown(&self) -> Option<UpcomingMenu> {
+        self.lock().clone()
+    }
+
+    /// The row at `index` of what is on screen.
+    pub fn row(&self, index: usize) -> Option<UpcomingRow> {
+        self.lock()
+            .as_ref()
+            .and_then(|m| m.rows.get(index).cloned())
+    }
+}
+
+/// The process's one latch (the menu is a process singleton too).
+pub static UPCOMING_SHOWN: UpcomingLatch = UpcomingLatch::new();
+
+/// [`UPCOMING_SHOWN`]`.row(index)`.
+pub fn upcoming_row(index: usize) -> Option<UpcomingRow> {
+    UPCOMING_SHOWN.row(index)
+}
+
+#[cfg(test)]
+mod upcoming_menu_tests {
+    use super::*;
+    use crate::meeting_detect::{UpcomingMeeting, UpcomingSnapshot};
+
+    fn snap(hide_titles: bool, meetings: Vec<(&str, Option<&str>, i64)>) -> UpcomingSnapshot {
+        UpcomingSnapshot {
+            meetings: meetings
+                .into_iter()
+                .map(|(key, title, start)| UpcomingMeeting {
+                    key: key.to_string(),
+                    title: title.map(str::to_string),
+                    start_unix: start,
+                    has_link: false,
+                })
+                .collect(),
+            hide_titles,
+            utc_offset_secs: 0,
+        }
+    }
+
+    // 14:00:00Z on a whole day boundary + 14 h.
+    const TWO_PM: i64 = 1_800_014_400 - (1_800_014_400 % 86_400) + 14 * 3600;
+
+    #[test]
+    fn upcoming_menu_shows_next_meeting_title_and_time() {
+        let m = upcoming_menu(&snap(
+            false,
+            vec![
+                ("cal:a:1", Some("Standup"), TWO_PM),
+                ("cal:b:2", None, TWO_PM + 5400),
+            ],
+        ));
+        assert_eq!(m.next_text, "Next: Standup \u{b7} 2:00 PM");
+        assert_eq!(m.rows.len(), 2);
+        assert_eq!(m.rows[0].id, "upcoming_record_0");
+        assert_eq!(
+            m.rows[0].text,
+            "Record \u{201c}Standup\u{201d} \u{b7} 2:00 PM"
+        );
+        assert_eq!(m.rows[1].text, "Record Meeting at 3:30 PM");
+        assert!(!m.hide_titles);
+        assert_eq!(meeting_clock(TWO_PM, -6 * 3600), "8:00 AM");
+    }
+
+    #[test]
+    fn upcoming_menu_hide_titles_shows_only_the_time() {
+        let m = upcoming_menu(&snap(true, vec![("cal:a:1", Some("Board call"), TWO_PM)]));
+        assert_eq!(m.next_text, "Next meeting 2:00 PM");
+        assert_eq!(m.rows[0].text, "Record Meeting at 2:00 PM");
+        assert!(!m.next_text.contains("Board"));
+        assert!(!m.rows[0].text.contains("Board"));
+        // The recording is still named after the event.
+        assert_eq!(m.rows[0].title.as_deref(), Some("Board call"));
+        assert!(m.hide_titles);
+    }
+
+    #[test]
+    fn upcoming_menu_empty_day_says_so() {
+        let m = upcoming_menu(&snap(false, vec![]));
+        assert_eq!(m.next_text, NO_MORE_MEETINGS_LABEL);
+        assert!(m.rows.is_empty(), "no empty submenu");
+    }
+
+    #[test]
+    fn upcoming_record_ids_dispatch_to_the_row_on_screen() {
+        assert_eq!(
+            command_for("upcoming_record_0"),
+            Some(TrayCommand::RecordUpcoming(0))
+        );
+        assert_eq!(
+            command_for("upcoming_record_7"),
+            Some(TrayCommand::RecordUpcoming(7))
+        );
+        assert_eq!(command_for("upcoming_record_"), None);
+        assert_eq!(command_for("upcoming_record_x1"), None);
+        assert_eq!(command_for("upcoming_record_-1"), None);
+        assert_eq!(command_for(ID_UPCOMING), None);
+        assert_eq!(command_for(ID_NEXT_MEETING), None);
+        assert_eq!(
+            command_for(ID_HIDE_MEETING_TITLES),
+            Some(TrayCommand::ToggleHideMeetingTitles)
+        );
+        for id in [ID_NEXT_MEETING, ID_UPCOMING, ID_HIDE_MEETING_TITLES] {
+            assert!(is_upcoming_row(id));
+            assert!(
+                INSERTED_ITEMS.contains(&id),
+                "{id} is inserted, not laid out"
+            );
+        }
+        assert!(!is_upcoming_row(ID_MEETING_TOGGLE));
+        let latch = UpcomingLatch::new();
+        assert_eq!(latch.row(0), None);
+        let m = upcoming_menu(&snap(false, vec![("cal:a:1", Some("Standup"), TWO_PM)]));
+        latch.set(Some(m.clone()));
+        assert_eq!(latch.row(0).map(|r| r.key), Some("cal:a:1".to_string()));
+        assert_eq!(latch.row(1), None, "a stale index records nothing");
+        latch.set(None);
+        assert_eq!(latch.shown(), None);
+    }
+
+    /// yap-1106-menubar-redesign — Meeting is the first group under the status
+    /// header, Start/Stop first; then Dictation, Open, Pill, Quit.
+    #[test]
+    fn menubar_layout_groups_in_order() {
+        let groups: Vec<Vec<&str>> = MENU_LAYOUT
+            .split(|s| *s == Slot::Separator)
+            .map(|g| {
+                g.iter()
+                    .filter_map(|s| match s {
+                        Slot::Item(id) => Some(*id),
+                        Slot::Separator => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(groups[0], [ID_LICENSE_HEADER]);
+        assert_eq!(groups[1], [ID_MEETING_TOGGLE, ID_MEETING_KIND]);
+        assert_eq!(groups[2][0], ID_TOGGLE);
+        assert!(groups[2].contains(&ID_PASTE_LAST) && groups[2].contains(&ID_COPY_LAST));
+        assert_eq!(groups[3][..3], [ID_SHOW, ID_HISTORY, ID_SETTINGS]);
+        assert_eq!(groups[4], [ID_HIDE_PILL, ID_SHOW_PILL]);
+        assert_eq!(groups.last().map(|g| *g.last().unwrap()), Some(ID_QUIT));
     }
 }
 

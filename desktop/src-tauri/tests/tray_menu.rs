@@ -77,7 +77,7 @@ fn every_menu_item_maps_to_a_registered_command() {
                 "{:?} does not dispatch to the command its row names",
                 item.id
             ),
-            ItemKind::StateLabel | ItemKind::KindSubmenu => assert_eq!(
+            ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => assert_eq!(
                 command_for(item.id),
                 None,
                 "{:?} is not an action and must not dispatch",
@@ -139,7 +139,11 @@ fn every_menu_item_maps_to_a_registered_command() {
                 _ => None,
             })
             .next()
-            .unwrap_or_else(|| "RecordMeetingAs".to_string());
+            .unwrap_or_else(|| match name {
+                // WF-07 — the "Today's Meetings" children.
+                "record_upcoming" => "RecordUpcoming".to_string(),
+                _ => "RecordMeetingAs".to_string(),
+            });
         assert!(
             dispatch.contains(&format!("TrayCommand::{variant}")),
             "run_tray_command has no arm for {variant}"
@@ -188,6 +192,7 @@ fn no_item_is_unreachable() {
         let reachable = TRAY_ITEMS.iter().any(|i| match i.kind {
             ItemKind::Action(c) => c.name() == name,
             ItemKind::KindSubmenu => name == "record_meeting_as" && !KIND_PICKER.is_empty(),
+            ItemKind::UpcomingSubmenu => name == "record_upcoming",
             ItemKind::StateLabel => false,
         });
         assert!(reachable, "command {name} has no menu item");
@@ -207,6 +212,23 @@ fn no_item_is_unreachable() {
     assert_eq!(MENU_LAYOUT[0], Slot::Item(tray_menu::ID_LICENSE_HEADER));
     // Quit is last.
     assert_eq!(MENU_LAYOUT.last(), Some(&Slot::Item(tray_menu::ID_QUIT)));
+    // yap-1106-menubar-redesign — Meeting is the first group under the header,
+    // Start/Stop first; Dictation follows it.
+    assert_eq!(MENU_LAYOUT[1], Slot::Separator);
+    assert_eq!(MENU_LAYOUT[2], Slot::Item(tray_menu::ID_MEETING_TOGGLE));
+    assert_eq!(MENU_LAYOUT[3], Slot::Item(tray_menu::ID_MEETING_KIND));
+    assert_eq!(MENU_LAYOUT[5], Slot::Item(tray_menu::ID_TOGGLE));
+    // WF-07 — the calendar rows are anchored on the kind picker and dispatch
+    // through the registry; lib.rs places them in ONE function.
+    let lib = code_only(LIB_SRC);
+    let place = fn_body(&lib, "place_upcoming_rows");
+    assert!(place.contains("tray_menu::is_upcoming_row("));
+    assert!(place.contains("tray_menu::ID_MEETING_KIND"));
+    assert!(lib.contains("meeting_detect::set_upcoming_sink("));
+    assert_eq!(
+        command_for("upcoming_record_2"),
+        Some(TrayCommand::RecordUpcoming(2))
+    );
 }
 
 /// Y6-B "what not to do": no Languages / Formatting submenu (Y10).

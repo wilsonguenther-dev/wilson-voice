@@ -1821,7 +1821,193 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
                 start_recording(app, state);
             }
         }
+        // WF-07 — Record one of today's calendar meetings from the submenu.
+        TrayCommand::RecordUpcoming(index) => {
+            record_upcoming_meeting(app, state, index);
+        }
+        // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
+        // and re-publishes, which redraws the calendar rows.
+        TrayCommand::ToggleHideMeetingTitles => {
+            let on = !meeting_detect::load_hide_titles(&state.db);
+            match meeting_detect::save_hide_titles(&state.db, on) {
+                Ok(()) => log::info!("tray hide_meeting_titles toggled on={on}"),
+                Err(e) => {
+                    log::warn!("tray hide_meeting_titles failed error={e:?}");
+                    // The check item flipped itself on the click; redraw the
+                    // rows from the unchanged snapshot so it reads true again.
+                    apply_upcoming_menu_on_main(
+                        app,
+                        state,
+                        meeting_detect::upcoming_snapshot().as_ref(),
+                    );
+                    notify(app, "Yap", "Yap could not save that setting — try again");
+                }
+            }
+        }
     }
+}
+
+/// WF-07 — start a recording for the "Today's Meetings" row the user clicked,
+/// named after the event (the hidden-titles toggle only hides it in the menu).
+/// Off the main thread, like every tray meeting start. Recording it snoozes
+/// the pill offer for the same occurrence.
+fn record_upcoming_meeting(app: &AppHandle, state: &Arc<AppState>, index: usize) {
+    let Some(row) = tray_menu::upcoming_row(index) else {
+        log::warn!("tray upcoming_record clicked index={index} result=ignored:stale_row");
+        return;
+    };
+    if state.meeting_stop_in_flight.load(Ordering::SeqCst)
+        || state.meeting().is_some_and(|c| c.is_recording())
+    {
+        log::info!("tray upcoming_record clicked index={index} result=ignored:meeting_running");
+        notify(app, "Yap", "A meeting is already recording — stop it first");
+        return;
+    }
+    let app = app.clone();
+    let app_on_spawn_failure = app.clone();
+    let st = state.clone();
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("yap-meeting-upcoming".into())
+        .spawn(move || {
+            let has_title = row.title.is_some();
+            match begin_meeting(&app, &st, row.title.clone(), kind) {
+                Ok(status) => {
+                    log::info!(
+                        "tray upcoming_record clicked index={index} result={} has_title={has_title} linked={}",
+                        if status.recording { "started" } else { "not_started" },
+                        row.has_link
+                    );
+                    if meeting_detect::respond(&row.key).is_some() {
+                        meeting_detect::emit_clear(&app);
+                        release_offer_pill(&app);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("tray upcoming_record clicked index={index} result=error:{e}");
+                    notify(&app, "Yap", e);
+                }
+            }
+        })
+    {
+        log::error!("tray upcoming_record clicked result=error:thread_spawn:{e}");
+        notify(
+            &app_on_spawn_failure,
+            "Yap",
+            "Yap could not run that — try again".to_string(),
+        );
+    }
+}
+
+/// WF-07 — the ONE place the calendar rows of the menu are mutated. MAIN
+/// THREAD only. `snap == None` (calendar off, or no grant) removes them. The
+/// rows are found by id, so a retry after a half-applied failure is
+/// idempotent; what was drawn is recorded in `tray_menu::UPCOMING_SHOWN` only
+/// on success, so a click always resolves against the rows on screen.
+fn apply_upcoming_menu_on_main(
+    app: &AppHandle,
+    state: &AppState,
+    snap: Option<&meeting_detect::UpcomingSnapshot>,
+) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray upcoming_menu skipped reason=tray_not_built");
+        return;
+    };
+    let plan = snap.map(tray_menu::upcoming_menu);
+    match place_upcoming_rows(app, &menu, plan.as_ref()) {
+        Ok(()) => {
+            log::info!(
+                "tray upcoming_menu synced calendar={} rows={}",
+                plan.is_some(),
+                plan.as_ref().map_or(0, |p| p.rows.len())
+            );
+            tray_menu::UPCOMING_SHOWN.set(plan);
+        }
+        Err(e) => {
+            log::warn!("tray upcoming_menu apply_failed error={e}");
+            // Whatever is left on screen must not resolve a click to a row
+            // that is gone; the next publish redraws.
+            tray_menu::UPCOMING_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_upcoming_rows(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: Option<&tray_menu::UpcomingMenu>,
+) -> Result<(), String> {
+    // Out with the old rows.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| tray_menu::is_upcoming_row(k.id().as_ref()))
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    // In, directly under "Record a meeting as…": the Meeting group.
+    let mut at = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MEETING_KIND)
+        .map(|i| i + 1)
+        .ok_or("tray: no kind picker to anchor the calendar rows")?;
+    let next = MenuItem::with_id(
+        app,
+        tray_menu::ID_NEXT_MEETING,
+        &plan.next_text,
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| format!("next item: {e}"))?;
+    menu.insert(&next, at)
+        .map_err(|e| format!("next insert: {e}"))?;
+    at += 1;
+    if !plan.rows.is_empty() {
+        let children = plan
+            .rows
+            .iter()
+            .map(|r| MenuItem::with_id(app, r.id.as_str(), &r.text, true, None::<&str>))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row item: {e}"))?;
+        let submenu = Submenu::with_id_and_items(
+            app,
+            tray_menu::ID_UPCOMING,
+            tray_menu::label(tray_menu::ID_UPCOMING),
+            true,
+            &children
+                .iter()
+                .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| format!("submenu: {e}"))?;
+        menu.insert(&submenu, at)
+            .map_err(|e| format!("submenu insert: {e}"))?;
+        at += 1;
+    }
+    let hide = CheckMenuItem::with_id(
+        app,
+        tray_menu::ID_HIDE_MEETING_TITLES,
+        tray_menu::label(tray_menu::ID_HIDE_MEETING_TITLES),
+        true,
+        plan.hide_titles,
+        None::<&str>,
+    )
+    .map_err(|e| format!("hide item: {e}"))?;
+    menu.insert(&hide, at)
+        .map_err(|e| format!("hide insert: {e}"))?;
+    Ok(())
 }
 
 /// Y2-D — the ONE way the pill (and the menu bar) asks for the purchase SHEET.
@@ -11583,6 +11769,13 @@ pub fn run() {
             if let Some(controller) = state.meeting() {
                 meeting_tray_sync_on_main(&state, &controller.status());
             }
+            // WF-07 — and the calendar rows from the last published snapshot
+            // (none at first launch: the watcher starts after the tray).
+            apply_upcoming_menu_on_main(
+                app.handle(),
+                &state,
+                meeting_detect::upcoming_snapshot().as_ref(),
+            );
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -11665,6 +11858,21 @@ pub fn run() {
             float_pill::start_hover_watch(app.handle().clone());
             // yap-notetaker-detect — event-driven + one 30 s timer; reads the
             // calendar only when "Use my calendar" is on AND access is granted.
+            // WF-07 — the watcher hands the tray today's meetings (only when
+            // "Use my calendar" is on and access is granted), and only when
+            // they changed; the rows are redrawn on the main thread.
+            let upcoming_app = app.handle().clone();
+            meeting_detect::set_upcoming_sink(move |snap| {
+                let app_main = upcoming_app.clone();
+                let hop = upcoming_app.run_on_main_thread(move || {
+                    if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                        apply_upcoming_menu_on_main(&app_main, &state, snap.as_ref());
+                    }
+                });
+                if let Err(e) = hop {
+                    log::warn!("tray upcoming_menu hop_failed error={e}");
+                }
+            });
             meeting_detect::start_watch(
                 app.handle().clone(),
                 state.db.clone(),
