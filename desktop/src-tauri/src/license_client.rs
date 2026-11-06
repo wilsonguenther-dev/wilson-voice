@@ -1312,13 +1312,12 @@ mod tests {
 
     // ── the wire, against a local stub HTTP server ──
 
-    /// One scripted stub reply: (status, headers, body).
-    type StubReply = (u16, Vec<(&'static str, String)>, String);
-
     /// One-connection-per-request HTTP/1.1 stub on 127.0.0.1. Serves the
     /// scripted (status, headers, body) replies in order and records each
     /// request's raw head + body. Stops after the last reply.
-    fn stub_server(replies: Vec<StubReply>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    fn stub_server(
+        replies: Vec<(u16, Vec<(&'static str, String)>, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/api/v1/licensing", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
