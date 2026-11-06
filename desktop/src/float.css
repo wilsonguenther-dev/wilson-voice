@@ -1714,9 +1714,10 @@ html[data-one-pill="true"][data-dock] .nudge-row {
    stop was a 20 pt square the eye aimed at and the hand missed. The hit area is
    the same rect (pill/hitTargets.ts publishes it, float_pill.rs pads anything
    that still comes in smaller), so what you see is exactly what takes the click.
-   Last in the file so a component's own width/height can only ever grow it. */
-[data-pill-control] {
+   Last in the file so a component's own width/height can only ever grow it.
+   The retired Classic pill's 20 pt flow-bar slots keep their drawn size (the
+   slot layout is measured in SLOT_PX); their HIT area is still padded to 24. */
+[data-pill-control]:not(.slot) {
   min-width: 24px;
   min-height: 24px;
-  box-sizing: border-box;
 }

@@ -164,7 +164,7 @@ function sendHitboxes(rects: Rect4[]): void {
   const key = live.map((r) => r.map(Math.round).join(",")).join(";");
   if (key === lastHitboxes) return;
   lastHitboxes = key;
-  (globalThis as { __YAP_PILL_HITBOXES__?: Rect4[] }).__YAP_PILL_HITBOXES__ = live;
+  (globalThis as unknown as { __YAP_PILL_HITBOXES__?: Rect4[] }).__YAP_PILL_HITBOXES__ = live;
   invoke("pill_set_hitboxes", { rects: live.map(([x, y, w, h]) => ({ x, y, w, h })) }).catch(() => {});
 }
 
