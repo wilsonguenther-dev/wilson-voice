@@ -15,7 +15,7 @@ use wilson_voice_lib::summarize::{
     is_verbatim_narrative, mic_is_single_voice, narrative_containment, question_is_open,
     strip_speaker_tag, summarize_segments, transcript_lines, validate_narrative, SegmentSpeaker,
     SummaryError, SummaryItem, TokenCounter, TrackOwner, TranscriptLine, MAX_ITEMS_PER_SEGMENT,
-    MIC_SHARED_OWNER, NO_SUMMARY_VERBATIM, VERBATIM_NARRATIVE_MAX,
+    MIC_SHARED_OWNER, NO_SUMMARY_VERBATIM, VERBATIM_MIN_WORDS, VERBATIM_NARRATIVE_MAX,
 };
 
 const FIXTURE: &[&str] = &[
@@ -77,6 +77,39 @@ fn the_planted_verbatim_fixture_is_over_the_ceiling() {
         None,
         "v8_verbatim refuses it"
     );
+}
+
+/// The ceiling judges paragraphs. One sentence restating the meeting's one
+/// line of substance (a stated price) is a quote, not a re-transcript: it is
+/// kept, as review round 4 requires (tests/summary_round4.rs).
+#[test]
+fn one_quoted_sentence_is_not_a_re_transcript() {
+    let src = "seg_0001: Okay, this is the pricing review.\nseg_0002: Dr. Britt said the seat price is $49.99 for the starter tier.";
+    let quote = "Dr. Britt said the seat price is $49.99 for the starter tier.";
+    assert!(quote.split_whitespace().count() < VERBATIM_MIN_WORDS);
+    assert!(narrative_containment(src, quote) > VERBATIM_NARRATIVE_MAX);
+    assert!(!is_verbatim_narrative(src, quote));
+    assert_eq!(validate_narrative(src, quote).as_deref(), Some(quote));
+    assert!(VERBATIM.split_whitespace().count() >= VERBATIM_MIN_WORDS);
+}
+
+/// Marker-less decisions the review rounds made binding ("the launch moves to
+/// May") still pass the decision guard; a description does not.
+#[test]
+fn a_change_shaped_decision_keeps_its_section() {
+    assert!(decision_has_marker(
+        "Thanks everyone, the launch moves to May",
+        "Thanks everyone, the launch moves to May."
+    ));
+    assert!(decision_has_marker(
+        "Appreciate the team pushing the launch to May",
+        ""
+    ));
+    assert!(!decision_has_marker(
+        "It's really dope.",
+        "It's really dope."
+    ));
+    assert!(action_has_commitment("Who owns the escalation path"));
 }
 
 #[test]

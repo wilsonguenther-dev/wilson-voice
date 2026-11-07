@@ -145,6 +145,13 @@ const GROUNDEDNESS_FLOOR: f64 = 0.80;
 /// (`GROUNDEDNESS_FLOOR`) is the floor; this is the ceiling.
 pub const VERBATIM_NARRATIVE_MAX: f64 = 0.6;
 
+/// The shortest narrative (words) the verbatim ceiling judges. A re-transcript
+/// is a paragraph of copied speech; one sentence that restates the meeting's
+/// one line of substance (a stated price, a single decision) is a quote, and
+/// 4-gram containment over fewer than ~20 4-grams is noise, not evidence.
+/// The audit's re-transcripts were 90-200 words; the planted fixture is 33.
+pub const VERBATIM_MIN_WORDS: usize = 25;
+
 /// The Summary section, word for word, when every narrative was refused as a
 /// re-transcript. Said out loud rather than left blank: a missing paragraph
 /// looks like a bug, this reads as what happened.
@@ -174,9 +181,12 @@ pub fn narrative_containment(source: &str, narrative: &str) -> f64 {
     word_ngram_containment(narrative, source, 4)
 }
 
-/// Whether `narrative` repeats `source` past [`VERBATIM_NARRATIVE_MAX`].
+/// Whether `narrative` repeats `source` past [`VERBATIM_NARRATIVE_MAX`]: a
+/// paragraph (at least [`VERBATIM_MIN_WORDS`] words) whose word 4-grams are
+/// mostly lifted from the source.
 pub fn is_verbatim_narrative(source: &str, narrative: &str) -> bool {
-    narrative_containment(source, narrative) > VERBATIM_NARRATIVE_MAX
+    narrative.split_whitespace().count() >= VERBATIM_MIN_WORDS
+        && narrative_containment(source, narrative) > VERBATIM_NARRATIVE_MAX
 }
 
 /// yap-audit-notes-guards (DO 2) — `Me: we shipped it` → `we shipped it`.
@@ -1717,8 +1727,8 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
     }
     // V8 (yap-audit-notes-guards) — a narrative that repeats its source is a
     // re-transcript wearing a Summary heading. Refused, never trimmed.
-    let containment = narrative_containment(source, narrative);
-    if containment > VERBATIM_NARRATIVE_MAX {
+    if is_verbatim_narrative(source, narrative) {
+        let containment = narrative_containment(source, narrative);
         log::info!(
             "summarize narrative_refused reason=v8_verbatim containment={containment:.2} max={VERBATIM_NARRATIVE_MAX}"
         );
@@ -2401,11 +2411,11 @@ fn describes_rather_than_commits(lower: &str) -> bool {
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
         .replace('\u{2019}', "'");
-    matches!(
-        first.as_str(),
-        "i'm" | "im" | "it's" | "its" | "it" | "that's" | "thats" | "this" | "that" | "what"
-            | "wow" | "so"
-    ) || ["i am ", "i feel", "i love", "i like", "i was ", "i've been"]
+    matches!(first.as_str(), "i'm" | "im" | "it's" | "its" | "that's" | "thats" | "wow")
+        || [
+            "i am ", "i feel", "i love", "i like", "i was ", "i've been", "that was ", "it was ",
+            "this was ", "this is ", "what a ",
+        ]
         .iter()
         .any(|p| lower.starts_with(p))
 }
@@ -2423,28 +2433,48 @@ fn addressed_imperative(text: &str) -> bool {
 }
 
 /// DO 5 — an action needs a commitment: an owner + commitment verb
-/// (`owner_commitment`, which also takes "I'll" + verb), an imperative, an
-/// imperative addressed to a person, or an explicit obligation ("need to",
-/// "will"). First-person feelings and descriptions never qualify.
+/// (`owner_commitment`, which also takes "I'll" + verb), an explicit
+/// obligation (`generic_commitment`: "need to", "will"), an imperative, or an
+/// imperative addressed to a person. First-person feelings and descriptions
+/// ("I'm excited", "It's really dope") never qualify. Everything else reaching
+/// here was already vetted by [`classify_item`] (which drops statements whose
+/// subject is a thing and small talk), so it keeps the model's word: this
+/// guard adds the feelings rule, it does not re-litigate the classifier.
 pub fn action_has_commitment(text: &str) -> bool {
     let t = strip_speaker_tag(text).trim();
-    if owner_commitment(t) {
+    let lower = t.to_lowercase();
+    if owner_commitment(t) || generic_commitment(&lower) {
         return true;
     }
-    let lower = t.to_lowercase();
     if describes_rather_than_commits(&lower) {
         return false;
     }
-    starts_imperative(t) || addressed_imperative(t) || generic_commitment(&lower)
+    true
 }
+
+/// Shapes that settle or change something without a formal decision marker:
+/// "the launch moves to May", "pushing the launch to May", "the free trial
+/// will be dropped". Review rounds 1-4 (tests/summary_classify.rs) made these
+/// binding decisions; a description ("The weather was nice") has none.
+const DECISION_SHAPES: &[&str] = &[
+    "moves to", "moved to", "move to", "moving", "pushing", "pushed", "push ", "pushes",
+    "drop", "cut ", "switch", "will ", "won't", "stays", "stay ", "remain", "going to",
+    "is now", "are now", "from now on", "no longer", "instead", "starts", "start ",
+    "launch", "ship", "postpone", "delay", "cancel", "keep ", "skip",
+];
 
 /// DO 5 — a decision needs a decision marker, in its own words or in the line
 /// it cites (the model shortens "We decided to drop X" to "Drop X").
 pub fn decision_has_marker(text: &str, cited_line: &str) -> bool {
-    [text, cited_line].iter().any(|t| {
+    let marked = [text, cited_line].iter().any(|t| {
         let lower = t.to_lowercase();
         DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower)
-    })
+    });
+    if marked {
+        return true;
+    }
+    let lower = strip_speaker_tag(text).trim().to_lowercase();
+    !describes_rather_than_commits(&lower) && DECISION_SHAPES.iter().any(|m| lower.contains(m))
 }
 
 /// DO 5 — a statement is not an open question: it needs a "?" (its own or
