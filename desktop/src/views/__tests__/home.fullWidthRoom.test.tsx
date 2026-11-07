@@ -31,6 +31,7 @@ import privacySrc from "../settings/Privacy.tsx?raw";
 import homeSrc from "../Home.tsx?raw";
 import historySrc from "../History.tsx?raw";
 import appCss from "../../App.css?raw";
+import tokensCss from "../../tokens.css?raw";
 
 type State = Record<string, unknown>;
 function makeCtx(state: State): AppCtx {
@@ -254,6 +255,21 @@ describe("yap-1107-parity-home — Home matches the approved page's measured rul
     expect(rule(".home-stats")).toMatch(/font-size:\s*14px/);
     expect(rule(".home-stat b")).toMatch(/font-size:\s*20px/);
   });
+  it("batch-6 bounce fixes: stats line box, stretched panels, panel head, label box, row tops", () => {
+    // stats h was 14% off: the 20 px numbers inherited 1.55; the line box is the measured 30.69 px.
+    expect(rule(".home-stats")).toMatch(/height:\s*var\(--home-stats-h\)/);
+    expect(rule(".home-stat b")).toMatch(/line-height:\s*var\(--home-panel-h-lh\)/);
+    expect(tokensCss).toMatch(/--home-stats-h:\s*30\.69px/);
+    // last take h was 47% off: .lower stretches both panels to the row.
+    expect(rule(".home-split")).toMatch(/align-items:\s*stretch/);
+    expect(rule(".home-view .home-panel-h")).toMatch(/line-height:\s*var\(--home-panel-h-lh\)/);
+    // s04 .yh-label 9-14% off: 25 px tall (5 + 15 + 5), never narrower than 134.3 px.
+    expect(rule(".yappy-house .yh-label")).toMatch(/line-height:\s*var\(--home-room-label-lh\)/);
+    expect(rule(".yappy-house .yh-label")).toMatch(/min-width:\s*var\(--home-room-label-w\)/);
+    expect(tokensCss).toMatch(/--home-room-label-lh:\s*15px/);
+    expect(tokensCss).toMatch(/--home-room-label-w:\s*134\.3px/);
+    expect(rule(".recent-row")).toMatch(/align-items:\s*start/);
+  });
   it("the last take is the approved panel: Copy is the dark button, then Open and Paste again", () => {
     const html = home(base({ history: [take(0), take(1)], insights: insights({ totalSessions: 2 }) }));
     const card = html.slice(html.indexOf('data-home="latest"'));
@@ -267,7 +283,12 @@ describe("yap-1107-parity-home — Home matches the approved page's measured rul
   it("recent rows are 110 px | 1fr | 70 px and the search reads the approved words", () => {
     expect(rule(".recent-row")).toMatch(/grid-template-columns:\s*110px minmax\(0, 1fr\) 70px/);
     expect(rule(".recent-row")).toMatch(/padding:\s*9px 4px/);
-    expect(rule(".home-view .home-search input[type=\"search\"]")).toMatch(/height:\s*36px/);
+    // yap-1107-parity-home (batch-6 bounce: padding 12 vs 0) — the BOX is the
+    // approved .search, 36 px with 0 12 px padding and an 8 px gap.
+    expect(rule(".home-view .home-search")).toMatch(/height:\s*36px/);
+    expect(rule(".home-view .home-search")).toMatch(/padding:\s*0 12px/);
+    expect(rule(".home-view .home-search")).toMatch(/gap:\s*8px/);
+    expect(rule(".home-view .home-search input[type=\"search\"]")).toMatch(/inset:\s*0/);
     const html = home(base({ history: [take(0)] }));
     // The hint is TEXT in the box, as on the approved .search; it goes once you type.
     expect(html).toContain('<span class="home-search-hint" aria-hidden="true">Search everything you&#x27;ve said</span>');

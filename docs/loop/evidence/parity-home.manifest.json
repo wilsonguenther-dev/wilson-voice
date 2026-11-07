@@ -2,7 +2,7 @@
   "item": "yap-1107-parity-home",
   "approved": "~/Obsidian/Wilson-Brain/Projects/Yap/design-2026-11-06/home.html (s05 newest; s03, s04 approved earlier)",
   "measuredWith": "node scripts/parity-crops.mjs --page home.html --width 1440 --height 900 (2x, frame 1200 ms), 2026-11-07",
-  "captures": "YAP_SMOKE_SCALE=2 YAP_SMOKE_VIEWS=home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json bash scripts/smoke-windowed.sh (980x700 + 720x520), plus YAP_SMOKE_W1=1188 YAP_SMOKE_H1=880 for the s05 states",
+  "captures": "Two runs of the windowed smoke on the integrated build, seeded daily fixtures (they park two takes in Needs attention, as the approved page shows): (1) YAP_SMOKE_SCALE=2 YAP_SMOKE_VIEWS=home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_W1=1188 YAP_SMOKE_H1=1600 YAP_SMOKE_RUN=parity-home-<date> bash scripts/smoke-windowed.sh  -> custom-home-1188x1600.png (every s05 state: a 968 px main column holds the 3x room, and 1600 px tall holds Home down to its end row, so no state box runs off the capture) and custom-home-720x520.png; (2) the same with W1/H1 unset -> custom-home-980x700.png and custom-home-720x520.png (the s04 room sizes). smoke-windowed.sh honours YAP_SMOKE_W1/H1/W2/H2 (default 980x700 / 720x520).",
   "frameMs": 1200,
   "states": [
     {
@@ -17,9 +17,9 @@
         "view": "home",
         "selector": ".yappy-house .yh-stage",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 960,
@@ -43,9 +43,9 @@
         "view": "home",
         "selector": ".yappy-house",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 960,
@@ -93,9 +93,9 @@
         "view": "home",
         "selector": ".home-stats",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 920,
@@ -118,7 +118,8 @@
           "#1d1c1a",
           "#56534d",
           "#8b877f"
-        ]
+        ],
+        "h": 30.69
       },
       "measured": {
         "w": 920,
@@ -148,9 +149,9 @@
         "view": "home",
         "selector": ".latest-take",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "fontPx": [
@@ -162,7 +163,9 @@
           "r": 16,
           "b": 16,
           "l": 16
-        }
+        },
+        "w": 556.3,
+        "h": 243.56
       },
       "measured": {
         "w": 556.3,
@@ -194,9 +197,9 @@
         "view": "home",
         "selector": ".needs-attention",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "padding": {
@@ -204,7 +207,13 @@
           "r": 16,
           "b": 16,
           "l": 16
-        }
+        },
+        "fontPx": [
+          12,
+          13,
+          14
+        ],
+        "h": 243.56
       },
       "measured": {
         "w": 347.7,
@@ -237,9 +246,9 @@
         "view": "home",
         "selector": ".home-search",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 920,
@@ -250,7 +259,17 @@
         "colors": [
           "#8b877f",
           "#fbfaf7"
-        ]
+        ],
+        "padding": {
+          "t": 0,
+          "r": 12,
+          "b": 0,
+          "l": 12
+        },
+        "gap": {
+          "row": 8,
+          "col": 8
+        }
       },
       "measured": {
         "w": 920,
@@ -278,9 +297,9 @@
         "view": "home",
         "selector": ".recent-takes",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 920,
@@ -316,9 +335,9 @@
         "view": "home",
         "selector": ".home-end",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 920,
@@ -358,9 +377,9 @@
         "view": "home",
         "selector": ".app-footer",
         "width": 1188,
-        "height": 880,
+        "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x880.png"
+        "capture": "custom-home-1188x1600.png"
       },
       "expect": {
         "w": 968,
@@ -428,7 +447,8 @@
         "gap": {
           "row": 7,
           "col": 7
-        }
+        },
+        "w": 134.3
       },
       "measured": {
         "h": 25,
@@ -474,7 +494,8 @@
         "gap": {
           "row": 7,
           "col": 7
-        }
+        },
+        "w": 134.3
       },
       "measured": {
         "h": 25,
