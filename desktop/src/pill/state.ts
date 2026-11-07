@@ -36,6 +36,7 @@ import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
 import { REST_CAPSULE } from "./characterFit";
+import { VDOCK_OPEN, VDOCK_TAB } from "./vdock";
 import { BUBBLE_MAX_H_PX, BUBBLE_MAX_WIDTH_PX } from "./bubble";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
@@ -216,7 +217,14 @@ export function pillLayout(input: PillInput): PillLayout {
       bubble: char, hint: char, clock: null, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
-  const env = RESTING_PHASES.has(phase) ? CHARACTER_REST : CHARACTER_OPEN;
+  // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 188
+  // open, a 30 x 40 tab at rest), flush to the screen edge; every slot (the
+  // clock, the progress row, the bubble, the hint, a card) opens INWARD beside
+  // it, so nothing ever reaches across the screen edge side.
+  const side = dock === "left" || dock === "right";
+  const resting = RESTING_PHASES.has(phase);
+  const env = side ? (resting ? VDOCK_TAB : VDOCK_OPEN) : resting ? CHARACTER_REST : CHARACTER_OPEN;
+  if (side) return sideLayout(key, input, character, env);
   const lines = Math.max(1, Math.round(input.hintLines ?? (phase === "blind" ? 3 : 1)));
   const hintH = lines * HINT_LINE_H;
   // 1 — everything placed relative to the character's top-left at (0, 0).
@@ -265,6 +273,56 @@ export function pillLayout(input: PillInput): PillLayout {
   };
 }
 
+/**
+ * yap-1106-pill-vertical-dock-world — the side-dock layout. The shell is the
+ * character box, flush to the dock edge (no PANEL_MARGIN on that side, so the
+ * window parks it touching the screen edge); the slots stack in one column on
+ * the inner side, SLOT_GAP from the shell: clock first (so it always sits level
+ * with him), then progress, a card, the bubble and the hint. The column is centred on the
+ * shell when it is shorter, top-aligned when it is taller.
+ */
+function sideLayout(key: string, input: PillInput, character: LayoutCharacter, env: Readonly<{ w: number; h: number }>): PillLayout {
+  const { phase, meeting, dock } = input;
+  const left = dock === "left";
+  const lines = Math.max(1, Math.round(input.hintLines ?? (phase === "blind" ? 3 : 1)));
+  const char0: Box = { x: 0, y: 0, w: env.w, h: env.h };
+  const inX = (w: number) => (left ? env.w + SLOT_GAP : -SLOT_GAP - w);
+  const rows: Array<{ name: "clock" | "progress" | "bubble" | "hint" | "card"; w: number; h: number }> = [];
+  if (meeting !== "none") rows.push({ name: "clock", w: CLOCK_W[meeting], h: CLOCK_H });
+  if (phase === PROGRESS_PHASE) rows.push({ name: "progress", w: PROGRESS_W, h: PROGRESS_H });
+  const cardH = input.card ? Math.max(1, Math.ceil(input.card.h)) : 0;
+  if (cardH) rows.push({ name: "card", w: CARD_W, h: cardH });
+  rows.push({ name: "bubble", w: BUBBLE_W, h: BUBBLE_H });
+  rows.push({ name: "hint", w: HINT_W, h: lines * HINT_LINE_H });
+  const colH = rows.reduce((a, r) => a + r.h, 0) + SLOT_GAP * (rows.length - 1);
+  let y = colH < env.h ? (env.h - colH) / 2 : 0;
+  const placed: Partial<Record<(typeof rows)[number]["name"], Box>> = {};
+  for (const r of rows) {
+    placed[r.name] = { x: inX(r.w), y, w: r.w, h: r.h };
+    y += r.h + SLOT_GAP;
+  }
+  const all = [char0, ...Object.values(placed) as Box[]];
+  const minX = Math.min(...all.map((b) => b.x));
+  const minY = Math.min(...all.map((b) => b.y));
+  const maxX = Math.max(...all.map(right));
+  const maxY = Math.max(...all.map(bottom));
+  // flush: the edge side carries no margin, the inner side PANEL_MARGIN
+  const dx = (left ? 0 : PANEL_MARGIN) - minX, dy = PANEL_MARGIN - minY;
+  const char = shift(char0, dx, dy);
+  const at = (b: Box | undefined) => (b ? shift(b, dx, dy) : null);
+  return {
+    key, phase, meeting, dock, character, legacy: false,
+    panel: { w: Math.ceil(maxX - minX + PANEL_MARGIN), h: Math.ceil(maxY - minY + 2 * PANEL_MARGIN) },
+    char,
+    bubble: at(placed.bubble)!,
+    hint: at(placed.hint)!,
+    clock: at(placed.clock),
+    progress: at(placed.progress),
+    card: at(placed.card),
+    anchor: { x: char.x + char.w / 2, y: char.y + char.h / 2 },
+  };
+}
+
 /** Where Yappy's capsule (of width `capW`) is centred inside his box at this dock. */
 export function capsuleCentre(layout: PillLayout, capW: number): { x: number; y: number } {
   const c = layout.char;
@@ -309,7 +367,9 @@ export function layoutProblems(l: PillLayout): string[] {
   }
   if (l.clock && boxGap(l.clock, l.char) > CLOCK_REACH_PT) out.push(`clock ${boxGap(l.clock, l.char).toFixed(1)}pt from the character`);
   const u = unionBox(named.map((n) => n[1]));
-  const wantW = Math.ceil(u.w + 2 * PANEL_MARGIN), wantH = Math.ceil(u.h + 2 * PANEL_MARGIN);
+  // a side dock is flush to the screen edge: PANEL_MARGIN on the inner side only
+  const marginsX = l.dock === "left" || l.dock === "right" ? 1 : 2;
+  const wantW = Math.ceil(u.w + marginsX * PANEL_MARGIN), wantH = Math.ceil(u.h + 2 * PANEL_MARGIN);
   if (l.panel.w !== wantW || l.panel.h !== wantH) out.push(`panel ${l.panel.w}x${l.panel.h} != union+margin ${wantW}x${wantH}`);
   for (const [n, b] of named) {
     if (b.x < 0 || b.y < 0 || right(b) > l.panel.w + 0.5 || bottom(b) > l.panel.h + 0.5) out.push(`${n} outside the panel`);
