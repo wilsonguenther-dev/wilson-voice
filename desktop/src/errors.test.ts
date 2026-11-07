@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPasteFailedGate,
   adviceFor, ERROR_CATALOGUE, errorAdvice, errorCode, errorText, GENERIC_ADVICE, isLicenseRequired, LICENSE_REQUIRED,
   pasteFailedToast, REFUSED_CODE,
 } from "./errors";
@@ -144,5 +145,29 @@ describe("caught errors never reach a line raw", () => {
     expect(a.line).toBe("Yap could not check for updates.");
     expect(a.line).not.toContain("[object Object]");
     expect(a.action?.kind).toBe("support");
+  });
+});
+
+describe("yap-1107 one paste_failed toast per take", () => {
+  it("lets the first paste_failed for a take through and drops a repeat", () => {
+    const once = createPasteFailedGate();
+    expect(once("take-1")).toBe(true);
+    expect(once("take-1")).toBe(false);
+    expect(once("take-2")).toBe(true);
+  });
+
+  it("never swallows an event that carries no id", () => {
+    const once = createPasteFailedGate();
+    expect(once(undefined)).toBe(true);
+    expect(once(undefined)).toBe(true);
+  });
+
+  it("forgets the oldest ids past its limit", () => {
+    const once = createPasteFailedGate(2);
+    once("a");
+    once("b");
+    once("c");
+    expect(once("a")).toBe(true);
+    expect(once("c")).toBe(false);
   });
 });

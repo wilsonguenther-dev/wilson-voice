@@ -290,14 +290,182 @@ pub fn copy_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> 
 
 #[cfg(not(target_os = "macos"))]
 pub fn copy_sequenced(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
-    use tauri_plugin_clipboard_manager::ClipboardExt;
-    app.clipboard()
-        .write_text(text.to_string())
-        .map_err(|e| format!("clipboard write: {e}"))
+    crate::paste::copy_text(app, text)
 }
 
 /// WF-15 — the plain-text pasteboard type every copy declares.
 pub const PLAIN_TEXT_TYPE: &str = "public.utf8-plain-text";
+
+// ─── yap-1107-clipboard-write-never-fails-silently ─────────────────────────
+//
+// Every clipboard write Yap makes goes through [`write_verified_with`]: write,
+// read back (changeCount moved + the string compares equal), and retry with
+// backoff before anything is reported. Before this, the write path had three
+// `let _ = clipboard.write_text(..)` (the settle restore, the left-behind
+// transcript, the clear) whose failures vanished, and every other write trusted
+// the plugin's `Ok` without looking at the pasteboard afterwards — a second
+// writer landing between our write and the target's read (a clipboard manager,
+// Universal Clipboard, a script running pbcopy) went unseen.
+
+/// Waits before each retry. The first try runs at once, so a write gets at
+/// most `1 + WRITE_BACKOFF_MS.len()` attempts (≈260 ms of waiting in total)
+/// before the error is surfaced.
+pub const WRITE_BACKOFF_MS: [u64; 3] = [20, 60, 180];
+
+/// One pasteboard the verified writer drives: the real general pasteboard on
+/// macOS, the clipboard plugin elsewhere, a fake in the tests.
+pub trait PasteboardIo {
+    /// Replace the pasteboard's contents with `text` as plain text.
+    fn write(&mut self, text: &str) -> Result<(), String>;
+    /// The plain-text contents right now (`None` = no string on it).
+    fn read(&mut self) -> Option<String>;
+    /// The pasteboard's change counter, where the platform has one.
+    fn change_count(&mut self) -> Option<i64>;
+}
+
+/// Why one attempt did not verify. Logged by name; never carries the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteCause {
+    /// The pasteboard refused the write outright (plugin / AppKit said no).
+    Refused,
+    /// The write returned OK but the changeCount never moved: nothing landed.
+    Unchanged,
+    /// Read-back found another string: a second writer won the race.
+    Clobbered,
+    /// Read-back found no string at all (promise owner gone, cleared).
+    Empty,
+}
+
+impl WriteCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WriteCause::Refused => "refused",
+            WriteCause::Unchanged => "unchanged",
+            WriteCause::Clobbered => "clobbered",
+            WriteCause::Empty => "empty",
+        }
+    }
+}
+
+/// A write that was SEEN on the pasteboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteReceipt {
+    /// 1 = first try.
+    pub attempts: u32,
+    /// The changeCount the verified contents carry (macOS), for a caller that
+    /// wants to know later whether the pasteboard still holds this write.
+    pub change_count: Option<i64>,
+}
+
+/// A write that never verified after every retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteFailure {
+    pub attempts: u32,
+    pub cause: WriteCause,
+    /// The platform's own words for a `Refused` write (log only).
+    pub detail: String,
+}
+
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "clipboard write: {} after {} tries",
+            self.cause.as_str(),
+            self.attempts
+        )?;
+        if !self.detail.is_empty() {
+            write!(f, " ({})", self.detail)?;
+        }
+        Ok(())
+    }
+}
+
+/// One attempt: write, then prove it by reading back.
+fn attempt_write(
+    io: &mut dyn PasteboardIo,
+    text: &str,
+) -> Result<Option<i64>, (WriteCause, String)> {
+    let before = io.change_count();
+    io.write(text).map_err(|e| (WriteCause::Refused, e))?;
+    let after = io.change_count();
+    if let (Some(b), Some(a)) = (before, after) {
+        if a == b {
+            return Err((WriteCause::Unchanged, String::new()));
+        }
+    }
+    match io.read() {
+        Some(got) if got == text => Ok(after),
+        Some(_) => Err((WriteCause::Clobbered, String::new())),
+        None => Err((WriteCause::Empty, String::new())),
+    }
+}
+
+/// Write `text`, verify it on the pasteboard, retry with [`WRITE_BACKOFF_MS`].
+/// `sleep` is injected so the tests run without waiting. `site` names the
+/// caller in the log line ("copy", "restore", "leave_transcript", …).
+pub fn write_verified_with(
+    io: &mut dyn PasteboardIo,
+    text: &str,
+    site: &str,
+    sleep: &mut dyn FnMut(Duration),
+) -> Result<WriteReceipt, WriteFailure> {
+    let started = Instant::now();
+    let mut attempts: u32 = 0;
+    let mut last = (WriteCause::Refused, String::new());
+    for wait in std::iter::once(None).chain(WRITE_BACKOFF_MS.iter().map(|ms| Some(*ms))) {
+        if let Some(ms) = wait {
+            log::warn!(
+                "paste_tx clipboard_write retry site={site} attempt={next} cause={cause} wait_ms={ms}",
+                next = attempts + 1,
+                cause = last.0.as_str(),
+            );
+            sleep(Duration::from_millis(ms));
+        }
+        attempts += 1;
+        match attempt_write(io, text) {
+            Ok(change_count) => {
+                if attempts > 1 {
+                    log::info!(
+                        "paste_tx clipboard_write recovered site={site} attempts={attempts} ms={}",
+                        started.elapsed().as_millis()
+                    );
+                }
+                return Ok(WriteReceipt {
+                    attempts,
+                    change_count,
+                });
+            }
+            Err(cause) => last = cause,
+        }
+    }
+    let failure = WriteFailure {
+        attempts,
+        cause: last.0,
+        detail: last.1,
+    };
+    log::error!(
+        "paste_tx clipboard_write failed site={site} attempts={attempts} cause={} ms={}",
+        failure.cause.as_str(),
+        started.elapsed().as_millis()
+    );
+    Err(failure)
+}
+
+/// [`write_verified_with`] with a real sleep.
+pub fn write_verified(
+    io: &mut dyn PasteboardIo,
+    text: &str,
+    site: &str,
+) -> Result<WriteReceipt, WriteFailure> {
+    write_verified_with(io, text, site, &mut |d: Duration| std::thread::sleep(d))
+}
+
+/// The general pasteboard as plain text — the one every Yap copy lands on.
+#[cfg(target_os = "macos")]
+pub(crate) fn general_pasteboard() -> mac::GeneralPasteboard {
+    mac::GeneralPasteboard
+}
 
 /// WF-15 — the nspasteboard.org marker that tells well-behaved clipboard
 /// managers (Maccy, Paste, Raycast, …) "this write is transient, do not file
@@ -355,7 +523,7 @@ mod mac {
     use tauri::AppHandle;
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
-    use super::{evaluate, TxState, WaitDecision};
+    use super::{evaluate, PasteboardIo, TxState, WaitDecision};
 
     /// How often the waiter re-evaluates the transaction.
     const POLL: Duration = Duration::from_millis(15);
@@ -468,25 +636,51 @@ mod mac {
         } else if receipt_seen {
             // The target demonstrably read the transcript: hand the user their
             // own clipboard back. This is the receipt, not a guess at a sleep.
-            let clipboard = app.clipboard();
             match &p.saved_text {
                 Some(text) => {
-                    let _ = clipboard.write_text(text.clone());
+                    match super::write_verified(&mut GeneralPasteboard, text, "restore") {
+                        Ok(_) => {
+                            log::info!("reliable-paste: read confirmed — prior clipboard restored")
+                        }
+                        // The transcript stays on the clipboard (the take already
+                        // landed); the user's prior copy is what we failed to put
+                        // back, so say so in the log rather than claim a restore.
+                        Err(e) => diag_warn!(
+                            "paste_tx",
+                            "reliable-paste: read confirmed — prior clipboard NOT restored: {err}",
+                            err = e
+                        ),
+                    }
                 }
                 None => {
-                    let _ = clipboard.clear();
+                    if let Err(e) = app.clipboard().clear() {
+                        diag_warn!(
+                            "paste_tx",
+                            "reliable-paste: read confirmed — clipboard clear failed: {err}",
+                            err = e
+                        );
+                    } else {
+                        log::info!(
+                            "reliable-paste: read confirmed — prior (empty) clipboard restored"
+                        );
+                    }
                 }
             }
-            log::info!("reliable-paste: read confirmed — prior clipboard restored");
         } else {
             // Nobody read it, so the ⌘V never landed. Never lose text: replace
             // the dead promise with the transcript as plain text so the user
             // can still ⌘V it themselves.
-            let _ = app.clipboard().write_text(p.transcript.clone());
-            diag_warn!(
-                "paste_tx",
-                "reliable-paste: no clipboard read within timeout — left the transcript on the clipboard"
-            );
+            match super::write_verified(&mut GeneralPasteboard, &p.transcript, "leave_transcript") {
+                Ok(_) => diag_warn!(
+                    "paste_tx",
+                    "reliable-paste: no clipboard read within timeout — left the transcript on the clipboard"
+                ),
+                Err(e) => diag_error!(
+                    "paste_tx",
+                    "reliable-paste: no clipboard read within timeout and the transcript could not be left on the clipboard: {err}",
+                    err = e
+                ),
+            }
         }
 
         // Release the owner; the outstanding promise dies with the pasteboard
@@ -551,9 +745,9 @@ mod mac {
     /// still open (its restore, if any, happens NOW), then write the copy.
     pub fn settle_then_copy(app: &AppHandle, text: String) -> Result<(), String> {
         flush_pending(app);
-        app.clipboard()
-            .write_text(text)
-            .map_err(|e| format!("clipboard write: {e}"))
+        super::write_verified(&mut GeneralPasteboard, &text, "copy_sequenced")
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// WF-15 — main-thread half of `copy_transient_sequenced`: settle any open
@@ -562,31 +756,81 @@ mod mac {
     pub fn settle_then_copy_transient(app: &AppHandle, text: String) -> Result<(), String> {
         // A pending paste restore must not land after (and clobber) this copy.
         flush_pending(app);
-        let pasteboard = NSPasteboard::generalPasteboard();
-        let names: Vec<Retained<NSString>> = super::transient_copy_types()
-            .iter()
-            .map(|t| NSString::from_str(t))
-            .collect();
-        let types = NSArray::from_retained_slice(&names);
-        let no_owner: Option<&AnyObject> = None;
-        let change_count: NSInteger =
-            unsafe { msg_send![&*pasteboard, declareTypes: &*types, owner: no_owner] };
-        if change_count <= 0 {
-            return Err("declareTypes:owner: failed".into());
+        super::write_verified(&mut TransientPasteboard, &text, "copy_transient")
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// The general pasteboard as plain text (no owner, no promise). Every
+    /// method is a plain AppKit call; `NSPasteboard` may be driven off the main
+    /// thread for data that is already on it (no promise involved).
+    pub struct GeneralPasteboard;
+
+    impl PasteboardIo for GeneralPasteboard {
+        fn write(&mut self, text: &str) -> Result<(), String> {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            let body = NSString::from_str(text);
+            // SAFETY: NSPasteboardTypeString is a read-only framework static.
+            let wrote = pasteboard.setString_forType(&body, unsafe { NSPasteboardTypeString });
+            if wrote {
+                Ok(())
+            } else {
+                Err("setString:forType: returned NO".into())
+            }
         }
-        let body = NSString::from_str(&text);
-        let wrote: bool =
-            unsafe { msg_send![&*pasteboard, setString: &*body, forType: &*names[0]] };
-        if !wrote {
-            return Err("the pasteboard refused the note text".into());
+        fn read(&mut self) -> Option<String> {
+            // SAFETY: as above.
+            NSPasteboard::generalPasteboard()
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .map(|s| s.to_string())
         }
-        // The marker's presence is the signal; its payload is empty.
-        let empty = NSString::from_str("");
-        for marker in &names[1..] {
-            let _: bool =
-                unsafe { msg_send![&*pasteboard, setString: &*empty, forType: &**marker] };
+        fn change_count(&mut self) -> Option<i64> {
+            Some(NSPasteboard::generalPasteboard().changeCount() as i64)
         }
-        Ok(())
+    }
+
+    /// WF-15 — the general pasteboard with the transient marker declared
+    /// beside the text, so clipboard managers skip the note.
+    pub struct TransientPasteboard;
+
+    impl PasteboardIo for TransientPasteboard {
+        fn write(&mut self, text: &str) -> Result<(), String> {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            let names: Vec<Retained<NSString>> = super::transient_copy_types()
+                .iter()
+                .map(|t| NSString::from_str(t))
+                .collect();
+            let types = NSArray::from_retained_slice(&names);
+            let no_owner: Option<&AnyObject> = None;
+            let change_count: NSInteger =
+                unsafe { msg_send![&*pasteboard, declareTypes: &*types, owner: no_owner] };
+            if change_count <= 0 {
+                return Err("declareTypes:owner: failed".into());
+            }
+            let body = NSString::from_str(text);
+            let wrote: bool =
+                unsafe { msg_send![&*pasteboard, setString: &*body, forType: &*names[0]] };
+            if !wrote {
+                return Err("the pasteboard refused the note text".into());
+            }
+            // The marker's presence is the signal; its payload is empty.
+            let empty = NSString::from_str("");
+            for marker in &names[1..] {
+                let marked: bool =
+                    unsafe { msg_send![&*pasteboard, setString: &*empty, forType: &**marker] };
+                if !marked {
+                    log::warn!("paste_tx clipboard_write marker_refused site=copy_transient");
+                }
+            }
+            Ok(())
+        }
+        fn read(&mut self) -> Option<String> {
+            GeneralPasteboard.read()
+        }
+        fn change_count(&mut self) -> Option<i64> {
+            GeneralPasteboard.change_count()
+        }
     }
 
     /// Main-thread half: publish the promise, post ⌘V, arm the waiter. The
@@ -628,7 +872,11 @@ mod mac {
             if let Ok(mut st) = state.lock() {
                 st.injection_failed = true;
             }
-            diag_error!("paste_tx", "reliable-paste: ⌘V injection failed: {err}", err = e);
+            diag_error!(
+                "paste_tx",
+                "reliable-paste: ⌘V injection failed: {err}",
+                err = e
+            );
         }
 
         let pending = Arc::new(Mutex::new(Pending {
@@ -762,5 +1010,247 @@ mod tests {
             Some(injected + Duration::from_millis((MAX_RECEIPTS * 4) as u64)),
             "the newest receipt still decides the quiet period"
         );
+    }
+
+    // ─── yap-1107-clipboard-write-never-fails-silently ─────────────────────
+
+    /// A scripted pasteboard: each write consumes one scripted behaviour.
+    struct FakeBoard {
+        contents: Option<String>,
+        count: i64,
+        script: Vec<FakeWrite>,
+        writes: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    enum FakeWrite {
+        Lands,
+        Refused,
+        /// Returns OK but nothing changes (changeCount stays put).
+        Ignored,
+        /// Lands, then a second writer replaces it before the read-back.
+        Clobbered,
+    }
+
+    impl FakeBoard {
+        fn new(script: Vec<FakeWrite>) -> Self {
+            Self {
+                contents: Some("prior".into()),
+                count: 7,
+                script,
+                writes: 0,
+            }
+        }
+    }
+
+    impl PasteboardIo for FakeBoard {
+        fn write(&mut self, text: &str) -> Result<(), String> {
+            let step = self
+                .script
+                .get(self.writes as usize)
+                .copied()
+                .unwrap_or(FakeWrite::Lands);
+            self.writes += 1;
+            match step {
+                FakeWrite::Lands => {
+                    self.count += 1;
+                    self.contents = Some(text.to_string());
+                    Ok(())
+                }
+                FakeWrite::Refused => Err("busy".into()),
+                FakeWrite::Ignored => Ok(()),
+                FakeWrite::Clobbered => {
+                    self.count += 2;
+                    self.contents = Some("someone else".into());
+                    Ok(())
+                }
+            }
+        }
+        fn read(&mut self) -> Option<String> {
+            self.contents.clone()
+        }
+        fn change_count(&mut self) -> Option<i64> {
+            Some(self.count)
+        }
+    }
+
+    #[test]
+    fn verified_write_lands_on_the_first_try_without_sleeping() {
+        let mut board = FakeBoard::new(vec![FakeWrite::Lands]);
+        let mut slept = Vec::new();
+        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+            slept.push(d)
+        })
+        .expect("a landing write verifies");
+        assert_eq!(r.attempts, 1);
+        assert_eq!(r.change_count, Some(8));
+        assert!(slept.is_empty());
+    }
+
+    /// Acceptance (2): a write another process clobbers is retried with the
+    /// backoff and verified on a later try — never reported as copied early.
+    #[test]
+    fn verified_write_retries_a_clobbered_write_with_backoff() {
+        let mut board = FakeBoard::new(vec![
+            FakeWrite::Clobbered,
+            FakeWrite::Refused,
+            FakeWrite::Lands,
+        ]);
+        let mut slept = Vec::new();
+        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+            slept.push(d)
+        })
+        .expect("third try lands");
+        assert_eq!(r.attempts, 3);
+        assert_eq!(
+            slept,
+            vec![Duration::from_millis(20), Duration::from_millis(60)]
+        );
+        assert_eq!(board.contents.as_deref(), Some("hello"));
+    }
+
+    /// Acceptance (2)+(4): the error surfaces only after every retry, with the
+    /// cause of the last attempt — never a silent `Ok`.
+    #[test]
+    fn verified_write_reports_failure_only_after_every_retry() {
+        let all = 1 + WRITE_BACKOFF_MS.len();
+        for (step, cause) in [
+            (FakeWrite::Clobbered, WriteCause::Clobbered),
+            (FakeWrite::Refused, WriteCause::Refused),
+            (FakeWrite::Ignored, WriteCause::Unchanged),
+        ] {
+            let mut board = FakeBoard::new(vec![step; all]);
+            let mut slept = Vec::new();
+            let e = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+                slept.push(d)
+            })
+            .expect_err("never verified");
+            assert_eq!(e.attempts as usize, all);
+            assert_eq!(e.cause, cause);
+            assert_eq!(board.writes as usize, all, "every retry really wrote");
+            assert_eq!(
+                slept,
+                WRITE_BACKOFF_MS
+                    .iter()
+                    .map(|ms| Duration::from_millis(*ms))
+                    .collect::<Vec<_>>()
+            );
+            assert!(e.to_string().starts_with("clipboard write: "));
+        }
+    }
+
+    /// An empty read-back (promise owner gone, pasteboard cleared) is a
+    /// failure, not a success.
+    #[test]
+    fn verified_write_treats_an_empty_read_back_as_a_failure() {
+        struct Vanishing;
+        impl PasteboardIo for Vanishing {
+            fn write(&mut self, _text: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn read(&mut self) -> Option<String> {
+                None
+            }
+            fn change_count(&mut self) -> Option<i64> {
+                None
+            }
+        }
+        let e = write_verified_with(&mut Vanishing, "hello", "test", &mut |_| {})
+            .expect_err("nothing on the pasteboard");
+        assert_eq!(e.cause, WriteCause::Empty);
+    }
+
+    /// Acceptance (3) — 200 Yap writes through the REAL general pasteboard
+    /// while a second process hammers it with pbcopy. Every write must end
+    /// either verified (and, if nobody wrote since, still on the pasteboard)
+    /// or reported as failed: zero silent failures. Touches the user's real
+    /// clipboard, so it is ignored by default; the integrator runs it:
+    /// `cargo test --lib paste_tx::tests::clipboard_contention_200_writes -- --ignored --nocapture`
+    /// and the results land in docs/loop/evidence/clipboard-write/.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn clipboard_contention_200_writes() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let mut board = general_pasteboard();
+        let saved = board.read();
+        let mut hammer = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "i=0; while :; do i=$((i+1)); printf 'contender-%s' \"$i\" | /usr/bin/pbcopy; done",
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the pbcopy contender");
+        std::thread::sleep(Duration::from_millis(100));
+
+        let (mut verified, mut failed, mut silent, mut retried, mut overwritten_later) =
+            (0u32, 0u32, 0u32, 0u32, 0u32);
+        let mut causes: std::collections::BTreeMap<&'static str, u32> = Default::default();
+        let started = Instant::now();
+        for i in 0..200 {
+            let text = format!("yap-contention-{i}");
+            match write_verified(&mut board, &text, "contention_test") {
+                Ok(r) => {
+                    verified += 1;
+                    if r.attempts > 1 {
+                        retried += 1;
+                    }
+                    // Independent check: if nothing wrote since the verified
+                    // changeCount, the pasteboard must still hold OUR text.
+                    let now = board.change_count();
+                    let got = board.read();
+                    if now == r.change_count {
+                        if got.as_deref() != Some(text.as_str()) {
+                            silent += 1;
+                        }
+                    } else {
+                        overwritten_later += 1;
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    *causes.entry(e.cause.as_str()).or_default() += 1;
+                }
+            }
+        }
+        let elapsed_ms = started.elapsed().as_millis();
+        // Our own child, by handle — never a pattern kill.
+        let _ = hammer.kill();
+        let _ = hammer.wait();
+        if let Some(prior) = saved {
+            let _ = write_verified(&mut board, &prior, "contention_test_restore");
+        }
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/loop/evidence/clipboard-write");
+        std::fs::create_dir_all(&dir).expect("evidence dir");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let body = serde_json::json!({
+            "test": "clipboard_contention_200_writes",
+            "unix_time": stamp,
+            "writes": 200,
+            "verified": verified,
+            "failed_reported": failed,
+            "silent_failures": silent,
+            "verified_after_retry": retried,
+            "overwritten_by_contender_after_verify": overwritten_later,
+            "failure_causes": causes,
+            "backoff_ms": WRITE_BACKOFF_MS,
+            "elapsed_ms": elapsed_ms as u64,
+        });
+        let path = dir.join(format!("contention-{stamp}.json"));
+        let mut f = std::fs::File::create(&path).expect("evidence file");
+        writeln!(f, "{}", serde_json::to_string_pretty(&body).unwrap()).unwrap();
+        println!("{body}");
+
+        assert_eq!(verified + failed, 200, "every write is accounted for");
+        assert_eq!(silent, 0, "zero silent failures");
     }
 }

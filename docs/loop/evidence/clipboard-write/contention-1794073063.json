@@ -1,0 +1,17 @@
+{
+  "backoff_ms": [
+    20,
+    60,
+    180
+  ],
+  "elapsed_ms": 47,
+  "failed_reported": 0,
+  "failure_causes": {},
+  "overwritten_by_contender_after_verify": 1,
+  "silent_failures": 0,
+  "test": "clipboard_contention_200_writes",
+  "unix_time": 1794073063,
+  "verified": 200,
+  "verified_after_retry": 1,
+  "writes": 200
+}
