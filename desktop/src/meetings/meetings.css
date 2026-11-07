@@ -610,3 +610,70 @@
   color: var(--danger-ink);
   margin: 0;
 }
+
+/* yap-1106-auto-label-and-correct — the speaker chip is a quiet button that
+   reads exactly like the label it replaces until hovered or focused; its menu
+   is a small card anchored under it. */
+.seg-who-wrap {
+  position: relative;
+  display: inline-block;
+}
+.seg-who-chip {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: start;
+  border-radius: var(--radius-sm);
+}
+.seg-who-chip:hover,
+.seg-who-chip[aria-expanded="true"] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.seg-who-chip:focus-visible {
+  outline: 2px solid var(--accent-action);
+  outline-offset: 2px;
+}
+.speaker-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-1));
+  inset-inline-start: 0;
+  min-width: 13rem;
+  padding: var(--space-2);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.speaker-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.speaker-menu-list > button {
+  text-align: start;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.speaker-menu-form,
+.speaker-menu-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.speaker-menu-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.transcript-undo {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0 0 var(--space-2);
+}

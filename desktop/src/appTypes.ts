@@ -685,6 +685,8 @@ export interface MeetingSegment {
   track?: number | null;
   /** yap-1106-who-is-this — the saved voice's name for this line, merged in after "Who was this?". */
   speakerName?: string | null;
+  /** yap-1106-auto-label-and-correct — the line's speaker cluster (null = unattributed). */
+  clusterIndex?: number | null;
 }
 
 /** YV125 — one choice on the start-of-meeting kind picker. Mirrors
