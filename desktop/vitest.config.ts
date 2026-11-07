@@ -67,6 +67,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/meetingPopover.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   // yap-call-1 — the call offer's copy, surface and countdown rules.
   "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "views/settings/browserCalls.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -74,6 +75,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.

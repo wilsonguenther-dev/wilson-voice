@@ -36,7 +36,10 @@ import { DURATION } from "./motion";
 // yap24-UI1 — the integer pixel grid: the canvas backing store, the camera blit
 // and the dock anchor all come from one pure module, so every art pixel lands
 // on whole device pixels at every dock and every backing scale.
-import { backingScale, dockCentreX, sceneBlit, toDevice } from "./pixelGrid";
+import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
+// yap-1106-fb-10 — no character is ever cropped: the scene buffer, the pose
+// range, the resting capsule and the camera all come from one pure rule.
+import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout } from "./state";
@@ -231,7 +234,9 @@ export default function YappyPill(
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     // ── wide scene buffer: the world fills its full width so it fills the pill ──
-    const PW = 176, PH = 44, GY = 30, FX = 88, FY = 18;   // face at (FX,FY); grass starts at GY
+    // yap-1106-fb-10 — the world is big enough to cover the widest open capsule at
+    // ONE device px per art px, with sky above him for a hop (characterFit PILL_SCENE).
+    const PW = PILL_SCENE.w, PH = PILL_SCENE.h, GY = PILL_SCENE.groundY, FX = PILL_SCENE.faceX;   // grass starts at GY
     const os = document.createElement("canvas"); os.width = PW; os.height = PH; const octx = os.getContext("2d")!;
     const C: Record<string, string> = {
       sky1: "#8fd6ff", sky2: "#c6ecff", sun: "#fff2b0", cloud: "#fffaf0", grass: "#8fd06a", grassD: "#6fb84e",
@@ -264,13 +269,14 @@ export default function YappyPill(
         for (let x = 3; x < PW; x += 9) rct(x, GY - 2, 1, 2, C.grassD);
         octx.globalAlpha = 1;
       }
-      const cx = FX - (A.prop === "desk" ? 6 : 0), feet = GY;
+      const cx = FX - (A.prop === "desk" ? CHICK_DESK_SHIFT : 0), feet = GY;
       // notepad slides in from the side when noting
       if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
         octx.globalAlpha = A.propIn; rct(px, py, 11, 12, C.paperL); rct(px + 1, py + 1, 9, 10, C.paper);
         for (let i = 0; i < 3; i++) rct(px + 2, py + 3 + i * 2, 7, 1, C.paperL); octx.globalAlpha = 1;
       }
-      drawChick(cx, feet, A);
+      // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises.
+      drawChick(cx, feet, clampChickPose(A));
       // receptionist desk + a little pixel TYPEWRITER
       if (A.prop === "desk" && A.propIn > .05) { const dy = GY - 2 + (1 - A.propIn) * 16;
         octx.globalAlpha = Math.min(1, A.propIn + .2);
@@ -289,6 +295,8 @@ export default function YappyPill(
     // a non-integer ratio). The DPR is re-read every frame, so dragging the pill to
     // a display with another backing scale re-grids it without a resize event.
     let W = 0, H = 0, DPR = backingScale(devicePixelRatio);
+    // yap-1106-fb-10 — one log line per mount if the camera ever could not keep him whole.
+    let warnedCrop = false;
     const resize = () => {
       DPR = backingScale(devicePixelRatio);
       const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -492,7 +500,8 @@ export default function YappyPill(
       ctx.clearRect(0, 0, W, H);
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
-      const capW = lerp(72, 236 * tierOpen, openV), capH = lerp(22, 60 * tierOpen, openV);
+      // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
+      const capW = lerp(REST_CAPSULE.w, OPEN_CAPSULE.w * tierOpen, openV), capH = lerp(REST_CAPSULE.h, OPEN_CAPSULE.h * tierOpen, openV);
       // YV53 — dock edge (read live off <html data-dock>, set by float-main): the
       // window is parked flush to that screen edge, so the capsule hugs it instead
       // of sitting mid-window. ONLY the anchor moves — capsule size and the camera
@@ -516,19 +525,16 @@ export default function YappyPill(
       const g = ctx.createLinearGradient(0, y0, 0, y0 + capH); g.addColorStop(0, "#c6ecff"); g.addColorStop(1, "#8fd6ff");
       ctx.fillStyle = g; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
       ctx.save(); rr(x0 + 1, y0 + 1, capW - 2, capH - 2, (capH - 2) / 2); ctx.clip(); ctx.imageSmoothingEnabled = false;
-      // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
-      const iw = capW - 2, ih = capH - 2;
-      const viewW = lerp(26, PW * 0.8, openV);         // zoom in: see ~80% of the buffer at open (bigger chick + grass)
-      const viewH = viewW * (ih / iw);                // match the capsule aspect → no distortion
-      const vcx = FX, vcy = lerp(FY, PH * 0.5, openV); // pan from the face to the scene centre
-      // yap24-UI1 — the camera view is fitted at the largest WHOLE number of device
-      // px per art px, on a whole-device-px origin; the leftover margin is more of
-      // the world at the same cell, never a stretch. When the world (PW x PH) is too
-      // small to cover the capsule at that cell, the cell steps UP to the smallest
-      // one that covers it (fully open at DPR 1: 2x, the view cropped) — src never
-      // reads past the buffer, so the capsule is never letterboxed. Drawn under an
-      // identity transform (the clip above is already in device space).
-      const blit = sceneBlit({ rect: { x: x0 + 1, y: y0 + 1, w: iw, h: ih }, view: { w: viewW, h: viewH }, centre: { x: vcx, y: vcy }, buffer: { w: PW, h: PH }, dpr: DPR });
+      // CAMERA (yap-1106-fb-10): centred on Yappy's whole bounding box — tufts,
+      // wings, tail, a hop — at the largest WHOLE number of device px per art px
+      // that keeps all of it inside the capsule's rounded clip (never zoomed onto
+      // his face, which cropped his head at rest). The leftover margin is more of
+      // the world at the same cell, never a stretch; the buffer covers every
+      // capsule at that cell, so it is never letterboxed. Drawn under an identity
+      // transform (the clip above is already in device space).
+      const cam = pillCamera({ x: x0, y: y0, w: capW, h: capH }, DPR);
+      if (!cam.fits && !warnedCrop) { warnedCrop = true; console.warn(cropWarning("yappy", { w: capW, h: capH }, DPR)); }
+      const blit = cam.blit;
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
       // sparkles (done) inside the pill — 2 CSS px squares, snapped to whole device px

@@ -18,6 +18,10 @@
  *
  *   node scripts/mic-picker-preview.mjs --out <dir> [--self-test]
  *
+ * WF-10 adds the fallback order ("If a mic disconnects"), the "Other devices"
+ * group for virtual / loopback inputs, the next-in-order hint and the pill's
+ * "Mic disconnected — continuing on …" line (mic-order-*.png, mic-pill-*.png).
+ *
  * NO npm DEPENDENCIES. Cleans up its Chrome process and profile dir on exit.
  */
 
@@ -31,6 +35,7 @@ const CHROME =
   process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const TRAY_RS = readFileSync(join(ROOT, "desktop/src-tauri/src/tray_menu.rs"), "utf8");
 const PICKER_TSX = readFileSync(join(ROOT, "desktop/src/views/settings/parts/MicrophonePicker.tsx"), "utf8");
+const RECORD_RS = readFileSync(join(ROOT, "desktop/src-tauri/src/record.rs"), "utf8");
 const TOKENS = readFileSync(join(ROOT, "desktop/src/tokens.css"), "utf8");
 
 function assertSourcesMatch() {
@@ -43,6 +48,11 @@ function assertSourcesMatch() {
     [PICKER_TSX, "No microphone is connected. Plug one in and it shows up here."],
     [PICKER_TSX, "Yap couldn't list your microphones."],
     [PICKER_TSX, "Your next take records from "],
+    [PICKER_TSX, "If a mic disconnects"],
+    [PICKER_TSX, "Yap keeps recording on the next mic in this order. Drag to rearrange."],
+    [PICKER_TSX, 'label="Other devices"'],
+    [PICKER_TSX, "next in your order, until it's back."],
+    [RECORD_RS, "Mic disconnected — continuing on {to}"],
   ];
   for (const [src, s] of need) if (!src.includes(s)) throw new Error("preview drifted from source: " + JSON.stringify(s));
 }
@@ -98,6 +108,46 @@ function settingsHtml(title, state) {
   return page(title, `<section class="panel"><h3>Microphone</h3>${inner}</section>`);
 }
 
+const AIRPODS = "AirPods Pro";
+const BLACKHOLE = "BlackHole 2ch";
+
+// WF-10 — Settings › Audio › Microphone with the fallback order underneath.
+function orderHtml(title, state) {
+  const unplugged = state === "fallback";
+  const select = `<label class="field"><span>Record from</span><select size="6">
+    <option>System Default (${esc(BUILT_IN)})</option><option>${esc(BUILT_IN)}</option>
+    ${unplugged ? "" : `<option selected>${esc(MV7)}</option>`}<option>${esc(AIRPODS)}</option>
+    <optgroup label="Other devices"><option>${esc(BLACKHOLE)}</option></optgroup>
+    ${unplugged ? `<option selected disabled>${esc(MV7)} — not connected</option>` : ""}</select></label>`;
+  const hint = unplugged
+    ? `${MV7} isn't connected, so Yap uses ${AIRPODS}, next in your order, until it's back.`
+    : `Your next take records from ${MV7}.`;
+  if (state === "before")
+    return page(title, `<section class="panel"><h3>Microphone</h3>${select}<p class="hint">${esc(hint)}</p></section>`);
+  const rows = [
+    { name: MV7, connected: !unplugged },
+    { name: AIRPODS, connected: true },
+    { name: BUILT_IN, connected: true },
+  ];
+  const list = rows
+    .map(
+      (r, i) =>
+        `<li><span class="rank">${i + 1}</span><span class="nm">${esc(r.name)}${r.connected ? "" : '<span class="hint"> — not connected</span>'}</span><button class="ghost"${i === 0 ? " disabled" : ""}>Up</button><button class="ghost"${i === rows.length - 1 ? " disabled" : ""}>Down</button></li>`,
+    )
+    .join("");
+  return page(
+    title,
+    `<section class="panel"><h3>Microphone</h3>${select}<p class="hint">${esc(hint)}</p>
+     <div class="order"><h4>If a mic disconnects</h4><p class="hint">Yap keeps recording on the next mic in this order. Drag to rearrange. Other devices, like virtual and loopback inputs, are never picked on their own.</p><ol>${list}</ol></div></section>`,
+  );
+}
+
+// WF-10 — the pill's line while a take continues on the next mic.
+function pillHtml(title, switched) {
+  const line = switched ? `Mic disconnected — continuing on ${AIRPODS}` : "Recording… release Fn or click Stop";
+  return page(title, `<div class="pill"><span class="dot"></span>${esc(line)}</div>`);
+}
+
 function page(title, body) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${TOKENS}
   body{margin:0;padding:24px;background:var(--surface);color:var(--text-primary);font:13px -apple-system,system-ui,sans-serif}
@@ -115,6 +165,12 @@ function page(title, body) {
   .field{display:flex;align-items:center;gap:12px}
   .field select{font:inherit;padding:5px 8px;min-width:280px}
   .hint{color:var(--text-muted);margin:10px 0 0}
+  .order{margin-top:16px}.order h4{margin:0 0 4px;font-size:13px}
+  .order ol{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:4px}
+  .order li{display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--surface-raised)}
+  .order .rank{min-width:1.5em;color:var(--text-muted)}.order .nm{flex:1}.order .ghost{margin-top:0}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:var(--radius-pill);background:var(--surface-inverse);color:var(--text-on-inverse)}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--status-live)}
   .ghost{margin-top:10px;font:inherit;background:none;border:1px solid var(--border-subtle);border-radius:6px;padding:5px 12px;color:var(--text-primary)}
   </style></head><body><h1>${esc(title)}</h1>${body}</body></html>`;
 }
@@ -129,6 +185,11 @@ const JOBS = [
   { file: "mic-settings-after-unplugged.png", html: () => settingsHtml("after: Settings › Audio — picked mic unplugged", "unplugged") },
   { file: "mic-settings-after-empty.png", html: () => settingsHtml("after: Settings › Audio — no microphone", "empty") },
   { file: "mic-settings-after-error.png", html: () => settingsHtml("after: Settings › Audio — list failed", "error") },
+  { file: "mic-order-before.png", html: () => orderHtml("before (WF-09): no fallback order, virtual inputs mixed in", "before") },
+  { file: "mic-order-after-ranked.png", html: () => orderHtml("after (WF-10): fallback order + Other devices", "ranked") },
+  { file: "mic-order-after-fallback.png", html: () => orderHtml("after (WF-10): pinned mic unplugged → next in order", "fallback") },
+  { file: "mic-pill-before.png", html: () => pillHtml("before: the pill during a take", false) },
+  { file: "mic-pill-after-switched.png", html: () => pillHtml("after (WF-10): the mic vanished mid-take", true) },
 ];
 
 async function shoot(cdp, file, doc) {

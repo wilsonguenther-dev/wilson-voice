@@ -93,6 +93,10 @@ pub mod license;
 // yap-lic-01 — offline verifier for drivia.consulting license tokens (compact
 // JWS, EdDSA, EMBEDDED keys only). Wired into `license` as the v2 path.
 pub mod license_v2;
+// yap-1106-lic-03 — the drivia.consulting activation client: activate /
+// refresh / deactivate over `license::LicenseTransport` (the only module that
+// reaches the licensing service). Tokens are verified offline by `license_v2`.
+pub mod license_client;
 // yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
 pub mod lifecycle;
 mod logging;
@@ -1570,6 +1574,12 @@ fn build_status(state: &AppState) -> AppStatus {
         ptt: &ptt,
         session_cap_warned: *state.session_cap_warned.lock(),
     });
+    // WF-10 — the mic vanished mid-take and capture carried on on the next
+    // one: the live take's line says so (the ceiling notice still outranks it).
+    let message = match record::mid_take_mic_note() {
+        Some(note) if recording && !*state.session_cap_warned.lock() => note,
+        _ => message,
+    };
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::still_recording_message(&chord_label)
@@ -1639,6 +1649,9 @@ fn emit_status(app: &AppHandle, state: &AppState) {
 /// `emit_status` is sometimes invoked from the ASR worker thread, so the actual
 /// updates are hopped onto the main thread with cheap Arc-backed handle clones.
 fn sync_tray(app: &AppHandle, state: &AppState) {
+    // WF-14 — the "Update ready" line, and a deferred restart that was waiting
+    // for this very transition to quiet.
+    sync_update_ready(app, state);
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
@@ -1772,6 +1785,100 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     });
 }
 
+/// WF-14 — the menu-bar "Update ready" line's handle. Built with the tray,
+/// inserted only while a downloaded release waits for a restart.
+static TRAY_UPDATE_READY: std::sync::Mutex<Option<MenuItem<Wry>>> = std::sync::Mutex::new(None);
+
+/// WF-14 — what Yap is doing right now, for the restart gate. A dictation, a
+/// take still decoding, a polish pass, meeting notes being written, or a
+/// meeting recording each keep the restart waiting.
+fn update_activity(state: &AppState) -> tray_menu::Activity {
+    let notes = SUMMARY_JOBS
+        .get()
+        .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
+        .unwrap_or(false);
+    tray_menu::Activity {
+        dictating: *state.recording.lock(),
+        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        polishing: tray_menu::polish_in_flight(),
+        notes,
+        meeting: state.meeting().is_some_and(|c| c.is_recording()),
+    }
+}
+
+/// WF-14 — reflect `tray_menu::UPDATE_READY` into the menu, and fire a
+/// deferred restart the moment Yap is quiet. Called from `sync_tray` (every
+/// state transition), from `install_update` and from the item's own click.
+/// The line sits directly under the status header (under the upgrade line when
+/// that shows) and is removed when no newer release is waiting — so a fresh
+/// process, already running the installed build, never shows it.
+fn sync_update_ready(app: &AppHandle, state: &AppState) {
+    let ready = tray_menu::UPDATE_READY.version();
+    let running = app.package_info().version.to_string();
+    let visible = tray_menu::update_item_visible(ready.as_deref(), &running);
+    let was_shown = tray_menu::UPDATE_READY.swap_shown(visible);
+    if !visible && !was_shown {
+        return;
+    }
+    let activity = update_activity(state);
+    let blocker = tray_menu::restart_blocker(activity);
+    let armed = tray_menu::UPDATE_READY.is_armed();
+    if tray_menu::restart_when_quiet(visible, armed, activity) {
+        tray_menu::UPDATE_READY.set_armed(false);
+        log::info!(
+            "update restart_deferred_fired version={}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+        // Through RunEvent::Exit and its bounded quit teardown, then relaunch.
+        app.request_restart();
+        return;
+    }
+    if visible && !was_shown {
+        log::info!(
+            "tray update_ready shown version={} running={running}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+    } else if !visible && was_shown {
+        log::info!("tray update_ready removed running={running}");
+    }
+    let label = tray_menu::update_ready_label(blocker, armed);
+    let item = TRAY_UPDATE_READY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let menu = state.tray_menu.lock().clone();
+    let (Some(item), Some(menu)) = (item, menu) else {
+        return; // tray not built yet; the next transition places it
+    };
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(label);
+        let items = menu.items().unwrap_or_default();
+        let present = items
+            .iter()
+            .any(|k| k.id().as_ref() == tray_menu::ID_UPDATE_READY);
+        if visible && !present {
+            let mut at = items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_LICENSE_HEADER)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if items
+                .get(at)
+                .is_some_and(|k| k.id().as_ref() == tray_menu::ID_UPGRADE)
+            {
+                at += 1;
+            }
+            if let Err(e) = menu.insert(&item, at) {
+                log::warn!("tray update_ready insert failed: {e}");
+            }
+        } else if !visible && present {
+            if let Err(e) = menu.remove(&item) {
+                log::warn!("tray update_ready remove failed: {e}");
+            }
+        }
+    });
+}
+
 /// Y6-B — what each menu-bar command DOES. Exhaustive over
 /// `tray_menu::TrayCommand` with no wildcard arm: a command added to the
 /// registry without a handler here does not compile. The tray's
@@ -1883,6 +1990,37 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         // every window.
         TrayCommand::PickLanguage(index) => {
             pick_language_from_tray(app, state, index);
+        }
+        // WF-14 — "Update ready — Restart to update". Never restarts out from
+        // under a take, a polish or a meeting: busy, the click arms a deferred
+        // restart (`sync_update_ready` fires it on the first quiet
+        // transition) and a second click cancels it.
+        TrayCommand::RestartToUpdate => {
+            let ready = tray_menu::UPDATE_READY.version();
+            let armed = tray_menu::UPDATE_READY.is_armed();
+            let activity = update_activity(state);
+            let blocker = tray_menu::restart_blocker(activity);
+            let action = tray_menu::restart_click(ready.is_some(), armed, activity);
+            log::info!(
+                "tray restart_to_update action={action:?} blocker={} version={}",
+                blocker.map(tray_menu::Busy::as_str).unwrap_or("none"),
+                ready.as_deref().unwrap_or("none")
+            );
+            match action {
+                tray_menu::RestartAction::Nothing => {}
+                tray_menu::RestartAction::RestartNow => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    app.request_restart();
+                }
+                tray_menu::RestartAction::Arm => {
+                    tray_menu::UPDATE_READY.set_armed(true);
+                    sync_update_ready(app, state);
+                }
+                tray_menu::RestartAction::Disarm => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    sync_update_ready(app, state);
+                }
+            }
         }
         // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
         TrayCommand::OpenLanguageSettings => {
@@ -2933,9 +3071,16 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             let state_lv = state.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
+                // WF-10 — redraw the pill when the take moves to another mic.
+                let mut mic_switch_seen = record::mic_switch_seq();
                 loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
+                    let mic_switch_now = record::mic_switch_seq();
+                    if mic_switch_now != mic_switch_seen {
+                        mic_switch_seen = mic_switch_now;
+                        emit_status(&app_lv, &state_lv);
+                    }
                     let warned = *state_lv.session_cap_warned.lock();
                     match record::session_cap_tick(started.elapsed(), warned) {
                         record::SessionCapAction::Continue => {}
@@ -4162,7 +4307,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // failure modes are otherwise invisible by construction.
                 // yap24-PILL2: wrapped so `polishing` is reported exactly when
                 // the cleanup pipeline actually calls the polish stage.
-                take_stages.polishing(|t| polish::polish_llm_result(t, dictation_mode, &polish_config)),
+                take_stages.polishing(|t| {
+                    // WF-14 — the restart gate reads this while it is held.
+                    let _polish = tray_menu::PolishGuard::enter();
+                    polish::polish_llm_result(t, dictation_mode, &polish_config)
+                }),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -6441,6 +6590,16 @@ async fn set_microphone(
     mic_select::choose(id, name, "settings")
         .map_err(|_| "Yap could not save that microphone. Try again.".to_string())?;
     Ok(mic_select::list())
+}
+
+/// WF-10 — save the fallback ranking (stable ids, best first) from Settings.
+/// When the chosen mic disappears — before a take or in the middle of one —
+/// Yap continues on the first ranked mic still plugged in. Virtual inputs are
+/// never auto-picked, ranked or not.
+#[tauri::command]
+async fn set_microphone_order(ids: Vec<String>) -> Result<mic_select::MicList, String> {
+    mic_select::set_order(ids)
+        .map_err(|_| "Yap could not save the microphone order. Try again.".to_string())
 }
 
 #[tauri::command]
@@ -9690,6 +9849,78 @@ fn meeting_kind_choices() -> Vec<meeting_control::KindChoice> {
     meeting_control::KIND_PICKER.to_vec()
 }
 
+/// WF-08 — what the pill's Meeting popover shows: today's next three meetings,
+/// "No upcoming meetings", or "Connect calendar". Decided by
+/// `calendar::meeting_popover` from the SAME snapshot the menu bar's "Today's
+/// Meetings" reads (`meeting_detect::upcoming_snapshot`), so the pill and the
+/// tray never disagree. Never reads EventKit, never asks for access.
+#[tauri::command]
+fn meeting_popover(state: State<'_, Arc<AppState>>) -> calendar::MeetingPopover {
+    let setup = state.db.notetaker_setup();
+    let snap = meeting_detect::upcoming_snapshot();
+    let pop = calendar::meeting_popover(
+        snap.as_ref(),
+        chrono::Local::now().timestamp(),
+        !setup.dismissed && !setup.calendar,
+    );
+    log::info!(
+        "pill meeting_popover opened state={} rows={} connect_nav={}",
+        pop.state,
+        pop.meetings.len(),
+        pop.connect.as_ref().map_or("none", |c| c.nav.as_str())
+    );
+    pop
+}
+
+/// WF-08 — a Record row of the pill's Meeting popover. Looks the row up by its
+/// occurrence key in the current snapshot, starts the recording named after
+/// the event (Virtual when it carries a link, as the tray's Record does), and
+/// snoozes the pill offer for that same occurrence. A row that left today's
+/// list since the popover opened is refused in words.
+#[tauri::command]
+fn meeting_popover_record(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let snap = meeting_detect::upcoming_snapshot();
+    let Some(row) = calendar::popover_meeting_for(snap.as_ref(), &key) else {
+        log::warn!("pill meeting_popover_record result=ignored:stale_row");
+        return Err(calendar::POPOVER_STALE_ERROR.to_string());
+    };
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    let st = state.inner().clone();
+    let started = std::time::Instant::now();
+    match begin_meeting(&app, &st, row.title.clone(), kind) {
+        Ok(status) => {
+            let result = if status.recording {
+                "started"
+            } else {
+                "not_started"
+            };
+            log::info!(
+                "pill meeting_popover_record result={result} has_title={} linked={} ms={}",
+                row.title.is_some(),
+                row.has_link,
+                started.elapsed().as_millis()
+            );
+            if meeting_detect::respond(&row.key).is_some() {
+                meeting_detect::emit_clear(&app);
+                release_offer_pill(&app);
+            }
+            Ok(status)
+        }
+        Err(e) => {
+            log::warn!("pill meeting_popover_record result=error:{e}");
+            Err(e)
+        }
+    }
+}
+
 /// Start a meeting. Errors (no capture engine, one already running) come back as
 /// a string the UI shows verbatim — this is the button a first-time user
 /// presses, and a silent failure here is the whole of finding #6 all over again.
@@ -10946,14 +11177,41 @@ fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
 }
 
 /// Paste a license key. Verified BEFORE it is written, so a bad paste never
-/// lands on disk. Activation is entirely local (yap-lic-00): the key is checked
-/// against the compiled-in public key and no network call is made.
+/// lands on disk.
+///
+/// yap-1106-lic-03 — a `DCL-` key goes to drivia.consulting: ONE
+/// `POST /api/v1/licensing/activate` (`license_client`), on a blocking thread
+/// so the webview never waits on the main thread. The returned token is
+/// verified offline by `license_v2` before it is stored. Any other paste (a v1
+/// key, or a token) is checked locally with no network call, as before.
 #[tauri::command]
-fn activate_license(
+async fn activate_license(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    client: State<'_, Arc<license_client::LicenseClient>>,
     key: String,
 ) -> Result<license::LicenseStatus, CommandError> {
+    if license_client::is_dcl_key(&key) {
+        let client = client.inner().clone();
+        let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
+        return match joined {
+            Ok(Ok(status)) => {
+                let _ = app.emit("license", &status);
+                Ok(status)
+            }
+            Ok(Err(e)) => Err(CommandError {
+                code: e.code,
+                message: e.message,
+            }),
+            Err(_) => {
+                log::warn!("license_client activate failure=join");
+                Err(CommandError {
+                    code: "server".to_string(),
+                    message: license_client::message_for("server").to_string(),
+                })
+            }
+        };
+    }
     match state.license.activate(&key) {
         Ok(status) => {
             let _ = app.emit("license", &status);
@@ -11012,12 +11270,34 @@ fn open_purchase_page() -> Result<(), String> {
 
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
+///
+/// yap-1106-lic-03 — a drivia.consulting token frees its seat server-side
+/// FIRST (`license_client::LicenseClient::deactivate`); offline, the license
+/// stays and the error says why. A Mac with no token clears locally.
 #[tauri::command]
-fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
-    state.license.deactivate();
-    let status = state.license.status();
-    let _ = app.emit("license", &status);
-    status
+async fn deactivate_license(
+    app: AppHandle,
+    client: State<'_, Arc<license_client::LicenseClient>>,
+) -> Result<license::LicenseStatus, CommandError> {
+    let client = client.inner().clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || client.deactivate()).await;
+    match joined {
+        Ok(Ok(status)) => {
+            let _ = app.emit("license", &status);
+            Ok(status)
+        }
+        Ok(Err(e)) => Err(CommandError {
+            code: e.code,
+            message: e.message,
+        }),
+        Err(_) => {
+            log::warn!("license_client deactivate failure=join");
+            Err(CommandError {
+                code: "server".to_string(),
+                message: license_client::message_for("server").to_string(),
+            })
+        }
+    }
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -11601,6 +11881,12 @@ async fn install_update(app: AppHandle) -> Result<String, String> {
             e.to_string()
         })?;
     log::info!("Yap {version} installed — applies on relaunch");
+    // WF-14 — the menu bar now offers "Update ready — Restart to update"; the
+    // restart itself waits for a quiet Yap (`tray_menu::restart_gate`).
+    tray_menu::UPDATE_READY.mark_ready(&version);
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        sync_update_ready(&app, &state);
+    }
     Ok(version)
 }
 
@@ -12242,6 +12528,7 @@ pub fn run() {
             microphone_status,
             list_microphones,
             set_microphone,
+            set_microphone_order,
             get_insights,
             daily_series,
             monthly_series,
@@ -12326,6 +12613,9 @@ pub fn run() {
             meeting_status,
             toggle_meeting_recording,
             meeting_kind_choices,
+            // WF-08 — the pill's Meeting popover.
+            meeting_popover,
+            meeting_popover_record,
             start_meeting,
             stop_meeting,
             export_history,
@@ -12443,6 +12733,45 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
+            // yap-1106-lic-03 — the activation client, on the licensing
+            // Keychain service of the RUNNING bundle id (a test channel keeps
+            // its own seat). Then the launch-time refresh check, on its own
+            // thread: it makes NO request while the token is fresh
+            // (`license_client::refresh_due`), and never blocks startup.
+            let lic_client = Arc::new(license_client::LicenseClient::new(
+                state.license.clone(),
+                Arc::new(license_client::HttpTransport),
+                Arc::new(keychain::MacKeychain::with_service(
+                    license_client::keychain_service_for(&app.config().identifier),
+                )),
+            ));
+            app.manage(lic_client.clone());
+            {
+                let handle = app.handle().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("license-refresh".into())
+                    .spawn(move || {
+                        let outcome = lic_client.refresh_if_due();
+                        if outcome.changes_status() {
+                            let status = lic_client.status();
+                            let _ = handle.emit("license", &status);
+                            if let license_client::RefreshOutcome::Deleted(code) = &outcome {
+                                // The activation screen states the reason.
+                                let _ = handle.emit(
+                                    "license_notice",
+                                    serde_json::json!({
+                                        "code": code,
+                                        "message": license_client::message_for(code),
+                                    }),
+                                );
+                            }
+                        }
+                    });
+                if spawned.is_err() {
+                    log::warn!("license_client refresh_thread failure=spawn");
+                }
+            }
+
             // DB-D — the Scratchpad's close/blur handling now rides with the
             // window itself: yap-1106-one-pill makes it on first use
             // (scratchpad::ensure_window), never here at launch.
@@ -12492,6 +12821,12 @@ pub fn run() {
             // The running binary's signature and the duplicate-bundle scan,
             // computed once, off the main thread, before the banner needs them.
             perm_truth::prime();
+            // yap-fx-08 — two copies of Yap on disk (the Desktop copy beside
+            // /Applications/Yap.app) split the TCC grants between them. Ask
+            // ONCE per set of copies, naming the running copy and which one
+            // holds the Microphone, whether to keep /Applications/Yap.app and
+            // move the rest to the Trash.
+            perm_truth::spawn_duplicate_copies_notice(app.handle().clone(), state.db.clone());
             // yap-p0-perm-repair: persist the last-run signature EVERY launch.
             perm_probe::prime();
 
@@ -12769,6 +13104,15 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            // WF-14 — built now, inserted only while an installed release
+            // waits for a restart (`sync_update_ready`).
+            let update_ready_i = MenuItem::with_id(
+                app,
+                tm::ID_UPDATE_READY,
+                tm::label(tm::ID_UPDATE_READY),
+                true,
+                None::<&str>,
+            )?;
             let show_i =
                 MenuItem::with_id(app, tm::ID_SHOW, tm::label(tm::ID_SHOW), true, None::<&str>)?;
             // Y6-B — the transcript history (the Home view).
@@ -12885,6 +13229,8 @@ pub fn run() {
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
+            *TRAY_UPDATE_READY.lock().unwrap_or_else(|p| p.into_inner()) = Some(update_ready_i);
+            tm::UPDATE_READY.reset_shown();
             *state.tray_menu.lock() = Some(menu.clone());
             // yap-1106 (a) — the meeting block is re-synced from
             // `controller.status()` whenever the tray is built, so a status that

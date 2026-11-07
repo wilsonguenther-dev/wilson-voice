@@ -16,6 +16,8 @@ vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: vi.fn() } }));
 
 import GEOMETRY from "./dock-geometry.json";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import {
   FLOW_BAR_SLOTS, FlowBarSlots, layoutSlots, meetingNoteTitle, pressSlot, railFailed, railKeysFrom,
   railLogLine, railShown, SCRATCHPAD_WINDOW_LANDED, SLOT_GAP_PX, slotAxis, slotById, slotLength,
@@ -255,6 +257,75 @@ describe("item 18 / WF-03 pill rail", () => {
     pressSlot(slotById("meeting-start"), railCtx(), noop, false);
     await flush();
     expect(inv.mock.calls.map((c) => c[0])).toContain("meeting_kind_choices");
+  });
+
+  it("meeting_popover_renders_all_three_states_from_the_backend_answer", async () => {
+    // WF-08 — the Meeting button opens the popover drawn from `meeting_popover`
+    // (calendar::meeting_popover, the menu bar's own snapshot).
+    type Item = { text?: string; enabled?: boolean; item?: string; action?: (id: string) => void; items?: Item[] };
+    const inv = vi.mocked(invoke);
+    const newMenu = vi.mocked(Menu.new);
+    const popup = vi.fn(() => Promise.resolve());
+    newMenu.mockImplementation((() => Promise.resolve({ popup })) as never);
+    const KINDS = [{ kind: "in_person", label: "In person" }, { kind: "virtual", label: "Virtual" }];
+    const answer = (popover: unknown) =>
+      inv.mockImplementation(((cmd: string) =>
+        Promise.resolve(cmd === "meeting_popover" ? popover : cmd === "meeting_kind_choices" ? KINDS : undefined)) as never);
+    const open = async (): Promise<Item[]> => {
+      newMenu.mockClear();
+      inv.mockClear();
+      pressSlot(slotById("meeting-start"), railCtx(), noop, false);
+      await flush();
+      await flush();
+      expect(newMenu).toHaveBeenCalledTimes(1);
+      return (newMenu.mock.calls[0][0] as unknown as { items: Item[] }).items;
+    };
+
+    // 1. Connected with meetings: a Record row each, then Record now (kinds).
+    answer({
+      state: "meetings",
+      meetings: [
+        { key: "cal:a:1", title: "Standup", clock: "2:00 PM", hasLink: true },
+        { key: "cal:b:2", title: null, clock: "2:30 PM", hasLink: false },
+      ],
+      emptyText: null, connectText: null, connect: null, recordNowText: "Record now",
+    });
+    let items = await open();
+    expect(items.map((i) => i.text ?? i.item)).toEqual([
+      "Record \u201cStandup\u201d \u00b7 2:00 PM", "Record Meeting at 2:30 PM", "Separator", "Record now",
+    ]);
+    expect(items[3].items?.map((i) => i.text)).toEqual(["In person", "Virtual"]);
+    inv.mockClear();
+    items[1].action?.("x");
+    expect(inv).toHaveBeenCalledWith("meeting_popover_record", { key: "cal:b:2" });
+    items[3].items?.[1].action?.("x");
+    expect(inv).toHaveBeenCalledWith("start_meeting", { title: null, kind: "virtual" });
+
+    // 2. Connected and empty.
+    answer({
+      state: "empty", meetings: [], emptyText: "No upcoming meetings",
+      connectText: null, connect: null, recordNowText: "Record now",
+    });
+    items = await open();
+    expect(items.map((i) => i.text ?? i.item)).toEqual(["No upcoming meetings", "Separator", "Record now"]);
+    expect(items[0].enabled).toBe(false);
+
+    // 3. Not connected: Connect calendar opens the existing setup card.
+    answer({
+      state: "not_connected", meetings: [], emptyText: "No upcoming meetings",
+      connectText: "Connect calendar", connect: { nav: "meetings", tab: null }, recordNowText: "Record now",
+    });
+    items = await open();
+    expect(items.map((i) => i.text ?? i.item)).toEqual(["No upcoming meetings", "Connect calendar", "Separator", "Record now"]);
+    vi.mocked(emit).mockClear();
+    inv.mockClear();
+    items[1].action?.("x");
+    expect(inv).toHaveBeenCalledWith("show_main");
+    expect(emit).toHaveBeenCalledWith("navigate", "meetings");
+    expect(popup).toHaveBeenCalled();
+
+    inv.mockImplementation((() => Promise.resolve()) as never);
+    newMenu.mockReset();
   });
 
   it("hands_free_has_a_clickable_stop_with_its_key", () => {

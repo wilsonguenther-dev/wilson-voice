@@ -322,3 +322,330 @@ pub fn them_owner_label(other_party: Option<&str>) -> String {
         .unwrap_or(crate::meetings::SYSTEM_SPEAKER_LABEL)
         .to_string()
 }
+
+// ─── WF-08 — the pill's Meeting popover ─────────────────────────────────────
+//
+// The rail's Meeting button opens a small popover: today's next meetings with
+// a Record row each, "Record now", and — when the calendar is not in use —
+// "No upcoming meetings" plus "Connect calendar". It reads the SAME snapshot
+// the menu bar's "Today's Meetings" reads (`meeting_detect::upcoming_today` →
+// `publish_upcoming` → `upcoming_snapshot`), so the two can never disagree and
+// the list is decided by one tested function. Nothing here reads EventKit or
+// asks for access: "Connect calendar" only NAVIGATES to the setup card, whose
+// own button stays the one place access is requested (rule 2 above).
+
+/// At most this many of today's meetings are listed in the pill's popover.
+pub const POPOVER_MAX: usize = 3;
+/// The popover's line when nothing is coming up (or the calendar is off).
+pub const POPOVER_EMPTY_LABEL: &str = "No upcoming meetings";
+/// The popover's way to the setup card when the calendar is not in use.
+pub const POPOVER_CONNECT_LABEL: &str = "Connect calendar";
+/// Start a recording right now, no calendar event needed.
+pub const POPOVER_RECORD_NOW_LABEL: &str = "Record now";
+/// `meeting_popover_record` for a row that left today's list after it opened.
+pub const POPOVER_STALE_ERROR: &str =
+    "That meeting is no longer on today's list — use Record now instead.";
+
+/// Which of the three states the popover is in.
+pub const POPOVER_STATE_MEETINGS: &str = "meetings";
+pub const POPOVER_STATE_EMPTY: &str = "empty";
+pub const POPOVER_STATE_NOT_CONNECTED: &str = "not_connected";
+
+/// One Record row of the popover.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PopoverMeeting {
+    /// The occurrence key (`meeting_detect::UpcomingMeeting::key`) handed back
+    /// to `meeting_popover_record`; Record snoozes the pill offer for it.
+    pub key: String,
+    /// The event title to show. `None` when the user hid titles in the menu
+    /// bar ("Hide Meeting Titles") or the event has none; the row then reads
+    /// "Record Meeting at 2:00 PM", exactly like the tray's row.
+    pub title: Option<String>,
+    /// "2:00 PM", the same text the menu bar shows.
+    pub clock: String,
+    /// Carries a conferencing link (recorded as Virtual).
+    pub has_link: bool,
+}
+
+/// Where "Connect calendar" goes: the main window's `navigate` payload and,
+/// for Settings, the `settings-tab` payload.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PopoverConnect {
+    pub nav: String,
+    pub tab: Option<String>,
+}
+
+/// Everything the popover draws, decided from ONE snapshot.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPopover {
+    /// [`POPOVER_STATE_MEETINGS`] | [`POPOVER_STATE_EMPTY`] | [`POPOVER_STATE_NOT_CONNECTED`].
+    pub state: String,
+    /// At most [`POPOVER_MAX`], earliest first. Empty unless state is "meetings".
+    pub meetings: Vec<PopoverMeeting>,
+    /// [`POPOVER_EMPTY_LABEL`] when there is nothing to list.
+    pub empty_text: Option<String>,
+    /// [`POPOVER_CONNECT_LABEL`] when state is "not_connected".
+    pub connect_text: Option<String>,
+    /// Where "Connect calendar" opens. `Some` exactly when `connect_text` is.
+    pub connect: Option<PopoverConnect>,
+    /// Always [`POPOVER_RECORD_NOW_LABEL`] — Record now is in every state.
+    pub record_now_text: String,
+}
+
+/// THE decision for the pill's Meeting popover.
+///
+/// * `snap` — `meeting_detect::upcoming_snapshot()`: `None` = the calendar is
+///   not in use ("Use my calendar" off, or no full access), the same meaning
+///   the menu bar gives it.
+/// * `now_unix` — rows that started more than `IN_PROGRESS_SECS` ago are
+///   dropped, so a snapshot that is a few minutes old never offers a meeting
+///   the menu bar would no longer list.
+/// * `setup_card_offers_connect` — the Meetings tab's setup card still shows
+///   its Connect calendar step (not dismissed, step not done). When it does,
+///   "Connect calendar" opens that card; otherwise it opens Settings →
+///   Meetings, where "Use my calendar" and the access line live.
+///
+/// Titles follow the menu bar's "Hide Meeting Titles" toggle: the pill is on
+/// screen during calls too.
+pub fn meeting_popover(
+    snap: Option<&crate::meeting_detect::UpcomingSnapshot>,
+    now_unix: i64,
+    setup_card_offers_connect: bool,
+) -> MeetingPopover {
+    let record_now_text = POPOVER_RECORD_NOW_LABEL.to_string();
+    let Some(snap) = snap else {
+        let connect = if setup_card_offers_connect {
+            PopoverConnect {
+                nav: "meetings".to_string(),
+                tab: None,
+            }
+        } else {
+            PopoverConnect {
+                nav: "settings".to_string(),
+                tab: Some("meetings".to_string()),
+            }
+        };
+        return MeetingPopover {
+            state: POPOVER_STATE_NOT_CONNECTED.to_string(),
+            meetings: Vec::new(),
+            empty_text: Some(POPOVER_EMPTY_LABEL.to_string()),
+            connect_text: Some(POPOVER_CONNECT_LABEL.to_string()),
+            connect: Some(connect),
+            record_now_text,
+        };
+    };
+    let meetings: Vec<PopoverMeeting> = snap
+        .meetings
+        .iter()
+        .filter(|m| m.start_unix > now_unix - crate::meeting_detect::IN_PROGRESS_SECS)
+        .take(POPOVER_MAX)
+        .map(|m| PopoverMeeting {
+            key: m.key.clone(),
+            title: if snap.hide_titles {
+                None
+            } else {
+                m.title.clone()
+            },
+            clock: crate::tray_menu::meeting_clock(m.start_unix, snap.utc_offset_secs),
+            has_link: m.has_link,
+        })
+        .collect();
+    let empty = meetings.is_empty();
+    MeetingPopover {
+        state: if empty {
+            POPOVER_STATE_EMPTY
+        } else {
+            POPOVER_STATE_MEETINGS
+        }
+        .to_string(),
+        meetings,
+        empty_text: empty.then(|| POPOVER_EMPTY_LABEL.to_string()),
+        connect_text: None,
+        connect: None,
+        record_now_text,
+    }
+}
+
+/// `meeting_popover_record` — the meeting behind a row, looked up by its key
+/// in the SAME snapshot the popover was drawn from. `None` = the row went
+/// stale (the day moved on, or the calendar was turned off meanwhile).
+pub fn popover_meeting_for(
+    snap: Option<&crate::meeting_detect::UpcomingSnapshot>,
+    key: &str,
+) -> Option<crate::meeting_detect::UpcomingMeeting> {
+    snap?.meetings.iter().find(|m| m.key == key).cloned()
+}
+
+#[cfg(test)]
+mod popover_tests {
+    //! WF-08 — the three states of the pill's Meeting popover, from the ONE
+    //! snapshot WF-07's menu bar reads.
+    use super::*;
+    use crate::meeting_detect::{UpcomingMeeting, UpcomingSnapshot};
+
+    /// 2026-11-06 14:00:00 UTC.
+    const TWO_PM: i64 = 1_794_060_000;
+
+    fn meeting(key: &str, title: Option<&str>, start: i64, link: bool) -> UpcomingMeeting {
+        UpcomingMeeting {
+            key: key.to_string(),
+            title: title.map(str::to_string),
+            start_unix: start,
+            has_link: link,
+        }
+    }
+
+    fn snap(hide_titles: bool, meetings: Vec<UpcomingMeeting>) -> UpcomingSnapshot {
+        UpcomingSnapshot {
+            meetings,
+            hide_titles,
+            utc_offset_secs: 0,
+        }
+    }
+
+    #[test]
+    fn popover_connected_with_meetings_lists_next_three_with_record_rows() {
+        let s = snap(
+            false,
+            vec![
+                meeting("cal:a:1", Some("Standup"), TWO_PM, true),
+                meeting("cal:b:2", None, TWO_PM + 1800, false),
+                meeting("cal:c:3", Some("  Design review "), TWO_PM + 3600, false),
+                meeting("cal:d:4", Some("Fourth"), TWO_PM + 5400, false),
+            ],
+        );
+        let p = meeting_popover(Some(&s), TWO_PM - 600, true);
+        assert_eq!(p.state, POPOVER_STATE_MEETINGS);
+        assert_eq!(p.meetings.len(), POPOVER_MAX);
+        assert_eq!(p.meetings[0].title.as_deref(), Some("Standup"));
+        assert_eq!(p.meetings[0].clock, "2:00 PM");
+        assert!(p.meetings[0].has_link);
+        assert_eq!(p.meetings[0].key, "cal:a:1");
+        assert_eq!(p.meetings[1].title, None);
+        assert_eq!(p.meetings[1].clock, "2:30 PM");
+        assert_eq!(p.meetings[2].key, "cal:c:3");
+        assert_eq!(p.empty_text, None);
+        assert_eq!(p.connect_text, None);
+        assert_eq!(p.connect, None);
+        assert_eq!(p.record_now_text, POPOVER_RECORD_NOW_LABEL);
+    }
+
+    #[test]
+    fn popover_hides_titles_when_the_menu_bar_does() {
+        let s = snap(
+            true,
+            vec![meeting("cal:a:1", Some("Standup"), TWO_PM, false)],
+        );
+        let p = meeting_popover(Some(&s), TWO_PM - 60, false);
+        assert_eq!(p.meetings[0].title, None);
+        assert_eq!(p.meetings[0].clock, "2:00 PM");
+    }
+
+    #[test]
+    fn popover_connected_and_empty_says_no_upcoming_meetings() {
+        let p = meeting_popover(Some(&snap(false, Vec::new())), TWO_PM, true);
+        assert_eq!(p.state, POPOVER_STATE_EMPTY);
+        assert!(p.meetings.is_empty());
+        assert_eq!(p.empty_text.as_deref(), Some(POPOVER_EMPTY_LABEL));
+        assert_eq!(p.connect, None, "a connected calendar never offers Connect");
+        assert_eq!(p.record_now_text, POPOVER_RECORD_NOW_LABEL);
+
+        // A stale snapshot whose only meeting is long over is "empty" too.
+        let old = snap(
+            false,
+            vec![meeting("cal:a:1", Some("Earlier"), TWO_PM, false)],
+        );
+        let p = meeting_popover(
+            Some(&old),
+            TWO_PM + crate::meeting_detect::IN_PROGRESS_SECS + 1,
+            true,
+        );
+        assert_eq!(p.state, POPOVER_STATE_EMPTY);
+        // ...while one that just began is still recordable.
+        let p = meeting_popover(Some(&old), TWO_PM + 60, true);
+        assert_eq!(p.state, POPOVER_STATE_MEETINGS);
+    }
+
+    #[test]
+    fn popover_not_connected_offers_connect_calendar_to_the_setup_card() {
+        let p = meeting_popover(None, TWO_PM, true);
+        assert_eq!(p.state, POPOVER_STATE_NOT_CONNECTED);
+        assert!(p.meetings.is_empty());
+        assert_eq!(p.empty_text.as_deref(), Some(POPOVER_EMPTY_LABEL));
+        assert_eq!(p.connect_text.as_deref(), Some(POPOVER_CONNECT_LABEL));
+        assert_eq!(
+            p.connect,
+            Some(PopoverConnect {
+                nav: "meetings".to_string(),
+                tab: None
+            })
+        );
+        assert_eq!(p.record_now_text, POPOVER_RECORD_NOW_LABEL);
+        // The card was dismissed or its calendar step is done: Settings → Meetings.
+        let p = meeting_popover(None, TWO_PM, false);
+        assert_eq!(
+            p.connect,
+            Some(PopoverConnect {
+                nav: "settings".to_string(),
+                tab: Some("meetings".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn popover_reads_the_same_upcoming_today_list_as_the_menu_bar() {
+        // ONE data source: the snapshot WF-07's `upcoming_today` builds from
+        // EventKit events. The popover shows the first three of exactly the
+        // rows the menu bar lists, in the same order, with the same clock.
+        use crate::meeting_detect::{upcoming_today, CalendarEvent};
+        let ev = |id: &str, title: &str, start: i64| CalendarEvent {
+            id: id.to_string(),
+            title: Some(title.to_string()),
+            start_unix: start,
+            ..Default::default()
+        };
+        let events = vec![
+            ev("late", "Retro", TWO_PM + 7200),
+            ev("first", "Standup", TWO_PM),
+            ev("past", "Breakfast", TWO_PM - 7200),
+            ev("mid", "Design review", TWO_PM + 1800),
+            ev("third", "1:1", TWO_PM + 3600),
+        ];
+        let s = snap(false, upcoming_today(&events, TWO_PM, TWO_PM + 36_000));
+        let menu = crate::tray_menu::upcoming_menu(&s);
+        let pop = meeting_popover(Some(&s), TWO_PM, true);
+        let menu_keys: Vec<&str> = menu.rows.iter().map(|r| r.key.as_str()).collect();
+        let pop_keys: Vec<&str> = pop.meetings.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(pop_keys, menu_keys[..POPOVER_MAX].to_vec());
+        assert_eq!(
+            pop.meetings
+                .iter()
+                .map(|m| m.title.as_deref().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            vec!["Standup", "Design review", "1:1"]
+        );
+        // Nothing left today → the same "empty" for both.
+        let s = snap(false, upcoming_today(&[], TWO_PM, TWO_PM + 36_000));
+        assert!(crate::tray_menu::upcoming_menu(&s).rows.is_empty());
+        assert_eq!(
+            meeting_popover(Some(&s), TWO_PM, true).state,
+            POPOVER_STATE_EMPTY
+        );
+    }
+
+    #[test]
+    fn popover_record_finds_the_row_by_key_or_reports_it_stale() {
+        let s = snap(
+            false,
+            vec![meeting("cal:a:1", Some("Standup"), TWO_PM, true)],
+        );
+        let m = popover_meeting_for(Some(&s), "cal:a:1").expect("row");
+        assert_eq!(m.title.as_deref(), Some("Standup"));
+        assert!(m.has_link);
+        assert_eq!(popover_meeting_for(Some(&s), "cal:zzz:9"), None);
+        assert_eq!(popover_meeting_for(None, "cal:a:1"), None);
+    }
+}

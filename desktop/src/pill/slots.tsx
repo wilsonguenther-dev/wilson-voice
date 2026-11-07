@@ -38,10 +38,11 @@
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { Menu } from "@tauri-apps/api/menu";
+import { Menu, type MenuItemOptions, type PredefinedMenuItemOptions, type SubmenuOptions } from "@tauri-apps/api/menu";
 import { Mic, MicOff, NotebookPen, Settings2, Square, StickyNote, Users, X } from "lucide-react";
 import { barAxis, barTokens, shellBarPhase, type BarDock } from "./dock";
 import { isListening, type LivePhase, type TranscribeProgress } from "./live";
+import { parseMeetingPopover, popoverEntries, type KindChoice, type PopoverEntry } from "./meetingPopover";
 
 export type SlotId =
   | "dictate"
@@ -285,32 +286,70 @@ async function openScratchpad(dock: BarDock): Promise<void> {
   });
 }
 
-/** Mirrors `meeting_control::KindChoice` (serde camelCase; `MeetingKind` is snake_case). */
-interface KindChoice {
-  kind: string;
-  label: string;
-}
+type PopoverMenuItem = MenuItemOptions | PredefinedMenuItemOptions | SubmenuOptions;
 
 /**
- * Start meeting WITH ITS KIND: a native popup of the backend's own picker
- * (`meeting_kind_choices`, the list the tray and the Meetings tab render), so
- * the pill can never offer a kind the others do not. Nothing records until the
- * person picks a row — a click is the consent (product rule).
+ * WF-08 — the Meeting button's popover: today's next three meetings (each a
+ * Record row), "Record now" WITH ITS KIND (the backend's own picker,
+ * `meeting_kind_choices`, the list the tray and the Meetings tab render), and,
+ * when no calendar is in use, "No upcoming meetings" + "Connect calendar",
+ * which opens the existing setup card. What it lists comes from the backend
+ * (`meeting_popover` → `calendar::meeting_popover`, the SAME snapshot the menu
+ * bar's "Today's Meetings" reads); `popoverEntries` (meetingPopover.ts) orders
+ * the rows. It is a native popup, so it escapes the small pill window and
+ * arrow keys / Return / Escape work. Nothing records until the person picks a
+ * row — a click is the consent (product rule).
  */
 async function startMeetingMenu(dock: BarDock): Promise<void> {
-  railLog("meeting_menu", { dock });
-  const got = await invoke<KindChoice[] | null>("meeting_kind_choices").catch(() => null);
+  const [rawPopover, got] = await Promise.all([
+    invoke<unknown>("meeting_popover").catch(() => null),
+    invoke<KindChoice[] | null>("meeting_kind_choices").catch(() => null),
+  ]);
+  const model = parseMeetingPopover(rawPopover);
   const choices = Array.isArray(got) ? got.filter((c) => c && c.kind && c.label) : [];
+  railLog("meeting_menu", { dock, state: model?.state ?? "unavailable", rows: model?.meetings.length ?? 0 });
   const start = (kind: string | null) => {
     const t0 = Date.now();
     invoke("start_meeting", { title: null, kind })
       .then(() => railLog("meeting_start", { kind: kind ?? "unknown", dock, ms: Date.now() - t0 }))
       .catch((e) => railFailed("meeting_start", e, typeof e === "string" && e ? e : "Meeting didn't start — try Record in the menu bar."));
   };
-  if (choices.length === 0) { start(null); return; }
-  const menu = await Menu.new({
-    items: choices.map((c) => ({ text: c.label, action: () => start(c.kind) })),
+  const record = (key: string, row: number) => {
+    const t0 = Date.now();
+    invoke("meeting_popover_record", { key })
+      .then(() => railLog("meeting_popover_record", { row, dock, ms: Date.now() - t0 }))
+      .catch((e) => railFailed("meeting_popover_record", e, typeof e === "string" && e ? e : "That meeting didn't start — try Record now."));
+  };
+  const connect = (nav: string, tab: string | null) => {
+    railLog("meeting_connect_calendar", { dock, nav, tab: tab ?? "none" });
+    openMain(nav, tab ?? undefined);
+  };
+  const entries = popoverEntries(model, choices);
+  // No backend answer and no kinds: the button does what it always did.
+  if (entries.length === 1 && entries[0].type === "record-now" && entries[0].kinds.length === 0) {
+    start(null);
+    return;
+  }
+  let recordRow = 0;
+  const items = entries.map((e: PopoverEntry): PopoverMenuItem => {
+    switch (e.type) {
+      case "record": {
+        const row = recordRow++;
+        return { text: e.text, action: () => record(e.key, row) };
+      }
+      case "note":
+        return { text: e.text, enabled: false };
+      case "connect":
+        return { text: e.text, action: () => connect(e.nav, e.tab) };
+      case "separator":
+        return { item: "Separator" };
+      case "record-now":
+        return e.kinds.length === 0
+          ? { text: e.text, action: () => start(null) }
+          : { text: e.text, items: e.kinds.map((c) => ({ text: c.label, action: () => start(c.kind) })) };
+    }
   });
+  const menu = await Menu.new({ items });
   await menu.popup();
 }
 
@@ -421,14 +460,14 @@ export const FLOW_BAR_SLOTS: readonly FlowBarSlot[] = [
     acrossPx: (ctx) => (railShown(ctx) ? SLOT_PX : Math.min(SLOT_PX, barThickness(ctx))),
   },
   {
-    // Item 18 — Start meeting, WITH its kind (native picker). Hidden once one records.
+    // Item 18 / WF-08 — the Meeting popover (today's meetings, Record now, Connect calendar). Hidden once one records.
     id: "meeting-start",
     group: "trail",
     glyph: () => <Users strokeWidth={2.2} />,
     tooltip: () => "Record a meeting",
     keycap: (ctx) => ctx.keys?.meeting ?? null,
     visible: (ctx) => railShown(ctx) && !ctx.meetingRecording,
-    onPress: (ctx) => { startMeetingMenu(ctx.dock).catch((e) => railFailed("meeting_menu", e, "Meeting picker didn't open — try Record in the menu bar.")); },
+    onPress: (ctx) => { startMeetingMenu(ctx.dock).catch((e) => railFailed("meeting_menu", e, "Meetings didn't open — try Record in the menu bar.")); },
     lengthPx: SLOT_PX,
     acrossPx: fixedAcross,
   },

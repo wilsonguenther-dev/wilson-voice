@@ -35,6 +35,7 @@
 import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
+import { REST_CAPSULE } from "./characterFit";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
 export type MeetingMode = "none" | "recording" | "after";
@@ -102,8 +103,12 @@ export const PANEL_MARGIN = 10;
 export const SLOT_GAP = 6;
 /** Acceptance: the clock touches or sits within this many points of the character. */
 export const CLOCK_REACH_PT = 12;
-/** Yappy's resting capsule (YappyPill: lerp(72, …), lerp(22, …) at openV = 0). */
-export const CHARACTER_REST = { w: 72, h: 22 } as const;
+/**
+ * Yappy's resting capsule (YappyPill: lerp(REST_CAPSULE.w, …) at openV = 0).
+ * yap-1106-fb-10 — sized by characterFit to hold every pill character WHOLE
+ * (was 72 x 22, which only fitted a face close-up: "the heads cropped").
+ */
+export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /** The speech bubble's reserved row (12 px bold + 5 px padding + border). */
