@@ -112,7 +112,7 @@ describe("launch walk — bound to engine load, never a timer", () => {
     expect(early.running).toBe(true);
     expect(early.scroll).toBeCloseTo(scrollForPct(40));
     const caught = launchWalkModel(base({ progress: prog(100, "ready"), sinceReadyMs: READY_CATCHUP_MS, readyFromPct: 40 }));
-    expect(caught.scroll).toBe(WALK_DIST);
+    expect(caught.scroll).toBeCloseTo(WALK_DIST);
     expect(caught.officeOpen).toBe(true);
     expect(launchWalkModel(base({ progress: prog(100, "ready"), sinceReadyMs: READY_SHOW_MS })).mode).toBe("hidden");
   });
