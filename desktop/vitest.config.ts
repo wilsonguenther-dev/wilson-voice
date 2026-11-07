@@ -58,6 +58,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "meetings/liveSnapshot.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "meetings/meetingsLayout.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1107-sidebar-collapses-to-icons — floor set WITHOUT a run (no-compile rule;
+  // sidebarRail.test.ts drives every function and branch); the integrator re-measures and may only raise it.
+  "sidebarRail.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
   "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/chatter.ts": { lines: 95, branches: 90, functions: 95, statements: 95 },
