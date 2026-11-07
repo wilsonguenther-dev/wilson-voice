@@ -77,7 +77,9 @@ import {
   GATE_HOLD_IDLE, gateHovered, gateSettleDueIn, onGateHover, reduceGateHold,
   type GateHold,
 } from "./pill/gateClick";
-import { voiceFor } from "./pill/voices";
+import { curseAllowed, curseBlock, voiceFor } from "./pill/voices";
+import { useCallRecordingView } from "./pill/CallOffer";
+import { isLiveCall } from "./pill/callOfferModel";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -124,6 +126,8 @@ interface Settings {
   pillStyle?: string;
   pillPosition?: string;
   companionTone?: string;
+  /** yap-1106-curse-setting — the Badass curse toggle (backend `companion_curse`, off by default). */
+  companionCurse?: boolean;
   /**
    * Y8-B — the Scratchpad's "Add to Flow Bar" toggle. Not on the backend's
    * Settings yet: it ships with DB-D (the Scratchpad window), and until then
@@ -373,6 +377,7 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
@@ -594,6 +599,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
@@ -659,6 +665,25 @@ function Float() {
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
   const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
+  // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
+  // Badass only, and never in a meeting state (recording, or its after-view on
+  // screen). Yap has no screen-share detector (no Screen Recording permission,
+  // by rule), so a LIVE CALL the call detector sees (Zoom, Meet, Teams… in any
+  // phase but idle, recorded or not) is the stand-in for "the screen may be
+  // shared": a call is where screens get shared. `screenShared` is also the
+  // hook a real share signal plugs into later.
+  const liveCall = isLiveCall(useCallRecordingView());
+  const curseGateIn = {
+    enabled: curseSetting,
+    voice: voiceFor(tone),
+    meeting: meeting.status.recording || meetingAfter !== null,
+    screenShared: liveCall,
+  };
+  const curseOn = curseAllowed(curseGateIn);
+  const curseWhy = curseBlock(curseGateIn);
+  useEffect(() => {
+    console.info(`pill voice_curse state=${curseWhy ?? "on"}`);
+  }, [curseWhy]);
   useEffect(() => {
     document.documentElement.dataset.fnHint = fnHint ? "true" : "false";
   }, [fnHint]);
@@ -713,7 +738,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} curse={curseOn} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
