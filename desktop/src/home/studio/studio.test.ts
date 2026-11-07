@@ -65,6 +65,10 @@ function st(over: Partial<StudioState> = {}): StudioState {
     battery: null,
     streakDays: null,
     newsReady: false,
+    engineLoading: false,
+    modelReady: true,
+    screenSharing: false,
+    doNotDisturb: false,
     yappy: "rest",
     ...over,
   };
