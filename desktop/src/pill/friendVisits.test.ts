@@ -4,6 +4,7 @@ import {
   DAILY_VISITS_QUIETER,
   DAILY_VISITS_QUIETEST,
   EMPTY_LEDGER,
+  CALL_LIVE_PHASES,
   EVENT_OWNER,
   FRIEND_EVENTS,
   QUIETER_AFTER_TAKES,
@@ -12,6 +13,7 @@ import {
   VISIT_GAP_QUIETER_MS,
   VISIT_MAX_MS,
   VISIT_QUIETER_MS,
+  callLive,
   dailyVisitCap,
   dayKey,
   decideVisit,
@@ -160,6 +162,22 @@ describe("friend visits — the approved quiet rules", () => {
     const l = at("backtrack-caught", { ...calm, doNotDisturb: true }, EMPTY_LEDGER).ledger;
     expect(l).toEqual(EMPTY_LEDGER);
     expect(reason(at("backtrack-caught", calm, l).d)).toBe("shown");
+  });
+
+  it("a live call is quiet like a meeting, from the call-offer phase", () => {
+    for (const phase of CALL_LIVE_PHASES) expect(callLive({ phase })).toBe(true);
+    expect(callLive({ phase: "idle" })).toBe(false);
+    expect(callLive({ phase: "end_prompt" })).toBe(false);
+    expect(callLive(null)).toBe(false);
+    expect(callLive("recording")).toBe(false);
+    expect(callLive({ phase: 3 })).toBe(false);
+    // The pill folds a live call into `meeting`, so a friend stays away.
+    const inCall = { ...calm, meeting: callLive({ phase: "chip" }) };
+    expect(reason(decideVisit("backtrack-caught", inCall, EMPTY_LEDGER, Date.now()))).toBe("meeting");
+    // When the call ends the friend may come (the fake clock moved on, the day was not used).
+    vi.advanceTimersByTime(H);
+    const after = { ...calm, meeting: callLive({ phase: "end_prompt" }) };
+    expect(reason(decideVisit("backtrack-caught", after, EMPTY_LEDGER, Date.now()))).toBe("shown");
   });
 
   it("a visit on screen leaves the moment a meeting, a share or Do Not Disturb starts", () => {

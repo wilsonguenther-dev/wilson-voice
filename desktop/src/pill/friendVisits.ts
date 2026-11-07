@@ -22,8 +22,8 @@
  *
  *   - a visit lasts at most [`VISIT_MAX_MS`] (4 s), shorter for a heavy user;
  *   - each friend visits at most once per local day;
- *   - never while a meeting records, the screen is shared or Do Not Disturb is
- *     on (Mochi's rule) — and a visit already on screen leaves the moment one
+ *   - never while a meeting records or a call is live (`callLive`), the screen
+ *     is shared or Do Not Disturb is on (Mochi's rule) — and a visit already on screen leaves the moment one
  *     of those starts;
  *   - one friend at a time;
  *   - from take [`QUIETER_AFTER_TAKES`] on, friends visit less: at most
@@ -258,6 +258,20 @@ export const serializeLedger = (l: VisitLedger): string => JSON.stringify(l);
 export function parseQuietState(raw: unknown): { screenSharing: boolean; doNotDisturb: boolean } {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return { screenSharing: o.screenSharing === true, doNotDisturb: o.doNotDisturb === true };
+}
+
+/**
+ * The call-offer phases (`call_offer.rs`, mirrored in callOfferModel.ts) in
+ * which a call app is live: a call is where screens get shared, so a live
+ * call is as quiet as a recording meeting even before anyone presses Record.
+ * `idle` and the after-call `end_prompt` are not live.
+ */
+export const CALL_LIVE_PHASES: readonly string[] = ["offering", "chip", "recording"];
+
+/** Is a call live, from a `call_offer` view payload? Anything malformed reads as not live. */
+export function callLive(view: unknown): boolean {
+  const o = view && typeof view === "object" ? (view as Record<string, unknown>) : null;
+  return typeof o?.phase === "string" && CALL_LIVE_PHASES.includes(o.phase);
 }
 
 /** The milestone a take count reaches exactly, or null (Yappy's visit). */

@@ -9,9 +9,10 @@
  *            else sits in the pill) and `friend_event { event }` for the
  *            owners whose backend signal lands separately (Gulp, Shelly,
  *            Cinder — Cinder's payload also says whether the cloud is on);
- *   quiet    the meeting recording (from the shell) plus `pill_quiet
- *            { screenSharing, doNotDisturb }`; a visit on screen leaves the
- *            moment any of them turns on.
+ *   quiet    the meeting recording (from the shell), a live call (the
+ *            `call_offer` view — a call is where screens get shared) plus
+ *            `pill_quiet { screenSharing, doNotDisturb }`; a visit on screen
+ *            leaves the moment any of them turns on.
  *
  * The ledger (once a day each, the after-50 caps) is one localStorage row, so
  * a relaunch does not reset a friend's day. Storage failing costs only the
@@ -22,12 +23,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { CALL_OFFER_EVENT, CALL_OFFER_STATE } from "./callOfferModel";
 import { BACKTRACK_CAUGHT_EVENT } from "./backtrackCaught";
 import {
   EMPTY_LEDGER,
   FRIEND_EVENT,
   PILL_QUIET_EVENT,
   VISIT_MAX_MS,
+  callLive,
   decideVisit,
   milestoneReached,
   parseLedger,
@@ -117,15 +121,18 @@ export interface FriendVisitProps {
 export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, forced = null }: FriendVisitProps) {
   const [visit, setVisit] = useState<Visit | null>(null);
   const [quiet, setQuiet] = useState({ screenSharing: false, doNotDisturb: false });
+  /** A call app is live (offering / chip / recording) — as quiet as a meeting. */
+  const [inCall, setInCall] = useState(false);
+  const meetingQuiet = meetingRecording || inCall;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ledgerRef = useRef<VisitLedger>(EMPTY_LEDGER);
   const takesRef = useRef(0);
   const visitRef = useRef<Visit | null>(null);
-  const ctxRef = useRef({ meetingRecording, occupant, quiet });
+  const ctxRef = useRef({ meetingQuiet, occupant, quiet });
   // Synced first, so every effect below (and every listener) reads this render.
   useEffect(() => {
-    ctxRef.current = { meetingRecording, occupant, quiet };
-  }, [meetingRecording, occupant, quiet]);
+    ctxRef.current = { meetingQuiet, occupant, quiet };
+  }, [meetingQuiet, occupant, quiet]);
 
   useEffect(() => {
     ledgerRef.current = loadLedger();
@@ -135,7 +142,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const raise = useCallback((event: string, cloudConnected = false) => {
     const c = ctxRef.current;
     const ctx: VisitContext = {
-      meeting: c.meetingRecording,
+      meeting: c.meetingQuiet,
       screenSharing: c.quiet.screenSharing,
       doNotDisturb: c.quiet.doNotDisturb,
       takesSoFar: takesRef.current,
@@ -171,6 +178,18 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       console.info(`pill friend_visit quiet screen_sharing=${q.screenSharing} dnd=${q.doNotDisturb}`);
       setQuiet(q);
     }).then(push, fail(PILL_QUIET_EVENT));
+    const call = (view: unknown) => {
+      const live = callLive(view);
+      setInCall((was) => {
+        if (was !== live) console.info(`pill friend_visit call live=${live}`);
+        return live;
+      });
+    };
+    listen<unknown>(CALL_OFFER_EVENT, (e) => call(e.payload)).then(push, fail(CALL_OFFER_EVENT));
+    // A pill that mounted mid-call reads the live view once.
+    invoke<unknown>(CALL_OFFER_STATE)
+      .then((v) => { if (!dead) call(v); })
+      .catch((e: unknown) => console.warn(`pill friend_visit call_state_failed reason=${e instanceof Error ? e.name : "unknown"}`));
     listen<unknown>("transcript", () => {
       takesRef.current += 1;
       saveTakes(takesRef.current);
@@ -192,7 +211,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
 
   // A meeting, a share or Do Not Disturb ends a visit at once; otherwise the
   // visit ends on its own clock (at most 4 s).
-  const silent = quietReason({ meeting: meetingRecording, ...quiet }) !== null;
+  const silent = quietReason({ meeting: meetingQuiet, ...quiet }) !== null;
   useEffect(() => {
     if (!visit) return undefined;
     const end = () => { visitRef.current = null; setVisit(null); };
