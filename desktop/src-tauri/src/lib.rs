@@ -8014,8 +8014,14 @@ fn retry_decode_bounded(
             Ok(_) => "ok".to_string(),
             Err(e) => format!("error:{}", e.replace('\n', " ")),
         };
+        // yap-1106-retry-replay-regression — the window counts say whether a
+        // long clip (45b1e41d, 214 s) took the windowed path; 0/0 on an error.
+        let (windows, windows_failed) = match result {
+            Ok(out) => (out.chunks, out.chunks_failed),
+            Err(_) => (0, 0),
+        };
         log::info!(
-            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} windows={windows} windows_failed={windows_failed} wall_ms={} engine_loads_during={}",
             started.elapsed().as_millis(),
             manager.engine_loads().saturating_sub(loads_before)
         );
@@ -18084,6 +18090,63 @@ mod retry_engine_tests {
         assert_eq!(m.engine_loads(), 1);
         live_take.join().unwrap().unwrap();
     }
+
+    /// yap-1106-retry-replay-regression — "Retry all" over today's three kept
+    /// clips (45b1e41d 214 s, b1d90963, 882c587d), one at a time as
+    /// `runRetryAll` drives them, on a fake engine: every clip comes back with
+    /// text inside its own deadline, each retry loads nothing (the acceptance
+    /// is engine_loads_during <= 1; a warm engine makes it 0), and the whole
+    /// run holds ONE engine. The real-audio replay is `retry_replay` (ignored,
+    /// private clips). Only the 214 s length is pinned here; the other two
+    /// get the deadline floor, the strictest clock a retry runs under.
+    #[test]
+    fn retry_all_over_todays_three_kept_clips_returns_text_each_on_one_engine() {
+        // The 214 s take gets the cap, not 229 s: a retry never waits longer.
+        assert_eq!(retry_deadline(214.0), Duration::from_secs(180));
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(20),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        for (id, clip_secs) in [("45b1e41d", 214.0), ("b1d90963", 0.0), ("882c587d", 0.0)] {
+            let deadline = retry_deadline(clip_secs);
+            let decode_mgr = m.clone();
+            let loads_before = m.engine_loads();
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &m,
+                id,
+                clip_secs,
+                deadline,
+                &mut |p| phases.push(p),
+                move || {
+                    decode_mgr
+                        .transcribe(vec![0.01; 16_000], None, None)
+                        .map(|text| transcription::AsrOutput {
+                            text,
+                            ..recovered_only_output()
+                        })
+                },
+            )
+            .unwrap_or_else(|e| panic!("{id}: retry failed: {e}"));
+            let wall = started.elapsed();
+            assert!(!out.text.trim().is_empty(), "{id}: empty transcript");
+            assert!(wall < deadline, "{id}: {wall:?} over {deadline:?}");
+            assert!(
+                m.engine_loads().saturating_sub(loads_before) <= 1,
+                "{id}: a retry loaded a second engine"
+            );
+            assert_eq!(phases, vec![RetryPhase::Decoding], "{id}: never queued");
+            assert!(!m.is_busy(), "{id}: the engine is back in its slot");
+        }
+        assert_eq!(m.engine_loads(), 1, "one engine for the whole Retry-all run");
+    }
 }
 
 /// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
@@ -18139,20 +18202,41 @@ mod retry_ui_contract_tests {
 /// green. The model is read from the same directory (`<file>` of the default
 /// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
 ///
-///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+/// yap-1106-retry-replay-regression adds the guard for the three clips kept
+/// later that day — 45b1e41d (214 s, the take that needs SP-01 windowing),
+/// b1d90963 and 882c587d — replayed the way "Retry all" runs them: one at a
+/// time, in order, on ONE manager. Each must come back with text inside its
+/// own deadline and load the engine at most once; a clip longer than
+/// [`transcription::DICTATION_CHUNK_THRESHOLD_SECONDS`] must take the
+/// windowed path (that check arms itself the day SP-01 drops the threshold
+/// to 35 s). The clips are never committed: copy them, run, delete the copy.
+///
+///   D="$(mktemp -d)"; cp <the kept wavs> "$D/"; cp <models>/<default>.gguf "$D/"
 ///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
 ///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+///   rm -rf "$D"
 #[cfg(test)]
 mod retry_replay {
     use super::*;
     use std::time::Instant;
 
-    #[test]
-    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
-    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+    /// Today's kept clips, by the id prefix their `<uuid>.wav` names start
+    /// with, in the order the Retry-all list shows them.
+    const TODAYS_KEPT_CLIPS: [&str; 3] = ["45b1e41d", "b1d90963", "882c587d"];
+
+    /// What every replay needs: the copied clips' directory and the model.
+    struct Replay {
+        dir: PathBuf,
+        model_id: String,
+        model_path: PathBuf,
+        prefs: languages::LanguagePrefs,
+    }
+
+    /// `None` (and a note on stderr) when `YAP_RETRY_REPLAY_DIR` is unset.
+    fn replay_setup() -> Option<Replay> {
         let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
             eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
-            return;
+            return None;
         };
         let dir = PathBuf::from(dir);
         // The engine's own log lines (loads, window timeouts, the
@@ -18170,64 +18254,145 @@ mod retry_replay {
             "model missing at {}",
             model_path.display()
         );
-        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+        Some(Replay {
+            dir,
+            model_id,
+            model_path,
+            prefs: AppSettings::default().language_prefs(),
+        })
+    }
+
+    /// Every `.wav` in the replay directory, sorted by name.
+    fn wavs_in(dir: &Path) -> Vec<PathBuf> {
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|x| x == "wav"))
             .collect();
         wavs.sort();
         assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+        wavs
+    }
 
+    /// One clip through the real retry engine stage, as one Retry press.
+    struct ClipRun {
+        clip_secs: f64,
+        out: transcription::AsrOutput,
+    }
+
+    /// Retry one clip on `manager` and hold it to the per-clip guard: text,
+    /// inside the clip's own deadline, at most one engine load meanwhile.
+    fn replay_clip(
+        r: &Replay,
+        manager: &transcription::TranscriptionManager,
+        wav: &Path,
+    ) -> ClipRun {
+        let name = wav.file_name().unwrap().to_string_lossy().to_string();
+        let samples = record::read_wav_16k_mono(wav).unwrap();
+        let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+        let deadline = retry_deadline(clip_secs);
+        let (m, id, path, p) = (
+            manager.clone(),
+            r.model_id.clone(),
+            r.model_path.clone(),
+            r.prefs.clone(),
+        );
+        let mut phases = Vec::new();
+        let loads_before = manager.engine_loads();
+        let started = Instant::now();
+        let out = retry_decode_bounded(
+            manager,
+            &name,
+            clip_secs,
+            deadline,
+            &mut |ph| phases.push(ph),
+            move || {
+                transcribe_native(
+                    &m,
+                    &id,
+                    &path,
+                    samples,
+                    &p,
+                    None,
+                    &mut transcribe_progress::NoObserver,
+                )
+            },
+        );
+        let wall = started.elapsed();
+        let loads_during = manager.engine_loads().saturating_sub(loads_before);
+        let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+        let words = out.text.split_whitespace().count();
+        println!(
+            "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} engine_loads_during={loads_during} loads={} phases={phases:?}",
+            deadline.as_secs_f64(),
+            out.chunks,
+            out.chunks_failed,
+            wall.as_millis(),
+            manager.engine_loads()
+        );
+        assert!(words > 0, "{name}: empty transcript");
+        assert!(
+            wall < deadline,
+            "{name}: {wall:?} over the deadline {deadline:?}"
+        );
+        assert!(
+            loads_during <= 1,
+            "{name}: a retry loaded a second engine (engine_loads_during={loads_during})"
+        );
+        ClipRun { clip_secs, out }
+    }
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Some(r) = replay_setup() else {
+            return;
+        };
         let manager = transcription::TranscriptionManager::new();
-        let prefs = AppSettings::default().language_prefs();
-        for wav in wavs {
-            let name = wav.file_name().unwrap().to_string_lossy().to_string();
-            let samples = record::read_wav_16k_mono(&wav).unwrap();
-            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
-            let deadline = retry_deadline(clip_secs);
-            let (m, id, path, p) = (
-                manager.clone(),
-                model_id.clone(),
-                model_path.clone(),
-                prefs.clone(),
-            );
-            let mut phases = Vec::new();
-            let started = Instant::now();
-            let out = retry_decode_bounded(
-                &manager,
-                &name,
-                clip_secs,
-                deadline,
-                &mut |ph| phases.push(ph),
-                move || {
-                    transcribe_native(
-                        &m,
-                        &id,
-                        &path,
-                        samples,
-                        &p,
-                        None,
-                        &mut transcribe_progress::NoObserver,
-                    )
-                },
-            );
-            let wall = started.elapsed();
-            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
-            let words = out.text.split_whitespace().count();
-            println!(
-                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
-                deadline.as_secs_f64(),
-                out.chunks,
-                out.chunks_failed,
-                wall.as_millis(),
-                manager.engine_loads()
-            );
-            assert!(words > 0, "{name}: empty transcript");
-            assert!(
-                wall < deadline,
-                "{name}: {wall:?} over the deadline {deadline:?}"
-            );
+        for wav in wavs_in(&r.dir) {
+            replay_clip(&r, &manager, &wav);
         }
         assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
+    }
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with today's three kept clips and the model"]
+    fn retry_replay_of_todays_three_kept_clips_returns_text_each_on_one_engine() {
+        let Some(r) = replay_setup() else {
+            return;
+        };
+        let wavs = wavs_in(&r.dir);
+        let picked: Vec<PathBuf> = TODAYS_KEPT_CLIPS
+            .iter()
+            .map(|id| {
+                wavs.iter()
+                    .find(|p| {
+                        p.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with(id))
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| panic!("kept clip {id} is not in YAP_RETRY_REPLAY_DIR"))
+            })
+            .collect();
+        // "Retry all": one clip at a time, each awaited before the next, on
+        // the one manager dictation uses.
+        let manager = transcription::TranscriptionManager::new();
+        for (id, wav) in TODAYS_KEPT_CLIPS.iter().zip(&picked) {
+            let run = replay_clip(&r, &manager, wav);
+            if run.clip_secs > transcription::DICTATION_CHUNK_THRESHOLD_SECONDS {
+                assert!(
+                    run.out.chunks > 1,
+                    "{id}: a {:.0} s clip is over the {:.0} s window threshold but decoded in {} window(s)",
+                    run.clip_secs,
+                    transcription::DICTATION_CHUNK_THRESHOLD_SECONDS,
+                    run.out.chunks
+                );
+            }
+        }
+        assert_eq!(
+            manager.engine_loads(),
+            1,
+            "one engine for the whole Retry-all run"
+        );
     }
 }
