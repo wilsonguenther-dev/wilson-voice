@@ -106,6 +106,7 @@ export function useAppShell() {
     modelReady: false,
     secureInputBlocked: false,
     secureInputDetail: null,
+    secureInputOwnField: false,
   });
   // YP3 — the entitlement this Mac has right now, and whether the warm purchase
   // sheet is up. `null` until the first `license_status` lands: the chip and the

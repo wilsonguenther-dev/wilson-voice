@@ -956,6 +956,11 @@ pub struct AppStatus {
     /// field — <chord> still works". `None` when not blocked or not exposed.
     #[serde(default)]
     pub secure_input_app: Option<String>,
+    /// yap-1107-secure-input-own-field-quiet — Secure Input is held by Yap's
+    /// OWN masked key field. Never sets `secure_input_blocked`; the window
+    /// shows only the one neutral `secure_input::OWN_FIELD_MESSAGE` line.
+    #[serde(default)]
+    pub secure_input_own_field: bool,
     /// yap24-PILL3 — the Carbon dictate chord is REALLY registered, so the
     /// pill may say "<dictate_toggle_label> still works" under Secure Input
     /// (hotkeys.rs: Carbon hotkeys are delivered while Secure Input is on).
@@ -1727,6 +1732,7 @@ fn build_status(state: &AppState) -> AppStatus {
             .as_deref()
             .filter(|_| secure.blocked)
             .map(|c| secure_input::holder_app(c).to_string()),
+        secure_input_own_field: secure.own_field && !secure.blocked,
         dictate_chord_registered,
         engine_loading,
         tap_health_message,

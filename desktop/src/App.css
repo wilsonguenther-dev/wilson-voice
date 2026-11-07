@@ -375,6 +375,18 @@ button.banner {
   opacity: 0.85;
 }
 
+/* yap-1107-secure-input-own-field-quiet — Yap's OWN masked key field holds
+   Secure Input while it has focus. The user caused it and blurring the field
+   ends it, so this is deliberately NOT a `.banner`: no tint, no border, no
+   red, muted text, one line. */
+.secure-input-quiet {
+  margin: 0 24px 8px;
+  padding: 4px 14px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 /* YV44 — an update is available. Informational + consent-based: it carries its
    own buttons (install / later / skip), so the banner itself is not a click
    target and never blocks what the user came to do. */
