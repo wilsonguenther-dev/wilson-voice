@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { GATE_HITBOX_OWNER_CHIP, GATE_HITBOX_OWNER_LOCK } from "./gateClick";
 import {
   DOOR_SCROLL,
   FRIEND_HOUSES,
   HOLD_PCT,
+  LAUNCH_WALK_HITBOX_OWNER,
   LAYER_SPEEDS,
   READY_CATCHUP_MS,
   READY_SHOW_MS,
@@ -191,5 +193,13 @@ describe("launch walk — bound to engine load, never a timer", () => {
     expect(forcedLaunchWalk("?walk=0")?.stage).toBe("starting");
     expect(forcedLaunchWalk("?phase=idle")).toBeNull();
     expect(forcedLaunchWalk("?walk=abc")).toBeNull();
+  });
+
+  it("Retry joins the click-through hitbox under its own owner", () => {
+    // Shares the hitbox with the capsule and the gate chip/lock, never replaces them.
+    expect(LAUNCH_WALK_HITBOX_OWNER).not.toBe("capsule");
+    expect(LAUNCH_WALK_HITBOX_OWNER).not.toBe(GATE_HITBOX_OWNER_CHIP);
+    expect(LAUNCH_WALK_HITBOX_OWNER).not.toBe(GATE_HITBOX_OWNER_LOCK);
+    expect(LAUNCH_WALK_HITBOX_OWNER.length).toBeGreaterThan(0);
   });
 });

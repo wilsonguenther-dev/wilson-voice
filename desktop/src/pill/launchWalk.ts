@@ -81,6 +81,12 @@ export interface EngineLoadProgress {
 }
 
 export const ENGINE_LOAD_PROGRESS_EVENT = "engine_load_progress";
+/**
+ * The `extendPillHitbox` owner for the Retry button: the pill panel is
+ * click-through outside the capsule, so while Retry shows its rect joins the
+ * hitbox under this owner (never the capsule's own, never a gate owner).
+ */
+export const LAUNCH_WALK_HITBOX_OWNER = "launch-walk-retry";
 
 /** Validate an event payload; anything malformed is `null` (the walk hides). */
 export function parseLoadProgress(raw: unknown): EngineLoadProgress | null {

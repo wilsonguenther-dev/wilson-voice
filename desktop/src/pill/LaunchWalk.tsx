@@ -20,11 +20,13 @@ import { drawChick, FRIENDS, type ChickPose } from "../sprites/art";
 import { drawFriendFrame } from "../sprites/friends";
 import { backingScale } from "./pixelGrid";
 import { prefersReducedMotion } from "./motion";
+import { extendPillHitbox } from "./drag";
 import {
   ENGINE_LOAD_PROGRESS_EVENT,
   FRIEND_HOUSES,
   GROUND_Y as GY,
   HOLD_PCT,
+  LAUNCH_WALK_HITBOX_OWNER,
   LAYER_SPEEDS,
   READY_CATCHUP_MS,
   READY_SHOW_MS,
@@ -203,6 +205,7 @@ export default function LaunchWalk({
   const [retrying, setRetrying] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastKey = useRef("");
+  const retryRef = useRef<HTMLButtonElement | null>(null);
 
   const model = launchWalkModel({
     progress: clock.progress,
@@ -259,6 +262,33 @@ export default function LaunchWalk({
     if (visible && model.running && recording) console.info("pill launch_walk_run reason=recording");
   }, [visible && model.running && recording]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The pill panel is click-through outside the capsule: while Retry is on
+  // screen its rect joins the hitbox under its own owner (like the gated chip),
+  // so the click reaches it instead of the app underneath. Unmount hands it back.
+  const retryShown = visible && model.showRetry;
+  useEffect(() => {
+    const el = retryRef.current;
+    if (!retryShown || !el) {
+      extendPillHitbox(null, LAUNCH_WALK_HITBOX_OWNER);
+      return;
+    }
+    const push = () => {
+      if (!el.isConnected) {
+        extendPillHitbox(null, LAUNCH_WALK_HITBOX_OWNER);
+        return;
+      }
+      const r = el.getBoundingClientRect();
+      extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, LAUNCH_WALK_HITBOX_OWNER);
+    };
+    const ro = new ResizeObserver(push);
+    ro.observe(el);
+    push();
+    return () => {
+      ro.disconnect();
+      extendPillHitbox(null, LAUNCH_WALK_HITBOX_OWNER);
+    };
+  }, [retryShown]);
+
   if (!visible) return null;
   const retry = () => {
     if (retrying) return;
@@ -287,7 +317,7 @@ export default function LaunchWalk({
         </span>
       )}
       {model.showRetry && (
-        <button type="button" className="launch-walk-retry" onClick={retry} disabled={retrying}>
+        <button ref={retryRef} type="button" className="launch-walk-retry" onClick={retry} disabled={retrying}>
           {retrying ? "Retrying" : "Retry"}
         </button>
       )}

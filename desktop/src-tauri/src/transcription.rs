@@ -445,7 +445,8 @@ type EngineLoader = Arc<dyn Fn(&Path) -> Result<Box<dyn Transcriber>, String> + 
 ///
 /// The launch walk's position comes from `pct` and nothing else (never a
 /// timer). The only part of a model load we can measure from outside the
-/// native call is reading the model file, so that is what moves 0 → 95:
+/// engine (the helper's spawn + model load is one opaque call) is reading the
+/// model file, so that is what moves 0 → 95:
 /// [`page_in_model`] reads the file through the page cache in chunks and
 /// reports bytes. The native load itself is one opaque call, so the walk
 /// WAITS at [`LOAD_HOLD_PCT`] for it and only the engine being stored in the
@@ -489,9 +490,11 @@ pub fn read_progress_pct(read: u64, total: u64) -> u8 {
 }
 
 /// Read the model file through the page cache in [`PAGE_IN_CHUNK`] pieces,
-/// calling `on_bytes(read, total)` after every chunk. The native loader reads
-/// the same bytes straight after, so this costs a cold load nothing extra and
-/// is what makes "reading the file" a real, measured number. `stop` is polled
+/// calling `on_bytes(read, total)` after every chunk. The engine (the
+/// `yap-asr` helper process since yap-1106-engine-owner) reads the same bytes
+/// straight after through the same system page cache, so this costs a cold
+/// load nothing extra and is what makes "reading the file" a real, measured
+/// number. The buffer is one chunk, so the app's own memory never grows. `stop` is polled
 /// between chunks (the app exiting). An I/O error ends the page-in early and
 /// is returned; the caller still runs the loader, which is the authority.
 pub fn page_in_model(
@@ -916,9 +919,6 @@ impl TranscriptionManager {
         self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
     }
 
-    /// True while a load is building an engine right now. Read straight off the
-    /// atomic (no slot lock), because YV80 asks it on every status emit so the
-    /// UI can say "Preparing your speech engine…" instead of nothing.
     /// yap-1106-launch-walk — route load progress to `sink` (the app's setup
     /// emits it as [`ENGINE_LOAD_PROGRESS_EVENT`]). A load that started before
     /// this was set is still recorded in [`last_load_progress`](Self::last_load_progress).
@@ -973,6 +973,9 @@ impl TranscriptionManager {
         }
     }
 
+    /// True while a load is building an engine right now. Read straight off the
+    /// atomic (no slot lock), because YV80 asks it on every status emit so the
+    /// UI can say "Preparing your speech engine…" instead of nothing.
     pub fn is_loading(&self) -> bool {
         self.inner.loading.load(Ordering::Acquire)
     }
