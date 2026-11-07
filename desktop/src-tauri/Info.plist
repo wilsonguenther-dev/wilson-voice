@@ -6,6 +6,17 @@
 	<string>Yap</string>
 	<key>CFBundleName</key>
 	<string>Yap</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Yap license link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>yapvoice</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSAudioCaptureUsageDescription</key>

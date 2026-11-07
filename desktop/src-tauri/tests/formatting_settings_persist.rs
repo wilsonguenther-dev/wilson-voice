@@ -56,7 +56,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
 // yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
-const APP_SETTINGS_FIELD_COUNT: usize = 49;
+// yap-1106-curse-setting: +1 (companion_curse).
+const APP_SETTINGS_FIELD_COUNT: usize = 50;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -123,6 +124,8 @@ fn fully_populated() -> AppSettings {
         pill_style: "yappy".into(),
         pill_position: "right".into(),
         companion_tone: "rude".into(),
+        // yap-1106-curse-setting — non-default: the Badass curse toggle on.
+        companion_curse: true,
         dictation_mode: "email".into(),
         cleanup_level: "high".into(),
         // Y4-A — both non-default (the shipped values are `false`), so the
@@ -283,6 +286,10 @@ fn every_app_settings_field_round_trips() {
     assert_eq!(read_back.cleanup_level, "high");
     assert_eq!(read_back.signature_mode, "auto");
     assert_eq!(read_back.snippet_scope, "utterance");
+    assert!(
+        read_back.companion_curse,
+        "the Badass curse toggle (companion_curse) must survive a relaunch"
+    );
 }
 
 /// A second write must not lose the first one's fields either — the bug also
@@ -373,6 +380,11 @@ fn old_blob_migrates_without_resetting_carried_fields() {
     assert_eq!(loaded.calibration_sample, None);
     assert_eq!(loaded.command_binding, defaults.command_binding);
     assert_eq!(loaded.pill_position, defaults.pill_position);
+    // yap-1106-curse-setting — a store from before the toggle never swears.
+    assert!(
+        !loaded.companion_curse,
+        "curse mode is OFF for an old store"
+    );
 
     // (c) The migration stamped the current version and rewrote the file once,
     //     so a relaunch is a no-op rather than a second migration.
