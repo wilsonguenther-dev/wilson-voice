@@ -72,9 +72,12 @@ describe("WF-05 polish reveal — model", () => {
 
   it("Use original sends the take id to the Undo AI Edit paste", async () => {
     expect(useOriginalArgs(REVEAL)).toEqual({ id: "take-1" });
-    const call = vi.fn(() => Promise.resolve("Pasted"));
-    await pasteOriginal(REVEAL, call);
-    expect(call).toHaveBeenCalledWith("use_original_take", { id: "take-1" });
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    await pasteOriginal(REVEAL, async (cmd, args) => {
+      calls.push([cmd, args]);
+      return "Pasted";
+    });
+    expect(calls).toEqual([["use_original_take", { id: "take-1" }]]);
   });
 
   it("a failed Use original says Rust's sentence, or the generic one", () => {

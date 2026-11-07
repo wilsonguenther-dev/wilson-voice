@@ -23,7 +23,7 @@ import {
   useOriginalArgs,
   useOriginalError,
   type PolishReveal,
-  type PolishRevealView,
+  type PolishRevealFace,
 } from "./polishReveal";
 
 /** Stable default so the listener effect does not re-subscribe every render. */
@@ -54,7 +54,7 @@ export function PolishRevealView({
   onKeep,
 }: {
   reveal: PolishReveal;
-  view: PolishRevealView;
+  view: PolishRevealFace;
   route?: string;
   error?: string | null;
   busy?: boolean;
@@ -109,12 +109,12 @@ export default function PolishRevealCard({
   muted = NOTHING_MUTED,
 }: {
   /** A dev-only matrix scene (`forcedPolishReveal`); `null` in a release. */
-  forced?: { reveal: PolishReveal; view: PolishRevealView } | null;
+  forced?: { reveal: PolishReveal; view: PolishRevealFace } | null;
   /** WF-17 muted pill categories. This toast is a `tip`, so muting Tips hides it. */
   muted?: ReadonlySet<string>;
 } = {}) {
   const [reveal, setReveal] = useState<PolishReveal | null>(forced?.reveal ?? null);
-  const [view, setView] = useState<PolishRevealView>(forced?.view ?? "toast");
+  const [view, setView] = useState<PolishRevealFace>(forced?.view ?? "toast");
   const [route, setRoute] = useState<string>(LOCAL_ROUTE_LABEL);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

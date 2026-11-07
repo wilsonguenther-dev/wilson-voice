@@ -49,7 +49,7 @@ export function isPolishReveal(v: unknown): v is PolishReveal {
 }
 
 /** The two faces of the card: the short toast, then the opened diff. */
-export type PolishRevealView = "toast" | "card";
+export type PolishRevealFace = "toast" | "card";
 
 export function polishRevealLines(r: PolishReveal): {
   label: string;
@@ -107,7 +107,7 @@ export const SAMPLE_POLISH_REVEAL: PolishReveal = {
  * The forced matrix scene, or `null`. float-main only calls this when its
  * DEV-ONLY `FORCED` handle is compiled in (scripts/pill-matrix.mjs).
  */
-export function forcedPolishReveal(search: string): { reveal: PolishReveal; view: PolishRevealView } | null {
+export function forcedPolishReveal(search: string): { reveal: PolishReveal; view: PolishRevealFace } | null {
   const v = new URLSearchParams(search).get("polish");
   if (v === "toast" || v === "card") return { reveal: SAMPLE_POLISH_REVEAL, view: v };
   return null;
