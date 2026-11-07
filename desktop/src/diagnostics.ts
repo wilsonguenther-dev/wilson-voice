@@ -37,6 +37,8 @@ export interface DiagSnapshot {
   events: DiagEvent[];
   counters: Record<string, DiagStat>;
   health: DiagHealth;
+  /** yap-1106 — named states, e.g. `byom.route` (the last cloud/local route). */
+  states?: Record<string, string>;
 }
 
 export interface ExportPaths {
