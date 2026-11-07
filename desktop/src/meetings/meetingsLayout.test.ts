@@ -94,7 +94,7 @@ describe("people", () => {
       ["You", 1],
     ]);
     expect(people[0].seconds).toBe(168);
-    expect(people[0].firstOffset).toBe("00:31");
+    expect(people[0].firstOffset).toBe("00:00:31");
     expect(people[0].reason).toBe(PERSON_REASON.Call);
     expect(unnamedVoices(people)).toEqual([]);
   });
