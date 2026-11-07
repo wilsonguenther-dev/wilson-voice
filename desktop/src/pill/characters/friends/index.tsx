@@ -23,6 +23,7 @@ import { phaseCopy, type ChatTone, type LivePhase, type PhaseArt, type PhaseArtT
 import { drawFriendFrame, friendManifest, type FrameKind, type FriendManifest } from "../../../sprites/friends";
 import { crispPlan, domBuffer } from "../../../sprites/crisp";
 import { CHARACTER_PHASES, fitSquare, type Character, type CharacterBox } from "../types";
+import { yappy } from "../yappy";
 
 /** The friends a user may put in the pill, in the approved order (after Yappy). */
 export const PILL_FRIENDS = ["hoot", "tidy", "gulp", "shelly"] as const;
@@ -141,6 +142,11 @@ export function friendCharacter(id: PillFriendId): Character {
   return {
     id,
     label: m.label,
+    // Batch 10 bounce fix: exactly ONE pill surface. A friend sits in the same
+    // one-pill stage as Yappy (sky, layout-sized window, top-center meeting dock,
+    // timer inside the pill); the stage paints it via `occupant` (pill/occupant.ts).
+    // `render` stays the art/copy contract and the shell body's fallback.
+    stage: yappy.stage,
     render: (frame) => {
       const pose = FRIEND_POSES[frame.phase] ?? FRIEND_POSES.idle;
       // Never past the box; an empty box paints an empty (0 x 0) canvas.

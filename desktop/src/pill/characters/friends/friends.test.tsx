@@ -20,6 +20,7 @@ import { CHARACTER_PHASES, CHARACTER_TONES, fitsBox, type CharacterFrame } from 
 import { FRIEND_LINES, FRIEND_POSES, PILL_FRIENDS, friendLine, friendPhaseArt, gulp, hoot, shelly, tidy } from "./index";
 import { phaseCopy, type LivePhase } from "../../live";
 import PillShell from "../../PillShell";
+import { yappy } from "../yappy";
 
 const frame = (phase: LivePhase, tone: CharacterFrame["tone"] = "friendly", box = { w: 240, h: 48 }): CharacterFrame => ({
   phase, tone, level: 0.4, box, dock: "x", reducedMotion: false,
@@ -86,7 +87,8 @@ describe("who sits in the pill (yap-1106-main-character-switch)", () => {
         expect(paint && fitsBox(paint.size, box), `${c.id} ${JSON.stringify(box)}`).toBe(true);
         expect(paint?.canvas).toEqual({ imageSmoothingEnabled: false });
       }
-      expect(c.stage).toBeUndefined();
+      // One pill surface: every friend mounts through Yappy's one-pill stage.
+      expect(c.stage).toBe(yappy.stage);
     }
   });
 
