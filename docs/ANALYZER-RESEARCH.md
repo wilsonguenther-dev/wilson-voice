@@ -206,3 +206,31 @@ and migration 11 (`speaker_profiles`, `speaker_samples`, plus
   `MatchBands::tuned` derives them from a genuine/impostor population
   (`ask` = the EER threshold, `auto` = the lowest threshold within a FAR cap).
 - Everything stays on this Mac ("Leaves this Mac: No").
+
+## 2026-11-07 — yap-1106-who-is-this: the "Who was this?" cards (no new package)
+
+No crate or model changes; the pins above are untouched, so
+`tests/supply_chain.rs` keeps asserting the same digests.
+
+- The full-clustering pass now keeps each cluster's voice
+  (`diarize::cluster_voices`: the L2-normalised mean of the cluster's
+  L2-normalised turn embeddings, plus its talk seconds) in migration 12's
+  `meeting_cluster_voices`, stamped with the pinned embedder digest
+  (`speaker_profiles::pinned_embedder_digest`). This is the hedgehog
+  analyzer's DIARIZE.md "Pipeline" idea of one saved centroid per person,
+  fed from the turns the pass already embedded; nothing new is embedded.
+- Cards: clusters with at least 20 s of speech that match no saved voice,
+  five at most, most speaking time first, never "You"
+  (`speaker_profiles::pick_voice_cards`). `ask`/`auto`-band matches read
+  "Same person as Alex?" with the reason ("Probably Alex — voice match 0.82").
+- The clip is at most 3 s cut from the start of the cluster's LONGEST turn
+  (`speaker_profiles::clearest_clip`); turns are the word-exact rows of
+  section 2, so a clip never crosses a speaker switch. Played from the kept
+  audio; once the 7-day retention purged it, the card says so and still
+  names from the line.
+- Save / That's me / "Yes, same person" relabel every row of the cluster in
+  that meeting (whole turns) and add the cluster voice as a sample when one
+  was kept (`Database::name_meeting_cluster`). "Not sure" and "Ignore this
+  voice" keep nothing (`Database::dismiss_meeting_cluster`). "Forget all
+  voices" and deleting the meeting clear the kept cluster voices.
+- Everything stays on this Mac ("Leaves this Mac: No").
