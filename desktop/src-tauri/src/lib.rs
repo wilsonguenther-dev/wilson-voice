@@ -13,6 +13,11 @@ mod diagnostics;
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
 // eval harness).
 pub mod asr_engine;
+/// yap-1106-engine-owner — the ONLY code that brings a speech engine up: the
+/// `yap-asr` helper process, its job queue, health state and quit.
+pub mod engine_owner;
+/// yap-1106-engine-owner — wire protocol shared with the `yap-asr` helper.
+pub mod asr_protocol;
 /// Y10-A — the dictation language set, auto-detect held to it, and which
 /// cleanup stages are language-agnostic.
 pub mod languages;
@@ -7970,7 +7975,9 @@ fn retry_decode_bounded(
     let remaining = deadline.saturating_sub(started.elapsed());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(decode());
+        // yap-1106-engine-owner — the retry is a job on the engine's queue,
+        // filed as a retry: a live dictation that arrives meanwhile goes first.
+        let _ = tx.send(engine_owner::as_job(engine_owner::JobKind::Retry, decode));
     });
     let result = match rx.recv_timeout(remaining) {
         Ok(r) => r,
@@ -13293,6 +13300,17 @@ pub fn run() {
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
 
+            // yap-1106-engine-owner — every engine health transition reaches
+            // the pill and Diagnostics as one small event.
+            {
+                let handle = app.handle().clone();
+                engine_owner::set_health_listener(Box::new(
+                    move |health: engine_owner::EngineHealth| {
+                        let _ = handle.emit(engine_owner::ENGINE_HEALTH_EVENT, health.as_str());
+                    },
+                ));
+            }
+
             // yap-notetaker-onboard — Help → "Set up Notetaker". Appended to the
             // Help submenu of Tauri's default macOS app menu (the app sets no
             // menu of its own), so the card can always be brought back after
@@ -14259,6 +14277,7 @@ pub fn run() {
                 if stopped > 0 {
                     log::info!("exit: stopped {stopped} notes sidecar(s)");
                 }
+                let engines = engine_owner::exit_snapshot();
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let report = quit_teardown(app_handle, &state);
                     log::info!("{}", report.log_line());
@@ -14266,6 +14285,11 @@ pub fn run() {
                     // close everything it meant to, and what did it close.
                     log::info!("{}", report.clean_line());
                 }
+                // yap-1106-engine-owner — after the drain and the DB
+                // checkpoint: kill any helper still unreaped (by its PID),
+                // log `exit: engines freed=N waited_ms=… skipped_destructors=…`,
+                // and `_exit` if an in-process engine is somehow still live.
+                engine_owner::finish_exit(engines);
             }
             _ => {}
         });

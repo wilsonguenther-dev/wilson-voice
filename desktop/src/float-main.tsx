@@ -15,6 +15,13 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
+import { EngineHealthChip } from "./pill/EngineHealthChip";
+import {
+  ENGINE_HEALTH_EVENT,
+  engineHealthTakesStrip,
+  parseEngineHealth,
+  type EngineHealth,
+} from "./pill/engineHealth";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
@@ -304,6 +311,7 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -403,6 +411,17 @@ function Float() {
     listen<unknown>("transcript", () => setProgress(null)).then(push);
     listen<unknown>("transcript_error", () => setProgress(null)).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  // yap-1106-engine-owner — the speech engine's one health state, pushed by
+  // `engine_owner` on every transition (never polled). "Catching up…" while a
+  // stuck engine is being waited out, "Restarting…" while it is replaced.
+  useEffect(() => {
+    let dead = false;
+    let unsub: (() => void) | null = null;
+    listen<unknown>(ENGINE_HEALTH_EVENT, (e) => setEngineHealth(parseEngineHealth(e.payload))).then(
+      (u) => (dead ? u() : (unsub = u)),
+    );
+    return () => { dead = true; unsub?.(); };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -698,7 +717,11 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+        {/* yap-1106-engine-owner — while the engine is loading, stuck or
+            restarting, THAT is the one line worth saying during a decode. */}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
           // announcement (`handsFreeLabel`); the clickable Stop is the rail's.

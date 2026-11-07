@@ -61,6 +61,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-engine-owner — the speech engine's health state, in plain words.
+  "pill/engineHealth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

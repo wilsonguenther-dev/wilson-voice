@@ -213,7 +213,7 @@ fn jit_entitlements_are_absent_from_the_app() {
 /// This test asserts the files, not the shipped DMG.
 #[test]
 fn sidecars_have_their_own_minimal_entitlements() {
-    for sidecar in ["yap-polish", "yap-diarize"] {
+    for sidecar in ["yap-polish", "yap-diarize", "yap-asr"] {
         let path = src_tauri()
             .join("entitlements")
             .join(format!("{sidecar}.plist"));

@@ -341,6 +341,9 @@ fn press_to_capture_start_is_not_paid_by_the_spill_writer() {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Read the committed fixture and tile it up to `seconds` of 16 kHz mono.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
     let path = manifest("tests/fixtures/quick-brown-fox-16k.wav");
     let mut reader = hound::WavReader::open(&path).ok()?;
@@ -377,6 +380,9 @@ fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
 /// a fresh clone and CI print one line and pass instead of silently asserting
 /// nothing. That is the same contract `docs/BUDGETS.md` describes for
 /// `polish_envelope.rs`.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn chunk_decode_wall_per_audio_second() {
     use wilson_voice_lib::{asr_engine, models};
@@ -1011,6 +1017,9 @@ fn no_new_polling_timer_was_introduced() {
 /// the budget sits with the other budgets. When both models are installed this
 /// test loads the engine itself and asserts the parent's own contribution is
 /// real, so the ceiling is never asserted against a run where nothing loaded.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn peak_resident_bytes_with_asr_and_polish_loaded() {
     use wilson_voice_lib::{asr_engine, models};
