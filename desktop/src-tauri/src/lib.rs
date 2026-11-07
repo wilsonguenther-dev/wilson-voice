@@ -162,6 +162,8 @@ pub mod models;
 pub mod net;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
+/// yap-1106-news-feeds — Yappy News fetch from public feeds (gated on cloud + topics).
+pub mod news;
 pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
