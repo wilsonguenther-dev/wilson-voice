@@ -7,6 +7,7 @@
  * clicks on real elements) is scripts/pill-matrix.mjs --clicks; the AppKit half
  * is float_pill.rs `every_control_centre_and_inner_corner_is_a_hit`.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Rect4 } from "./drag";
 
@@ -186,5 +187,97 @@ describe("press hold + pill.click telemetry", () => {
       ["pill_click_log", { control: "language-offer-add", handled: false }],
     ]);
     stop();
+  });
+});
+
+/* ── batch-6 bounce: what the browser's own hit test does to a press ──────────
+ * `pill-matrix --clicks` found every control missing its corner presses:
+ * WebKit/Chrome hit-test a box against its ROUNDED border, the refused-press
+ * chip sat on the meeting clock row, and the grown stop was pushed into the
+ * clock's rounded clip. These pin the CSS that fixes each, read from float.css
+ * rather than assumed. */
+const FLOAT_CSS = (readFileSync(new URL("../float.css", import.meta.url), "utf8") as string).replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** The declarations of the LAST rule whose selector is exactly `selector`. */
+function ruleBody(selector: string): Record<string, string> {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const all = [...FLOAT_CSS.matchAll(new RegExp(`(?:^|[}\\n])\\s*${esc}\\s*\\{([^}]*)\\}`, "g"))];
+  expect(all.length, `float.css has no rule "${selector}"`).toBeGreaterThan(0);
+  const body = all[all.length - 1][1];
+  const out: Record<string, string> = {};
+  for (const decl of body.split(";")) {
+    const i = decl.indexOf(":");
+    if (i > 0) out[decl.slice(0, i).trim()] = decl.slice(i + 1).trim();
+  }
+  return out;
+}
+
+const px = (v: string | undefined) => parseFloat(String(v));
+
+describe("fb-02 — the browser hit test agrees with the panel's rects", () => {
+  it("control_hit_shape_is_its_square_rect — a transparent square layer covers every control", () => {
+    const layer = ruleBody("[data-pill-control]:not(.slot, .ctrl)::after");
+    expect(layer.content).toBe('""');
+    expect(layer.position).toBe("absolute");
+    expect(layer.inset).toBe("0");
+    expect(layer["border-radius"]).toBe("0");
+    // The control is the layer's containing block, at zero specificity so a
+    // rule that already positions it (absolute chip, fixed card) wins.
+    expect(ruleBody(":where([data-pill-control]:not(.slot, .ctrl))").position).toBe("relative");
+    // The after-badge is itself a control: its own clip would round the layer off.
+    expect(ruleBody(".kami-stage .meeting-badge.meeting-after").overflow).toBe("visible");
+  });
+
+  it("control_drawn_at_least_24pt — the drawn floor matches MIN_HIT_PT", () => {
+    const floor = ruleBody("[data-pill-control]:not(.slot)");
+    expect(px(floor["min-width"])).toBe(hit.MIN_HIT_PT);
+    expect(px(floor["min-height"])).toBe(hit.MIN_HIT_PT);
+  });
+
+  it("meeting_stop_inner_corners_inside_the_clock_clip — the 24pt stop is not cut by the 14px arc", async () => {
+    const st = await import("./state");
+    const row = ruleBody(".kami-stage .meeting-badge:not(.meeting-after)");
+    const [pt, pr] = row.padding.split(/\s+/).map(px);
+    const radius = px(ruleBody(".kami-stage .meeting-badge")["border-radius"]);
+    const H = st.CLOCK_H, W = st.CLOCK_W.recording, S = hit.MIN_HIT_PT;
+    expect(H - 2 * pt).toBeGreaterThanOrEqual(S); // the stop fits the row's content height
+    // The stop, flush to the trailing padding and centred vertically.
+    const stop: Rect4 = [W - pr - S, (H - S) / 2, S, S];
+    // CSS scales radii that overrun a side: 14px on a 26pt row draws as 13.
+    const rr = Math.min(radius, H / 2, W / 2);
+    for (const [x, y] of hit.probePoints(stop)) {
+      // Inside the rounded clip: distance to the nearest point of the inner
+      // (rr-inset) rectangle is at most rr.
+      const cx = Math.min(Math.max(x, rr), W - rr);
+      const cy = Math.min(Math.max(y, rr), H - rr);
+      expect(Math.hypot(x - cx, y - cy), `probe (${x},${y}) is outside the clock's rounded clip`).toBeLessThanOrEqual(rr);
+    }
+  });
+
+  it("blocked_chip_never_covers_another_slot — mic/Trial chip sits inside Yappy's box in every dock x meeting", async () => {
+    const st = await import("./state");
+    const { BAR_DOCKS } = await import("./dock");
+    const chip = ruleBody('html[data-one-pill="true"] .kami-blocked');
+    expect(chip.left).toBe("calc(var(--char-x) + var(--char-w) / 2)");
+    expect(chip.top).toBe("calc(var(--char-y) + var(--char-h) - 6px)");
+    expect(chip.translate).toBe("-50% -100%");
+    expect(chip["max-width"]).toBe("var(--char-w)");
+    const CHIP_H = 26; // .kami-blocked: 14pt glyph + 2 x 5pt padding + 2 x 1pt border
+    let n = 0;
+    for (const phase of ["blocked", "gated"] as const) {
+      for (const meeting of ["none", "recording", "after"] as const) {
+        for (const dock of BAR_DOCKS) {
+          const l = st.pillLayout({ phase, meeting, dock });
+          const c = l.char;
+          const box = { x: c.x, y: c.y + c.h - 6 - CHIP_H, w: c.w, h: CHIP_H }; // its widest
+          expect(box.y).toBeGreaterThanOrEqual(c.y);
+          for (const [name, other] of [["clock", l.clock], ["bubble", l.bubble], ["hint", l.hint], ["progress", l.progress], ["card", l.card]] as const) {
+            if (other) expect(st.boxesOverlap(box, other), `${phase}/${meeting}/${dock}: chip over the ${name}`).toBe(false);
+          }
+          n += 1;
+        }
+      }
+    }
+    expect(n).toBeGreaterThanOrEqual(6);
   });
 });

@@ -676,6 +676,10 @@ async function clickMatrix(cdp, base, phases, outDir) {
             if (!hb.some((r) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3])) {
               findings.push({ id: "probe-outside-hitbox", detail: c.name + " " + where + " (" + x.toFixed(1) + "," + y.toFixed(1) + ") is not in the panel's hit rects " + JSON.stringify(hb) });
             }
+            // What the browser's own hit test puts under the point (rounded
+            // corners, an overlapping slot, an ancestor's clip) — named in the
+            // finding, so a miss says WHY instead of only "nothing".
+            const under = await evaluate(cdp, s, "(() => { const e = document.elementFromPoint(" + x + "," + y + "); if (!e) return 'nothing'; const c = e.closest('[data-pill-control]'); return c ? 'control ' + c.getAttribute('data-pill-control') : e.tagName.toLowerCase() + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).join('.') : ''); })()");
             await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 }, s);
             await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, s);
             await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, s);
@@ -684,9 +688,9 @@ async function clickMatrix(cdp, base, phases, outDir) {
             const mine = got.c[idx] || 0;
             const others = got.c.reduce((a, b) => a + b, 0) - mine + (got.stray || 0);
             probed++;
-            if (mine === 0) findings.push({ id: "probe-missed", detail: c.name + " " + where + ": the press clicked nothing on the control" });
+            if (mine === 0) findings.push({ id: "probe-missed", detail: c.name + " " + where + ": the press clicked nothing on the control (the point hit-tests to " + under + ")" });
             if (mine > 1) findings.push({ id: "probe-double", detail: c.name + " " + where + ": " + mine + " clicks from one press" });
-            if (others > 0) findings.push({ id: "probe-wrong-target", detail: c.name + " " + where + ": " + others + " click(s) landed elsewhere" });
+            if (others > 0) findings.push({ id: "probe-wrong-target", detail: c.name + " " + where + ": " + others + " click(s) landed elsewhere (on " + under + ")" });
           }
           rows.push({ id: p.id, dock, meeting, control: c.name, w: c.w, h: c.h, findings });
           console.log((findings.length ? "FAIL " : "ok   ") + p.id.padEnd(14) + dock.padEnd(7) + meeting.padEnd(10) + c.name);

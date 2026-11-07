@@ -1895,3 +1895,69 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
   min-width: 24px;
   min-height: 24px;
 }
+
+/* yap-1106-fb-02 (batch-6 bounce) — the WHOLE drawn rect takes the click.
+   WebKit and Chrome hit-test a box against its ROUNDED border, so a press in
+   the corner of a round control (the 999px mic/Trial chip, the 6px meeting
+   stop) fell through to the badge or Yappy's canvas — while the NSPanel, whose
+   hit rects are plain rectangles, had already taken the mouse. That is one
+   swallowed click. A transparent, square layer over each control makes the
+   control's hit shape the rectangle the panel was told about. The control
+   must be its containing block, so it is made `position: relative` at zero
+   specificity: any rule that already places it (the absolute chip, the
+   absolute after-badge) wins. Classic's `.ctrl`/`.slot` are left alone — their
+   tooltips are positioned against the bar, not the button. */
+:where([data-pill-control]:not(.slot, .ctrl)) {
+  position: relative;
+}
+[data-pill-control]:not(.slot, .ctrl)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  pointer-events: auto;
+}
+
+/* The after-meeting badge IS a control and a 14px-radius stadium. Its own
+   overflow clip would round the square layer above off again; its label
+   already ellipsizes itself, so the badge does not need to clip. */
+.kami-stage .meeting-badge.meeting-after {
+  overflow: visible;
+}
+
+/* The live clock clips to its rounded 26pt row. With the stop drawn at 24pt
+   the row is padded so the stop sits wholly inside the straight part: 1pt
+   above and below, 6pt from the trailing edge (its inner corners stay within
+   the 14px corner arc), and the row's gaps give back the 4pt the stop grew. */
+.kami-stage .meeting-badge:not(.meeting-after) {
+  padding: 1px 6px 1px 8px;
+  gap: 6px;
+}
+
+/* The refused-press chip (mic blocked / Trial ended) sits INSIDE Yappy's own
+   box in the one pill: centred on him, 6pt up from his bottom edge. It used
+   to hang off the window's bottom edge, which is where the meeting clock row
+   lives at a side dock and where the clock's trailing slot reaches at the
+   bottom dock — the chip and the stop sat on top of each other, so one of
+   the two never got its click. */
+html[data-one-pill="true"] .kami-blocked {
+  inset: auto;
+  left: calc(var(--char-x) + var(--char-w) / 2);
+  top: calc(var(--char-y) + var(--char-h) - 6px);
+  translate: -50% -100%;
+  margin: 0;
+  max-width: var(--char-w);
+}
+
+/* The live clock row, again: the stop is never the thing an over-long row pushes past that clip:
+   the call app's name is the one item that gives way (its full name is on its
+   tooltip); the dot, the clock, the audio chip and the stop keep their size. */
+.kami-stage .meeting-badge:not(.meeting-after) > .rec-app {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kami-stage .meeting-badge:not(.meeting-after) > :is(.rec-time, .rec-sysaudio) {
+  flex: none;
+}
