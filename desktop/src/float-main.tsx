@@ -25,6 +25,7 @@ import {
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
+import { DEFAULT_CHATTER_MODE, parseChatterMode, type ChatterMode } from "./pill/chatter";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
@@ -112,8 +113,11 @@ import {
   matrixLicenseScenes,
   matrixPhases,
   matrixDragBlobScene,
+  matrixFriendVisitScene,
   type ForcedPill,
 } from "./pill/forced";
+import { FriendVisit } from "./pill/FriendVisit";
+import { forcedFriendVisit } from "./pill/friendVisits";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -126,6 +130,8 @@ interface Settings {
   pillStyle?: string;
   pillPosition?: string;
   companionTone?: string;
+  /** yap-1106-chatter-setting — "Yappy talks": always | less | milestones (backend `yappy_talks`). */
+  yappyTalks?: string;
   /** yap-1106-curse-setting — the Badass curse toggle (backend `companion_curse`, off by default). */
   companionCurse?: boolean;
   /**
@@ -285,6 +291,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixRailScene(),
     // WF-02 — the pill mid-drag: the blob plus its three drop zones.
     matrixDragBlobScene(),
+    // yap-1106-friend-visits — Tidy visiting a resting pill.
+    matrixFriendVisitScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -377,6 +385,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // yap-1106-chatter-setting — "Yappy talks", read live off the settings payload like the tone.
+  const [chatter, setChatter] = useState<ChatterMode>(DEFAULT_CHATTER_MODE);
   const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
@@ -599,6 +609,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setChatter(parseChatterMode(s?.yappyTalks));
       setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
@@ -738,7 +749,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} curse={curseOn} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -776,6 +787,16 @@ function Float() {
       <div className="bar" {...bar}>
         {pill}
       </div>
+      {/* yap-1106-friend-visits — a friend visits for its own event only: at
+          most 4 s, once a day each, never during a meeting, a screen share or
+          Do Not Disturb, and less often after 50 takes (pill/friendVisits.ts). */}
+      <FriendVisit
+        meetingRecording={meeting.status.recording}
+        meetingNotesReady={meeting.phase.kind === "notes-ready"}
+        occupant={character.id}
+        forced={FORCED ? forcedFriendVisit(window.location.search) : null}
+        chatter={chatter}
+      />
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
@@ -796,7 +817,7 @@ function Float() {
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} chatter={chatter} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}

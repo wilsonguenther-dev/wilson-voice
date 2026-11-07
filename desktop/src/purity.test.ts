@@ -40,7 +40,7 @@ const ADAPTERS: Record<string, string> = {
   "diagnostics.ts": "Settings → Diagnostics reads diagnostics_snapshot and calls export_diagnostics over invoke()",
   "home/habitat/events.ts": "subscribes the habitat director to the backend's take, paste and model-download events",
   "formatting.ts": "useFormattingOptions loads and saves the formatting settings over invoke()",
-  "news/newsPrefs.ts": "the Yappy News picker's edits plus get_news_prefs / set_news_prefs / dismiss_news_offer over invoke() (its pure edits are covered by newsPrefs.test.ts)",
+  "news/newsPrefs.ts": "the Yappy News picker's edits plus get_news_prefs / set_news_prefs / dismiss_news_offer plus get_news_quote_key / set_news_quote_key / clear_news_quote_key over invoke() (its pure edits are covered by newsPrefs.test.ts)",
   "languageStore.ts": "binds the shared language store (languagePicker.ts createLanguageStore) to language_options, set_dictation_languages and the language events",
   "meetings/consentWatch.ts": "subscribes to the backend's meeting-consent event",
   "meetings/notetakerSetup.ts": "drives the notetaker setup commands",
@@ -56,7 +56,7 @@ const ADAPTERS: Record<string, string> = {
  * must be registered here or carry a test — a pill piece nobody looked at is
  * how the pill stops being drivable.
  */
-const PILL_COMPONENTS = ["CopyCard.tsx", "EngineHealthChip.tsx", "GovernorChip.tsx", "LanguageChip.tsx", "CallOffer.tsx", "LanguageOfferCard.tsx", "BacktrackCaughtCard.tsx", "MeetingDictationCard.tsx", "PolishRevealCard.tsx", "StyleChipButton.tsx", "MeetingBadge.tsx", "MeetingWorld.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "PillShell.tsx", "RouteChip.tsx", "SilentMicRow.tsx", "YappyPill.tsx", "characters/classic/index.tsx", "characters/example/index.tsx", "characters/yappy/index.tsx"];
+const PILL_COMPONENTS = ["CopyCard.tsx", "EngineHealthChip.tsx", "GovernorChip.tsx", "LanguageChip.tsx", "CallOffer.tsx", "FriendVisit.tsx", "LanguageOfferCard.tsx", "BacktrackCaughtCard.tsx", "MeetingDictationCard.tsx", "PolishRevealCard.tsx", "StyleChipButton.tsx", "MeetingBadge.tsx", "MeetingWorld.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "PillShell.tsx", "RouteChip.tsx", "SilentMicRow.tsx", "YappyPill.tsx", "characters/classic/index.tsx", "characters/example/index.tsx", "characters/yappy/index.tsx"];
 /** Docs and data under src/pill/ (dock-geometry.json is the Y5-I table dock.ts reads and dock.test.ts pins). */
 const PILL_DOCS = ["README.md", "dock-geometry.json"];
 

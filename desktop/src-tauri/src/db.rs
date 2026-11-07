@@ -9,6 +9,7 @@ use crate::meetings::{
     self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
+use crate::speaker_profiles::{self, MatchBands, SpeakerProfile, VoiceMatch};
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -408,6 +409,9 @@ fn new_transcript_entry(
     }
 }
 
+/// `settings_kv` key of the yap-1106-vocab-bias one-time misheard-list seed.
+pub const MISHEARD_SEED_KEY: &str = "vocab.misheard_seed_v1";
+
 /// Seed dictionary terms — proper nouns that deliberately WON'T auto-harvest
 /// (they're plain first-capitalized words; see is_jargon_token).
 const SEED_TERMS: &[&str] = &[
@@ -653,6 +657,11 @@ pub struct UserContextView {
     pub max_rules_words: usize,
 }
 
+/// yap-1106-voiceprints — the `speaker_profiles` columns, in
+/// `Database::map_speaker_profile` order.
+const SPEAKER_PROFILE_COLS: &str =
+    "id, display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at";
+
 /// YV94 — walk `PRAGMA user_version` up to [`SCHEMA_VERSION`], one transaction
 /// per step.
 ///
@@ -696,6 +705,9 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             9 => meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
             // yap-call-1 — the detected app / how it was found.
             10 => meetings::MIGRATION_10_DETECTED_CALL,
+            // yap-1106-voiceprints — speaker profiles, their samples, and the
+            // plain-text name a past meeting's segment keeps.
+            11 => crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1120,6 +1132,10 @@ impl Database {
         // once (it is dropped in the same transaction, so a deleted note can
         // never be resurrected by a later open).
         fold_legacy_scratchpad(&conn).map_err(|e| OpenErr::classify("scratchpad fold", e))?;
+        // yap-1106-news-rank-cache — the Yappy News story cache and seen-set.
+        // Disposable, so `IF NOT EXISTS` on every open rather than a ladder step
+        // (see `news::cache`'s docs).
+        crate::news::cache::ensure_schema(&conn).map_err(|e| OpenErr::classify("news cache", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -1256,6 +1272,10 @@ impl Database {
         // Always rebuild daily rollups from transcripts (source of truth)
         if let Err(e) = db.recompute_daily_stats() {
             log::warn!("daily_stats recompute on open: {e}");
+        }
+        // yap-1106-vocab-bias: one-time misheard-list seed for Wilson's install.
+        if let Err(e) = db.seed_misheard_if_wilsons_install() {
+            log::warn!("vocab seed failed on open: {e}");
         }
         Ok(db)
     }
@@ -2069,6 +2089,505 @@ impl Database {
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // yap-1106-voiceprints — speaker profiles (see `speaker_profiles.rs`).
+    // Every lifecycle step logs one `speaker_profiles <event>` line with ids
+    // and counts only — never a name, an embedding or a path.
+    // -----------------------------------------------------------------------
+
+    fn map_speaker_profile(r: &rusqlite::Row<'_>) -> rusqlite::Result<SpeakerProfile> {
+        let blob: Vec<u8> = r.get(6)?;
+        let centroid = speaker_profiles::decode_embedding(&blob).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Blob,
+                Box::<dyn std::error::Error + Send + Sync>::from(e),
+            )
+        })?;
+        Ok(SpeakerProfile {
+            id: r.get(0)?,
+            display_name: r.get(1)?,
+            is_me: r.get::<_, i64>(2)? != 0,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+            embedder_digest: r.get(5)?,
+            centroid,
+            n_samples: r.get(7)?,
+            last_heard_at: r.get(8)?,
+        })
+    }
+
+    fn speaker_profile_on(conn: &Connection, id: i64) -> Result<Option<SpeakerProfile>, String> {
+        conn.query_row(
+            &format!("SELECT {SPEAKER_PROFILE_COLS} FROM speaker_profiles WHERE id = ?1"),
+            params![id],
+            Self::map_speaker_profile,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// Create a profile from its first voice sample (the "who was this?"
+    /// prompt, or the opt-in "You" enrollment from dictation with `is_me`).
+    /// `meeting_id` is `None` for a dictation sample.
+    pub fn create_speaker_profile(
+        &self,
+        display_name: &str,
+        is_me: bool,
+        embedder_digest: &str,
+        first_sample: &[f32],
+        seconds: f64,
+        meeting_id: Option<&str>,
+    ) -> Result<SpeakerProfile, String> {
+        let name = speaker_profiles::clean_display_name(display_name)?;
+        if embedder_digest.trim().is_empty() {
+            return Err("a voiceprint needs the digest of the model that made it".into());
+        }
+        let centroid = speaker_profiles::fold_into_centroid(&[], 0, first_sample)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        if is_me {
+            let existing: Option<i64> = tx
+                .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if existing.is_some() {
+                log::warn!("speaker_profiles create_refused reason=me_exists");
+                return Err("Your voice is already saved. Add to it or delete it first.".into());
+            }
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO speaker_profiles
+               (display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at)
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, 1, ?3)",
+            params![
+                name,
+                is_me as i64,
+                now,
+                embedder_digest,
+                speaker_profiles::encode_embedding(&centroid)
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id,
+                meeting_id,
+                speaker_profiles::encode_embedding(first_sample),
+                seconds,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let profile = Self::speaker_profile_on(&tx, id)?
+            .ok_or_else(|| "the new speaker profile vanished".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles create id={id} is_me={is_me} dim={} from_meeting={}",
+            centroid.len(),
+            meeting_id.is_some()
+        );
+        Ok(profile)
+    }
+
+    /// Add one more voice sample to a profile. Refuses a sample from another
+    /// embedding model (digest) or dimension: a model change means re-enroll.
+    pub fn add_speaker_sample(
+        &self,
+        profile_id: i64,
+        embedder_digest: &str,
+        embedding: &[f32],
+        seconds: f64,
+        meeting_id: Option<&str>,
+    ) -> Result<SpeakerProfile, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let p = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        if p.embedder_digest != embedder_digest {
+            log::warn!("speaker_profiles sample_refused id={profile_id} reason=digest_mismatch");
+            return Err(
+                "This voice was saved with a different voice model. Enroll it again.".into(),
+            );
+        }
+        if !p.centroid.is_empty() && p.centroid.len() != embedding.len() {
+            log::warn!("speaker_profiles sample_refused id={profile_id} reason=dim_mismatch");
+            return Err("This voice sample does not fit the saved voice. Enroll it again.".into());
+        }
+        let centroid = speaker_profiles::fold_into_centroid(&p.centroid, p.n_samples, embedding)?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                profile_id,
+                meeting_id,
+                speaker_profiles::encode_embedding(embedding),
+                seconds,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles
+                SET centroid = ?2, n_samples = n_samples + 1, updated_at = ?3, last_heard_at = ?3
+              WHERE id = ?1",
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles sample_added id={profile_id} n_samples={}",
+            out.n_samples
+        );
+        Ok(out)
+    }
+
+    pub fn list_speaker_profiles(&self) -> Result<Vec<SpeakerProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SPEAKER_PROFILE_COLS} FROM speaker_profiles
+                  ORDER BY is_me DESC, display_name COLLATE NOCASE, id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], Self::map_speaker_profile)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn get_speaker_profile(&self, id: i64) -> Result<Option<SpeakerProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::speaker_profile_on(&conn, id)
+    }
+
+    /// How many samples a profile holds (the delete-cascade evidence).
+    pub fn speaker_sample_count(&self, profile_id: i64) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM speaker_samples WHERE profile_id = ?1",
+            params![profile_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Match one turn embedding against every saved profile (never across
+    /// embedder digests). Logs the outcome, never the name.
+    pub fn match_speaker_voice(
+        &self,
+        embedding: &[f32],
+        embedder_digest: &str,
+        bands: MatchBands,
+    ) -> Result<VoiceMatch, String> {
+        let profiles = self.list_speaker_profiles()?;
+        let m = speaker_profiles::match_voice(embedding, embedder_digest, &profiles, bands);
+        log::info!(
+            "speaker_profiles match outcome={} profiles={}",
+            m.outcome(),
+            profiles.len()
+        );
+        Ok(m)
+    }
+
+    /// Rename a profile. Segments labelled with it take the new name too.
+    pub fn rename_speaker_profile(
+        &self,
+        id: i64,
+        display_name: &str,
+    ) -> Result<SpeakerProfile, String> {
+        let name = speaker_profiles::clean_display_name(display_name)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let n = tx
+            .execute(
+                "UPDATE speaker_profiles SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, name, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("That speaker no longer exists.".into());
+        }
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_name = ?2 WHERE speaker_profile_id = ?1",
+                params![id, name],
+            )
+            .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!("speaker_profiles rename id={id} segments={segments}");
+        Ok(out)
+    }
+
+    /// Merge `absorb` into `keep`: its samples move over, the centroid is the
+    /// sample-weighted mean, its labelled segments take `keep`'s name, and
+    /// `absorb` is deleted. Refuses two different embedder digests.
+    pub fn merge_speaker_profiles(&self, keep: i64, absorb: i64) -> Result<SpeakerProfile, String> {
+        if keep == absorb {
+            return Err("Pick two different speakers to merge.".into());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let k = Self::speaker_profile_on(&tx, keep)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        let a = Self::speaker_profile_on(&tx, absorb)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        if k.embedder_digest != a.embedder_digest {
+            log::warn!(
+                "speaker_profiles merge_refused keep={keep} absorb={absorb} reason=digest_mismatch"
+            );
+            return Err(
+                "These voices were saved with different voice models and cannot be merged.".into(),
+            );
+        }
+        let centroid =
+            speaker_profiles::merge_centroids(&k.centroid, k.n_samples, &a.centroid, a.n_samples)?;
+        let now = Utc::now().to_rfc3339();
+        let last_heard = match (&k.last_heard_at, &a.last_heard_at) {
+            (Some(x), Some(y)) => Some(if x >= y { x.clone() } else { y.clone() }),
+            (x, y) => x.clone().or_else(|| y.clone()),
+        };
+        let is_me = k.is_me || a.is_me;
+        let moved = tx
+            .execute(
+                "UPDATE speaker_samples SET profile_id = ?1 WHERE profile_id = ?2",
+                params![keep, absorb],
+            )
+            .map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = ?1, speaker_name = ?3
+                  WHERE speaker_profile_id = ?2",
+                params![keep, absorb, k.display_name],
+            )
+            .map_err(|e| e.to_string())?;
+        // Delete first so the one-"me" unique index never sees two rows.
+        tx.execute(
+            "DELETE FROM speaker_profiles WHERE id = ?1",
+            params![absorb],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles
+                SET centroid = ?2, n_samples = ?3, last_heard_at = ?4, is_me = ?5, updated_at = ?6
+              WHERE id = ?1",
+            params![
+                keep,
+                speaker_profiles::encode_embedding(&centroid),
+                k.n_samples + a.n_samples,
+                last_heard,
+                is_me as i64,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, keep)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles merge keep={keep} absorb={absorb} samples_moved={moved} segments={segments}"
+        );
+        Ok(out)
+    }
+
+    /// Delete a profile and its samples. Past meetings keep the name as plain
+    /// text: the segment is unlinked, `speaker_name` stays. `false` if absent.
+    pub fn delete_speaker_profile(&self, id: i64) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL WHERE speaker_profile_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        let samples = tx
+            .execute(
+                "DELETE FROM speaker_samples WHERE profile_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        let n = tx
+            .execute("DELETE FROM speaker_profiles WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles delete id={id} found={} samples={samples} segments_unlinked={segments}",
+            n > 0
+        );
+        Ok(n > 0)
+    }
+
+    /// "This wasn't John": the profile drops every sample it learned in
+    /// `meeting_id` and its centroid is rebuilt from the samples that remain
+    /// (empty, with `n_samples = 0`, if none do — it then matches nothing until
+    /// it is taught again). Segments of that meeting labelled with it are
+    /// unlinked; their plain-text name is left for the caller to relabel.
+    pub fn unlearn_meeting_from_profile(
+        &self,
+        profile_id: i64,
+        meeting_id: &str,
+    ) -> Result<SpeakerProfile, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let p = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        let dropped = tx
+            .execute(
+                "DELETE FROM speaker_samples WHERE profile_id = ?1 AND meeting_id = ?2",
+                params![profile_id, meeting_id],
+            )
+            .map_err(|e| e.to_string())?;
+        let remaining: Vec<Vec<u8>> = {
+            let mut stmt = tx
+                .prepare("SELECT embedding FROM speaker_samples WHERE profile_id = ?1 ORDER BY id")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![profile_id], |r| r.get::<_, Vec<u8>>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+        let mut centroid: Vec<f32> = Vec::new();
+        let mut n: i64 = 0;
+        for blob in &remaining {
+            let v = speaker_profiles::decode_embedding(blob)?;
+            if !centroid.is_empty() && v.len() != centroid.len() {
+                continue;
+            }
+            centroid = speaker_profiles::fold_into_centroid(&centroid, n, &v)?;
+            n += 1;
+        }
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL
+                  WHERE speaker_profile_id = ?1 AND meeting_id = ?2",
+                params![profile_id, meeting_id],
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles SET centroid = ?2, n_samples = ?3, updated_at = ?4 WHERE id = ?1",
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                n,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles unlearn id={profile_id} samples_dropped={dropped} n_samples={n} \
+             was={} segments_unlinked={segments}",
+            p.n_samples
+        );
+        Ok(out)
+    }
+
+    /// "Forget all voiceprints": every profile and sample goes, past meetings
+    /// keep their names as plain text, and the "enroll my voice" answer is
+    /// cleared (the user wiped it, so asking again is honest). Returns the
+    /// number of profiles removed.
+    pub fn forget_all_voiceprints(&self) -> Result<usize, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL
+                  WHERE speaker_profile_id IS NOT NULL",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        let samples = tx
+            .execute("DELETE FROM speaker_samples", [])
+            .map_err(|e| e.to_string())?;
+        let profiles = tx
+            .execute("DELETE FROM speaker_profiles", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM settings_kv WHERE key = ?1",
+            params![speaker_profiles::ENROLL_ME_SETTING],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles forget_all profiles={profiles} samples={samples} segments_unlinked={segments}"
+        );
+        Ok(profiles)
+    }
+
+    /// Label one transcript segment with a profile: links it and copies the
+    /// name as plain text (what survives a later delete).
+    pub fn label_segment_speaker(&self, segment_id: &str, profile_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meeting_segments
+                    SET speaker_profile_id = ?2,
+                        speaker_name = (SELECT display_name FROM speaker_profiles WHERE id = ?2)
+                  WHERE id = ?1 AND EXISTS (SELECT 1 FROM speaker_profiles WHERE id = ?2)",
+                params![segment_id, profile_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            log::warn!("speaker_profiles label_refused profile={profile_id} reason=missing");
+            return Err("That speaker or line no longer exists.".into());
+        }
+        log::info!("speaker_profiles label profile={profile_id}");
+        Ok(())
+    }
+
+    /// A segment's stored speaker: `(profile id, plain-text name)`.
+    pub fn segment_speaker(
+        &self,
+        segment_id: &str,
+    ) -> Result<(Option<i64>, Option<String>), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT speaker_profile_id, speaker_name FROM meeting_segments WHERE id = ?1",
+            params![segment_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// The one-time "use my dictation audio to save my voice" answer.
+    /// `None` = never asked.
+    pub fn enroll_me_choice(&self) -> Option<bool> {
+        self.setting_get(speaker_profiles::ENROLL_ME_SETTING)
+            .map(|v| v == "yes")
+    }
+
+    pub fn set_enroll_me_choice(&self, yes: bool) -> Result<(), String> {
+        self.setting_set(
+            speaker_profiles::ENROLL_ME_SETTING,
+            if yes { "yes" } else { "no" },
+        )?;
+        log::info!("speaker_profiles enroll_me_choice yes={yes}");
+        Ok(())
     }
 
     /// Has the one-time meeting-capture notice been shown and closed yet?
@@ -3561,6 +4080,16 @@ impl Database {
         Ok(inserted > 0)
     }
 
+    /// yap-1106-news-rank-cache — run `f` on the connection for the Yappy News
+    /// cache (`news::cache`). Keep `f` short: it holds the one DB lock.
+    pub fn with_news_cache<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        f(&conn).map_err(|e| e.to_string())
+    }
+
     /// Y9-A — persist one transform invocation. Counts and tags only; the
     /// selection and the model's answer are never written.
     pub fn record_transform_run(
@@ -4067,7 +4596,22 @@ impl Database {
     }
 
     /// Apply dictionary preferred forms to ASR text (case-insensitive whole-token replace).
+    /// Apply the Dictionary's rewrite rules to a DICTATION (YV10 stage 1).
+    /// Logs `vocab applied track=dictation replacements=N`.
     pub fn apply_dictionary(&self, text: &str) -> Result<String, String> {
+        let (out, n) = self.apply_dictionary_counted(text)?;
+        if n > 0 {
+            log::info!("vocab applied track=dictation replacements={n}");
+        }
+        Ok(out)
+    }
+
+    /// yap-1106-vocab-bias — the one Dictionary applier, shared by dictation and
+    /// meeting segments (`meeting_pipeline::SegmentWritingStore`). Matching is
+    /// whole-word, phrase-aware and case-aware; see [`crate::dict_apply`].
+    /// Returns the rewritten text and how many replacements fired; each rule
+    /// that fired gets its `hits` raised by its count. Does not log.
+    pub fn apply_dictionary_counted(&self, text: &str) -> Result<(String, usize), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -4080,39 +4624,80 @@ impl Database {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
-        let mut replacements: Vec<(String, String)> = Vec::new();
+        let mut rules: Vec<(String, String)> = Vec::new();
         for r in rows {
-            replacements.push(r.map_err(|e| e.to_string())?);
+            rules.push(r.map_err(|e| e.to_string())?);
         }
-        let mut out = text.to_string();
-        for (term, preferred) in replacements {
-            let lower = out.to_lowercase();
-            let needle = term.to_lowercase();
-            if !lower.contains(&needle) {
-                continue;
-            }
-            // token-wise replace preserving surrounding punctuation loosely
-            let tokens: Vec<String> = out
-                .split_whitespace()
-                .map(|tok| {
-                    let bare = tok.trim_matches(|c: char| !c.is_alphanumeric());
-                    if bare.eq_ignore_ascii_case(&term) {
-                        tok.replacen(bare, &preferred, 1)
-                    } else {
-                        tok.to_string()
-                    }
-                })
-                .collect();
-            let next = tokens.join(" ");
-            if next != out {
-                out = next;
+        drop(stmt);
+        let applied = crate::dict_apply::apply_rules(text, &rules);
+        for ((term, _), &n) in rules.iter().zip(applied.hits.iter()) {
+            if n > 0 {
                 let _ = conn.execute(
-                    "UPDATE dictionary SET hits = hits + 1 WHERE term = ?1 COLLATE NOCASE",
-                    params![term],
+                    "UPDATE dictionary SET hits = hits + ?2 WHERE term = ?1 COLLATE NOCASE",
+                    params![term, n as i64],
                 );
             }
         }
-        Ok(out)
+        let n = applied.replacements();
+        Ok((applied.text, n))
+    }
+
+    /// yap-1106-vocab-bias — the Dictionary's "Add suggested words" button:
+    /// insert every [`crate::dict_apply::SUGGESTED_MISHEARD`] pair that is not
+    /// already a term. A term the user already has keeps their spelling.
+    /// Returns how many rows were added.
+    pub fn add_suggested_dictionary_terms(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let mut added = 0usize;
+        for (term, preferred) in crate::dict_apply::SUGGESTED_MISHEARD {
+            added += conn
+                .execute(
+                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, ?3, 0, ?4, 'seed')",
+                    params![Uuid::new_v4().to_string(), term, preferred, now],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(added)
+    }
+
+    /// yap-1106-vocab-bias — one-time migration: seed the misheard list into
+    /// Wilson's install. "Wilson's install" = history that already says Drivia
+    /// or Guenther. Runs at most once (`settings_kv` key
+    /// [`MISHEARD_SEED_KEY`]); an install with 50+ dictations and no match is
+    /// judged "not Wilson's" and never re-checked, a newer one is re-checked on
+    /// the next open. Returns rows added (0 when skipped or already done).
+    pub fn seed_misheard_if_wilsons_install(&self) -> Result<usize, String> {
+        if self.setting_get(MISHEARD_SEED_KEY).is_some() {
+            return Ok(0);
+        }
+        let (matched, total) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let matched: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM transcripts
+                       WHERE text LIKE '%Drivia%' OR text LIKE '%Guenther%')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            (matched, total)
+        };
+        if !matched {
+            if total >= 50 {
+                self.setting_set(MISHEARD_SEED_KEY, "skipped")?;
+                log::info!("vocab seed skipped reason=not_wilsons_install");
+            }
+            return Ok(0);
+        }
+        let added = self.add_suggested_dictionary_terms()?;
+        self.setting_set(MISHEARD_SEED_KEY, "seeded")?;
+        log::info!("vocab seed applied added={added}");
+        Ok(added)
     }
 
     // ── Y9-C spoken preference rules (append-only) ──────────────────────────
@@ -5862,6 +6447,101 @@ mod tests {
     // ── Analytics math (total words / WPM / streaks / words-today) ────────────
     // These prove the numbers Wilson watches are exactly right, under the real
     // edge cases: legacy speech=0 rows, multi-day history, streak grace + gaps.
+
+    /// yap-1106-vocab-bias: the misheard list is seeded ONCE into an install
+    /// whose history says Drivia, never into a stranger's, and the suggested
+    /// words button is idempotent.
+    #[test]
+    fn misheard_seed_runs_once_on_wilsons_install_only() {
+        let (db, dir) = fresh_db("vocab-seed-wilson");
+        assert_eq!(
+            db.seed_misheard_if_wilsons_install().unwrap(),
+            0,
+            "empty history"
+        );
+        assert!(
+            db.setting_get(MISHEARD_SEED_KEY).is_none(),
+            "re-checked next open"
+        );
+        db.insert_transcript(
+            "send the Drivia deck to Jeisil".into(),
+            "native".into(),
+            0.5,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 9);
+        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("seeded"));
+        assert_eq!(
+            db.seed_misheard_if_wilsons_install().unwrap(),
+            0,
+            "one-time"
+        );
+        let dict = db.list_dictionary().unwrap();
+        let pair = |t: &str| {
+            dict.iter()
+                .find(|d| d.term == t)
+                .and_then(|d| d.preferred.clone())
+        };
+        assert_eq!(pair("Trivia").as_deref(), Some("Drivia"));
+        assert_eq!(pair("Plus Lane").as_deref(), Some("Postline"));
+        assert_eq!(pair("ClassPlank").as_deref(), Some("ClassLink"));
+        assert_eq!(pair("Whisper Fill").as_deref(), Some("Wispr Flow"));
+        // The button after the seed adds nothing new.
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 0);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn misheard_seed_skips_a_strangers_install() {
+        let (db, dir) = fresh_db("vocab-seed-stranger");
+        for _ in 0..50 {
+            db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None)
+                .unwrap();
+        }
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0);
+        assert_eq!(
+            db.setting_get(MISHEARD_SEED_KEY).as_deref(),
+            Some("skipped")
+        );
+        assert!(db
+            .list_dictionary()
+            .unwrap()
+            .iter()
+            .all(|d| d.term != "Trivia"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Dictation uses the same applier: the pairs are fixed, "trivia night"
+    /// is not, and the rules that fired gain hits.
+    #[test]
+    fn dictation_dictionary_fixes_pairs_without_false_positives() {
+        let (db, dir) = fresh_db("vocab-dictation");
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 9);
+        assert_eq!(
+            db.apply_dictionary("ask Gunther about Plus Lane and trivia night")
+                .unwrap(),
+            "ask Guenther about Postline and trivia night"
+        );
+        let (out, n) = db
+            .apply_dictionary_counted("we went to trivia night")
+            .unwrap();
+        assert_eq!((out.as_str(), n), ("we went to trivia night", 0));
+        let hits = db
+            .list_dictionary()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.term == "Gunther")
+            .map(|d| d.hits)
+            .unwrap();
+        assert_eq!(hits, 1);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn fresh_db(tag: &str) -> (Database, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("wv-{tag}-{}", std::process::id()));

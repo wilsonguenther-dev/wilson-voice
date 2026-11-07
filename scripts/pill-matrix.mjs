@@ -82,13 +82,21 @@
  *       instrument failure · 9 self-test found the detectors blind.
  */
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, openSync } from "node:fs";
-import { createServer } from "node:net";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TAURI_SHIM, evaluate, openChrome, sleep } from "./headless-chrome.mjs";
+import {
+  TAURI_SHIM,
+  buildMatrixBundle,
+  evaluate,
+  fitPillPanel,
+  openChrome,
+  pillFixtureScript,
+  servePreview as servePreviewShared,
+  settlePhase,
+  sleep,
+} from "./headless-chrome.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESKTOP = join(ROOT, "desktop");
@@ -139,26 +147,9 @@ const ARGS = parseArgs(process.argv.slice(2));
  * phase answers is derived from its treatment TONE, which the page itself
  * published: no per-phase table lives here either.
  */
-function fixtureScript(tones) {
-  return String.raw`
-(() => {
-  const q = new URLSearchParams(location.search);
-  const tone = (${JSON.stringify(tones)})[q.get("phase")] || "calm";
-  window.__YAP_FIXTURES__ = {
-    get_settings: { pillStyle: q.get("pill") || "yappy", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
-    get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
-    // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
-    // layout makes (answered, so it is never an unhandled rejection).
-    meeting_status: q.get("meeting") === "recording"
-      // yap-1106-pill-rec-headphones-hoot-tape — elapsed=<seconds> in the URL puts the
-      // sun clock at any minute (0, 600 = the glance, 3600 = dusk, 3660 = moon).
-      ? (() => { const e = Math.max(0, Math.floor(Number(q.get("elapsed") ?? 217)) || 0); const p = (n) => String(n).padStart(2, "0"); return { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: e, elapsedLabel: p(Math.floor(e / 3600)) + ":" + p(Math.floor((e % 3600) / 60)) + ":" + p(e % 60), captureAvailable: true }; })()
-      : { recording: false, id: null, title: null, elapsedSeconds: 0, elapsedLabel: "00:00:00", captureAvailable: false },
-    pill_set_panel_frame: null,
-  };
-})();
-`;
-}
+/* yap-1107-parity-kit — the body lives in scripts/headless-chrome.mjs
+   (pillFixtureScript), shared with scripts/parity-sheet.mjs. */
+const fixtureScript = (tones) => pillFixtureScript(tones);
 
 /* ── the detectors, evaluated inside the page ───────────────────────────── */
 /*
@@ -208,6 +199,14 @@ function __pillDetect(want) {
     // yap-1106-pill-sky — the pinned time of day must be the sky on screen.
     if (want.sky && de.dataset.sky !== want.sky) bad.push("html[data-sky]=" + de.dataset.sky + " (asked " + want.sky + ")");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
+    // yap-1106-friend-visits — the friend scene must paint Tidy, crisp, unless a
+    // meeting records (then the quiet rule hides every visitor).
+    if (want.id === "friend-visit") {
+      const fv = document.querySelector('[data-friend-visit="tidy"]');
+      if (want.meeting === "recording") { if (fv) bad.push("friend visit drawn during a meeting"); }
+      else if (!fv) bad.push("no [data-friend-visit=tidy] visitor");
+      else { const cv = fv.querySelector("canvas"); if (!cv || !cv.width || !cv.height) bad.push("friend visit canvas not painted"); }
+    }
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
     // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
@@ -363,55 +362,10 @@ function __pillDetect(want) {
 
 /* ── build + serve the matrix bundle ────────────────────────────────────── */
 
-function freePort() {
-  if (process.env.YAP_PILL_PORT) return Promise.resolve(Number(process.env.YAP_PILL_PORT));
-  return new Promise((res, rej) => {
-    const s = createServer();
-    s.once("error", rej);
-    s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
-  });
-}
-
-function buildBundle(work) {
-  const dist = join(work, "dist");
-  const log = join(work, "vite-build.log");
-  const vite = join(DESKTOP, "node_modules", ".bin", "vite");
-  if (!existsSync(vite)) {
-    console.error("pill-matrix: " + vite + " missing — run npm ci in desktop/ (ENVIRONMENT failure, not a UI defect)");
-    process.exit(3);
-  }
-  console.log("pill-matrix: building float.html with YAP_PILL_MATRIX=1 -> " + dist);
-  const fd = openSync(log, "w");
-  const r = spawnSync(vite, ["build", "--outDir", dist, "--emptyOutDir", "--logLevel", "warn"], {
-    cwd: DESKTOP,
-    env: { ...process.env, YAP_PILL_MATRIX: "1" },
-    stdio: ["ignore", fd, fd],
-  });
-  if (r.status !== 0) {
-    console.error("pill-matrix: vite build exited " + r.status + "\n" + readFileSync(log, "utf8"));
-    process.exit(3);
-  }
-  return dist;
-}
-
-async function servePreview(dist, work) {
-  const port = await freePort();
-  const vite = join(DESKTOP, "node_modules", ".bin", "vite");
-  const fd = openSync(join(work, "vite-preview.log"), "w");
-  const proc = spawn(vite, ["preview", "--outDir", dist, "--port", String(port), "--strictPort", "--host", "127.0.0.1"], {
-    cwd: DESKTOP,
-    stdio: ["ignore", fd, fd],
-  });
-  const base = "http://127.0.0.1:" + port;
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(base + "/float.html")).ok) return { proc, base }; } catch {}
-    if (proc.exitCode !== null) break;
-    await sleep(250);
-  }
-  proc.kill("SIGKILL");
-  console.error("pill-matrix: vite preview never came up on " + base + "\n" + readFileSync(join(work, "vite-preview.log"), "utf8"));
-  process.exit(3);
-}
+/* yap-1107-parity-kit — freePort / build / preview moved to
+   scripts/headless-chrome.mjs (one copy, shared with parity-sheet.mjs). */
+const buildBundle = (work) => buildMatrixBundle(DESKTOP, work, "pill-matrix");
+const servePreview = (dist, work) => servePreviewShared(DESKTOP, dist, work, "pill-matrix");
 
 /* ── one page, navigated once per capture ───────────────────────────────── */
 
@@ -430,23 +384,11 @@ async function openPage(cdp, tones) {
 /* yap-1106-one-pill — size the window to the layout's panel, the way
  * float_pill.rs set_panel_frame sizes the NSPanel, then let it re-lay out. */
 async function fitPanel(cdp, s) {
-  const panel = await evaluate(cdp, s, "(window.__YAP_PILL_LAYOUT__ && window.__YAP_PILL_LAYOUT__.panel) || null").catch(() => null);
-  if (!panel) return { w: W, h: H };
-  await cdp.send("Emulation.setDeviceMetricsOverride", { width: panel.w, height: panel.h, deviceScaleFactor: SCALE, mobile: false }, s);
-  await sleep(Math.min(SETTLE_MS, 400));
-  return { w: panel.w, h: panel.h };
+  return fitPillPanel(cdp, s, { w: W, h: H }, SCALE, SETTLE_MS);
 }
 
 async function settle(cdp, s, wantId) {
-  const deadline = Date.now() + 8000;
-  for (;;) {
-    const st = await evaluate(cdp, s, `document.readyState + "|" + (document.documentElement.dataset.phase || "")`).catch(() => "");
-    if (st.startsWith("complete|") && (!wantId || st.endsWith("|" + wantId))) break;
-    if (Date.now() > deadline) break; // judged as phase-not-applied below
-    await sleep(100);
-  }
-  await evaluate(cdp, s, "document.fonts.ready.then(() => true)");
-  await sleep(SETTLE_MS); // let the strip fade and the capsule expand finish
+  return settlePhase(cdp, s, wantId, SETTLE_MS);
 }
 
 async function shoot(cdp, s, file) {

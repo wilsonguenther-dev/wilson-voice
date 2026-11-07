@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppCtx } from "../appShell";
 import { errorText } from "../errors";
-import { type ActiveLeave, leaveLines } from "../meetings/consent";
+import { type ActiveLeave, CLOUD_ROUTE_CHANGED_EVENT, leaveLines } from "../meetings/consent";
 
 export type ProviderKind = "bundled" | "open_ai_compatible" | "cloud_key";
 export type Task = "notes" | "polish";
@@ -187,6 +187,13 @@ export default function ModelProviders() {
       .catch((e: unknown) => setLoadError(errorText(e)));
   }, []);
   useEffect(load, [load]);
+  // fix-l3b3-1 — the cloud route (key + mode, in its own panel) sends notes
+  // and polish off this Mac without being a pick, so its changes re-read the
+  // summary instead of leaving "Nothing leaves it" on screen.
+  useEffect(() => {
+    window.addEventListener(CLOUD_ROUTE_CHANGED_EVENT, load);
+    return () => window.removeEventListener(CLOUD_ROUTE_CHANGED_EVENT, load);
+  }, [load]);
 
   const onTest = (id: string) => {
     setTests((m) => ({ ...m, [id]: { running: true } }));

@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { drawChick as drawChickArt } from "../sprites/art";
+import { drawDeskHD, drawNotepadHD, growPadInk } from "../sprites/props";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
@@ -23,6 +24,10 @@ import { bucketFor } from "./tone";
 import { curseAllowed, noteTakeSignal, parseMemory, takeDoneLine, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 // fix-b6-1-done-line-no-false-paste — the Copy card event, so the done line never claims a paste the card contradicts.
 import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
+import {
+  allowAfterLine, allowDoneLine, allowDuringLine, chatterLog, chatterPolicy, DEFAULT_CHATTER_MODE, shortenBubble,
+  TAKES_SEEN_KEY, type ChatterMode, type ChatterPolicy,
+} from "./chatter";
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, TAKE_STAGE_EVENT, transcribeLine,
@@ -89,8 +94,8 @@ function saveTakeMemory(m: TakeLineMemory): void {
 }
 // yap-1106-live-reactions-during-take — how many takes this pill has seen, so a
 // NEW user (isNewUser) gets the one listening glance. Storage failing costs
-// only the glance, never the take.
-const TAKES_SEEN_KEY = "yap.live.takesSeen";
+// only the glance, never the take. yap-1106-chatter-setting: the key now lives
+// in chatter.ts (`TAKES_SEEN_KEY`) because Settings reads the same count.
 function loadTakesSeen(): number {
   try { return parseTakesSeen(globalThis.localStorage?.getItem(TAKES_SEEN_KEY)); }
   catch (e) { console.warn("pill live takes_seen load_failed", e); return 0; }
@@ -126,7 +131,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -136,6 +141,11 @@ export default function YappyPill(
      * rude → Badass, rose → Rose).
      */
     voice?: VoiceId;
+    /**
+     * yap-1106-chatter-setting — "Yappy talks" (Settings › Companion), decided
+     * by the shell from `yappyTalks`. Omitted, it is "less over time".
+     */
+    chatter?: ChatterMode;
     /**
      * yap-1106-curse-setting — curse mode as the shell decided it (toggle on,
      * Badass, no meeting / screen-share state). Off by default; re-checked at
@@ -179,6 +189,11 @@ export default function YappyPill(
   const voiceRef = useRef<VoiceId>(voiceNow);
   voiceRef.current = voiceNow;
   useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
+  // yap-1106-chatter-setting — the chatter mode reaches the mount-once loop the same way.
+  const chatterRef = useRef<ChatterMode>(chatter);
+  chatterRef.current = chatter;
+  const chatterSink = useRef<(m: ChatterMode) => void>(() => {});
+  useEffect(() => { chatterSink.current(chatter); }, [chatter]);
   // yap-1106-curse-setting — read by the mount-once draw loop at the line.
   const curseRef = useRef<boolean>(curse);
   curseRef.current = curse;
@@ -377,7 +392,6 @@ export default function YappyPill(
       paper: "#fffdf5", paperL: "#c9c3ad", desk: "#b06a3a", deskD: "#8a4f28", glass: "#2c2a36",
       pencil: "#ffcf3a", pencilT: "#ff8fb0", tw: "#4a4a55", twD: "#33333d", twKey: "#d8d8e2",
     };
-    const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
     // yap-1106-pill-sky — the sky, sun/moon and grass for the Home room's time of
     // day, painted into its OWN cached surface only when the time of day changes
     // (at most four times a day; the clock is read at most every 30 s). Each
@@ -396,7 +410,7 @@ export default function YappyPill(
     // when the time of day or the capsule's box changes
     let capGrad: CanvasGradient | null = null, capGradKey = "";
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean; ink: number; elapsed: number }
 
     // the chick — front wing holds a pencil when noting / at the desk
     // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
@@ -410,24 +424,15 @@ export default function YappyPill(
       // nothing in the sky moves between time-of-day changes).
       blitSky<HTMLCanvasElement>(octx, sky, performance.now(), Math.max(0.8, w));
       const cx = FX - (A.prop === "desk" ? CHICK_DESK_SHIFT : 0), feet = GY;
-      // notepad slides in from the side when noting
-      if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
-        octx.globalAlpha = A.propIn; rct(px, py, 11, 12, C.paperL); rct(px + 1, py + 1, 9, 10, C.paper);
-        for (let i = 0; i < 3; i++) rct(px + 2, py + 3 + i * 2, 7, 1, C.paperL); octx.globalAlpha = 1;
-      }
+      // notepad slides in from the side when noting — yap-1106-pill-props-detail:
+      // the approved detail pass (clip, margin line, handwriting that grows).
+      if (A.prop === "pad") drawNotepadHD(octx, cx, GY, A.propIn, C.paper, A.ink);
       // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises.
       drawChick(cx, feet, clampChickPose(A));
-      // receptionist desk + a little pixel TYPEWRITER
-      if (A.prop === "desk" && A.propIn > .05) { const dy = GY - 2 + (1 - A.propIn) * 16;
-        octx.globalAlpha = Math.min(1, A.propIn + .2);
-        rct(4, dy, PW - 8, 8, C.desk); rct(4, dy, PW - 8, 2, C.deskD); rct(4, dy + 7, PW - 8, 1, C.deskD);
-        const tx = cx + 14, ty = dy - 6;
-        rct(tx, ty + 2, 14, 5, C.tw); rct(tx, ty + 2, 14, 1, C.twD); rct(tx + 2, ty, 10, 3, C.tw);        // body + carriage
-        rct(tx + 4, ty - 3, 6, 3, C.paper);                                                              // paper sticking up
-        for (let k = 0; k < 4; k++) rct(tx + 2 + k * 3, ty + 5, 2, 1, C.twKey);                          // keys
-        rct(cx - 26, dy + 1, 4, 5, C.sun);                                                               // small stamp/lamp
-        octx.globalAlpha = 1;
-      }
+      // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
+      // wood grain + edge highlight, carriage, return levers, keys that light in
+      // sequence, a bouncing page, and a mug + pencils on the left.
+      if (A.prop === "desk") drawDeskHD(octx, cx, GY, PW, A.propIn, A.elapsed, C.paper);
     }
 
     // yap24-UI1 — the backing store is WHOLE device px of the CSS box at the REAL
@@ -448,7 +453,7 @@ export default function YappyPill(
     let phase: Phase = "idle";
     const R = { sway: new SOD(2.2, .35, 1.4), open: new SOD(3.4, .7, 1.4), prop: new SOD(3, .7, 1.2) };
     const J = { phase: "ground", t: 0, y: 0, vy: 0, power: 0, crouch: 0 };
-    const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p; } };
+    const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p * policy.hopScale; } };
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
@@ -461,14 +466,30 @@ export default function YappyPill(
     // makes the `live.lines` telemetry fire exactly once per take; `glanceT` is
     // the remaining eyes-forward time of a new user's listening glance.
     let afterLines = 0, takeOpen = false, glanceT = 0;
+    // yap-1106-pill-props-detail — how much of the notepad page is written (0..1):
+    // it grows while he notes during a take and clears once the pad has gone.
+    // `shownProp` makes the `pill prop_change` line fire once per change, not per frame.
+    let padInk = 0, shownProp: Prop = "none";
     let takesSeen = loadTakesSeen();
+    // yap-1106-chatter-setting — how much Yappy may talk on THIS take, decided
+    // once per take from the setting and the take number (chatter.ts). `repeatN`
+    // counts this take's repeating during-take lines so "less" keeps 1 in 2.
+    let chatterMode: ChatterMode = chatterRef.current;
+    let policy: ChatterPolicy = chatterPolicy(chatterMode, takesSeen + 1);
+    let repeatN = 0;
+    chatterSink.current = (m) => {
+      if (m === chatterMode) return;
+      chatterMode = m;
+      policy = chatterPolicy(m, Math.max(1, takesSeen));
+      console.info(chatterLog(m, Math.max(1, takesSeen), policy));
+    };
     const logLiveLines = (vadSec: number | null) => {
       if (!takeOpen) return;
       takeOpen = false;
       console.info(liveLinesLog({ during: live.lines, after: afterLines, voicedSec: live.voicedT, vadSec }));
     };
     const afterLine = (): string => {
-      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines)) return "";
+      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines) || !allowAfterLine(policy, afterLines)) return "";
       const line = workLine(chatTone, words, afterLines);
       afterLines++;
       return line;
@@ -518,8 +539,11 @@ export default function YappyPill(
       { after: (ms, fn) => window.setTimeout(fn, ms), cancel: (id) => window.clearTimeout(id) },
       { reduceMotion: reduce },
     );
-    const say = (t: string) => bubbleQ.say(t);
-    sayRef.current = say;
+    // yap-1106-chatter-setting — Yappy's own lines are capped once quiet; a
+    // status line (decode progress, the hands-free explanation) passes
+    // `cap = false` and is never cut.
+    const say = (raw: string, cap = true) => bubbleQ.say(cap ? shortenBubble(raw, policy.maxChars) : raw);
+    sayRef.current = (t: string) => say(t, false);
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
     // `LivePhase` without an accent here is a compile error, never a blank pill.
@@ -559,14 +583,17 @@ export default function YappyPill(
       phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
       if (p === "listening") {
-        moodT = 0; hop(1); say(gateRef.current === "listening-locked" ? handsFreeLineRef.current : ""); resetLive(live);
-        if (isNewUser(takesSeen)) armGlance(live);
+        policy = chatterPolicy(chatterMode, takesSeen + 1);
+        repeatN = 0;
+        console.info(chatterLog(chatterMode, takesSeen + 1, policy));
+        moodT = 0; hop(1); say(gateRef.current === "listening-locked" ? handsFreeLineRef.current : "", false); resetLive(live);
+        if (isNewUser(takesSeen) && policy.firstTimeTips) armGlance(live);
         takesSeen++; saveTakesSeen(takesSeen);
         afterLines = 0; takeOpen = true;
         copyCardShown = noteTakeSignal(copyCardShown, "listening");
       }
       else if (p === "thinking") { moodT = 0; say(afterLine()); }
-      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
+      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(allowDoneLine(policy, takesSeen) ? doneLine(words) : ""); }
       else { moodT = 0; say(""); }
     }
     const sparkle: Array<{ x: number; y: number; vx: number; vy: number; life: number; heart: boolean }> = [];
@@ -662,15 +689,26 @@ export default function YappyPill(
       // prop and WHEN Yappy says something (it keeps reacting for the whole take,
       // measuring speech against this take's own room tone); the canvas renders it.
       if (phase === "listening") {
+        const saidBefore = live.said;
         const f = advanceLive(live, wallDt, level, chatTone, undefined, liveVoice);
         liveProp = f.prop;
-        if (f.say) say(f.say);
+        // yap-1106-chatter-setting — a tier crossing vs a repeating line; the
+        // policy keeps all, 1 in 2, or none of them (the glance is a first-time tip).
+        if (f.say) {
+          const crossed = live.said > saidBefore;
+          const ok = f.glance && !crossed ? policy.firstTimeTips : allowDuringLine(policy, crossed, crossed ? 0 : repeatN);
+          if (!crossed && !f.glance) repeatN++;
+          if (ok) say(f.say);
+        }
         // a new user's one listening glance: eyes up at you, a small hop
         if (f.glance) { glanceT = GLANCE_LOOK_SEC; hop(.8); }
       }
       if (glanceT > 0) glanceT = Math.max(0, glanceT - dt);
       const wantProp = wantPropFor(phase, words);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
+      if (wantProp === "pad" && phase === "listening") padInk = growPadInk(padInk, dt);
+      else if (wantProp !== "pad" && propV < 0.01) padInk = 0;
+      if (wantProp !== shownProp) { console.info(`pill prop_change from=${shownProp} to=${wantProp} detail=hd`); shownProp = wantProp; }
       mood += (moodT - mood) * Math.min(1, dt * 10);
       const grav = 2600;
       if (J.phase === "crouch") { J.t += dt; J.crouch = Math.min(1, J.t / .1); if (J.t >= .1) { J.phase = "air"; J.vy = -300 * J.power; J.crouch = 0; } }
@@ -690,7 +728,7 @@ export default function YappyPill(
       else if (beakHold <= 0) { let w = beakFrame; if (beakFrame === 0 && beak > .28) w = 1; else if (beakFrame === 1 && beak > .6) w = 2; else if (beakFrame >= 2 && beak < .42) w = 1; else if (beakFrame === 1 && beak < .12) w = 0; if (w !== beakFrame) { beakFrame = w; beakHold = .05; } }
       // after release the chatter is CAPPED (AFTER_TAKE_MAX_LINES): the bubble keeps
       // its last line instead of rotating every second while the take decodes.
-      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
+      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines) && allowAfterLine(policy, afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
       for (const p of sparkle) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 120 * dt; p.life -= dt * 1.2; }
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 
@@ -698,7 +736,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked" });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
@@ -802,7 +840,7 @@ export default function YappyPill(
       }
       setPhase("transcribing");
       words = p.wordsSoFar;
-      say(transcribeLine(chatTone, p));
+      say(transcribeLine(chatTone, p), false);
       wake();
     };
     raf = requestAnimationFrame(loop);

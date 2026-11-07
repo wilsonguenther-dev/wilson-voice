@@ -9,6 +9,8 @@ import type {
 } from "./permission";
 export type Nav =
   | "home"
+  // yap-1106-home-full-width-room — the full list Home's "See all" row opens.
+  | "history"
   | "permissions"
   | "meetings"
   | "insights"
@@ -164,6 +166,12 @@ export interface AppSettings {
    * by YappyPill (settings event) and YappyHouse (prop). Curse filter stays on.
    */
   companionTone?: string;
+  /**
+   * yap-1106-chatter-setting (backend `yappy_talks`, default "less"): "Yappy
+   * talks" — always | less (quieter from the 50th take) | milestones. Read
+   * live by YappyPill and NudgeRow through float-main (`pill/chatter.ts`).
+   */
+  yappyTalks?: string;
   /**
    * yap-1106-curse-setting (backend `companion_curse`, default false): the
    * Badass voice may swear about one finished-take line in four. Offered only
