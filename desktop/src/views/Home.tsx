@@ -132,7 +132,7 @@ export default function Home() {
     fixesToday: fixesRef.current,
     dictionarySize: booting || !Array.isArray(dictionary) ? null : dictionary.length,
     battery: governor ? { percent: governor.batteryPercent, charging: governor.onAc } : null,
-    streakDays: typeof insights?.streakDays === "number" ? insights.streakDays : null,
+    streakDays: insights ? insights.streakDays : null,
     // No backend event says a briefing was delivered on this base yet: Cinder
     // waits off-stage until one does (see studio.ts drawMid).
     newsReady: false,
