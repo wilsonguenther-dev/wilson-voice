@@ -821,16 +821,17 @@ pub struct AppIdentity {
 
 impl AppIdentity {
     pub fn new(bundle_id: Option<&str>, name: Option<&str>) -> Self {
-        let clean = |s: Option<&str>| {
-            s.map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
         AppIdentity {
-            bundle_id: clean(bundle_id),
-            name: clean(name),
+            bundle_id: clean_identity_part(bundle_id),
+            name: clean_identity_part(name),
         }
     }
+}
+
+fn clean_identity_part(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// The take's paste target: the bundle id the YV21 guard re-verifies at paste
