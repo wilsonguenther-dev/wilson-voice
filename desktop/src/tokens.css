@@ -142,6 +142,10 @@
   --accent-busy: 38 92% 55%; /* amber — transcribing  */
   --accent-done: 152 69% 52%; /* green — done         */
   --accent-meeting: 0 84% 62%; /* red — recording, the one universal signal */
+  /* yap-1106-pill-rec-headphones-hoot-tape — the meeting scene's DOM overlays:
+     the tape reels' spokes and the elapsed time under the sun. */
+  --meeting-reel-ink: #1e2025;
+  --meeting-scene-ink: #fffdf5;
 
   /* ══════════════════════════════════════════════════════════════════
      ACTIVITY HEATMAP (YV55) — a warm amber climb out of the soil, so an
