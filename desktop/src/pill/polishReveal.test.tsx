@@ -7,6 +7,9 @@
  * `tests/polish_reveal.rs`); the Use original replace path is
  * `dictation::tests::use_original_*`.
  */
+// No @types/node in this project (see tokens.test.ts for the same shape).
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node.
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement, ReactNode } from "react";
@@ -20,6 +23,7 @@ import {
   USE_ORIGINAL_COMMAND,
   USE_ORIGINAL_FAILED,
   USE_ORIGINAL_NOT_FOUND,
+  USE_ORIGINAL_SENTENCES,
   forcedPolishReveal,
   isPolishReveal,
   polishRevealLines,
@@ -88,6 +92,82 @@ describe("WF-05 polish reveal — model", () => {
     expect(useOriginalError("A newer take landed. Use History to paste this one.")).toContain("newer take");
     expect(useOriginalError(new Error("boom"))).toBe(USE_ORIGINAL_FAILED);
     expect(useOriginalError("  ")).toBe(USE_ORIGINAL_FAILED);
+  });
+
+  // yap-1107 — Wilson clicked Use original on Yap Test 0.9.4-loop3.2 and the
+  // card printed Tauri's own runtime text. Only our sentences are ever shown.
+  const TAURI_STATE_NOT_MANAGED =
+    "state not managed for field `state` on command `use_original_take`. You must call `.manage()` before using this command";
+
+  it("a raw Tauri error never reaches the card: it says the plain sentence and logs the raw text", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const shown = useOriginalError(TAURI_STATE_NOT_MANAGED);
+      expect(shown).toBe(USE_ORIGINAL_FAILED);
+      expect(shown).toBe("Couldn’t paste the original. Try Use original again.");
+      expect(shown).not.toMatch(/state not managed|command|manage|`/i);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("pill polish_reveal_use_original failed=unknown_error");
+      expect(String(warn.mock.calls[0][0])).toContain("state not managed");
+
+      const html = renderToStaticMarkup(
+        PolishRevealView({
+          reveal: REVEAL,
+          view: "card",
+          busy: false,
+          error: shown,
+          onReveal: noop,
+          onUseOriginal: noop,
+          onKeep: noop,
+        }) as ReactElement,
+      );
+      expect(html).toContain('role="alert"');
+      expect(html).toContain("Couldn’t paste the original. Try Use original again.");
+      expect(html).not.toMatch(/state not managed|use_original_take|\.manage\(\)|`/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("only allowlisted sentences pass through; any other text is the generic line", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const s of USE_ORIGINAL_SENTENCES) expect(useOriginalError(s)).toBe(s);
+      // Curly vs straight apostrophes and stray space still match our sentence.
+      expect(useOriginalError("  Couldn't read that take. Try Use original again. ")).toBe(
+        "Couldn’t read that take. Try Use original again.",
+      );
+      expect(warn).not.toHaveBeenCalled();
+      for (const other of [
+        "paste task join failed: task 7 panicked",
+        "invalid args `id` for command `use_original_take`: missing required key id",
+        "Command use_original_take not found",
+        "That take is gone from History. Also something else.",
+        undefined,
+        null,
+        42,
+      ]) {
+        expect(useOriginalError(other)).toBe(USE_ORIGINAL_FAILED);
+      }
+      expect(warn).toHaveBeenCalledTimes(7);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("the allowlist covers every sentence lib.rs use_original_take can reject with", () => {
+    const rs = readFileSync(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8") as string;
+    const start = rs.indexOf("async fn use_original_take(");
+    expect(start).toBeGreaterThan(-1);
+    const end = rs.indexOf("\n}\n", start);
+    const body = rs.slice(start, end);
+    const sentences = [...body.matchAll(/"([^"]+)"\.into\(\)/g)].map((m) => m[1]);
+    expect(sentences.length).toBeGreaterThanOrEqual(4);
+    for (const s of sentences) expect(USE_ORIGINAL_SENTENCES).toContain(s);
+    const failed = /pub const USE_ORIGINAL_FAILED_MESSAGE: &str =\s*"([^"]+)";/.exec(rs);
+    expect(failed?.[1]).toBe(USE_ORIGINAL_FAILED);
+    // The command asks for the state the app manages (Arc<AppState>).
+    expect(body).toContain("tauri::State<'_, Arc<AppState>>");
   });
 
   it("Use original that cannot find the polished words says the clipboard sentence", async () => {

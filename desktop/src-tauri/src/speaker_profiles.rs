@@ -604,8 +604,8 @@ pub struct VoiceCard {
     pub line: String,
     pub clip_start: Option<f64>,
     pub clip_end: Option<f64>,
-    /// "Same person as Alex?" — an `ask`-band (or `auto`-band, until the
-    /// auto-label item labels those itself) match, with its reason.
+    /// "Same person as Alex? 62% sure" — an `ask`-band match (under the 0.70
+    /// threshold), with its reason. `auto`-band voices never get a card.
     pub suggestion: Option<VoiceSuggestion>,
 }
 
@@ -650,12 +650,12 @@ pub fn pick_voice_cards(candidates: &[ClusterCandidate]) -> Vec<VoiceCard> {
             continue;
         }
         let suggestion = match &c.voice_match {
-            Some(VoiceMatch::Auto {
-                profile_id,
-                display_name,
-                similarity,
-            })
-            | Some(VoiceMatch::Ask {
+            // yap-1106-fb-22b — a voice that matches a saved profile at the
+            // ONE 0.70 threshold (`PROVISIONAL_AUTO_SIMILARITY`) is labelled
+            // without asking (auto-label); only voices that matched nobody at
+            // 70% or more get a card. You are never carded.
+            Some(VoiceMatch::Auto { .. }) => continue,
+            Some(VoiceMatch::Ask {
                 profile_id,
                 display_name,
                 similarity,
@@ -1052,8 +1052,24 @@ pub struct CorrectionUndo {
     pub positive_sample_ids: Vec<i64>,
     #[serde(default)]
     pub negative_sample_ids: Vec<i64>,
+    /// yap-1106-fb-22b — what "This wasn't John" took back OUT of John's
+    /// voiceprint (ids and counts only; a voiceprint never reaches the
+    /// webview). Undo puts those samples back.
+    #[serde(default)]
+    pub unlearned: Vec<UnlearnedVoice>,
     /// Unix milliseconds after which "Undo" is gone.
     pub expires_at_ms: i64,
+}
+
+/// One voice a correction took out of a profile: `samples` rows of `profile_id`
+/// learned in this meeting from the voice of `(track, cluster_index)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnlearnedVoice {
+    pub profile_id: i64,
+    pub track: i64,
+    pub cluster_index: i64,
+    pub samples: i64,
 }
 
 /// What `Database::correct_meeting_speakers` returns.

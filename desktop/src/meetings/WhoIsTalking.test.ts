@@ -8,6 +8,11 @@ import {
   nudgeText,
   shouldNudge,
   suggestionReason,
+  answerFor,
+  doneText,
+  nameSuggestions,
+  pushRecent,
+  sameAsText,
   type CardEvent,
   type CardState,
 } from "./WhoIsTalking";
@@ -75,10 +80,89 @@ describe("who is this — the card state machine", () => {
     }
   });
 
-  it("'Same person as Alex?': Yes saves, No falls back to the name card", () => {
+  it("'Same person as Alex?': Yes saves, No starts someone new", () => {
     expect(run([{ type: "yes" }]).phase).toBe("saving");
     const no = run([{ type: "no" }]);
-    expect(no).toMatchObject({ phase: "unknown", declinedSuggestion: true });
+    expect(no).toMatchObject({ phase: "new", declinedSuggestion: true });
+    expect(isOpen(no)).toBe(true);
+  });
+});
+
+// yap-1106-fb-22b-who-was-this-cards — unknown → named / not-sure / merged / new.
+describe("who was this — the after-meeting card state machine", () => {
+  const card = { suggestion: { profileId: 7, displayName: "John", similarity: 0.62 } };
+
+  it("unknown → named: Save writes the typed name through name_cluster", () => {
+    const typed = run([{ type: "type", name: " John " }]);
+    expect(answerFor({ type: "save" }, typed, card)).toEqual({
+      command: "name_cluster",
+      target: { kind: "newName", name: "John" },
+    });
+    const named = run([{ type: "save" }, { type: "saved", name: "John", relabelled: 14, me: false }], typed);
+    expect(named.phase).toBe("named");
+    expect(doneText(named)).toBe("John ✓ · 14 lines relabeled");
+  });
+
+  it("unknown → merged: Yes, John adds this voice to John's voiceprint", () => {
+    expect(answerFor({ type: "yes" }, INITIAL_CARD, card)).toEqual({
+      command: "name_cluster",
+      target: { kind: "profile", profileId: 7 },
+    });
+    const merged = run([{ type: "yes" }, { type: "saved", name: "John", relabelled: 9, me: false }]);
+    expect(merged.phase).toBe("merged");
+    expect(isDone(merged)).toBe(true);
+    expect(doneText(merged)).toBe("John ✓ · 9 lines relabeled");
+  });
+
+  it("unknown → new: No, someone new asks for a name, then saves a NEW speaker", () => {
+    const fresh = run([{ type: "no" }]);
+    expect(fresh.phase).toBe("new");
+    expect(answerFor({ type: "yes" }, fresh, { suggestion: null })).toBeNull();
+    const typed = cardReducer(fresh, { type: "type", name: "Priya" });
+    expect(answerFor({ type: "save" }, typed, card)).toEqual({
+      command: "name_cluster",
+      target: { kind: "newName", name: "Priya" },
+    });
+    const named = run([{ type: "save" }, { type: "saved", name: "Priya", relabelled: 4, me: false }], typed);
+    expect(named.phase).toBe("named");
+  });
+
+  it("unknown → not-sure: leaves Speaker N and persists nothing", () => {
+    const typed = run([{ type: "type", name: "Maybe Sam" }]);
+    const answer = answerFor({ type: "notSure" }, typed, card);
+    // No name and no voiceprint ever leave the card: the only call drops the
+    // stored voice and stops the asking.
+    expect(answer).toEqual({ command: "ignore_cluster", ignore: false });
+    expect(JSON.stringify(answer)).not.toContain("Sam");
+    expect(JSON.stringify(answer)).not.toContain("name_cluster");
+    const notSure = cardReducer(typed, { type: "notSure" });
+    expect(notSure.phase).toBe("notSure");
+    expect(notSure.savedName).toBeUndefined();
+    expect(notSure.relabelled).toBeUndefined();
+    expect(isDone(notSure)).toBe(true);
+  });
+
+  it("a failed merge can be retried and is not counted as merged", () => {
+    const failed = run([{ type: "yes" }, { type: "failed", error: "Couldn't save that name. Try again." }]);
+    expect(failed).toMatchObject({ phase: "error", merging: false });
+    const named = run([{ type: "type", name: "Jo" }, { type: "save" }, { type: "saved", name: "Jo", relabelled: 1, me: false }], failed);
+    expect(named.phase).toBe("named");
+    expect(doneText(named)).toBe("Jo ✓ · 1 line relabeled");
+  });
+
+  it("copy: 'Same person as John? 62% sure'", () => {
+    expect(sameAsText({ displayName: "John", similarity: 0.62 })).toBe("Same person as John? 62% sure");
+    expect(sameAsText({ displayName: "John", similarity: 0.999 })).toBe("Same person as John? 99% sure");
+  });
+
+  it("name suggestions: attendees, then saved voices, then recent names, never You", () => {
+    expect(nameSuggestions(["John Park", "Ana"], ["ana", "You", "Ben"], ["Cy", "john park"])).toEqual([
+      "John Park",
+      "Ana",
+      "Ben",
+      "Cy",
+    ]);
+    expect(pushRecent(["Ana", "Ben"], " ben ")).toEqual(["ben", "Ana"]);
   });
 });
 

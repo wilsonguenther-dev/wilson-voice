@@ -16,6 +16,42 @@ import { REVEAL_EDIT_TTL_MS, type PolishResult } from "./polishResult";
 export const POLISH_REVEAL_EVENT = "polish_reveal";
 /** "Use original" — `lib.rs` `use_original_take` (the Undo AI Edit paste). */
 export const USE_ORIGINAL_COMMAND = "use_original_take";
+
+/**
+ * What a failed "Use original" says when Rust gave no sentence of its own.
+ * Mirrors `lib.rs` `USE_ORIGINAL_FAILED_MESSAGE`.
+ */
+export const USE_ORIGINAL_FAILED = "Couldn’t paste the original. Try Use original again.";
+
+/**
+ * Mirrors `paste.rs` `REPLACE_NOT_FOUND_MESSAGE`: Use original could not find
+ * the polished words right before the caret (the user typed after them, moved
+ * the caret, or the field is unreadable), so nothing was typed and the original
+ * went to the clipboard instead. Rust rejects with this sentence.
+ */
+export const USE_ORIGINAL_NOT_FOUND =
+  "Couldn't find the polished words in that field. The original is on your clipboard.";
+
+/**
+ * yap-1107 — the ONLY rejections the card shows verbatim: every `Err` sentence
+ * `lib.rs` `use_original_take` / `use_original_reply` can send. Anything not on
+ * this list (Tauri's own runtime text, a join failure) becomes
+ * `USE_ORIGINAL_FAILED`. A new Rust sentence must be added here to be shown.
+ */
+export const USE_ORIGINAL_SENTENCES: readonly string[] = [
+  USE_ORIGINAL_FAILED,
+  USE_ORIGINAL_NOT_FOUND,
+  "Couldn’t read that take. Try Use original again.",
+  "That take is gone from History.",
+  "A newer take landed. Use History to paste this one.",
+  "This take has no original to paste.",
+];
+
+/** Same sentence, ignoring surrounding space and straight vs curly apostrophes. */
+function sameSentence(a: string, b: string): boolean {
+  const norm = (s: string) => s.trim().replace(/[\u2018\u2019]/g, "'");
+  return norm(a) === norm(b);
+}
 /** Unanswered, the toast leaves on its own after this long. */
 export const POLISH_REVEAL_TTL_MS = REVEAL_EDIT_TTL_MS;
 /** Where polish ran when the route chip has nothing to say (a default install). */
@@ -75,21 +111,21 @@ export function polishRevealLines(r: PolishReveal): {
   };
 }
 
-/** What a failed "Use original" says when Rust gave no sentence of its own. */
-export const USE_ORIGINAL_FAILED = "Couldn’t paste the original. Try Use original again.";
-
 /**
- * Mirrors `paste.rs` `REPLACE_NOT_FOUND_MESSAGE`: Use original could not find
- * the polished words right before the caret (the user typed after them, moved
- * the caret, or the field is unreadable), so nothing was typed and the original
- * went to the clipboard instead. Rust rejects with this sentence.
+ * Rust's refusal sentence when it is one of OUR sentences
+ * (`USE_ORIGINAL_SENTENCES`), else the generic line. Anything else (a Tauri
+ * runtime error such as "state not managed ...", a join failure, an Error
+ * object) is never shown: it is logged for diagnosis and the card says
+ * `USE_ORIGINAL_FAILED`.
  */
-export const USE_ORIGINAL_NOT_FOUND =
-  "Couldn't find the polished words in that field. The original is on your clipboard.";
-
-/** Rust's refusal sentence when it sent one, else the generic line. */
 export function useOriginalError(e: unknown): string {
-  return typeof e === "string" && e.trim().length > 0 ? e : USE_ORIGINAL_FAILED;
+  if (typeof e === "string") {
+    const known = USE_ORIGINAL_SENTENCES.find((s) => sameSentence(s, e));
+    if (known) return known;
+  }
+  const raw = e instanceof Error ? e.message : String(e);
+  console.warn(`pill polish_reveal_use_original failed=unknown_error raw=${JSON.stringify(raw.slice(0, 300))}`);
+  return USE_ORIGINAL_FAILED;
 }
 
 /** The `invoke` arguments for Use original: the take's row id. */

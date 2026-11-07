@@ -14,6 +14,8 @@ import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meeti
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
 import WhoIsTalking from "../meetings/WhoIsTalking";
+import { NOTES_ACTIVE } from "../meetings/progress";
+import YappySprite from "../license/YappySprite";
 import {
   applyLabelRows,
   clusterLabel,
@@ -733,6 +735,14 @@ export default function Meetings() {
             <article className="meeting-detail" aria-label={openMeeting.meeting.title}>
               {/* §9 — the "Who's talking?" strip sits at the top of the detail. */}
               <WhoIsTalkingStrip unnamed={unnamedVoices(detailPeopleRows)} onOpenPeople={() => setTab("people")} />
+              {/* yap-1106-fb-22b — Stop opens the meeting here while the summary is
+                  still being written; the cards can be answered meanwhile. */}
+              {(NOTES_ACTIVE as readonly string[]).includes(progress[openMeeting.meeting.id]?.state ?? "") && (
+                <p className="who-summary-writing tiny muted" role="status" aria-live="polite">
+                  <YappySprite size={24} className="who-summary-yappy" />
+                  Writing the summary…
+                </p>
+              )}
               {/* yap-1106-who-is-this — "Who was this?" cards, only after the meeting. */}
               <WhoIsTalking
                 meetingId={openMeeting.meeting.id}
