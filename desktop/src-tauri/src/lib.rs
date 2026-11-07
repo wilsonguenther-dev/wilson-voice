@@ -13999,8 +13999,11 @@ pub fn run() {
         if !adopted.is_empty() {
             log::info!("recover: {} crashed meeting(s) recovered", adopted.len());
         }
+        // yap-fx-05: every stranded / recovered meeting waits its turn — 60 s
+        // after launch, 30 s of no dictation, and the resource governor —
+        // so a take dictated right after a relaunch keeps the warm engine.
         let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
-            meeting_pipeline::enqueue(id);
+            meeting_pipeline::enqueue_recovered(id);
         });
         if !reconciled.is_empty() {
             log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
