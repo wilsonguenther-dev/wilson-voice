@@ -6,8 +6,14 @@
  *      essay, plus during-take lines.
  *   3. At least 40 distinct lines per voice (companions page, section 5).
  *   4. No line repeats within the last 20 takes.
+ * fix-b6-1-done-line-no-false-paste:
+ *   5. pasted:false never yields a paste-claiming line (4 voices x 4 bands, 200 takes, no repeat inside 20).
+ *   6. A take that received insert-copy-card ends in done with a non-paste-claim line.
+ *   7. The pill voice_line log carries pasted=<bool> and no transcript text.
  */
 import { describe, expect, it, vi } from "vitest";
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node (as in purity.test.ts).
+import { readFileSync } from "node:fs";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -16,12 +22,13 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefi
 
 import { AppContext, type AppCtx } from "../appShell";
 import Companion from "../views/settings/Companion";
-import { advanceLive, createLiveState, DEFAULT_LIVE, LIVE_TIERS } from "./live";
+import { advanceLive, createLiveState, DEFAULT_LIVE, LIVE_TIERS, reduceTakeStage, type LivePhase, type TakeStageName } from "./live";
+import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import {
-  CURSE_EVERY, EMPTY_MEMORY, RECENT_TAKES, TAKE_BANDS, VOICES, VOICE_OPTIONS,
-  distinctLines, duringLines, fillLine, isStrongest, parseMemory, pickTakeLine,
-  rememberTakeLine, takeBand, typingSaved, voiceFor,
-  type PickOpts, type TakeLineMemory, type VoiceId,
+  CURSE_EVERY, EMPTY_MEMORY, PASTE_CLAIMS, RECENT_TAKES, TAKE_BANDS, VOICES, VOICE_OPTIONS,
+  claimsPaste, distinctLines, duringLines, fillLine, isStrongest, noteTakeSignal, parseMemory, pickTakeLine,
+  rememberTakeLine, takeBand, takeDoneLine, typingSaved, voiceFor,
+  type PickOpts, type TakeLineMemory, type TakePasteSignal, type VoiceId,
 } from "./voices";
 
 const THREE: VoiceId[] = ["bestfriend", "badass", "professional"];
@@ -220,5 +227,124 @@ describe("during-take lines (live.ts advanceLive with a voice)", () => {
   it("without a voice, the old tone lines are unchanged", () => {
     expect(talk(30)).toEqual(talk(30, undefined));
     expect(talk(30).some((l) => VOICES.bestfriend.during.includes(l))).toBe(false);
+  });
+});
+
+describe("fix-b6-1-done-line-no-false-paste — no paste claim the Copy card contradicts", () => {
+  /** One word count per band: up to 5 / about 21 / about 61 / an essay. */
+  const BAND_WORDS: Record<string, number> = { tiny: 3, paragraph: 21, memo: 61, essay: 420 };
+  const TODAY = "2026-11-06";
+
+  it("tags exactly the approved lines that say pasted/inserted, and every one is real copy", () => {
+    const takeLines = (v: VoiceId) => TAKE_BANDS.flatMap((b) => VOICES[v].take[b]);
+    const every = ALL.flatMap(takeLines);
+    for (const claim of PASTE_CLAIMS) expect(every).toContain(claim);
+    // Drift guard: a new line that says it pasted/inserted must be tagged too.
+    const sayPaste = /\b(paste|pasted|pasting|insert|inserted)\b/i;
+    for (const l of [...every, ...(VOICES.badass.curse ?? [])]) expect(PASTE_CLAIMS.has(l)).toBe(sayPaste.test(l));
+    expect(claimsPaste("Inserted, 12 words.")).toBe(true);           // filled template
+    expect(claimsPaste("Pasted at cursor.")).toBe(true);
+    expect(claimsPaste("Captured, ready to go.")).toBe(false);
+  });
+
+  it("defaults to pasted:true, so the approved claims are still said when the text landed", () => {
+    const empty = (): TakeLineMemory => ({ recent: [], strongDay: null });
+    expect(pickTakeLine(3, "professional", empty(), { nonce: 0 }).text).toBe("Inserted, 3 words.");
+    expect(pickTakeLine(3, "professional", empty(), { nonce: 0, pasted: true }).key).toBe("Inserted, {w} words.");
+    const off = pickTakeLine(3, "professional", empty(), { nonce: 0, pasted: false });
+    expect(claimsPaste(off.text)).toBe(false);
+    expect(off.source).toBe("band");
+  });
+
+  it.each(ALL)("%s: pasted:false never yields a paste claim in any band over 200 takes, and never repeats inside 20", (voice) => {
+    for (const band of TAKE_BANDS) {
+      const w = BAND_WORDS[band];
+      expect(takeBand(w)).toBe(band);
+      for (const curse of [false, true]) {
+        let mem: TakeLineMemory = { recent: [], strongDay: null };
+        const keys: string[] = [];
+        const texts: string[] = [];
+        for (let i = 0; i < 200; i++) {
+          const p = pickTakeLine(w, voice, mem, { nonce: i, pasted: false, curse, today: TODAY });
+          expect(PASTE_CLAIMS.has(p.key)).toBe(false);
+          expect(claimsPaste(p.text)).toBe(false);
+          expect(keys.slice(Math.max(0, i - RECENT_TAKES), i)).not.toContain(p.key);
+          expect(texts.slice(Math.max(0, i - RECENT_TAKES), i)).not.toContain(p.text);
+          keys.push(p.key); texts.push(p.text);
+          mem = rememberTakeLine(mem, p, TODAY);
+        }
+      }
+    }
+  });
+
+  it("memory full of earlier pasted takes still yields a fresh non-claim line", () => {
+    for (const voice of ALL) {
+      const { mem } = runTakes(voice, 60);
+      const p = pickTakeLine(3, voice, mem, { nonce: 61, pasted: false });
+      expect(claimsPaste(p.text)).toBe(false);
+      expect(mem.recent).not.toContain(p.key);
+    }
+  });
+
+  it("folds the take's paste signals: listening clears, the Copy card and paste_not_confirmed set, paste_confirmed keeps", () => {
+    const fold = (signals: TakePasteSignal[], start = false) => signals.reduce(noteTakeSignal, start);
+    expect(fold(["listening"], true)).toBe(false);
+    expect(fold(["listening", "insert-copy-card"])).toBe(true);
+    expect(fold(["listening", "paste_not_confirmed"])).toBe(true);
+    expect(fold(["listening", "paste_confirmed"])).toBe(false);
+    expect(fold(["listening", "insert-copy-card", "paste_confirmed"])).toBe(true);   // a card on screen is the answer
+    expect(fold(["listening", "insert-copy-card", "listening"])).toBe(false);        // the next take starts clean
+  });
+
+  it("a take that received insert-copy-card ends in done with a non-paste-claim line", () => {
+    expect(INSERT_COPY_CARD_EVENT).toBe("insert-copy-card");
+    // The take's phase: a not-confirmed paste still ends in `done` (live.ts reduceTakeStage).
+    const stages: TakeStageName[] = ["decoding", "pasting", "paste_not_confirmed", "done"];
+    const phase = stages.reduce<LivePhase>((p, st) => reduceTakeStage(p, st, st === "done" ? 9 : undefined), "thinking");
+    expect(phase).toBe("done");
+    // What YappyPill does on that path, take after take, for every voice and size.
+    for (const voice of ALL) {
+      let mem: TakeLineMemory = { recent: [], strongDay: null };
+      let copyCardShown = true;                       // left over from an earlier take
+      let claimsWhenLanded = 0;
+      for (let i = 0; i < 200; i++) {
+        const w = [3, 21, 61, 420][i % 4];
+        const cardTake = i % 3 !== 2;
+        const signals: TakePasteSignal[] = cardTake
+          ? ["listening", "insert-copy-card", "paste_not_confirmed"]
+          : ["listening", "paste_confirmed"];
+        copyCardShown = signals.reduce(noteTakeSignal, copyCardShown);
+        expect(copyCardShown).toBe(cardTake);
+        const out = takeDoneLine(w, voice, mem, { nonce: i, today: TODAY, pasted: !copyCardShown });
+        if (cardTake) expect(claimsPaste(out.picked.text)).toBe(false);
+        else if (claimsPaste(out.picked.text)) claimsWhenLanded++;
+        expect(out.log).toContain(`pasted=${!cardTake}`);
+        mem = out.memory;
+      }
+      // Positive control: voices with paste claims still say them on takes that landed.
+      if (voice === "professional" || voice === "bestfriend") expect(claimsWhenLanded).toBeGreaterThan(0);
+    }
+  });
+
+  it("pill voice_line log carries pasted=<bool> and no transcript text", () => {
+    const mem: TakeLineMemory = { recent: [], strongDay: null };
+    for (const pasted of [true, false]) {
+      const out = takeDoneLine(61, "professional", mem, { nonce: 4, today: TODAY, pasted });
+      expect(out.log).toMatch(/^pill voice_line voice=[a-z]+ band=[a-z]+ source=[a-z]+ recent=\d+ pasted=(true|false)$/);
+      expect(out.log.endsWith(` pasted=${pasted}`)).toBe(true);
+      expect(out.log).not.toContain(out.picked.text);
+      expect(out.memory.recent).toEqual([out.picked.key]);
+    }
+    expect(takeDoneLine(3, "bestfriend", mem).log).toContain("pasted=true");   // default
+  });
+
+  it("YappyPill wires it: tracks the Copy card per take and passes pasted into the done line", () => {
+    const src = readFileSync(new URL("./YappyPill.tsx", import.meta.url), "utf8") as string;
+    expect(src).toContain("listen<unknown>(INSERT_COPY_CARD_EVENT");
+    expect(src).toContain("listen<TakeStageNotice>(TAKE_STAGE_EVENT");
+    expect(src).toContain('copyCardShown = noteTakeSignal(copyCardShown, "listening")');
+    expect(src).toContain("pasted: !copyCardShown");
+    expect(src).toContain("console.info(out.log)");
+    expect(src).not.toMatch(/pickTakeLine\(/);
   });
 });
