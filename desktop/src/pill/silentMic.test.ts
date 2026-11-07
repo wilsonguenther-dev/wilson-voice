@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import {
   forcedSilentMic, nextMicrophone, parseSilentMicWarning, SAMPLE_SILENT_MIC_WARNING,
   silentMicAccessibleName, silentMicShows, switchedLine, type SilentMicList,
 } from "./silentMic";
 
-const here = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
+const here = (p: string): string => readFileSync(new URL(p, import.meta.url), "utf8") as string;
 
 const LIST: SilentMicList = {
   devices: [
@@ -50,6 +50,11 @@ describe("WF-13 silent-mic warning — pill model", () => {
     expect(nextMicrophone(null)).toBeNull();
   });
 
+  it("starts from the top of the list when the mic in use is not listed", () => {
+    expect(nextMicrophone({ ...LIST, inUseId: "unplugged" })?.id).toBe("builtin");
+    expect(nextMicrophone({ ...LIST, inUseId: null, chosenId: null })?.id).toBe("builtin");
+  });
+
   it("uses the saved pick when nothing is in use yet", () => {
     expect(nextMicrophone({ ...LIST, inUseId: null, chosenId: "shure" })?.id).toBe("builtin");
   });
@@ -66,6 +71,15 @@ describe("WF-13 silent-mic warning — pill model", () => {
   it("the matrix can force the row", () => {
     expect(forcedSilentMic("?phase=listening&silentMic=1")).toBe(SAMPLE_SILENT_MIC_WARNING);
     expect(forcedSilentMic("?phase=listening")).toBeNull();
+  });
+
+  it("the matrix row is a listening pill forced into the silent-mic state", async () => {
+    const { matrixSilentMicScene } = await import("./forced");
+    const row = matrixSilentMicScene();
+    expect(row.id).toBe("silent-mic");
+    expect(row.phase).toBe("listening");
+    expect(row.query).toBe("silentMic=1");
+    expect(forcedSilentMic(`?phase=${row.phase}&${row.query}`)).toBe(SAMPLE_SILENT_MIC_WARNING);
   });
 
   it("is mounted by the float window and styled from tokens", () => {

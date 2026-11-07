@@ -6370,7 +6370,11 @@ mod silent_mic_tests {
 
     #[test]
     fn silent_mic_check_is_wired_into_the_consumer_and_arm() {
-        let code = include_str!("record.rs");
+        // Only the code ABOVE this test module counts (the asserts below
+        // would otherwise find their own string literals).
+        let full = include_str!("record.rs");
+        let code = full.split("mod silent_mic_tests").next().unwrap_or(full);
+        assert!(code.len() < full.len(), "the test module marker is found");
         assert!(code.contains("apply_silent_mic_event(check.feed("));
         assert!(code.contains("begin_silent_mic_take(&stream.device_name);"));
         assert!(code.contains("retarget_silent_mic(&live.device_name);"));
