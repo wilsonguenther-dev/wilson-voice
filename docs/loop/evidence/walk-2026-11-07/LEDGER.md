@@ -16,6 +16,8 @@ Note: Wilson walked **0.9.4-loop3.11** (main d4ad0d71) at 14:33Z. The copy insta
 
 The second dispatch (coder B2, 2026-11-07T22:52Z) hit the same wall: this item cannot be done by any seat that may not drive the installed app. Route it to a walk seat with permission to launch Yap Test, send keystrokes, run `screencapture` and `say`, or to Wilson. Re-dispatching it to a code-only coder will bounce it a third time.
 
+Third dispatch (coder B2, 2026-11-07T22:54Z): bounced again for the same reason, nothing walked, nothing compiled. The base it was sent with (origin/loop3/integration-8) no longer exists. Stop sending this item to code-only seats; it needs a walk seat or Wilson.
+
 This ledger was written by code-only coder B2. That seat's hard guardrails forbid what the walk needs: launching or driving any copy of Yap, GUI keystrokes, `screencapture` of the Yap window, `say` through the speakers, and running vite/npm for the headless UI shim. So no step below was walked. There are no PASS/FAIL verdicts and no screenshots, and nothing was invented to fill them. The walk has to run in a seat that may drive the installed app (the integrator or a walk seat). Use the step table as the script and fill in the Time / Happened / Verdict / Screenshot / Log columns.
 
 ## Steps
