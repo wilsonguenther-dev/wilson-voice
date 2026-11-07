@@ -413,7 +413,11 @@ function railCheck(name, m, { rail }) {
     if (it.count && (it.count.w < 5 || it.count.h < 5)) bad.push(`nav "${it.name}" count badge not visible (${it.count.w}x${it.count.h})`);
   }
   if (!m.items.some((it) => it.active && it.w > 0)) bad.push("no visible active nav item");
-  if (!m.mark || m.mark.w < 20) bad.push("brand mark not visible");
+  // Visible = drawn, not collapsed. The shipped one-line release tag keeps the
+  // mark at its long-standing ~18 px flex-shrunk width (yap-1107-sidebar-
+  // version-line-fits holds that layout pixel-identical), so width alone is not
+  // the test; the 36 px height and a non-trivial width are.
+  if (!m.mark || m.mark.w < 12 || m.mark.h < 30) bad.push(`brand mark not visible (${m.mark ? `${m.mark.w.toFixed(1)}x${m.mark.h.toFixed(1)}` : "missing"})`);
   if (!m.dictate || m.dictate.w < 32 || !m.dictate.name) bad.push("Dictate not reachable/named");
   return bad;
 }
