@@ -69,6 +69,25 @@
  *   B5  PNGs: <label>-idle / -selected / -hover at 1190, <label>-idle-900, and
  *       <label>-list[-900] crops of the list pane.
  *
+ * yap-1107-meetings-row-no-stale-tooltip (PNGs to --tip-out): Wilson saw a
+ * native "Meeting 12:19 PM" tooltip float over the NEXT row (title={m.title}
+ * on the whole row button). The row keeps no title attribute; the title span
+ * gets one only while its ellipsis cuts it (one ResizeObserver per list).
+ *   T1  the short-title row ("Retro", fits): neither the li nor any
+ *       descendant has a title attribute, idle AND after a 1.5 s hover on its
+ *       title; no custom tooltip ([role=tooltip], .tooltip, [data-tooltip]) is
+ *       visible; elementFromPoint at the next row's title and time resolves
+ *       inside the next row (nothing drawn over it).
+ *   T2  the long-title row (ellipsised: scrollWidth > clientWidth): its title
+ *       span's title attribute equals the full title, and nothing else in the
+ *       row carries one — idle and after a 1.5 s hover.
+ *   T3  every row, at 1190, 900 and 1600 px wide: span has a title  <=>  it is
+ *       cut, and the only other title allowed is a FAILED row's state chip
+ *       (its reason; the detail pane does not show it).
+ *   T4  PNGs <label>-hover-short-1.5s, <label>-hover-short-1.5s-list,
+ *       <label>-hover-long-1.5s-list. BEFORE: --dist <origin/main build>
+ *       --label before (T1 is EXPECTED to fail there: the row button has a title).
+ *
  * USAGE   node scripts/meetings-row-shots.mjs [--out <dir>] [--label after|before] [--dist <built dist>]
  *   --out    default docs/loop/evidence/yap-1107-meetings-row-chips-baseline
  *   --label  PNG name prefix (default "after"). The BEFORE shots come from the
@@ -109,6 +128,11 @@ const LABEL = arg("--label", "after");
 const PREBUILT = arg("--dist", null);
 const CLICK_ID = "yap-1107-meetings-row-whole-click-target";
 const CLICK_OUT = resolve(arg("--click-out", join(ROOT, "docs", "loop", "evidence", CLICK_ID)));
+const TIP_ID = "yap-1107-meetings-row-no-stale-tooltip";
+const TIP_OUT = resolve(arg("--tip-out", join(ROOT, "docs", "loop", "evidence", TIP_ID)));
+const TIP_HOVER_MS = 1500;
+const TIP_SHORT = "m-short-0002";
+const TIP_LONG = "m-long-0001";
 
 /* ── the meetings fixture ─────────────────────────────────────────────── */
 const now = Date.now();
@@ -554,6 +578,126 @@ async function clickTargetChecks(cdp, s, ids, fail) {
   await press("Escape", "Escape", 27);
 }
 
+/* ── yap-1107-meetings-row-no-stale-tooltip (T1–T4) ───────────────────── */
+// Per row: is the title span cut, what title does it carry, and every element
+// (li included) that carries a title attribute, tagged span / failed-chip / other.
+const TITLES = `(() => [...document.querySelectorAll("li.meeting-row[data-meeting-id]")].map((li) => {
+  const t = li.querySelector(".meeting-row-title");
+  const titled = [li, ...li.querySelectorAll("*")].filter((el) => el.hasAttribute("title")).map((el) => ({
+    el: el.tagName.toLowerCase() + (el.classList.length ? "." + [...el.classList].join(".") : ""),
+    title: el.getAttribute("title"),
+    kind: el === t ? "span" : el.classList.contains("meeting-state") && li.dataset.meetingState === "failed" ? "failed-chip" : "other",
+  }));
+  return {
+    id: li.dataset.meetingId,
+    text: t ? t.textContent.trim() : "",
+    cut: t ? t.scrollWidth > t.clientWidth : false,
+    spanTitle: t ? t.getAttribute("title") : null,
+    titled,
+  };
+}))()`;
+
+const VISIBLE_TOOLTIPS = `[...document.querySelectorAll('[role="tooltip"], .tooltip, [data-tooltip]')].filter((el) => {
+  const cs = getComputedStyle(el); const r = el.getBoundingClientRect();
+  return cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) > 0 && r.width > 0 && r.height > 0;
+}).map((el) => el.tagName.toLowerCase() + "." + [...el.classList].join("."))`;
+
+// The row after `id` in list order, and what sits on top of its title and time.
+const NEXT_ROW_HITS = (id) => `(() => {
+  const rows = [...document.querySelectorAll("li.meeting-row[data-meeting-id]")];
+  const i = rows.findIndex((r) => r.dataset.meetingId === ${JSON.stringify(id)});
+  const next = rows[i + 1];
+  if (i < 0 || !next) return null;
+  return { id: next.dataset.meetingId, hits: [".meeting-row-title", ".meeting-row-when"].map((sel) => {
+    const el = next.querySelector(sel); if (!el) return { sel, ok: false, hit: "missing" };
+    const r = el.getBoundingClientRect(); const x = r.left + Math.min(r.width / 2, 24), y = r.top + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return { sel, ok: !!hit && next.contains(hit), hit: hit ? hit.tagName.toLowerCase() + "." + [...hit.classList].join(".") : "nothing" };
+  }) };
+})()`;
+
+function judgeTitles(rows, state, fail) {
+  if (!Array.isArray(rows) || rows.length === 0) { fail("T3", `${state}: no rows measured`); return; }
+  for (const r of rows) {
+    if (r.cut && r.spanTitle !== r.text) fail("T3", `${state} ${r.id}: title is cut but its span's title is ${JSON.stringify(r.spanTitle)}`);
+    if (!r.cut && r.spanTitle !== null) fail("T3", `${state} ${r.id}: title fits but its span still has title ${JSON.stringify(r.spanTitle)}`);
+    for (const t of r.titled) if (t.kind === "other") fail("T3", `${state} ${r.id}: ${t.el} carries title ${JSON.stringify(t.title)}`);
+  }
+  const short = rows.find((r) => r.id === TIP_SHORT);
+  if (!short) fail("T1", `${state}: the short-title fixture row is missing`);
+  else {
+    if (short.cut) fail("T1", `${state}: the short title "${short.text}" is cut (fixture/layout broken)`);
+    if (short.titled.length) fail("T1", `${state}: short row carries title attribute(s) ${JSON.stringify(short.titled)}`);
+  }
+  const long = rows.find((r) => r.id === TIP_LONG);
+  if (!long) fail("T2", `${state}: the long-title fixture row is missing`);
+  else if (state.startsWith("1190") || state.startsWith("hover")) {
+    if (!long.cut) fail("T2", `${state}: the long title is not ellipsised at ${W} px (fixture/layout broken)`);
+    if (long.spanTitle !== long.text) fail("T2", `${state}: long row's span title ${JSON.stringify(long.spanTitle)} is not the full title`);
+    const others = long.titled.filter((t) => t.kind !== "span");
+    if (others.length) fail("T2", `${state}: something besides the title span carries a title ${JSON.stringify(others)}`);
+  }
+}
+
+async function tooltipChecks(cdp, s, fail) {
+  mkdirSync(TIP_OUT, { recursive: true });
+  const tipShot = async (name, listOnly) => {
+    await sleep(200); // the hover itself already waited TIP_HOVER_MS
+    let clip;
+    if (listOnly) {
+      const r = await evaluate(cdp, s, `(() => { const p = document.querySelector(".meetings-list-pane"); if (!p) return null; const b = p.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: Math.min(b.height, innerHeight - b.top) }; })()`);
+      if (!r) { fail("T4", "no list pane to crop for " + name); return; }
+      clip = { ...r, scale: 1 };
+    }
+    const png = await cdp.send("Page.captureScreenshot", clip ? { format: "png", clip } : { format: "png" }, s);
+    writeFileSync(join(TIP_OUT, `${LABEL}-${name}.png`), Buffer.from(png.data, "base64"));
+  };
+  const hoverTitle = async (id) => {
+    const c = await centre(cdp, s, `li.meeting-row[data-meeting-id="${id}"] .meeting-row-title`);
+    if (!c) return false;
+    await mouse(cdp, s, "mouseMoved", c.left + Math.min(8, (c.right - c.left) / 2), c.y);
+    await sleep(TIP_HOVER_MS);
+    return true;
+  };
+
+  // T3 idle at 1190 (pointer parked, nothing focused).
+  await mouse(cdp, s, "mouseMoved", W - 4, H - 4);
+  await sleep(300);
+  const idle = await evaluate(cdp, s, TITLES);
+  console.log("titles 1190-idle " + JSON.stringify(idle.map((r) => [r.id, r.cut, r.spanTitle !== null, r.titled.length])));
+  judgeTitles(idle, "1190-idle", fail);
+
+  // T1 — 1.5 s hover on the short title.
+  if (!(await hoverTitle(TIP_SHORT))) fail("T1", "short-title row not found to hover");
+  else {
+    judgeTitles(await evaluate(cdp, s, TITLES), "hover-short", fail);
+    const tips = await evaluate(cdp, s, VISIBLE_TOOLTIPS);
+    if (tips.length) fail("T1", "a custom tooltip is visible after the hover: " + JSON.stringify(tips));
+    const next = await evaluate(cdp, s, NEXT_ROW_HITS(TIP_SHORT));
+    if (!next) fail("T1", "the short-title row has no next row to check (fixture order changed)");
+    else for (const h of next.hits) if (!h.ok) fail("T1", `after the hover, ${next.id} ${h.sel} is covered by ${h.hit}`);
+    await tipShot("hover-short-1.5s", false);
+    await tipShot("hover-short-1.5s-list", true);
+  }
+
+  // T2 — 1.5 s hover on the long (ellipsised) title.
+  if (!(await hoverTitle(TIP_LONG))) fail("T2", "long-title row not found to hover");
+  else {
+    judgeTitles(await evaluate(cdp, s, TITLES), "hover-long", fail);
+    await tipShot("hover-long-1.5s-list", true);
+  }
+
+  // T3 — the one list ResizeObserver re-syncs on a resize, both directions.
+  for (const width of [W_NARROW, 1600, W]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+    await sleep(400);
+    await mouse(cdp, s, "mouseMoved", width - 4, H - 4);
+    const rows = await evaluate(cdp, s, TITLES);
+    console.log(`titles ${width} ` + JSON.stringify(rows.map((r) => [r.id, r.cut, r.spanTitle !== null])));
+    judgeTitles(rows, `${width === W ? "1190-after-resize" : width + "-idle"}`, fail);
+  }
+}
+
 /* ── CDP helpers ──────────────────────────────────────────────────────── */
 async function mouse(cdp, s, type, x, y, button = "none", extra = {}) {
   await cdp.send("Input.dispatchMouseEvent", { type, x, y, button, ...extra }, s);
@@ -697,6 +841,11 @@ async function run() {
     await chipsJudge("idle-1190");
     await shot(cdp, s, "idle");
     await listShot("list");
+
+    /* ── yap-1107-meetings-row-no-stale-tooltip (T1–T4) ───────────────── */
+    await tooltipChecks(cdp, s, fail);
+    await mouse(cdp, s, "mouseMoved", W - 4, H - 4);
+    await sleep(250);
 
     // hover — each row in turn; A2: no row's height or top moves.
     for (const r of idle) {
