@@ -10104,24 +10104,26 @@ async fn news_quotes_check(
     };
     let quiet = news_quiet_now(&state);
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<news::briefing::QuotesOutcome, String> {
-        let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
-        news::briefing::check_quotes_if_due(
-            &state.db,
-            &quote,
-            trigger,
-            quiet,
-            news_prefs::now_ms(),
-            news::schedule::local_utc_offset_ms(),
-        )
-        .map_err(|tag| {
-            log::warn!(
-                "news quotes_failed trigger={} reason={tag}",
-                trigger.as_str()
-            );
-            "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
-        })
-    })
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<news::briefing::QuotesOutcome, String> {
+            let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
+            news::briefing::check_quotes_if_due(
+                &state.db,
+                &quote,
+                trigger,
+                quiet,
+                news_prefs::now_ms(),
+                news::schedule::local_utc_offset_ms(),
+            )
+            .map_err(|tag| {
+                log::warn!(
+                    "news quotes_failed trigger={} reason={tag}",
+                    trigger.as_str()
+                );
+                "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
+            })
+        },
+    )
     .await
     .map_err(|e| {
         log::error!("news quotes_worker_failed error=\"{e}\"");

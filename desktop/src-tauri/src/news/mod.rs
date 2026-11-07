@@ -4,9 +4,9 @@
 //! this Mac ([`rank`], [`cache`]). Nothing here runs unless the cloud option
 //! is on and at least one topic is set ([`feeds::gate`]).
 
-pub mod cache;
 /// yap-1106-news-home-briefing — market quote check, movers, story opener.
 pub mod briefing;
+pub mod cache;
 pub mod explain;
 pub mod feeds;
 pub mod rank;
