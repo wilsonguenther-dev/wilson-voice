@@ -85,6 +85,34 @@ static ESC_DOWN: AtomicBool = AtomicBool::new(false);
 /// panel back on its dock. pill/drag.ts `PILL_DRAG_CANCEL_EVENT` is the same
 /// string; the webview's gesture catches up so the release is inert.
 pub const PILL_DRAG_CANCEL_EVENT: &str = "pill-drag-cancel";
+/// yap-1107-reveal-stays-until-read — is the "Polished — Reveal" toast or its
+/// "What polish changed" card up? Set by the pill (`pill_reveal_state`). While
+/// it is, the hover watch reads Esc and the left mouse button from the window
+/// server (the panel is a non-activating NSPanel that is normally never key,
+/// so the webview rarely sees a keydown, and a click outside the panel never
+/// reaches it at all) and sends [`POLISH_REVEAL_CLOSE_EVENT`].
+static REVEAL_OPEN: AtomicBool = AtomicBool::new(false);
+/// Edge detectors for the reveal watch: only a FRESH press closes it, never a
+/// key or button already held when the reveal appeared.
+static REVEAL_ESC_WAS: AtomicBool = AtomicBool::new(false);
+static REVEAL_MOUSE_WAS: AtomicBool = AtomicBool::new(false);
+/// Backend → pill webview: close the reveal now. Payload `"esc"` or
+/// `"click_outside"`. pill/polishReveal.ts `POLISH_REVEAL_CLOSE_EVENT`.
+pub const POLISH_REVEAL_CLOSE_EVENT: &str = "polish-reveal-close";
+/// Every reason the pill may report for the reveal opening or closing
+/// (pill/revealDwell.ts `REVEAL_CLOSE_REASONS`, plus `shown`). Anything else is
+/// logged as `other`, so the telemetry line never carries free text.
+pub const REVEAL_REASONS: [&str; 9] = [
+    "shown",
+    "timer",
+    "esc",
+    "click_outside",
+    "close_button",
+    "keep",
+    "use_original",
+    "new_recording",
+    "muted",
+];
 /// The VISIBLE capsule's rect inside the float window, in logical points,
 /// reported by the pill webview (`pill_set_hitbox`). Width 0 → nothing is
 /// grabbable yet, so the panel stays fully click-through.
@@ -1350,6 +1378,102 @@ fn poll_drag_escape(app: &AppHandle) -> bool {
     true
 }
 
+/// yap-1107-reveal-stays-until-read — the pill reports the reveal opened or
+/// closed. Arms / disarms the Esc + click-outside watch and writes the one
+/// structured line per open / close (reason tag and how long it was up; never
+/// any text).
+pub fn set_reveal_open(open: bool, reason: &str, dwell_ms: u64) {
+    // Prime the edge detectors so a key or button already down when the reveal
+    // appears does not count as a fresh press.
+    REVEAL_ESC_WAS.store(esc_key_down(), Ordering::SeqCst);
+    REVEAL_MOUSE_WAS.store(left_mouse_down(), Ordering::SeqCst);
+    REVEAL_OPEN.store(open, Ordering::SeqCst);
+    let reason = reveal_reason_tag(reason);
+    if open {
+        log::info!("pill polish_reveal event=open reason={reason}");
+    } else {
+        log::info!("pill polish_reveal event=close reason={reason} dwell_ms={dwell_ms}");
+    }
+}
+
+/// The reason as an allowlisted tag (`REVEAL_REASONS`), else `other`.
+pub fn reveal_reason_tag(reason: &str) -> &'static str {
+    REVEAL_REASONS
+        .iter()
+        .copied()
+        .find(|r| *r == reason)
+        .unwrap_or("other")
+}
+
+/// Pure decision of the reveal watch: a fresh Esc press closes it; a fresh
+/// left-button press with the cursor OUTSIDE the reveal closes it. A press on
+/// the reveal itself is its own button's business.
+pub fn reveal_close_reason(
+    open: bool,
+    esc_was: bool,
+    esc_now: bool,
+    mouse_was: bool,
+    mouse_now: bool,
+    cursor_on_reveal: bool,
+) -> Option<&'static str> {
+    if !open {
+        return None;
+    }
+    if esc_now && !esc_was {
+        return Some("esc");
+    }
+    if mouse_now && !mouse_was && !cursor_on_reveal {
+        return Some("click_outside");
+    }
+    None
+}
+
+/// The hover watch's per-slice reveal check (30 ms). Costs nothing unless the
+/// reveal is up. While it is up the pill's hitbox IS the reveal's rect
+/// (`holdPillHitbox`), so `cursor_on_capsule_cheap` answers "on the reveal".
+/// A global mouse-down is read as button STATE (`CGEventSourceButtonState`),
+/// which needs no permission; a click shorter than one slice can be missed,
+/// and the close button, Esc and the timer still close it then.
+fn poll_reveal_close(app: &AppHandle) {
+    if !REVEAL_OPEN.load(Ordering::SeqCst) {
+        return;
+    }
+    let esc = esc_key_down();
+    let esc_was = REVEAL_ESC_WAS.swap(esc, Ordering::SeqCst);
+    let mouse = left_mouse_down();
+    let mouse_was = REVEAL_MOUSE_WAS.swap(mouse, Ordering::SeqCst);
+    let on_reveal = cursor_on_capsule_cheap();
+    let Some(reason) = reveal_close_reason(true, esc_was, esc, mouse_was, mouse, on_reveal) else {
+        return;
+    };
+    // Disarm now; the pill confirms with `pill_reveal_state(false, ..)`.
+    REVEAL_OPEN.store(false, Ordering::SeqCst);
+    log::info!("pill polish_reveal event=backend_close reason={reason}");
+    if let Err(e) = app.emit(POLISH_REVEAL_CLOSE_EVENT, reason) {
+        log::warn!("pill polish_reveal event=close_emit_failed error={e}");
+    }
+}
+
+/// Is the left mouse button down right now, from the combined session state —
+/// a read of the window server's button table, no event tap, no permission.
+#[cfg(target_os = "macos")]
+fn left_mouse_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const MOUSE_BUTTON_LEFT: u32 = 0;
+    // SAFETY: a pure read of the window server's button state; both arguments
+    // are plain integers and the call has no preconditions.
+    unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, MOUSE_BUTTON_LEFT) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn left_mouse_down() -> bool {
+    false
+}
+
 /// Is Escape down right now (macOS virtual key 0x35), from the combined session
 /// state — a read of the key table, no event tap and no main thread.
 #[cfg(target_os = "macos")]
@@ -1431,6 +1555,8 @@ pub fn start_hover_watch(app: AppHandle) {
                 if poll_drag_escape(&app) {
                     break;
                 }
+                // yap-1107 — Esc / a click outside closes the polish reveal.
+                poll_reveal_close(&app);
                 let near = cursor_on_capsule_cheap();
                 let was = CURSOR_NEAR.swap(near, Ordering::Relaxed);
                 if should_wake_early(was, near) {
@@ -1928,6 +2054,39 @@ mod wf02_drag_tests {
     fn the_cancel_event_name_matches_the_webview() {
         // pill/drag.ts PILL_DRAG_CANCEL_EVENT
         assert_eq!(PILL_DRAG_CANCEL_EVENT, "pill-drag-cancel");
+    }
+
+    // yap-1107-reveal-stays-until-read
+    #[test]
+    fn a_fresh_esc_or_a_click_outside_closes_the_reveal() {
+        // Esc: only a fresh press, only while the reveal is up.
+        assert_eq!(reveal_close_reason(true, false, true, false, false, true), Some("esc"));
+        assert_eq!(reveal_close_reason(true, true, true, false, false, false), None);
+        assert_eq!(reveal_close_reason(false, false, true, false, true, false), None);
+        // A fresh press outside the reveal closes it; on the reveal it does not.
+        assert_eq!(
+            reveal_close_reason(true, false, false, false, true, false),
+            Some("click_outside")
+        );
+        assert_eq!(reveal_close_reason(true, false, false, false, true, true), None);
+        // A button held since before the reveal (or since the last slice) is not a press.
+        assert_eq!(reveal_close_reason(true, false, false, true, true, false), None);
+        assert_eq!(reveal_close_reason(true, false, false, false, false, false), None);
+    }
+
+    #[test]
+    fn the_reveal_close_event_name_matches_the_webview() {
+        // pill/polishReveal.ts POLISH_REVEAL_CLOSE_EVENT
+        assert_eq!(POLISH_REVEAL_CLOSE_EVENT, "polish-reveal-close");
+    }
+
+    #[test]
+    fn reveal_telemetry_reasons_are_allowlisted_tags() {
+        for r in REVEAL_REASONS {
+            assert_eq!(reveal_reason_tag(r), r);
+        }
+        assert_eq!(reveal_reason_tag("the report is done"), "other");
+        assert_eq!(reveal_reason_tag(""), "other");
     }
 }
 

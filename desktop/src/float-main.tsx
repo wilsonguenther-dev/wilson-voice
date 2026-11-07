@@ -153,6 +153,8 @@ interface Settings {
   scratchpadOnBar?: boolean;
   /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
   mutedPillCategories?: string[];
+  /** yap-1107 — Settings › Notifications: "Keep the reveal open until I close it". */
+  keepPolishRevealOpen?: boolean;
 }
 
 /**
@@ -412,6 +414,7 @@ function Float() {
   const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
+  const [keepRevealOpen, setKeepRevealOpen] = useState(false);
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -635,6 +638,7 @@ function Float() {
       setChatter(parseChatterMode(s?.yappyTalks));
       setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
+      setKeepRevealOpen(s?.keepPolishRevealOpen === true);
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -884,6 +888,7 @@ function Float() {
       <PolishRevealCard
         forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
+        keepOpen={keepRevealOpen}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}

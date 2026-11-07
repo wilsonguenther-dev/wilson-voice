@@ -190,6 +190,12 @@ export interface AppSettings {
    */
   mutedPillCategories?: string[];
   /**
+   * yap-1107-reveal-stays-until-read (backend `keep_polish_reveal_open`,
+   * default false): Settings › Notifications "Keep the reveal open until I
+   * close it". On, the "Polished — Reveal" toast never leaves on its own.
+   */
+  keepPolishRevealOpen?: boolean;
+  /**
    * WF-16 (backend `hide_from_capture_in_meetings`, default true): while a
    * meeting records, the pill, its meeting chip and the Scratchpad are kept
    * out of screen shares and screenshots. Missing = on.

@@ -747,6 +747,13 @@ pub struct AppSettings {
     /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
     #[serde(default)]
     pub muted_pill_categories: Vec<String>,
+    /// yap-1107-reveal-stays-until-read — Settings › Notifications "Keep the
+    /// reveal open until I close it". Off by default: the "Polished — Reveal"
+    /// toast then leaves on its own (8 s minimum, never under the pointer,
+    /// `desktop/src/pill/revealDwell.ts`); on, only Esc, a click outside, its
+    /// close button or an answer closes it.
+    #[serde(default)]
+    pub keep_polish_reveal_open: bool,
     /// WF-16 — "Hide Yap from screen sharing during meetings". On by default:
     /// while a meeting records, the pill (and its meeting chip) and the
     /// Scratchpad are kept out of screen shares and screenshots; they come
@@ -910,6 +917,7 @@ impl Default for AppSettings {
             structure_app_overrides: std::collections::BTreeMap::new(),
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
+            keep_polish_reveal_open: false,
             hide_from_capture_in_meetings: true,
             yappy_talks: default_yappy_talks(),
         }
@@ -6658,6 +6666,12 @@ fn save_settings(
                 next.hide_from_capture_in_meetings
             );
         }
+        if next.keep_polish_reveal_open != live.keep_polish_reveal_open {
+            log::info!(
+                "settings keep_polish_reveal_open_changed on={}",
+                next.keep_polish_reveal_open
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -7065,6 +7079,15 @@ fn save_settings(
 #[tauri::command]
 fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
+}
+
+/// yap-1107-reveal-stays-until-read — the pill says the polish reveal opened
+/// (`reason` "shown") or closed (why, and `dwell_ms` it was up). Arms / disarms
+/// the backend Esc + click-outside watch (`float_pill::set_reveal_open`), which
+/// also writes the telemetry line. `reason` is an allowlisted tag there.
+#[tauri::command]
+fn pill_reveal_state(open: bool, reason: String, dwell_ms: u64) {
+    float_pill::set_reveal_open(open, &reason, dwell_ms);
 }
 
 /// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
@@ -15124,6 +15147,7 @@ pub fn run() {
             language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_reveal_state,
             pill_set_panel_frame,
             pill_cycle_style,
             pending_copy_card,
@@ -17328,6 +17352,37 @@ mod tests {
         assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
         let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
         assert_eq!(nback.native_model, "handy-computer/whisper-tiny-gguf");
+    }
+
+    // yap-1107-reveal-stays-until-read: "Keep the reveal open until I close it"
+    // is off on a fresh install and on a store written before the field
+    // existed, and when switched on it survives a restart (write -> load) on
+    // its wire key.
+    #[test]
+    fn keep_polish_reveal_open_defaults_off_and_survives_a_restart() {
+        assert!(!AppSettings::default().keep_polish_reveal_open);
+        let legacy = r#"{ "language": "en", "autoPaste": true }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(!parsed.keep_polish_reveal_open);
+
+        let dir = temp_dir("keep-reveal");
+        let path = dir.join("settings.json");
+        let on = AppSettings {
+            keep_polish_reveal_open: true,
+            ..AppSettings::default()
+        };
+        write_settings_file(&path, &on).expect("write settings");
+        let raw = std::fs::read_to_string(&path).expect("read settings");
+        assert!(raw.contains("\"keepPolishRevealOpen\": true") || raw.contains("\"keepPolishRevealOpen\":true"));
+        assert!(load_settings(&path).keep_polish_reveal_open, "on survives a restart");
+
+        let off = AppSettings {
+            keep_polish_reveal_open: false,
+            ..on
+        };
+        write_settings_file(&path, &off).expect("write settings off");
+        assert!(!load_settings(&path).keep_polish_reveal_open, "off survives a restart");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // YV42: launch-at-login is OFF unless the user asked for it — a fresh

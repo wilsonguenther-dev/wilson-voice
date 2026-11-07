@@ -20,6 +20,11 @@ export const REVEAL_MIN_DWELL_MS = REVEAL_EDIT_TTL_MS;
 /** ...nor sooner than this after the pointer last moved inside it. */
 export const REVEAL_POINTER_GRACE_MS = 2_000;
 
+/** Settings › Notifications row, right under Tips (which mutes the reveal). */
+export const KEEP_REVEAL_OPEN_LABEL = "Keep the reveal open until I close it";
+export const KEEP_REVEAL_OPEN_BLURB =
+  "“What polish changed” stays up until you press Esc, click elsewhere or close it. Off, it stays at least 8 seconds and never while your pointer is on it.";
+
 /** Which face is up. Only the toast has a timer; the card waits for an answer. */
 export type RevealFace = "toast" | "card";
 
