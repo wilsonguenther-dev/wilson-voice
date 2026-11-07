@@ -29,7 +29,7 @@ import { DEFAULT_CHATTER_MODE, parseChatterMode, type ChatterMode } from "./pill
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
-import LaunchWalk from "./pill/LaunchWalk";
+import LaunchWalk from "./pill/LaunchWalkScene";
 import { forcedLaunchWalk } from "./pill/launchWalk";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import MeetingDictationCard from "./pill/MeetingDictationCard";
