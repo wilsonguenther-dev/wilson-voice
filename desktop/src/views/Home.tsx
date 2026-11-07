@@ -158,9 +158,9 @@ export default function Home() {
     return <LoadingState data-loading-state="home" noun="history" expected={insights?.totalSessions ?? null} onRetry={() => void refreshAll()} />;
 
   const latest: TranscriptEntry | null = !query && history.length > 0 ? history[0] : null;
-  // With a search typed the list is the top matches; without one it is the
-  // takes AFTER the latest (which already has its own card), still capped at 5.
-  const recent = recentTakes(latest ? history.slice(1) : history);
+  // The last 5 takes (the latest included, as on the approved mock), or the
+  // top 5 matches while a search is typed. Never more: Home has an end.
+  const recent = recentTakes(history);
   const stats = statsLine({
     wordsToday: insights?.wordsToday,
     streakDays: insights?.streakDays,

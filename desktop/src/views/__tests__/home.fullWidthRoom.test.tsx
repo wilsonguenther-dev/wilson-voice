@@ -197,7 +197,7 @@ describe("contained scroll and a footer that never moves", () => {
 });
 
 describe("Home shows the last 5 takes then 'See all'; History pages 50 at a time", () => {
-  it("lists the latest plus at most 5 more, then a See all row, and nothing that loads more", () => {
+  it("lists the last 5 takes, then a See all row, and nothing that loads more", () => {
     const history = Array.from({ length: 12 }, (_, i) => take(i));
     const html = home(base({ history, insights: insights({ totalSessions: 288 }) }));
     const list = html.slice(html.indexOf('data-home="recent"'), html.indexOf('data-home="see-all"'));
