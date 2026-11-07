@@ -2387,10 +2387,7 @@ pub fn ends_sentence(text: &str) -> bool {
     let trimmed = text.trim_end_matches(|c: char| {
         c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '\u{201D}' | '\u{2019}')
     });
-    matches!(
-        trimmed.chars().last(),
-        Some('.' | '?' | '!' | '\u{2026}')
-    )
+    matches!(trimmed.chars().last(), Some('.' | '?' | '!' | '\u{2026}'))
 }
 
 /// Cut ONE track's word rows of one window into readable utterances.
@@ -2472,8 +2469,7 @@ pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
         while i < merged.len() {
             if merged.len() > 1 && merged[i].seconds() < UTTERANCE_MIN_SECONDS {
                 let cap = UTTERANCE_MAX_SECONDS + UTTERANCE_TIME_EPS;
-                let fits_prev =
-                    i > 0 && merged[i].end_seconds - merged[i - 1].start_seconds <= cap;
+                let fits_prev = i > 0 && merged[i].end_seconds - merged[i - 1].start_seconds <= cap;
                 let fits_next = i + 1 < merged.len()
                     && merged[i + 1].end_seconds - merged[i].start_seconds <= cap;
                 let gap_prev = if i > 0 {
@@ -2703,7 +2699,10 @@ fn assign_word(
     if let Some(i) = best_by(on_track.iter().copied().filter(|&i| covers(i)), overlap) {
         return Some(i);
     }
-    if let Some(i) = best_by(on_track.iter().copied().filter(|&i| overlap(i) > 0.0), overlap) {
+    if let Some(i) = best_by(
+        on_track.iter().copied().filter(|&i| overlap(i) > 0.0),
+        overlap,
+    ) {
         return Some(i);
     }
     best_by(on_track.iter().copied(), |i: usize| {
@@ -2776,7 +2775,8 @@ pub fn build_speaker_turns(
         match current {
             Some((k, _)) if k == key => {}
             Some((k, first)) => {
-                out.turns.push(turn_of(track, segments, k, words, first..wi));
+                out.turns
+                    .push(turn_of(track, segments, k, words, first..wi));
                 current = Some((key, wi));
             }
             None => current = Some((key, wi)),
