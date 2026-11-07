@@ -356,7 +356,9 @@ export function readableDiff(
     if (t.op === "removed") inBefore += wordCount(t.text);
     else if (t.op === "added") inAfter += wordCount(t.text);
   }
-  const share = (inHunks: number, total: number) => (total > 0 ? inHunks / total : inHunks > 0 ? 1 : 0);
+  // A side with no words has no words in a hunk either (the runs are built
+  // from that side's tokens), so an empty side is 0 percent changed.
+  const share = (inHunks: number, total: number) => (total > 0 ? inHunks / total : 0);
   const changedShare = Math.max(share(inBefore, wordCount(before)), share(inAfter, wordCount(after)));
   const layout: DiffLayout = hunks > 0 && changedShare > BLOCKS_CHANGED_SHARE ? "blocks" : "inline";
   return { exact, runs, hunks, changedShare, layout };
