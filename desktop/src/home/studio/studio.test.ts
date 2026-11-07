@@ -4,6 +4,7 @@
  * names. Pixel checks run on the test raster (sprites/raster.ts), so no webview.
  */
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { Raster } from "../../sprites/raster";
 import type { TranscriptEntry } from "../../appTypes";
