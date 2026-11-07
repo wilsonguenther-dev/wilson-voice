@@ -15,6 +15,11 @@ export function activePillStyle(saved?: string | null): string {
   return PILL_STYLE_CHOICES.some(([id]) => id === saved) ? (saved as string) : PILL_STYLE_CHOICES[0][0];
 }
 
+/** yap-1106-curse-setting — the curse toggle is offered only while the voice is Badass. */
+export function curseToggleShown(companionTone?: string | null): boolean {
+  return voiceFor(companionTone) === "badass";
+}
+
 export default function Companion() {
   const {
     saveSettings, settings,
@@ -101,6 +106,26 @@ export default function Companion() {
                       })}
                     </div>
                     <p className="settings-hint">What Yappy says while you talk and when you finish. It applies to whichever companion sits in the pill.</p>
+                    {/* yap-1106-curse-setting — the curse toggle exists only under
+                        Badass and is off by default. Switching to another voice
+                        hides it; the saved choice waits for Badass again. */}
+                    {curseToggleShown(settings.companionTone) && (
+                      <div className="curse-setting" data-curse-setting>
+                        <label className="toggle">
+                          <input
+                            type="checkbox"
+                            data-curse-toggle
+                            checked={settings.companionCurse === true}
+                            onChange={(e) => {
+                              console.info(`settings voice_curse_set on=${e.target.checked}`);
+                              saveSettings({ ...settings, companionCurse: e.target.checked });
+                            }}
+                          />
+                          <span>Let Badass swear</span>
+                        </label>
+                        <p className="settings-hint">About one line in four, the strongest word at most once a day. Never during a meeting or a screen share.</p>
+                      </div>
+                    )}
                   </div>
                   <div className="panel" data-row>
                   <h3>Always on screen</h3>
