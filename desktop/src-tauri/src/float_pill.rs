@@ -1132,9 +1132,24 @@ pub fn pill_keeps_up(keep_visible: bool, copy_card_held: bool, offer_pending: bo
     keep_visible || copy_card_held || offer_pending
 }
 
+/// yap-fx-06 — a dictation that ends (done, cancelled by Esc, failed) while a
+/// meeting is recording never takes the pill down with it: the pill is where
+/// the meeting's clock and its one-click Stop live, and the Esc toast
+/// ("Dictation cancelled — meeting still recording. Stop meeting?") is drawn
+/// in it. Before this, a user with the idle pill switched off lost the meeting
+/// badge the moment a dictation inside the meeting ended — a recording with no
+/// visible Stop. Pure, so the rule is tested without a window.
+pub fn keeps_up_for_live_meeting(keep_visible: bool, meeting_recording: bool) -> bool {
+    keep_visible || meeting_recording
+}
+
 pub fn after_recording(app: &AppHandle, keep_visible: bool) {
+    let meeting_recording = crate::meeting::active_capture().is_some();
+    if meeting_recording && !keep_visible {
+        log::info!("float_pill after_take kept_up=true reason=meeting_recording");
+    }
     let keep_visible = pill_keeps_up(
-        keep_visible,
+        keeps_up_for_live_meeting(keep_visible, meeting_recording),
         copy_card_held(),
         crate::meeting_detect::pending().is_some(),
     );
@@ -1528,6 +1543,17 @@ pub fn start_space_keeper(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    /// yap-fx-06 — a dictation ending inside a meeting keeps the pill (and so
+    /// the meeting's Stop and the Esc toast) on screen, even with the idle
+    /// pill switched off; with no meeting, the caller's answer stands.
+    #[test]
+    fn a_take_ending_during_a_meeting_keeps_the_pill_up() {
+        assert!(super::keeps_up_for_live_meeting(false, true));
+        assert!(super::keeps_up_for_live_meeting(true, true));
+        assert!(super::keeps_up_for_live_meeting(true, false));
+        assert!(!super::keeps_up_for_live_meeting(false, false));
+    }
+
     #[test]
     fn copy_card_release_never_hides_a_take_in_flight() {
         // yap-p0-insertion-bridge-fallback: with show_floating_pill off, the
