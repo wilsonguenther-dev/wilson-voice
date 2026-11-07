@@ -645,6 +645,10 @@ struct InFlight {
     /// its result away. Read back by the lease so the caller is told which of
     /// the two happened instead of being handed a decode failure.
     discard: Option<Discard>,
+    /// yap-1106-sp-04 — catalog id of the leased engine. A load that finds its
+    /// own model out on a lease reuses it (waits for the handback) instead of
+    /// building a second copy.
+    model_id: String,
 }
 
 /// Shared guts. Held by an `Arc` so the idle watcher can keep a `Weak` and exit
@@ -895,8 +899,79 @@ impl TranscriptionManager {
         self.inner.generation.fetch_add(1, Ordering::AcqRel);
         let previous = self.inner.engine.lock().take();
         if let Some(engine) = previous {
-            log::info!("ASR model '{}' unloaded", engine.model_id);
+            let model = engine.model_id.clone();
             drop(engine);
+            log::info!(
+                "engine free reason=unload model={model} engines_live={}",
+                crate::engine_owner::engines_live()
+            );
+        }
+    }
+
+    /// yap-1106-sp-04 — catalog id of the engine that is out on a lease right
+    /// now (a decode holds it), if any. Together with [`Self::loaded_model`]
+    /// this is everything resident: the slot is empty while a decode runs.
+    pub fn leased_model(&self) -> Option<String> {
+        self.inner
+            .in_flight
+            .lock()
+            .as_ref()
+            .map(|f| f.model_id.clone())
+    }
+
+    /// yap-1106-sp-04 — ONE engine copy. Before `model_id` is built, any OTHER
+    /// model must be gone: one sitting in the slot is freed now, one out on a
+    /// lease is asked back (a meeting chunk is cancelled through its hook and
+    /// re-decodes after the handback) and freed when it returns. If it does
+    /// not come back inside [`ENGINE_HANDBACK_WAIT`], the load is refused with
+    /// the queue's own `CATCHING_UP` sentence instead of stacking a copy.
+    fn free_other_model_for(&self, model_id: &str) -> Result<(), String> {
+        let started = Instant::now();
+        let mut asked_back = false;
+        loop {
+            let other = {
+                let mut slot = self.inner.engine.lock();
+                match slot.as_ref() {
+                    Some(e) if e.model_id != model_id => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some(old) = other {
+                // A copy of `old` still out on another lease must not come
+                // back into the slot after this: the generation bump drops it.
+                self.inner.generation.fetch_add(1, Ordering::AcqRel);
+                let from = old.model_id.clone();
+                drop(old);
+                log::info!(
+                    "engine free reason=model_swap from={from} to={model_id} engines_live={}",
+                    crate::engine_owner::engines_live()
+                );
+            }
+            if self.inner.leases.load(Ordering::Acquire) == 0 {
+                return Ok(());
+            }
+            match self.leased_model() {
+                // Our own model is out: the caller reuses it after handback.
+                Some(id) if id == model_id => return Ok(()),
+                Some(id) => {
+                    if !asked_back {
+                        asked_back = true;
+                        log::info!("engine swap waiting for handback from={id} to={model_id}");
+                        self.preempt_in_flight();
+                    }
+                }
+                // Between take and publish, or between handback and release.
+                None => {}
+            }
+            if started.elapsed() >= ENGINE_HANDBACK_WAIT {
+                log::warn!(
+                    "engine swap refused: the other model never came back to={model_id} waited_ms={} engines_live={}",
+                    started.elapsed().as_millis(),
+                    crate::engine_owner::engines_live()
+                );
+                return Err(crate::engine_owner::CATCHING_UP.to_string());
+            }
+            std::thread::sleep(ENGINE_HANDBACK_POLL);
         }
     }
 
@@ -1059,6 +1134,17 @@ impl TranscriptionManager {
             self.touch();
             return Ok(());
         }
+        // yap-1106-sp-04 — the slot is empty while a decode holds the engine.
+        // If that engine IS this model, it is resident: building another copy
+        // here is exactly the second Parakeet the 2026-11-06 session found.
+        if self.leased_model().as_deref() == Some(model_id) {
+            log::info!(
+                "engine load reused model={model_id} reason=leased engines_live={}",
+                crate::engine_owner::engines_live()
+            );
+            self.touch();
+            return Ok(());
+        }
         if !model_path.is_file() {
             return Err(format!(
                 "model '{model_id}' is not downloaded ({} missing)",
@@ -1071,6 +1157,14 @@ impl TranscriptionManager {
         // Whoever held the gate before us may have loaded the very model we
         // came for — the arm-then-transcribe pair of a first dictation.
         if self.loaded_model().as_deref() == Some(model_id) {
+            self.touch();
+            return Ok(());
+        }
+        // yap-1106-sp-04 — free the other model BEFORE building this one, so
+        // two copies are never resident at once (the old order loaded first
+        // and dropped the old engine only when the new one took the slot).
+        self.free_other_model_for(model_id)?;
+        if self.leased_model().as_deref() == Some(model_id) {
             self.touch();
             return Ok(());
         }
@@ -1146,8 +1240,10 @@ impl TranscriptionManager {
         self.touch();
         let loads = self.inner.loads.fetch_add(1, Ordering::AcqRel) + 1;
         log::info!(
-            "ASR model '{model_id}' loaded and warm loads={loads} abandoned_live={}",
-            self.abandoned_engines()
+            "engine load model={model_id} loads={loads} abandoned_live={} engines_live={} load_ms={}",
+            self.abandoned_engines(),
+            crate::engine_owner::engines_live(),
+            load_started.elapsed().as_millis()
         );
         Ok(())
     }
@@ -1294,8 +1390,23 @@ impl TranscriptionManager {
                 }
                 Err(e) if e == NO_ENGINE_LOADED && reloads < DICTATION_MODEL_RELOADS => {
                     reloads += 1;
+                    // yap-1106-sp-04 — a reload only when the model id truly
+                    // differs. Our own model out on a meeting chunk is the
+                    // SAME engine: wait for its handback (the chunk was
+                    // cancelled through its hook) and decode on it.
+                    let leased = self.leased_model();
+                    if leased.as_deref() == Some(model_id) {
+                        log::info!(
+                            "dictation reuses the leased engine model={model_id} attempt={reloads} engines_live={}",
+                            crate::engine_owner::engines_live()
+                        );
+                        self.preempt_in_flight();
+                        continue;
+                    }
+                    let resident = self.loaded_model().or(leased);
                     log::info!(
-                        "dictation needs '{model_id}' but another model is resident — reloading it (attempt {reloads})"
+                        "dictation model_swap from={} to={model_id} attempt={reloads}",
+                        resident.as_deref().unwrap_or("none")
                     );
                     self.load(model_id, model_path)?;
                 }
@@ -1585,6 +1696,14 @@ impl TranscriptionManager {
         // ticket is held to the end of this function, i.e. until the engine
         // is back in its slot (or dropped) and the lease count is down.
         let kind = crate::engine_owner::current_job_kind(preemptible);
+        // yap-1106-sp-04 — meeting and recovery decoding run on a thread in
+        // the Darwin background band (PRIO_DARWIN_BG), so a dictation that
+        // decodes next to them is never starved. A dictation or a retry the
+        // user asked for stays in the foreground.
+        let background = matches!(
+            kind,
+            crate::engine_owner::JobKind::Meeting | crate::engine_owner::JobKind::Recovery
+        );
         // A meeting chunk keeps the words its driver already understands:
         // turned away by quit it is `ABANDONED_FOR_EXIT` (re-decoded next
         // launch, never written as a failure), and out-waited it is the same
@@ -1627,6 +1746,7 @@ impl TranscriptionManager {
             cancel: engine.engine.cancel_handle(),
             preemptible,
             discard: None,
+            model_id: engine.model_id.clone(),
         });
         // A dictation that raised its claim between `take_engine` and the line
         // above found no in-flight record and cancelled nothing. Re-ask now that
@@ -1660,6 +1780,9 @@ impl TranscriptionManager {
         let worker_fate = Arc::clone(&fate);
         let worker_abandoned = Arc::clone(&abandoned_live);
         std::thread::spawn(move || {
+            if background && !crate::asr_protocol::set_current_thread_background(true) {
+                log::debug!("engine decode background_priority=unavailable");
+            }
             let mut engine = engine;
             // Panic containment: on unwind the engine is dropped instead of
             // returned, so a poisoned native session is never reused.
@@ -3354,6 +3477,187 @@ mod tests {
         let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(decoded, vec!["dict".to_string()]);
         assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+    }
+
+    // ---- yap-1106-sp-04: one engine copy, background meeting decode ----
+
+    /// An engine that counts itself alive: built by the loader, uncounted on
+    /// drop — so `peak` is the most copies that were ever resident at once.
+    struct LiveEngine {
+        live: Arc<AtomicU64>,
+        delay: Duration,
+    }
+
+    impl Transcriber for LiveEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.delay);
+            Ok("live".to_string())
+        }
+    }
+
+    impl Drop for LiveEngine {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    struct LiveCounts {
+        live: Arc<AtomicU64>,
+        peak: Arc<AtomicU64>,
+        loads: Arc<AtomicU64>,
+    }
+
+    fn live_counting_manager(delay: Duration) -> (TranscriptionManager, LiveCounts) {
+        let counts = LiveCounts {
+            live: Arc::new(AtomicU64::new(0)),
+            peak: Arc::new(AtomicU64::new(0)),
+            loads: Arc::new(AtomicU64::new(0)),
+        };
+        let (live, peak, loads) = (
+            counts.live.clone(),
+            counts.peak.clone(),
+            counts.loads.clone(),
+        );
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(LiveEngine {
+                live: live.clone(),
+                delay,
+            }) as Box<dyn Transcriber>)
+        });
+        (
+            manager(loader, Duration::from_secs(600), Duration::from_secs(120)),
+            counts,
+        )
+    }
+
+    #[test]
+    fn swapping_models_frees_the_old_copy_before_building_the_new_one() {
+        let a = stub_model_file("a");
+        let b = stub_model_file("b");
+        let (m, counts) = live_counting_manager(Duration::ZERO);
+        m.load("a", &a).expect("a loads");
+        m.load("b", &b).expect("b swaps in");
+        m.load("a", &a).expect("a swaps back");
+        assert_eq!(counts.loads.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            counts.peak.load(Ordering::SeqCst),
+            1,
+            "two engine copies were resident during a swap"
+        );
+        assert_eq!(counts.live.load(Ordering::SeqCst), 1);
+        assert_eq!(m.loaded_model().as_deref(), Some("a"));
+        std::fs::remove_dir_all(a.parent().unwrap()).ok();
+        std::fs::remove_dir_all(b.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_load_of_the_model_a_meeting_chunk_holds_reuses_it_instead_of_building_a_second() {
+        let path = stub_model_file("stub.gguf");
+        let (m, counts) = live_counting_manager(Duration::from_millis(400));
+        m.load("stub/model", &path).expect("load");
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        assert_eq!(m.leased_model().as_deref(), Some("stub/model"));
+        m.load("stub/model", &path)
+            .expect("the leased engine counts as resident");
+        assert_eq!(
+            counts.loads.load(Ordering::SeqCst),
+            1,
+            "a second copy was built while the meeting held the first"
+        );
+        assert!(meeting.join().expect("meeting thread").is_ok());
+        let dictated = m.transcribe(vec![0.2; 16_000], None, None);
+        assert_eq!(
+            dictated.as_deref(),
+            Ok("live"),
+            "the dictation reuses the same engine"
+        );
+        assert_eq!(counts.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.loads.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_swap_during_a_meeting_chunk_on_another_model_waits_for_the_handback_and_frees_it_first() {
+        let pinned = stub_model_file("pinned");
+        let dict = stub_model_file("dict");
+        let (m, counts) = live_counting_manager(Duration::from_millis(300));
+        m.load("pinned", &pinned)
+            .expect("the meeting's model loads");
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        m.load("dict", &dict)
+            .expect("the swap waits for the chunk and then loads");
+        assert_eq!(
+            counts.peak.load(Ordering::SeqCst),
+            1,
+            "the dictation model was built while the meeting's copy was still out"
+        );
+        assert_eq!(counts.live.load(Ordering::SeqCst), 1);
+        assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+        assert!(meeting.join().expect("meeting thread").is_ok());
+        std::fs::remove_dir_all(pinned.parent().unwrap()).ok();
+        std::fs::remove_dir_all(dict.parent().unwrap()).ok();
+    }
+
+    /// Records whether each decode ran in the Darwin background band.
+    #[cfg(target_os = "macos")]
+    struct PriorityProbe {
+        seen: Arc<Mutex<Vec<bool>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Transcriber for PriorityProbe {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.seen
+                .lock()
+                .push(crate::asr_protocol::current_thread_background());
+            Ok("probe".to_string())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn meeting_chunks_decode_at_background_priority_and_dictations_do_not() {
+        let path = stub_model_file("stub.gguf");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let probe_seen = seen.clone();
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            Ok(Box::new(PriorityProbe {
+                seen: probe_seen.clone(),
+            }) as Box<dyn Transcriber>)
+        });
+        let m = manager(loader, Duration::from_secs(600), Duration::from_secs(120));
+        m.load("stub/model", &path).expect("load");
+        m.transcribe_timed(vec![0.1; 16_000], None, None)
+            .expect("meeting chunk decodes");
+        m.transcribe(vec![0.2; 16_000], None, None)
+            .expect("dictation decodes");
+        assert_eq!(
+            *seen.lock(),
+            vec![true, false],
+            "meeting chunk must decode at PRIO_DARWIN_BG, the dictation in the foreground"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     // ---- yap-1106-launch-walk: engine load progress ----
