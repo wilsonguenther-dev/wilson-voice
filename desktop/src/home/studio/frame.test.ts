@@ -5,6 +5,7 @@
  * the parallax while the layers do; and the room is shown at an integer cell.
  */
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { Raster } from "../../sprites/raster";
 import { pixelGrid } from "../../pill/pixelGrid";
@@ -41,6 +42,10 @@ const S: StudioState = {
   streakDays: 3,
   newsReady: true,
   yappy: "rest",
+  engineLoading: false,
+  modelReady: true,
+  screenSharing: false,
+  doNotDisturb: false,
 };
 
 const hexOf = (r: Raster, x: number, y: number) => {
