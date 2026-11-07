@@ -286,6 +286,8 @@ pub mod structure;
 // pause-cut windows while it records, so release decodes only the tail.
 pub mod stream_decode;
 pub mod take_stage;
+/// yap-1106-fb-04 — paste waits for a typing pause.
+pub mod typing_pause;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
