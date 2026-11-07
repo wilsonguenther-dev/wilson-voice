@@ -221,6 +221,6 @@ describe("Home shows the last 5 takes then 'See all'; History pages 50 at a time
     expect(pageRangeLabel(0, 0)).toBe("No takes");
   });
   it("the sidebar has a History item", () => {
-    expect(app(base())).toMatch(/<span>History<\/span>/);
+    expect(app(base())).toMatch(/<span class="nav-label">History<\/span>/);
   });
 });
