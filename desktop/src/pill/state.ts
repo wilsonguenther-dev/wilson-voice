@@ -189,6 +189,10 @@ export const CARD_CLASSES = [
   "polish-reveal-wrap",
   // yap-fx-06 — "Dictation cancelled — meeting still recording" and friends.
   "meeting-dictation-wrap",
+  // yap-1106-fb-22a — "Who's talking right now?": float.css already places it
+  // in the card row; without it here it was never measured, so the panel did
+  // not grow and the card was drawn over Yappy, cut off by the window.
+  "who-card-wrap",
 ] as const;
 export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
 /** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
