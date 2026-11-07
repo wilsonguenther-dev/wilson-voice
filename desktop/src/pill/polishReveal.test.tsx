@@ -7,6 +7,8 @@
  * `tests/polish_reveal.rs`); the Use original replace path is
  * `dictation::tests::use_original_*`.
  */
+// No @types/node in this project (see tokens.test.ts for the same shape).
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node.
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
