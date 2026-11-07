@@ -129,6 +129,7 @@ fn deps(db: Arc<Database>, dir: &Path, asr: Factory) -> PipelineDeps {
         demand: Arc::new(NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|_: &MeetingProgressEvent| {}),
+        diarize: wilson_voice_lib::meeting_diarize::DiarizeBackend::Off,
         after_transcript: None,
         config: small_windows(),
         start_delay: Duration::ZERO,

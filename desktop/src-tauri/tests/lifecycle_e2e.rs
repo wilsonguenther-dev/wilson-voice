@@ -305,7 +305,7 @@ fn display_change_lands_the_pill_on_a_visible_screen() {
 /// window-server fact; a test process cannot put an app in fullscreen. What
 /// this test pins is (a) the configuration the measurement has to be taken
 /// against — the pill is ALREADY an `NSPanel` (tauri-nspanel, nonactivating,
-/// `fullScreenAuxiliary` + `canJoinAllSpaces`, status level), which makes the
+/// `fullScreenAuxiliary` + `canJoinAllSpaces`, PopUpMenu level or above), which makes the
 /// ROADMAP's "a normal NSWindow cannot float above fullscreen apps" premise
 /// stale for this window — and (b) that the open answer is written down as a
 /// named limitation and a manual row, not left unknown or claimed green.
@@ -315,7 +315,11 @@ fn fullscreen_float_is_configured_for_it_but_unmeasured_and_written_down_as_such
     assert!(fp.contains("window\n        .to_panel::<DictatePill>()"));
     assert!(fp.contains(".full_screen_auxiliary()"));
     assert!(fp.contains(".can_join_all_spaces()"));
-    assert!(fp.contains("PanelLevel::Status.value()"));
+    // FB-03: the level is the presence rule's (PopUpMenu or just above a
+    // presenting front app), never Status (25), set at conversion and on
+    // every re-front.
+    assert!(fp.contains("panel.set_level(presence::wanted_level());"));
+    assert!(!fp.contains("PanelLevel::Status"));
     assert!(fp.contains("nonactivating_panel()"));
 
     let arch = repo("ARCHITECTURE.md");

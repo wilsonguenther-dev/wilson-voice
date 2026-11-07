@@ -8,7 +8,7 @@
  * Driven by the real app events (get_status/status/recording/audio_level/transcript),
  * the shared MouthDriver, and the tone data table (rude/friendly/rose).
  */
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
@@ -16,10 +16,11 @@ import { drawChick as drawChickArt } from "../sprites/art";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
+import GovernorChip from "./GovernorChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { bucketFor } from "./tone";
-import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
+import { curseAllowed, pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
@@ -31,6 +32,14 @@ import {
   GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute, splitValue,
   type PillLicense,
 } from "./license";
+// yap-1106-pill-trial-clickable — the gated pill is the Buy button: its route,
+// copy, hover hold and the resting nub's lock come from one pure module.
+import {
+  GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_LOCK_LABEL, GATE_PRESS_MS, YAPPY_HOP_EVENT, YAPPY_HOP_MS,
+  GATE_HITBOX_OWNER_CHIP, GATE_HITBOX_OWNER_LOCK,
+  gateChipCopy, gateClickArgs, nubLockVisible, setGateHover, type GateSurface,
+} from "./gateClick";
+import { PILL_HOVER_OUT_EVENT } from "./hitbox";
 // Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
 // two places; `no_duration_literal_outside_motion_ts` now forbids that shape.
 import { DURATION } from "./motion";
@@ -47,6 +56,10 @@ import { capsuleCentre, currentPillLayout, PILL_LAYOUT_EVENT } from "./state";
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
+// yap-1106-yappy-states-and-motion — the phase transition table, and the
+// speech bubble's queue / placement / fixed copy.
+import { phaseTransition, publishPhaseTransition } from "./transitions";
+import { bubbleCentreX, createBubbleQueue, handsFreeExplainLine, type BubbleQueue } from "./bubble";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 // `speechSeconds` = the backend's energy-VAD speech time for the take (db.rs
@@ -111,7 +124,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -121,6 +134,12 @@ export default function YappyPill(
      * rude → Badass, rose → Rose).
      */
     voice?: VoiceId;
+    /**
+     * yap-1106-curse-setting — curse mode as the shell decided it (toggle on,
+     * Badass, no meeting / screen-share state). Off by default; re-checked at
+     * the line against this capsule's own voice and meeting flag.
+     */
+    curse?: boolean;
     /**
      * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
      * decided by the SHELL. Only the accessible name and the announcement read
@@ -158,7 +177,22 @@ export default function YappyPill(
   const voiceRef = useRef<VoiceId>(voiceNow);
   voiceRef.current = voiceNow;
   useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
+  // yap-1106-curse-setting — read by the mount-once draw loop at the line.
+  const curseRef = useRef<boolean>(curse);
+  curseRef.current = curse;
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
+  // so the 2-line clamp's overflow never clips the bubble's tail.
+  const bubbleTextRef = useRef<HTMLSpanElement | null>(null);
+  // The draw loop reads the gate through this (hands-free pose), and the gate
+  // effect speaks through `sayRef` (the queue lives in the mount-once scene).
+  const gateRef = useRef<LivePhase>(gate);
+  gateRef.current = gate;
+  const sayRef = useRef<(t: string) => void>(() => {});
+  const prevGateRef = useRef<LivePhase>(gate);
+  // The last hands-free explanation, so a `listening` (re)entry that lands
+  // after the gate change keeps it on screen instead of blanking the bubble.
+  const handsFreeLineRef = useRef<string>("");
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
   // hit-box is published from the draw loop below, not from a DOM rect.
@@ -204,6 +238,84 @@ export default function YappyPill(
     emit("navigate", "settings").catch(() => {});
     emit("settings-tab", "license").catch(() => {});
   }, [drag, licenseRoute]);
+  // yap-1106-pill-trial-clickable — a gated click opens the purchase page in the
+  // browser (a stored-key problem gets Settings → License instead; the policy
+  // in gateClick.ts decides). The pill sends a SURFACE and a TARGET NAME, never
+  // a URL: the backend logs `pill gate.click` and owns the destination. If the
+  // backend cannot open the browser, the press still lands somewhere useful —
+  // the in-app purchase / license surface above.
+  //
+  // pill.html §13 "Click": the pressed chip sinks for GATE_PRESS_MS and reads
+  // "Opening drivia.consulting…" until the refusal settles. The nub's lock has
+  // no chip to relabel, so it only opens.
+  const [gateOpening, setGateOpening] = useState(false);
+  const [gatePressed, setGatePressed] = useState(false);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+  }, []);
+  const openGatePurchase = useCallback((surface: GateSurface) => {
+    if (drag.dragged()) return;
+    if (surface !== "nub") {
+      setGateOpening(true);
+      setGatePressed(true);
+      if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+      pressTimer.current = setTimeout(() => {
+        pressTimer.current = null;
+        setGatePressed(false);
+      }, GATE_PRESS_MS);
+    }
+    invoke(GATE_CLICK_COMMAND, gateClickArgs(license, surface)).catch((e) => {
+      console.warn("pill gate.click failure=invoke", e);
+      setGateOpening(false);
+      openPurchase();
+    });
+  }, [drag, license, openPurchase]);
+  // Hover over the gated pill: the chip says "Buy a license", and the refusal
+  // holds for as long as the pointer rests on it (float-main owns the timer).
+  const [gateHover, setGateHoverLocal] = useState(false);
+  const hoverGate = useCallback((on: boolean) => {
+    setGateHoverLocal(on);
+    setGateHover(on);
+  }, []);
+  useEffect(() => {
+    if (!gated) {
+      hoverGate(false);
+      setGateOpening(false);
+    }
+  }, [gated, hoverGate]);
+  useEffect(() => {
+    // The panel goes click-through the moment the cursor leaves the hitbox, so
+    // the webview never sees a pointerleave; the backend says so instead.
+    let dead = false;
+    let un: (() => void) | null = null;
+    listen(PILL_HOVER_OUT_EVENT, () => hoverGate(false))
+      .then((u) => (dead ? u() : (un = u)))
+      .catch(() => {});
+    return () => { dead = true; un?.(); };
+  }, [hoverGate]);
+  // A license arrived by deep link from the site: Yappy hops once (a CSS class
+  // on the stage; reduced motion gets no hop, float.css).
+  const [hop, setHop] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    let un: (() => void) | null = null;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    listen(YAPPY_HOP_EVENT, () => {
+      setHop(true);
+      if (t !== null) clearTimeout(t);
+      t = setTimeout(() => { t = null; setHop(false); }, YAPPY_HOP_MS);
+    })
+      .then((u) => (dead ? u() : (un = u)))
+      .catch(() => {});
+    return () => { dead = true; un?.(); if (t !== null) clearTimeout(t); };
+  }, []);
+  const showLock = nubLockVisible(license, gated, blocked);
+  // pill.html §13, frame by frame (refused / hover / pressed).
+  const gateChip = gateChipCopy(gateVisual.label, gateHover, gateOpening);
+  const gateChipClass = ["kami-blocked gated", gateHover ? "is-hover" : "", gatePressed ? "is-pressed" : ""]
+    .filter(Boolean)
+    .join(" ");
   // WF-01 — a click on the canvas capsule. A refused pill routes exactly where
   // its overlay button does (licence first when gated, then the mic fix);
   // otherwise the backend toggles a HANDS-FREE take, and on the stop click it
@@ -211,7 +323,7 @@ export default function YappyPill(
   // The backend also owns the busy guard (a click mid-transcription is a no-op)
   // and logs every outcome (`pill click action=…`).
   tapRef.current = () => {
-    if (gated) { openPurchase(); return; }
+    if (gated) { openGatePurchase("pill"); return; }
     if (blocked) { openPermissions(); return; }
     invoke("pill_click_toggle").catch(() => {
       // A refused start (trial over) already raised its own toast backend-side.
@@ -291,7 +403,7 @@ export default function YappyPill(
     // when the time of day or the capsule's box changes
     let capGrad: CanvasGradient | null = null, capGradKey = "";
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean }
 
     // the chick — front wing holds a pencil when noting / at the desk
     // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
@@ -383,14 +495,30 @@ export default function YappyPill(
     let takeCount = takeMemory.recent.length;
     const doneLine = (w: number): string => {
       const today = localDay();
-      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today });
+      // Belt and braces: the shell already gated `curse`; the line re-checks
+      // this capsule's live voice and meeting flag so a stale prop can never
+      // swear in Professional or during a meeting.
+      const curseNow = curseAllowed({ enabled: curseRef.current, voice: liveVoice, meeting: meetingRef.current, screenShared: false });
+      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today, curse: curseNow, rand: Math.random });
       takeCount++;
       takeMemory = rememberTakeLine(takeMemory, picked, today);
       saveTakeMemory(takeMemory);
-      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} recent=${takeMemory.recent.length}`);
+      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} curse=${curseNow} recent=${takeMemory.recent.length}`);
       return picked.text;
     };
-    const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
+    // yap-1106-yappy-states-and-motion — ONE bubble at a time: a new line waits
+    // for the old one to leave (bubble.ts), timings from DURATION.
+    const bubbleText = bubbleTextRef.current ?? bubble;
+    const bubbleQ: BubbleQueue = createBubbleQueue(
+      {
+        setText: (t) => { bubbleText.textContent = t; },
+        setShown: (on) => { bubble.classList.toggle("show", on); },
+      },
+      { after: (ms, fn) => window.setTimeout(fn, ms), cancel: (id) => window.clearTimeout(id) },
+      { reduceMotion: reduce },
+    );
+    const say = (t: string) => bubbleQ.say(t);
+    sayRef.current = say;
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
     // `LivePhase` without an accent here is a compile error, never a blank pill.
@@ -430,7 +558,7 @@ export default function YappyPill(
       phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
       if (p === "listening") {
-        moodT = 0; hop(1); say(""); resetLive(live);
+        moodT = 0; hop(1); say(gateRef.current === "listening-locked" ? handsFreeLineRef.current : ""); resetLive(live);
         if (isNewUser(takesSeen)) armGlance(live);
         takesSeen++; saveTakesSeen(takesSeen);
         afterLines = 0; takeOpen = true;
@@ -452,7 +580,7 @@ export default function YappyPill(
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
     listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }, { target: "float" }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV81 — the pill window's own visibility. Two sources, because neither is
     // complete on its own: `pill_visible` is the panel being ordered out/in by
     // the backend (float_pill::set_shown), and `visibilitychange` is the webview
@@ -562,7 +690,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked" });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
@@ -633,10 +761,10 @@ export default function YappyPill(
         // yap-1106-one-pill — kept inside its own reserved row: never over the
         // character, the hint or the clock, and never outside the panel.
         const bb = lay.bubble;
-        bubble.style.left = (bw ? Math.max(bb.x + bw / 2, Math.min(bb.x + bb.w - bw / 2, cx)) : cx) + "px";
+        bubble.style.left = bubbleCentreX(cx, bw, bb, document.documentElement.dataset.dock) + "px";
         bubble.style.top = (bb.y + bb.h) + "px";
       } else {
-        bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
+        bubble.style.left = bubbleCentreX(cx, bw, { x: 4, w: W - 8 }, document.documentElement.dataset.dock) + "px";
         bubble.style.top = (y0 - 10) + "px";
       }
     }
@@ -684,12 +812,33 @@ export default function YappyPill(
       cancelAnimationFrame(raf); window.clearTimeout(tick);
       document.removeEventListener("visibilitychange", onVisibility);
       applyGateRef.current = () => {};
+      sayRef.current = () => {};
+      bubbleQ.dispose();
       ro.disconnect(); unsubs.forEach((u) => u());
     };
   }, []);
 
   // PERM-C — drive the canvas phase from the gate prop.
   useEffect(() => { applyGateRef.current(gate); }, [gate]);
+  // yap-1106-yappy-states-and-motion — every gate change runs ONE row of the
+  // transition table (published as --phase-dur/--phase-ease/--phase-delay on
+  // the stage), and entering hands-free says what hands-free means.
+  useEffect(() => {
+    const from = prevGateRef.current;
+    prevGateRef.current = gate;
+    if (from === gate) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const t = phaseTransition(from, gate, reduceMotion);
+    const stage = stageRef.current;
+    if (stage) publishPhaseTransition(stage, t);
+    console.info(`pill phase_transition from=${PHASE_ID[from]} to=${PHASE_ID[gate]} dur_ms=${t.durationMs} delay_ms=${t.delayMs} curve=${t.curve} reduce=${reduceMotion ? 1 : 0}`);
+    if (gate === "listening-locked") {
+      const line = handsFreeExplainLine(toneRef.current, chordLabel.trim() || DEFAULT_STOP_KEY);
+      handsFreeLineRef.current = line;
+      sayRef.current(line);
+      console.info(`pill hands_free_explain tone=${toneRef.current} chars=${line.length}`);
+    }
+  }, [gate, chordLabel]);
   // Y3-C — and the transcribing phase from the progress prop (float-main owns it).
   useEffect(() => { applyProgressRef.current(progress); }, [progress]);
 
@@ -737,12 +886,49 @@ export default function YappyPill(
       extendPillHitbox(null);
     };
   }, []);
+  // yap-1106-pill-trial-clickable — the gated chip (now wider: "Trial ended" +
+  // its "Get Yap" button) and the resting nub's lock can sit OUTSIDE the canvas
+  // capsule this pill reports as its hitbox; on the click-through panel their
+  // clicks would fall through to the app underneath. Each one, while mounted,
+  // is unioned into the hitbox under its own owner (the badge above keeps the
+  // default owner), and unmount hands that share back.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const owners: ReadonlyArray<readonly [string, string]> = [
+      [GATE_HITBOX_OWNER_CHIP, ".kami-blocked.gated"],
+      [GATE_HITBOX_OWNER_LOCK, ".kami-gate-lock"],
+    ];
+    const push = () => {
+      for (const [owner, sel] of owners) {
+        const el = stage.querySelector<HTMLElement>(sel);
+        if (!el || !el.isConnected) {
+          extendPillHitbox(null, owner);
+          continue;
+        }
+        const r = el.getBoundingClientRect();
+        extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, owner);
+      }
+    };
+    const ro = new ResizeObserver(push);
+    for (const [, sel] of owners) {
+      const el = stage.querySelector<HTMLElement>(sel);
+      if (el) ro.observe(el);
+    }
+    push();
+    return () => {
+      ro.disconnect();
+      for (const [owner] of owners) extendPillHitbox(null, owner);
+    };
+  }, [gated, showLock, gateChip.lead, gateChip.cta]);
 
   return (
     <div
       ref={stageRef}
-      className="kami-stage"
+      className={hop ? "kami-stage kami-hop" : "kami-stage"}
       data-phase={PHASE_ID[gate]}
+      onPointerEnter={gated ? () => hoverGate(true) : undefined}
+      onPointerLeave={gated ? () => hoverGate(false) : undefined}
       data-sprite={art.sprite}
       data-motion={art.motion}
       // Y5-J — the canvas is aria-hidden pixels, so the stage itself carries
@@ -751,7 +937,7 @@ export default function YappyPill(
       aria-label={phaseAccessibleName(gate, progress, chordLabel)}
     >
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
-      <div ref={bubbleRef} className="kami-bubble"></div>
+      <div ref={bubbleRef} className="kami-bubble"><span ref={bubbleTextRef} className="kami-bubble-text"></span></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
           Departure Mono, so neither costs the draw loop a repaint. Never a
@@ -778,7 +964,23 @@ export default function YappyPill(
           so it survives every frame policy including reduced motion. Inert: a
           purchase route (when checkout opens) is the gated capsule's job.
           Only the value is here; the sentence is the title. */}
-      {license?.show && !gated && !blocked ? (
+      {/* yap-1106-pill-trial-clickable — after the refusal settles, the
+          resting nub keeps a small LOCK that opens the same page. */}
+      {showLock ? (
+        <button
+          type="button"
+          className="kami-license kami-license-ended kami-gate-lock"
+          aria-label={GATE_LOCK_LABEL}
+          title={GATE_BUY_TOOLTIP}
+          onClick={() => openGatePurchase("nub")}
+        >
+          <svg viewBox="0 0 12 12" aria-hidden>
+            <path d="M3.5 5.5V4a2.5 2.5 0 0 1 5 0v1.5" />
+            <rect x="2.5" y="5.5" width="7" height="5" rx="1" />
+          </svg>
+        </button>
+      ) : null}
+      {license?.show && !gated && !blocked && !showLock ? (
         <div className={`kami-license kami-license-${license.tone}`} title={license.title} role="note" aria-label={license.title}>
           {(() => {
             const sp = splitValue(license.value);
@@ -807,14 +1009,30 @@ export default function YappyPill(
       {gated && (
         <button
           type="button"
-          className="kami-blocked gated"
-          aria-label={gateVisual.label}
-          title={GATED_TITLE}
-          onClick={openPurchase}
+          className={gateChipClass}
+          // The headline, what a click does, where it goes, and the why.
+          aria-label={`${gateVisual.label}. ${GATE_BUY_LABEL}. ${GATE_BUY_TOOLTIP}. ${GATED_TITLE}`}
+          title={GATE_BUY_TOOLTIP}
+          onClick={() => openGatePurchase("chip")}
+          onFocus={() => hoverGate(true)}
+          onBlur={() => hoverGate(false)}
         >
           {/* The SAME ⊘ the ended license chip wears — one mark for one state. */}
           <i className="kami-gated-glyph" aria-hidden>{GATED_GLYPH}</i>
-          <span>{gateVisual.label}</span>
+          {/* pill.html §13: "Trial ended" + a "Get Yap" button; hover (or focus)
+              fills it as "Buy a license" and the tooltip says where it goes;
+              pressed, the pill reads "Opening drivia.consulting…". The words
+              are in the button's accessible name already, so these are hidden
+              from assistive tech to keep it one announcement. */}
+          <span>{gateChip.lead}</span>
+          {gateChip.cta !== null ? (
+            <span className={gateChip.ctaFilled ? "kami-gate-cta is-filled" : "kami-gate-cta"} aria-hidden>
+              {gateChip.cta}
+            </span>
+          ) : null}
+          {gateChip.tooltip !== null ? (
+            <span className="kami-gate-tip" role="tooltip" aria-hidden>{gateChip.tooltip}</span>
+          ) : null}
         </button>
       )}
       {blocked && (
@@ -837,6 +1055,7 @@ export default function YappyPill(
         </button>
       )}
       <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
+      <GovernorChip />
     </div>
   );
 }
