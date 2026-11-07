@@ -72,6 +72,12 @@ export interface DiffViewProps {
   onFeedback?: (value: number | null) => void;
   /** Re-paste the raw take. Omit to hide the undo button. */
   onUndo?: () => void;
+  /**
+   * WF-05 — where AI polish ran, in the route chip's own words ("Cloud" /
+   * "On this Mac", `pill/cloudChip.ts`). Never a vendor or a model. Omit to
+   * hide the line (History's panel, where the take may predate the route).
+   */
+  route?: string | null;
 }
 
 export default function DiffView({
@@ -82,6 +88,7 @@ export default function DiffView({
   feedback,
   onFeedback,
   onUndo,
+  route,
 }: DiffViewProps) {
   const tokens = useMemo(() => diffWords(raw, formatted), [raw, formatted]);
   const summary = useMemo(() => diffSummary(tokens), [tokens]);
@@ -125,6 +132,12 @@ export default function DiffView({
           <>Stages that ran: none recorded for this take</>
         )}
       </p>
+
+      {route && stageList.includes("polish") ? (
+        <p className="diff-route tiny">
+          AI polish ran: <span className="diff-route-chip">{route}</span>
+        </p>
+      ) : null}
 
       {polishSkipReason ? (
         // The silent-skip signal. Never hidden behind a disclosure: the whole

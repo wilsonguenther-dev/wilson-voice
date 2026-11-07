@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- yap-1106-engine-owner: the yap-asr sidecar's OWN entitlements. SCOPE: read ONLY by
+	     scripts/sign-local.sh's default sign mode (see yap-diarize.plist for the full note;
+	     tauri build signs every externalBin with ../Entitlements.plist).
+	     Speech model decode (ggml, Metal on Apple Silicon). Audio arrives as a samples file
+	     the app writes, so it needs no microphone entitlement.
+	     Empty on purpose. Add a key here only with a signed-runtime run that fails without it
+	     (docs/RELEASE.md, Entitlement audit). -->
+</dict>
+</plist>

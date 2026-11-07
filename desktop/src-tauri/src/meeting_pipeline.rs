@@ -249,6 +249,10 @@ pub struct PipelineDeps {
     pub quit: Arc<dyn Fn() -> bool + Send + Sync>,
     pub sink: ProgressSink,
     pub after_transcript: Option<AfterTranscript>,
+    /// yap-1106-diarize-wire — the speaker pass run on every finished meeting,
+    /// after the transcript is final and BEFORE `after_transcript` (notes), so
+    /// notes read the speaker labels. `Off` in tests that are not about it.
+    pub diarize: crate::meeting_diarize::DiarizeBackend,
     pub config: MeetingAsrConfig,
     /// R2 — how long the worker waits before its first job
     /// ([`QUEUE_START_DELAY`] in the app, zero in tests).
@@ -1455,6 +1459,25 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         state.as_str()
     );
     stage_done("finalize", &mut stage_clock);
+    // yap-1106-diarize-wire — "Finding speakers": cluster the right track and
+    // write `cluster_index`. Never blocks or fails the meeting: every error is
+    // logged (`diarize result=…`) and leaves the plain labels and this state.
+    // Notes (`after_transcript`) run after it.
+    if matches!(state, MeetingState::Complete | MeetingState::Partial)
+        && !deps.diarize.is_off()
+        && !((deps.quit)() || quitting())
+    {
+        (deps.sink)(&MeetingProgressEvent {
+            id: id.to_string(),
+            state: crate::meeting_diarize::FINDING_SPEAKERS_STATE.to_string(),
+            percent: 100,
+            processed_through_seconds: meeting.duration_seconds,
+            duration_seconds: meeting.duration_seconds,
+            error: None,
+        });
+        let _ = crate::meeting_diarize::diarize_meeting(db, id, &deps.progress_dir, &deps.diarize);
+        stage_done("diarize", &mut stage_clock);
+    }
     emit_final(deps, id, state, error);
     if matches!(state, MeetingState::Complete | MeetingState::Partial) {
         if let Some(after) = deps.after_transcript.as_ref() {

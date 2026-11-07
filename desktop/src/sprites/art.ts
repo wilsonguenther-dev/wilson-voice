@@ -4,10 +4,12 @@
  * Wilson, 2026-11-06 ~17:00Z: "all of them look blurred" and "make sure none
  * of these ever degrade". The nine sprites below are the round-two art from
  * the design review (design-2026-11-06/assets/friends-hd.js, copied verbatim
- * to ./approved/ so CI can read it) and the shipped pill chick (YappyPill's
- * drawChick, mirrored in ./approved/yappy.js). `art.snapshot.test.ts` renders
- * every one of them from THIS file and pixel-compares it to the approved
- * frames: zero tolerance for colour, one pixel of tolerance for position.
+ * to ./approved/ so CI can read it) and the pill chick `drawChick`, which since
+ * yap-1106-yappy-detail-pass IS the approved round-two Yappy (`D.yappy`) driven
+ * by the pill's pose (./approved/yappy.js keeps the 0.9.3 chick it replaced, as
+ * the "before"). `art.snapshot.test.ts` renders every one of them from THIS
+ * file and pixel-compares it to the approved frames: zero tolerance for
+ * colour, one pixel of tolerance for position.
  *
  * Every draw call lands on whole art pixels (`Math.round` in the helpers,
  * integer widths), so a sprite is a grid of solid cells. Scaling to the screen
@@ -194,7 +196,8 @@ const D = {} as Record<SpriteName, FriendSprite>;
     } };
 
 /** The approved friends, keyed by name. `FRIENDS.yappy` is the round-two
- * detail pass of Yappy; the shipped pill chick is `drawChick` below. */
+ * detail pass of Yappy; the pill chick `drawChick` below draws the same bird
+ * (its rest, blink and talk poses are `FRIENDS.yappy` f=0, 1, 2 exactly). */
 export const FRIENDS: Readonly<Record<SpriteName, FriendSprite>> = D;
 
 /* ── the pill chick ──────────────────────────────────────────────────────── */
@@ -221,52 +224,89 @@ export interface ChickPose {
   handsFree?: boolean;
 }
 
-/** The art box `drawChick` is snapshot-tested in: feet at (20, 30) on 40x34,
- * the same box the approved `Yappy.sprite()` uses. */
+/** The 0.9.3 art box (`Yappy.sprite()` in ./approved/yappy.js): feet at (20, 30)
+ * on 40x34. The detail-pass bird (toes and shadow to feetY + 3) still fits it. */
 export const CHICK_BOX = { w: 40, h: 34, cx: 20, feetY: 30 } as const;
 
 /**
- * The pill chick — moved here verbatim from YappyPill's render closure so the
- * snapshot test draws the SAME code the pill runs. The front wing holds a
- * pencil when noting / at the desk.
+ * The rest pose's position inside the approved `FRIENDS.yappy` art box
+ * (40 x 36, body centre (20, 20)): `drawChick(o, 20, 31, REST)` paints the
+ * approved frame pixel for pixel (art.snapshot.test.ts proves it).
+ */
+export const CHICK_DETAIL_BOX = { w: 40, h: 36, cx: 20, feetY: 31 } as const;
+
+/** yap-1106-yappy-detail-pass — the detail-pass tones (friends-hd.js `D.yappy`). */
+export const CHICK_DETAIL = {
+  outline: "#5a2e24", rim: "#9a6248", shade: "#f2b52e", spark: "#fffbe6", bellyLine: "#f3dca0", tail: "#e09a1c",
+  stem: "#c98a14", leafHi: "#ffd27a", toe: "#d06a10", eye: "#2b2118",
+} as const;
+
+/**
+ * The pill chick — yap-1106-yappy-detail-pass (Wilson approved, design review
+ * 2026-11-06): the round-two Yappy from friends-hd.js `D.yappy` (rim-lit warm
+ * outline, a shade crescent, a leaf sprout, wing feathers, toes, the big
+ * two-pixel eye shine, ground shadow), driven by the pill's pose so every
+ * phase the character contract lists draws the SAME bird.
+ *
+ * The rest pose (no hop/squash/sway/flap, eyes open, beak shut) is the approved
+ * frame f=0 exactly; `blink` is f=1 and `beakF >= 2` is f=2. The pose fields
+ * the approved art has no frame for (mood, look down, glasses, pencil, droop,
+ * beak half-open) are drawn in the same tones on the same whole-pixel grid.
+ * The ground shadow stays on the ground (`feetY + 2`) when he hops.
  */
 export function drawChick(o: PixelCtx, cx: number, feetY: number, A: ChickPose): void {
-  const C = CHICK_COLORS;
-  const ell = (ex: number, ey: number, rx: number, ry: number, col: string) => { o.fillStyle = col; for (let y = Math.floor(ey - ry); y <= Math.ceil(ey + ry); y++) { const t = (y + .5 - ey) / ry; if (Math.abs(t) > 1) continue; const hw = rx * Math.sqrt(1 - t * t); o.fillRect(Math.round(ex - hw), y, Math.max(1, Math.round(2 * hw)), 1); } };
-  const rct = (x: number, y: number, w: number, h: number, col: string) => { o.fillStyle = col; o.fillRect(Math.round(x), Math.round(y), w, h); };
+  const C = CHICK_COLORS, K = CHICK_DETAIL, h = H(o), ell = h.ell, r = h.r;
   const cy = feetY - 11 - A.hop; const rx = 11 + A.sx, ry = 11 + A.sy;
-  ell(cx + rx - 1, cy + 2, 4, 3, C.outline); ell(cx + rx - 1, cy + 2, 3, 2, C.dark);              // tail
-  ell(cx + rx - 2, cy + 1 - A.flap, 3, 4, C.outline); ell(cx + rx - 2, cy + 1 - A.flap, 2, 3, C.dark); // back wing
-  ell(cx, cy, rx + 1, ry + 1, C.outline); ell(cx, cy, rx, ry, C.body); ell(cx - 3, cy - 4, rx - 4, ry - 5, C.light); ell(cx, cy + 5, rx - 5, ry - 5, C.belly);
+  shadow(h, cx, feetY + 2, 10);
+  ell(cx + rx - 1, cy + 2, 4, 3, K.outline); ell(cx + rx - 1, cy + 2, 3, 2, K.tail);                     // tail
+  // body: warm outline, a rim of light on the top edge, base, shade crescent bottom-right, light top-left
+  ell(cx, cy, rx + 1, ry + 1, K.outline); ell(cx, cy - .6, rx + .6, ry + .6, K.rim); ell(cx, cy, rx, ry, C.body);
+  ell(cx + 3, cy + 4, rx - 3, ry - 4, K.shade); ell(cx - 1, cy - 1, rx - 2, ry - 2, C.body); ell(cx - 3, cy - 4, rx - 4, ry - 5, C.light);
+  r(cx - rx + 4, cy - ry + 3, 3, 1, K.spark); r(cx - rx + 3, cy - ry + 4, 1, 1, K.spark);
+  ell(cx, cy + 5, rx - 5, ry - 5.5, C.belly); r(cx - 4, cy + ry - 2, 8, 1, K.bellyLine);
+  // the leaf sprout is his ears (Y2-B): upright at rest, wilted once the trial is
+  // out — a POSE (different pixels, same frame), never an animation.
   const sw = Math.round(A.sway);
-  // Y2-B — the tufts are his ears: upright at rest, folded flat once the
-  // trial is out. A POSE (different pixels, same frame), never an animation.
-  if (A.droop) { rct(cx - 3 + sw, cy - ry, 2, 1, C.sprout); rct(cx + 1 + sw, cy - ry - 1, 2, 1, C.sprout); }
-  else { rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout); }
-  const wy = cy + 1 - A.flap;
-  if (A.handsFree) {
-    // both wings folded over the belly, tips meeting under the beak
-    ell(cx - 4, cy + 8, 4, 2, C.outline); ell(cx - 4, cy + 8, 3, 1, C.body);
-    ell(cx + 4, cy + 8, 4, 2, C.outline); ell(cx + 4, cy + 8, 3, 1, C.body);
+  if (A.droop) {
+    r(cx - 1 + sw, cy - ry - 2, 1, 2, K.stem);
+    r(cx - 3 + sw, cy - ry - 2, 2, 1, C.sprout); r(cx - 4 + sw, cy - ry - 1, 1, 1, C.sprout);
+    r(cx + sw, cy - ry - 2, 2, 1, C.sprout); r(cx + 2 + sw, cy - ry - 1, 1, 1, C.sprout);
   } else {
-    ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
+    r(cx - 1 + sw, cy - ry - 2, 1, 3, K.stem); r(cx - 3 + sw, cy - ry - 3, 2, 2, C.sprout);
+    r(cx + sw, cy - ry - 4, 3, 2, C.sprout); r(cx + 1 + sw, cy - ry - 4, 1, 1, K.leafHi);
   }
-  if (A.pencil && !A.handsFree) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
+  if (A.handsFree) {
+    // yap-1106-yappy-states-and-motion — a HANDS-FREE take: both wings folded
+    // over the belly, tips meeting under the beak, each with one feather mark
+    // (detail-pass tones). No pencil: no hands needed.
+    for (const s of [-1, 1]) {
+      ell(cx + s * 4, cy + 8, 4, 2, K.outline); ell(cx + s * 4, cy + 8, 3, 1, C.body);
+      r(cx + s * 4 - (s < 0 ? 1 : 0), cy + 8, 1, 1, K.tail);
+    }
+  } else {
+    // front wing with two feather marks; it lifts with `flap` and holds the pencil
+    const wx = cx - rx + 1, wy = cy + 1 - A.flap;
+    ell(wx, wy, 3, 4.5, K.outline); ell(wx, wy, 2, 3.5, C.body); r(wx - 1, wy + 2, 2, 1, K.tail); r(wx - 1, wy, 1, 1, K.tail);
+    if (A.pencil) { const px = cx - rx - 2, py = cy + 3; r(px - 3, py - 3, 1, 1, C.pencilT); r(px - 2, py - 2, 1, 1, C.pencil); r(px - 1, py - 1, 1, 1, C.pencil); r(px, py, 1, 1, C.pencil); r(px + 1, py + 1, 1, 1, C.dark); }
+  }
   const ex = 5, ey = cy + 1;
   for (const s of [-1, 1]) { const eXc = cx + s * ex;
-    if (A.mood > .55) { rct(eXc - 2, ey - 1, 1, 1, C.eye); rct(eXc - 1, ey - 2, 1, 1, C.eye); rct(eXc, ey - 2, 1, 1, C.eye); rct(eXc + 1, ey - 1, 1, 1, C.eye); }
-    else if (A.blink > .5 || A.mood < -.5) { rct(eXc - 2, ey + (A.mood < -.5 ? 1 : 0), 4, 1, C.eye); }
-    else if (A.look === "down") { ell(eXc, ey + 1, 2.1, 2.3, C.eye); rct(eXc - 1, ey, 1, 1, C.white); }
-    else { ell(eXc, ey, 2.2, 2.7, C.eye); rct(eXc - 1, ey - 2, 1, 1, C.white); o.globalAlpha = .7; rct(eXc + 1, ey + 1, 1, 1, C.white); o.globalAlpha = 1; }
+    if (A.mood > .55) { r(eXc - 2, ey, 1, 1, K.eye); r(eXc - 1, ey - 1, 1, 1, K.eye); r(eXc, ey - 1, 1, 1, K.eye); r(eXc + 1, ey, 1, 1, K.eye); }
+    else if (A.blink > .5 || A.mood < -.5) { r(eXc - 2, ey + (A.mood < -.5 ? 1 : 0), 4, 1, K.eye); }
+    else if (A.look === "down") { ell(eXc, ey + 1, 2.6, 2.6, K.eye); r(eXc - 1, ey, 2, 1, C.white); r(eXc + 1, ey + 2, 1, 1, C.white, .7); }
+    else { eye(h, eXc, ey, 0, true); }
   }
-  // reading glasses for the receptionist / essay personas
-  if (A.glasses) { rct(cx - ex - 3, ey - 1, 1, 4, C.glass); rct(cx - ex + 2, ey - 1, 1, 4, C.glass); rct(cx - ex - 3, ey - 1, 5, 1, C.glass); rct(cx - ex - 3, ey + 2, 5, 1, C.glass);
-    rct(cx + ex - 2, ey - 1, 1, 4, C.glass); rct(cx + ex + 3, ey - 1, 1, 4, C.glass); rct(cx + ex - 2, ey - 1, 5, 1, C.glass); rct(cx + ex - 2, ey + 2, 5, 1, C.glass); rct(cx - 2, ey, 4, 1, C.glass); }
-  const by = cy + 5, f = A.beakF;
-  rct(cx - 1, by - 1, 3, 1, C.beakD); rct(cx - 1, by, 3, 1, C.beak);
-  if (f === 1) { rct(cx, by + 1, 1, 1, C.cavity); rct(cx - 1, by + 2, 3, 1, C.beakD); }
-  else if (f >= 2) { rct(cx - 1, by + 1, 3, 1, C.cavity); rct(cx, by + 2, 1, 1, C.tongue); rct(cx - 1, by + 3, 3, 1, C.beakD); }
-  else { rct(cx, by + 1, 1, 1, C.beak); }
-  o.globalAlpha = .7; rct(cx - rx + 2, cy + 3, 2, 1, C.blush); rct(cx + rx - 3, cy + 3, 2, 1, C.blush); o.globalAlpha = 1;
-  rct(cx - 3, cy + ry - 1, 1, 2, C.foot); rct(cx + 3, cy + ry - 1, 1, 2, C.foot);
+  // reading glasses for the receptionist / essay personas, sized to the big eyes
+  if (A.glasses) {
+    for (const s of [-1, 1]) { const lx = cx + s * ex - 3; r(lx, ey - 2, 7, 1, C.glass); r(lx, ey + 2, 7, 1, C.glass); r(lx, ey - 2, 1, 5, C.glass); r(lx + 6, ey - 2, 1, 5, C.glass); }
+    r(cx - 1, ey - 1, 3, 1, C.glass);
+  }
+  // beak: three rows; 1 = a sliver open, >= 2 = open with the tongue out (approved f=2)
+  const f = A.beakF;
+  r(cx - 1, cy + 5, 3, 1, C.beakD); r(cx - 2, cy + 6, 5, 1, C.beak);
+  if (f >= 2) { r(cx - 1, cy + 7, 3, 1, C.cavity); r(cx, cy + 8, 1, 1, C.tongue); }
+  else { r(cx - 1, cy + 7, 3, 1, C.beak); if (f === 1) r(cx, cy + 7, 1, 1, C.cavity); }
+  r(cx - rx + 2, cy + 4, 3, 1, C.blush, .75); r(cx + rx - 4, cy + 4, 3, 1, C.blush, .75); r(cx - rx + 3, cy + 5, 1, 1, C.blush, .4);
+  // toes: a leg under each side and a three-pixel foot
+  for (const x of [-4, 3]) { r(cx + x, cy + ry, 1, 2, C.foot); r(cx + x - 1, cy + ry + 2, 3, 1, K.toe); }
 }
