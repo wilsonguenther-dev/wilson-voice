@@ -13689,10 +13689,6 @@ pub fn run() {
         .build(context)
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| match event {
-            // yap-lifecycle — a Dock click / Finder double-click / `open -a
-            // Yap` on a running Yap. The arm only dispatches; the decision is
-            // lifecycle::activation_action (which deliberately ignores
-            // has_visible_windows: the pill counts as one).
             // yap-1106-pill-trial-clickable — `yapvoice://license/activate`
             // from the purchase page. The arm only dispatches.
             #[cfg(target_os = "macos")]
@@ -13702,6 +13698,10 @@ pub fn run() {
                     urls.iter().map(|u| u.as_str().to_string()).collect(),
                 );
             }
+            // yap-lifecycle — a Dock click / Finder double-click / `open -a
+            // Yap` on a running Yap. The arm only dispatches; the decision is
+            // lifecycle::activation_action (which deliberately ignores
+            // has_visible_windows: the pill counts as one).
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
                 has_visible_windows,
