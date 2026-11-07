@@ -750,6 +750,13 @@ pub struct Step {
     pub events: Vec<PttEvent>,
     /// Arm a hold timer for this press generation (`HOLD_ARM_MS` from now).
     pub arm_hold: Option<u64>,
+    /// SP-09 (yap24-OS1) — a fresh press: capture starts NOW, at the key-down
+    /// (`record::pre_arm`), so the take that the hold timer may confirm owns
+    /// the audio from the press on instead of from `HOLD_ARM_MS` later.
+    pub pre_arm: bool,
+    /// SP-09 — the press turned out not to be a hold (a tap, or cut short by
+    /// a key): discard what it buffered (`record::discard_pre_arm`).
+    pub discard_pre_arm: bool,
 }
 
 impl Step {
@@ -759,7 +766,7 @@ impl Step {
     fn of(events: &[PttEvent]) -> Self {
         Self {
             events: events.to_vec(),
-            arm_hold: None,
+            ..Self::default()
         }
     }
 }
@@ -926,9 +933,13 @@ impl PttMachine {
         self.hold_armed = false;
         // YV38: this wait is NOT latency slack — it IS the gesture, the window
         // that separates a tap (hands-free toggle) from a hold (push-to-talk).
+        // SP-09: the press is also where capture starts — the hold timer
+        // decides whether the audio is KEPT, not when it begins.
         Step {
             events: Vec::new(),
             arm_hold: Some(self.press_gen),
+            pre_arm: true,
+            discard_pre_arm: false,
         }
     }
 
@@ -953,7 +964,16 @@ impl PttMachine {
             self.end_take();
             return Step::of(&[PttEvent::Stop]);
         }
+        // SP-09 — from here on the press was NOT a hold: whatever it pre-armed
+        // is discarded, whatever else this release does.
+        let mut step = self.on_tap_up(now_ms, duration);
+        step.discard_pre_arm = true;
+        step
+    }
 
+    /// The release of a press that never became a hold (SP-09 split this out
+    /// so every such release discards its pre-armed audio).
+    fn on_tap_up(&mut self, now_ms: u64, duration: u64) -> Step {
         if self.hands_free {
             return Step::none();
         }
@@ -1037,7 +1057,10 @@ impl PttMachine {
         self.press_at = None;
         self.press_gen += 1;
         self.end_take();
-        Step::of(&[PttEvent::Interrupted])
+        let mut step = Step::of(&[PttEvent::Interrupted]);
+        // SP-09 — a press cut short by a key never keeps its audio.
+        step.discard_pre_arm = true;
+        step
     }
 
     /// The live-take clock, called every poll tick.
@@ -1332,6 +1355,15 @@ pub fn stop_take_with(origin: StopOrigin, stop: impl FnOnce()) {
 
 /// Run one machine step's effects. Called with NO machine lock held.
 fn dispatch(state: &Arc<TapState>, step: Step) {
+    // SP-09 — discard before pre-arm (a release then a press, in order), and
+    // both before the hold timer and the events: fire-and-forget sends to the
+    // capture worker, so the tap thread never waits on audio.
+    if step.discard_pre_arm {
+        crate::record::discard_pre_arm();
+    }
+    if step.pre_arm {
+        crate::record::pre_arm(std::time::Instant::now());
+    }
     if let Some(gen) = step.arm_hold {
         spawn_hold_timer(gen);
     }
@@ -2459,6 +2491,49 @@ mod mouse_tests {
             assert_eq!(MAIN_TAP_MASK & (1u64 << t), 0, "event type {t}");
         }
         assert_eq!(MAIN_TAP_OPTIONS, KCG_EVENT_TAP_OPTION_LISTEN_ONLY);
+    }
+
+    /// SP-09 — capture starts at the key-down; only a confirmed hold keeps it.
+    #[test]
+    fn sp09_press_pre_arms_and_only_a_hold_keeps_the_audio() {
+        // Hold: pre-arm on the down, Start at HOLD_ARM_MS, Stop with no discard.
+        let mut m = PttMachine::new();
+        let down = m.edge(true, false, 1_000, EdgeSource::Tap);
+        assert!(down.pre_arm, "capture starts on key-down");
+        assert!(down.events.is_empty(), "no take yet: the hold decides");
+        let gen = down.arm_hold.expect("hold timer armed");
+        let start = m.hold_timer(gen, 1_000 + HOLD_ARM_MS);
+        assert_eq!(start.events, vec![PttEvent::Start]);
+        assert!(!start.discard_pre_arm);
+        let stop = m.edge(false, false, 3_000, EdgeSource::Tap);
+        assert_eq!(stop.events, vec![PttEvent::Stop]);
+        assert!(!stop.discard_pre_arm, "a hold keeps its audio");
+
+        // Tap: the release discards the buffer.
+        let mut m = PttMachine::new();
+        assert!(m.edge(true, false, 1_000, EdgeSource::Tap).pre_arm);
+        let up = m.edge(false, false, 1_100, EdgeSource::Tap);
+        assert!(up.events.is_empty());
+        assert!(up.discard_pre_arm, "a tap discards what it buffered");
+
+        // Double tap: the second release discards its press too, then starts
+        // the hands-free take (which anchors on its own arm).
+        let down2 = m.edge(true, false, 1_300, EdgeSource::Tap);
+        assert!(down2.pre_arm);
+        let up2 = m.edge(false, false, 1_400, EdgeSource::Tap);
+        assert!(up2.discard_pre_arm);
+        assert_eq!(up2.events, vec![PttEvent::HandsFreeOn, PttEvent::Start]);
+        // The tap that ends hands-free is consumed: no pre-arm for it.
+        let end = m.edge(true, false, 3_000, EdgeSource::Tap);
+        assert!(!end.pre_arm);
+        assert_eq!(end.events, vec![PttEvent::HandsFreeOff, PttEvent::Stop]);
+
+        // A press cut short by an ordinary key discards too.
+        let mut m = PttMachine::new();
+        assert!(m.edge(true, false, 1_000, EdgeSource::Tap).pre_arm);
+        let cut = m.key_down(false);
+        assert_eq!(cut.events, vec![PttEvent::Interrupted]);
+        assert!(cut.discard_pre_arm);
     }
 
     /// Hold mode is the fn gesture: hold past HOLD_ARM_MS starts, release stops.
