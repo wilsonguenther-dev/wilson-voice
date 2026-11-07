@@ -166,6 +166,10 @@
   --pill-shell-bottom: #0c0c0f;
   --pill-shell-highlight: #3a3b40; /* the lit edge of a round pill button */
   --pill-text: #f5f5f7;
+  /* yap-1106-pill-warmup-engine — the 72 x 24 warm-up window's room wall
+     (design-2026-11-06 pill.html section 10, the room behind Yappy). */
+  --pill-warmup-window: #eccf92;
+  --pill-warmup-fill: hsl(38 92% 55%);
   --pill-bubble-surface: #20222e;
   --pill-bubble-text: #f7f1e6;
   /* WF-20 — the per-app style chip under a listening pill (StyleChipButton.tsx). */

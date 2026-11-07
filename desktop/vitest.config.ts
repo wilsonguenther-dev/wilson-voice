@@ -66,6 +66,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   // yap-1106-launch-walk — floor set by the batch-11 integrator from the measured run (100 / 95.57 / 100 / 100).
   "pill/launchWalk.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
+  // yap-1106-pill-warmup-engine — a first floor below the expected run; the integrator raises it to the measured one.
+  "pill/warmup.ts": { lines: 95, branches: 85, functions: 95, statements: 95 },
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
