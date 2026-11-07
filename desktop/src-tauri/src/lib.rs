@@ -728,8 +728,6 @@ pub struct AppSettings {
 /// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
 pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
 
-/// WF-17 — keep only mutable categories, once each, in table order. A stored
-/// `"error"` (or anything unknown) is dropped: an error can never be muted.
 /// yap-1106-chatter-setting — the "Yappy talks" modes. Mirrors
 /// `CHATTER_MODES` in `desktop/src/pill/chatter.ts`.
 pub const YAPPY_TALKS_MODES: [&str; 3] = ["always", "less", "milestones"];
@@ -749,6 +747,8 @@ fn default_yappy_talks() -> String {
     "less".into()
 }
 
+/// WF-17 — keep only mutable categories, once each, in table order. A stored
+/// `"error"` (or anything unknown) is dropped: an error can never be muted.
 pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
     MUTABLE_PILL_CATEGORIES
         .iter()

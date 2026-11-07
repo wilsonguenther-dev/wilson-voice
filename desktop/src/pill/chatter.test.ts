@@ -3,6 +3,7 @@
  * milestones. The policy is pure, so every rule is proved here without a
  * window; chatter.settings.test.tsx proves the Settings row and the wiring.
  */
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {

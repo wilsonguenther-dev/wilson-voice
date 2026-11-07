@@ -2,6 +2,7 @@
  * yap-1106-chatter-setting — the "Yappy talks" row in Settings › Companion and
  * the wiring that carries it to the pill. The policy itself is chatter.test.ts.
  */
+// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
