@@ -3095,21 +3095,24 @@ impl stream_decode::WindowDecoder for EngineWindowDecoder {
 /// yap-1106-sp-05 — arm the streaming decode for the take about to record.
 /// Called BEFORE the capture opens, so the stream sees the take's first sample
 /// (the seal in `record` proves it saw every one).
-fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
+///
+/// Returns the stream's take id (the polish pipeline listens on it), or `None`
+/// when this take does not stream.
+fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) -> Option<u64> {
     let (native, prefs) = {
         let settings = state.settings.lock();
         (settings.native_model.clone(), settings.language_prefs())
     };
     let Some((model_id, model_path)) = native_model_ready(&native) else {
         stream_decode::disarm("no_model");
-        return;
+        return None;
     };
     let Some(language) =
         stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
     else {
         stream_decode::disarm("auto_language");
         log::info!("stream_decode skipped reason=auto_language");
-        return;
+        return None;
     };
     let take = stream_decode::next_take_id();
     let decoder: Arc<dyn stream_decode::WindowDecoder> = Arc::new(EngineWindowDecoder {
@@ -3122,6 +3125,9 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
     let app_ev = app.clone();
     let sink: stream_decode::PartialSink =
         Arc::new(move |partial: &stream_decode::TranscriptPartial| {
+            // yap-1106-sp-07 — the same committed text feeds the polish
+            // pipeline, which polishes its finished chunks right away.
+            polish::pipeline_feed(partial.take, &partial.committed);
             if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
                 log::warn!(
                     "stream_decode partial_emit_failed take={} error={e}",
@@ -3136,6 +3142,108 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
         Some(sink),
     ));
     log::info!("stream_decode armed take={take}");
+    Some(take)
+}
+
+/// yap-1106-sp-07 — key-down half of the pipelined, warm polish: pre-warm the
+/// sidecar (AC + governor at full only) and, when the take streams, start the
+/// pipeline that polishes each committed window's finished chunks while the
+/// user is still talking. Runs on its own thread, so the frontmost-app read,
+/// the two DB reads and the sidecar spawn never delay the capture opening.
+fn arm_polish_for_take(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u64>) {
+    polish::pipeline_disarm("new_take");
+    let app = app.clone();
+    let state = state.clone();
+    let spawned = std::thread::Builder::new()
+        .name("yap-polish-arm".into())
+        .spawn(move || arm_polish_now(&app, &state, stream_take));
+    if let Err(e) = spawned {
+        log::warn!("polish pipeline arm_spawn_failed error={e}");
+    }
+}
+
+fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u64>) {
+    // The take's app as it stands at key-down. The release path reads it
+    // again (plus the AX context); if the mode it resolves differs, the
+    // pre-polished chunks do not match and the release polishes them live.
+    let app_name = focus::frontmost_app_name().unwrap_or_default();
+    let bundle_id = focus::frontmost_bundle_id().unwrap_or_default();
+    let (setting, level, structure_on, overrides, language) = {
+        let s = state.settings.lock();
+        (
+            s.dictation_mode.clone(),
+            dictation::CleanupLevel::from_setting(&s.cleanup_level),
+            s.structure_enabled && s.dictation_mode.trim() != "plain",
+            s.structure_app_overrides.clone(),
+            s.language.clone(),
+        )
+    };
+    let mode = dictation::resolve_mode_with_context(&setting, &app_name, None, None);
+    let mode = apply_style_override(app, &setting, &app_name, mode);
+    let cfg = {
+        let s = state.settings.lock();
+        polish::PolishConfig::from_settings(&s, mode)
+    }
+    .with_preferences(
+        state
+            .db
+            .matching_voice_preferences(&voice_prefs::TakeContext {
+                mode,
+                bundle_id: &bundle_id,
+                language: &language,
+            }),
+    )
+    .with_profile(state.db.style_profile());
+    if level != dictation::CleanupLevel::High
+        || mode == dictation::DictationMode::Code
+        || cfg.model.trim().is_empty()
+    {
+        log::info!("polish prewarm outcome=not_eligible");
+        return;
+    }
+    polish::prewarm_sidecar(&cfg);
+    let Some(take) = stream_take else {
+        return;
+    };
+    let Some(client) = polish::installed_client(&cfg) else {
+        return;
+    };
+    let structure =
+        dictation::structure_format_for_take(structure_on, &overrides, &bundle_id, mode);
+    let style = cfg.style;
+    let st = state.clone();
+    // The rules stages exactly as the release runs them, stopped at the door
+    // of the polish stage: the text the polish closure receives IS the polish
+    // input. Pauses are not known until release, so none are passed; a take
+    // whose pauses add a paragraph break mid-chunk just reuses fewer chunks.
+    let prepare: polish::PolishPrepare = Arc::new(move |raw: &str| {
+        let seen = std::cell::RefCell::new(None::<String>);
+        let _ = dictation::run_cleanup_for_language(
+            raw,
+            level,
+            mode,
+            structure,
+            style,
+            &[],
+            &language,
+            |t| st.db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
+            |t| {
+                *seen.borrow_mut() = Some(t.to_string());
+                Err("pipeline_rules_only")
+            },
+        );
+        seen.into_inner()
+    });
+    if let Some(pipeline) = polish::PolishPipeline::start(
+        take,
+        mode,
+        cfg,
+        Box::new(client),
+        prepare,
+        Arc::new(polish::sidecar_ready_for_pipeline),
+    ) {
+        polish::pipeline_arm(pipeline);
+    }
 }
 
 /// yap-1106-sp-05 — the take's streamed decode, when streaming carried it all
@@ -3396,7 +3504,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
         None
     };
     // yap-1106-sp-05 — the streaming decode is armed before the capture opens.
-    arm_stream_decode(app, state);
+    let stream_take = arm_stream_decode(app, state);
+    // yap-1106-sp-07 — and the warm, pipelined polish rides on it.
+    arm_polish_for_take(app, state, stream_take);
     match record::start_recording(
         data_dir().join("recordings"),
         &recovery_dir(),
@@ -3508,6 +3618,7 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
             stream_decode::disarm("capture_failed");
+            polish::pipeline_disarm("capture_failed");
             let line =
                 "Yap could not open the microphone — check that an input device is connected.";
             *state.last_error.lock() = Some(take_error::LastError::new(
@@ -4543,6 +4654,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     rec.speech_present
                 );
                 stream_decode::disarm("no_speech");
+                polish::pipeline_disarm("no_speech");
                 return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
             // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
@@ -4843,6 +4955,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // budget, empty (and so a byte-identical request) when unset.
                 .with_profile(db.style_profile());
             let t_cleanup = std::time::Instant::now();
+            // yap-1106-sp-07 — stop the pipeline (after the chunk in flight)
+            // and park what it polished during capture; the polish stage below
+            // reuses every chunk that still matches and asks only for the rest.
+            // Inside cleanup_ms on purpose: that wait is release time.
+            polish::pipeline_finish();
             // yap-format-structure: list syntax for THIS paste target, from the
             // Structure switch and the per-app override list. A user-picked
             // Plain mode means "exactly what I said" — no structure either.
