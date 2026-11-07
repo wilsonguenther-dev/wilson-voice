@@ -71,6 +71,11 @@ export interface CharacterStageProps {
   tone?: ChatTone;
   /** yap-1106-voice-modes — Yappy's voice (Best friend, Badass, Professional, Rose). */
   voice?: VoiceId;
+  /**
+   * yap-1106-curse-setting — curse mode, already decided by the shell
+   * (`curseAllowed`: toggle on, Badass, no meeting / screen-share state).
+   */
+  curse?: boolean;
   progress?: TranscribeProgress | null;
   meeting?: MeetingStatus;
   meetingAfter?: MeetingAfterView | null;
