@@ -74,6 +74,11 @@ export interface CharacterStageProps {
   voice?: VoiceId;
   /** yap-1106-chatter-setting — "Yappy talks": always / less over time / only milestones. */
   chatter?: ChatterMode;
+  /**
+   * yap-1106-curse-setting — curse mode, already decided by the shell
+   * (`curseAllowed`: toggle on, Badass, no meeting / screen-share state).
+   */
+  curse?: boolean;
   progress?: TranscribeProgress | null;
   meeting?: MeetingStatus;
   meetingAfter?: MeetingAfterView | null;

@@ -39,6 +39,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "errors.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "retryDictation.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "home/habitat/habitat.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-home-full-width-room — floor set by the builder WITHOUT a run (no-compile
+  // rule; homeLayout.test.ts drives every function and branch); the integrator re-measures and may only raise it.
+  "home/homeLayout.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
   "hotkeyRecorder.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "languagePicker.ts": { lines: 96, branches: 80, functions: 93, statements: 97 },
@@ -65,9 +68,15 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
   "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-wf-05 — the "Polished — Reveal" payload check, copy and route words.
+  "pill/polishReveal.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
+  // yap-1106-engine-owner — the speech engine's health state, in plain words.
+  "pill/engineHealth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-fx-06 — the meeting + dictation card's model (Esc toast, hands-free ask, stop failed).
+  "pill/meetingDictation.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/silentMic.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
@@ -88,8 +97,12 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-1106-insights-redesign — headline numbers, the insight sentence, chart states, keyboard steps.
   "views/insightsModel.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
+  // yap-1106-pill-trial-clickable — gated-pill copy, settle timing, nub lock.
+  "pill/gateClick.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-friend-visits — floors set below the authored test's reach (no run allowed); the integrator raises them to the measured value.
+  "pill/friendVisits.ts": { lines: 95, branches: 85, functions: 95, statements: 95 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },

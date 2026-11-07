@@ -249,6 +249,10 @@ pub struct PipelineDeps {
     pub quit: Arc<dyn Fn() -> bool + Send + Sync>,
     pub sink: ProgressSink,
     pub after_transcript: Option<AfterTranscript>,
+    /// yap-1106-diarize-wire — the speaker pass run on every finished meeting,
+    /// after the transcript is final and BEFORE `after_transcript` (notes), so
+    /// notes read the speaker labels. `Off` in tests that are not about it.
+    pub diarize: crate::meeting_diarize::DiarizeBackend,
     pub config: MeetingAsrConfig,
     /// R2 — how long the worker waits before its first job
     /// ([`QUEUE_START_DELAY`] in the app, zero in tests).
@@ -270,7 +274,33 @@ pub struct MeetingPipeline {
     /// the recording clock straight to "Transcribing 0%" instead of going
     /// quiet while the ASR model loads for the first window.
     sink: ProgressSink,
+    /// yap-1106-quit-during-asr-crash — set by [`MeetingPipeline::stop_and_join`]:
+    /// the job in flight stands down at its next window and the worker thread
+    /// leaves its loop instead of starting the next queued meeting.
+    stop: Arc<AtomicBool>,
+    /// The worker thread, so the exit teardown can JOIN it — the engine a job
+    /// holds is dropped on that thread, and the join is how the quit knows it
+    /// was dropped BEFORE `exit()` runs ggml's C++ static destructors.
+    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Where the quit markers go (beside the resume ledgers).
+    progress_dir: PathBuf,
 }
+
+/// What [`MeetingPipeline::stop_and_join`] got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerJoin {
+    /// No worker thread to join (never spawned, or already joined).
+    NotRunning,
+    /// The worker left its loop and was joined inside the budget: every engine
+    /// its job held has been dropped on that thread.
+    Joined,
+    /// The worker is still inside a job when the budget ran out. The caller
+    /// must not let `exit()` run static destructors under it (`_exit` instead).
+    TimedOut,
+}
+
+/// Poll step for the bounded join.
+const JOIN_POLL: Duration = Duration::from_millis(5);
 
 impl MeetingPipeline {
     /// Queue a meeting. A meeting already queued is not queued twice.
@@ -293,6 +323,70 @@ impl MeetingPipeline {
             log::info!("meeting pipeline: queued {id}");
             (self.sink)(&queued_event(id));
         }
+    }
+
+    /// yap-1106-quit-during-asr-crash — the exit teardown's half of the worker:
+    /// tell the job in flight to stand down, mark every meeting still queued or
+    /// mid-job as interrupted by the quit (the next launch's reconcile re-queues
+    /// it and does not count the quit as a crash), wake an idle worker, and JOIN
+    /// the thread within `budget`.
+    ///
+    /// `TimedOut` leaves the handle in place, so [`worker_alive`] keeps saying
+    /// the thread is still running — the exit path then skips static
+    /// destructors with `_exit` rather than let ggml tear down a Metal device
+    /// a live decode is still using.
+    ///
+    /// [`worker_alive`]: Self::worker_alive
+    pub fn stop_and_join(&self, budget: Duration) -> WorkerJoin {
+        let started = Instant::now();
+        self.stop.store(true, Ordering::SeqCst);
+        let interrupted: Vec<String> = {
+            let (lock, _) = &*self.pending;
+            lock.lock()
+                .map(|p| p.queued.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        for id in &interrupted {
+            write_quit_marker(&self.progress_dir, id);
+        }
+        // An idle worker is blocked on the channel: an empty id wakes it, and
+        // the stop flag makes it leave instead of running anything.
+        if let Ok(tx) = self.tx.lock() {
+            let _ = tx.send(String::new());
+        }
+        let handle = self.worker.lock().ok().and_then(|mut h| h.take());
+        let Some(handle) = handle else {
+            return WorkerJoin::NotRunning;
+        };
+        while !handle.is_finished() {
+            if started.elapsed() >= budget {
+                if let Ok(mut slot) = self.worker.lock() {
+                    *slot = Some(handle);
+                }
+                log::warn!(
+                    "meeting_pipeline stop outcome=timed_out waited_ms={} interrupted={}",
+                    started.elapsed().as_millis(),
+                    interrupted.len()
+                );
+                return WorkerJoin::TimedOut;
+            }
+            std::thread::sleep(JOIN_POLL);
+        }
+        let _ = handle.join();
+        log::info!(
+            "meeting_pipeline stop outcome=joined waited_ms={} interrupted={}",
+            started.elapsed().as_millis(),
+            interrupted.len()
+        );
+        WorkerJoin::Joined
+    }
+
+    /// Is the worker thread still running? `false` once it has been joined.
+    pub fn worker_alive(&self) -> bool {
+        self.worker
+            .lock()
+            .map(|h| h.as_ref().is_some_and(|h| !h.is_finished()))
+            .unwrap_or(false)
     }
 
     /// Is a meeting queued or being transcribed? (yap24-NT4 R4)
@@ -364,8 +458,33 @@ pub fn enqueue(id: &str) -> bool {
     }
 }
 
+/// yap-1106-quit-during-asr-crash — the installed pipeline's worker is still
+/// running (the exit path's "may static destructors run?" question). `false`
+/// with no pipeline installed.
+pub fn installed_worker_alive() -> bool {
+    INSTALLED.get().is_some_and(MeetingPipeline::worker_alive)
+}
+
+/// yap-1106-quit-during-asr-crash — stop and join the installed pipeline's
+/// worker; `NotRunning` when none is installed.
+pub fn stop_and_join_installed(budget: Duration) -> WorkerJoin {
+    INSTALLED
+        .get()
+        .map(|p| p.stop_and_join(budget))
+        .unwrap_or(WorkerJoin::NotRunning)
+}
+
 /// Spawn the ONE worker thread.
 pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
+    let stop = Arc::new(AtomicBool::new(false));
+    // The job's own quit check also hears this pipeline's stop, so a job in
+    // flight stands down at its next window when the exit teardown asks.
+    let mut deps = deps;
+    let outer_quit = Arc::clone(&deps.quit);
+    let job_stop = Arc::clone(&stop);
+    deps.quit = Arc::new(move || job_stop.load(Ordering::SeqCst) || outer_quit());
+    let worker_stop = Arc::clone(&stop);
+    let progress_dir = deps.progress_dir.clone();
     let (tx, rx) = mpsc::channel::<String>();
     let pending = Arc::new((
         Mutex::new(Pending {
@@ -388,6 +507,16 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 waited += step;
             }
             for id in rx {
+                // yap-1106-quit-during-asr-crash — a quit leaves the loop here,
+                // so the next queued meeting never starts on an engine the exit
+                // teardown is taking away; it stays `transcribing` for the next
+                // launch's reconcile.
+                if worker_stop.load(Ordering::SeqCst) || quitting() {
+                    break;
+                }
+                if id.is_empty() {
+                    continue;
+                }
                 // yap-1106-resource-governor: on a starved Mac the decode
                 // waits — in the queue, row still `transcribing`, the pill's
                 // chip saying why — until wall power / full, a "Run anyway",
@@ -420,6 +549,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 // Any in-process end of the job (including a caught panic)
                 // clears the crash marker: only a dead PROCESS leaves it.
                 clear_attempt_marker(&deps.progress_dir, &id);
+                // A job that reached an end state is no longer interrupted —
+                // only a stand-down (`transcribing`) keeps its quit marker.
+                if !matches!(&result, Ok(Ok(MeetingState::Transcribing))) {
+                    clear_quit_marker(&deps.progress_dir, &id);
+                }
                 match result {
                     Ok(Ok(state)) => {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
@@ -451,13 +585,24 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 cv.notify_all();
             }
         });
-    if let Err(e) = spawned {
-        diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
-    }
+    let worker = match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            diag_error!(
+                "meeting_pipeline",
+                "meeting pipeline: worker thread failed to spawn: {err}",
+                err = e
+            );
+            None
+        }
+    };
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
         pending,
         sink,
+        stop,
+        worker: Arc::new(Mutex::new(worker)),
+        progress_dir,
     }
 }
 
@@ -699,6 +844,47 @@ fn clear_attempt_marker(dir: &Path, meeting_id: &str) {
     let _ = std::fs::remove_file(attempt_marker_path(dir, meeting_id));
 }
 
+// ── yap-1106-quit-during-asr-crash: a quit is not a crash ───────────────────
+
+/// `<progress_dir>/<id>.quit-interrupted` — written by the exit teardown for
+/// every meeting still queued or mid-job when the app quit. Its presence tells
+/// the next launch's reconcile WHY the row is `transcribing`.
+pub fn quit_marker_path(dir: &Path, meeting_id: &str) -> PathBuf {
+    dir.join(format!("{meeting_id}.quit-interrupted"))
+}
+
+/// Record that the quit interrupted this meeting's job.
+pub fn write_quit_marker(dir: &Path, meeting_id: &str) {
+    let path = quit_marker_path(dir, meeting_id);
+    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = std::fs::write(&path, b"quit\n") {
+        diag_warn!(
+            "meeting_pipeline",
+            "meeting pipeline: cannot write {file}: {err}",
+            file = crate::diagnostics::basename(&path),
+            err = e
+        );
+    }
+}
+
+fn clear_quit_marker(dir: &Path, meeting_id: &str) {
+    let _ = std::fs::remove_file(quit_marker_path(dir, meeting_id));
+}
+
+/// Launch side: was this meeting's job interrupted by a quit? Consumes the
+/// marker. When it was, the attempt marker that job left (a forced `_exit`
+/// never reaches the worker's clear) is removed too — quitting is not the
+/// meeting taking Yap down, so it must never count toward the crash-loop guard.
+pub fn take_quit_marker(dir: &Path, meeting_id: &str) -> bool {
+    let path = quit_marker_path(dir, meeting_id);
+    if !path.exists() {
+        return false;
+    }
+    clear_quit_marker(dir, meeting_id);
+    clear_attempt_marker(dir, meeting_id);
+    true
+}
+
 /// Ledger progress summed over both tracks — what "progress" means for R2.
 fn ledger_progress(dir: &Path, meeting_id: &str) -> f64 {
     let store = JsonProgressStore::new(dir);
@@ -808,6 +994,7 @@ pub fn meeting_sidecar_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
                     rest.ends_with(".asr-progress.json")
                         || rest == "asr-progress.json"
                         || rest == "index.jsonl"
+                        || rest == "quit-interrupted"
                         || (rest.starts_with('t') && rest.ends_with(".index.jsonl"))
                 })
                 .map(|e| e.path())
@@ -1044,6 +1231,29 @@ fn median_of(v: &[f64]) -> f64 {
     }
 }
 
+/// yap-1106-vocab-bias — apply the user's Dictionary to one MEETING segment
+/// before it is stored, exactly as dictation applies it (same rules, same
+/// applier: [`Database::apply_dictionary_counted`]). Before this, the Dictionary
+/// only reached dictation, so a meeting kept "Trivia" for Drivia. A Dictionary
+/// read failure keeps the recogniser's text: it never fails a meeting window.
+/// Returns the segment and how many replacements fired.
+pub fn vocab_segment(db: &Database, mut segment: NewMeetingSegment) -> (NewMeetingSegment, usize) {
+    match db.apply_dictionary_counted(&segment.text) {
+        Ok((text, n)) => {
+            if n > 0 && !text.trim().is_empty() {
+                segment.text = text;
+                (segment, n)
+            } else {
+                (segment, 0)
+            }
+        }
+        Err(e) => {
+            log::warn!("vocab failed track={} error={e}", segment.track);
+            (segment, 0)
+        }
+    }
+}
+
 /// The ledger the driver writes through: DB segment first, ledger second.
 struct SegmentWritingStore<'a> {
     inner: JsonProgressStore,
@@ -1057,6 +1267,9 @@ struct SegmentWritingStore<'a> {
     deps: &'a PipelineDeps,
     /// Decoder milliseconds summed over this run's windows on this track.
     decode_ms: u64,
+    /// yap-1106-vocab-bias: Dictionary replacements made on this track's
+    /// segments (logged once per track as `vocab applied track=… replacements=…`).
+    vocab_replacements: usize,
     /// yap-audit-utterance-segments — rows written on this track this run,
     /// and the windows they came from, for the per-track `utterances` line.
     rows_written: usize,
@@ -1091,7 +1304,15 @@ impl ProgressStore for SegmentWritingStore<'_> {
     }
 
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
-        let segments = chunk_segments(chunk, self.track);
+        // yap-1106-vocab-bias: every utterance row passes through the
+        // Dictionary before it is stored, as dictation does.
+        let raw = chunk_segments(chunk, self.track);
+        let mut segments: Vec<NewMeetingSegment> = Vec::with_capacity(raw.len());
+        for segment in raw {
+            let (segment, replaced) = vocab_segment(self.db, segment);
+            self.vocab_replacements += replaced;
+            segments.push(segment);
+        }
         if !segments.is_empty() {
             self.db
                 .append_meeting_segments(self.meeting_id, &segments)?;
@@ -1353,6 +1574,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             duration: meeting.duration_seconds,
             deps,
             decode_ms: 0,
+            vocab_replacements: 0,
             rows_written: 0,
             windows_written: 0,
         };
@@ -1401,6 +1623,11 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
                     interrupted: transcript.interrupted,
                 },
             )
+        );
+        log::info!(
+            "vocab applied track={} replacements={} meeting={id}",
+            track,
+            store.vocab_replacements
         );
         if transcript.interrupted {
             log::info!(
@@ -1455,6 +1682,25 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
         state.as_str()
     );
     stage_done("finalize", &mut stage_clock);
+    // yap-1106-diarize-wire — "Finding speakers": cluster the right track and
+    // write `cluster_index`. Never blocks or fails the meeting: every error is
+    // logged (`diarize result=…`) and leaves the plain labels and this state.
+    // Notes (`after_transcript`) run after it.
+    if matches!(state, MeetingState::Complete | MeetingState::Partial)
+        && !deps.diarize.is_off()
+        && !((deps.quit)() || quitting())
+    {
+        (deps.sink)(&MeetingProgressEvent {
+            id: id.to_string(),
+            state: crate::meeting_diarize::FINDING_SPEAKERS_STATE.to_string(),
+            percent: 100,
+            processed_through_seconds: meeting.duration_seconds,
+            duration_seconds: meeting.duration_seconds,
+            error: None,
+        });
+        let _ = crate::meeting_diarize::diarize_meeting(db, id, &deps.progress_dir, &deps.diarize);
+        stage_done("diarize", &mut stage_clock);
+    }
     emit_final(deps, id, state, error);
     if matches!(state, MeetingState::Complete | MeetingState::Partial) {
         if let Some(after) = deps.after_transcript.as_ref() {
@@ -1480,6 +1726,57 @@ mod nt6_retry_tests {
         ));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
+    }
+
+    /// yap-1106-vocab-bias: the Dictionary reaches MEETING segments. The 8
+    /// misheard pairs on a meeting-segment fixture come out spelled right, are
+    /// stored that way, and the track keeps its attribution.
+    #[test]
+    fn vocab_fixes_the_eight_pairs_on_a_meeting_segment() {
+        let db = Database::open_in_memory().expect("db");
+        assert_eq!(db.add_suggested_dictionary_terms().expect("suggest"), 9);
+        let m = db
+            .create_meeting("Pipeline review", "mic")
+            .expect("meeting");
+        let raw = NewMeetingSegment::new(
+            12.0,
+            41.5,
+            "so Trivia and Gunther pitched Plus Lane to ClassLank, ClassPlank and St. Marcos \
+             over Whisper Fill, Henshake and TechServe.",
+        )
+        .on_track(1);
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 9);
+        assert_eq!(seg.track, 1);
+        assert_eq!(
+            seg.text,
+            "so Drivia and Guenther pitched Postline to ClassLink, ClassLink and San Marcos \
+             over Wispr Flow, Handshake and TechServ."
+        );
+        db.append_meeting_segments(&m.id, std::slice::from_ref(&seg))
+            .expect("append");
+        let stored = db.list_meeting_segments(&m.id).expect("segments");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].text, seg.text);
+    }
+
+    /// No false positive in a meeting: "trivia night" stays when Drivia is not
+    /// in the speaker's context, and nothing is counted.
+    #[test]
+    fn vocab_leaves_trivia_night_alone_in_a_meeting() {
+        let db = Database::open_in_memory().expect("db");
+        db.add_suggested_dictionary_terms().expect("suggest");
+        let raw = NewMeetingSegment::new(
+            0.0,
+            8.0,
+            "Trivia night is Thursday, bring a team for trivia.",
+        );
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 0);
+        assert_eq!(
+            seg.text,
+            "Trivia night is Thursday, bring a team for trivia."
+        );
     }
 
     #[test]

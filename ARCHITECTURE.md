@@ -180,7 +180,8 @@ process has no window-server session.
 **FULLSCREEN — named limitation (Y6-D).** ROADMAP.md says a normal `NSWindow`
 cannot float above fullscreen apps and names `tauri-nspanel` as the fix. That
 premise is stale for the pill: `float_pill.rs` already converts the float
-window with `to_panel::<DictatePill>()` (nonactivating, `PanelLevel::Status`,
+window with `to_panel::<DictatePill>()` (nonactivating, PopUpMenu level or just
+above a presenting front app per FB-03 `float_pill/presence.rs::level_for`,
 `canJoinAllSpaces | stationary | fullScreenAuxiliary | ignoresCycle`). Whether
 that panel actually appears over a fullscreen app has NOT been measured — the
 Y6-D build ran headless and did not drive a fullscreen Space. Status:

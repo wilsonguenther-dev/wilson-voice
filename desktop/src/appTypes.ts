@@ -9,6 +9,8 @@ import type {
 } from "./permission";
 export type Nav =
   | "home"
+  // yap-1106-home-full-width-room — the full list Home's "See all" row opens.
+  | "history"
   | "permissions"
   | "meetings"
   | "insights"
@@ -170,6 +172,12 @@ export interface AppSettings {
    * live by YappyPill and NudgeRow through float-main (`pill/chatter.ts`).
    */
   yappyTalks?: string;
+  /**
+   * yap-1106-curse-setting (backend `companion_curse`, default false): the
+   * Badass voice may swear about one finished-take line in four. Offered only
+   * under Badass; ignored by every other voice and in any meeting state.
+   */
+  companionCurse?: boolean;
   /**
    * WF-17 — quiet mode (backend `muted_pill_categories`): the pill-message
    * categories switched off in Settings › Notifications. Only "tip", "news"
