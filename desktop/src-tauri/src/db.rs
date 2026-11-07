@@ -1132,6 +1132,10 @@ impl Database {
         // once (it is dropped in the same transaction, so a deleted note can
         // never be resurrected by a later open).
         fold_legacy_scratchpad(&conn).map_err(|e| OpenErr::classify("scratchpad fold", e))?;
+        // yap-1106-news-rank-cache — the Yappy News story cache and seen-set.
+        // Disposable, so `IF NOT EXISTS` on every open rather than a ladder step
+        // (see `news::cache`'s docs).
+        crate::news::cache::ensure_schema(&conn).map_err(|e| OpenErr::classify("news cache", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -4074,6 +4078,16 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(inserted > 0)
+    }
+
+    /// yap-1106-news-rank-cache — run `f` on the connection for the Yappy News
+    /// cache (`news::cache`). Keep `f` short: it holds the one DB lock.
+    pub fn with_news_cache<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        f(&conn).map_err(|e| e.to_string())
     }
 
     /// Y9-A — persist one transform invocation. Counts and tags only; the

@@ -9579,7 +9579,18 @@ fn set_news_prefs(
     prefs: news_prefs::NewsPrefs,
     source: String,
 ) -> Result<news_prefs::NewsView, String> {
-    news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+    let view = news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms())
+        .map_err(|e| e.plain())?;
+    // yap-1106-news-rank-cache — switching Yappy News off deletes the story
+    // cache and the seen-set. A failure here never fails the save (the switch
+    // is already off, so nothing reads the cache); it is logged.
+    if let Err(e) = state
+        .db
+        .with_news_cache(|c| news::cache::apply_prefs(c, &prefs))
+    {
+        log::warn!("news cache_clear_failed reason=feature_off error=\"{e}\"");
+    }
+    Ok(view)
 }
 
 #[tauri::command]
