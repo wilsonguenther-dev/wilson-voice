@@ -9849,6 +9849,78 @@ fn meeting_kind_choices() -> Vec<meeting_control::KindChoice> {
     meeting_control::KIND_PICKER.to_vec()
 }
 
+/// WF-08 — what the pill's Meeting popover shows: today's next three meetings,
+/// "No upcoming meetings", or "Connect calendar". Decided by
+/// `calendar::meeting_popover` from the SAME snapshot the menu bar's "Today's
+/// Meetings" reads (`meeting_detect::upcoming_snapshot`), so the pill and the
+/// tray never disagree. Never reads EventKit, never asks for access.
+#[tauri::command]
+fn meeting_popover(state: State<'_, Arc<AppState>>) -> calendar::MeetingPopover {
+    let setup = state.db.notetaker_setup();
+    let snap = meeting_detect::upcoming_snapshot();
+    let pop = calendar::meeting_popover(
+        snap.as_ref(),
+        chrono::Local::now().timestamp(),
+        !setup.dismissed && !setup.calendar,
+    );
+    log::info!(
+        "pill meeting_popover opened state={} rows={} connect_nav={}",
+        pop.state,
+        pop.meetings.len(),
+        pop.connect.as_ref().map_or("none", |c| c.nav.as_str())
+    );
+    pop
+}
+
+/// WF-08 — a Record row of the pill's Meeting popover. Looks the row up by its
+/// occurrence key in the current snapshot, starts the recording named after
+/// the event (Virtual when it carries a link, as the tray's Record does), and
+/// snoozes the pill offer for that same occurrence. A row that left today's
+/// list since the popover opened is refused in words.
+#[tauri::command]
+fn meeting_popover_record(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let snap = meeting_detect::upcoming_snapshot();
+    let Some(row) = calendar::popover_meeting_for(snap.as_ref(), &key) else {
+        log::warn!("pill meeting_popover_record result=ignored:stale_row");
+        return Err(calendar::POPOVER_STALE_ERROR.to_string());
+    };
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    let st = state.inner().clone();
+    let started = std::time::Instant::now();
+    match begin_meeting(&app, &st, row.title.clone(), kind) {
+        Ok(status) => {
+            let result = if status.recording {
+                "started"
+            } else {
+                "not_started"
+            };
+            log::info!(
+                "pill meeting_popover_record result={result} has_title={} linked={} ms={}",
+                row.title.is_some(),
+                row.has_link,
+                started.elapsed().as_millis()
+            );
+            if meeting_detect::respond(&row.key).is_some() {
+                meeting_detect::emit_clear(&app);
+                release_offer_pill(&app);
+            }
+            Ok(status)
+        }
+        Err(e) => {
+            log::warn!("pill meeting_popover_record result=error:{e}");
+            Err(e)
+        }
+    }
+}
+
 /// Start a meeting. Errors (no capture engine, one already running) come back as
 /// a string the UI shows verbatim — this is the button a first-time user
 /// presses, and a silent failure here is the whole of finding #6 all over again.
@@ -12541,6 +12613,9 @@ pub fn run() {
             meeting_status,
             toggle_meeting_recording,
             meeting_kind_choices,
+            // WF-08 — the pill's Meeting popover.
+            meeting_popover,
+            meeting_popover_record,
             start_meeting,
             stop_meeting,
             export_history,
