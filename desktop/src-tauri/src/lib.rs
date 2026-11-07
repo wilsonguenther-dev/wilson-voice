@@ -8457,7 +8457,14 @@ async fn retry_failed_dictation(
                         .apply_dictionary(t)
                         .unwrap_or_else(|_| t.to_string())
                 },
-                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+                // yap-1107-cloud-first-when-key-present: a retry's cleanup
+                // takes the same route as a live take — cloud first when a
+                // key is in and the Mac is online, the bundled model else.
+                |t| {
+                    cloud_polish(&app, &state.db, t, &|t| {
+                        polish::polish_llm_result(t, mode, &polish_config)
+                    })
+                },
             );
             text
         };
@@ -10725,7 +10732,9 @@ fn set_cloud_mode(
     state: State<'_, Arc<AppState>>,
     mode: cloud_route::CloudMode,
 ) -> Result<CloudRouteView, String> {
-    cloud_route::CloudMode::save(&*state.db, mode).map_err(|e| {
+    // yap-1107-cloud-first-when-key-present: a pick in Settings is the
+    // user's — the cloud-first default never overrides it.
+    cloud_route::CloudMode::save_explicit(&*state.db, mode).map_err(|e| {
         log::error!("byom mode_save_failed error={e}");
         "The mode could not be saved — try again.".to_string()
     })?;
@@ -10770,8 +10779,10 @@ fn set_cloud_notes_model(
 }
 
 /// Save (or replace) the cloud key: Keychain only, bound to the host. A new
-/// key clears "needs attention" and — the first time — turns the mode to
-/// "Cloud when online" (DO 11). An empty key deletes the provider.
+/// key clears "needs attention" and turns the mode to "Cloud when online"
+/// unless the user picked a mode themselves (yap-1107-cloud-first-when-key-
+/// present, D2: cloud first whenever a key is in). An empty key deletes the
+/// provider.
 #[tauri::command]
 fn save_cloud_key(
     app: AppHandle,
@@ -10800,17 +10811,13 @@ fn save_cloud_key(
         log::info!("byom key_removed");
         return Ok(cloud_route_view_for(&app, db));
     }
-    let had_key = model_providers::cloud_key_provider(db, &keys).is_some();
     model_providers::upsert_provider(db, &keys, cfg, Some(&key)).map_err(|e| {
         log::error!("byom key_save_failed reason={}", e.tag());
         e.plain()
     })?;
     cloud_route::set_key_attention(db, false);
-    if !had_key && cloud_route::CloudMode::load(db) == cloud_route::CloudMode::AlwaysLocal {
-        if let Err(e) = cloud_route::CloudMode::save(db, cloud_route::CloudMode::CloudWhenOnline) {
-            log::warn!("byom mode_autoselect_failed error={e}");
-        }
-    }
+    // Never over an explicit pick: "Always on this Mac" stays exactly that.
+    cloud_route::ensure_cloud_first_default(db, true);
     cloud_route::start_path_monitor();
     if let Ok(mut b) = cloud_breaker().lock() {
         b.record_success();
@@ -15229,6 +15236,27 @@ pub fn run() {
                 if resource_governor::install(governor) {
                     resource_governor::start_background(Arc::new(|| false));
                 }
+            }
+            // yap-1107-cloud-first-when-key-present — D2: a key saved by an
+            // older build gets "Cloud when online" once, never over an explicit
+            // pick. Off the setup thread: the key is read from the Keychain.
+            {
+                let handle = app.handle().clone();
+                let db = state.db.clone();
+                std::thread::spawn(move || {
+                    let has_key =
+                        model_providers::cloud_key_provider(&*db, &byom_keychain(&handle))
+                            .is_some();
+                    cloud_route::ensure_cloud_first_default(&*db, has_key);
+                    let mode = cloud_route::CloudMode::load(&*db);
+                    log::info!(
+                        "byom startup_route mode={} has_key={has_key}",
+                        mode.as_str()
+                    );
+                    if has_key && mode.wants_cloud() {
+                        cloud_route::start_path_monitor();
+                    }
+                });
             }
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),

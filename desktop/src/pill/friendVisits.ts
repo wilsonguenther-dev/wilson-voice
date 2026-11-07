@@ -29,7 +29,9 @@
  *   - from take [`QUIETER_AFTER_TAKES`] on, friends visit less: at most
  *     [`DAILY_VISITS_QUIETER`] visits a day in all, at least
  *     [`VISIT_GAP_QUIETER_MS`] apart; from take [`QUIETEST_AFTER_TAKES`] on,
- *     [`DAILY_VISITS_QUIETEST`] a day.
+ *     [`DAILY_VISITS_QUIETEST`] a day. "Takes" is the app's real total
+ *     (`get_insights` -> `totalSessions`, via [`takeTracker`]), never a
+ *     counter that starts at 0 on an existing install.
  *
  * Pure + deterministic: no timers, no events, no DOM, no Tauri.
  * `FriendVisit.tsx` feeds it what the app already knows and paints the result.
@@ -230,9 +232,10 @@ export function decideVisit(
   if (visitShowing(current, ctx, nowMs)) return { show: false, reason: "visit-showing" };
   const today = dayKey(nowMs);
   if (ledger.lastDay[friend] === today) return { show: false, reason: "already-today" };
-  const countToday = ledger.day === today ? ledger.count : 0;
+  // The gap is checked before the day's cap, so a heavy user's second event
+  // inside the gap says "too-soon" and a later one that day says "daily-cap".
+  // Either way it is skipped; only the reason in the log differs.
   const quietTakes = quietingTakes(ctx);
-  if (countToday >= dailyVisitCap(quietTakes)) return { show: false, reason: "daily-cap" };
   if (
     quietTakes >= QUIETER_AFTER_TAKES &&
     ledger.lastAtMs !== null &&
@@ -241,6 +244,8 @@ export function decideVisit(
   ) {
     return { show: false, reason: "too-soon" };
   }
+  const countToday = ledger.day === today ? ledger.count : 0;
+  if (countToday >= dailyVisitCap(quietTakes)) return { show: false, reason: "daily-cap" };
   const ms = visitDurationMs(quietTakes);
   return { show: true, visit: { friend, event, startMs: nowMs, untilMs: nowMs + ms } };
 }
@@ -303,6 +308,122 @@ export function callLive(view: unknown): boolean {
 /** The milestone a take count reaches exactly, or null (Yappy's visit). */
 export const MILESTONE_TAKES: readonly number[] = [100, 1000];
 export const milestoneReached = (takesSoFar: number): boolean => MILESTONE_TAKES.includes(takes(takesSoFar));
+
+/**
+ * An EDGE, not a level: did the take count go from `prev` to `next` across a
+ * milestone (prev < m <= next)? A re-read that lands on the same total never
+ * repeats Yappy's visit, and a jump (two takes landing between reads) still
+ * fires once.
+ */
+export function milestoneCrossed(prev: number, next: number): boolean {
+  const a = takes(prev);
+  const b = takes(next);
+  return MILESTONE_TAKES.some((m) => a < m && m <= b);
+}
+
+/** Where the take count came from: the app's real total, or the pill's own guess. */
+export type TakesSource = "insights" | "fallback";
+
+/**
+ * The real total of takes in a `get_insights` payload (`totalSessions` — the
+ * number Home's stats line and the sidebar badge show), or null when the
+ * payload carries none.
+ */
+export function insightsTotal(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const n = (raw as Record<string, unknown>).totalSessions;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+}
+
+/** The pill's running take count, seeded from the app's real total. */
+export interface TakeTracker {
+  /** Read the real total once (on mount). Resolves to where the count came from. */
+  seed(): Promise<TakesSource>;
+  /** A `transcript` landed. Resolves true only when the count crossed 100 or 1000 just now. */
+  transcript(): Promise<boolean>;
+  /** Takes so far, for the 50 / 200 ladder. */
+  takes(): number;
+  source(): TakesSource;
+}
+
+/**
+ * `readTotal` is `invoke("get_insights")`; `fallbackTakes` is the pill's old
+ * local counter, used only when the real total cannot be read (with one warn
+ * line saying so). Calls are serialised, so a `transcript` that lands before
+ * the seed resolves counts on top of the real total, never on top of 0.
+ *
+ * On each `transcript` the real total is read again and the count becomes
+ * max(real, previous + 1): the take that just landed counts even if the read
+ * raced its save, and the count never goes backwards inside one pill session.
+ * Switching from the fallback to the real total re-seeds silently (no
+ * milestone for a jump from a guess).
+ */
+export function takeTracker(
+  readTotal: () => Promise<unknown>,
+  fallbackTakes: () => number,
+  warn: (line: string) => void = (line) => console.warn(line),
+): TakeTracker {
+  let count = 0;
+  /** The highest total seen; the milestone edge is measured against it. */
+  let peak = 0;
+  let src: TakesSource = "fallback";
+  let queue: Promise<unknown> = Promise.resolve();
+  const read = async (): Promise<number | null> => {
+    try {
+      const n = insightsTotal(await readTotal());
+      if (n === null) warn("pill friend_visit takes_read_failed reason=no-total");
+      return n;
+    } catch (e) {
+      warn(`pill friend_visit takes_read_failed reason=${e instanceof Error ? e.name : "unknown"}`);
+      return null;
+    }
+  };
+  const run = <T>(job: () => Promise<T>): Promise<T> => {
+    const next = queue.then(job, job);
+    queue = next.catch(() => undefined);
+    return next;
+  };
+  return {
+    seed: () =>
+      run(async () => {
+        const n = await read();
+        if (n !== null) {
+          count = n;
+          peak = n;
+          src = "insights";
+        } else {
+          count = takes(fallbackTakes());
+          peak = count;
+          src = "fallback";
+          warn("pill friend_visit takes_fallback reason=insights-unavailable");
+        }
+        return src;
+      }),
+    transcript: () =>
+      run(async () => {
+        const n = await read();
+        if (n !== null && src === "fallback") {
+          // The first real read after a fallback replaces the guess; a guess
+          // never decides a milestone.
+          count = n;
+          peak = n;
+          src = "insights";
+          return false;
+        }
+        // The app saves the take before it emits `transcript`, so the re-read
+        // is the real total (a retry that adds no take adds nothing here).
+        // Only when the read fails does the pill guess one more.
+        count = n ?? count + 1;
+        // An edge against the highest total seen, so a re-read (or a total
+        // that dips after a delete and climbs back) never repeats it.
+        const crossed = milestoneCrossed(peak, count);
+        peak = Math.max(peak, count);
+        return crossed;
+      }),
+    takes: () => count,
+    source: () => src,
+  };
+}
 
 /** One structured log line per decision (no transcript text, no paths). */
 export function visitLogLine(event: string, d: VisitDecision): string {

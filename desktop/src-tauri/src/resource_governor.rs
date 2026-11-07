@@ -252,20 +252,27 @@ pub fn level_for(r: &Readings, pause_below: u8) -> Verdict {
 /// What the polish stage does at a level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolishPlan {
-    /// Run the local model.
+    /// Run polish normally on this Mac's budget: the bundled model is allowed.
+    /// (The dictation path still asks the cloud route first — `cloud_polish`
+    /// in lib.rs wraps the local polish — so `Local` never means "bundled
+    /// only".)
     Local,
-    /// Light, and a cloud polish is configured and online: use it.
+    /// A cloud polish is configured and online: use it (at full AND light —
+    /// yap-1107-cloud-first-when-key-present, D2: cloud first whenever a key
+    /// is in and the Mac is online).
     Cloud,
     /// Skip; the take ships as plain text with the `saving_battery` note.
     Skip,
 }
 
-/// Polish at `level`. `cloud_available` is "a cloud polish is on AND online"
-/// (BYOM item 22) — `false` until that lands, so light skips.
+/// Polish at `level`. `cloud_available` is "a cloud polish is on AND usable
+/// right now" (`cloud_route::cloud_available`). D2 (Wilson, binding): with a
+/// key in and the Mac online the cloud goes first at every level that polishes
+/// at all; only minimal (the Mac is starved) skips outright.
 pub fn polish_plan(level: Level, cloud_available: bool) -> PolishPlan {
     match level {
+        Level::Full | Level::Light if cloud_available => PolishPlan::Cloud,
         Level::Full => PolishPlan::Local,
-        Level::Light if cloud_available => PolishPlan::Cloud,
         Level::Light | Level::Minimal => PolishPlan::Skip,
     }
 }
@@ -1179,6 +1186,9 @@ mod tests {
         assert_eq!(polish_plan(Level::Full, false), PolishPlan::Local);
         assert_eq!(polish_plan(Level::Light, false), PolishPlan::Skip);
         assert_eq!(polish_plan(Level::Light, true), PolishPlan::Cloud);
+        // yap-1107-cloud-first-when-key-present: full + a usable cloud key is
+        // the cloud route, not the bundled model (D2: cloud first).
+        assert_eq!(polish_plan(Level::Full, true), PolishPlan::Cloud);
         assert_eq!(polish_plan(Level::Minimal, true), PolishPlan::Skip);
         assert!(!live_transcript_paused_at(Level::Light));
         assert!(live_transcript_paused_at(Level::Minimal));

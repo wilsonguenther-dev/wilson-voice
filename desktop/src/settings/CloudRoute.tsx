@@ -37,6 +37,10 @@ export interface CloudRouteView {
   leavesHost: string | null;
 }
 
+/** yap-1107-cloud-first-when-key-present — the line under the mode switch (no vendor names). */
+export const CLOUD_FIRST_LINE =
+  "With your key in, Yap uses the cloud first. It falls back to this Mac when you are offline, over your daily limit, or the cloud is slow.";
+
 export const MODE_LABEL: Record<CloudMode, string> = {
   cloud_when_online: "Cloud when online (faster)",
   always_local: "Always on this Mac",
@@ -108,6 +112,10 @@ export function CloudRouteSettingsView({
           </label>
         ))}
       </fieldset>
+      {/* yap-1107-cloud-first-when-key-present (D2): one plain line under the switch. */}
+      <p className="settings-help" data-line="cloud-first">
+        {CLOUD_FIRST_LINE}
+      </p>
       <label className="field" data-field="cloud-key">
         <span>Your key {view.keySaved ? `(saved ••••${view.keyHint})` : "(not saved)"}</span>
         <input

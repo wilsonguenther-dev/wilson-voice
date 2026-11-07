@@ -180,6 +180,8 @@
    the `auto` label column beside an empty 1fr. */
 .live-track ul:only-child { grid-column: 1 / -1; }
 .live-track li { overflow-wrap: break-word; }
+/* yap-1106-live-whos-talking: each run (one voice's consecutive lines) joins the track's grid. */
+.live-run { display: contents; }
 .live-track li { font-size: 12px; opacity: 0.85; }
 .live-track li:last-child { opacity: 1; }
 .live-transcript-wait { opacity: 0.7; margin-top: 4px; }

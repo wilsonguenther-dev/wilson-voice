@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CloudRouteSettingsView, MODE_LABEL, spendLine, spendNote, type CloudRouteView } from "./CloudRoute";
+import { CLOUD_FIRST_LINE, CloudRouteSettingsView, MODE_LABEL, spendLine, spendNote, type CloudRouteView } from "./CloudRoute";
 
 const base: CloudRouteView = {
   mode: "cloud_when_online",
@@ -55,6 +55,22 @@ describe("CloudRoute settings", () => {
     expect(spendNote({ ...base.spend, warn: true, capReached: true })).toMatch(/limit reached today/);
     expect(spendNote(base.spend)).toBeNull();
     expect(spendLine(base.spend)).toBe("Today $1.23 of $6.50 · Month to date $23.40");
+  });
+
+  it("shows the cloud-first line under the mode switch, word for word, with no vendor name", () => {
+    const exact =
+      "With your key in, Yap uses the cloud first. It falls back to this Mac when you are offline, over your daily limit, or the cloud is slow.";
+    expect(CLOUD_FIRST_LINE).toBe(exact);
+    for (const view of [base, { ...base, mode: "always_local" as const }, { ...base, keySaved: false, keyHint: "", leavesHost: null }]) {
+      const html = render(view);
+      expect(html).toContain(`<p class="settings-help" data-line="cloud-first">${exact}</p>`);
+      // Under the switch: after the mode fieldset, before the key field.
+      const at = html.indexOf('data-line="cloud-first"');
+      expect(at).toBeGreaterThan(html.indexOf('data-field="cloud-mode"'));
+      expect(at).toBeLessThan(html.indexOf('data-field="cloud-key"'));
+    }
+    const lower = exact.toLowerCase();
+    for (const bad of ["anthropic", "claude", "openai", "gpt", "sonnet", "opus", "gemini"]) expect(lower).not.toContain(bad);
   });
 
   it("names no vendor or model", () => {

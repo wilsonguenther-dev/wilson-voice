@@ -1,7 +1,18 @@
 // Y5-G — App.tsx is the SHELL ONLY: nav, header, the license chip, the toast
 // host and the global modals. Every screen lives in ./views/<Name>.tsx and the
 // eight settings panels in ./views/settings/. Shell state lives in ./appShell.
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  ChartColumn, ChevronsLeft, ChevronsRight, History as HistoryIcon, House, LoaderCircle,
+  Mic, Settings as SettingsIcon, ShieldCheck, Square, StickyNote, BookA, Users,
+  type LucideIcon,
+} from "lucide-react";
+import type { Nav } from "./appTypes";
+import {
+  NARROW_QUERY, SIDEBAR_TOGGLE_HINT, loadCollapsed, navShortcutHint, railReason, railShown,
+  saveCollapsed, sidebarKeyAction,
+} from "./sidebarRail";
+import { uiLog } from "./views/insightsModel";
 import { AppContext, useAppShell } from "./appShell";
 import { TEST_CHIP } from "./buildChannel";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,6 +56,63 @@ export default function App() {
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
     insights, engine,
   } = ctx;
+
+  // yap-1107-sidebar-collapses-to-icons — the icon rail. Both values are read
+  // synchronously in the initializers (localStorage + matchMedia), so the
+  // first paint after a relaunch already has the right width: no flash.
+  const [railChosen, setRailChosen] = useState(() => loadCollapsed(localStore()));
+  const [narrow, setNarrow] = useState(() => narrowNow());
+  const rail = railShown(railChosen, narrow);
+  const railWhy = railReason(railChosen, narrow);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(NARROW_QUERY);
+    let last = mq.matches;
+    const onChange = () => {
+      if (mq.matches === last) return;
+      last = mq.matches;
+      setNarrow(mq.matches);
+      uiLog("sidebar auto_rail", { narrow: mq.matches, width: window.innerWidth });
+    };
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  function setRail(next: boolean, via: "button" | "shortcut") {
+    setRailChosen(next);
+    const saved = saveCollapsed(localStore(), next);
+    uiLog("sidebar toggle", { collapsed: next, via, saved });
+    if (!saved) toast("Yap could not save the sidebar choice, so it resets when Yap restarts.");
+  }
+  // The window-level keys read the latest state through a ref, so the
+  // listener is attached once. Ctrl-Cmd-S toggles; Cmd-1..Cmd-8 pick a view.
+  // The shortcut recorders consume their keys first (capture phase,
+  // preventDefault), and sidebarKeyAction ignores consumed events.
+  const railKeys = useRef({ railChosen, narrow, setRail, setNav, ready: false });
+  railKeys.current = { railChosen, narrow, setRail, setNav, ready: !!settings?.onboarded };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const k = railKeys.current;
+      if (!k.ready) return;
+      const action = sidebarKeyAction(e);
+      if (!action) return;
+      e.preventDefault();
+      if (action.kind === "nav") {
+        k.setNav(action.nav);
+        uiLog("sidebar nav_shortcut", { nav: action.nav });
+        return;
+      }
+      if (k.narrow) {
+        // Under 900 px the rail is the only layout that fits; the remembered
+        // choice applies again once the window is wide.
+        uiLog("sidebar toggle_ignored", { reason: "narrow" });
+        return;
+      }
+      k.setRail(!k.railChosen, "shortcut");
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Y5-F — what each catalogue action does in the main window. The pill shows
   // the same catalogue line without the button (float-main.tsx).
@@ -107,6 +175,13 @@ export default function App() {
             ? "Needs permissions"
             : "Ready — hold fn⌃ to dictate");
 
+  // yap-1107-sidebar-collapses-to-icons — Dictate's name when it is an icon.
+  const dictateName = status.recording
+    ? "Stop listening"
+    : status.busy
+      ? "Transcribing…"
+      : "Dictate  fn⌃";
+
   if (bootError && !settings) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
@@ -136,8 +211,8 @@ export default function App() {
 
   return (
     <AppContext.Provider value={ctx}>
-    <div className="shell">
-      <aside className="sidebar">
+    <div className={rail ? "shell rail" : "shell"} data-rail={railWhy}>
+      <aside className="sidebar" aria-label="Yap">
         <div className="brand-block">
           <div className="mark">
             <span className={status.recording ? "dot pulse" : "dot"} />
@@ -150,7 +225,7 @@ export default function App() {
           </div>
         </div>
 
-        <nav className="nav">
+        <nav className="nav" id="yap-nav" aria-label="Sections">
           {(
             [
               ["home", "Home", insights?.totalSessions ?? history.length],
@@ -165,13 +240,20 @@ export default function App() {
               ["scratchpad", "Scratchpad", scratch.length],
               ["settings", "Settings", null],
             ] as const
-          ).map(([id, label, count]) => (
+          ).map(([id, label, count]) => {
+            const Icon = NAV_ICONS[id];
+            const shown = count != null && count > 0;
+            const hint = navShortcutHint(id);
+            return (
             <button
               key={id}
               className={nav === id ? "nav-item active" : "nav-item"}
               aria-current={nav === id ? "page" : undefined}
+              aria-keyshortcuts={hint ? "Meta+" + hint.slice(1) : undefined}
+              data-tip={rail ? `${label}${shown ? ` · ${count}` : ""}  ${hint}` : undefined}
               onClick={() => setNav(id)}
             >
+              <Icon className="nav-icon" size={18} strokeWidth={1.75} aria-hidden="true" />
               <span className="nav-label">{label}</span>
               {count != null && count > 0 && (
                 <span className={id === "permissions" ? "count warn" : "count"}>
@@ -179,7 +261,8 @@ export default function App() {
                 </span>
               )}
             </button>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="sidebar-foot">
@@ -192,12 +275,25 @@ export default function App() {
             className={status.recording ? "dictate-side live" : "dictate-side"}
             onClick={toggleRecord}
             disabled={status.busy}
+            aria-label={rail ? dictateName : undefined}
+            data-tip={rail ? dictateName : undefined}
           >
+            {/* yap-1107-sidebar-collapses-to-icons — in the rail Dictate is its
+                icon, with the same live state (the .live fill, Stop, busy). */}
+            {rail ? (
+              status.recording ? (
+                <Square size={16} strokeWidth={2} aria-hidden="true" />
+              ) : status.busy ? (
+                <LoaderCircle size={18} strokeWidth={1.75} aria-hidden="true" />
+              ) : (
+                <Mic size={18} strokeWidth={1.75} aria-hidden="true" />
+              )
+            ) : null}
             {/* YV56 — "Dictate · fn⌃" was one string, so the verb and the key
                 carried identical weight. The action stays native SF; the key is
                 data and wears the pixel voice in its own chip, the same
                 treatment the nav counts and the header status pill take. */}
-            {status.recording ? (
+            {rail ? null : status.recording ? (
               "Stop listening"
             ) : status.busy ? (
               "Transcribing…"
@@ -208,6 +304,32 @@ export default function App() {
               </>
             )}
           </button>
+          {/* yap-1107-sidebar-collapses-to-icons — the collapse control. Under
+              900 px the rail is automatic (spec 1.1), so the control steps
+              aside until the window is wide again. */}
+          {!narrow && (
+            <button
+              type="button"
+              className="rail-toggle"
+              aria-controls="yap-nav"
+              aria-expanded={!rail}
+              aria-keyshortcuts="Control+Meta+S"
+              aria-label={rail ? "Expand sidebar" : "Collapse sidebar"}
+              data-tip={rail ? `Expand sidebar  ${SIDEBAR_TOGGLE_HINT}` : undefined}
+              title={rail ? undefined : `Collapse sidebar (${SIDEBAR_TOGGLE_HINT})`}
+              onClick={() => setRail(!railChosen, "button")}
+            >
+              {rail ? (
+                <ChevronsRight size={16} strokeWidth={1.75} aria-hidden="true" />
+              ) : (
+                <>
+                  <ChevronsLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+                  <span>Collapse</span>
+                  <span className="rail-toggle-key" aria-hidden="true">{SIDEBAR_TOGGLE_HINT}</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </aside>
 
@@ -310,118 +432,127 @@ export default function App() {
           </div>
         )}
 
-        {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
-            behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
-            outranks every other banner because nothing below it can be reached
-            with the hotkey while this is on, and it names the holder so the
-            user knows which app to go release. */}
-        {/* yap-1107-secure-input-own-field-quiet — when the holder is Yap's
-            own masked key field, SecureInputBanner renders one quiet neutral
-            line instead of the red banner. */}
-        <SecureInputBanner status={status} />
+        {/* yap-1107-settings-banner-no-overlay — every app-level banner (Secure
+            Input, its quiet own-field line, hotkey degraded, hide hint,
+            permissions, governor/setup warnings, update) lives in ONE in-flow
+            row of .main. The row is flex:none (App.css .main-banners), so it
+            keeps its full height and .content below it shrinks and scrolls;
+            nothing here is absolute/fixed/sticky, so a banner can only push
+            the view down, never cover it. Empty, it is 0 px tall. */}
+        <div className="main-banners" data-main-banners>
+          {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
+              behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
+              outranks every other banner because nothing below it can be reached
+              with the hotkey while this is on, and it names the holder so the
+              user knows which app to go release. */}
+          {/* yap-1107-secure-input-own-field-quiet — when the holder is Yap's
+              own masked key field, SecureInputBanner renders one quiet neutral
+              line instead of the red banner. */}
+          <SecureInputBanner status={status} />
 
-        {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
-            not delivering and/or the dictate chord did not register, so the
-            line names why — and offers the chord only when it registered. */}
-        {status.hotkeyDegraded && !status.secureInputBlocked && (
-          <div className="banner blocked" role="status">
-            <strong>{status.hotkeyDegraded}</strong>
-            {repairPane(status) && (
-              <button
-                type="button"
-                onClick={() =>
-                  // yap-p0-perm-repair: a denied or stale Input Monitoring
-                  // grant gets the real Repair (tccutil reset for Yap's own
-                  // bundle id + the pane + re-probe). A grant the probe reads
-                  // as fine is never reset — that only opens the pane.
-                  (perms?.probe && canRepair(perms.probe.listenEvent.state)
-                    ? repairFromPill("listen_event", {
-                        toast,
-                        openPane: () =>
-                          invoke("open_privacy_settings", { pane: repairPane(status) }),
-                        refresh: refreshPerms,
-                      })
-                    : invoke("open_privacy_settings", {
-                        pane: repairPane(status),
-                      })
-                  ).catch((e) => toastError(e))
-                }
-              >
-                Repair
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* yap-lifecycle — once per install, after the first red-X hide. It
-            claims the hint on mount, so a hide during onboarding still shows. */}
-        <HideHint />
-
-        {/* PERM-E — the single permission surface. Renders NOTHING while all
-            four grants are fine, which is why it sits unconditionally here
-            rather than behind a nav check: it is its own visibility rule. */}
-        <PermissionHealthRow
-          report={perms}
-          unproven={unprovenLine(settings)}
-          onTryIt={replayOnboarding}
-        />
-        {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
-            the same probe onboarding renders. */}
-        <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
-
-        {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
-            meeting's transcription waits for power, heat or memory. */}
-        {governorBanner && (
-          <Banner tone="warn" role="status">
-            {governorBanner}
-          </Banner>
-        )}
-
-        {status.modelReady && needsPerms && nav === "home" && (
-          <Banner tone="warn" onActivate={() => setNav("permissions")}>
-            Setup incomplete — open Permissions to enable Mic / Accessibility
-            for {nameProduct("Yap", perms?.productName)}
-          </Banner>
-        )}
-
-        {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner
-            is the whole notification, it never blocks the app, and the install
-            happens only if the user asks for it here. "Later" hides it until
-            the next launch; "Skip this version" retires this release for good. */}
-        {update && (
-          <div className="banner update">
-            <strong>
-              Update available — Yap {update.version} (you're on{" "}
-              {update.currentVersion}). Install now?
-            </strong>
-            {update.notes && (
-              <span className="banner-detail">{update.notes}</span>
-            )}
-            <div className="banner-actions">
-              <button
-                className="primary"
-                onClick={installUpdateNow}
-                disabled={installing}
-              >
-                {installing ? "Installing…" : "Install now"}
-              </button>
-              <button onClick={() => setUpdate(null)} disabled={installing}>
-                Later
-              </button>
-              <button onClick={skipUpdateVersion} disabled={installing}>
-                Skip this version
-              </button>
+          {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
+              not delivering and/or the dictate chord did not register, so the
+              line names why — and offers the chord only when it registered. */}
+          {status.hotkeyDegraded && !status.secureInputBlocked && (
+            <div className="banner blocked" role="status">
+              <strong>{status.hotkeyDegraded}</strong>
+              {repairPane(status) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    // yap-p0-perm-repair: a denied or stale Input Monitoring
+                    // grant gets the real Repair (tccutil reset for Yap's own
+                    // bundle id + the pane + re-probe). A grant the probe reads
+                    // as fine is never reset — that only opens the pane.
+                    (perms?.probe && canRepair(perms.probe.listenEvent.state)
+                      ? repairFromPill("listen_event", {
+                          toast,
+                          openPane: () =>
+                            invoke("open_privacy_settings", { pane: repairPane(status) }),
+                          refresh: refreshPerms,
+                        })
+                      : invoke("open_privacy_settings", {
+                          pane: repairPane(status),
+                        })
+                    ).catch((e) => toastError(e))
+                  }
+                >
+                  Repair
+                </button>
+              )}
             </div>
-          </div>
-        )}
+          )}
 
-        {installedVersion && (
-          <div className="banner update">
-            <strong>
-              Yap {installedVersion} installed — quit and reopen Yap to finish.
-            </strong>
-          </div>
-        )}
+          {/* yap-lifecycle — once per install, after the first red-X hide. It
+              claims the hint on mount, so a hide during onboarding still shows. */}
+          <HideHint />
+
+          {/* PERM-E — the single permission surface. Renders NOTHING while all
+              four grants are fine, which is why it sits unconditionally here
+              rather than behind a nav check: it is its own visibility rule. */}
+          <PermissionHealthRow
+            report={perms}
+            unproven={unprovenLine(settings)}
+            onTryIt={replayOnboarding}
+          />
+          {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
+              the same probe onboarding renders. */}
+          <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
+
+          {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
+              meeting's transcription waits for power, heat or memory. */}
+          {governorBanner && (
+            <Banner tone="warn" role="status">
+              {governorBanner}
+            </Banner>
+          )}
+
+          {status.modelReady && needsPerms && nav === "home" && (
+            <Banner tone="warn" onActivate={() => setNav("permissions")}>
+              Setup incomplete — open Permissions to enable Mic / Accessibility
+              for {nameProduct("Yap", perms?.productName)}
+            </Banner>
+          )}
+
+          {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner
+              is the whole notification, it never blocks the app, and the install
+              happens only if the user asks for it here. "Later" hides it until
+              the next launch; "Skip this version" retires this release for good. */}
+          {update && (
+            <div className="banner update">
+              <strong>
+                Update available — Yap {update.version} (you're on{" "}
+                {update.currentVersion}). Install now?
+              </strong>
+              {update.notes && (
+                <span className="banner-detail">{update.notes}</span>
+              )}
+              <div className="banner-actions">
+                <button
+                  className="primary"
+                  onClick={installUpdateNow}
+                  disabled={installing}
+                >
+                  {installing ? "Installing…" : "Install now"}
+                </button>
+                <button onClick={() => setUpdate(null)} disabled={installing}>
+                  Later
+                </button>
+                <button onClick={skipUpdateVersion} disabled={installing}>
+                  Skip this version
+                </button>
+              </div>
+            </div>
+          )}
+
+          {installedVersion && (
+            <div className="banner update">
+              <strong>
+                Yap {installedVersion} installed — quit and reopen Yap to finish.
+              </strong>
+            </div>
+          )}
+        </div>
 
         <div className="content">
           {nav === "permissions" && <Permissions />}
@@ -613,4 +744,33 @@ function BrandTag({ version }: { version: string }) {
       <span className="brand-scope">local · private</span>
     </div>
   );
+}
+
+/** yap-1107-sidebar-collapses-to-icons — one line icon per view (lucide, the
+ *  set the pill already uses; one stroke weight, never emoji). */
+const NAV_ICONS: Record<Nav, LucideIcon> = {
+  home: House,
+  history: HistoryIcon,
+  permissions: ShieldCheck,
+  meetings: Users,
+  insights: ChartColumn,
+  dictionary: BookA,
+  scratchpad: StickyNote,
+  settings: SettingsIcon,
+};
+
+/** localStorage, or null where the webview refuses it (it can throw). */
+function localStore(): Storage | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the window is under the spec's 900 px rail line right now. */
+function narrowNow(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(NARROW_QUERY).matches
+    : false;
 }

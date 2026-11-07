@@ -29,6 +29,28 @@
 //! Until the monitor's first answer (and off macOS) the probe says online, and
 //! the breaker catches an unreachable host. [`OnlineProbe`] is the seam tests
 //! drive with [`FixedPath`].
+//!
+//! ## Cloud first whenever a key is in (yap-1107-cloud-first-when-key-present)
+//!
+//! D2 (Wilson, binding): "Always prioritise online when people have their API
+//! key in." A user with a key and no mode of their own is on "Cloud when
+//! online" ([`ensure_cloud_first_default`], at start-up and on every key save;
+//! the `cloud_mode_source` row tells a user's pick from Yap's default, so an
+//! explicit "Always on this Mac" is never overridden). Every route decision
+//! logs `byom route=… reason=… job=…` once, in [`run_routed`].
+//!
+//! Text-model call-site audit (lib.rs lines as of this item; re-grep, they drift):
+//!
+//! | call site | job | routed through `decide` |
+//! |---|---|---|
+//! | lib.rs:5082 live take polish stage → `cloud_polish` (bundled `polish_llm_result` is its fallback) | polish | yes |
+//! | lib.rs:8462 failed-take Retry / Keep cleanup → `cloud_polish` (was a direct `polish::polish_llm`) | polish | yes (fixed here) |
+//! | lib.rs:10430 `cloud_polish_chunk`, sp-08 parallel chunks + lib.rs:3250 sp-07 in-take `CloudChunkClient` | polish | yes (`cloud_run`) |
+//! | lib.rs:10538 / 10571 `cloud_notes` map + reduce, called first at lib.rs:11522; bundled notes (lib.rs:11539) is the fallback | notes | yes (`cloud_run`) |
+//! | lib.rs:10224 News explain → `news_explain_cloud` (`run_routed`, Job::Format); News rank is arithmetic, no model | format | yes |
+//! | model_providers.rs:518 `CloudKeyProvider::complete` — only the Settings "Test connection" of the provider the user picked | format | yes (by design: tests that provider) |
+//! | lib.rs:8824 spoken preference rule → `voice_prefs::propose_installed` | derive | local by contract (Y9-C: derived on this Mac with a grammar; not a D2 job) |
+//! | cli.rs:1211 headless `yap` CLI notes | notes | local by design (no app, no Keychain session) |
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -40,6 +62,13 @@ use crate::model_providers::SettingsKv;
 
 /// `settings_kv` row: the mode (`always_local` default).
 pub const MODE_KEY: &str = "cloud_mode";
+/// yap-1107-cloud-first-when-key-present — `settings_kv` row: who wrote
+/// [`MODE_KEY`]: [`MODE_SOURCE_EXPLICIT`] (the user picked it in Settings) or
+/// [`MODE_SOURCE_DEFAULT`] (Yap set "Cloud when online" because a key is in).
+/// Only a `default` (or never-written) mode is ever changed by Yap.
+pub const MODE_SOURCE_KEY: &str = "cloud_mode_source";
+pub const MODE_SOURCE_EXPLICIT: &str = "explicit";
+pub const MODE_SOURCE_DEFAULT: &str = "default";
 /// `settings_kv` row: the daily cap in USD (text, default [`DEFAULT_DAILY_CAP_USD`]).
 pub const CAP_KEY: &str = "cloud_daily_cap_usd";
 /// `settings_kv` row: the token ledger (JSON [`Ledger`]).
@@ -86,7 +115,8 @@ pub const RETRY_JITTER_SPAN_MS: u64 = 500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CloudMode {
-    /// The default for a new user: nothing leaves this Mac.
+    /// The default for a new user with no key: nothing leaves this Mac. A key
+    /// turns a never-picked mode into `CloudWhenOnline` (D2).
     #[default]
     AlwaysLocal,
     /// "Cloud when online (faster)".
@@ -129,6 +159,78 @@ impl CloudMode {
     pub fn wants_cloud(self) -> bool {
         !matches!(self, CloudMode::AlwaysLocal)
     }
+
+    /// The user picked `mode` in Settings: saved and marked explicit, so the
+    /// cloud-first default ([`ensure_cloud_first_default`]) never overrides
+    /// it — "Always on this Mac" stays exactly that.
+    pub fn save_explicit(kv: &dyn SettingsKv, mode: CloudMode) -> Result<(), String> {
+        Self::save(kv, mode)?;
+        kv.kv_set(MODE_SOURCE_KEY, MODE_SOURCE_EXPLICIT)?;
+        log::info!("byom mode_source source=explicit mode={}", mode.as_str());
+        Ok(())
+    }
+
+    /// Did the user choose the current mode themselves? A mode row written
+    /// before the source row existed counts as the user's when it says
+    /// anything but "Cloud when online" (before this build Yap itself only
+    /// ever wrote `cloud_when_online`, on the first key save).
+    pub fn is_explicit(kv: &dyn SettingsKv) -> bool {
+        match kv.kv_get(MODE_SOURCE_KEY).as_deref() {
+            Some(MODE_SOURCE_EXPLICIT) => true,
+            Some(_) => false,
+            None => kv
+                .kv_get(MODE_KEY)
+                .and_then(|s| Self::parse(&s))
+                .is_some_and(|m| m != CloudMode::CloudWhenOnline),
+        }
+    }
+}
+
+/// yap-1107-cloud-first-when-key-present (D2, Wilson: "Always prioritise
+/// online when people have their API key in") — the default for a user with
+/// a key is "Cloud when online". Runs at start-up (a key saved by an older
+/// build) and on every key save. Changes the mode only when a key is in AND
+/// the user never picked a mode; an explicit choice — above all "Always on
+/// this Mac" — is never touched. Idempotent: the source row it writes makes
+/// a second run a no-op. `Some(mode)` when it changed the mode.
+pub fn ensure_cloud_first_default(kv: &dyn SettingsKv, has_key: bool) -> Option<CloudMode> {
+    if !has_key {
+        return None;
+    }
+    let source = kv.kv_get(MODE_SOURCE_KEY);
+    let row = kv.kv_get(MODE_KEY).and_then(|s| CloudMode::parse(&s));
+    if CloudMode::is_explicit(kv) {
+        if source.is_none() {
+            // A pre-source pick ("Always on this Mac" / "Cloud only"): pin it
+            // as the user's so no later run has to guess again.
+            if let Err(e) = kv.kv_set(MODE_SOURCE_KEY, MODE_SOURCE_EXPLICIT) {
+                log::warn!("byom mode_source_save_failed error={e}");
+            }
+            log::info!(
+                "byom cloud_first_default kept=explicit mode={}",
+                row.unwrap_or_default().as_str()
+            );
+        }
+        return None;
+    }
+    if row == Some(CloudMode::CloudWhenOnline) {
+        if source.is_none() {
+            if let Err(e) = kv.kv_set(MODE_SOURCE_KEY, MODE_SOURCE_DEFAULT) {
+                log::warn!("byom mode_source_save_failed error={e}");
+            }
+        }
+        return None;
+    }
+    let mode = CloudMode::CloudWhenOnline;
+    if let Err(e) = CloudMode::save(kv, mode) {
+        log::warn!("byom cloud_first_default_failed error={e}");
+        return None;
+    }
+    if let Err(e) = kv.kv_set(MODE_SOURCE_KEY, MODE_SOURCE_DEFAULT) {
+        log::warn!("byom mode_source_save_failed error={e}");
+    }
+    log::info!("byom cloud_first_default set mode={}", mode.as_str());
+    Some(mode)
 }
 
 // ── Jobs and budgets ─────────────────────────────────────────────────────────
