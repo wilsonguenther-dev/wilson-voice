@@ -68,9 +68,11 @@ pub mod focus;
 pub mod formatting_options;
 /// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
 mod pill_click;
+
 /// yap-1106-pill-trial-clickable — the `yapvoice://license/activate` link back
 /// from the purchase page (strict, pure parser).
 mod deep_link;
+
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -164,10 +166,10 @@ pub mod mic_select;
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
 pub mod net;
-/// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
-pub mod news_prefs;
 /// yap-1106-news-feeds — Yappy News fetch from public feeds (gated on cloud + topics).
 pub mod news;
+/// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
+pub mod news_prefs;
 pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
@@ -12212,7 +12214,10 @@ fn handle_deep_links(app: &AppHandle, urls: Vec<String>) {
                     notify(
                         &app,
                         "Yap could not activate your license",
-                        format!("{} Open Settings, then License, to paste your key.", e.message),
+                        format!(
+                            "{} Open Settings, then License, to paste your key.",
+                            e.message
+                        ),
                     );
                     present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
                     let _ = app.emit("navigate", "settings");
