@@ -109,6 +109,14 @@
   --accent-data: #4ba3d8;
   --accent-data-soft: rgba(75, 163, 216, 0.16);
 
+  /* yap-1107-meetings-row-whole-click-target — a list row's states, one step
+     apart: idle (no fill) < hover < selected/open < pressed. The selected bar
+     is the action accent. */
+  --row-hover: rgba(239, 125, 60, 0.07);
+  --row-selected: var(--accent-action-soft);
+  --row-pressed: rgba(239, 125, 60, 0.22);
+  --row-selected-bar: var(--accent-action);
+
   /* YV56 - ink pair for every semantic colour. The vivid tokens above are FILL
      colours - they sit under white/ink text on buttons, bars and the heat ramp,
      and they have to stay the brand hue. As TEXT on the cream they were washed
@@ -362,6 +370,8 @@
 
     --accent-action: #ff9a5c;
     --accent-action-soft: rgba(255, 154, 92, 0.16);
+    --row-hover: rgba(255, 154, 92, 0.08);
+    --row-pressed: rgba(255, 154, 92, 0.26);
     --accent-data: #8fd6ff;
     --accent-data-soft: rgba(143, 214, 255, 0.14);
 

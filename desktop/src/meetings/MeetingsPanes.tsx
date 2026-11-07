@@ -79,6 +79,28 @@ export function MeetingFilters({
   );
 }
 
+/**
+ * yap-1107-meetings-row-whole-click-target — the row's open button fills the
+ * whole card, and a row's status column (Retry / Cancel notes) sits in the same
+ * grid cell on its right edge. This ref callback measures that column and puts
+ * its width on the row as --row-status-w, which the button reserves as right
+ * padding, so the text never runs under a status button and the card stays one
+ * target edge to edge. React 19 calls the returned cleanup on detach.
+ */
+export function reserveStatusWidth(el: HTMLElement | null): (() => void) | undefined {
+  const row = el?.parentElement;
+  if (!el || !row) return undefined;
+  const apply = () => row.style.setProperty("--row-status-w", `${Math.ceil(el.getBoundingClientRect().width)}px`);
+  apply();
+  if (typeof ResizeObserver === "undefined") return undefined;
+  const watch = new ResizeObserver(apply);
+  watch.observe(el);
+  return () => {
+    watch.disconnect();
+    row.style.removeProperty("--row-status-w");
+  };
+}
+
 function chipClass(name: string): string {
   return name === "You" ? "person-chip is-you" : "person-chip";
 }
