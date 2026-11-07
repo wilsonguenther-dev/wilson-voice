@@ -1,0 +1,1142 @@
+{
+  "item": "yap-1107-parity-companions",
+  "writtenAt": "2026-11-07T22:54:19Z",
+  "designDir": "~/Obsidian/Wilson-Brain/Projects/Yap/design-2026-11-06 (scripts/parity-crops.mjs DESIGN_DIR)",
+  "source": "measured with node scripts/parity-crops.mjs --page companions.html (headless Chrome, 2x, frame 1200 ms); crops in docs/smoke-shots/parity-companions-2026-11-07/artifact/ (scratch, gitignored)",
+  "frameMs": 1200,
+  "sheet": "docs/loop/evidence/parity-companions-<date>.html (written by the integrator step with node scripts/parity-sheet.mjs)",
+  "blockedBy": {
+    "yap-1106-main-character-switch": [
+      "s04-who-sits-in-pill",
+      "s09-hoot-in-pill",
+      "s09-hoot-meeting"
+    ]
+  },
+  "states": [
+    {
+      "id": "s02-detail-art",
+      "name": "More detailed art, same pixel look (every friend at Yappy's level)",
+      "section": "#s02",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#pairs",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".yh-stage",
+        "capture": "home-1280x900.png"
+      },
+      "expect": {
+        "w": 1134,
+        "h": 471.78,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": 16,
+          "col": 16
+        },
+        "colors": [
+          "#8b877f",
+          "#b93a26",
+          "#e9f4ff"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#ffd24a",
+            "#ffe9a0",
+            "#fff2c4",
+            "#6b3a2e",
+            "#3a2f36"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#ffe9a0",
+            "#ffd24a",
+            "#fff2c4",
+            "#2b2118",
+            "#f2b52e",
+            "#5a2e24"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#7fbf6a",
+            "#cfe3b0",
+            "#4a3328",
+            "#5f9f4e",
+            "#3b3f4a",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#7fbf6a",
+            "#2f5a2c",
+            "#e8d9b5",
+            "#cdbb92",
+            "#5a4632",
+            "#5f9f4e"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#e0453a",
+            "#2b2118",
+            "#4a3328",
+            "#e8c86a",
+            "#a5704a"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#2b2118",
+            "#b8332a",
+            "#e0453a",
+            "#5a1a14",
+            "#ff7a6a",
+            "#ffffff"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6cc35a",
+            "#c9eba4",
+            "#4a3328",
+            "#2b2118",
+            "#4f9f42"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#2f5a2c",
+            "#e1f4c4",
+            "#94dc7c",
+            "#6cc35a",
+            "#4f9f42",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#a8774f",
+            "#e8cfa4",
+            "#fff8e8",
+            "#4a3328",
+            "#3b3f4a",
+            "#e0574a"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#4a2c1e",
+            "#f0dcb4",
+            "#8a5d3a",
+            "#a8774f",
+            "#fbf1dc",
+            "#c8443a"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#2b2118",
+            "#5a4a6a",
+            "#4a3328",
+            "#ffd84a",
+            "#a19d9e",
+            "#a8a7bc"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 140,
+          "h": 120,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#dae6f5",
+            "#2e2440",
+            "#9fb8d8",
+            "#ffd84a",
+            "#8a6a10",
+            "#3e3450"
+          ]
+        }
+      ],
+      "note": "Sprite draw bodies are a line-for-line port: desktop/src/sprites/art.ts D.* vs assets/friends-hd.js D.* (w x h and every hex identical, 9 of 9)."
+    },
+    {
+      "id": "s03-studio-side-view",
+      "name": "The studio, option C layered side view, 320 x 160 art at exactly 3x = 960 x 480",
+      "section": "#s03",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#sideRoom",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".yh-stage",
+        "capture": "home-1280x900.png"
+      },
+      "expect": {
+        "w": 960,
+        "h": 480,
+        "fontPx": [],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": []
+      },
+      "artifactSprites": [],
+      "note": "STUDIO_W/H 320x160 (home/studio/studio.ts) at whole-number scale 3 (YappyHouse data-room-scale) = 960x480. A flat and B isometric are NOT chosen and not built."
+    },
+    {
+      "id": "s04-who-sits-in-pill",
+      "name": "Picking who sits in the pill (Settings > Companion)",
+      "section": "#s04",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#s04 .grid2 > .card:nth-child(1)",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "settings",
+        "tab": "Companion",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".settings-panel",
+        "capture": "settings-companion-1280x900.png"
+      },
+      "expect": {
+        "w": 578,
+        "h": 538.58,
+        "fontPx": [
+          13,
+          16
+        ],
+        "padding": {
+          "t": 20,
+          "r": 20,
+          "b": 20,
+          "l": 20
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#56534d",
+          "#fbfaf7"
+        ]
+      },
+      "artifactSprites": [],
+      "note": "BLOCKED: yap-1106-main-character-switch was reverted from main (73b77232); Companion.tsx PILL_STYLE_CHOICES offers Yappy only. Needs that item first."
+    },
+    {
+      "id": "s05-three-voices",
+      "name": "Three voices + reaction words (Best friend, Badass, Professional; curse swap)",
+      "section": "#s05",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#modes",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "settings",
+        "tab": "Companion",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".settings-panel",
+        "capture": "settings-companion-1280x900.png"
+      },
+      "expect": {
+        "w": 1176,
+        "h": 1257.67,
+        "fontPx": [
+          12,
+          13,
+          18
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": 16,
+          "col": 16
+        },
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#2f8f5b",
+          "#8b877f",
+          "#b9392566",
+          "#b93a26",
+          "#fbfaf7",
+          "#fffdf7"
+        ]
+      },
+      "artifactSprites": [],
+      "note": "Copy surface; app lines live in pill/chatter.ts + pill/tone.ts (chatter + curse settings landed)."
+    },
+    {
+      "id": "s05-reaction-words",
+      "name": "Reaction words table",
+      "section": "#s05",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#reacts",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "settings",
+        "tab": "Companion",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".settings-panel",
+        "capture": "settings-companion-1280x900.png"
+      },
+      "expect": {
+        "w": 1134,
+        "h": 2049,
+        "fontPx": [
+          14
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#56534d",
+          "#b93a26"
+        ]
+      },
+      "artifactSprites": [],
+      "note": "Copy surface (yap-1106-reaction-words landed in b2877116)."
+    },
+    {
+      "id": "s06-launch-walk-frame",
+      "name": "Launch: Yappy walks to work, storyboard window 196 x 44",
+      "section": "#s06",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#launch > .fr:nth-child(1) canvas.win",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=model_loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".launch-walk-canvas",
+        "capture": "model_loading__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 196,
+        "h": 44,
+        "fontPx": [],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": []
+      },
+      "artifactSprites": [],
+      "note": "FIXED in this branch: SCENE_W 176 -> 196 (pill/launchWalk.ts), --launch-walk-w/h tokens. Whole-number 1x instead of the page's 1.39x stretch."
+    },
+    {
+      "id": "s06-launch-walk-2x",
+      "name": "Launch walk at twice the size (#walkPlay 392 x 88 = 196 x 44 at 2x)",
+      "section": "#s06",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#walkPlay",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=model_loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".launch-walk-canvas",
+        "capture": "model_loading__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 392,
+        "h": 88,
+        "fontPx": [],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": []
+      },
+      "artifactSprites": [],
+      "note": "Same canvas captured at deviceScaleFactor 2: backing 392 x 88."
+    },
+    {
+      "id": "s07-reactions-while-talking",
+      "name": "Reactions happen while you talk (intended timeline)",
+      "section": "#s07",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#tl-want",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "listening__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 1134,
+        "h": 74,
+        "fontPx": [
+          10,
+          11
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#40a36c40",
+          "#8b877f",
+          "#e3484e2e",
+          "#fbfaf7",
+          "#fffdf7"
+        ]
+      },
+      "artifactSprites": [],
+      "note": "Timeline diagram; the app side is the live bubble during a take (pill/live.ts)."
+    },
+    {
+      "id": "s08-cinder-sal-mochi",
+      "name": "Cinder redrawn from his reference + Sal and Mochi",
+      "section": "#s08",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#cinderStrip",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".yh-stage",
+        "capture": "home-1280x900.png"
+      },
+      "expect": {
+        "w": 1134,
+        "h": 405.69,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": 12,
+          "col": 12
+        },
+        "colors": [
+          "#8b877f",
+          "#e9f4ff"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#e0393e",
+            "#6a1420",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#c82e36"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 186,
+          "h": 156,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fffdf5",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b"
+          ]
+        }
+      ],
+      "note": "Cinder draw body identical to friends-hd.js (30 lines, diff empty); Sal + Mochi room-only (home/studio/studio.ts furnaceState / mochiOnDoor)."
+    },
+    {
+      "id": "s08-cast",
+      "name": "The cast cards (story bible art, 96 px tiles)",
+      "section": "#s01",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#cast",
+        "sprites": []
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "width": 1280,
+        "height": 900,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "selector": ".yh-stage",
+        "capture": "home-1280x900.png"
+      },
+      "expect": {
+        "w": 1176,
+        "h": 619.41,
+        "fontPx": [
+          11,
+          12,
+          13,
+          20
+        ],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": 14,
+          "col": 14
+        },
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#2e8f5c59",
+          "#2f8f5b",
+          "#56534d",
+          "#8b877f",
+          "#b7782059",
+          "#b7791f",
+          "#b93a26",
+          "#ba392559",
+          "#e9f4ff",
+          "#fbfaf7"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#ffe9a0",
+            "#ffd24a",
+            "#fff2c4",
+            "#2b2118",
+            "#f2b52e",
+            "#5a2e24"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#4a2c1e",
+            "#f0dcb4",
+            "#8a5d3a",
+            "#a8774f",
+            "#fbf1dc",
+            "#c8443a"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#2b2118",
+            "#b8332a",
+            "#e0453a",
+            "#5a1a14",
+            "#ff7a6a",
+            "#ffffff"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#2f5a2c",
+            "#e1f4c4",
+            "#94dc7c",
+            "#6cc35a",
+            "#4f9f42",
+            "#2b2118"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#7fbf6a",
+            "#2f5a2c",
+            "#e8d9b5",
+            "#cdbb92",
+            "#5a4632",
+            "#5f9f4e"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#dae6f5",
+            "#2e2440",
+            "#9fb8d8",
+            "#ffd84a",
+            "#8a6a10",
+            "#3e3450"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#7a2e14",
+            "#e05a24",
+            "#ff7a3c",
+            "#ffa86a",
+            "#2b2118",
+            "#ff8a3c"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#9a9aa6",
+            "#3e3e48",
+            "#dcdce4",
+            "#7c7c88",
+            "#b4b4c0",
+            "#f0c8d0"
+          ]
+        },
+        {
+          "tag": "canvas",
+          "w": 96,
+          "h": 96,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#6a1420",
+            "#e0393e",
+            "#fbe8c4",
+            "#f28aa0",
+            "#ff6b6b",
+            "#2b2118"
+          ]
+        }
+      ],
+      "note": "Art identical (see s02)."
+    },
+    {
+      "id": "s09-sky-a-today",
+      "name": "The pill sky, A today's sky (196 x 44 window)",
+      "section": "#s09",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#skies > .card:nth-child(1) canvas.win",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "idle__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 196,
+        "h": 44,
+        "fontPx": [],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": []
+      },
+      "artifactSprites": [],
+      "note": "Pill window size is owned by yap-1107-parity-pill."
+    },
+    {
+      "id": "s09-sky-c-day",
+      "name": "The pill sky, C matches the Home room (day)",
+      "section": "#s09",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#skies > .card:nth-child(3) canvas.win",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "idle__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 196,
+        "h": 44,
+        "fontPx": [],
+        "padding": {
+          "t": 0,
+          "r": 0,
+          "b": 0,
+          "l": 0
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": []
+      },
+      "artifactSprites": [],
+      "note": "pill/sky.ts SKY_TIMES dawn/day/dusk/night."
+    },
+    {
+      "id": "s09-hoot-in-pill",
+      "name": "Hoot in the pill, listening",
+      "section": "#s04",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#switch > div:nth-of-type(1)",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=hoot&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "listening__hoot__bottom__none.png"
+      },
+      "expect": {
+        "w": 536,
+        "h": 120,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 14,
+          "r": 14,
+          "b": 14,
+          "l": 14
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#262a31",
+          "#fffdf7"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 200,
+          "h": 44,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#8fd6ff",
+            "#8fd06a",
+            "#6fb84e",
+            "#4a2c1e",
+            "#f0dcb4",
+            "#8a5d3a"
+          ]
+        }
+      ],
+      "note": "BLOCKED: needs yap-1106-main-character-switch (reverted); the registry has no hoot pill character and pill-matrix CHARACTERS=[yappy]."
+    },
+    {
+      "id": "s09-hoot-meeting",
+      "name": "Hoot records the meeting himself, headphones on",
+      "section": "#s04",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#switch > div:nth-of-type(2)",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=hoot&dock=top&meeting=recording&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "idle__hoot__top__recording.png"
+      },
+      "expect": {
+        "w": 536,
+        "h": 120,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 14,
+          "r": 14,
+          "b": 14,
+          "l": 14
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1e2025",
+          "#262a31",
+          "#2b2e35",
+          "#e5484d",
+          "#eceae4",
+          "#ff8a8d"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 150,
+          "h": 44,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#8fd6ff",
+            "#8fd06a",
+            "#c6ecff",
+            "#6fb84e",
+            "#f0dcb4",
+            "#4a2c1e"
+          ]
+        },
+        {
+          "tag": "svg",
+          "w": 14,
+          "h": 14,
+          "scale": null,
+          "inside": true,
+          "palette": []
+        }
+      ],
+      "note": "BLOCKED: same dependency."
+    },
+    {
+      "id": "s09-friend-visit",
+      "name": "A friend visiting the pill (Yappy visits for the 100th take; quiet rules)",
+      "section": "#s04",
+      "artifact": {
+        "page": "companions.html",
+        "selector": "#switch > div:nth-of-type(3)",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day&visit=tidy",
+        "selector": "[data-friend-visit]",
+        "capture": "friend-visit__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 536,
+        "h": 120,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 14,
+          "r": 14,
+          "b": 14,
+          "l": 14
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#262a31",
+          "#eceae4",
+          "#fffdf7"
+        ]
+      },
+      "artifactSprites": [
+        {
+          "tag": "canvas",
+          "w": 200,
+          "h": 44,
+          "scale": 0.5,
+          "inside": true,
+          "palette": [
+            "#8fd6ff",
+            "#8fd06a",
+            "#6fb84e",
+            "#ffd24a",
+            "#f0dcb4",
+            "#4a2c1e"
+          ]
+        },
+        {
+          "tag": "svg",
+          "w": 14,
+          "h": 14,
+          "scale": null,
+          "inside": true,
+          "palette": []
+        }
+      ],
+      "note": "Visitor landed (pill/FriendVisit.tsx, 28 px box beside the capsule); the artifact draws the visitor inside the window next to the main character, which needs the main-character switch. Quiet rule (no visitor during a meeting) is asserted by pill-matrix."
+    }
+  ]
+}
