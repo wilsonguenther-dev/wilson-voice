@@ -269,3 +269,47 @@ export function parseLiveAsk(raw: unknown): LiveAsk | null {
   }
   return null;
 }
+
+/** A forced matrix scene: the card state and what the field shows. */
+export interface ForcedWho {
+  state: WhoState;
+  name: string;
+}
+
+/**
+ * The six frames of the approved Meetings page §A, for headless captures
+ * (`?whoCard=new|typed|toast|another|same|skip`), dev/matrix builds only.
+ */
+export function forcedWhoCard(search: string): ForcedWho | null {
+  const ask = (cluster: number, label: string): WhoState => ({
+    ...WHO_IDLE,
+    asked: [cluster],
+    card: { kind: "ask", cluster, label, shownAtMs: Number.MAX_SAFE_INTEGER / 2 },
+  });
+  switch (new URLSearchParams(search).get("whoCard")) {
+    case "new":
+      return { state: ask(0, "Speaker 1"), name: "" };
+    case "typed":
+      return { state: ask(0, "Speaker 1"), name: "John" };
+    case "toast":
+      return {
+        state: { ...WHO_IDLE, asked: [0], named: { 0: "John" }, card: { kind: "toast", cluster: 0, text: savedToast("John"), untilMs: Number.MAX_SAFE_INTEGER } },
+        name: "",
+      };
+    case "another":
+      return { state: ask(1, "Speaker 2"), name: "Maya" };
+    case "same":
+      return {
+        state: {
+          ...WHO_IDLE,
+          asked: [2],
+          card: { kind: "same", cluster: 2, label: "Speaker 3", name: "John", percent: 62, shownAtMs: Number.MAX_SAFE_INTEGER / 2 },
+        },
+        name: "",
+      };
+    case "skip":
+      return { state: ask(3, "Speaker 4"), name: "" };
+    default:
+      return null;
+  }
+}

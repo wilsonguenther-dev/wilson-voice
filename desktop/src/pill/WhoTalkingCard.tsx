@@ -23,6 +23,7 @@ import {
   parseLiveAsk,
   reduceWho,
   whoCardView,
+  type ForcedWho,
   type WhoContext,
   type WhoEffect,
   type WhoInput,
@@ -72,11 +73,19 @@ function VoiceWave() {
   );
 }
 
-export default function WhoTalkingCard({ recording }: { recording: boolean }) {
+export default function WhoTalkingCard({
+  recording,
+  forced = null,
+}: {
+  recording: boolean;
+  /** A matrix scene (`forcedWhoCard`): drawn as given, no timers, no backend. */
+  forced?: ForcedWho | null;
+}) {
   const [enabled, setEnabled] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
-  const [held, dispatch] = useReducer(heldReducer, { state: WHO_IDLE, effects: [] });
-  const [name, setName] = useState("");
+  const [held, dispatch] = useReducer(heldReducer, { state: forced?.state ?? WHO_IDLE, effects: [] });
+  const [name, setName] = useState(forced?.name ?? "");
+  const isForced = forced !== null;
   const wrapRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<WhoContext>({ enabled, recording, screenSharing });
   ctxRef.current = { enabled, recording, screenSharing };
@@ -84,6 +93,7 @@ export default function WhoTalkingCard({ recording }: { recording: boolean }) {
   // The setting, the quiet state and the questions. Same late-listener guard
   // as every other subscription in the pill.
   useEffect(() => {
+    if (isForced) return;
     let dead = false;
     const unsubs: UnlistenFn[] = [];
     const push = (u: UnlistenFn) => (dead ? u() : unsubs.push(u));
@@ -116,34 +126,35 @@ export default function WhoTalkingCard({ recording }: { recording: boolean }) {
       dead = true;
       unsubs.forEach((u) => u());
     };
-  }, []);
+  }, [isForced]);
 
   // The meeting ended: forget this meeting's voices.
   useEffect(() => {
-    if (!recording) dispatch({ type: "reset" });
-  }, [recording]);
+    if (!recording && !isForced) dispatch({ type: "reset" });
+  }, [recording, isForced]);
 
   // A context change (screen share, setting off) is applied at once.
   useEffect(() => {
+    if (isForced) return;
     dispatch({ type: "tick", ctx: { enabled, recording, screenSharing }, nowMs: Date.now() });
-  }, [enabled, recording, screenSharing]);
+  }, [enabled, recording, screenSharing, isForced]);
 
   // One timer to the card's next deadline.
   const card = held.state.card;
   useEffect(() => {
-    if (card.kind === "hidden") return;
+    if (card.kind === "hidden" || isForced) return;
     const due = card.kind === "toast" ? card.untilMs : card.shownAtMs + WHO_IGNORE_MS;
     const t = setTimeout(
       () => dispatch({ type: "tick", ctx: ctxRef.current, nowMs: Date.now() }),
       Math.max(0, due - Date.now()),
     );
     return () => clearTimeout(t);
-  }, [card]);
+  }, [card, isForced]);
 
   // Effects go to the backend exactly once per reducer step.
   useEffect(() => {
-    held.effects.forEach(send);
-  }, [held]);
+    if (!isForced) held.effects.forEach(send);
+  }, [held, isForced]);
 
   // The card is clickable where it is drawn (the pill window is otherwise
   // click-through), the same hitbox hold every pill card uses.
@@ -170,7 +181,9 @@ export default function WhoTalkingCard({ recording }: { recording: boolean }) {
 
   // A new question starts with an empty field.
   const cluster = card.kind === "hidden" ? null : card.cluster;
-  useEffect(() => setName(""), [cluster, card.kind]);
+  useEffect(() => {
+    if (!isForced) setName("");
+  }, [cluster, card.kind, isForced]);
 
   if (card.kind === "toast") {
     return (

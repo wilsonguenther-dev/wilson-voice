@@ -11,7 +11,9 @@ import {
   WHO_IGNORE_MS,
   WHO_MIN_SPEECH_S,
   WHO_TOAST_MS,
+  forcedWhoCard,
   parseLiveAsk,
+  surePercent,
   reduceWho,
   savedToast,
   whoCardView,
@@ -205,6 +207,37 @@ describe("who's talking — live card", () => {
     const src = readFileSync(new URL("./WhoTalkingCard.tsx", import.meta.url), "utf8") as string;
     expect(src).not.toMatch(/autoFocus/);
     expect(src).not.toMatch(/\.focus\(/);
+  });
+
+  it("forces each of the six design frames for headless captures, and nothing else", () => {
+    const frames = ["new", "typed", "toast", "another", "same", "skip"].map((f) => forcedWhoCard(`?whoCard=${f}`));
+    expect(frames.map((f) => f?.state.card.kind)).toEqual(["ask", "ask", "toast", "ask", "same", "ask"]);
+    expect(frames[1]?.name).toBe("John");
+    expect(frames[3]?.name).toBe("Maya");
+    expect(whoCardView(frames[4]!.state.card)?.title).toBe("Same person as John? 62% sure");
+    expect(forcedWhoCard("")).toBeNull();
+    expect(forcedWhoCard("?whoCard=nope")).toBeNull();
+  });
+
+  it("rounds the sure percent and never shows 100% or a broken number", () => {
+    expect(surePercent(0.624)).toBe(62);
+    expect(surePercent(1.2)).toBe(99);
+    expect(surePercent(-0.3)).toBe(0);
+    expect(surePercent(Number.NaN)).toBe(0);
+  });
+
+  it("answers only the card that is showing", () => {
+    expect(reduceWho(WHO_IDLE, { type: "save", name: "John", nowMs: 0 }).effects).toEqual([]);
+    expect(reduceWho(WHO_IDLE, { type: "same", yes: true, nowMs: 0 }).effects).toEqual([]);
+    expect(reduceWho(WHO_IDLE, { type: "skip", nowMs: 0 }).effects).toEqual([]);
+    expect(reduceWho(WHO_IDLE, { type: "tick", ctx: ON, nowMs: 0 }).state).toBe(WHO_IDLE);
+    const asking = reduceWho(WHO_IDLE, { type: "ask", ask: fresh(1), ctx: ON, nowMs: 0 }).state;
+    expect(reduceWho(asking, { type: "same", yes: true, nowMs: 1 }).effects).toEqual([]);
+    expect(reduceWho(asking, { type: "tick", ctx: OFF, nowMs: 1 }).effects).toEqual([{ kind: "skip", cluster: 1, reason: "setting_off" }]);
+    const notRecording = { ...ON, recording: false };
+    expect(reduceWho(WHO_IDLE, { type: "ask", ask: fresh(1), ctx: notRecording, nowMs: 0 }).state).toBe(WHO_IDLE);
+    const toast = reduceWho(asking, { type: "save", name: "Jo", nowMs: 0 }).state;
+    expect(reduceWho(toast, { type: "tick", ctx: ON, nowMs: 1 }).state).toBe(toast);
   });
 
   it("parses the backend's ask and drops malformed payloads", () => {
