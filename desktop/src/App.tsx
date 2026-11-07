@@ -310,118 +310,127 @@ export default function App() {
           </div>
         )}
 
-        {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
-            behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
-            outranks every other banner because nothing below it can be reached
-            with the hotkey while this is on, and it names the holder so the
-            user knows which app to go release. */}
-        {/* yap-1107-secure-input-own-field-quiet — when the holder is Yap's
-            own masked key field, SecureInputBanner renders one quiet neutral
-            line instead of the red banner. */}
-        <SecureInputBanner status={status} />
+        {/* yap-1107-settings-banner-no-overlay — every app-level banner (Secure
+            Input, its quiet own-field line, hotkey degraded, hide hint,
+            permissions, governor/setup warnings, update) lives in ONE in-flow
+            row of .main. The row is flex:none (App.css .main-banners), so it
+            keeps its full height and .content below it shrinks and scrolls;
+            nothing here is absolute/fixed/sticky, so a banner can only push
+            the view down, never cover it. Empty, it is 0 px tall. */}
+        <div className="main-banners" data-main-banners>
+          {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
+              behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
+              outranks every other banner because nothing below it can be reached
+              with the hotkey while this is on, and it names the holder so the
+              user knows which app to go release. */}
+          {/* yap-1107-secure-input-own-field-quiet — when the holder is Yap's
+              own masked key field, SecureInputBanner renders one quiet neutral
+              line instead of the red banner. */}
+          <SecureInputBanner status={status} />
 
-        {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
-            not delivering and/or the dictate chord did not register, so the
-            line names why — and offers the chord only when it registered. */}
-        {status.hotkeyDegraded && !status.secureInputBlocked && (
-          <div className="banner blocked" role="status">
-            <strong>{status.hotkeyDegraded}</strong>
-            {repairPane(status) && (
-              <button
-                type="button"
-                onClick={() =>
-                  // yap-p0-perm-repair: a denied or stale Input Monitoring
-                  // grant gets the real Repair (tccutil reset for Yap's own
-                  // bundle id + the pane + re-probe). A grant the probe reads
-                  // as fine is never reset — that only opens the pane.
-                  (perms?.probe && canRepair(perms.probe.listenEvent.state)
-                    ? repairFromPill("listen_event", {
-                        toast,
-                        openPane: () =>
-                          invoke("open_privacy_settings", { pane: repairPane(status) }),
-                        refresh: refreshPerms,
-                      })
-                    : invoke("open_privacy_settings", {
-                        pane: repairPane(status),
-                      })
-                  ).catch((e) => toastError(e))
-                }
-              >
-                Repair
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* yap-lifecycle — once per install, after the first red-X hide. It
-            claims the hint on mount, so a hide during onboarding still shows. */}
-        <HideHint />
-
-        {/* PERM-E — the single permission surface. Renders NOTHING while all
-            four grants are fine, which is why it sits unconditionally here
-            rather than behind a nav check: it is its own visibility rule. */}
-        <PermissionHealthRow
-          report={perms}
-          unproven={unprovenLine(settings)}
-          onTryIt={replayOnboarding}
-        />
-        {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
-            the same probe onboarding renders. */}
-        <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
-
-        {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
-            meeting's transcription waits for power, heat or memory. */}
-        {governorBanner && (
-          <Banner tone="warn" role="status">
-            {governorBanner}
-          </Banner>
-        )}
-
-        {status.modelReady && needsPerms && nav === "home" && (
-          <Banner tone="warn" onActivate={() => setNav("permissions")}>
-            Setup incomplete — open Permissions to enable Mic / Accessibility
-            for {nameProduct("Yap", perms?.productName)}
-          </Banner>
-        )}
-
-        {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner
-            is the whole notification, it never blocks the app, and the install
-            happens only if the user asks for it here. "Later" hides it until
-            the next launch; "Skip this version" retires this release for good. */}
-        {update && (
-          <div className="banner update">
-            <strong>
-              Update available — Yap {update.version} (you're on{" "}
-              {update.currentVersion}). Install now?
-            </strong>
-            {update.notes && (
-              <span className="banner-detail">{update.notes}</span>
-            )}
-            <div className="banner-actions">
-              <button
-                className="primary"
-                onClick={installUpdateNow}
-                disabled={installing}
-              >
-                {installing ? "Installing…" : "Install now"}
-              </button>
-              <button onClick={() => setUpdate(null)} disabled={installing}>
-                Later
-              </button>
-              <button onClick={skipUpdateVersion} disabled={installing}>
-                Skip this version
-              </button>
+          {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
+              not delivering and/or the dictate chord did not register, so the
+              line names why — and offers the chord only when it registered. */}
+          {status.hotkeyDegraded && !status.secureInputBlocked && (
+            <div className="banner blocked" role="status">
+              <strong>{status.hotkeyDegraded}</strong>
+              {repairPane(status) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    // yap-p0-perm-repair: a denied or stale Input Monitoring
+                    // grant gets the real Repair (tccutil reset for Yap's own
+                    // bundle id + the pane + re-probe). A grant the probe reads
+                    // as fine is never reset — that only opens the pane.
+                    (perms?.probe && canRepair(perms.probe.listenEvent.state)
+                      ? repairFromPill("listen_event", {
+                          toast,
+                          openPane: () =>
+                            invoke("open_privacy_settings", { pane: repairPane(status) }),
+                          refresh: refreshPerms,
+                        })
+                      : invoke("open_privacy_settings", {
+                          pane: repairPane(status),
+                        })
+                    ).catch((e) => toastError(e))
+                  }
+                >
+                  Repair
+                </button>
+              )}
             </div>
-          </div>
-        )}
+          )}
 
-        {installedVersion && (
-          <div className="banner update">
-            <strong>
-              Yap {installedVersion} installed — quit and reopen Yap to finish.
-            </strong>
-          </div>
-        )}
+          {/* yap-lifecycle — once per install, after the first red-X hide. It
+              claims the hint on mount, so a hide during onboarding still shows. */}
+          <HideHint />
+
+          {/* PERM-E — the single permission surface. Renders NOTHING while all
+              four grants are fine, which is why it sits unconditionally here
+              rather than behind a nav check: it is its own visibility rule. */}
+          <PermissionHealthRow
+            report={perms}
+            unproven={unprovenLine(settings)}
+            onTryIt={replayOnboarding}
+          />
+          {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
+              the same probe onboarding renders. */}
+          <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
+
+          {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
+              meeting's transcription waits for power, heat or memory. */}
+          {governorBanner && (
+            <Banner tone="warn" role="status">
+              {governorBanner}
+            </Banner>
+          )}
+
+          {status.modelReady && needsPerms && nav === "home" && (
+            <Banner tone="warn" onActivate={() => setNav("permissions")}>
+              Setup incomplete — open Permissions to enable Mic / Accessibility
+              for {nameProduct("Yap", perms?.productName)}
+            </Banner>
+          )}
+
+          {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner
+              is the whole notification, it never blocks the app, and the install
+              happens only if the user asks for it here. "Later" hides it until
+              the next launch; "Skip this version" retires this release for good. */}
+          {update && (
+            <div className="banner update">
+              <strong>
+                Update available — Yap {update.version} (you're on{" "}
+                {update.currentVersion}). Install now?
+              </strong>
+              {update.notes && (
+                <span className="banner-detail">{update.notes}</span>
+              )}
+              <div className="banner-actions">
+                <button
+                  className="primary"
+                  onClick={installUpdateNow}
+                  disabled={installing}
+                >
+                  {installing ? "Installing…" : "Install now"}
+                </button>
+                <button onClick={() => setUpdate(null)} disabled={installing}>
+                  Later
+                </button>
+                <button onClick={skipUpdateVersion} disabled={installing}>
+                  Skip this version
+                </button>
+              </div>
+            </div>
+          )}
+
+          {installedVersion && (
+            <div className="banner update">
+              <strong>
+                Yap {installedVersion} installed — quit and reopen Yap to finish.
+              </strong>
+            </div>
+          )}
+        </div>
 
         <div className="content">
           {nav === "permissions" && <Permissions />}
