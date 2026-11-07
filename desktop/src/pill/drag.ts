@@ -408,6 +408,9 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
     const handlers: PillDrag["handlers"] = {
       onPointerDown: (e) => {
         if (e.button !== 0) return; // left button only; right/middle are not a grab
+        // WF-04 — Ctrl-click is the Mac's right-click: it opens the pill menu
+        // (float-main's `contextmenu` listener) and must never start a take.
+        if (e.ctrlKey) return;
         clearSquash();
         reduce.current = prefersReducedMotion();
         t0.current = performance.now();

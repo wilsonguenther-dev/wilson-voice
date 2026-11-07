@@ -11,11 +11,14 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use wilson_voice_lib::float_pill::PillPosition;
 use wilson_voice_lib::lifecycle::{quit_plan, QuitStep};
 use wilson_voice_lib::meeting_control::KIND_PICKER;
 use wilson_voice_lib::tray_menu::{
-    self, command_for, idle_pill_visible, pill_menu_state, ItemKind, PillHide, Slot, TrayCommand,
-    COMMAND_NAMES, HISTORY_NAV, INSERTED_ITEMS, MENU_LAYOUT, PILL_HIDE_FOR, TRAY_ITEMS,
+    self, command_for, idle_pill_visible, pill_context_menu, pill_hide_enabled, pill_menu_state,
+    Activity, ItemKind, PillDock, PillHide, PillMenuInputs, PillMenuRow, Slot, TrayCommand,
+    COMMAND_NAMES, HISTORY_NAV, INSERTED_ITEMS, MENU_LAYOUT, PILL_HIDE_FOR, PILL_MENU_LAYOUT,
+    PILL_ONLY_ITEMS, TRAY_ITEMS,
 };
 use wilson_voice_lib::AppSettings;
 
@@ -23,6 +26,8 @@ const LIB_SRC: &str = include_str!("../src/lib.rs");
 const PASTE_TX_SRC: &str = include_str!("../src/paste_tx.rs");
 const TRAY_MENU_SRC: &str = include_str!("../src/tray_menu.rs");
 const NAV_SRC: &str = include_str!("../../src/appTypes.ts");
+const FLOAT_MAIN_SRC: &str = include_str!("../../src/float-main.tsx");
+const DRAG_SRC: &str = include_str!("../../src/pill/drag.ts");
 
 fn code_only(src: &str) -> String {
     src.lines()
@@ -151,6 +156,9 @@ fn every_menu_item_maps_to_a_registered_command() {
                 // WF-11 — the "Languages" children.
                 "pick_language" => "PickLanguage".to_string(),
                 "open_language_settings" => "OpenLanguageSettings".to_string(),
+                // WF-04 — the pill's right-click menu rows.
+                "dock_pill" => "DockPill".to_string(),
+                "open_scratchpad" => "OpenScratchpad".to_string(),
                 _ => "RecordMeetingAs".to_string(),
             });
         assert!(
@@ -207,6 +215,10 @@ fn no_item_is_unreachable() {
                 name == "pick_language" || name == "open_language_settings"
             }
             ItemKind::StateLabel => false,
+        }) || PILL_ONLY_ITEMS.iter().any(|i| match i.kind {
+            // WF-04 — the docks and Open Scratchpad live in the pill's menu.
+            ItemKind::Action(c) => c.name() == name,
+            _ => false,
         });
         assert!(reachable, "command {name} has no menu item");
     }
@@ -288,7 +300,9 @@ fn languages_submenu_shares_the_one_language_writer() {
     assert!(place.contains("tray_menu::ID_LANGUAGES"));
     assert!(place.contains("tray_menu::ID_MICROPHONE"));
     assert!(place.contains("tray_menu::ID_HANDS_FREE"));
-    assert!(place.contains("tray_menu::ID_LANGUAGE_SETTINGS"));
+    // WF-04 — the submenu itself is built by ONE builder the pill menu shares.
+    assert!(place.contains("language_submenu("));
+    assert!(fn_body(&lib, "language_submenu").contains("tray_menu::ID_LANGUAGE_SETTINGS"));
     let writer = fn_body(&lib, "write_dictation_languages");
     assert!(writer.contains("languages::LANGUAGES_CHANGED_EVENT"));
     assert!(writer.contains("sync_language_menu("));
@@ -581,5 +595,280 @@ fn update_ready_line_is_inserted_and_gone_after_restart() {
     assert_eq!(
         tray_menu::update_ready_label(tray_menu::restart_blocker(busy), true),
         "Will restart after this meeting \u{00b7} Cancel"
+    );
+}
+
+// ─── WF-04 — the pill's right-click menu ─────────────────────────────────────
+
+fn quiet_pill() -> PillMenuInputs {
+    PillMenuInputs {
+        show_floating_pill: true,
+        hidden: false,
+        activity: Activity::default(),
+        dock: PillDock::Bottom,
+    }
+}
+
+/// The id a pill row resolves to (submenus by their registry id).
+fn pill_row_id(r: &PillMenuRow) -> Option<&'static str> {
+    match r {
+        PillMenuRow::Action { id, .. } | PillMenuRow::Dock { id, .. } => Some(*id),
+        PillMenuRow::Microphone { .. } => Some(tray_menu::ID_MICROPHONE),
+        PillMenuRow::Languages { .. } => Some(tray_menu::ID_LANGUAGES),
+        PillMenuRow::Separator => None,
+    }
+}
+
+fn pill_row_label(r: &PillMenuRow) -> Option<&'static str> {
+    match r {
+        PillMenuRow::Action { label, .. }
+        | PillMenuRow::Dock { label, .. }
+        | PillMenuRow::Microphone { label }
+        | PillMenuRow::Languages { label } => Some(*label),
+        PillMenuRow::Separator => None,
+    }
+}
+
+fn hide_row_enabled(inputs: PillMenuInputs) -> bool {
+    pill_context_menu(inputs)
+        .iter()
+        .find_map(|r| match r {
+            PillMenuRow::Action { id, enabled, .. } if *id == tray_menu::ID_HIDE_PILL => {
+                Some(*enabled)
+            }
+            _ => None,
+        })
+        .expect("the pill menu has a Hide row")
+}
+
+/// WF-04 ACCEPTANCE (single source): the pill's menu is built from the SAME
+/// item table as the menu bar — every row is an id resolved through
+/// `tray_menu::item`, the rows the two menus share carry the menu bar's label
+/// byte for byte, every click dispatches through `command_for`, and lib.rs
+/// draws it from the decision with the menu bar's own submenu builders and no
+/// label literals of its own.
+#[test]
+fn pill_menu_is_built_from_the_tray_item_table() {
+    let rows = pill_context_menu(quiet_pill());
+    let ids: Vec<&str> = rows.iter().filter_map(pill_row_id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            tray_menu::ID_HIDE_PILL,
+            tray_menu::ID_PILL_DOCK_BOTTOM,
+            tray_menu::ID_PILL_DOCK_LEFT,
+            tray_menu::ID_PILL_DOCK_RIGHT,
+            tray_menu::ID_MICROPHONE,
+            tray_menu::ID_LANGUAGES,
+            tray_menu::ID_OPEN_SCRATCHPAD,
+            tray_menu::ID_SHOW,
+        ],
+        "Hide, the three docks, Microphone, Languages, Open Scratchpad, Open Yap"
+    );
+    let mut shared = 0;
+    for r in rows.iter() {
+        let (Some(id), Some(label)) = (pill_row_id(r), pill_row_label(r)) else {
+            continue;
+        };
+        assert_eq!(
+            tray_menu::label(id),
+            label,
+            "{id:?} label is not the registry's"
+        );
+        if let Some(t) = TRAY_ITEMS.iter().find(|t| t.id == id) {
+            assert_eq!(t.label, label, "{id:?} drifted from the menu bar");
+            shared += 1;
+        }
+    }
+    assert_eq!(
+        shared, 4,
+        "hide, Microphone, Languages and Open Yap are the menu bar's rows"
+    );
+    // Every clickable row dispatches through the one registry.
+    assert_eq!(
+        command_for(tray_menu::ID_HIDE_PILL),
+        Some(TrayCommand::HidePillForAnHour)
+    );
+    assert_eq!(
+        command_for(tray_menu::ID_OPEN_SCRATCHPAD),
+        Some(TrayCommand::OpenScratchpad)
+    );
+    assert_eq!(command_for(tray_menu::ID_SHOW), Some(TrayCommand::OpenYap));
+    for item in PILL_ONLY_ITEMS.iter() {
+        assert!(
+            TRAY_ITEMS.iter().all(|t| t.id != item.id),
+            "{:?} collides with a menu bar id",
+            item.id
+        );
+        assert!(!INSERTED_ITEMS.contains(&item.id));
+        assert!(!item.label.is_empty());
+        match item.kind {
+            ItemKind::Action(c) => assert_eq!(command_for(item.id), Some(c)),
+            other => panic!(
+                "{:?} is a pill-only {other:?}; only actions belong here",
+                item.id
+            ),
+        }
+        assert!(
+            PILL_MENU_LAYOUT.contains(&Slot::Item(item.id)),
+            "{:?} is never shown",
+            item.id
+        );
+    }
+    // Separator hygiene, as for the menu bar.
+    assert!(matches!(PILL_MENU_LAYOUT.first(), Some(Slot::Item(_))));
+    assert!(matches!(PILL_MENU_LAYOUT.last(), Some(Slot::Item(_))));
+    for w in PILL_MENU_LAYOUT.windows(2) {
+        assert!(!(w[0] == Slot::Separator && w[1] == Slot::Separator));
+    }
+    // lib.rs: drawn from the decision, with the menu bar's submenu builders.
+    let lib = code_only(LIB_SRC);
+    assert!(lib.contains("pill_context_menu,"), "command not registered");
+    let cmd = fn_body(&lib, "pill_context_menu");
+    assert!(cmd.contains("tray_menu::pill_context_menu("));
+    assert!(cmd.contains("popup_menu(&menu)"));
+    let build = fn_body(&lib, "build_pill_menu");
+    assert!(build.contains("microphone_submenu(app, &plan)"));
+    assert!(build.contains("language_submenu(app, &plan)"));
+    assert!(build.contains("tray_menu::MIC_SHOWN.snapshot()"));
+    assert!(build.contains("tray_menu::LANG_SHOWN.snapshot()"));
+    for item in TRAY_ITEMS.iter().chain(PILL_ONLY_ITEMS.iter()) {
+        assert!(
+            !build.contains(&format!("\"{}\"", item.label)),
+            "build_pill_menu spells the label {:?} itself",
+            item.label
+        );
+    }
+    assert!(fn_body(&lib, "place_microphone_submenu").contains("microphone_submenu("));
+    assert!(fn_body(&lib, "place_language_submenu").contains("language_submenu("));
+}
+
+/// WF-04 ACCEPTANCE: Hide is greyed while a take or a meeting is running —
+/// and only Hide; the rest of the menu stays usable.
+#[test]
+fn pill_hide_is_greyed_while_a_take_or_meeting_runs() {
+    assert!(hide_row_enabled(quiet_pill()));
+    let busy = [
+        Activity {
+            dictating: true,
+            ..Activity::default()
+        },
+        Activity {
+            take_in_flight: true,
+            ..Activity::default()
+        },
+        Activity {
+            polishing: true,
+            ..Activity::default()
+        },
+        Activity {
+            meeting: true,
+            ..Activity::default()
+        },
+    ];
+    for activity in busy {
+        let inputs = PillMenuInputs {
+            activity,
+            ..quiet_pill()
+        };
+        assert!(
+            !hide_row_enabled(inputs),
+            "Hide must be greyed for {activity:?}"
+        );
+        assert!(!pill_hide_enabled(inputs));
+        for r in pill_context_menu(inputs) {
+            if let PillMenuRow::Action { id, enabled, .. } = r {
+                if id != tray_menu::ID_HIDE_PILL {
+                    assert!(enabled, "{id:?} must not grey with Hide");
+                }
+            }
+        }
+    }
+    // Notes being written after a meeting is not a take: Hide stays.
+    assert!(hide_row_enabled(PillMenuInputs {
+        activity: Activity {
+            notes: true,
+            ..Activity::default()
+        },
+        ..quiet_pill()
+    }));
+    // The menu bar's own rule still holds underneath.
+    assert!(!hide_row_enabled(PillMenuInputs {
+        show_floating_pill: false,
+        ..quiet_pill()
+    }));
+    assert!(!hide_row_enabled(PillMenuInputs {
+        hidden: true,
+        ..quiet_pill()
+    }));
+    assert_eq!(
+        pill_menu_state(true, false).hide_enabled,
+        pill_hide_enabled(quiet_pill())
+    );
+    // lib.rs feeds the decision the live activity.
+    let lib = code_only(LIB_SRC);
+    assert!(fn_body(&lib, "pill_context_menu").contains("update_activity("));
+}
+
+/// WF-04: the three dock rows check the dock the pill has, dispatch to that
+/// dock, and the click is the same durable change as a drag.
+#[test]
+fn pill_dock_rows_check_the_current_dock_and_persist_like_a_drag() {
+    for dock in PillDock::ALL {
+        let rows = pill_context_menu(PillMenuInputs {
+            dock,
+            ..quiet_pill()
+        });
+        let checked: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                PillMenuRow::Dock {
+                    id, checked: true, ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checked, vec![dock.menu_id()]);
+        assert_eq!(
+            command_for(dock.menu_id()),
+            Some(TrayCommand::DockPill(dock))
+        );
+        assert_eq!(PillDock::from_settings(dock.as_settings()), dock);
+        assert_eq!(
+            PillPosition::from_settings(dock.as_settings()).as_settings(),
+            dock.as_settings(),
+            "the pill menu writes the same pill_position strings as a drag"
+        );
+    }
+    assert_eq!(PillDock::from_settings("somewhere"), PillDock::Bottom);
+    let lib = code_only(LIB_SRC);
+    let dock_fn = fn_body(&lib, "dock_pill_from_menu");
+    assert!(dock_fn.contains("persist_settings(&next)"));
+    assert!(dock_fn.contains("app.emit(\"settings\", &next)"));
+    assert!(dock_fn.contains("float_pill::set_position("));
+    assert!(dock_fn.contains("float_pill::reposition(app)"));
+    let dispatch = fn_body(&lib, "run_tray_command");
+    assert!(dispatch.contains("dock_pill_from_menu(app, state, dock)"));
+    assert!(dispatch.contains("scratchpad::open(app)"));
+}
+
+/// WF-04: right-click — and Ctrl-click, which WebKit reports as the same
+/// `contextmenu` event — opens the menu, and a Ctrl-click never reaches the
+/// pill's press handler (it would start a take).
+#[test]
+fn right_or_ctrl_click_opens_the_pill_menu_and_never_starts_a_take() {
+    assert!(FLOAT_MAIN_SRC.contains("window.addEventListener(\"contextmenu\""));
+    assert!(FLOAT_MAIN_SRC.contains("invoke(\"pill_context_menu\")"));
+    let down = DRAG_SRC
+        .find("onPointerDown: (e) =>")
+        .expect("drag.ts press handler");
+    let press = DRAG_SRC[down..]
+        .split("beginPress(")
+        .next()
+        .expect("press handler body");
+    assert!(press.contains("e.button !== 0"));
+    assert!(
+        press.contains("if (e.ctrlKey) return;"),
+        "a Ctrl-click must not start a press"
     );
 }
