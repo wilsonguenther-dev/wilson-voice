@@ -57,6 +57,9 @@ import { capsuleCentre, currentPillLayout } from "./state";
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
+// yap-1106-stuck-pill-keeps-its-scene — a stuck engine never strips the scene.
+import { SCENE_IDLE, reduceStuckScene, sceneFramePlan, watchCanvasLoss, type RepaintReason, type SceneEvent, type SceneState } from "./stuckScene";
+import type { EngineHealth } from "./engineHealth";
 // yap-1106-yappy-states-and-motion — the phase transition table, and the
 // speech bubble's queue / placement / fixed copy.
 import { phaseTransition, publishPhaseTransition } from "./transitions";
@@ -125,7 +128,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle" }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -164,6 +167,12 @@ export default function YappyPill(
      * but where a press GOES must not differ between two styles of one pill.
      */
     license?: PillLicense | null;
+    /**
+     * yap-1106-stuck-pill-keeps-its-scene — the engine's health, owned by the
+     * shell. Stuck/restarting keeps the WHOLE scene: calmer frames, and the
+     * sky cache + canvas rebuilt from scratch (pill/stuckScene.ts).
+     */
+    engineHealth?: EngineHealth;
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -338,6 +347,17 @@ export default function YappyPill(
   // parking is only safe if something un-parks it when the meeting ends.
   const meetingRef = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
+  // yap-1106-stuck-pill-keeps-its-scene — the scene reducer, read by the
+  // mount-once draw loop through refs like the meeting flag. `fullRepaintRef`
+  // is assigned inside that loop's effect (it owns the sky cache).
+  const sceneRef = useRef<SceneState>(SCENE_IDLE);
+  const fullRepaintRef = useRef<(reason: RepaintReason) => void>(() => {});
+  const dispatchSceneRef = useRef((e: SceneEvent) => {
+    const prev = sceneRef.current;
+    const next = reduceStuckScene(prev, e);
+    sceneRef.current = next;
+    if (next.repaint !== prev.repaint && next.reason) fullRepaintRef.current(next.reason);
+  });
   // Y2-B (8d85cdf) — the draw loop is mounted ONCE, so the license reaches it
   // through a ref. What the canvas takes from it is a POSTURE: on the last day
   // (and once the trial has ended, or a key is in trouble) Yappy's head tufts
@@ -393,6 +413,19 @@ export default function YappyPill(
     // the capsule's own fill follows the same sky; one gradient, rebuilt only
     // when the time of day or the capsule's box changes
     let capGrad: CanvasGradient | null = null, capGradKey = "";
+    // yap-1106-stuck-pill-keeps-its-scene — rebuild EVERYTHING the next frame
+    // draws from: the cached sky surface, the capsule gradient, then a frame.
+    fullRepaintRef.current = (reason: RepaintReason) => {
+      sky.invalidate();
+      capGrad = null; capGradKey = "";
+      console.info(`pill scene_repaint reason=${reason} health=${sceneRef.current.health} scene=${sceneRef.current.scene}`);
+      wake();
+    };
+    const unwatchLoss = watchCanvasLoss(
+      [cv, os, skyCanvas],
+      () => { console.warn(`pill scene_context_lost health=${sceneRef.current.health}`); dispatchSceneRef.current({ type: "context_lost", at: performance.now() }); },
+      () => dispatchSceneRef.current({ type: "context_restored", at: performance.now() }),
+    );
 
     interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean; ink: number; elapsed: number }
 
@@ -576,7 +609,7 @@ export default function YappyPill(
     const onVisibility = () => {
       const was = hidden;
       hidden = document.hidden || !shown;
-      if (was && !hidden) wake();
+      if (was && !hidden) { dispatchSceneRef.current({ type: "shown", at: performance.now() }); wake(); }
     };
     listen<boolean>("pill_visible", (e) => { shown = e.payload !== false; onVisibility(); }).then((u) => (dead ? u() : unsubs.push(u)));
     document.addEventListener("visibilitychange", onVisibility);
@@ -609,14 +642,16 @@ export default function YappyPill(
     // needs frames to advance — dictation DURING a meeting animates normally,
     // because the live-take branch is answered before anything can park.
     function loop(ts: number) {
-      const plan = framePlan(phase, {
+      // yap-1106-stuck-pill-keeps-its-scene — a strained engine calms a live
+      // loop to ~10 fps (sceneFramePlan); it never parks or blanks the scene.
+      const plan = sceneFramePlan(framePlan(phase, {
         level,
         busyVisuals: sparkle.length > 0 || J.phase !== "ground",
         reduceMotion: reduce,
         settled: settledNow(),
         hidden,
         meetingRecording: meetingRef.current,
-      });
+      }), sceneRef.current.strained);
       const mode: FrameMode = plan.mode;
       // schedule the next wake FIRST, so nothing below can strand the loop
       raf = 0; tick = 0;
@@ -624,6 +659,7 @@ export default function YappyPill(
       else if (mode === "ambient") tick = window.setTimeout(() => loop(performance.now()), plan.intervalMs);
       if (mode === "raf" && plan.intervalMs > 0 && lastDraw && ts - lastDraw < plan.intervalMs) return;   // skip this redraw, keep the rAF alive
       lastDraw = ts;
+      if (sceneRef.current.strained) dispatchSceneRef.current({ type: "tick", at: ts });
       // dt drives the animation (clamped for stability); wallDt drives the live
       // state machine, so a throttled frame still advances the take's clock. The
       // clamp rides the schedule: on the ambient tick a whole frame IS 100ms, and
@@ -796,8 +832,15 @@ export default function YappyPill(
       sayRef.current = () => {};
       bubbleQ.dispose();
       ro.disconnect(); unsubs.forEach((u) => u());
+      unwatchLoss();
+      fullRepaintRef.current = () => {};
     };
   }, []);
+  // yap-1106-stuck-pill-keeps-its-scene — the shell's engine health into the
+  // scene reducer (after the draw loop's effect, so a repaint can reach it).
+  useEffect(() => {
+    dispatchSceneRef.current({ type: "health", health: engineHealth, at: performance.now() });
+  }, [engineHealth]);
 
   // PERM-C — drive the canvas phase from the gate prop.
   useEffect(() => { applyGateRef.current(gate); }, [gate]);
@@ -912,6 +955,10 @@ export default function YappyPill(
       onPointerLeave={gated ? () => hoverGate(false) : undefined}
       data-sprite={art.sprite}
       data-motion={art.motion}
+      // yap-1106-stuck-pill-keeps-its-scene — the scene is ALWAYS full; the
+      // health rides beside it for CSS, screenshots and the matrix.
+      data-scene="full"
+      data-engine-health={engineHealth}
       // Y5-J — the canvas is aria-hidden pixels, so the stage itself carries
       // the phase's name; the live region below announces its changes.
       role="group"

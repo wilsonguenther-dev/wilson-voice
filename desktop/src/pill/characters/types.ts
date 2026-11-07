@@ -18,6 +18,7 @@ import { ALL_LIVE_PHASES, type ChatTone, type LivePhase, type PhaseArt, type Tra
 import type { VoiceId } from "../voices";
 import type { MeetingAfterView, MeetingStatus } from "../meeting";
 import type { PillLicense } from "../license";
+import type { EngineHealth } from "../engineHealth";
 
 /** Width and height in CSS px. */
 export interface CharacterBox {
@@ -81,6 +82,12 @@ export interface CharacterStageProps {
   meetingAfter?: MeetingAfterView | null;
   onMeetingOpen?: (id: string) => void;
   license?: PillLicense | null;
+  /**
+   * yap-1106-stuck-pill-keeps-its-scene — the engine's health, decided by the
+   * shell. Stuck/restarting never drops the scene; the stage calms its frame
+   * rate and rebuilds the whole scene (pill/stuckScene.ts).
+   */
+  engineHealth?: EngineHealth;
 }
 
 export interface Character {

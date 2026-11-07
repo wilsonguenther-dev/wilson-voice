@@ -216,6 +216,28 @@ function __pillDetect(want) {
       else if (!fv) bad.push("no [data-friend-visit=tidy] visitor");
       else { const cv = fv.querySelector("canvas"); if (!cv || !cv.width || !cv.height) bad.push("friend visit canvas not painted"); }
     }
+    // yap-1106-stuck-pill-keeps-its-scene — a stuck/restarting engine keeps the
+    // FULL scene: the health applied, its plain-words label shown, the stage
+    // marked full, a non-empty painted canvas, and Yappy's box inside it.
+    if (want.engine) {
+      if (de.dataset.engineHealth !== want.engine) bad.push("html[data-engine-health]=" + de.dataset.engineHealth + " (asked " + want.engine + ")");
+      const chip = document.querySelector('.engine-health[data-state="' + want.engine + '"]');
+      if (!chip || !chip.textContent.trim()) bad.push("no engine-health label for " + want.engine);
+      const stage = document.querySelector(".kami-stage");
+      if (!stage || stage.dataset.scene !== "full") bad.push("scene=" + (stage ? stage.dataset.scene : "none"));
+      const cv = document.querySelector(".kami-canvas");
+      const r = cv ? cv.getBoundingClientRect() : null;
+      if (!cv || !cv.width || !cv.height || !r || r.width < 1 || r.height < 1) bad.push("empty scene rect");
+      else {
+        const px = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+        let opaque = 0;
+        for (let i = 3; i < px.length; i += 4 * 7) if (px[i] > 0) opaque++;
+        if (opaque < 16) bad.push("scene canvas is blank");
+        const L = window.__YAP_PILL_LAYOUT__;
+        const c = L && L.char;
+        if (c && !(c.x >= r.left - 2 && c.y >= r.top - 2 && c.x + c.w <= r.right + 2 && c.y + c.h <= r.bottom + 2)) bad.push("character box outside the scene rect");
+      }
+    }
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
     // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
@@ -567,7 +589,7 @@ async function run() {
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting, sky }) + ")");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, engine: p.engine, pill: character, dock, meeting, sky }) + ")");
             const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + (skies.length > 1 ? "__" + sky : "") + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
