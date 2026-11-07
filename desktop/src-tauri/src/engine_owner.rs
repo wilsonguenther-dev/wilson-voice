@@ -489,7 +489,11 @@ pub fn spawned_helper_pids() -> Vec<u32> {
 /// Quit's last resort: SIGKILL every helper this process spawned and has not
 /// reaped — by its recorded PID, never by name or pattern. Returns how many.
 pub fn kill_spawned_helpers() -> usize {
-    let pids = spawned_helper_pids();
+    // Signalled under the registry lock: a PID is reaped only after it leaves
+    // the registry (see `kill_process` / `HelperEngine::shutdown`), so every
+    // PID signalled here is still our unreaped child and cannot be reused.
+    let registry = helpers();
+    let pids = registry.clone();
     for pid in &pids {
         // SAFETY: plain syscall on a PID we spawned and still own (not reaped,
         // so it cannot have been reused).
@@ -498,6 +502,7 @@ pub fn kill_spawned_helpers() -> usize {
         }
         log::warn!("engine helper killed pid={pid} reason=quit_cap");
     }
+    drop(registry);
     pids.len()
 }
 
@@ -518,6 +523,40 @@ struct HelperEngine {
     next_id: u64,
     caps: Option<asr_engine::ModelCapabilities>,
     last_language: Option<String>,
+    /// The id of the decode in flight on the helper, 0 when none. The cancel
+    /// hook reads it to escalate a cancel the helper ignores into a kill by
+    /// PID — and only for the job it was asked to stop.
+    running: Arc<AtomicU64>,
+}
+
+/// Escalation of an ignored cancel: past [`HELPER_CANCEL_GRACE`], if job `job`
+/// is still the one running on helper `pid` and that PID is still our unreaped
+/// child, SIGKILL it. The decode then returns at once (its pipe closes), the
+/// engine is dropped, and macOS frees the helper's GPU memory.
+fn kill_if_still_running(pid: u32, job: u64, running: Arc<AtomicU64>) {
+    let spawned = std::thread::Builder::new()
+        .name("yap-asr-cancel-escalation".into())
+        .spawn(move || {
+            std::thread::sleep(HELPER_CANCEL_GRACE);
+            if running.load(Ordering::Acquire) != job {
+                return;
+            }
+            let registry = helpers();
+            if !registry.contains(&pid) {
+                return;
+            }
+            // SAFETY: plain syscall on a PID we spawned and have not reaped
+            // (it is still in the registry, checked under its lock).
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            drop(registry);
+            publish(EngineHealth::Stuck, "cancel_ignored", "decode");
+            log::warn!("engine helper killed pid={pid} reason=cancel_ignored job={job}");
+        });
+    if let Err(e) = spawned {
+        log::warn!("engine cancel escalation not started: {e}");
+    }
 }
 
 fn timed_kind(s: &str) -> asr_engine::TimedKind {
@@ -559,6 +598,7 @@ impl HelperEngine {
             next_id: 1,
             caps: None,
             last_language: None,
+            running: Arc::new(AtomicU64::new(0)),
         };
         engine.start()?;
         Ok(engine)
@@ -706,6 +746,7 @@ impl HelperEngine {
         }
         let id = self.take_id();
         let deadline = job_deadline(samples.len(), 16_000);
+        let running = self.running.clone();
         let Some(process) = self.proc_.as_mut() else {
             return Err(crate::transcription::NO_ENGINE_LOADED.to_string());
         };
@@ -713,6 +754,7 @@ impl HelperEngine {
         write_private(&path, &samples_to_le_bytes(samples))?;
         let started = Instant::now();
         publish(EngineHealth::Busy, "job_started", "decode");
+        running.store(id, Ordering::Release);
         let sent = send_line(
             &process.stdin,
             &AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed),
@@ -741,6 +783,7 @@ impl HelperEngine {
                 }
             },
         };
+        running.store(0, Ordering::Release);
         let _ = std::fs::remove_file(&path);
         log::info!(
             "engine job done samples={} ms={} ok={}",
@@ -788,18 +831,23 @@ impl HelperEngine {
         let deadline = started + HELPER_EXIT_CAP;
         let mut clean = false;
         while Instant::now() < deadline {
+            // Reaped under the registry lock and unregistered in the same
+            // breath, so a registered PID is always an unreaped child.
+            let mut registry = helpers();
             match process.child.try_wait() {
                 Ok(Some(_)) => {
+                    registry.retain(|p| *p != process.pid);
                     clean = true;
                     break;
                 }
-                Ok(None) => std::thread::sleep(HELPER_EXIT_POLL),
+                Ok(None) => {
+                    drop(registry);
+                    std::thread::sleep(HELPER_EXIT_POLL);
+                }
                 Err(_) => break,
             }
         }
-        if clean {
-            unregister_pid(process.pid);
-        } else {
+        if !clean {
             kill_process(&mut process, "exit_cap");
         }
         let waited = started.elapsed().as_millis();
@@ -814,9 +862,11 @@ impl HelperEngine {
 
 /// Kill exactly the helper we spawned, by its PID, and reap it.
 fn kill_process(process: &mut HelperProcess, reason: &str) {
+    // Out of the registry BEFORE the reap, so nothing that signals registered
+    // PIDs can ever hit a reaped (reusable) one.
+    unregister_pid(process.pid);
     let _ = process.child.kill();
     let _ = process.child.wait();
-    unregister_pid(process.pid);
     log::warn!(
         "engine helper killed pid={} reason={reason} engines_live={}",
         process.pid,
@@ -895,9 +945,17 @@ impl Transcriber for HelperEngine {
     }
 
     fn cancel_handle(&self) -> Option<CancelHandle> {
-        let stdin = self.proc_.as_ref()?.stdin.clone();
+        let process = self.proc_.as_ref()?;
+        let stdin = process.stdin.clone();
+        let pid = process.pid;
+        let running = self.running.clone();
         Some(Arc::new(move || {
+            let job = running.load(Ordering::Acquire);
+            log::info!("engine cancel requested pid={pid} job={job}");
             let _ = send_line(&stdin, &AsrRequest::cancel(0));
+            if job != 0 {
+                kill_if_still_running(pid, job, running.clone());
+            }
         }))
     }
 
@@ -1935,6 +1993,119 @@ mod engine_owner_tests {
         // SAFETY: signal 0 only probes; the PID was ours and is now reaped.
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         assert!(!alive, "helper pid {pid} must be gone after quit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fake `yap-asr` that speaks the real wire protocol, "loads", takes one
+    /// decode and then hangs in it, never reading the cancel line.
+    fn fake_hanging_helper(tag: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("yap-fake-asr-{tag}-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let ready = serde_json::to_string(&AsrReady::now(0)).expect("ready line");
+        let loaded = serde_json::to_string(&AsrResponse::ok(1)).expect("load reply");
+        let script = dir.join(ASR_HELPER_BIN);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho '{ready}'\nread _load\necho '{loaded}'\nread _job\nexec sleep 600\n"
+            ),
+        )
+        .expect("write fake helper");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake helper");
+        (dir, script)
+    }
+
+    // (b) on the real helper: a cancel the helper ignores is escalated to a
+    // kill BY ITS PID past the cancel grace, so the stuck decode returns and
+    // the helper's GPU memory is freed instead of being left running.
+    #[test]
+    fn an_ignored_cancel_kills_the_helper_by_pid_after_the_grace() {
+        let (dir, script) = fake_hanging_helper("escalate");
+        let mut engine =
+            HelperEngine::spawn(&script, &dir.join("never-read.gguf")).expect("fake helper up");
+        let pid = engine.proc_.as_ref().expect("helper process").pid;
+        let running = engine.running.clone();
+        let cancel = engine
+            .cancel_handle()
+            .expect("helper engines are cancellable");
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = engine.transcribe(&[0.0f32; 16_000], None, None);
+            let _ = tx.send(result);
+            drop(engine);
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while running.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < until, "the decode never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let started = Instant::now();
+        cancel();
+        let result = rx
+            .recv_timeout(HELPER_CANCEL_GRACE + Duration::from_secs(3))
+            .expect("the stuck decode returned after its helper was killed");
+        assert!(result.is_err(), "a killed helper cannot have transcribed");
+        assert!(
+            started.elapsed() >= HELPER_CANCEL_GRACE,
+            "the helper gets its grace before the kill"
+        );
+        worker.join().expect("worker thread");
+        assert!(!spawned_helper_pids().contains(&pid));
+        // SAFETY: signal 0 only probes; the PID was ours and is now reaped.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        assert!(!alive, "helper pid {pid} must be gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // FX-02 at the production seam: when `TranscriptionManager`'s lease gives
+    // up on a hung helper decode, it cancels it; the ignored cancel becomes a
+    // kill by PID, the abandoned engine is freed (never left on the GPU), and
+    // the manager loaded exactly one engine for it.
+    #[test]
+    fn a_lease_timeout_frees_the_abandoned_helper_instead_of_leaving_it_running() {
+        let (dir, script) = fake_hanging_helper("lease");
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, b"GGUF").expect("stub model file");
+        let bin = script.clone();
+        let manager = crate::transcription::TranscriptionManager::with_loader(
+            Arc::new(move |path: &Path| {
+                HelperEngine::spawn(&bin, path).map(|e| Box::new(e) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            Duration::from_millis(200),
+        );
+        manager
+            .load("fake/model", &model)
+            .expect("fake helper loads");
+        assert_eq!(manager.engine_loads(), 1);
+        let pids_before = spawned_helper_pids();
+        let err = manager
+            .transcribe(vec![0.0f32; 16_000], None, None)
+            .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        let until = Instant::now() + HELPER_CANCEL_GRACE + Duration::from_secs(5);
+        while manager.abandoned_engines() != 0 {
+            assert!(
+                Instant::now() < until,
+                "the abandoned helper was never freed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for pid in pids_before {
+            assert!(
+                !spawned_helper_pids().contains(&pid),
+                "helper {pid} still registered after the lease gave up on it"
+            );
+        }
+        assert_eq!(manager.engine_loads(), 1, "nothing reloaded on its own");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

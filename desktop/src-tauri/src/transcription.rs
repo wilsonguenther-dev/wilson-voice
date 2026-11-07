@@ -1395,6 +1395,12 @@ impl TranscriptionManager {
         });
 
         let mut outcome = rx.recv_timeout(self.inner.transcribe_timeout);
+        // yap-1106-engine-owner — an abandoned decode is never left running:
+        // it is cancelled the moment the lease gives up on it. For the
+        // `yap-asr` helper that cancel escalates to a kill BY ITS PID past the
+        // cancel grace, so the GPU memory comes back and the next take loads
+        // at most one fresh copy instead of piling a second one on top.
+        let mut cancel_abandoned = false;
         if matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)) {
             let mut f = fate.lock();
             match *f {
@@ -1407,6 +1413,7 @@ impl TranscriptionManager {
                 }
                 LeaseFate::Waiting => {
                     *f = LeaseFate::Abandoned;
+                    cancel_abandoned = true;
                     let live = abandoned_live.fetch_add(1, Ordering::AcqRel) + 1;
                     log::warn!(
                         "ASR decode timed out after {}s — engine abandoned to its worker thread abandoned_live={live}",
@@ -1414,6 +1421,22 @@ impl TranscriptionManager {
                     );
                 }
                 LeaseFate::Abandoned => {}
+            }
+        }
+        if cancel_abandoned {
+            let cancel = self
+                .inner
+                .in_flight
+                .lock()
+                .as_ref()
+                .and_then(|f| f.cancel.clone());
+            log::warn!(
+                "engine lease_timeout cancel_abandoned={} engines_live={}",
+                cancel.is_some(),
+                crate::engine_owner::engines_live()
+            );
+            if let Some(cancel) = cancel {
+                cancel();
             }
         }
         let result = match outcome {
