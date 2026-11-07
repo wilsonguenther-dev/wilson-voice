@@ -86,6 +86,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-pill-trial-clickable — floor set by the batch-2 integrator from the measured run.
+  "pill/gateClick.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
