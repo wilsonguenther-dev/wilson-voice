@@ -94,6 +94,8 @@ const PRESS_TO_CAPTURE_SPILL_OVERHEAD_MS: u128 = 25;
 /// legitimately costs something (per-window model priming, the overlap region
 /// decoded twice), and 60% of a single-window decode is the most that is worth
 /// paying for a take that can be shown progressing.
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 const CHUNK_DECODE_WALL_PER_AUDIO_SECOND_RATIO_CEILING: f64 = 1.60;
 
 /// `progress_events_per_minute_of_audio` — a CEILING, not a target. 60/min is
@@ -159,6 +161,8 @@ fn manifest(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 fn skip(reason: &str) {
     println!("long_take_budget SKIPPED — {reason}");
 }
@@ -341,6 +345,9 @@ fn press_to_capture_start_is_not_paid_by_the_spill_writer() {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Read the committed fixture and tile it up to `seconds` of 16 kHz mono.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
     let path = manifest("tests/fixtures/quick-brown-fox-16k.wav");
     let mut reader = hound::WavReader::open(&path).ok()?;
@@ -377,6 +384,9 @@ fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
 /// a fresh clone and CI print one line and pass instead of silently asserting
 /// nothing. That is the same contract `docs/BUDGETS.md` describes for
 /// `polish_envelope.rs`.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn chunk_decode_wall_per_audio_second() {
     use wilson_voice_lib::{asr_engine, models};
@@ -905,7 +915,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     all.insert(
         "src/transcription.rs",
         BTreeMap::from([
-            (2, 2),
+            // yap-1106-engine-owner — 2:2->4: the teardown-order test's stub
+            // engine (`#[cfg(test)] mod tests`) spins in 2 ms test-only waits.
+            (2, 4),
             (5, 2),
             (10, 2),
             (20, 2),
@@ -1015,6 +1027,9 @@ fn no_new_polling_timer_was_introduced() {
 /// the budget sits with the other budgets. When both models are installed this
 /// test loads the engine itself and asserts the parent's own contribution is
 /// real, so the ceiling is never asserted against a run where nothing loaded.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn peak_resident_bytes_with_asr_and_polish_loaded() {
     use wilson_voice_lib::{asr_engine, models};

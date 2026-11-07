@@ -151,7 +151,15 @@ export const CARD_W = 284;
 // WF-05's "Polished — Reveal" toast/card (`.polish-reveal-wrap`) is a card too:
 // the opened diff card is taller than the resting panel, so the layout must
 // reserve its row or Use original / Keep fall outside the window.
-export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row", "polish-reveal-wrap"] as const;
+export const CARD_CLASSES = [
+  "copy-card",
+  "meeting-offer-wrap",
+  "language-offer-wrap",
+  "nudge-row",
+  "polish-reveal-wrap",
+  // yap-fx-06 — "Dictation cancelled — meeting still recording" and friends.
+  "meeting-dictation-wrap",
+] as const;
 export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
 /** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
 export const CARD_STACK_VAR = "--card-stack-y";
