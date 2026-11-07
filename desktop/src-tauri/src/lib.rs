@@ -13,12 +13,12 @@ mod diagnostics;
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
 // eval harness).
 pub mod asr_engine;
-/// Y10-A — the dictation language set, auto-detect held to it, and which
-/// cleanup stages are language-agnostic.
-pub mod languages;
 pub mod channel;
 mod cli;
 pub mod command_mode;
+/// Y10-A — the dictation language set, auto-detect held to it, and which
+/// cleanup stages are language-agnostic.
+pub mod languages;
 pub mod take_error;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
@@ -121,8 +121,8 @@ pub mod http_client;
 pub mod keychain;
 pub mod model_providers;
 // yap-1106-byom-cloud-fast-path — the cloud route (policy) and its SSE client.
-pub mod cloud_route;
 pub mod cloud_client;
+pub mod cloud_route;
 // yap-notetaker-onboard — Set up Notetaker: Apple Calendar (read-only) and
 // Otter file import.
 pub mod calendar;
@@ -159,10 +159,10 @@ pub mod mic_select;
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
+pub mod live_transcript;
 pub mod net;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
-pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
 pub mod nudge;
@@ -249,8 +249,8 @@ pub mod shortcuts;
 mod shortcut_defer;
 // yap-p0-hotkeys-no-permission — the zero-TCC dictate chord, the one hotkey
 // arbiter and the truthful hotkey status.
-pub mod hotkeys;
 pub mod hotkey_table;
+pub mod hotkeys;
 // Fix round 2: the exclusive Carbon probe the dictate registrar runs first.
 pub mod carbon_probe;
 use hotkeys::{HotkeyEdge, HotkeySource};
@@ -1626,8 +1626,11 @@ fn build_status(state: &AppState) -> AppStatus {
     // yap-p0-hotkeys-no-permission DO 4/5: truthful hotkey status + the
     // explicit degraded-mode line. Secure Input outranks the stored tap state.
     let mut hotkeys_now = hotkeys::status();
-    hotkeys_now.fn_tap =
-        hotkeys::effective_fn_tap(&hotkeys_now.fn_tap, secure.blocked, secure.culprit.as_deref());
+    hotkeys_now.fn_tap = hotkeys::effective_fn_tap(
+        &hotkeys_now.fn_tap,
+        secure.blocked,
+        secure.culprit.as_deref(),
+    );
     let (_, dictate_toggle_label) = hotkeys::active_dictate();
     let dictate_chord_registered = matches!(hotkeys_now.carbon, hotkeys::CarbonStatus::Registered);
     let probe = OsPermissionProbe;
@@ -3773,13 +3776,12 @@ fn run_model_transform_take(
 ) -> TakeOutcome {
     // The mode decides only one thing here: a code editor is `Code`, and code
     // never reaches a model (V8) — the stage refuses it as `not_eligible`.
-    let mode =
-        dictation::resolve_mode_with_context(
-            &settings.dictation_mode,
-            source_app,
-            cursor_context.before_caret.as_deref(),
-            cursor_context.browser_mode,
-        );
+    let mode = dictation::resolve_mode_with_context(
+        &settings.dictation_mode,
+        source_app,
+        cursor_context.before_caret.as_deref(),
+        cursor_context.browser_mode,
+    );
     // WF-20 — a running chip pick for this app replaces the resolved mode.
     let mode = apply_style_override(app, &settings.dictation_mode, source_app, mode);
     let cfg = polish::PolishConfig::from_settings(settings, mode);
@@ -5934,8 +5936,10 @@ fn save_settings(
             hotkey_table::BindingAction::RecordMeeting,
             next.meeting_chord.as_ref(),
         );
-        let (cc, cl) =
-            hotkey_table::resolve(hotkey_table::BindingAction::Cancel, next.cancel_chord.as_ref());
+        let (cc, cl) = hotkey_table::resolve(
+            hotkey_table::BindingAction::Cancel,
+            next.cancel_chord.as_ref(),
+        );
         let mut all = vec![
             (hotkey_table::BindingAction::DictateToggle, dc, dl),
             (hotkey_table::BindingAction::RecordMeeting, mc, ml),
@@ -5993,7 +5997,9 @@ fn save_settings(
             new_global.push((
                 a,
                 match next_c.as_ref() {
-                    Some(c) => hotkey_table::chord_for_action(a, c).map_err(CommandError::refused)?,
+                    Some(c) => {
+                        hotkey_table::chord_for_action(a, c).map_err(CommandError::refused)?
+                    }
                     None => hotkey_table::resolve(a, None),
                 },
             ));
@@ -6100,7 +6106,11 @@ fn save_settings(
     if dictate_changed && smoke::global_hotkeys_allowed() {
         if let Err(e) = rebind_dictate_toggle(&app, &next) {
             let new_label = dictate_toggle_chord(&next).1;
-            return Err(rollback(chord_rebind_error(&new_label, &e), false, &Vec::new()));
+            return Err(rollback(
+                chord_rebind_error(&new_label, &e),
+                false,
+                &Vec::new(),
+            ));
         }
         dictate_applied = true;
     }
@@ -7314,7 +7324,8 @@ fn collapse_short_loops(text: &str) -> String {
     while i < tokens.len() {
         let run = run_len(&tokens[i..]).max(1);
         let short_loop = (RETRY_LOOP_MIN_RUN..=RETRY_SHORT_LOOP_MAX_TOKENS).contains(&run);
-        if short_loop && distinct_until_next_loop(&tokens[i + run..]) >= RETRY_RESUME_MIN_DISTINCT_TOKENS
+        if short_loop
+            && distinct_until_next_loop(&tokens[i + run..]) >= RETRY_RESUME_MIN_DISTINCT_TOKENS
         {
             out.push(tokens[i]);
         } else {
@@ -7578,7 +7589,9 @@ pub fn keep_what_was_transcribed(
         .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
     retry_gate(&mut kept)?;
     if kept.trim().is_empty() {
-        return Err("There is nothing left to transcribe in this take".to_string().into());
+        return Err("There is nothing left to transcribe in this take"
+            .to_string()
+            .into());
     }
     let text = finish(&row, &kept);
     let wav = PathBuf::from(&row.wav_path);
@@ -8075,7 +8088,10 @@ fn apply_voice_preference(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<voice_prefs::VoicePreference, String> {
-    state.db.apply_voice_preference(&id).map_err(|e| e.to_string())
+    state
+        .db
+        .apply_voice_preference(&id)
+        .map_err(|e| e.to_string())
 }
 
 /// Y9-C — retract (or discard a pending) rule. The row stays: append-only.
@@ -8084,7 +8100,10 @@ fn retract_voice_preference(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<voice_prefs::VoicePreference, String> {
-    state.db.retract_voice_preference(&id).map_err(|e| e.to_string())
+    state
+        .db
+        .retract_voice_preference(&id)
+        .map_err(|e| e.to_string())
 }
 
 /// Y9-C — the whole append-only history, newest first.
@@ -8251,7 +8270,11 @@ fn delete_note(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn set_note_pinned(state: State<'_, Arc<AppState>>, id: String, pinned: bool) -> Result<(), String> {
+fn set_note_pinned(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    pinned: bool,
+) -> Result<(), String> {
     state.db.set_note_pinned(&id, pinned)
 }
 
@@ -8509,7 +8532,12 @@ fn diagnostics_health(state: &AppState) -> diagnostics::Health {
     }
     perms.insert(
         "post_event".to_string(),
-        if report.probe.post_event.usable() { "authorized" } else { "denied" }.to_string(),
+        if report.probe.post_event.usable() {
+            "authorized"
+        } else {
+            "denied"
+        }
+        .to_string(),
     );
     let hk = hotkeys::status();
     let mut meeting = diagnostics::meeting_health();
@@ -8553,7 +8581,12 @@ async fn export_diagnostics(
     let home = home_dir();
     let snap = diagnostics::snapshot(diagnostics_health(&state));
     let username = support::username_from_home(&home);
-    match diagnostics::write_export(&home.join("Downloads"), &snap, &username, chrono::Utc::now()) {
+    match diagnostics::write_export(
+        &home.join("Downloads"),
+        &snap,
+        &username,
+        chrono::Utc::now(),
+    ) {
         Ok((json, txt)) => {
             let name = |p: &std::path::Path| {
                 p.file_name()
@@ -8567,7 +8600,11 @@ async fn export_diagnostics(
                 txt = name(&txt),
                 events = snap.events.len(),
             );
-            diagnostics::record_duration("diagnostics", "export", started.elapsed().as_millis() as u64);
+            diagnostics::record_duration(
+                "diagnostics",
+                "export",
+                started.elapsed().as_millis() as u64,
+            );
             support::reveal_in_finder(&txt);
             Ok(diagnostics::ExportPaths {
                 json: json.display().to_string(),
@@ -8855,7 +8892,10 @@ fn byom_keychain(app: &AppHandle) -> keychain::MacKeychain {
 }
 
 #[tauri::command]
-fn list_model_providers(app: AppHandle, state: State<'_, Arc<AppState>>) -> model_providers::ProvidersView {
+fn list_model_providers(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> model_providers::ProvidersView {
     model_providers::list_view(&*state.db, &byom_keychain(&app))
 }
 
@@ -8891,7 +8931,10 @@ fn delete_model_provider(
 ) -> Result<model_providers::ProvidersView, String> {
     let keys = byom_keychain(&app);
     model_providers::delete_provider(&*state.db, &keys, &provider_id).map_err(|e| {
-        log::error!("model_providers delete failed id={provider_id} reason={}", e.tag());
+        log::error!(
+            "model_providers delete failed id={provider_id} reason={}",
+            e.tag()
+        );
         e.plain()
     })?;
     byom_clients().forget(&provider_id);
@@ -8949,7 +8992,10 @@ async fn test_model_provider(
             &mut emit,
         )
         .map_err(|e| {
-            log::error!("model_providers test refused id={provider_id} reason={}", e.tag());
+            log::error!(
+                "model_providers test refused id={provider_id} reason={}",
+                e.tag()
+            );
             e.plain()
         })
     })
@@ -8991,7 +9037,10 @@ pub(crate) fn cloud_last_route() -> Option<cloud_route::RouteChip> {
 }
 
 fn note_cloud_route(chip: cloud_route::RouteChip) {
-    if let Ok(mut g) = CLOUD_LAST_ROUTE.get_or_init(|| std::sync::Mutex::new(None)).lock() {
+    if let Ok(mut g) = CLOUD_LAST_ROUTE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
         *g = Some(chip);
     }
 }
@@ -9027,8 +9076,10 @@ fn cloud_run<R>(
     };
     let model = cloud_client::model_for(job, notes_best);
     let budget = cloud_route::budget_for(job);
-    let constrained_notes_allowed =
-        db.setting_get(cloud_route::CONSTRAINED_NOTES_KEY).as_deref() == Some("allow");
+    let constrained_notes_allowed = db
+        .setting_get(cloud_route::CONSTRAINED_NOTES_KEY)
+        .as_deref()
+        == Some("allow");
     let ctx = cloud_route::RouteContext {
         mode,
         has_key: provider.is_some(),
@@ -9054,18 +9105,15 @@ fn cloud_run<R>(
             cfg.model.trim()
         };
         cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
-            model,
-            job,
-            system,
-            cloud_text,
-            max_tokens,
-            budget,
-            cancel,
-            on_delta,
+            model, job, system, cloud_text, max_tokens, budget, cancel, on_delta,
         )
     };
     let routed = cloud_route::run_routed(&ctx, &mut cloud, accept, local);
-    note_cloud_route(cloud_route::RouteChip::new(routed.route, routed.reason, job));
+    note_cloud_route(cloud_route::RouteChip::new(
+        routed.route,
+        routed.reason,
+        job,
+    ));
     routed
 }
 
@@ -9224,7 +9272,10 @@ fn set_cloud_notes_model(
 ) -> Result<CloudRouteView, String> {
     state
         .db
-        .setting_set(cloud_route::NOTES_MODEL_KEY, if best { "best" } else { "fast" })
+        .setting_set(
+            cloud_route::NOTES_MODEL_KEY,
+            if best { "best" } else { "fast" },
+        )
         .map_err(|e| {
             log::error!("byom notes_model_save_failed error={e}");
             "The notes model choice could not be saved.".to_string()
@@ -9597,7 +9648,9 @@ static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
 /// focus-2026-10-19 — is this polish-catalog model's GGUF on disk?
 pub(crate) fn summary_model_on_disk(id: &str) -> bool {
-    models::polish_model(id).map(models::is_polish_downloaded).unwrap_or(false)
+    models::polish_model(id)
+        .map(models::is_polish_downloaded)
+        .unwrap_or(false)
 }
 
 /// focus-2026-10-19 — one progress event for a meeting row (the Meetings card
@@ -9623,7 +9676,10 @@ fn emit_notes_status(state: &AppState, st: &summary_jobs::NotesStatus) {
     // tray's "Meeting notes ready — Open" line and the background notification
     // fire here now that notes run on their own worker instead of inside the
     // transcript hook. A cancel is the user's own act and announces nothing.
-    if matches!(st.phase, summary_jobs::NotesPhase::Ready | summary_jobs::NotesPhase::Failed) {
+    if matches!(
+        st.phase,
+        summary_jobs::NotesPhase::Ready | summary_jobs::NotesPhase::Failed
+    ) {
         if let Some(app) = MEETING_APP.get() {
             announce_meeting_notes(app, state, &st.id);
         }
@@ -9902,12 +9958,28 @@ fn list_notes_jobs() -> Vec<summary_jobs::NotesStatus> {
 
 /// Meetings with a transcript and no notes.
 fn meetings_needing_notes(state: &AppState) -> Vec<summary_jobs::NeedsNotes> {
-    let Ok(rows) = state.db.list_meetings(500, None) else { return Vec::new() };
+    let Ok(rows) = state.db.list_meetings(500, None) else {
+        return Vec::new();
+    };
     rows.into_iter()
         .filter(|m| matches!(m.state.as_str(), "complete" | "partial" | "summarizing"))
-        .filter(|m| m.summary.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true))
-        .filter(|m| state.db.list_meeting_segments(&m.id).map(|s| !s.is_empty()).unwrap_or(false))
-        .map(|m| summary_jobs::NeedsNotes { id: m.id, started_at: m.started_at })
+        .filter(|m| {
+            m.summary
+                .as_deref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+        })
+        .filter(|m| {
+            state
+                .db
+                .list_meeting_segments(&m.id)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        })
+        .map(|m| summary_jobs::NeedsNotes {
+            id: m.id,
+            started_at: m.started_at,
+        })
         .collect()
 }
 
@@ -9922,7 +9994,8 @@ struct NotesBacklog {
 /// notes started on this install, which never start on their own.
 #[tauri::command]
 fn notes_backlog(state: State<'_, Arc<AppState>>) -> NotesBacklog {
-    let ledger = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
+    let ledger =
+        summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
     let (_, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(&state), &ledger);
     let busy = |id: &String| {
         SUMMARY_JOBS
@@ -9972,8 +10045,10 @@ fn resume_pending_summaries(state: &AppState) {
     // when its resume ledger records a failed window (or a note survived), so
     // a partial transcript is never claimed complete and keeps its Retry.
     if let Ok(rows) = state.db.list_meetings(500, None) {
-        let pairs: Vec<(String, String)> =
-            rows.iter().map(|m| (m.id.clone(), m.state.clone())).collect();
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|m| (m.id.clone(), m.state.clone()))
+            .collect();
         let active = |id: &str| {
             SUMMARY_JOBS
                 .get()
@@ -9981,7 +10056,10 @@ fn resume_pending_summaries(state: &AppState) {
                 .is_some_and(|s| s.phase.is_active())
         };
         for id in summary_jobs::stale_summarizing(&pairs, &active) {
-            let error = rows.iter().find(|m| m.id == id).and_then(|m| m.error.clone());
+            let error = rows
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| m.error.clone());
             // #250 fix round 1 (independent B1): shipped builds cleared `error`
             // when they wrote `summarizing`, so the failed-window ledger beside
             // the audio is what tells a partial transcript apart.
@@ -9989,18 +10067,29 @@ fn resume_pending_summaries(state: &AppState) {
                 error.as_deref(),
                 meeting_pipeline::ledger_records_failed_window(&meetings_dir(), &id),
             );
-            if state.db.set_meeting_state(&id, back, note.as_deref()).is_ok()
+            if state
+                .db
+                .set_meeting_state(&id, back, note.as_deref())
+                .is_ok()
             {
-                log::info!("summary: meeting {id} was left 'summarizing' by a crash — reset for Retry");
+                log::info!(
+                    "summary: meeting {id} was left 'summarizing' by a crash — reset for Retry"
+                );
             }
         }
     }
-    let ledger = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
+    let ledger =
+        summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
     let (resume, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(state), &ledger);
     if !backlog.is_empty() {
-        log::info!("summary: {} past meeting(s) wait for the backlog banner", backlog.len());
+        log::info!(
+            "summary: {} past meeting(s) wait for the backlog banner",
+            backlog.len()
+        );
     }
-    let Some(jobs) = SUMMARY_JOBS.get() else { return };
+    let Some(jobs) = SUMMARY_JOBS.get() else {
+        return;
+    };
     for id in resume {
         if jobs.submit(&id) {
             log::info!("summary: resuming the summary of meeting {id}");
@@ -10117,20 +10206,24 @@ pub(crate) fn summarize_meeting_with(
     }
     let segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
     if segments.is_empty() {
-        return Err(NotesError::Summary("that meeting has no transcript to summarize".to_string()));
+        return Err(NotesError::Summary(
+            "that meeting has no transcript to summarize".to_string(),
+        ));
     }
     // focus-2026-10-19: the resolved notes model, never "none".
     let model = match summarize::plan_summary_model(chosen, &summary_model_on_disk) {
         summarize::SummaryModelPlan::Use(m) => m,
         summarize::SummaryModelPlan::Download(_) => {
-            return Err(NotesError::Summary("the notes model isn't on this Mac yet.".into()))
+            return Err(NotesError::Summary(
+                "the notes model isn't on this Mac yet.".into(),
+            ))
         }
     };
     if cancel.is_cancelled() {
         return Err(NotesError::Cancelled);
     }
-    let session =
-        summarize::SidecarSession::for_installed_model(&model).map_err(|_| NotesError::ModelStart)?;
+    let session = summarize::SidecarSession::for_installed_model(&model)
+        .map_err(|_| NotesError::ModelStart)?;
     let client = summarize::SidecarSummaryClient::with_cancel(session, cancel.clone());
 
     // Fix round 1 (B3): the notes job never writes over the meeting's
@@ -10162,9 +10255,9 @@ pub(crate) fn summarize_meeting_with(
         summarize::SummaryError::NoSegments => {
             NotesError::Summary("that meeting has no transcript to summarize".to_string())
         }
-        summarize::SummaryError::Protocol => NotesError::Summary(
-            "the notes model gave answers Yap couldn't use.".to_string(),
-        ),
+        summarize::SummaryError::Protocol => {
+            NotesError::Summary("the notes model gave answers Yap couldn't use.".to_string())
+        }
     })?;
     if cancel.is_cancelled() {
         return Err(NotesError::Cancelled);
@@ -10222,7 +10315,9 @@ fn store_meeting_summary(
     }
     let now = db.get_meeting(id).map_err(NotesError::Summary)?;
     let now_segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
-    if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
+    if !now
+        .as_ref()
+        .is_some_and(|m| summary_jobs::transcript_settled(&m.state))
         || !summary_jobs::same_transcript(read_segments, &now_segments)
     {
         log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
@@ -10269,7 +10364,11 @@ fn export_meeting_markdown(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             log::info!("meetings export ok file={name} segments={}", r.count);
-            diagnostics::record_duration("meetings", "export", started.elapsed().as_millis() as u64);
+            diagnostics::record_duration(
+                "meetings",
+                "export",
+                started.elapsed().as_millis() as u64,
+            );
             Ok(r)
         }
         Err(e) => {
@@ -10299,8 +10398,15 @@ fn expand_tilde(s: &str) -> String {
 /// yap-1106 — the path an export of `id` would have (or has): the folder plus
 /// `meetings::export_file_name`. Pure over the row; does not touch the disk.
 fn meeting_export_path(db: &Database, settings: &AppSettings, id: &str) -> Result<PathBuf, String> {
-    let meeting = db.get_meeting(id)?.ok_or_else(|| format!("no meeting {id}"))?;
-    Ok(meeting_export_dir(settings).join(meetings::export_file_name(&meeting.title, meeting.started_at)))
+    let meeting = db
+        .get_meeting(id)?
+        .ok_or_else(|| format!("no meeting {id}"))?;
+    Ok(
+        meeting_export_dir(settings).join(meetings::export_file_name(
+            &meeting.title,
+            meeting.started_at,
+        )),
+    )
 }
 
 /// yap-1106 — Copy as Markdown: the same bytes the export writes, on the
@@ -10342,7 +10448,10 @@ pub struct RevealResult {
 /// yap-1106 — Show in Finder: select the meeting's export when it exists,
 /// otherwise open the export folder (created on demand).
 #[tauri::command]
-fn reveal_meeting_export(state: State<'_, Arc<AppState>>, id: String) -> Result<RevealResult, String> {
+fn reveal_meeting_export(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<RevealResult, String> {
     let path = meeting_export_path(&state.db, &state.settings.lock(), &id).map_err(|e| {
         log::warn!("meetings reveal failed id={id} err={e}");
         format!("Couldn't find this meeting ({e}).")
@@ -10350,24 +10459,38 @@ fn reveal_meeting_export(state: State<'_, Arc<AppState>>, id: String) -> Result<
     if path.is_file() {
         support::reveal_in_finder(&path);
         log::info!("meetings reveal target=file");
-        return Ok(RevealResult { path: path.display().to_string(), target: "file".into() });
+        return Ok(RevealResult {
+            path: path.display().to_string(),
+            target: "file".into(),
+        });
     }
-    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(app_paths::default_meeting_export_dir);
+    let dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(app_paths::default_meeting_export_dir);
     open_folder(&dir, "meetings reveal")?;
     log::info!("meetings reveal target=folder");
-    Ok(RevealResult { path: dir.display().to_string(), target: "folder".into() })
+    Ok(RevealResult {
+        path: dir.display().to_string(),
+        target: "folder".into(),
+    })
 }
 
 /// Create `dir` and open it in Finder. One sentence + one action on failure.
 fn open_folder(dir: &Path, who: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| {
         log::warn!("{who} folder create failed err={e}");
-        format!("Couldn't create the export folder ({e}). Pick another folder in Settings › Meetings.")
+        format!(
+            "Couldn't create the export folder ({e}). Pick another folder in Settings › Meetings."
+        )
     })?;
-    std::process::Command::new("/usr/bin/open").arg(dir).spawn().map_err(|e| {
-        log::warn!("{who} open failed err={e}");
-        format!("Couldn't open the folder in Finder ({e}).")
-    })?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(dir)
+        .spawn()
+        .map_err(|e| {
+            log::warn!("{who} open failed err={e}");
+            format!("Couldn't open the folder in Finder ({e}).")
+        })?;
     Ok(())
 }
 
@@ -10394,8 +10517,14 @@ fn meeting_export_location(state: State<'_, Arc<AppState>>) -> MeetingExportLoca
     let settings = state.settings.lock();
     MeetingExportLocation {
         path: meeting_export_dir(&settings).display().to_string(),
-        is_default: settings.meeting_export_dir.as_deref().map(str::trim).is_none_or(str::is_empty),
-        default_path: app_paths::default_meeting_export_dir().display().to_string(),
+        is_default: settings
+            .meeting_export_dir
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty),
+        default_path: app_paths::default_meeting_export_dir()
+            .display()
+            .to_string(),
     }
 }
 
@@ -10407,7 +10536,11 @@ fn set_meeting_export_dir(
     state: State<'_, Arc<AppState>>,
     path: Option<String>,
 ) -> Result<MeetingExportLocation, String> {
-    let next = path.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(expand_tilde);
+    let next = path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(expand_tilde);
     if let Some(p) = next.as_deref() {
         let dir = Path::new(p);
         if !dir.is_absolute() {
@@ -10426,14 +10559,21 @@ fn set_meeting_export_dir(
             format!("The folder was not saved ({e}). Try again.")
         })?;
     }
-    log::info!("meetings export-dir set default={}", path.as_deref().map(str::trim).is_none_or(str::is_empty));
+    log::info!(
+        "meetings export-dir set default={}",
+        path.as_deref().map(str::trim).is_none_or(str::is_empty)
+    );
     Ok(meeting_export_location(state))
 }
 
 /// yap24-NT9 — the export itself, shared by the `export_meeting_markdown`
 /// command and the headless `--transcribe-meeting` proof, so the file the CLI
 /// asserts on is byte-for-byte the file the Meetings view writes.
-pub(crate) fn write_meeting_markdown(db: &Database, id: &str, dir: &Path) -> Result<ExportResult, String> {
+pub(crate) fn write_meeting_markdown(
+    db: &Database,
+    id: &str,
+    dir: &Path,
+) -> Result<ExportResult, String> {
     use std::io::Write;
 
     let (meeting, markdown) = db.meeting_markdown(id)?;
@@ -11365,14 +11505,19 @@ fn current_binding_rows(state: &AppState) -> Vec<hotkey_table::BindingRow> {
     let hk = hotkeys::status();
     let fn_tap = hotkeys::effective_fn_tap(&hk.fn_tap, secure.blocked, secure.culprit.as_deref());
     let settings = state.settings.lock().clone();
-    let im = matches!(perm_probe::listen_event_hid(), permissions::GrantState::Authorized);
+    let im = matches!(
+        perm_probe::listen_event_hid(),
+        permissions::GrantState::Authorized
+    );
     let inputs = hotkey_table::TableInputs {
         fn_tap,
         dictate_carbon: hk.carbon,
         meeting_carbon: hotkey_table::meeting_status(),
         accessibility: perm_probe::accessibility_trusted(),
         input_monitoring: im,
-        listen_event_row: hotkey_table::tcc_listen_event_row(&perm_truth::running_identity().bundle_id),
+        listen_event_row: hotkey_table::tcc_listen_event_row(
+            &perm_truth::running_identity().bundle_id,
+        ),
         hold_label: settings.hotkey_label.clone(),
         toggle_label: hotkeys::active_dictate().1,
         cancel_label: hotkey_table::active_cancel().1,
@@ -11486,7 +11631,9 @@ fn live_primary_chords(
 
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
-fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
+fn dictate_toggle_chord(
+    settings: &AppSettings,
+) -> (tauri_plugin_global_shortcut::Shortcut, String) {
     // yap-hotkeys-advisories-r1 #2: re-validated against EVERY rule, the
     // reserved-chord list included, at launch and on every rebind.
     hotkey_table::resolve_dictate(settings.dictate_toggle.as_ref())
@@ -11516,18 +11663,29 @@ impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
             return Err(e);
         }
         let r = if chord == shortcuts::DICTATE_TOGGLE.shortcut() {
-            self.app.global_shortcut().register(shortcuts::DICTATE_TOGGLE.shortcut())
+            self.app
+                .global_shortcut()
+                .register(shortcuts::DICTATE_TOGGLE.shortcut())
         } else {
             self.app.global_shortcut().register(chord)
         };
         match &r {
-            Ok(()) => log::info!("{} dictate-toggle registered (carbon)", hotkeys::active_dictate().1),
-            Err(e) => log::warn!("{} dictate-toggle register failed: {e}", hotkeys::active_dictate().1),
+            Ok(()) => log::info!(
+                "{} dictate-toggle registered (carbon)",
+                hotkeys::active_dictate().1
+            ),
+            Err(e) => log::warn!(
+                "{} dictate-toggle register failed: {e}",
+                hotkeys::active_dictate().1
+            ),
         }
         r.map_err(|e| e.to_string())
     }
     fn unregister(&mut self, chord: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
-        self.app.global_shortcut().unregister(chord).map_err(|e| e.to_string())
+        self.app
+            .global_shortcut()
+            .unregister(chord)
+            .map_err(|e| e.to_string())
     }
     fn is_registered(&self, chord: tauri_plugin_global_shortcut::Shortcut) -> bool {
         self.app.global_shortcut().is_registered(chord)
@@ -11562,33 +11720,33 @@ struct FnTapSource<'a> {
 }
 
 impl hotkeys::TapEventSource for FnTapSource<'_> {
-fn install(&mut self) -> Result<hotkeys::TapAttempt, String> {
-    #[cfg(target_os = "macos")]
-    {
-        start_fn_tap(self.app, self.state);
-        Ok(hotkeys::TapAttempt::Dispatched)
+    fn install(&mut self) -> Result<hotkeys::TapAttempt, String> {
+        #[cfg(target_os = "macos")]
+        {
+            start_fn_tap(self.app, self.state);
+            Ok(hotkeys::TapAttempt::Dispatched)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self.app, self.state);
+            Err("fn tap is macOS-only".into())
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (self.app, self.state);
-        Err("fn tap is macOS-only".into())
-    }
-}
 }
 
 /// Writes arming results into the process-wide hotkey status.
 struct AppHotkeySink;
 
 impl hotkeys::StatusSink for AppHotkeySink {
-fn carbon(&mut self, s: hotkeys::CarbonStatus) {
-    hotkeys::set_carbon_status(s);
-}
-fn fn_tap(&mut self, s: hotkeys::FnTapStatus) {
-    hotkeys::set_fn_tap_status(s);
-}
-fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
-    hotkeys::status().fn_tap
-}
+    fn carbon(&mut self, s: hotkeys::CarbonStatus) {
+        hotkeys::set_carbon_status(s);
+    }
+    fn fn_tap(&mut self, s: hotkeys::FnTapStatus) {
+        hotkeys::set_fn_tap_status(s);
+    }
+    fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
+        hotkeys::status().fn_tap
+    }
 }
 
 /// yap-qa-hotkey-walk-binding DO 3 — the Tauri event that puts
@@ -11631,12 +11789,9 @@ fn show_fn_hint(app: &AppHandle, st: &Arc<AppState>) {
 /// only rebinds while a tap is running, and re-spawns after a failed install.
 #[cfg(target_os = "macos")]
 fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
-    let binding = ptt_macos::PttBinding::from_settings(
-        &state.settings.lock().ptt_binding,
-    );
-    let command_binding = ptt_macos::CommandBinding::from_settings(
-        &state.settings.lock().command_binding,
-    );
+    let binding = ptt_macos::PttBinding::from_settings(&state.settings.lock().ptt_binding);
+    let command_binding =
+        ptt_macos::CommandBinding::from_settings(&state.settings.lock().command_binding);
     // WF-19 — the mouse button rides the same tap. A stored value that no
     // longer parses (hand-edited file) is logged and treated as off.
     let mouse = match ptt_macos::MouseBinding::parse(&state.settings.lock().ptt_mouse_binding) {
@@ -11663,43 +11818,41 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                     take_hotkey_edge(&h, &st, HotkeyEdge::Release, HotkeySource::FnTap);
                 }
                 ptt_macos::PttEvent::StillRecording => {
-                        // yap-hotkey-stop DO 4: the status event carries
-                        // `still_recording`; the pill swaps its line.
-                        emit_status(&h, &st);
-                        float_pill::show_for_recording(&h);
-                        log::warn!(
-                            "take still recording — pill asks for fn or stop"
-                        );
-                    }
-                    ptt_macos::PttEvent::Interrupted => {
-                        *st.hands_free.lock() = false;
-                        cancel_recording(&h, &st);
-                    }
-                    ptt_macos::PttEvent::HandsFreeOn => {
-                        *st.hands_free.lock() = true;
-                        *st.hands_free_by_chord.lock() = false;
-                        emit_status(&h, &st);
-                        float_pill::show_for_recording(&h);
-                        log::info!("hands-free ON source=fn_double_tap");
-                    }
-                    ptt_macos::PttEvent::HandsFreeOff => {
-                        *st.hands_free.lock() = false;
-                        emit_status(&h, &st);
-                        log::info!("hands-free OFF");
-                    }
-                    ptt_macos::PttEvent::FnWithoutModifierHint => {
-                        show_fn_hint(&h, &st);
-                    }
-                }) {
-                    log::error!("PTT main-thread hop failed: {e}");
+                    // yap-hotkey-stop DO 4: the status event carries
+                    // `still_recording`; the pill swaps its line.
+                    emit_status(&h, &st);
+                    float_pill::show_for_recording(&h);
+                    log::warn!("take still recording — pill asks for fn or stop");
                 }
-            }),
-        );
-        log::info!(
-            "PTT hybrid started ({} · command mode {})",
-            binding.label(),
-            command_binding.label()
-        );
+                ptt_macos::PttEvent::Interrupted => {
+                    *st.hands_free.lock() = false;
+                    cancel_recording(&h, &st);
+                }
+                ptt_macos::PttEvent::HandsFreeOn => {
+                    *st.hands_free.lock() = true;
+                    *st.hands_free_by_chord.lock() = false;
+                    emit_status(&h, &st);
+                    float_pill::show_for_recording(&h);
+                    log::info!("hands-free ON source=fn_double_tap");
+                }
+                ptt_macos::PttEvent::HandsFreeOff => {
+                    *st.hands_free.lock() = false;
+                    emit_status(&h, &st);
+                    log::info!("hands-free OFF");
+                }
+                ptt_macos::PttEvent::FnWithoutModifierHint => {
+                    show_fn_hint(&h, &st);
+                }
+            }) {
+                log::error!("PTT main-thread hop failed: {e}");
+            }
+        }),
+    );
+    log::info!(
+        "PTT hybrid started ({} · command mode {})",
+        binding.label(),
+        command_binding.label()
+    );
 }
 
 /// yap-hotkey-stop DO 5 — THE stop for a live dictation. The hotkey (fn
@@ -12649,8 +12802,7 @@ pub fn run() {
     // names. Fails closed: a mismatched pair would read/write the wrong state
     // root (or ship a production id with the updater off).
     let context = tauri::generate_context!();
-    if let Err(why) =
-        channel::check_bundle_identity(channel::CURRENT, &context.config().identifier)
+    if let Err(why) = channel::check_bundle_identity(channel::CURRENT, &context.config().identifier)
     {
         eprintln!("{why}");
         std::process::exit(78); // EX_CONFIG
@@ -12712,7 +12864,9 @@ pub fn run() {
     ) {
         lifecycle::HandoffVerdict::NoRunningInstance => {}
         lifecycle::HandoffVerdict::Handed { ack_ms } => {
-            log::info!("second launch: running Yap presented its window (ack {ack_ms}ms) — exiting");
+            log::info!(
+                "second launch: running Yap presented its window (ack {ack_ms}ms) — exiting"
+            );
             std::process::exit(0);
         }
         lifecycle::HandoffVerdict::Stale { waited_ms } => {
@@ -12885,7 +13039,9 @@ pub fn run() {
         // never a launch panic. Every caller already fails closed on a missing
         // worker ("the notes worker is not running — restart Yap").
         match summary_jobs::SummaryJobs::spawn(
-            Arc::new(AppNotes { state: state.clone() }),
+            Arc::new(AppNotes {
+                state: state.clone(),
+            }),
             Arc::new(move |st: &summary_jobs::NotesStatus| emit_notes_status(&report_state, st)),
         ) {
             Ok(jobs) => {
@@ -13007,11 +13163,15 @@ pub fn run() {
         if !adopted.is_empty() {
             log::info!("recover: {} crashed meeting(s) recovered", adopted.len());
         }
-        let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
-            meeting_pipeline::enqueue(id);
-        });
+        let reconciled =
+            meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
+                meeting_pipeline::enqueue(id);
+            });
         if !reconciled.is_empty() {
-            log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
+            log::info!(
+                "reconcile: {} stranded meeting(s) handled",
+                reconciled.len()
+            );
         }
     }
 
@@ -14475,7 +14635,10 @@ mod tests {
         assert_eq!(wire["message"], why.as_str());
         // A non-sentence failure converts to the uncatalogued code, so the UI
         // keeps hiding raw text.
-        assert_eq!(super::CommandError::from("io: denied".to_string()).code, super::COMMAND_FAILED_CODE);
+        assert_eq!(
+            super::CommandError::from("io: denied".to_string()).code,
+            super::COMMAND_FAILED_CODE
+        );
     }
 
     /// Y5-F fix round 2 — a chord rebind's register failure never reaches the
@@ -14488,10 +14651,16 @@ mod tests {
     fn chord_rebind_refusals_carry_no_raw_registrar_text() {
         struct Fails(String);
         impl crate::hotkeys::CarbonRegistrar for Fails {
-            fn register(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+            fn register(
+                &mut self,
+                _: tauri_plugin_global_shortcut::Shortcut,
+            ) -> Result<(), String> {
                 Err(self.0.clone())
             }
-            fn unregister(&mut self, _: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+            fn unregister(
+                &mut self,
+                _: tauri_plugin_global_shortcut::Shortcut,
+            ) -> Result<(), String> {
                 Ok(())
             }
             fn is_registered(&self, _: tauri_plugin_global_shortcut::Shortcut) -> bool {
@@ -14499,14 +14668,27 @@ mod tests {
             }
         }
         let mut sink = crate::hotkeys::HotkeysStatus::default();
-        let taken = crate::carbon_probe::probe_result(crate::carbon_probe::EVENT_HOT_KEY_EXISTS_ERR)
-            .expect_err("exists is an error");
+        let taken =
+            crate::carbon_probe::probe_result(crate::carbon_probe::EVENT_HOT_KEY_EXISTS_ERR)
+                .expect_err("exists is an error");
         let other = crate::carbon_probe::probe_result(-50).expect_err("-50 is an error");
-        let forbidden = ["OSStatus", "eventHotKey", "RegisterEventHotKey", "(", "Unable to", "-9878", "-50"];
+        let forbidden = [
+            "OSStatus",
+            "eventHotKey",
+            "RegisterEventHotKey",
+            "(",
+            "Unable to",
+            "-9878",
+            "-50",
+        ];
         let check = |err: &super::CommandError| {
             if err.code == super::REFUSED_CODE {
                 for f in forbidden {
-                    assert!(!err.message.contains(f), "refused message {:?} carries {f:?}", err.message);
+                    assert!(
+                        !err.message.contains(f),
+                        "refused message {:?} carries {f:?}",
+                        err.message
+                    );
                 }
             } else {
                 assert_eq!(err.code, super::COMMAND_FAILED_CODE);
@@ -14515,21 +14697,36 @@ mod tests {
         // Dictate path: the raw text arrives already wrapped by hotkeys::rebind.
         let old = crate::shortcuts::DICTATE_TOGGLE.shortcut();
         let new = tauri_plugin_global_shortcut::Shortcut::new(
-            Some(tauri_plugin_global_shortcut::Modifiers::CONTROL | tauri_plugin_global_shortcut::Modifiers::ALT),
+            Some(
+                tauri_plugin_global_shortcut::Modifiers::CONTROL
+                    | tauri_plugin_global_shortcut::Modifiers::ALT,
+            ),
             tauri_plugin_global_shortcut::Code::KeyD,
         );
-        let wrapped_taken = crate::hotkeys::rebind(&mut Fails(taken.clone()), old, "fn", new, "⌃⌥D", &mut sink)
-            .expect_err("register failed");
-        assert!(wrapped_taken.contains("eventHotKeyExistsErr"), "fixture is the real shape: {wrapped_taken}");
+        let wrapped_taken =
+            crate::hotkeys::rebind(&mut Fails(taken.clone()), old, "fn", new, "⌃⌥D", &mut sink)
+                .expect_err("register failed");
+        assert!(
+            wrapped_taken.contains("eventHotKeyExistsErr"),
+            "fixture is the real shape: {wrapped_taken}"
+        );
         let e = super::chord_rebind_error("⌃⌥D", &wrapped_taken);
         assert_eq!(e.code, super::REFUSED_CODE);
-        assert_eq!(e.message, "⌃⌥D is already used by another app or macOS — pick another chord");
+        assert_eq!(
+            e.message,
+            "⌃⌥D is already used by another app or macOS — pick another chord"
+        );
         check(&e);
         for raw in [
-            crate::hotkeys::rebind(&mut Fails(other.clone()), old, "fn", new, "⌃⌥D", &mut sink).unwrap_err(),
+            crate::hotkeys::rebind(&mut Fails(other.clone()), old, "fn", new, "⌃⌥D", &mut sink)
+                .unwrap_err(),
             crate::hotkeys::rebind(
                 &mut Fails("Unable to register hotkey: RegisterEventHotKey failed for KeyD".into()),
-                old, "fn", new, "⌃⌥D", &mut sink,
+                old,
+                "fn",
+                new,
+                "⌃⌥D",
+                &mut sink,
             )
             .unwrap_err(),
             "receiving on a closed channel".to_string(),
@@ -14538,7 +14735,11 @@ mod tests {
             other.clone(),
         ] {
             let e = super::chord_rebind_error("⌃⌥D", &raw);
-            assert_eq!(e.code, super::COMMAND_FAILED_CODE, "{raw} must not be a refusal");
+            assert_eq!(
+                e.code,
+                super::COMMAND_FAILED_CODE,
+                "{raw} must not be a refusal"
+            );
             check(&e);
         }
         // The meeting path with a held chord (if the plugin ever surfaces it).
@@ -16853,7 +17054,10 @@ mod tests {
             .0;
         // yap-recovery-followups (b): Keep moved into its own backend function
         // (it now enforces the confirm flag); the command still routes to it.
-        assert!(body.contains("keep_what_was_transcribed("), "Keep goes through the backend check");
+        assert!(
+            body.contains("keep_what_was_transcribed("),
+            "Keep goes through the backend check"
+        );
         let keep = LIB
             .split_once("pub fn keep_what_was_transcribed(")
             .expect("the Keep path must exist")
@@ -17139,7 +17343,10 @@ mod db_b_recovery_followups {
                 "confirm={confirm:?} must be refused"
             );
             // Nothing written: the row, its words and the history are untouched.
-            let now = db.get_failed_dictation(&row.id).unwrap().expect("row stays");
+            let now = db
+                .get_failed_dictation(&row.id)
+                .unwrap()
+                .expect("row stays");
             assert_eq!(now.error, row.error);
             assert_eq!(now.attempt_text, None);
             assert_eq!(now.partial_text, row.partial_text);
@@ -17182,7 +17389,9 @@ mod db_b_recovery_followups {
             .split_once("/// YV52 — throw a failed take away")
             .unwrap()
             .0;
-        assert!(body.contains("keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm"));
+        assert!(
+            body.contains("keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm")
+        );
         assert!(body.contains("RECOVERY_CLAIMS.claim(&id)"));
     }
 
@@ -17194,7 +17403,12 @@ mod db_b_recovery_followups {
         {
             let (dir, db) = fresh("c-retry");
             let row = db
-                .record_failed_dictation(&dir.join("live.wav"), 20.0, "1 of 4 sections failed", None)
+                .record_failed_dictation(
+                    &dir.join("live.wav"),
+                    20.0,
+                    "1 of 4 sections failed",
+                    None,
+                )
                 .unwrap();
             let key = db::recovery_key(&row);
             let live = db
@@ -17240,7 +17454,12 @@ mod db_b_recovery_followups {
             let (dir, db) = fresh("c-keep");
             let claims = RecoveryClaims::new();
             let row = db
-                .record_failed_dictation(&dir.join("live.wav"), 20.0, "1 of 4 sections failed", None)
+                .record_failed_dictation(
+                    &dir.join("live.wav"),
+                    20.0,
+                    "1 of 4 sections failed",
+                    None,
+                )
                 .unwrap();
             let key = db::recovery_key(&row);
             let live = db
@@ -17265,7 +17484,10 @@ mod db_b_recovery_followups {
             // words (different windows), so the live words stay and the Keep
             // words are appended — the audio is gone, so dropping either
             // side would lose words for good.
-            assert_eq!(entry.text, format!("{}\n\n{}", words("live", 10), words("kept", 25)));
+            assert_eq!(
+                entry.text,
+                format!("{}\n\n{}", words("live", 10), words("kept", 25))
+            );
             assert_eq!(entry.word_count, 35);
             let all = db.list_transcripts(10, None).unwrap();
             assert_eq!(all.len(), 1, "exactly one history row for the take");
@@ -17321,7 +17543,10 @@ mod db_b_recovery_followups {
             assert!(!wav.exists(), "Keep deleted the audio");
             let all = db.list_transcripts(10, None).unwrap();
             assert_eq!(all.len(), 1, "exactly one history row for the take");
-            for word in live_text.split_whitespace().chain(kept_text.split_whitespace()) {
+            for word in live_text
+                .split_whitespace()
+                .chain(kept_text.split_whitespace())
+            {
                 assert!(
                     all[0].text.split_whitespace().any(|t| t == word),
                     "word {word} lost: live={live_text:?} kept={kept_text:?} saved={:?}",
@@ -17333,10 +17558,7 @@ mod db_b_recovery_followups {
         }
         // A save whose words are all already in the entry changes nothing,
         // and a save that holds every live word plus more replaces it cleanly.
-        for (live_text, saved, expect) in [
-            (w(99), w(3), w(99)),
-            (w(3), w(99), w(99)),
-        ] {
+        for (live_text, saved, expect) in [(w(99), w(3), w(99)), (w(3), w(99), w(99))] {
             let (dir, db) = fresh("c-subset");
             let claims = RecoveryClaims::new();
             let row = db
@@ -17344,13 +17566,25 @@ mod db_b_recovery_followups {
                 .unwrap();
             let key = db::recovery_key(&row);
             db.insert_transcript_for_take(
-                live_text, "native".into(), 1.0, 20.0, 900, None, chrono::Utc::now(), None, Some(&key),
+                live_text,
+                "native".into(),
+                1.0,
+                20.0,
+                900,
+                None,
+                chrono::Utc::now(),
+                None,
+                Some(&key),
             )
             .unwrap();
-            db.note_failed_retry(&row.id, "failed again", Some(&saved)).unwrap();
+            db.note_failed_retry(&row.id, "failed again", Some(&saved))
+                .unwrap();
             let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
                 .expect("Keep saves");
-            assert_eq!(entry.text, expect, "no duplicated words when one side covers the other");
+            assert_eq!(
+                entry.text, expect,
+                "no duplicated words when one side covers the other"
+            );
         }
         // A user's hand edit of the live entry survives a later, longer save.
         {
@@ -17362,16 +17596,32 @@ mod db_b_recovery_followups {
             let key = db::recovery_key(&row);
             let live = db
                 .insert_transcript_for_take(
-                    "alpha beta gamma delta".into(), "native".into(), 1.0, 20.0, 900, None,
-                    chrono::Utc::now(), None, Some(&key),
+                    "alpha beta gamma delta".into(),
+                    "native".into(),
+                    1.0,
+                    20.0,
+                    900,
+                    None,
+                    chrono::Utc::now(),
+                    None,
+                    Some(&key),
                 )
                 .unwrap();
-            db.record_correction(&live.id, "alpha beta GAMMA-FIXED delta").unwrap();
-            db.note_failed_retry(&row.id, "failed again", Some("alpha beta gamma delta epsilon zeta"))
+            db.record_correction(&live.id, "alpha beta GAMMA-FIXED delta")
                 .unwrap();
+            db.note_failed_retry(
+                &row.id,
+                "failed again",
+                Some("alpha beta gamma delta epsilon zeta"),
+            )
+            .unwrap();
             let entry = keep_what_was_transcribed(&db, &claims, &row.id, Some(true), identity)
                 .expect("Keep saves");
-            assert!(entry.text.contains("GAMMA-FIXED"), "the user's edit was overwritten: {:?}", entry.text);
+            assert!(
+                entry.text.contains("GAMMA-FIXED"),
+                "the user's edit was overwritten: {:?}",
+                entry.text
+            );
             assert!(entry.text.contains("zeta"));
         }
     }
@@ -17533,11 +17783,19 @@ mod db_b_recovery_followups {
         let clean = words("w", 15);
         let raw = format!("{clean} {}", ["the"; 30].join(" "));
         let row = recovered_row(&db, &dir, "take-shown", &raw);
-        assert_eq!(row.partial_text.as_deref(), Some(raw.as_str()), "raw loop on disk");
+        assert_eq!(
+            row.partial_text.as_deref(),
+            Some(raw.as_str()),
+            "raw loop on disk"
+        );
         // "Already transcribed" before any attempt: the gated words.
         let shown = failed_row_for_display(row.clone());
         assert_eq!(shown.partial_text.as_deref(), Some(clean.as_str()));
-        assert_eq!(shown.partial_text, saved_words(&row), "same text as Keep/Transcribed so far");
+        assert_eq!(
+            shown.partial_text,
+            saved_words(&row),
+            "same text as Keep/Transcribed so far"
+        );
         // A failed Finish: "Transcribed so far" is the same gated text.
         let failed = decode_failed_take(
             &db,
@@ -17574,10 +17832,15 @@ mod db_b_recovery_followups {
         // …and so does "Keep what was transcribed" on a recovered take.
         let (dir, db) = fresh("g");
         let row = recovered_row(&db, &dir, "take-short-loop", &input);
-        let entry = keep_what_was_transcribed(&db, &RecoveryClaims::new(), &row.id, Some(true), identity)
-            .expect("Keep saves the clean words");
+        let entry =
+            keep_what_was_transcribed(&db, &RecoveryClaims::new(), &row.id, Some(true), identity)
+                .expect("Keep saves the clean words");
         assert_eq!(
-            entry.text.split_whitespace().filter(|w| w.starts_with("clean")).count(),
+            entry
+                .text
+                .split_whitespace()
+                .filter(|w| w.starts_with("clean"))
+                .count(),
             40
         );
         // Bounded: a LONG loop (> N) is still cut, words after it and all.
@@ -17606,7 +17869,10 @@ mod db_b_recovery_followups {
         assert_eq!(row.attempt_text, None, "no Keep before the attempt");
         let err = finish_preconditions::<()>(&db, &row, true, None).unwrap_err();
         assert_eq!(err, NO_MODEL_INSTALLED);
-        let after = db.get_failed_dictation(&row.id).unwrap().expect("row stays");
+        let after = db
+            .get_failed_dictation(&row.id)
+            .unwrap()
+            .expect("row stays");
         // Home.tsx offers Keep exactly when `attemptText` is set.
         assert_eq!(after.attempt_text.as_deref(), Some(words("w", 20).as_str()));
         assert_eq!(after.error, NO_MODEL_INSTALLED);

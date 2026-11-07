@@ -59,8 +59,8 @@ use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::meeting::{MIC_TRACK as MIC_TRACK_INDEX, SYSTEM_TRACK as SYSTEM_TRACK_INDEX};
 use crate::meeting_asr::{
-    ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand, JsonProgressStore, MeetingAsr,
-    split_utterances, MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows,
+    split_utterances, ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand,
+    JsonProgressStore, MeetingAsr, MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows,
     VoiceActivity, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
@@ -288,7 +288,11 @@ impl MeetingPipeline {
             .map(|tx| tx.send(id.to_string()).is_ok())
             .unwrap_or(false);
         if !sent {
-            diag_warn!("meeting_pipeline", "meeting pipeline: worker is gone, {id} stays queued for next launch", id = id);
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting pipeline: worker is gone, {id} stays queued for next launch",
+                id = id
+            );
         } else {
             log::info!("meeting pipeline: queued {id}");
             (self.sink)(&queued_event(id));
@@ -358,7 +362,11 @@ pub fn enqueue(id: &str) -> bool {
             true
         }
         None => {
-            diag_warn!("meeting_pipeline", "meeting pipeline: not installed, {id} waits for the next launch", id = id);
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting pipeline: not installed, {id} waits for the next launch",
+                id = id
+            );
             false
         }
     }
@@ -393,7 +401,9 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 // chip saying why — until wall power / full, a "Run anyway",
                 // or quit. The recording is already safe on disk.
                 if wait_for_governor(&id, &|| quitting() || (deps.quit)()) {
-                    log::info!("meeting pipeline: {id} stays queued for next launch (quit while deferred)");
+                    log::info!(
+                        "meeting pipeline: {id} stays queued for next launch (quit while deferred)"
+                    );
                     let (lock, cv) = &*worker_pending;
                     if let Ok(mut p) = lock.lock() {
                         p.queued.remove(&id);
@@ -414,7 +424,10 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                     job_started.elapsed().as_millis() as u64,
                 );
                 let failed = !matches!(&result, Ok(Ok(s)) if *s != MeetingState::Failed);
-                crate::diagnostics::set_state("meeting.state", if failed { "failed" } else { "idle" });
+                crate::diagnostics::set_state(
+                    "meeting.state",
+                    if failed { "failed" } else { "idle" },
+                );
                 // Any in-process end of the job (including a caught panic)
                 // clears the crash marker: only a dead PROCESS leaves it.
                 clear_attempt_marker(&deps.progress_dir, &id);
@@ -423,7 +436,12 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
                     }
                     Ok(Err(e)) => {
-                        diag_warn!("meeting_pipeline", "meeting pipeline: {id} failed: {err}", id = id, err = e);
+                        diag_warn!(
+                            "meeting_pipeline",
+                            "meeting pipeline: {id} failed: {err}",
+                            id = id,
+                            err = e
+                        );
                         let msg = format!("Yap could not transcribe this meeting: {e}");
                         let _ = deps
                             .db
@@ -431,7 +449,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                         emit_final(&deps, &id, MeetingState::Failed, Some(msg));
                     }
                     Err(_) => {
-                        diag_error!("meeting_pipeline", "meeting pipeline: job for {id} panicked — marked failed", id = id);
+                        diag_error!(
+                            "meeting_pipeline",
+                            "meeting pipeline: job for {id} panicked — marked failed",
+                            id = id
+                        );
                         let msg = "Yap hit an internal error transcribing this meeting. \
                                    Press Retry."
                             .to_string();
@@ -450,7 +472,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
             }
         });
     if let Err(e) = spawned {
-        diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
+        diag_error!(
+            "meeting_pipeline",
+            "meeting pipeline: worker thread failed to spawn: {err}",
+            err = e
+        );
     }
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
@@ -597,11 +623,7 @@ pub fn ledger_records_failed_window(dir: &Path, meeting_id: &str) -> bool {
     [MIC_TRACK, SYSTEM_TRACK]
         .iter()
         .filter_map(|t| store.load(&ledger_key(meeting_id, *t)).ok())
-        .any(|p| {
-            p.chunks
-                .iter()
-                .any(|c| c.status == ChunkStatus::AsrFailed)
-        })
+        .any(|p| p.chunks.iter().any(|c| c.status == ChunkStatus::AsrFailed))
 }
 
 /// The per-track resume ledgers only — what a re-decode discards (never the
@@ -641,7 +663,12 @@ pub fn read_capture_carry(dir: &Path, meeting_id: &str) -> Option<CaptureCarry> 
         Err(e) => {
             // Unreadable carry: assume the capture WAS partial — never let a
             // corrupt file promote a short capture to `complete`.
-            diag_warn!("meeting_pipeline", "meeting {id}: unreadable capture carry ({err}) — treated as partial", id = meeting_id, err = e);
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting {id}: unreadable capture carry ({err}) — treated as partial",
+                id = meeting_id,
+                err = e
+            );
             Some(CaptureCarry {
                 partial: true,
                 note: None,
@@ -686,10 +713,19 @@ fn write_attempt_marker(dir: &Path, meeting_id: &str, marker: AttemptMarker) {
     match serde_json::to_vec(&marker) {
         Ok(bytes) => {
             if let Err(e) = std::fs::write(&path, bytes) {
-                diag_warn!("meeting_pipeline", "meeting pipeline: cannot write {file}: {err}", file = crate::diagnostics::basename(&path), err = e);
+                diag_warn!(
+                    "meeting_pipeline",
+                    "meeting pipeline: cannot write {file}: {err}",
+                    file = crate::diagnostics::basename(&path),
+                    err = e
+                );
             }
         }
-        Err(e) => diag_warn!("meeting_pipeline", "meeting pipeline: cannot encode attempt marker: {err}", err = e),
+        Err(e) => diag_warn!(
+            "meeting_pipeline",
+            "meeting pipeline: cannot encode attempt marker: {err}",
+            err = e
+        ),
     }
 }
 
@@ -743,7 +779,13 @@ pub fn guarded_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String
         return Ok(MeetingState::Failed);
     }
     if crashes > 0 {
-        diag_warn!("meeting_pipeline", "meeting pipeline: {id} — the last launch died mid-job ({crashes}/{max})", id = id, crashes = crashes, max = MAX_UNPROGRESSED_ATTEMPTS);
+        diag_warn!(
+            "meeting_pipeline",
+            "meeting pipeline: {id} — the last launch died mid-job ({crashes}/{max})",
+            id = id,
+            crashes = crashes,
+            max = MAX_UNPROGRESSED_ATTEMPTS
+        );
     }
     write_attempt_marker(
         dir,
@@ -766,7 +808,11 @@ pub fn requeue_waiting_for_model(db: &Database, enqueue: &dyn Fn(&str)) -> usize
     let rows = match db.list_meetings(100_000, None) {
         Ok(rows) => rows,
         Err(e) => {
-            diag_warn!("meeting_pipeline", "meeting pipeline: cannot list waiting meetings ({err})", err = e);
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting pipeline: cannot list waiting meetings ({err})",
+                err = e
+            );
             return 0;
         }
     };
@@ -867,7 +913,11 @@ pub fn sweep_meeting_audio(
         Err(e) => {
             // Rolled back: those rows still point at their audio, which stays
             // on disk and is retried on the next sweep.
-            diag_warn!("meeting_pipeline", "retention: untranscribed meeting audio purge skipped: {err}", err = e);
+            diag_warn!(
+                "meeting_pipeline",
+                "retention: untranscribed meeting audio purge skipped: {err}",
+                err = e
+            );
             Vec::new()
         }
     };
@@ -910,7 +960,12 @@ fn unlink_purged_meeting_audio(
             match std::fs::remove_file(&file) {
                 Ok(()) => removed.push(file),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => diag_warn!("meeting_pipeline", "retention: {file} not removed: {err}", file = crate::diagnostics::basename(&file), err = e),
+                Err(e) => diag_warn!(
+                    "meeting_pipeline",
+                    "retention: {file} not removed: {err}",
+                    file = crate::diagnostics::basename(&file),
+                    err = e
+                ),
             }
         }
     }
@@ -1001,8 +1056,12 @@ pub fn chunk_segments(chunk: &ChunkOutcome, track: i64) -> Vec<NewMeetingSegment
             .filter_map(|u| {
                 let text = u.text.split_whitespace().collect::<Vec<_>>().join(" ");
                 (!text.is_empty()).then(|| {
-                    NewMeetingSegment::new(u.start_seconds, u.end_seconds.max(u.start_seconds), text)
-                        .on_track(track)
+                    NewMeetingSegment::new(
+                        u.start_seconds,
+                        u.end_seconds.max(u.start_seconds),
+                        text,
+                    )
+                    .on_track(track)
                 })
             })
             .collect();
@@ -1087,7 +1146,8 @@ impl ProgressStore for SegmentWritingStore<'_> {
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
         let segments = chunk_segments(chunk, self.track);
         if !segments.is_empty() {
-            self.db.append_meeting_segments(self.meeting_id, &segments)?;
+            self.db
+                .append_meeting_segments(self.meeting_id, &segments)?;
             let lengths: Vec<f64> = segments
                 .iter()
                 .map(|s| (s.end_seconds - s.start_seconds).max(0.0))
@@ -1233,7 +1293,13 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     for (track, path) in &tracks {
         match WavWindows::open(path) {
             Ok(w) => sources.push((*track, w)),
-            Err(e) => diag_warn!("meeting_pipeline", "meeting {id}: track {track} unreadable ({err}) — skipped", id = id, track = track, err = e),
+            Err(e) => diag_warn!(
+                "meeting_pipeline",
+                "meeting {id}: track {track} unreadable ({err}) — skipped",
+                id = id,
+                track = track,
+                err = e
+            ),
         }
     }
     if sources.is_empty() {
@@ -1325,7 +1391,12 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     let vad: Option<Arc<dyn VoiceActivity + Send + Sync>> = match (deps.vad)() {
         Ok(v) => Some(v),
         Err(e) => {
-            diag_warn!("meeting_pipeline", "meeting {id}: no VAD ({err}) — chunking on the fixed clock", id = id, err = e);
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting {id}: no VAD ({err}) — chunking on the fixed clock",
+                id = id,
+                err = e
+            );
             None
         }
     };

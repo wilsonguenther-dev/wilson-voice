@@ -395,7 +395,10 @@ impl DiarizePool {
         // Mac it is refused (never a restart-budget hit) and the caller keeps
         // the unlabelled transcript until power is back.
         if let Some(reason) = crate::resource_governor::heavy_work_deferred("diarize") {
-            log::info!("diarize deferred reason={reason} governor=1 file={}", wav.file_name().and_then(|f| f.to_str()).unwrap_or("?"));
+            log::info!(
+                "diarize deferred reason={reason} governor=1 file={}",
+                wav.file_name().and_then(|f| f.to_str()).unwrap_or("?")
+            );
             return Err(DiarizeError::Refused(format!("saving_battery:{reason}")));
         }
         let req =

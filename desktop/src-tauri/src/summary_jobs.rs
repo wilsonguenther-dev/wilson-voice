@@ -71,7 +71,10 @@ impl NotesPhase {
     }
     /// Still going — the card offers Cancel.
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::PreparingNotes | Self::Summarizing)
+        matches!(
+            self,
+            Self::Queued | Self::PreparingNotes | Self::Summarizing
+        )
     }
 }
 
@@ -163,8 +166,17 @@ pub fn classify_download_error(msg: &str) -> NotesError {
     } else if let Some(code) = http_status_in(&lower) {
         NotesError::Server(code)
     } else if [
-        "timed out", "stalled", "error sending request", "connect", "dns", "network",
-        "unreachable", "offline", "read from", "short read", "failed to lookup",
+        "timed out",
+        "stalled",
+        "error sending request",
+        "connect",
+        "dns",
+        "network",
+        "unreachable",
+        "offline",
+        "read from",
+        "short read",
+        "failed to lookup",
     ]
     .iter()
     .any(|m| lower.contains(m))
@@ -178,7 +190,10 @@ pub fn classify_download_error(msg: &str) -> NotesError {
 /// The `NNN` of the last "returned HTTP NNN" in a download error.
 fn http_status_in(lower: &str) -> Option<u16> {
     let at = lower.rfind("http ")?;
-    let digits: String = lower[at + 5..].chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = lower[at + 5..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     let code: u16 = digits.parse().ok()?;
     (400..600).contains(&code).then_some(code)
 }
@@ -264,7 +279,10 @@ pub fn ensure_notes_model(
                     Ok(m)
                 }
                 Err(e) => {
-                    log::warn!("summary notes_model_fetch failure model={m} reason={}", e.plain());
+                    log::warn!(
+                        "summary notes_model_fetch failure model={m} reason={}",
+                        e.plain()
+                    );
                     Err(e)
                 }
             }
@@ -501,18 +519,17 @@ fn worker_loop(inner: &Arc<Inner>) {
         // A1: a panic in the model fetch or the summary ends THIS job as
         // failed (with Retry) — it never kills the worker or leaves
         // `running` set, which would park every later meeting at "queued".
-        let end = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_one(inner, &id, &token)
-        }))
-        .unwrap_or_else(|_| {
-            log::error!("summary: the notes job for meeting {id} panicked — marked failed");
-            NotesStatus {
-                id: id.clone(),
-                phase: NotesPhase::Failed,
-                percent: 0,
-                reason: Some(INTERNAL_ERROR_REASON.to_string()),
-            }
-        });
+        let end =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_one(inner, &id, &token)))
+                .unwrap_or_else(|_| {
+                    log::error!("summary: the notes job for meeting {id} panicked — marked failed");
+                    NotesStatus {
+                        id: id.clone(),
+                        phase: NotesPhase::Failed,
+                        percent: 0,
+                        reason: Some(INTERNAL_ERROR_REASON.to_string()),
+                    }
+                });
         // A2: the slot is cleared and the end status written under ONE lock,
         // so a submit (Retry, the live hook, resume) cannot land between the
         // two and have its Queued status overwritten by this job's end.
@@ -640,7 +657,11 @@ pub fn same_transcript(
     read: &[crate::meetings::MeetingSegment],
     now: &[crate::meetings::MeetingSegment],
 ) -> bool {
-    read.len() == now.len() && read.iter().zip(now).all(|(a, b)| a.id == b.id && a.text == b.text)
+    read.len() == now.len()
+        && read
+            .iter()
+            .zip(now)
+            .all(|(a, b)| a.id == b.id && a.text == b.text)
 }
 
 // ── the upgrade backlog (review A3) ─────────────────────────────────────────
@@ -759,14 +780,20 @@ pub fn state_after_stale_summarizing(
 ) -> (crate::meetings::MeetingState, Option<String>) {
     let note = error.filter(|e| !e.trim().is_empty());
     if let Some(note) = note {
-        (crate::meetings::MeetingState::Partial, Some(note.to_string()))
+        (
+            crate::meetings::MeetingState::Partial,
+            Some(note.to_string()),
+        )
     } else if ledger_has_failed_window {
         (
             crate::meetings::MeetingState::Partial,
             Some(crate::meeting_pipeline::SOME_WINDOWS_FAILED_MESSAGE.to_string()),
         )
     } else {
-        (crate::meetings::MeetingState::Complete, error.map(str::to_string))
+        (
+            crate::meetings::MeetingState::Complete,
+            error.map(str::to_string),
+        )
     }
 }
 
@@ -911,7 +938,11 @@ mod tests {
         let t1 = std::thread::spawn(move || a.submit("m1"));
         let t2 = std::thread::spawn(move || b.submit("m1"));
         let accepted = [t1.join().unwrap(), t2.join().unwrap()];
-        assert_eq!(accepted.iter().filter(|x| **x).count(), 1, "one job per meeting");
+        assert_eq!(
+            accepted.iter().filter(|x| **x).count(),
+            1,
+            "one job per meeting"
+        );
         wait_phase(&j, "m1", NotesPhase::Summarizing);
         assert!(!j.submit("m1"), "a running meeting is not queued again");
         assert!(j.submit("m2"));
@@ -920,7 +951,11 @@ mod tests {
         }
         assert!(j.wait_idle(Duration::from_secs(5)));
         assert_eq!(stub.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(stub.max_live.load(Ordering::SeqCst), 1, "never two sidecars");
+        assert_eq!(
+            stub.max_live.load(Ordering::SeqCst),
+            1,
+            "never two sidecars"
+        );
         assert_eq!(*stub.stored.lock().unwrap(), vec!["m1", "m2"]);
     }
 
@@ -938,13 +973,24 @@ mod tests {
         assert!(j.is_busy("m1"));
         // What `submit` alone did on cb35adf: refused, and the stale job stored.
         assert!(!j.submit("m1"));
-        assert!(j.submit_new_transcript("m1"), "notes for the new transcript are coming");
+        assert!(
+            j.submit_new_transcript("m1"),
+            "notes for the new transcript are coming"
+        );
         release.send(()).unwrap(); // the stale run ends (cancelled, stores nothing)
         wait_phase(&j, "m1", NotesPhase::Summarizing); // ...and runs again
         release.send(()).unwrap();
         assert!(j.wait_idle(Duration::from_secs(5)));
-        assert_eq!(stub.calls.load(Ordering::SeqCst), 2, "the stale job, then the rerun");
-        assert_eq!(*stub.stored.lock().unwrap(), vec!["m1"], "only the rerun stored notes");
+        assert_eq!(
+            stub.calls.load(Ordering::SeqCst),
+            2,
+            "the stale job, then the rerun"
+        );
+        assert_eq!(
+            *stub.stored.lock().unwrap(),
+            vec!["m1"],
+            "only the rerun stored notes"
+        );
         assert_eq!(j.status("m1").map(|s| s.phase), Some(NotesPhase::Ready));
         assert!(!j.is_busy("m1"));
     }
@@ -957,7 +1003,10 @@ mod tests {
         assert!(j.submit("m1"));
         wait_phase(&j, "m1", NotesPhase::Summarizing);
         assert!(j.submit("m2"));
-        assert!(j.submit_new_transcript("m2"), "queued: it reads the new transcript");
+        assert!(
+            j.submit_new_transcript("m2"),
+            "queued: it reads the new transcript"
+        );
         // The person cancels m1 after a new transcript asked for a restart.
         assert!(j.submit_new_transcript("m1"));
         assert!(j.cancel("m1"));
@@ -965,7 +1014,11 @@ mod tests {
             release.send(()).unwrap();
         }
         assert!(j.wait_idle(Duration::from_secs(5)));
-        assert_eq!(*stub.stored.lock().unwrap(), vec!["m2"], "one m2 job; m1 stays cancelled");
+        assert_eq!(
+            *stub.stored.lock().unwrap(),
+            vec!["m2"],
+            "one m2 job; m1 stays cancelled"
+        );
         assert_eq!(j.status("m1").map(|s| s.phase), Some(NotesPhase::Cancelled));
         // Idle meeting: a plain submit.
         assert!(j.submit_new_transcript("m3"));
@@ -1011,9 +1064,15 @@ mod tests {
         // test literal must not duplicate shipped copy.
         let cases = [
             (NotesError::Offline, true),
-            (NotesError::DiskFull("stub: 1.6 GB needed, 0.2 GB free".into()), true),
+            (
+                NotesError::DiskFull("stub: 1.6 GB needed, 0.2 GB free".into()),
+                true,
+            ),
             (NotesError::Checksum, true),
-            (NotesError::Summary("stub: the summary refused".into()), false),
+            (
+                NotesError::Summary("stub: the summary refused".into()),
+                false,
+            ),
             (NotesError::ModelStart, false),
         ];
         for (err, in_download) in cases {
@@ -1041,15 +1100,21 @@ mod tests {
     #[test]
     fn download_errors_sort_into_plain_reasons() {
         assert_eq!(
-            classify_download_error("download failed after 4 attempts: request to https://x failed: dns error"),
+            classify_download_error(
+                "download failed after 4 attempts: request to https://x failed: dns error"
+            ),
             NotesError::Offline
         );
         assert_eq!(
-            classify_download_error("download failed after 4 attempts: download from x stalled at 10 bytes"),
+            classify_download_error(
+                "download failed after 4 attempts: download from x stalled at 10 bytes"
+            ),
             NotesError::Offline
         );
         assert_eq!(
-            classify_download_error("download failed after 4 attempts: sha256 mismatch: expected a, got b"),
+            classify_download_error(
+                "download failed after 4 attempts: sha256 mismatch: expected a, got b"
+            ),
             NotesError::Checksum
         );
         assert!(matches!(
@@ -1080,13 +1145,26 @@ mod tests {
         release.send(()).unwrap();
         let st = j.wait_for("m1", Duration::from_secs(5)).unwrap();
         assert_eq!(st.phase, NotesPhase::Cancelled);
-        assert_eq!(stub.calls.load(Ordering::SeqCst), 0, "no summary after a cancelled download");
-        let max_pct = seen.lock().unwrap().iter().map(|s| s.percent).max().unwrap();
+        assert_eq!(
+            stub.calls.load(Ordering::SeqCst),
+            0,
+            "no summary after a cancelled download"
+        );
+        let max_pct = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.percent)
+            .max()
+            .unwrap();
         assert_eq!(max_pct, 30, "no chunk after the cancel");
         // Resume / Retry redoes it.
         *stub.gate.lock().unwrap() = None;
         assert!(j.submit("m1"));
-        assert_eq!(j.wait_for("m1", Duration::from_secs(5)).unwrap().phase, NotesPhase::Ready);
+        assert_eq!(
+            j.wait_for("m1", Duration::from_secs(5)).unwrap().phase,
+            NotesPhase::Ready
+        );
     }
 
     // B2 — Cancel during the summary stores nothing and says "cancelled".
@@ -1101,7 +1179,10 @@ mod tests {
         release.send(()).unwrap();
         let st = j.wait_for("m1", Duration::from_secs(5)).unwrap();
         assert_eq!(st.phase, NotesPhase::Cancelled);
-        assert!(stub.stored.lock().unwrap().is_empty(), "no partial stored as final");
+        assert!(
+            stub.stored.lock().unwrap().is_empty(),
+            "no partial stored as final"
+        );
     }
 
     #[test]
@@ -1135,13 +1216,20 @@ mod tests {
     #[test]
     fn upgrade_backlog_is_opt_in() {
         let since: DateTime<Utc> = "2026-10-19T12:00:00Z".parse().unwrap();
-        let row = |id: &str, at: &str| NeedsNotes { id: id.into(), started_at: at.parse().unwrap() };
+        let row = |id: &str, at: &str| NeedsNotes {
+            id: id.into(),
+            started_at: at.parse().unwrap(),
+        };
         let rows = vec![
             row("old1", "2026-09-01T10:00:00Z"),
             row("old2", "2026-10-18T10:00:00Z"),
             row("new1", "2026-10-19T13:00:00Z"),
         ];
-        let mut ledger = NotesLedger { since, backlog: BacklogChoice::Pending, cancelled: Vec::new() };
+        let mut ledger = NotesLedger {
+            since,
+            backlog: BacklogChoice::Pending,
+            cancelled: Vec::new(),
+        };
         let (resume, backlog) = plan_resume(&rows, &ledger);
         assert_eq!(resume, vec!["new1"]);
         assert_eq!(backlog, vec!["old1", "old2"]);
@@ -1166,7 +1254,10 @@ mod tests {
         assert_eq!(l2.since, t1, "the first run's moment sticks");
         l2.backlog = BacklogChoice::Accepted;
         l2.save(&path);
-        assert_eq!(NotesLedger::load_or_create(&path, t2).backlog, BacklogChoice::Accepted);
+        assert_eq!(
+            NotesLedger::load_or_create(&path, t2).backlog,
+            BacklogChoice::Accepted
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1181,7 +1272,6 @@ mod tests {
         let active = |id: &str| id == "live";
         assert_eq!(stale_summarizing(&rows, &active), vec!["old".to_string()]);
     }
-
 
     /// A6: every reason a card can show is real copy — non-empty and
     /// distinct per variant — without re-typing any shipped string here.
@@ -1201,13 +1291,19 @@ mod tests {
         for (i, r) in reasons.iter().enumerate() {
             assert!(r.trim().len() > 3, "empty reason for {:?}", variants[i]);
             for (j, other) in reasons.iter().enumerate().skip(i + 1) {
-                assert_ne!(r, other, "{:?} and {:?} read the same", variants[i], variants[j]);
+                assert_ne!(
+                    r, other,
+                    "{:?} and {:?} read the same",
+                    variants[i], variants[j]
+                );
             }
         }
         assert!(NotesError::Server(503).plain().contains("503"));
-        assert_ne!(NotesError::Server(404).plain(), NotesError::Server(503).plain());
+        assert_ne!(
+            NotesError::Server(404).plain(),
+            NotesError::Server(503).plain()
+        );
     }
-
 
     /// A1: a backend that panics on one meeting.
     struct Panicky;
@@ -1236,12 +1332,15 @@ mod tests {
         assert_eq!(boom.phase, NotesPhase::Failed);
         assert_eq!(boom.reason.as_deref(), Some(INTERNAL_ERROR_REASON));
         let fine = j.wait_for("fine", Duration::from_secs(5)).expect("status");
-        assert_eq!(fine.phase, NotesPhase::Ready, "the worker survived the panic");
+        assert_eq!(
+            fine.phase,
+            NotesPhase::Ready,
+            "the worker survived the panic"
+        );
         // Retry is accepted: the slot was cleared.
         assert!(j.submit("boom"));
         assert!(j.wait_idle(Duration::from_secs(5)));
     }
-
 
     /// #250 fix round 1 (independent B2): the OS refusing the worker thread is
     /// an `Err` the launch path logs, never a panic on the main thread.
@@ -1249,26 +1348,40 @@ mod tests {
     fn a_refused_worker_thread_is_an_error_not_a_panic() {
         let out = std::panic::catch_unwind(|| {
             SummaryJobs::spawn_with(Arc::new(Panicky), Arc::new(|_: &NotesStatus| {}), |_, _| {
-                Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "no threads left"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "no threads left",
+                ))
             })
         });
         let res = out.expect("spawn_with must not panic when the thread is refused");
         let err = res.err().expect("a refused thread is an Err");
-        assert!(err.contains("no threads left"), "the OS reason is carried: {err}");
+        assert!(
+            err.contains("no threads left"),
+            "the OS reason is carried: {err}"
+        );
     }
 
     /// review-opus2 A7: only a network-shaped error reads "offline".
     #[test]
     fn unknown_download_errors_are_not_offline() {
-        assert_eq!(classify_download_error("rename a -> b failed: os error 1"), NotesError::Download);
-        assert_eq!(classify_download_error("no download URLs configured"), NotesError::Download);
+        assert_eq!(
+            classify_download_error("rename a -> b failed: os error 1"),
+            NotesError::Download
+        );
+        assert_eq!(
+            classify_download_error("no download URLs configured"),
+            NotesError::Download
+        );
         assert_eq!(
             classify_download_error("request to https://x/m failed: error sending request"),
             NotesError::Offline
         );
-        assert_eq!(classify_download_error("download from u stalled at 5 bytes"), NotesError::Offline);
+        assert_eq!(
+            classify_download_error("download from u stalled at 5 bytes"),
+            NotesError::Offline
+        );
     }
-
 
     /// review-opus2 A6: a cancel survives a relaunch; an old meeting is never
     /// started by the automatic paths unless the backlog was accepted.
@@ -1283,18 +1396,23 @@ mod tests {
         let new = since + chrono::Duration::minutes(5);
         let old = since - chrono::Duration::days(3);
         assert!(l.allows_auto("a", new));
-        assert!(!l.allows_auto("b", old), "a stranded old meeting needs the banner");
+        assert!(
+            !l.allows_auto("b", old),
+            "a stranded old meeting needs the banner"
+        );
         NotesLedger::set_cancelled(&path, "a", true);
         let l = NotesLedger::load_or_create(&path, Utc::now());
         assert!(!l.allows_auto("a", new), "the cancel survived the relaunch");
-        let rows = vec![NeedsNotes { id: "a".into(), started_at: new }];
+        let rows = vec![NeedsNotes {
+            id: "a".into(),
+            started_at: new,
+        }];
         assert_eq!(plan_resume(&rows, &l), (vec![], vec![]));
         NotesLedger::set_cancelled(&path, "a", false);
         let l = NotesLedger::load_or_create(&path, Utc::now());
         assert!(l.allows_auto("a", new), "Retry clears it");
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 
     /// yap24-NT4 R4 — a summary never starts while the backend says ASR (or
     /// memory) is busy; it runs on the first idle tick after, and a cancel
@@ -1311,7 +1429,11 @@ mod tests {
             self.inner.fetch_model(p, c)
         }
         fn summarize(&self, id: &str, c: &CancelToken) -> Result<(), NotesError> {
-            assert_eq!(self.busy_ticks.load(Ordering::SeqCst), 0, "summarized while ASR was busy");
+            assert_eq!(
+                self.busy_ticks.load(Ordering::SeqCst),
+                0,
+                "summarized while ASR was busy"
+            );
             self.inner.summarize(id, c)
         }
         fn defer_reason(&self, _id: &str) -> Option<String> {
@@ -1330,10 +1452,15 @@ mod tests {
     #[test]
     fn a_summary_waits_for_asr_to_go_idle_then_runs() {
         let stub = Stub::new(true);
-        let backend = Arc::new(Deferring { inner: stub.clone(), busy_ticks: AtomicUsize::new(4) });
+        let backend = Arc::new(Deferring {
+            inner: stub.clone(),
+            busy_ticks: AtomicUsize::new(4),
+        });
         let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).unwrap();
         assert!(jobs.submit("m1"));
-        let end = jobs.wait_for("m1", Duration::from_secs(5)).expect("a status");
+        let end = jobs
+            .wait_for("m1", Duration::from_secs(5))
+            .expect("a status");
         assert_eq!(end.phase, NotesPhase::Ready);
         assert_eq!(backend.busy_ticks.load(Ordering::SeqCst), 0);
         assert_eq!(*stub.stored.lock().unwrap(), vec!["m1".to_string()]);
@@ -1342,12 +1469,17 @@ mod tests {
     #[test]
     fn a_cancel_while_deferred_stores_nothing() {
         let stub = Stub::new(true);
-        let backend = Arc::new(Deferring { inner: stub.clone(), busy_ticks: AtomicUsize::new(usize::MAX) });
+        let backend = Arc::new(Deferring {
+            inner: stub.clone(),
+            busy_ticks: AtomicUsize::new(usize::MAX),
+        });
         let jobs = SummaryJobs::spawn(backend, Arc::new(|_: &NotesStatus| {})).unwrap();
         assert!(jobs.submit("m2"));
         std::thread::sleep(Duration::from_millis(30));
         assert!(jobs.cancel("m2"));
-        let end = jobs.wait_for("m2", Duration::from_secs(5)).expect("a status");
+        let end = jobs
+            .wait_for("m2", Duration::from_secs(5))
+            .expect("a status");
         assert_eq!(end.phase, NotesPhase::Cancelled);
         assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
         assert!(stub.stored.lock().unwrap().is_empty());
@@ -1355,8 +1487,20 @@ mod tests {
 
     #[test]
     fn memory_defers_only_above_the_ceiling_and_never_on_unknown() {
-        assert!(!memory_defers(900.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
-        assert!(memory_defers(1300.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
-        assert!(!memory_defers(0.0, NOTES_SIDECAR_PEAK_MB, NOTES_RSS_CEILING_MB));
+        assert!(!memory_defers(
+            900.0,
+            NOTES_SIDECAR_PEAK_MB,
+            NOTES_RSS_CEILING_MB
+        ));
+        assert!(memory_defers(
+            1300.0,
+            NOTES_SIDECAR_PEAK_MB,
+            NOTES_RSS_CEILING_MB
+        ));
+        assert!(!memory_defers(
+            0.0,
+            NOTES_SIDECAR_PEAK_MB,
+            NOTES_RSS_CEILING_MB
+        ));
     }
 }
