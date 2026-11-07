@@ -19,6 +19,7 @@ import {
   SAMPLE_POLISH_REVEAL,
   USE_ORIGINAL_COMMAND,
   USE_ORIGINAL_FAILED,
+  USE_ORIGINAL_NOT_FOUND,
   forcedPolishReveal,
   isPolishReveal,
   polishRevealLines,
@@ -87,6 +88,34 @@ describe("WF-05 polish reveal — model", () => {
     expect(useOriginalError("A newer take landed. Use History to paste this one.")).toContain("newer take");
     expect(useOriginalError(new Error("boom"))).toBe(USE_ORIGINAL_FAILED);
     expect(useOriginalError("  ")).toBe(USE_ORIGINAL_FAILED);
+  });
+
+  it("Use original that cannot find the polished words says the clipboard sentence", async () => {
+    // Rust (paste::replace_take) refused the range: copy only, no paste, and
+    // the command rejects with this sentence, which the pill shows verbatim.
+    let error: string | undefined;
+    await pasteOriginal(REVEAL, async () => {
+      throw USE_ORIGINAL_NOT_FOUND;
+    }).catch((e: unknown) => {
+      error = useOriginalError(e);
+    });
+    expect(error).toBe(USE_ORIGINAL_NOT_FOUND);
+    expect(USE_ORIGINAL_NOT_FOUND).toBe(
+      "Couldn't find the polished words in that field. The original is on your clipboard.",
+    );
+    const el = PolishRevealView({
+      reveal: REVEAL,
+      view: "card",
+      busy: false,
+      error,
+      onReveal: noop,
+      onUseOriginal: noop,
+      onKeep: noop,
+    }) as ReactElement;
+    const html = renderToStaticMarkup(el);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Couldn&#x27;t find the polished words in that field.");
+    expect(html).toContain("The original is on your clipboard.");
   });
 
   it("names where polish ran in the route chip's words, never a vendor", () => {

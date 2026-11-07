@@ -1,8 +1,10 @@
 // WF-05 — "Polished your dictation — Reveal edit". After a take the polish
 // stage really rewrote (on this Mac or in the cloud), the pill shows a short
 // "Polished — Reveal" toast. Reveal opens a small card with the take's diff
-// (the shared DiffView) and two answers: Use original (swaps the polished text
-// back to the words as dictated, through the Undo AI Edit paste) and Keep.
+// (the shared DiffView) and two answers: Use original (selects the polished
+// text in its field and types the words as dictated over it, the same replace
+// Undo AI Edit uses; when the polished words cannot be found it copies the
+// original instead and says so) and Keep.
 // Rust raises the event only when more than a word or so changed once
 // punctuation and capitals are ignored (`dictation::polish_changed_words`).
 // Pure model — no hooks, no Tauri imports.
@@ -75,6 +77,15 @@ export function polishRevealLines(r: PolishReveal): {
 
 /** What a failed "Use original" says when Rust gave no sentence of its own. */
 export const USE_ORIGINAL_FAILED = "Couldn’t paste the original. Try Use original again.";
+
+/**
+ * Mirrors `paste.rs` `REPLACE_NOT_FOUND_MESSAGE`: Use original could not find
+ * the polished words right before the caret (the user typed after them, moved
+ * the caret, or the field is unreadable), so nothing was typed and the original
+ * went to the clipboard instead. Rust rejects with this sentence.
+ */
+export const USE_ORIGINAL_NOT_FOUND =
+  "Couldn't find the polished words in that field. The original is on your clipboard.";
 
 /** Rust's refusal sentence when it sent one, else the generic line. */
 export function useOriginalError(e: unknown): string {
