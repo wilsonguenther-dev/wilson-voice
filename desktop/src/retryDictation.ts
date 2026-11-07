@@ -92,7 +92,7 @@ export interface RetryWatchdog {
 export function createRetryWatchdog(onExpire: () => void): RetryWatchdog {
   let handle: ReturnType<typeof setTimeout> | null = null;
   let expired = false;
-  let fire: () => void = () => {};
+  let fire!: () => void; // set synchronously by the Promise executor below
   const whenExpired = new Promise<void>((resolve) => {
     fire = resolve;
   });
