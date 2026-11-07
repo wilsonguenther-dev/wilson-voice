@@ -172,8 +172,8 @@ export function createPasteFailedGate(limit = 200): (id: string | null | undefin
     if (seen.has(id)) return false;
     seen.add(id);
     if (seen.size > limit) {
-      const oldest = seen.values().next().value;
-      if (oldest !== undefined) seen.delete(oldest);
+      // The set is over its limit, so it is never empty: the first value exists.
+      seen.delete(seen.values().next().value as string);
     }
     return true;
   };
