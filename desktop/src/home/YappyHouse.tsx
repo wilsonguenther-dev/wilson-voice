@@ -236,7 +236,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
         });
         og!.imageSmoothingEnabled = false;
         const firstFrame = frameCache.stats.renders === 0;
-        composeStudio(og!, layers, frameCache.get(), offs, s, t);
+        composeStudio<HTMLCanvasElement>(og!, layers, frameCache.get(), offs, s, t);
         if (firstFrame) console.info(`home studio_frame_cached w=${W} h=${H} cell=${grid.cell}`);
         stage!.dataset.onAir = onAirLit(s) ? "on" : "off";
         // A display with a different backing scale re-grids here: no resize event fires for that.
