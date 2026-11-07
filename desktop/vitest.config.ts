@@ -64,8 +64,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/characters/types.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/copyCardModel.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
-  // yap-1106-launch-walk — floor set conservatively (the coder may not run coverage); the integrator may raise it to the measured value.
-  "pill/launchWalk.ts": { lines: 90, branches: 80, functions: 100, statements: 90 },
+  // yap-1106-launch-walk — floor set by the batch-11 integrator from the measured run (100 / 95.57 / 100 / 100).
+  "pill/launchWalk.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
@@ -109,8 +109,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/friendVisits.ts": { lines: 95, branches: 85, functions: 95, statements: 95 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
-  // yap-1106-pill-vertical-dock-world — floors set below the authored test's reach (no run allowed); the integrator raises them to the measured value.
-  "pill/vdock.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
+  // yap-1106-pill-vertical-dock-world — floor set by the batch-11 integrator from the measured run (100 / 98.46 / 100 / 100).
+  "pill/vdock.ts": { lines: 100, branches: 98, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
