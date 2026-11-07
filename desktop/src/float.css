@@ -494,9 +494,16 @@ body,
   image-rendering: pixelated;
   cursor: pointer;
 }
+/* yap-1106-yappy-states-and-motion — the approved bubble motion (pill.html §03):
+   in = fade up 4 px and grow 96 → 100 percent (--dur-bubble-in, ease-out);
+   out = fade only (--dur-bubble-out), the transform snapping back only after
+   the fade has finished. At most 200 px wide (bubble.ts BUBBLE_MAX_WIDTH_PX)
+   and clamped to two lines by .kami-bubble-text, so a long line can never
+   reach across the screen or under the dock edge. */
 .kami-bubble {
   position: absolute;
-  transform: translate(-50%, -100%) scale(0.9);
+  transform: translate(-50%, calc(-100% + 4px)) scale(0.96);
+  width: max-content;
   background: var(--pill-bubble-surface);
   color: var(--pill-bubble-text);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -506,16 +513,49 @@ body,
   font-weight: 700;
   letter-spacing: -0.01em;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  max-width: 92%;
+  white-space: normal;
+  max-width: min(200px, 92%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.25s, transform 0.3s var(--spring-pop);
+  transition:
+    opacity var(--dur-bubble-out, 120ms) var(--ease-out, ease-out),
+    transform 0s linear var(--dur-bubble-out, 120ms);
   z-index: 3;
 }
 .kami-bubble.show {
   opacity: 1;
   transform: translate(-50%, -100%) scale(1);
+  transition:
+    opacity var(--dur-bubble-in, 160ms) var(--ease-out, ease-out),
+    transform var(--dur-bubble-in, 160ms) var(--ease-out, ease-out);
+}
+.kami-bubble-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Reduce motion: the bubble only crossfades — no lift, no grow. */
+  .kami-bubble,
+  .kami-bubble.show {
+    transform: translate(-50%, -100%) scale(1);
+    transition: opacity var(--dur-bubble-out, 100ms) linear;
+  }
+}
+/* The phase transition table (transitions.ts) publishes --phase-dur /
+   --phase-ease / --phase-delay on the stage for each gate change; a refusal
+   note enters on that row (the capsule-grows-for-its-note entry). */
+@keyframes kami-phase-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.kami-stage .kami-blocked {
+  animation: kami-phase-in var(--phase-dur, 100ms) var(--phase-ease, ease-out) var(--phase-delay, 0ms) both;
 }
 .kami-bubble::after {
   content: "";
