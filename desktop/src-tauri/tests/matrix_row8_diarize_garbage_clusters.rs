@@ -285,21 +285,44 @@ fn under_clustering_is_not_detectable_here_and_the_gate_does_not_pretend() {
 /// TRUE, and it would be watching the wrong symbol anyway: the thing still
 /// absent from the app is the GATE.
 ///
-/// So this asserts the two halves separately. `rank_and_floor`, `cluster_track`
-/// and `attribute_clusters` have no caller in `src/` outside `diarize.rs` — no
-/// meeting is ever diarized, so there is no pass for any gate to be applied to,
-/// and that is what keeps the row `PolicyOnly`. And `cluster_sanity` DOES have
+/// So this asserts the two halves separately. `rank_and_floor` has no caller in
+/// `src/` outside `diarize.rs` — since yap-1106-diarize-wire every meeting IS
+/// diarized (`meeting_diarize.rs` calls `cluster_track` and
+/// `attribute_clusters`, and is their only caller), but no gate is applied to
+/// that pass, and that is what keeps the row `PolicyOnly`. And `cluster_sanity` DOES have
 /// one, which is asserted rather than assumed: if the shipping gate ever stops
 /// applying the published degrade, the divergence comes back and this says so
 /// at the point where it happened.
 #[test]
 fn nothing_in_the_app_applies_the_sanity_gate_yet() {
-    for shipping in ["rank_and_floor", "cluster_track", "attribute_clusters"] {
-        let wired = call_sites(shipping, &["diarize.rs"]);
-        assert!(
-            wired.is_empty(),
-            "{}",
-            promote_the_row("8", shipping, &wired)
+    // yap-1106-diarize-wire gave `cluster_track` and `attribute_clusters` their
+    // shipping caller (`meeting_diarize.rs`): meetings ARE diarized now. What
+    // keeps row 8 `PolicyOnly` is the GATE: nothing in that pass applies
+    // `rank_and_floor`, so a garbage clustering still reaches the labels
+    // unchecked. Watch the gate alone, and still assert the clustering pass is
+    // the only new caller of the other two.
+    let gate = call_sites("rank_and_floor", &["diarize.rs"]);
+    assert!(
+        gate.is_empty(),
+        "{}",
+        promote_the_row("8", "rank_and_floor", &gate)
+    );
+    for pass in ["cluster_track", "attribute_clusters"] {
+        let callers: Vec<String> = call_sites(pass, &["diarize.rs"])
+            .iter()
+            .map(|p| {
+                PathBuf::from(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.clone())
+            })
+            .collect();
+        assert_eq!(
+            callers,
+            vec!["meeting_diarize.rs".to_string()],
+            "`{pass}` is called from somewhere other than the shipping diarize pass: \
+             {callers:?}. If that caller applies a rank+floor gate, row 8 is wired: \
+             promote it to `Coverage::Test` in src/meeting_matrix.rs."
         );
     }
 

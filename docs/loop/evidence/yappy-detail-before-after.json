@@ -1,0 +1,97 @@
+{
+  "rows": [
+    "before: 0.9.3 chick (approved/yappy.js)",
+    "after: detail pass (sprites/art.ts drawChick)",
+    "reference: approved D.yappy f=0, 1, 2"
+  ],
+  "columns": [
+    {
+      "label": "rest",
+      "pose": {}
+    },
+    {
+      "label": "blink",
+      "pose": {
+        "blink": 1
+      }
+    },
+    {
+      "label": "happy",
+      "pose": {
+        "mood": 0.8
+      }
+    },
+    {
+      "label": "sad",
+      "pose": {
+        "mood": -0.8
+      }
+    },
+    {
+      "label": "look down",
+      "pose": {
+        "look": "down"
+      }
+    },
+    {
+      "label": "beak half open",
+      "pose": {
+        "beakF": 1
+      }
+    },
+    {
+      "label": "beak open",
+      "pose": {
+        "beakF": 2
+      }
+    },
+    {
+      "label": "hop + squash",
+      "pose": {
+        "hop": 3,
+        "sx": 1,
+        "sy": -1
+      }
+    },
+    {
+      "label": "wing flap",
+      "pose": {
+        "flap": 2
+      }
+    },
+    {
+      "label": "sprout sway",
+      "pose": {
+        "sway": 2
+      }
+    },
+    {
+      "label": "pencil (pad prop)",
+      "pose": {
+        "pencil": true,
+        "look": "down"
+      }
+    },
+    {
+      "label": "glasses (desk prop)",
+      "pose": {
+        "glasses": true,
+        "beakF": 1
+      }
+    },
+    {
+      "label": "droop (trial over)",
+      "pose": {
+        "droop": true
+      }
+    },
+    {
+      "label": "hands-free (wings folded)",
+      "pose": {
+        "handsFree": true,
+        "pencil": true
+      }
+    }
+  ],
+  "scale": 6
+}

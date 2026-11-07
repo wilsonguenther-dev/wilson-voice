@@ -86,11 +86,12 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
 fi
 REL="${CARGO_TARGET_DIR:-$DESKTOP/target}/release"
 if [[ "${YAP_DIET_NO_BUILD:-}" != "1" ]]; then
-  ( cd "$DESKTOP" && cargo build --release -p yap-polish -p yap-diarize ) >&2
+  ( cd "$DESKTOP" && cargo build --release -p yap-polish -p yap-diarize -p yap-asr ) >&2
   TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
   mkdir -p "$SRC/binaries"
   cp "$REL/yap-polish" "$SRC/binaries/yap-polish-$TRIPLE"
   cp "$REL/yap-diarize" "$SRC/binaries/yap-diarize-$TRIPLE"
+  cp "$REL/yap-asr" "$SRC/binaries/yap-asr-$TRIPLE"
   ( cd "$SRC" && cargo build --release --features custom-protocol ) >&2
 fi
 for b in wilson-voice yap-polish yap-diarize; do
