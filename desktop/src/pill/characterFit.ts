@@ -86,11 +86,32 @@ export const CHICK_LIMITS = {
 
 const clampTo = (v: number, [lo, hi]: readonly [number, number]) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : 0);
 
-/** Clamp a chick pose into CHICK_LIMITS (fields not listed pass through). */
-export function clampChickPose<P extends { hop: number; sx: number; sy: number; flap: number; sway: number }>(p: P): P {
+/**
+ * The most the chick ever rises above his resting pose, in art px: a full hop
+ * plus a full stretch (his tufts top out at feetY - 25 - hop - sy).
+ */
+export const MAX_LIFT = CHICK_LIMITS.hop[1] + CHICK_LIMITS.sy[1];
+
+/** A lift budget as a whole number of art px in 0 … MAX_LIFT (anything else is the full lift). */
+export function liftBudget(lift: number): number {
+  return Number.isFinite(lift) ? Math.min(MAX_LIFT, Math.max(0, Math.floor(lift))) : MAX_LIFT;
+}
+
+/**
+ * Clamp a chick pose into CHICK_LIMITS (fields not listed pass through).
+ *
+ * yap-1107-pill-matches-artifact-size — `lift` caps how far the pose may rise
+ * (hop first, then stretch) so the pose stays inside `chickBoxFor(lift)`: the
+ * camera can then draw him at the approved artifact's size without his tufts
+ * or a hop leaving the capsule. Crouch, squash, wings and sway are untouched.
+ */
+export function clampChickPose<P extends { hop: number; sx: number; sy: number; flap: number; sway: number }>(p: P, lift: number = MAX_LIFT): P {
+  const l = liftBudget(lift);
+  const hopHi = Math.min(CHICK_LIMITS.hop[1], l);
+  const syHi = Math.min(CHICK_LIMITS.sy[1], l - hopHi);
   return {
     ...p,
-    hop: clampTo(p.hop, CHICK_LIMITS.hop), sx: clampTo(p.sx, CHICK_LIMITS.sx), sy: clampTo(p.sy, CHICK_LIMITS.sy),
+    hop: clampTo(p.hop, [CHICK_LIMITS.hop[0], hopHi]), sx: clampTo(p.sx, CHICK_LIMITS.sx), sy: clampTo(p.sy, [CHICK_LIMITS.sy[0], syHi]),
     flap: clampTo(p.flap, CHICK_LIMITS.flap), sway: clampTo(p.sway, CHICK_LIMITS.sway),
   };
 }
@@ -109,6 +130,71 @@ export function chickBox(): FitBox {
   const x = PILL_SCENE.faceX - CHICK_DESK_SHIFT - CHICK_EXTENT.left;
   const y = PILL_SCENE.groundY - CHICK_EXTENT.up;
   return { x, y, w: PILL_SCENE.faceX + CHICK_EXTENT.right - x, h: CHICK_EXTENT.up + CHICK_EXTENT.down };
+}
+
+/**
+ * The chick's bounding box when his pose is clamped to `lift` (clampChickPose):
+ * the full box less the rows a smaller hop / stretch never reaches. Same left,
+ * right and feet; only the top comes down. `chickBoxFor(MAX_LIFT)` is `chickBox()`.
+ */
+export function chickBoxFor(lift: number): FitBox {
+  const b = chickBox();
+  const cut = MAX_LIFT - liftBudget(lift);
+  return { x: b.x, y: b.y + cut, w: b.w, h: b.h - cut };
+}
+
+/* ── the approved artifact's sprite scale ───────────────────────────────── */
+
+/**
+ * yap-1107-pill-matches-artifact-size — the approved Pill artifact
+ * (design-2026-11-06 pill.html, the listening pill): a 220 CSS px window shows
+ * 0.8 x 176 art px of the scene, so Yappy is drawn at 1.5625 CSS px per art px.
+ * Wilson 2026-11-07: "make sure they look exactly like the artifacts" — the
+ * app drew him at 1.0 on 1x and 2x (64 percent of the approved size).
+ */
+export const ARTIFACT_SPRITE_SCALE = 1.5625;
+/** A whole cell may land this far above the artifact's scale and still count as it (the item's 5 percent). */
+export const ARTIFACT_TOLERANCE = 0.05;
+
+export interface PillFit {
+  /** Device px per art px. */
+  cell: number;
+  /** The lift budget the pose is clamped to at that cell (MAX_LIFT = a full hop). */
+  lift: number;
+}
+
+/**
+ * The cell and lift Yappy is drawn at in a capsule's visible stadium (device px).
+ *
+ * The rule: the largest whole cell at or under the artifact's scale (plus the
+ * tolerance) at which his WHOLE box still fits, giving up only hop height to
+ * get there — never a pixel of him (yap-1106-fb-10 still holds: the box for the
+ * clamped pose sits inside the stadium). When no cell above the full-hop fit
+ * holds even a resting pose, the full-hop fit is used, as before. On a 1x
+ * display the artifact's 1.56 rounds down to cell 1, so 1x is unchanged; on
+ * 2x the open capsule draws cell 3 (1.5 CSS px per art px, 96 percent of the
+ * artifact) with a one-art-px hop.
+ */
+export function pillFit(stadium: FitBox, dprRaw: number): PillFit {
+  const dpr = backingScale(dprRaw);
+  const whole = Math.max(1, largestFittingCell(stadium, chickBox(), POSITION_GUARD));
+  const ceiling = Math.floor(ARTIFACT_SPRITE_SCALE * (1 + ARTIFACT_TOLERANCE) * dpr + 1e-9);
+  for (let c = ceiling; c > whole; c--) {
+    for (let l = MAX_LIFT - 1; l >= 0; l--) {
+      if (largestFittingCell(stadium, chickBoxFor(l), POSITION_GUARD) >= c) return { cell: c, lift: l };
+    }
+  }
+  return { cell: whole, lift: MAX_LIFT };
+}
+
+/** CSS px per art px a fit draws at (what the artifact's 1.5625 is compared with). */
+export function cssPerArtPx(fit: Pick<PillFit, "cell">, dprRaw: number): number {
+  return fit.cell / backingScale(dprRaw);
+}
+
+/** One structured line when the pill's sprite scale changes (no content, numbers only). */
+export function scaleEvent(fit: PillFit, capsule: Size, dpr: number): string {
+  return `pill sprite-scale cell=${fit.cell} lift=${fit.lift} cssPerArt=${cssPerArtPx(fit, dpr).toFixed(3)} capW=${Math.round(capsule.w)} capH=${Math.round(capsule.h)} dpr=${dpr}`;
 }
 
 /** A pill character's bounding box size in art px: the sprite manifest's, or the chick's for Yappy. */
@@ -198,6 +284,8 @@ export interface PillCamera {
   char: FitBox;
   stadium: FitBox;
   fits: boolean;
+  /** The lift budget the scene must clamp his pose to this frame (clampChickPose(pose, lift)). */
+  lift: number;
 }
 
 /**
@@ -209,9 +297,10 @@ export interface PillCamera {
 export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
   const dpr = backingScale(dprRaw);
   const { clip, stadium } = capsuleStadium(capsule, dpr);
-  const env = chickBox();
-  const fit = Math.max(1, largestFittingCell(stadium, env, POSITION_GUARD));
-  const cell = Math.max(fit, coverCell(clip.w, clip.h, PILL_SCENE.w, PILL_SCENE.h));
+  // yap-1107-pill-matches-artifact-size — the approved artifact's size, whole.
+  const fit = pillFit(stadium, dpr);
+  const env = chickBoxFor(fit.lift);
+  const cell = Math.max(fit.cell, coverCell(clip.w, clip.h, PILL_SCENE.w, PILL_SCENE.h));
   const blit = sceneBlit({
     rect: inset(capsule, CAPSULE_BORDER),
     view: { w: clip.w / cell, h: clip.h / cell },
@@ -226,7 +315,7 @@ export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
     w: env.w * blit.cell,
     h: env.h * blit.cell,
   };
-  return { blit, char, stadium, fits: stadiumContains(stadium, char) };
+  return { blit, char, stadium, fits: stadiumContains(stadium, char), lift: fit.lift };
 }
 
 /* ── the capsule for a state ────────────────────────────────────────────── */

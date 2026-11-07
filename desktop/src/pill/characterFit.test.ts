@@ -15,6 +15,7 @@ import {
   CHICK_EXTENT, CHICK_LIMITS, FIT_DOCKS, OPEN_CAPSULE, OPEN_TIERS, PILL_CHARACTERS, PILL_SCENE, REST_CAPSULE, REST_MIN_W,
   capsuleForDock, chickBox, characterArt, clampChickPose, cropWarning, inStadium, largestFittingCell, pillCamera,
   placeCharacter, placeSprite, restCapsuleFor, stadiumContains, type FitBox, type FitDock,
+  ARTIFACT_SPRITE_SCALE, ARTIFACT_TOLERANCE, MAX_LIFT, chickBoxFor, cssPerArtPx, liftBudget, pillFit, scaleEvent,
 } from "./characterFit";
 import { ALL_LIVE_PHASES, type LivePhase } from "./live";
 import { CHARACTER_OPEN, CHARACTER_REST, PANEL_MARGIN, RESTING_PHASES, capsuleCentre, pillLayout, type MeetingMode } from "./state";
@@ -204,5 +205,92 @@ describe("yap-1106-fb-10 geometry", () => {
 
   it("cropWarning is one structured line with no content", () => {
     expect(cropWarning("yappy", { w: 72.4, h: 22.6 }, 2)).toBe("pill character-cropped character=yappy capW=72 capH=23 dpr=2");
+  });
+});
+
+/**
+ * yap-1107-pill-matches-artifact-size — Wilson 2026-11-07: the pill "looks small
+ * and shrunken" next to the approved Pill artifact. The artifact draws Yappy at
+ * 1.5625 CSS px per art px (listening: 0.8 x 176 art px across a 220 px window);
+ * the app drew him at 1.0 on 2x. On 2x the open capsule now draws him at 1.5
+ * (cell 3, 96 percent), still whole: only the height of a hop is given up.
+ */
+describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifact's size", () => {
+  const OPEN_PHASES: readonly LivePhase[] = ["listening", "listening-locked", "transcribing", "polishing", "pasting", "done"];
+
+  it("chick_box_for_lift_holds_every_clamped_pose: a smaller lift budget keeps every painted pixel inside chickBoxFor(lift)", () => {
+    const cx = 60, feetY = 70, full = chickBox();
+    let n = 0;
+    for (let lift = 0; lift <= MAX_LIFT; lift++) {
+      const b = chickBoxFor(lift);
+      // same left / right / feet as the full box; only the top comes down
+      expect(b.x).toBe(full.x);
+      expect(b.w).toBe(full.w);
+      expect(b.y + b.h).toBe(full.y + full.h);
+      const up = CHICK_EXTENT.up - (full.h - b.h);
+      const box = { x: cx - CHICK_EXTENT.left, y: feetY - up, w: CHICK_EXTENT.left + CHICK_EXTENT.right, h: up + CHICK_EXTENT.down };
+      for (const pose of chickPoses()) {
+        if (pose.sway !== 0 && pose.sway !== CHICK_LIMITS.sway[1]) continue; // sway never moves the top; keeps the run short
+        const r = new Raster(120, 100);
+        drawChick(r, cx, feetY, clampChickPose(pose, lift));
+        const got = paintedBox(r);
+        expect(got).not.toBeNull();
+        expect(inside(got!, box), `lift=${lift} ${JSON.stringify(got)} outside ${JSON.stringify(box)} for ${JSON.stringify(pose)}`).toBe(true);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThan(100);
+    expect(chickBoxFor(MAX_LIFT)).toEqual(full);
+  }, 60_000);
+
+  it("lift_budget_caps_hop_then_stretch_and_leaves_the_rest", () => {
+    expect(MAX_LIFT).toBe(CHICK_LIMITS.hop[1] + CHICK_LIMITS.sy[1]);
+    expect(liftBudget(Number.NaN)).toBe(MAX_LIFT);
+    expect(liftBudget(-3)).toBe(0);
+    expect(liftBudget(99)).toBe(MAX_LIFT);
+    const p = clampChickPose({ hop: 6, sx: 3, sy: 2, flap: 2, sway: 2 }, 1);
+    expect(p).toEqual({ hop: 1, sx: 3, sy: 0, flap: 2, sway: 2 });
+    // a crouch and a squash are never cut
+    expect(clampChickPose({ hop: -2, sx: -1, sy: -4, flap: 0, sway: -2 }, 0)).toEqual({ hop: -2, sx: -1, sy: -4, flap: 0, sway: -2 });
+    // the default is the full range (yap-1106-fb-10 unchanged)
+    expect(clampChickPose({ hop: 6, sx: 0, sy: 2, flap: 0, sway: 0 })).toEqual({ hop: 6, sx: 0, sy: 2, flap: 0, sway: 0 });
+  });
+
+  it("open_pill_on_2x_draws_yappy_within_5_percent_of_the_artifact_and_whole", () => {
+    for (const phase of OPEN_PHASES) for (const dock of ["bottom", "top", "left", "right"] as const) for (const meeting of MEETINGS) {
+      const { cap } = placeCapsule(phase, meeting, dock, capsuleSize(phase, 1));
+      const c = pillCamera(cap, 2);
+      const scale = cssPerArtPx(c.blit, 2);
+      expect(Math.abs(scale - ARTIFACT_SPRITE_SCALE) / ARTIFACT_SPRITE_SCALE, `${phase} ${dock} ${meeting} scale=${scale}`).toBeLessThanOrEqual(ARTIFACT_TOLERANCE);
+      expect(c.fits, `${phase} ${dock} ${meeting} ${JSON.stringify(c.char)} in ${JSON.stringify(c.stadium)}`).toBe(true);
+      expect(c.lift).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("retina_never_halves_the_sprite: 2x draws at least the 1x size, and never past the artifact's", () => {
+    for (const phase of [...OPEN_PHASES, "idle", "sleepy"] as const) for (const tier of OPEN_TIERS) {
+      const size = capsuleSize(phase, tier);
+      const one = pillCamera({ x: 0, y: 0, ...size }, 1), two = pillCamera({ x: 0, y: 0, ...size }, 2);
+      expect(cssPerArtPx(two.blit, 2), `${phase} tier=${tier}`).toBeGreaterThanOrEqual(cssPerArtPx(one.blit, 1));
+      expect(cssPerArtPx(two.blit, 2)).toBeLessThanOrEqual(ARTIFACT_SPRITE_SCALE * (1 + ARTIFACT_TOLERANCE));
+      expect(two.fits && one.fits).toBe(true);
+    }
+  });
+
+  it("1x_is_unchanged: cell 1 and the full hop (the artifact's 1.56 rounds down to one device px)", () => {
+    const { stadium } = { stadium: pillCamera({ x: 0, y: 0, w: OPEN_CAPSULE.w, h: OPEN_CAPSULE.h }, 1).stadium };
+    expect(pillFit(stadium, 1)).toEqual({ cell: 1, lift: MAX_LIFT });
+  });
+
+  it("shell_matches_the_artifact_width_and_holds_him_whole: open 236 wide (artifact 228), resting is the fb-10 floor", () => {
+    expect(Math.abs(OPEN_CAPSULE.w - 228) / 228).toBeLessThanOrEqual(0.05);
+    // the open capsule is the smallest height at which cell 3 on 2x keeps a whole, resting Yappy
+    // (the artifact's 52 px shell would crop his tufts at its own scale, which yap-1106-fb-10 forbids)
+    expect(OPEN_CAPSULE.h).toBeGreaterThanOrEqual(58);
+    expect(REST_CAPSULE.h).toBeLessThanOrEqual(OPEN_CAPSULE.h);
+  });
+
+  it("scaleEvent is one structured line with numbers only", () => {
+    expect(scaleEvent({ cell: 3, lift: 1 }, { w: 236.2, h: 59.8 }, 2)).toBe("pill sprite-scale cell=3 lift=1 cssPerArt=1.500 capW=236 capH=60 dpr=2");
   });
 });
