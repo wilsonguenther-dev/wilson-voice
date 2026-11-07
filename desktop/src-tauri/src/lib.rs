@@ -6200,6 +6200,31 @@ fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
 }
 
+/// yap-1106-fb-02-pill-first-click — the pill webview publishes EVERY rect the
+/// panel must take the cursor over: the capsule plus each control's own drawn
+/// rect (stop, the meeting stop, Trial ended, the cards' buttons…). The
+/// backend pads each to 24 x 24 pt and hit-tests the list, so a control outside
+/// the capsule is no longer click-through glass.
+#[tauri::command]
+fn pill_set_hitboxes(rects: Vec<float_pill::HitRect>) {
+    float_pill::set_hitboxes(&rects);
+}
+
+/// fb-02 — a pointer-down (`held = true`) / its release on a pill control.
+/// While held the hover watch keeps the panel interactive, so no cursor test
+/// can hand it back to click-through between mouse-down and mouse-up.
+#[tauri::command]
+fn pill_press_hold(held: bool) {
+    float_pill::set_press_held(held);
+}
+
+/// fb-02 telemetry — `pill click control=<name> handled=<bool>`, one line per
+/// click on a pill control (desktop/src/pill/hitTargets.ts).
+#[tauri::command]
+fn pill_click_log(control: String, handled: bool) {
+    float_pill::log_click(&control, handled);
+}
+
 /// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
 /// asks for the panel frame that is exactly the union of its content boxes plus
 /// a margin, and the point the character sits at inside it. The panel is
@@ -12508,6 +12533,9 @@ pub fn run() {
             language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_set_hitboxes,
+            pill_press_hold,
+            pill_click_log,
             pill_set_panel_frame,
             pill_cycle_style,
             pending_copy_card,

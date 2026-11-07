@@ -46,6 +46,7 @@ const ADAPTERS: Record<string, string> = {
   "permissionRepair.ts": "runs the per-service permission probe and repair commands",
   "pill/characters/registry.ts": "registers Yappy, whose transitional canvas stage (pill/YappyPill.tsx, lazily imported) listens to the backend",
   "pill/drag.ts": "moves the float window through invoke(); its hit-box math is tested on its own",
+  "pill/hitTargets.ts": "publishes every pill control's drawn rect as hit area and logs pill.click through invoke(); its padding math is tested on its own",
   "updater.ts": "the check_for_update / install_update commands",
 };
 
