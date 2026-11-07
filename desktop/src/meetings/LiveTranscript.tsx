@@ -3,10 +3,15 @@
  * records, under "You" / "Call" on a call and with no label on a mic-only
  * meeting. Drawn inside the recording banner of the Meetings view; it clears
  * itself at Stop, and the finished transcript (TranscriptList) is the record.
+ *
+ * yap-1106-live-whos-talking — a line whose voice matched an enrolled person
+ * reads their name ("Alex", with the reason as its tooltip), an unmatched one
+ * "Someone new", and anything unsure keeps You / Call. The post-meeting pass
+ * replaces every live name.
  */
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import { hasLiveLines, LIVE_EVENT, NO_LIVE, reduceLive, type LiveSnapshot } from "./liveSnapshot";
+import { hasLiveLines, LIVE_EVENT, liveRuns, NO_LIVE, reduceLive, type LiveSnapshot } from "./liveSnapshot";
 
 /** The presentational half: pure, so the test renders it without Tauri. */
 export function LiveLines({ snapshot }: { snapshot: LiveSnapshot }) {
@@ -23,14 +28,24 @@ export function LiveLines({ snapshot }: { snapshot: LiveSnapshot }) {
         .filter((t) => t.lines.length > 0)
         .map((t) => (
           <div className="live-track" key={t.track}>
-            {t.speaker && (
-              <span className={t.track === 0 ? "seg-who" : "seg-who them"}>{t.speaker}</span>
-            )}
-            <ul>
-              {t.lines.map((line, i) => (
-                <li key={i}>{line}</li>
-              ))}
-            </ul>
+            {liveRuns(t).map((run, r) => (
+              <div className="live-run" key={r}>
+                {run.label && (
+                  <span
+                    className={t.track === 0 ? "seg-who" : "seg-who them"}
+                    title={run.hint ?? undefined}
+                    data-live-voice={run.hint ? "matched" : undefined}
+                  >
+                    {run.label}
+                  </span>
+                )}
+                <ul>
+                  {run.lines.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         ))}
     </div>

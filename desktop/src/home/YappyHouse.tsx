@@ -31,6 +31,7 @@ import { toChatTone, type ChatTone } from "../pill/live";
 import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
 import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
 import { subscribeHabitat } from "./habitat/events";
+import { duoAt } from "../news/duo";
 // yap24-UI1 — the integer pixel grid (shared with the pill): the room is drawn at
 // the largest WHOLE number of device px per art px that fits the stage.
 import { backingScale, parseObjectPosition, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
@@ -150,7 +151,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
     inputsRef.current = inputs;
     wakeRef.current?.();
     // Primitive deps: Home rebuilds the object each render; only a real change redraws.
-  }, [inputs.fixesToday, inputs.dictionarySize, inputs.battery?.percent, inputs.battery?.charging, inputs.streakDays, inputs.newsReady, inputs.engineLoading, inputs.modelReady, inputs.screenSharing, inputs.doNotDisturb]);
+  }, [inputs.fixesToday, inputs.dictionarySize, inputs.battery?.percent, inputs.battery?.charging, inputs.streakDays, inputs.newsReady, inputs.newsArrivedAtMs, inputs.newsDelivered, inputs.newsTurns, inputs.engineLoading, inputs.modelReady, inputs.screenSharing, inputs.doNotDisturb]);
   // yap-1106-sal-and-mochi — one log line when Sal's furnace or Mochi's spot changes.
   const furnace = furnaceState(inputs);
   const mochiWhy = mochiQuietReason(inputs);
@@ -214,12 +215,25 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
       drawFailed = false,
       mode: RedrawMode | null = null;
 
+    function duoFrame() {
+      const i = inputsRef.current;
+      return duoAt(i.newsReady ? i.newsArrivedAtMs : null, Date.now(), reduce, i.newsTurns ?? 0);
+    }
+
+    function duoStudio(): Pick<StudioState, "duoHandover" | "duoSpeaker"> {
+      const d = duoFrame();
+      return { duoHandover: d.handover, duoSpeaker: reduce ? null : d.speaker };
+    }
+
     function snapshot(): StudioState {
       const phase = skyPhase(new Date());
       return {
         ...inputsRef.current,
         // yap-1106-news-home-briefing — Cinder's flight in with a new briefing.
         cinderFlight: cinderFlight(inputsRef.current.newsArrivedAtMs, Date.now(), reduce),
+        // yap-1106-news-duo-delivery — the hand-over and whose turn it is, from
+        // the same clock the briefing card reads (reduce motion: nobody animates).
+        ...duoStudio(),
         phase,
         sky: skyAt(phase),
         meetingRecording: meetingRef.current,
@@ -277,7 +291,9 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
         parallaxSettling: settling(),
         meetingRecording: meetingRef.current,
         furnaceLighting: inputsRef.current.engineLoading,
-        cinderFlying: inputsRef.current.newsReady && cinderFlight(inputsRef.current.newsArrivedAtMs, Date.now(), reduce) < 1,
+        // yap-1106-news-duo-delivery — the room stays live through the flight,
+        // the hand-over and the turns (reduce motion is "still" regardless).
+        cinderFlying: inputsRef.current.newsReady && duoFrame().stage !== "done",
       });
       if (p.mode !== mode) {
         console.info(`home studio_mode from=${mode ?? "none"} to=${p.mode} draws=${draws}`);

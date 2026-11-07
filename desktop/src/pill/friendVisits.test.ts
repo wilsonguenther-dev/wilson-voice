@@ -20,6 +20,8 @@ import {
   dayKey,
   decideVisit,
   forcedFriendVisit,
+  insightsTotal,
+  milestoneCrossed,
   milestoneReached,
   parseLedger,
   parseQuietState,
@@ -27,6 +29,7 @@ import {
   quietingTakes,
   recordVisit,
   serializeLedger,
+  takeTracker,
   visitDurationMs,
   visitLogLine,
   visitRemainingMs,
@@ -318,5 +321,167 @@ describe("friend visits — the approved quiet rules", () => {
     );
     expect(visitLogLine("a b/c\"d", { show: false, reason: "unknown-event" })).toBe("pill friend_visit skipped event=abcd reason=unknown-event");
     expect(visitLogLine("", { show: false, reason: "unknown-event" })).toBe("pill friend_visit skipped event=none reason=unknown-event");
+  });
+});
+
+// fix-l3b8-1 — the ladder and the milestone read the app's REAL take count
+// (get_insights -> totalSessions), not a pill counter that starts at 0.
+describe("friend visits — the real take count", () => {
+  const insights = (n: number) => ({ totalSessions: n, totalWords: 0 });
+
+  it("the milestone is an edge: crossing 100 or 1000 exactly once", () => {
+    expect(milestoneCrossed(99, 100)).toBe(true);
+    expect(milestoneCrossed(100, 100)).toBe(false);
+    expect(milestoneCrossed(100, 101)).toBe(false);
+    expect(milestoneCrossed(98, 101)).toBe(true);
+    expect(milestoneCrossed(999, 1000)).toBe(true);
+    expect(milestoneCrossed(3000, 3001)).toBe(false);
+    expect(milestoneCrossed(Number.NaN, 5)).toBe(false);
+  });
+
+  it("reads totalSessions from the insights payload, or nothing", () => {
+    expect(insightsTotal(insights(3000))).toBe(3000);
+    expect(insightsTotal({ totalSessions: 12.7 })).toBe(12);
+    expect(insightsTotal({ totalSessions: 0 })).toBe(0);
+    expect(insightsTotal({ totalSessions: -1 })).toBeNull();
+    expect(insightsTotal({ totalSessions: "3000" })).toBeNull();
+    expect(insightsTotal({})).toBeNull();
+    expect(insightsTotal(null)).toBeNull();
+    expect(insightsTotal(42)).toBeNull();
+  });
+
+  it("seeds from the real total, and the local counter is not read", async () => {
+    const fallback = vi.fn(() => 7);
+    const warn = vi.fn();
+    const t = takeTracker(() => Promise.resolve(insights(3000)), fallback, warn);
+    expect(await t.seed()).toBe("insights");
+    expect(t.takes()).toBe(3000);
+    expect(t.source()).toBe("insights");
+    expect(fallback).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    // A heavy user is on the quietest rung from the first event.
+    expect(dailyVisitCap(t.takes())).toBe(DAILY_VISITS_QUIETEST);
+  });
+
+  it("falls back to the local counter only when the read fails, with a warn line", async () => {
+    const warn = vi.fn();
+    const t = takeTracker(() => Promise.reject(new TypeError("ipc")), () => 42, warn);
+    expect(await t.seed()).toBe("fallback");
+    expect(t.takes()).toBe(42);
+    expect(warn).toHaveBeenCalledWith("pill friend_visit takes_read_failed reason=TypeError");
+    expect(warn).toHaveBeenCalledWith("pill friend_visit takes_fallback reason=insights-unavailable");
+    const bad = takeTracker(() => Promise.resolve({ nope: 1 }), () => Number.NaN, warn);
+    expect(await bad.seed()).toBe("fallback");
+    expect(bad.takes()).toBe(0);
+    expect(warn).toHaveBeenCalledWith("pill friend_visit takes_read_failed reason=no-total");
+  });
+
+  it("from 99 real takes one transcript raises the milestone and the next does not", async () => {
+    let real = 99;
+    const t = takeTracker(() => Promise.resolve(insights(real)), () => 0, vi.fn());
+    await t.seed();
+    real = 100;
+    expect(await t.transcript()).toBe(true);
+    expect(t.takes()).toBe(100);
+    real = 101;
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(101);
+  });
+
+  it("a transcript that adds no take (a retry merged into a saved entry) neither counts nor fires", async () => {
+    let real = 99;
+    const t = takeTracker(() => Promise.resolve(insights(real)), () => 0, vi.fn());
+    await t.seed();
+    // The retry emitted `transcript` but the history still holds 99: no guess-ahead.
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(99);
+    real = 100;
+    expect(await t.transcript()).toBe(true);
+    // A re-read of the same total never repeats the milestone.
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(100);
+  });
+
+  it("a total that dips (history deleted) and climbs back past 100 does not repeat the milestone", async () => {
+    let real = 150;
+    const t = takeTracker(() => Promise.resolve(insights(real)), () => 0, vi.fn());
+    await t.seed();
+    real = 90;
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(90);
+    real = 100;
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(100);
+    real = 1000;
+    expect(await t.transcript()).toBe(true); // 1000 is a new edge
+  });
+
+  it("a transcript that lands before the seed resolves settles on the real total", async () => {
+    let resolve: (v: unknown) => void = () => {};
+    let calls = 0;
+    const read = () => {
+      calls += 1;
+      return calls === 1 ? new Promise<unknown>((r) => { resolve = r; }) : Promise.resolve(insights(3001));
+    };
+    const t = takeTracker(read, () => 0, vi.fn());
+    const seeded = t.seed();
+    const landed = t.transcript();
+    // The serialised seed job starts on a microtask; wait until its read is
+    // pending (the transcript is queued behind it) before answering it.
+    while (calls === 0) await Promise.resolve();
+    resolve(insights(3000));
+    expect(await seeded).toBe("insights");
+    expect(await landed).toBe(false);
+    expect(t.takes()).toBe(3001);
+  });
+
+  it("a fallback pill that later reads the real total re-seeds without a false milestone", async () => {
+    let fail = true;
+    const t = takeTracker(
+      () => (fail ? Promise.reject(new Error("x")) : Promise.resolve(insights(3000))),
+      () => 0,
+      vi.fn(),
+    );
+    expect(await t.seed()).toBe("fallback");
+    // Still failing: the guess counts up by one.
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(1);
+    fail = false;
+    expect(await t.transcript()).toBe(false); // 1 -> 3000 crosses 100 and 1000, but it is a re-seed
+    expect(t.takes()).toBe(3000);
+    expect(t.source()).toBe("insights");
+  });
+
+  it("a failed re-read on the real source still counts the take", async () => {
+    let fail = false;
+    const warn = vi.fn();
+    const t = takeTracker(
+      () => (fail ? Promise.reject("boom") : Promise.resolve(insights(99))),
+      () => 0,
+      warn,
+    );
+    await t.seed();
+    fail = true;
+    expect(await t.transcript()).toBe(true);
+    expect(t.takes()).toBe(100);
+    expect(t.source()).toBe("insights");
+    expect(warn).toHaveBeenCalledWith("pill friend_visit takes_read_failed reason=unknown");
+  });
+
+  it("the default warn goes to console.warn", async () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = takeTracker(() => Promise.resolve(null), () => 3);
+    expect(await t.seed()).toBe("fallback");
+    expect(spy).toHaveBeenCalledWith("pill friend_visit takes_fallback reason=insights-unavailable");
+    spy.mockRestore();
+  });
+
+  it("3000 real takes: shown, then too-soon ten minutes later, then daily-cap that day", () => {
+    const ctx: VisitContext = { ...calm, takesSoFar: 3000 };
+    const first = decideVisit("word-added", ctx, EMPTY_LEDGER, MORNING);
+    expect(first.show).toBe(true);
+    const l = recordVisit(EMPTY_LEDGER, shown(first));
+    expect(reason(decideVisit("backtrack-caught", ctx, l, MORNING + 10 * 60 * 1000))).toBe("too-soon");
+    expect(reason(decideVisit("battery-low", ctx, l, MORNING + 3 * H))).toBe("daily-cap");
   });
 });

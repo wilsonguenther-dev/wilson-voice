@@ -1,12 +1,13 @@
 import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import YappyHouse from "../home/YappyHouse";
 import { fixesToday, type StudioInputs } from "../home/studio/studio";
 import { useStudioQuiet } from "../home/studio/useStudioQuiet";
 import { useGovernor } from "../pill/GovernorChip";
 import NewsHomeCard from "../news/NewsHomeCard";
 import NewsBriefing from "../news/NewsBriefing";
+import { quietNow } from "../news/briefing";
 import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
@@ -134,10 +135,41 @@ export default function Home() {
   // back door; a NEW one flies her in (reduce motion skips the flight).
   const [newsReady, setNewsReady] = useState(false);
   const [newsArrivedAt, setNewsArrivedAt] = useState<number | null>(null);
-  const onNewsDelivered = useCallback((ms: number) => {
+  // yap-1106-news-duo-delivery — Cinder and Yappy deliver it together, with
+  // the same rules as the other friends: never during a meeting, a screen
+  // share or Do Not Disturb. A delivery that lands while it is quiet is held
+  // (Cinder waits at the back door) and plays when the quiet ends; quiet that
+  // starts mid-delivery stops it at once (no arrival time = nothing moves).
+  const [newsTurns, setNewsTurns] = useState(0);
+  const [newsHeld, setNewsHeld] = useState(false);
+  const newsQuiet = quietNow({
+    meetingRecording: !!meetingStatus?.recording,
+    screenSharing: quiet.screenSharing,
+    doNotDisturb: quiet.doNotDisturb,
+  });
+  const newsQuietRef = useRef(newsQuiet);
+  newsQuietRef.current = newsQuiet;
+  const onNewsDelivered = useCallback((ms: number, turns: number) => {
+    setNewsTurns(turns);
+    if (newsQuietRef.current) {
+      setNewsHeld(true);
+      console.info(`home cinder_delivery_held reason=quiet turns=${turns}`);
+      return;
+    }
     setNewsArrivedAt(ms);
-    console.info("home cinder_delivery");
+    console.info(`home cinder_delivery turns=${turns}`);
   }, []);
+  useEffect(() => {
+    if (newsQuiet || !newsHeld) return;
+    setNewsHeld(false);
+    setNewsArrivedAt(Date.now());
+    console.info("home cinder_delivery_released");
+  }, [newsQuiet, newsHeld]);
+  const onSkipDuo = useCallback((at: number) => {
+    setNewsArrivedAt(at);
+    console.info("home cinder_delivery_skipped");
+  }, []);
+  const duoArrivedAt = newsQuiet ? null : newsArrivedAt;
   const openNewsSettings = useCallback(() => {
     console.info("home news_edit_topics");
     setNav("settings");
@@ -152,7 +184,11 @@ export default function Home() {
     // yap-1106-news-home-briefing — the briefing card under the studio says
     // when a briefing is on it, and when a new one landed.
     newsReady,
-    newsArrivedAtMs: newsArrivedAt,
+    newsArrivedAtMs: duoArrivedAt,
+    // yap-1106-news-duo-delivery — delivered this visit = Cinder sits at
+    // Yappy's desk; held for quiet = she waits at the back door.
+    newsDelivered: newsArrivedAt != null,
+    newsTurns,
     // yap-1106-sal-and-mochi — Sal lights the furnace while the speech engine
     // loads; the furnace is cold while no model is on this Mac.
     engineLoading: status.engineLoading === true,
@@ -228,6 +264,8 @@ export default function Home() {
         onDelivered={onNewsDelivered}
         onReady={setNewsReady}
         onEditTopics={openNewsSettings}
+        duoArrivedAtMs={duoArrivedAt}
+        onSkipDuo={onSkipDuo}
       />
 
       {/* The three stat tiles, now one quiet line under the room. */}

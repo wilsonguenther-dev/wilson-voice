@@ -58,6 +58,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "meetings/liveSnapshot.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "meetings/meetingsLayout.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1107-sidebar-collapses-to-icons — floor set WITHOUT a run (no-compile rule;
+  // sidebarRail.test.ts drives every function and branch); the integrator re-measures and may only raise it.
+  "sidebarRail.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
   "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/chatter.ts": { lines: 95, branches: 90, functions: 95, statements: 95 },
@@ -82,6 +85,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/stuckScene.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   // yap-1106-news-home-briefing — the Home briefing's pick, rank, quote line and quiet gate.
   "news/briefing.ts": { lines: 90, branches: 80, functions: 100, statements: 88 },
+  // yap-1106-news-duo-delivery — the joint delivery's turn script and shared clock.
+  "news/duo.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

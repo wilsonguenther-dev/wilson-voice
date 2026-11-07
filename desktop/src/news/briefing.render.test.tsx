@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
 import { NewsBriefingView } from "./NewsBriefing";
 import { buildBriefing, type CachedStory } from "./briefing";
+import { duoAt, duoTurns } from "./duo";
 
 const noop = () => undefined;
 const story = (key: string, score: number, over: Partial<CachedStory> = {}): CachedStory => ({
@@ -86,5 +87,41 @@ describe("yap-1106-news-home-briefing card", () => {
       expect(text, file).not.toMatch(/from "\.\.\/pill\//);
       expect(text, file).not.toMatch(/\bemit\(|emitTo\(|pill_/);
     }
+  });
+});
+
+describe("yap-1106-news-duo-delivery card", () => {
+  const turns = duoTurns(briefing, ["NVDA"], "professional");
+  const T0 = 1_000_000;
+
+  it("news_duo_card_shows_cinder_bringing_the_paper_first", () => {
+    const html = render({ duo: { frame: duoAt(T0, T0, false, turns.length), turns }, onSkipDuo: noop });
+    expect(html).toContain('data-news-duo="arriving"');
+    expect(html).toContain("data-news-duo-skip");
+    // The finished summary lines wait until the delivery is over.
+    expect(html).not.toContain('data-news-says="cinder"');
+  });
+
+  it("news_duo_card_takes_turns_cinder_names_yappy_explains", () => {
+    const first = render({ duo: { frame: duoAt(T0, T0, true, turns.length), turns } });
+    expect(first).toContain('data-news-says="cinder"');
+    expect(first).toContain('data-news-turn="0"');
+    expect(first).toContain("Dev news!");
+    expect(first).toContain('data-news-talking="yes"');
+    expect(first).toContain('data-news-story-current="yes"');
+    expect(first).toContain("story 1 of 3");
+    const second = render({ duo: { frame: { ...duoAt(T0, T0, true, turns.length), turn: 1, speaker: "yappy" }, turns } });
+    expect(second).toContain('data-news-says="yappy"');
+    expect(second).toContain("worth a look.");
+    const third = render({ duo: { frame: { ...duoAt(T0, T0, true, turns.length), turn: 3, speaker: "yappy" }, turns } });
+    // No explained line for story b: Yappy reads the headline in the chosen voice.
+    expect(third).toContain("In brief: Headline b");
+  });
+
+  it("news_duo_card_done_shows_the_summary_lines", () => {
+    const html = render({ duo: { frame: duoAt(null, T0, false, turns.length), turns } });
+    expect(html).toContain('data-news-says="cinder"');
+    expect(html).not.toContain("data-news-duo-skip");
+    expect(html).not.toContain("data-news-turn=");
   });
 });

@@ -70,24 +70,52 @@ pub enum TakeAction {
 /// (asserted in tests/hotkey_no_tcc.rs) so fn and the chord feel the same.
 pub const CARBON_HOLD_MS: u64 = 280;
 
-/// The ONE decision for every hotkey edge from either source. PURE.
+/// yap-1107-start-stop-any-surface — the intent one hotkey edge sends to the
+/// ONE take machine (`take_control::TakeMachine`). The hotkey keeps no state
+/// of its own: whether a release stops the take (hold-to-talk) is a property
+/// of the TAKE (`take_control::Hold`), so a pill / menu / Dictate-button stop
+/// during a hold also stops and the release that follows is a no-op.
+pub fn intent_for(edge: HotkeyEdge, source: HotkeySource) -> crate::take_control::Intent {
+    use crate::take_control::{HoldKey, Intent};
+    match (source, edge) {
+        // Idle: start a take this press rides on. Live: toggle it off —
+        // whoever started it (fn, chord, pill, tray, Dictate button).
+        (HotkeySource::Carbon, HotkeyEdge::Press) => Intent::HoldPress(HoldKey::Chord),
+        // Held >= CARBON_HOLD_MS: hold-to-talk, the release stops. Shorter:
+        // a toggle tap, the take keeps running.
+        (HotkeySource::Carbon, HotkeyEdge::Release) => Intent::HoldRelease(HoldKey::Chord),
+        // Never a second start while a take is live.
+        (HotkeySource::FnTap, HotkeyEdge::Press) => Intent::HoldPress(HoldKey::Fn),
+        // `ptt_macos` already decided this edge ends the take (`PttEvent::Stop`).
+        (HotkeySource::FnTap, HotkeyEdge::Release) => Intent::Stop,
+    }
+}
+
+/// The hotkey's view of the ONE take machine, for a caller that has only the
+/// keyboard (tests/hotkey_no_tcc.rs drives both sources through it). It holds
+/// no flag of its own: it is a `TakeMachine` fed by [`intent_for`], with the
+/// recorder assumed to arm at once. The app does NOT use this wrapper — every
+/// surface, the hotkey included, goes through `lib.rs::take_intent` on the
+/// app's one machine.
 #[derive(Debug, Clone, Default)]
 pub struct HotkeyArbiter {
-    owner: Option<HotkeySource>,
-    carbon_press_at: Option<u64>,
+    machine: crate::take_control::TakeMachine,
 }
 
 impl HotkeyArbiter {
     pub const fn new() -> Self {
         Self {
-            owner: None,
-            carbon_press_at: None,
+            machine: crate::take_control::TakeMachine::new(),
         }
     }
 
-    /// The source that started the live take, if a hotkey started it.
+    /// The hotkey source the live take is riding on as a hold, if any.
     pub fn owner(&self) -> Option<HotkeySource> {
-        self.owner
+        use crate::take_control::HoldKey;
+        self.machine.hold().map(|h| match h.key {
+            HoldKey::Chord => HotkeySource::Carbon,
+            HoldKey::Fn => HotkeySource::FnTap,
+        })
     }
 
     /// Decide one edge. `take_live` is the app's own recording flag, so a take
@@ -99,55 +127,21 @@ impl HotkeyArbiter {
         take_live: bool,
         now_ms: u64,
     ) -> TakeAction {
-        if !take_live {
-            self.owner = None;
-        }
-        match (source, edge) {
-            (HotkeySource::Carbon, HotkeyEdge::Press) => {
-                if take_live {
-                    // Toggle off — whoever started it (fn, chord, pill, tray).
-                    self.owner = None;
-                    self.carbon_press_at = None;
-                    TakeAction::Stop
-                } else {
-                    self.owner = Some(HotkeySource::Carbon);
-                    self.carbon_press_at = Some(now_ms);
-                    TakeAction::Start
-                }
+        use crate::take_control::{Decision, Surface};
+        self.machine.observe(take_live);
+        match self
+            .machine
+            .intent(Surface::Hotkey, intent_for(edge, source), now_ms)
+        {
+            Decision::Start => {
+                self.machine.armed(true);
+                TakeAction::Start
             }
-            (HotkeySource::Carbon, HotkeyEdge::Release) => {
-                let Some(at) = self.carbon_press_at.take() else {
-                    return TakeAction::Ignore;
-                };
-                if take_live
-                    && self.owner == Some(HotkeySource::Carbon)
-                    && now_ms.saturating_sub(at) >= CARBON_HOLD_MS
-                {
-                    self.owner = None;
-                    TakeAction::Stop
-                } else {
-                    TakeAction::Ignore
-                }
+            Decision::Stop | Decision::StopWhenArmed => {
+                self.machine.stopped();
+                TakeAction::Stop
             }
-            (HotkeySource::FnTap, HotkeyEdge::Press) => {
-                if take_live {
-                    // Never a second start: a take is already live (started by
-                    // the chord, or by fn itself).
-                    TakeAction::Ignore
-                } else {
-                    self.owner = Some(HotkeySource::FnTap);
-                    TakeAction::Start
-                }
-            }
-            (HotkeySource::FnTap, HotkeyEdge::Release) => {
-                if take_live {
-                    self.owner = None;
-                    self.carbon_press_at = None;
-                    TakeAction::Stop
-                } else {
-                    TakeAction::Ignore
-                }
-            }
+            Decision::Ignore(_) => TakeAction::Ignore,
         }
     }
 }

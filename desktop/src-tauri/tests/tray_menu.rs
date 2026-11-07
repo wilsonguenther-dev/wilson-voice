@@ -473,7 +473,9 @@ fn copy_last_goes_through_the_paste_sequencer() {
     let tx = code_only(PASTE_TX_SRC);
     let settle = fn_body(&tx, "settle_then_copy");
     let flush = settle.find("flush_pending(app)").expect("settles first");
-    let write = settle.find("write_text(").expect("then writes");
+    // yap-1107-clipboard-write-never-fails-silently: the copy is a verified
+    // write (write, read back, retry), still strictly after the settle.
+    let write = settle.find("write_verified(").expect("then writes");
     assert!(
         flush < write,
         "the copy must be written AFTER the pending paste settles"
