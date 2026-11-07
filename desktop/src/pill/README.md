@@ -91,8 +91,11 @@ A meeting is ONE surface, never a recording capsule beside Yappy. `pillLayout`
 (`state.ts`) returns `shell` (the union of Yappy and the clock, flush, no gap) and
 `sceneCharacter`. At rest during a recording the meeting scene (`MeetingWorld`: sun
 clock, Hoot at the tape, Yappy in headphones) IS the pill and the canvas draws no
-sky capsule; dictating mid-meeting, Yappy's capsule opens and the clock shrinks to
-a small stack next to stop (`MeetingBadge` `meeting-stacked`); after stop the badge
+sky capsule; whenever Yappy's capsule is open mid-meeting (a take, transcribing,
+done, error, ...) the clock shrinks to a small stack next to stop (`MeetingBadge`
+`meeting-stacked`). One test decides it: `meetingClockStacked(phase)` in
+`state.ts` sizes the layout's clock box (CLOCK_STACK_W) and is the `stacked` prop
+both shells pass the badge, so the scene is never clipped into the stack box; after stop the badge
 is the right-hand segment of the same shell. float.css paints the one
 `.meeting-shell` behind both. `meetingSurfaceProblems()` and the pill matrix's
 `meeting-second-surface` finding guard it.

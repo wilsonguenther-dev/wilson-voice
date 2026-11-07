@@ -220,6 +220,20 @@ export const LEGACY_PANEL = { w: 300, h: 140 } as const;
 /** Phases Yappy draws as the small resting capsule; every other phase opens him. */
 export const RESTING_PHASES: ReadonlySet<LivePhase> = new Set<LivePhase>(["idle", "sleepy"]);
 
+/**
+ * fix-l3b1-1-meeting-stack-matches-layout — the ONE test for "a recording
+ * meeting's clock is the small stack (time + stop), not the scene". The layout
+ * (`clockWidth` through pillLayout and sideLayout) reserves CLOCK_STACK_W for
+ * exactly these phases, and both pill shells (YappyPill, PillShell) hand the
+ * same answer to MeetingBadge as `stacked`. It was `isListening(gate)` in the
+ * shells, so transcribing / polishing / pasting / done / error / cancelled /
+ * blind drew the 112 px scene (a second Yappy) into the 96 px box, clipped,
+ * with the Stop button cut off.
+ */
+export function meetingClockStacked(phase: LivePhase): boolean {
+  return !RESTING_PHASES.has(phase);
+}
+
 /** The meeting slot from the meeting pipeline's two views (float-main owns both). */
 export function meetingMode(status: Pick<MeetingStatus, "recording"> | null | undefined, after: MeetingAfterView | null | undefined): MeetingMode {
   if (after) return "after";
@@ -272,7 +286,7 @@ export function pillLayout(input: PillInput): PillLayout {
   if (sceneCharacter) {
     clock0 = { ...char0 };
   } else if (meeting !== "none") {
-    const cw = clockWidth(meeting, resting);
+    const cw = clockWidth(meeting, !meetingClockStacked(phase));
     // yap-1107-one-pill-during-meeting — flush to Yappy (no gap): the clock is a
     // segment of the one shell, never a second capsule floating beside him.
     // The pill's own trailing segment: beside Yappy, vertically centred on him.
@@ -326,7 +340,7 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
   const rows: Array<{ name: "clock" | "progress" | "bubble" | "hint" | "card"; w: number; h: number }> = [];
   // yap-1107-one-pill-during-meeting — the clock is a segment of the one shell:
   // flush to the tab/room (no SLOT_GAP), the stack mid-take, the scene at rest.
-  if (meeting !== "none") rows.push({ name: "clock", w: clockWidth(meeting, RESTING_PHASES.has(phase)), h: CLOCK_H });
+  if (meeting !== "none") rows.push({ name: "clock", w: clockWidth(meeting, !meetingClockStacked(phase)), h: CLOCK_H });
   if (phase === PROGRESS_PHASE) rows.push({ name: "progress", w: PROGRESS_W, h: PROGRESS_H });
   const cardH = input.card ? Math.max(1, Math.ceil(input.card.h)) : 0;
   if (cardH) rows.push({ name: "card", w: CARD_W, h: cardH });
