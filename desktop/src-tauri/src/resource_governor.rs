@@ -18,8 +18,9 @@
 //!
 //!   * **full** — everything runs.
 //!   * **light** — on battery at or under the "pause heavy work" percent
-//!     (default 20), on a charger under 45 W with the battery under 20%, Low
-//!     Power Mode on, thermal serious, or memory warn.
+//!     (default 20) or under 15% whatever that setting says (FX-03's floor),
+//!     on a charger under 45 W with the battery under 20%, Low Power Mode on,
+//!     thermal serious, or memory warn.
 //!   * **minimal** — on battery ≤ 10%, thermal critical, or memory critical.
 //!
 //! What each consumer does with it (the pure predicates below are what they
@@ -30,12 +31,15 @@
 //!     polish is configured and online, otherwise it is skipped with the
 //!     `saving_battery` note; at minimal it is skipped.
 //!   * Meeting ASR, notes and diarization ([`Governor::heavy_work_deferred`])
-//!     are deferred at light WHEN THE REASON IS POWER (battery, Low Power
-//!     Mode, a weak charger) and at minimal, and queue until the Mac is back
-//!     on wall power or at full. The meeting still RECORDS — capture is cheap
-//!     (OS-12). Thermal-serious or memory-warn on wall power is light too, but
-//!     a decode on AC is what cools and frees the Mac fastest, so only polish
-//!     steps aside for it.
+//!     — and the meeting RECOVERY decode, which runs through the same
+//!     pipeline queue — are deferred at light and at minimal, and queue until
+//!     the Mac is back on wall power or at full. The meeting still RECORDS —
+//!     capture is cheap (OS-12). FX-03 counts thermal-serious and memory-warn
+//!     as constrained too: a 3.8 GB decode is exactly what starves a Mac that
+//!     is already short of memory, so it waits for full like the rest.
+//!   * Dictation keeps exactly ONE engine while constrained
+//!     ([`keeps_one_engine`]): the warm polish sidecar is unloaded on the way
+//!     into light/minimal, leaving only the ASR model resident.
 //!   * The live transcript ([`Governor::live_transcript_paused`]) pauses at
 //!     minimal.
 //!
@@ -146,6 +150,10 @@ impl Readings {
 pub const MINIMAL_BATTERY_PERCENT: u8 = 10;
 /// Default for the "Pause heavy work on battery below N%" setting.
 pub const DEFAULT_PAUSE_BELOW_PERCENT: u8 = 20;
+/// FX-03: on battery under this percent is light whatever the user's
+/// "pause heavy work" setting says. The setting can raise the line, never
+/// lower it under this floor.
+pub const CONSTRAINED_BATTERY_PERCENT: u8 = 15;
 /// A charger under this wattage cannot keep up with a decode (FX-03).
 pub const WEAK_ADAPTER_WATTS: u32 = 45;
 /// …and only matters while the battery is under this.
@@ -165,7 +173,7 @@ pub struct Verdict {
     /// The reading behind the reason: `4%`, `on`, `critical`, `warn`, `20w`.
     pub value: Option<String>,
     /// Was the reason a POWER reason (battery, Low Power Mode, weak charger)?
-    /// Heavy work defers at light only for those.
+    /// Only the pill wording reads it ("Saving battery" vs "Running hot").
     pub power_limited: bool,
 }
 
@@ -212,7 +220,7 @@ pub fn level_for(r: &Readings, pause_below: u8) -> Verdict {
     // ── light ──
     if r.on_battery() {
         if let Some(p) = pct {
-            if p <= pause_below {
+            if p <= pause_below || p < CONSTRAINED_BATTERY_PERCENT {
                 return Verdict::of(Level::Light, "battery", format!("{p}%"), true);
             }
         }
@@ -270,9 +278,16 @@ pub const POLISH_SKIP_TAG: &str = "saving_battery";
 pub fn heavy_work_deferred_by(verdict: &Verdict) -> Option<String> {
     match verdict.level {
         Level::Full => None,
-        Level::Light if !verdict.power_limited => None,
         Level::Light | Level::Minimal => verdict.reason.clone(),
     }
+}
+
+/// FX-03: "dictation keeps exactly one engine" while constrained. `true` at
+/// light and minimal — the caller unloads every warm model that is not the
+/// dictation ASR (today: the polish sidecar; notes and diarization are
+/// already deferred, so they load nothing new).
+pub fn keeps_one_engine(level: Level) -> bool {
+    level != Level::Full
 }
 
 /// The live transcript pauses at minimal only.
@@ -360,6 +375,9 @@ pub struct GovernorView {
     pub sentence: Option<String>,
     /// The pill's small state: "Saving battery: notes after you plug in".
     pub pill_label: Option<String>,
+    /// The main window's banner (FX-03): "Yap is saving power — your meeting
+    /// will transcribe when you're charged". `None` unless heavy work is held.
+    pub main_sentence: Option<String>,
     /// Is heavy work (meeting ASR, notes, diarization) being held?
     pub heavy_work_deferred: bool,
     /// The jobs currently waiting (meeting ids, `notes:<id>`, `diarize`).
@@ -390,10 +408,28 @@ pub fn pill_label_for(v: &Verdict) -> Option<String> {
         (Level::Minimal, "battery") => "Saving battery: notes after you plug in".into(),
         (Level::Minimal, "thermal") => "Cooling down: notes when this Mac cools".into(),
         (Level::Minimal, "memory") => "Low on memory: notes when it frees up".into(),
+        (Level::Light, r) if r.starts_with("adapter_") => {
+            "Slow charger: notes when the battery is up".into()
+        }
         (Level::Light, _) if power => "Saving battery: notes after you plug in".into(),
-        (Level::Light, "thermal") => "Running hot: plain text for now".into(),
-        (Level::Light, "memory") => "Low on memory: plain text for now".into(),
+        (Level::Light, "thermal") => "Running hot: notes when this Mac cools".into(),
+        (Level::Light, "memory") => "Low on memory: notes when it frees up".into(),
         _ => "Yap is going easy on this Mac".into(),
+    })
+}
+
+/// The main window's one plain sentence (FX-03) while a meeting's
+/// transcription is being held. `None` when nothing heavy is held.
+pub fn main_sentence_for(v: &Verdict) -> Option<String> {
+    let reason = heavy_work_deferred_by(v)?;
+    Some(match reason.as_str() {
+        "thermal" => {
+            "Yap is letting this Mac cool down — your meeting will transcribe when it does".into()
+        }
+        "memory" => {
+            "Yap is saving memory — your meeting will transcribe when this Mac frees some up".into()
+        }
+        _ => "Yap is saving power — your meeting will transcribe when you're charged".into(),
     })
 }
 
@@ -472,10 +508,7 @@ impl Governor {
                 );
                 crate::diagnostics::set_state("governor.level", verdict.level.as_str());
                 if verdict.level == Level::Full && !g.overrides.is_empty() {
-                    log::info!(
-                        "governor overrides_cleared count={}",
-                        g.overrides.len()
-                    );
+                    log::info!("governor overrides_cleared count={}", g.overrides.len());
                     g.overrides.clear();
                 }
             }
@@ -521,8 +554,13 @@ impl Governor {
     /// including when the user pressed "Run anyway" for this job.
     pub fn heavy_work_deferred(&self, job: &str) -> Option<String> {
         let verdict = self.verdict(Duration::from_secs(5));
-        let held = heavy_work_deferred_by(&verdict)
-            .filter(|_| !self.inner.lock().map(|g| g.overrides.contains(job)).unwrap_or(false));
+        let held = heavy_work_deferred_by(&verdict).filter(|_| {
+            !self
+                .inner
+                .lock()
+                .map(|g| g.overrides.contains(job))
+                .unwrap_or(false)
+        });
         // Track who is waiting so the UI can offer "Run anyway" per job.
         if let Ok(mut g) = self.inner.lock() {
             let idx = g.waiting.iter().position(|w| w == job);
@@ -582,7 +620,13 @@ impl Governor {
         self.inner
             .lock()
             .map(|g| Self::view_of(&g))
-            .unwrap_or_else(|_| Self::view_of_parts(&Verdict::full(), &Readings::default(), DEFAULT_PAUSE_BELOW_PERCENT))
+            .unwrap_or_else(|_| {
+                Self::view_of_parts(
+                    &Verdict::full(),
+                    &Readings::default(),
+                    DEFAULT_PAUSE_BELOW_PERCENT,
+                )
+            })
     }
 
     fn view_of(g: &Inner) -> GovernorView {
@@ -604,6 +648,7 @@ impl Governor {
             pause_below_percent: pause_below,
             sentence: sentence_for(v),
             pill_label: pill_label_for(v),
+            main_sentence: main_sentence_for(v),
             heavy_work_deferred: heavy_work_deferred_by(v).is_some(),
             waiting_jobs: Vec::new(),
         }
@@ -665,7 +710,11 @@ pub fn view_now() -> GovernorView {
             g.verdict(Duration::from_secs(5));
             g.view()
         }
-        None => Governor::view_of_parts(&Verdict::full(), &Readings::default(), DEFAULT_PAUSE_BELOW_PERCENT),
+        None => Governor::view_of_parts(
+            &Verdict::full(),
+            &Readings::default(),
+            DEFAULT_PAUSE_BELOW_PERCENT,
+        ),
     }
 }
 
@@ -887,63 +936,110 @@ mod tests {
     fn level_table() {
         let table: Vec<(&str, Readings, Level, Option<&str>)> = vec![
             ("4% on AC is full", r(true, 4), Level::Full, None),
-            ("4% on battery is minimal", r(false, 4), Level::Minimal, Some("battery")),
-            ("10% on battery is minimal", r(false, 10), Level::Minimal, Some("battery")),
-            ("11% on battery is light", r(false, 11), Level::Light, Some("battery")),
-            ("20% on battery is light", r(false, 20), Level::Light, Some("battery")),
+            (
+                "4% on battery is minimal",
+                r(false, 4),
+                Level::Minimal,
+                Some("battery"),
+            ),
+            (
+                "10% on battery is minimal",
+                r(false, 10),
+                Level::Minimal,
+                Some("battery"),
+            ),
+            (
+                "11% on battery is light",
+                r(false, 11),
+                Level::Light,
+                Some("battery"),
+            ),
+            (
+                "20% on battery is light",
+                r(false, 20),
+                Level::Light,
+                Some("battery"),
+            ),
             ("21% on battery is full", r(false, 21), Level::Full, None),
             ("80% on battery is full", r(false, 80), Level::Full, None),
             (
                 "low power on AC is light",
-                Readings { low_power: true, ..r(true, 90) },
+                Readings {
+                    low_power: true,
+                    ..r(true, 90)
+                },
                 Level::Light,
                 Some("lowpower"),
             ),
             (
                 "thermal serious is light",
-                Readings { thermal: ThermalState::Serious, ..r(true, 90) },
+                Readings {
+                    thermal: ThermalState::Serious,
+                    ..r(true, 90)
+                },
                 Level::Light,
                 Some("thermal"),
             ),
             (
                 "thermal critical is minimal",
-                Readings { thermal: ThermalState::Critical, ..r(true, 90) },
+                Readings {
+                    thermal: ThermalState::Critical,
+                    ..r(true, 90)
+                },
                 Level::Minimal,
                 Some("thermal"),
             ),
             (
                 "memory warn is light",
-                Readings { memory: MemoryPressure::Warn, ..r(true, 90) },
+                Readings {
+                    memory: MemoryPressure::Warn,
+                    ..r(true, 90)
+                },
                 Level::Light,
                 Some("memory"),
             ),
             (
                 "memory critical is minimal",
-                Readings { memory: MemoryPressure::Critical, ..r(true, 90) },
+                Readings {
+                    memory: MemoryPressure::Critical,
+                    ..r(true, 90)
+                },
                 Level::Minimal,
                 Some("memory"),
             ),
             (
                 "20 W charger at 4% is light (adapter)",
-                Readings { adapter_watts: Some(20), ..r(true, 4) },
+                Readings {
+                    adapter_watts: Some(20),
+                    ..r(true, 4)
+                },
                 Level::Light,
                 Some("adapter_20w_battery_4"),
             ),
             (
                 "20 W charger at 50% is full",
-                Readings { adapter_watts: Some(20), ..r(true, 50) },
+                Readings {
+                    adapter_watts: Some(20),
+                    ..r(true, 50)
+                },
                 Level::Full,
                 None,
             ),
             (
                 "96 W charger at 4% is full",
-                Readings { adapter_watts: Some(96), ..r(true, 4) },
+                Readings {
+                    adapter_watts: Some(96),
+                    ..r(true, 4)
+                },
                 Level::Full,
                 None,
             ),
             (
                 "no battery at all is full",
-                Readings { battery: BatteryReading::default(), ..r(true, 0) },
+                Readings {
+                    battery: BatteryReading::default(),
+                    ..r(true, 0)
+                },
                 Level::Full,
                 None,
             ),
@@ -955,7 +1051,10 @@ mod tests {
             ),
             (
                 "4% battery AND thermal serious says battery",
-                Readings { thermal: ThermalState::Serious, ..r(false, 4) },
+                Readings {
+                    thermal: ThermalState::Serious,
+                    ..r(false, 4)
+                },
                 Level::Minimal,
                 Some("battery"),
             ),
@@ -971,10 +1070,19 @@ mod tests {
     fn the_pause_below_setting_moves_the_light_line() {
         assert_eq!(level_for(&r(false, 30), 35).level, Level::Light);
         assert_eq!(level_for(&r(false, 30), 20).level, Level::Full);
-        // A setting UNDER 10 pulls minimal down with it: 5% means "leave me
-        // alone until 5", not "minimal at 10 anyway".
-        assert_eq!(level_for(&r(false, 8), 5).level, Level::Full);
+        // A setting UNDER 10 pulls minimal down with it: 5% means "no
+        // minimal until 5", not "minimal at 10 anyway" — but FX-03's 15%
+        // floor still makes 8% light.
+        assert_eq!(level_for(&r(false, 8), 5).level, Level::Light);
         assert_eq!(level_for(&r(false, 5), 5).level, Level::Minimal);
+        // The floor: under 15% on battery is light whatever the setting.
+        assert_eq!(level_for(&r(false, 14), 5).level, Level::Light);
+        assert_eq!(
+            level_for(&r(false, 14), 5).reason.as_deref(),
+            Some("battery")
+        );
+        assert_eq!(level_for(&r(false, 15), 5).level, Level::Full);
+        assert_eq!(level_for(&r(false, 14), 1).level, Level::Light);
         assert_eq!(clamp_pause_below(0), 1);
         assert_eq!(clamp_pause_below(100), 99);
     }
@@ -992,16 +1100,14 @@ mod tests {
             heavy_work_deferred_by(&level_for(&r(false, 15), 20)).as_deref(),
             Some("battery")
         );
+        // FX-03: thermal serious and memory warn are constrained too — the
+        // meeting decode waits for full even on wall power.
         assert_eq!(
             heavy_work_deferred_by(&level_for(
-                &Readings { thermal: ThermalState::Serious, ..r(true, 90) },
-                20
-            )),
-            None
-        );
-        assert_eq!(
-            heavy_work_deferred_by(&level_for(
-                &Readings { thermal: ThermalState::Critical, ..r(true, 90) },
+                &Readings {
+                    thermal: ThermalState::Serious,
+                    ..r(true, 90)
+                },
                 20
             ))
             .as_deref(),
@@ -1009,7 +1115,48 @@ mod tests {
         );
         assert_eq!(
             heavy_work_deferred_by(&level_for(
-                &Readings { adapter_watts: Some(20), ..r(true, 4) },
+                &Readings {
+                    memory: MemoryPressure::Warn,
+                    ..r(true, 90)
+                },
+                20
+            ))
+            .as_deref(),
+            Some("memory")
+        );
+        assert_eq!(
+            heavy_work_deferred_by(&level_for(
+                &Readings {
+                    low_power: true,
+                    ..r(true, 90)
+                },
+                20
+            ))
+            .as_deref(),
+            Some("lowpower")
+        );
+        assert_eq!(heavy_work_deferred_by(&level_for(&r(true, 90), 20)), None);
+        // Dictation keeps exactly one engine whenever the Mac is constrained.
+        assert!(!keeps_one_engine(Level::Full));
+        assert!(keeps_one_engine(Level::Light));
+        assert!(keeps_one_engine(Level::Minimal));
+        assert_eq!(
+            heavy_work_deferred_by(&level_for(
+                &Readings {
+                    thermal: ThermalState::Critical,
+                    ..r(true, 90)
+                },
+                20
+            ))
+            .as_deref(),
+            Some("thermal")
+        );
+        assert_eq!(
+            heavy_work_deferred_by(&level_for(
+                &Readings {
+                    adapter_watts: Some(20),
+                    ..r(true, 4)
+                },
                 20
             ))
             .as_deref(),
@@ -1038,7 +1185,10 @@ mod tests {
         assert_eq!(g.heavy_work_deferred("m1"), None);
         assert!(!g.live_transcript_paused());
         assert_eq!(g.polish_plan(false), PolishPlan::Local);
-        assert!(seen.lock().unwrap().is_empty(), "full→full is not a transition");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "full→full is not a transition"
+        );
 
         // Unplug at 4%.
         probe.set(r(false, 4));
@@ -1050,12 +1200,19 @@ mod tests {
             let s = seen.lock().unwrap();
             assert_eq!(s.len(), 1);
             assert_eq!(s[0].level, Level::Minimal);
-            assert_eq!(s[0].sentence.as_deref(), Some("Yap is going easy: 4% battery"));
+            assert_eq!(
+                s[0].sentence.as_deref(),
+                Some("Yap is going easy: 4% battery")
+            );
             assert_eq!(
                 s[0].pill_label.as_deref(),
                 Some("Saving battery: notes after you plug in")
             );
             assert!(s[0].heavy_work_deferred);
+            assert_eq!(
+                s[0].main_sentence.as_deref(),
+                Some("Yap is saving power — your meeting will transcribe when you're charged")
+            );
         }
 
         assert_eq!(g.view().waiting_jobs, vec!["m1".to_string()]);
@@ -1089,7 +1246,10 @@ mod tests {
 
     #[test]
     fn the_fake_probe_is_also_an_energy_probe() {
-        let probe = FakeProbe::new(Readings { thermal: ThermalState::Fair, ..r(false, 50) });
+        let probe = FakeProbe::new(Readings {
+            thermal: ThermalState::Fair,
+            ..r(false, 50)
+        });
         let e: &dyn EnergyProbe = &probe;
         assert_eq!(e.thermal(), ThermalState::Fair);
         assert_eq!(e.battery().percent, Some(50));
@@ -1098,22 +1258,68 @@ mod tests {
 
     #[test]
     fn sentences_read_as_plain_words() {
-        let v = level_for(&Readings { low_power: true, ..r(true, 90) }, 20);
+        let v = level_for(
+            &Readings {
+                low_power: true,
+                ..r(true, 90)
+            },
+            20,
+        );
         assert_eq!(
             sentence_for(&v).as_deref(),
             Some("Yap is going easy: Low Power Mode is on")
         );
-        let v = level_for(&Readings { adapter_watts: Some(20), ..r(true, 4) }, 20);
+        let v = level_for(
+            &Readings {
+                adapter_watts: Some(20),
+                ..r(true, 4)
+            },
+            20,
+        );
         assert_eq!(
             sentence_for(&v).as_deref(),
             Some("Yap is going easy: a 20w charger can't keep up")
         );
         assert_eq!(
             pill_label_for(&v).as_deref(),
-            Some("Saving battery: notes after you plug in")
+            Some("Slow charger: notes when the battery is up")
         );
-        let v = level_for(&Readings { thermal: ThermalState::Serious, ..r(true, 90) }, 20);
-        assert_eq!(pill_label_for(&v).as_deref(), Some("Running hot: plain text for now"));
+        assert_eq!(
+            main_sentence_for(&v).as_deref(),
+            Some("Yap is saving power — your meeting will transcribe when you're charged")
+        );
+        let v = level_for(
+            &Readings {
+                thermal: ThermalState::Serious,
+                ..r(true, 90)
+            },
+            20,
+        );
+        assert_eq!(
+            pill_label_for(&v).as_deref(),
+            Some("Running hot: notes when this Mac cools")
+        );
+        assert_eq!(
+            main_sentence_for(&v).as_deref(),
+            Some("Yap is letting this Mac cool down — your meeting will transcribe when it does")
+        );
+        let v = level_for(
+            &Readings {
+                memory: MemoryPressure::Warn,
+                ..r(true, 90)
+            },
+            20,
+        );
+        assert_eq!(
+            pill_label_for(&v).as_deref(),
+            Some("Low on memory: notes when it frees up")
+        );
+        let v = level_for(&r(false, 4), 20);
+        assert_eq!(
+            main_sentence_for(&v).as_deref(),
+            Some("Yap is saving power — your meeting will transcribe when you're charged")
+        );
+        assert_eq!(main_sentence_for(&Verdict::full()), None);
         assert_eq!(sentence_for(&Verdict::full()), None);
         assert_eq!(pill_label_for(&Verdict::full()), None);
     }

@@ -25,6 +25,8 @@ export interface GovernorView {
   sentence: string | null;
   /** Pill: "Saving battery: notes after you plug in". */
   pillLabel: string | null;
+  /** Main window banner: "Yap is saving power — your meeting will transcribe when you're charged". */
+  mainSentence: string | null;
   heavyWorkDeferred: boolean;
   waitingJobs: string[];
 }
@@ -41,6 +43,7 @@ export const GOVERNOR_FULL: GovernorView = {
   pauseBelowPercent: 20,
   sentence: null,
   pillLabel: null,
+  mainSentence: null,
   heavyWorkDeferred: false,
   waitingJobs: [],
 };
@@ -66,6 +69,15 @@ export function governorChip(view: GovernorView | null | undefined): GovernorChi
 /** Settings › Advanced: the sentence, or the quiet default. */
 export function governorSentence(view: GovernorView | null | undefined): string {
   return view?.sentence ?? "Yap is running at full speed.";
+}
+
+/**
+ * The main window's one plain sentence (FX-03), or `null` when no meeting work
+ * is being held. The backend writes it; this only decides whether it shows.
+ */
+export function governorMainBanner(view: GovernorView | null | undefined): string | null {
+  if (!view || view.level === "full" || !view.heavyWorkDeferred) return null;
+  return view.mainSentence ?? null;
 }
 
 /** 1..=99, whole; anything else keeps `current`. Mirrors `clamp_pause_below`. */

@@ -10262,6 +10262,11 @@ pub fn run() {
                 ));
                 let emit_handle = app.handle().clone();
                 governor.set_emitter(move |view| {
+                    // FX-03: constrained = dictation keeps exactly one engine.
+                    // The emitter fires on every transition, off the UI thread.
+                    if resource_governor::keeps_one_engine(view.level) {
+                        polish::unload_sidecar_for_governor(view.level.as_str());
+                    }
                     if let Err(e) = emit_handle.emit(resource_governor::GOVERNOR_EVENT, view) {
                         log::warn!("governor emit failure reason={e}");
                     }

@@ -1470,6 +1470,18 @@ pub fn sidecar_status() -> SidecarStatus {
     pool().status()
 }
 
+/// yap-1106-resource-governor (FX-03) — "dictation keeps exactly one engine"
+/// while the Mac is constrained: drop the warm polish sidecar now instead of
+/// waiting for the idle sweep. Polish is skipped at light/minimal, so nothing
+/// respawns it until the governor is back at full. `true` when one was held.
+pub fn unload_sidecar_for_governor(level: &str) -> bool {
+    let unloaded = pool().unload_now();
+    if unloaded {
+        log::info!("polish sidecar unloaded reason=governor level={level}");
+    }
+    unloaded
+}
+
 /// YV81 — unload a warm sidecar that nobody has used for
 /// [`SIDECAR_IDLE_UNLOAD`], returning whether a child was actually killed.
 ///
@@ -1673,6 +1685,19 @@ impl SidecarPool {
             "polish sidecar unloaded after {}s unused — it reloads on the next take",
             idle.as_secs()
         );
+        true
+    }
+
+    /// Kill the warm child now, whatever its idle time (the governor's
+    /// one-engine rule). Same bookkeeping as [`Self::sweep_idle`]: back to
+    /// `NotInstalled`, restart budget untouched. `false` when nothing was held.
+    fn unload_now(&self) -> bool {
+        let mut held = self.slot.lock();
+        let Some(child) = held.take() else {
+            return false;
+        };
+        child.kill();
+        self.set(SidecarState::NotInstalled, None);
         true
     }
 
@@ -2568,6 +2593,29 @@ mod polish_fallback_tests {
         );
         assert_eq!(pool.status(), SidecarStatus::new(SidecarState::Ready, None));
         pool.slot.lock().take().expect("a warm child").kill();
+    }
+
+    /// yap-1106-resource-governor (FX-03) — on the way into light/minimal the
+    /// governor drops the warm sidecar AT ONCE, however recently it was used,
+    /// so dictation keeps exactly one engine (the ASR model) resident.
+    #[test]
+    fn governor_unloads_a_warm_sidecar_at_once() {
+        let pool = SidecarPool::new(stub(READY_STUB), Duration::from_secs(10));
+        // Nothing warm: nothing to kill.
+        assert!(!pool.unload_now());
+        let model = stub_model();
+        let answer = poll_until(|| pool.rewrite(&model, &stub_request()).ok());
+        assert!(answer.is_some());
+        assert!(pool.slot.lock().is_some(), "the child is warm");
+        // Used a moment ago — the idle sweep would keep it; the governor does not.
+        assert!(!pool.sweep_idle());
+        assert!(pool.unload_now(), "the warm child is terminated");
+        assert!(pool.slot.lock().is_none(), "no second engine is left resident");
+        assert_eq!(
+            pool.status(),
+            SidecarStatus::new(SidecarState::NotInstalled, None)
+        );
+        assert!(!pool.unload_now());
     }
 
     // --- The signature, on the far side of the model (YV62, R13) ----------

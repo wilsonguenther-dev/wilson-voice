@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   GOVERNOR_FULL,
   governorChip,
+  governorMainBanner,
   governorSentence,
   pauseBelowFromInput,
   type GovernorView,
@@ -15,6 +16,7 @@ const light: GovernorView = {
   onAc: false,
   sentence: "Yap is going easy: 15% battery",
   pillLabel: "Saving battery: notes after you plug in",
+  mainSentence: "Yap is saving power — your meeting will transcribe when you're charged",
   heavyWorkDeferred: true,
   waitingJobs: ["m1"],
 };
@@ -33,15 +35,27 @@ describe("governorChip", () => {
     expect(governorChip({ ...light, waitingJobs: [] })?.runAnyway).toBe(false);
     expect(governorChip({ ...light, level: "minimal" })?.tone).toBe("minimal");
   });
-  it("a thermal light has no Run anyway: nothing is held", () => {
+  it("a thermal light with nothing waiting has no Run anyway", () => {
     const hot: GovernorView = {
       ...GOVERNOR_FULL,
       level: "light",
       reason: "thermal",
-      pillLabel: "Running hot: plain text for now",
-      heavyWorkDeferred: false,
+      pillLabel: "Running hot: notes when this Mac cools",
+      heavyWorkDeferred: true,
     };
-    expect(governorChip(hot)).toEqual({ label: "Running hot: plain text for now", tone: "light", runAnyway: false });
+    expect(governorChip(hot)).toEqual({ label: "Running hot: notes when this Mac cools", tone: "light", runAnyway: false });
+  });
+});
+
+describe("governorMainBanner", () => {
+  it("shows the backend's one sentence only while meeting work is held", () => {
+    expect(governorMainBanner(light)).toBe(
+      "Yap is saving power — your meeting will transcribe when you're charged",
+    );
+    expect(governorMainBanner({ ...light, heavyWorkDeferred: false })).toBeNull();
+    expect(governorMainBanner(GOVERNOR_FULL)).toBeNull();
+    expect(governorMainBanner(null)).toBeNull();
+    expect(governorMainBanner({ ...light, mainSentence: null })).toBeNull();
   });
 });
 
