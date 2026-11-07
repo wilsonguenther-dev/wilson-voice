@@ -1,14 +1,24 @@
 import { useAppCtx } from "../../appShell";
 import MicrophonePicker from "./parts/MicrophonePicker";
 
-export default function Audio() {
+/**
+ * yap-1106-settings-redesign — the microphone picker lives in Settings ›
+ * General and the "While you talk" cleanup in Settings › Dictation, so each
+ * control shows exactly once. With no `part` both render (the old Audio tab).
+ */
+export type AudioPart = "input" | "cleanup";
+
+export default function Audio({ part }: { part?: AudioPart } = {}) {
   const {
     saveSettings, settings,
   } = useAppCtx();
   if (!settings) return null;
+  const showInput = part !== "cleanup";
+  const showCleanup = part !== "input";
   return (
                 <section className="settings-panel" data-settings-pane="audio">
-                  <MicrophonePicker />
+                  {showInput && <MicrophonePicker />}
+                  {showCleanup && (
                   <div className="panel" data-row>
                   <h3>While you talk</h3>
                   <label className="toggle">
@@ -54,6 +64,7 @@ export default function Audio() {
                     </span>
                   </label>
                   </div>
+                  )}
                 </section>
   );
 }

@@ -2,6 +2,7 @@
 // now composition only; the seven view modules read this through AppContext.
 // No state field was renamed, no effect reordered, no listener duplicated.
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sectionForTab } from "./settingsIndex";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -15,6 +16,7 @@ import { finishFailedToast } from "./recoveryToast";
 import { useToasts, type ToastAction, type ToastInput } from "./toast";
 import { useFormattingOptions } from "./formatting";
 import { IDLE_MEETING, MEETING_EVENT, parseNavigate, type MeetingStatus } from "./pill/meeting";
+import { readMeetingKindDefault } from "./meetings/kindDefault";
 import { type MeetingConsent } from "./meetings/consent";
 import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
@@ -163,7 +165,9 @@ export function useAppShell() {
    * works exactly as it did for a user who never looks at the picker: this is a
    * hint that improves diarization, never a gate.
    */
-  const [meetingKind, setMeetingKind] = useState<string>("unknown");
+  // yap-1106-settings-redesign — begins at Settings › Meetings › Meeting kinds
+  // ("New meetings start as"), which is `unknown` until the user picks one.
+  const [meetingKind, setMeetingKind] = useState<string>(readMeetingKindDefault);
   /**
    * The picker's options, fetched from Rust rather than written out again here
    * — the tray submenu renders the SAME `meeting_control::KIND_PICKER`, so a
@@ -616,8 +620,10 @@ export function useAppShell() {
   // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
   // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is
   // usually warm by now, so the answer is read at the moment it is asked for.
+  // yap-1106-settings-redesign — Privacy and the speech-model parts now share
+  // Settings › Models & privacy, so the refresh follows the SECTION.
   useEffect(() => {
-    if (nav !== "settings" || settingsTab !== "privacy") return;
+    if (nav !== "settings" || sectionForTab(settingsTab) !== "models") return;
     let dead = false;
     invoke<EngineStatus>("engine_status")
       .then((e) => !dead && setEngine(e))
@@ -626,6 +632,18 @@ export function useAppShell() {
       dead = true;
     };
   }, [nav, settingsTab]);
+
+  // yap-1106-settings-redesign — Settings' pinned Done (and Escape) returns to
+  // the screen you came from, so remember the last screen that was not Settings.
+  const settingsReturnRef = useRef<Nav>("home");
+  useEffect(() => {
+    if (nav !== "settings") settingsReturnRef.current = nav;
+  }, [nav]);
+  const leaveSettings = useCallback(() => {
+    const to = settingsReturnRef.current === "settings" ? "home" : settingsReturnRef.current;
+    console.info(`ui settings_done to=${to}`);
+    setNav(to);
+  }, []);
 
   useEffect(() => {
     refreshAll();
@@ -1592,6 +1610,7 @@ export function useAppShell() {
     setNoteTitle, setOpenMeeting, setPerms, setQuery, setRetrying,
     setScratch, setScratchComposing, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
     setSupportBusy, setSupportOpen, setSupportPreview, setSysAudio, setSysAudioBusy, setSysAudioGate,
+    leaveSettings,
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,
     snippets, status, supportBusy, supportOpen, supportPreview, sysAudio,
     sysAudioBusy, sysAudioGate, toast, toggleRecord, trialWarnShown, update,

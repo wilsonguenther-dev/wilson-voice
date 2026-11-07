@@ -1,6 +1,7 @@
 // Y5-G — App.tsx is the SHELL ONLY: nav, header, the license chip, the toast
 // host and the global modals. Every screen lives in ./views/<Name>.tsx and the
 // eight settings panels in ./views/settings/. Shell state lives in ./appShell.
+import NavIcon from "./NavIcon";
 import { AppContext, useAppShell } from "./appShell";
 import { TEST_CHIP } from "./buildChannel";
 import { invoke } from "@tauri-apps/api/core";
@@ -157,8 +158,12 @@ export default function App() {
               className={nav === id ? "nav-item active" : "nav-item"}
               aria-current={nav === id ? "page" : undefined}
               onClick={() => setNav(id)}
+              title={label}
             >
-              <span>{label}</span>
+              <span className="nav-main">
+                <NavIcon id={id} />
+                <span className="nav-label">{label}</span>
+              </span>
               {count != null && count > 0 && (
                 <span className={id === "permissions" ? "count warn" : "count"}>
                   {count}
@@ -183,13 +188,16 @@ export default function App() {
                 carried identical weight. The action stays native SF; the key is
                 data and wears the pixel voice in its own chip, the same
                 treatment the nav counts and the header status pill take. */}
+            {/* yap-1106-settings-redesign — in the icon rail (<900px) the
+                words go visually hidden and a dot stands in for them. */}
+            <span className="dictate-glyph" aria-hidden="true" />
             {status.recording ? (
-              "Stop listening"
+              <span className="dictate-label">Stop listening</span>
             ) : status.busy ? (
-              "Transcribing…"
+              <span className="dictate-label">Transcribing…</span>
             ) : (
               <>
-                Dictate
+                <span className="dictate-label">Dictate</span>
                 <span className="dictate-key">fn⌃</span>
               </>
             )}

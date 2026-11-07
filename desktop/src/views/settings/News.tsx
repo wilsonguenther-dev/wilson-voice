@@ -69,7 +69,7 @@ export function NewsSettingsView({
           <p className="settings-hint">
             Yappy News needs the cloud option.{" "}
             <button type="button" className="ghost" onClick={onConnect}>
-              Connect it in Advanced
+              Connect it in Models &amp; privacy
             </button>
           </p>
         )}

@@ -203,7 +203,9 @@ body:has(.float-pill),
 /* Main shell — Tahoe / liquid-glass inspired */
 .shell {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  /* yap-1106-settings-redesign — a slimmer icon + label rail (was 220px);
+     under 900px it collapses to icons only (media block below). */
+  grid-template-columns: 184px minmax(0, 1fr);
   height: 100vh;
   /* YV56 — the two wash gradients were teal + indigo, the last of the pre-warm
      palette and the largest surface in the app: they tinted the locked cream
@@ -303,6 +305,28 @@ body:has(.float-pill),
   background: var(--bg-card);
   color: var(--text);
   box-shadow: var(--shadow);
+}
+
+/* yap-1106-settings-redesign — icon + label rail. */
+.nav-item > .nav-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nav-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.dictate-glyph {
+  display: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 /* YV56 — a nav count is DATA, not a label: pixel voice, tabular figures so
@@ -1297,11 +1321,184 @@ button.star.on {
   line-height: 1.55;
 }
 
+/* yap-1106-settings-redesign (§14) — a slim left list of five sections with
+   search above it, ONE main column that scrolls on its own (the rest of the
+   screen stays put), and a pinned footer with Account & help and Done. */
 .settings {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "side main"
+    "foot foot";
+  column-gap: 24px;
+  height: 100%;
+  min-height: 0;
+}
+
+.settings-side {
+  grid-area: side;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 640px;
+  min-height: 0;
+}
+
+.settings-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-list-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.settings-list-item:hover,
+.settings-account:hover {
+  color: var(--text);
+}
+
+.settings-list-item.active {
+  background: var(--bg-card);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.settings-main {
+  grid-area: main;
+  min-height: 0;
+  max-width: 680px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 4px 16px 0;
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.settings-head .settings-hint {
+  margin: 4px 0 0;
+}
+
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-block:empty {
+  display: none;
+}
+
+/* A search jump flashes the control it landed on for 2 s. */
+.settings-hit {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+  transition: outline-color 0.3s ease;
+}
+
+.settings-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-result .settings-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.settings-result-where {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px 4px;
+  color: var(--muted);
+}
+
+.settings-done-bar {
+  grid-area: foot;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-account.active {
+  color: var(--text);
+}
+
+.settings-list-item:focus-visible,
+.settings-result:focus-visible,
+.settings-account:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-hit {
+    transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .settings {
+    grid-template-columns: 148px minmax(0, 1fr);
+    column-gap: 16px;
+  }
 }
 
 /* YV27 · in-Settings segmented sub-nav — one panel at a time, no infinite scroll */
@@ -1654,69 +1851,65 @@ button.star.on {
    nav as a horizontally scrolling strip, the Dictate button. The shell gives
    that row its height and the rest to the view, so nothing below it grows the
    window past 100vh. */
-@media (max-width: 860px) {
+/* yap-1106-settings-redesign — under 900px the sidebar stays a left rail but
+   drops to icons only (labels stay for screen readers and as tooltips). This
+   replaced the YV-era top strip, which hid nav items behind a sideways scroll. */
+@media (max-width: 900px) {
   .shell {
-    /* minmax(0, …): a bare 1fr column floors at the row's min-content, which
-       is the whole unscrolled nav — the strip must shrink and scroll instead. */
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
   }
-  /* yap-uiux-2026-10-16-O2 (fix round 1) — the strip is a GRID, not a flex
-     row. The speech-model ribbon lives in .sidebar-foot; in a flex row the
-     flex:none foot took the ribbon's whole one-line width and .nav
-     (min-width:0) shrank to ZERO, so at 720x520 a running or failed download
-     hid Home…Settings entirely. Now row 1 is brand | nav | Dictate, with the
-     nav column minmax(0, 1fr) so it always keeps the leftover width, and the
-     ribbon takes a full-width row 2 of its own. */
   .sidebar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    min-width: 0;
-    align-items: center;
-    gap: 6px 10px;
-    padding: 8px 12px;
-    border-right: none;
-    border-bottom: 1px solid var(--glass-border);
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px 8px;
   }
   .brand-block {
-    grid-column: 1;
-    grid-row: 1;
+    justify-content: center;
     padding: 0;
   }
-  .brand-tag {
-    display: none;
-  }
-  .nav {
-    grid-column: 2;
-    grid-row: 1;
-    flex-direction: row;
-    flex-wrap: nowrap;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .nav::-webkit-scrollbar {
+  .brand-block > div:not(.mark) {
     display: none;
   }
   .nav-item {
-    flex: none;
-    gap: 6px;
-    padding: 0.45rem 0.6rem;
+    position: relative;
+    justify-content: center;
+    padding: 0.6rem 0;
   }
-  /* The foot dissolves so the ribbon and Dictate are grid items. */
-  .sidebar-foot {
-    display: contents;
+  .nav-label,
+  .dictate-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .nav-item .count {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 0.6rem;
   }
   .dictate-side {
-    grid-column: 3;
-    grid-row: 1;
-    width: auto;
-    padding: 0.5rem 0.75rem;
+    padding: 0.55rem 0;
   }
-  .sidebar-foot .model-ribbon {
-    grid-column: 1 / -1;
-    grid-row: 2;
+  .dictate-side .dictate-key {
+    display: none;
   }
+  .dictate-glyph {
+    display: inline-block;
+  }
+  .sidebar-foot .model-ribbon-text {
+    display: none;
+  }
+  .sidebar-foot .model-ribbon-track {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 860px) {
   .stats-row,
   .panel-grid,
   .dict-add,
@@ -1971,17 +2164,11 @@ button.star.on {
 /* In the narrow one-row strip (see the H5 block) the ribbon has a full-width
    row of its own, so it goes back to one line: track, text, Retry. This sits
    AFTER the sidebar-width rules above so it wins at equal specificity. */
-@media (max-width: 860px) {
+@media (max-width: 900px) {
   .sidebar-foot .model-ribbon {
     flex-wrap: nowrap;
     margin-bottom: 0;
-    padding: 5px 10px;
-  }
-  .sidebar-foot .model-ribbon-track {
-    flex: 0 0 88px;
-  }
-  .sidebar-foot .model-ribbon-text {
-    min-width: 0;
+    padding: 5px 6px;
   }
 }
 

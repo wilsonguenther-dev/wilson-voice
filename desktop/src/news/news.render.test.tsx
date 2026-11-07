@@ -67,7 +67,7 @@ describe("yap-1106 Settings → Yappy News", () => {
     expect(html).toContain("Developer, NVDA, Tauri releases");
     expect(html).toContain("Last refreshed 5 min ago.");
     expect(html).toContain(NEWS_PRIVACY_LINE);
-    expect(html).not.toContain("Connect it in Advanced");
+    expect(html).not.toContain("Connect it in Models &amp; privacy");
   });
   it("news_settings_cloud_off_is_off_with_one_way_to_connect", () => {
     const v = view({ cloudConnected: false });
@@ -75,7 +75,7 @@ describe("yap-1106 Settings → Yappy News", () => {
       <NewsSettingsView view={v} draft={v} saving={false} onChange={noop} onSave={noop} onRevert={noop} onConnect={noop} />,
     );
     expect(html).toContain('data-news-status="off"');
-    expect(html).toContain("Connect it in Advanced");
+    expect(html).toContain("Connect it in Models &amp; privacy");
     expect(html).toContain("Not refreshed yet.");
     expect(html).toContain("No topics yet.");
   });

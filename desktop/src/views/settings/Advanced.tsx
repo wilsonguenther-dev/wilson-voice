@@ -5,12 +5,21 @@ import { type AppSettings } from "../../appTypes";
 import { useAppCtx } from "../../appShell";
 import PowerPanel from "../../PowerPanel";
 
-export default function Advanced() {
+/**
+ * yap-1106-settings-redesign — the speech-model parts sit in Settings › Models
+ * & privacy; Startup and Updates sit in Settings › General. With no `part`
+ * every panel renders (the old Advanced tab).
+ */
+export type AdvancedPart = "models" | "startup";
+
+export default function Advanced({ part }: { part?: AdvancedPart } = {}) {
   const {
     modelSetup, perms, polishSetup, saveSettings,
     setSettings, setUpdate, settings, toast, toastError,
   } = useAppCtx();
   if (!settings) return null;
+  const showModels = part !== "startup";
+  const showStartup = part !== "models";
   async function checkForUpdateNow() {
     try {
       // Asking explicitly means "show me anything" — retire an earlier skip so
@@ -35,6 +44,8 @@ export default function Advanced() {
   }
   return (
                 <section className="settings-panel" data-settings-pane="advanced">
+                  {showModels && (
+                  <>
                   <PowerPanel />
                   <div className="panel" data-row>
                     <h3>Speech model</h3>
@@ -75,6 +86,10 @@ export default function Advanced() {
                       </span>
                     </label>
                   </div>
+                  </>
+                  )}
+                  {showStartup && (
+                  <>
                   {/* YV42 — launch at login. Off by default; nothing installs a
                       login item behind your back. */}
                   <div className="panel" data-row>
@@ -124,6 +139,8 @@ export default function Advanced() {
                       </div>
                     )}
                   </div>
+                  </>
+                  )}
                 </section>
   );
 }

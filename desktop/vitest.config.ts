@@ -52,6 +52,10 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "meetings/transcript.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "meetings/liveSnapshot.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "meetings/meetingsLayout.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
+  // yap-1106-settings-redesign — floors set conservatively by a coder seat that
+  // may not run coverage; the integrator may raise them to the measured value.
+  "meetings/kindDefault.ts": { lines: 90, branches: 80, functions: 100, statements: 90 },
+  "settingsIndex.ts": { lines: 80, branches: 60, functions: 85, statements: 80 },
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

@@ -32,13 +32,24 @@ interface MeetingExportLocation {
 // on origin/main (before: no switch) and on this branch (after); the Meetings
 // tab lands as `settings-meetings-<size>.png` under docs/smoke-shots/. The
 // default state (switch on) is the fixture default (no `hideFromCaptureInMeetings`).
-export default function Meetings() {
+/**
+ * yap-1106-settings-redesign — Settings › Meetings shows this pane in two
+ * parts around Meeting kinds, retention and Speakers: `call` (detection,
+ * browser calls, screen sharing, never-offer, call audio) and `exports` (the
+ * destinations). Each part reads only what it renders. No part = both.
+ */
+export type MeetingsPart = "call" | "exports";
+
+export default function Meetings({ part }: { part?: MeetingsPart } = {}) {
+  const showCall = part !== "exports";
+  const showExports = part !== "call";
   const { toast, toastError, perms, setNav, settings, saveSettings } = useAppCtx();
   const [view, setView] = useState<DetectSettingsView | null>(null);
   // yap-1106 — the export folder: shown, openable, changeable.
   const [exportLoc, setExportLoc] = useState<MeetingExportLocation | null>(null);
   const [draftDir, setDraftDir] = useState("");
   useEffect(() => {
+    if (!showExports) return;
     let dead = false;
     invoke<MeetingExportLocation>("meeting_export_location")
       .then((v) => {
@@ -68,6 +79,7 @@ export default function Meetings() {
     }
   }
   useEffect(() => {
+    if (!showCall) return;
     let dead = false;
     invoke<DetectSettingsView>("meeting_detect_settings")
       .then((v) => { if (!dead) setView(v); })
@@ -81,6 +93,7 @@ export default function Meetings() {
   // states per app (offer / never); Reset puts an app back to offer.
   const [never, setNever] = useState<NeverRow[]>([]);
   useEffect(() => {
+    if (!showCall) return;
     let dead = false;
     invoke<NeverRow[]>("call_offer_never_list")
       .then((rows) => { if (!dead) setNever(rows); })
@@ -105,6 +118,50 @@ export default function Meetings() {
     }
   }
 
+  const exportsPanel = (
+    <div className="panel" data-row data-meeting-exports>
+      <h3>Meeting exports</h3>
+      <p className="settings-hint">
+        Export Markdown and Show in Finder use this folder. Files are named
+        by date and title. Everything stays on this Mac.
+      </p>
+      <label className="field">
+        <span>Folder</span>
+        <input
+          type="text"
+          value={draftDir}
+          placeholder={exportLoc?.defaultPath ?? "~/Documents/Yap/Meetings"}
+          aria-label="Export folder"
+          onChange={(e) => setDraftDir(e.target.value)}
+        />
+      </label>
+      <div className="actions">
+        <button type="button" onClick={() => void openExportDir()}>
+          Open meetings folder
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={!exportLoc || draftDir.trim() === exportLoc.path}
+          onClick={() => void saveExportDir(draftDir)}
+        >
+          Save folder
+        </button>
+        {exportLoc && !exportLoc.isDefault && (
+          <button type="button" className="ghost" onClick={() => void saveExportDir(null)}>
+            Use default
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  if (!showCall) {
+    return (
+      <section className="settings-panel" data-settings-pane="meeting-exports">
+        {exportsPanel}
+      </section>
+    );
+  }
   if (!view) return null;
   const calendarReady = view.calendarAccess === "full_access";
   const browserLines = browserCallsLines(perms ? perms.accessibility : null);
@@ -215,41 +272,7 @@ export default function Meetings() {
           the pill show whether call audio is on, silent, or off.
         </p>
       </div>
-      <div className="panel" data-row data-meeting-exports>
-        <h3>Meeting exports</h3>
-        <p className="settings-hint">
-          Export Markdown and Show in Finder use this folder. Files are named
-          by date and title. Everything stays on this Mac.
-        </p>
-        <label className="field">
-          <span>Folder</span>
-          <input
-            type="text"
-            value={draftDir}
-            placeholder={exportLoc?.defaultPath ?? "~/Documents/Yap/Meetings"}
-            aria-label="Export folder"
-            onChange={(e) => setDraftDir(e.target.value)}
-          />
-        </label>
-        <div className="actions">
-          <button type="button" onClick={() => void openExportDir()}>
-            Open meetings folder
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={!exportLoc || draftDir.trim() === exportLoc.path}
-            onClick={() => void saveExportDir(draftDir)}
-          >
-            Save folder
-          </button>
-          {exportLoc && !exportLoc.isDefault && (
-            <button type="button" className="ghost" onClick={() => void saveExportDir(null)}>
-              Use default
-            </button>
-          )}
-        </div>
-      </div>
+      {showExports && exportsPanel}
     </section>
   );
 }

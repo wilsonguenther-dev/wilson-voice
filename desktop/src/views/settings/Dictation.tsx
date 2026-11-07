@@ -3,7 +3,6 @@ import WritingStyle from "../../WritingStyle";
 import { useAppCtx } from "../../appShell";
 import { useState } from "react";
 import VoicePreferencesPanel from "../../VoicePreferencesPanel";
-import LanguageSettings from "../../LanguageSettings";
 import {
   STRUCTURE_CHOICES,
   type StructureChoice,
@@ -382,7 +381,7 @@ export default function Dictation() {
                     </div>
                   </div>
                   <div className="panel" data-row>
-                  <h3>Paste and language</h3>
+                  <h3>Paste</h3>
                   <label className="toggle">
                     <input
                       type="checkbox"
@@ -396,8 +395,6 @@ export default function Dictation() {
                     />
                     <span>Paste my words automatically when I finish talking</span>
                   </label>
-                  {/* Y10-A: the language SET, driven by the installed model's probe. */}
-                  <LanguageSettings />
                   <p className="settings-hint">
                     Auto-paste needs the Accessibility permission.
                   </p>

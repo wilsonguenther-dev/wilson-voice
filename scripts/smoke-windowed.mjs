@@ -443,14 +443,16 @@ async function judgeAfterSpinner(cdp, s) {
   return res;
 }
 
+// yap-1106-settings-redesign — walks the five sections of the left list plus
+// the "Account & help" footer link; the active one carries aria-current="page".
 async function captureSettingsTabs(cdp, s, label, outDir, views) {
   const tabs = await evaluate(
     cdp,
     s,
-    `[...document.querySelectorAll('.settings-subnav [role="tab"]')].map(b => (b.innerText || "").trim())`
+    `[...document.querySelectorAll('.settings-list-item, .settings-account')].map(b => (b.innerText || "").trim())`
   );
   if (!tabs.length) {
-    views.push({ view: "settings-tabs", size: label, findings: [{ id: "no-settings-tabs", detail: "Settings rendered no [role=tab] in .settings-subnav" }], rows: 0, chars: 0, shot: null, nav: "none", pageErrors: [] });
+    views.push({ view: "settings-tabs", size: label, findings: [{ id: "no-settings-tabs", detail: "Settings rendered no section buttons (.settings-list-item / .settings-account)" }], rows: 0, chars: 0, shot: null, nav: "none", pageErrors: [] });
     console.log("FAIL settings-tabs  " + label + " no SettingsTab buttons found");
     return;
   }
@@ -460,7 +462,7 @@ async function captureSettingsTabs(cdp, s, label, outDir, views) {
     const clicked = await evaluate(
       cdp,
       s,
-      `(() => { const b = document.querySelectorAll('.settings-subnav [role="tab"]')[${i}]; if (!b) return false; b.click(); return true; })()`
+      `(() => { const b = document.querySelectorAll('.settings-list-item, .settings-account')[${i}]; if (!b) return false; b.click(); return true; })()`
     );
     await sleep(300);
     const res = await judgeAfterSpinner(cdp, s);
@@ -468,9 +470,9 @@ async function captureSettingsTabs(cdp, s, label, outDir, views) {
     const selected = await evaluate(
       cdp,
       s,
-      `((document.querySelectorAll('.settings-subnav [role="tab"]')[${i}] || {}).getAttribute || (() => null)).call(document.querySelectorAll('.settings-subnav [role="tab"]')[${i}], "aria-selected")`
+      `((document.querySelectorAll('.settings-list-item, .settings-account')[${i}] || {}).getAttribute || (() => null)).call(document.querySelectorAll('.settings-list-item, .settings-account')[${i}], "aria-current")`
     );
-    if (selected !== "true") res.findings.push({ id: "tab-not-selected", detail: "clicked SettingsTab '" + tabs[i] + "' but aria-selected=" + selected });
+    if (selected !== "page") res.findings.push({ id: "tab-not-selected", detail: "clicked Settings section '" + tabs[i] + "' but aria-current=" + selected });
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
     const file = join(outDir, PREFIX + name + "-" + label + ".png");
     writeFileSync(file, Buffer.from(shot.data, "base64"));

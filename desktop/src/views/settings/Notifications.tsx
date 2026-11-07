@@ -8,7 +8,7 @@
 // Vite dev server up on :5273, run
 //   YAP_SMOKE_VIEWS=Settings YAP_SMOKE_RUN=wf17-<before|after> node scripts/smoke-windowed.mjs
 // on origin/main (before: no Notifications tab) and on this branch (after).
-// `captureSettingsTabs` clicks every `.settings-subnav [role=tab]`, so the new
+// `captureSettingsTabs` clicks every Settings section button, so the new
 // tab lands as `settings-notifications-<size>.png` under docs/smoke-shots/.
 // The all-on state is the fixture default (no `mutedPillCategories`).
 import { useAppCtx } from "../../appShell";
