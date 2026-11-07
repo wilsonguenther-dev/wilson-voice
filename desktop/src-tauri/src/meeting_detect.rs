@@ -395,10 +395,15 @@ fn evaluate_upcoming(db: &Database, s: &DetectSettings) {
     let offset = local.offset().local_minus_utc();
     let started = std::time::Instant::now();
     let events = sys::events_between(now - IN_PROGRESS_SECS, local_day_end(now, offset));
-    crate::diagnostics::record_duration(
+    // SP-11 — this read runs on every watcher wake (each mic change plus the
+    // 30 s backstop), so its duration line is written only when it was slow;
+    // the stat is kept on every read.
+    let read_ms = started.elapsed().as_millis() as u64;
+    crate::diagnostics::record_duration_quiet(
         "meeting_detect",
         "upcoming_read_ms",
-        started.elapsed().as_millis() as u64,
+        read_ms,
+        crate::call_signals::snapshot_duration_due(read_ms, false),
     );
     publish_upcoming(Some(UpcomingSnapshot {
         meetings: upcoming_today(&events, now, local_day_end(now, offset)),
