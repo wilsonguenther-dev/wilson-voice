@@ -119,7 +119,7 @@ export function PeopleChipLine({ people, shown }: { people: readonly string[]; s
         aria-hidden={hidden.length > 0 ? undefined : true}
         title={hidden.length > 0 ? hidden.join(", ") : undefined}
       >
-        +{Math.max(1, hidden.length)}
+        {`+${Math.max(1, hidden.length)}`}
       </span>
     </>
   );
