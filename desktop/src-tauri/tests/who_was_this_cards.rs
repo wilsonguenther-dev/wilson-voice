@@ -401,7 +401,7 @@ fn five_real_voices_never_card_you() {
             .expect("an embedding")
     };
     let me = embed(VOICES[0], 1);
-    let voices: Vec<Vec<f32>> = VOICES.iter().map(|v| embed(v, 0)).collect();
+    let voices: Vec<Vec<f32>> = VOICES.iter().map(|v| embed(*v, 0)).collect();
     let dir = temp_dir("fb22b-real-db");
     let db = open_db(&dir);
     db.create_speaker_profile("You", true, DIGEST, &me, 30.0, None)
