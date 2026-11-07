@@ -188,7 +188,10 @@ const shift = (b: Box, dx: number, dy: number): Box => ({ x: b.x + dx, y: b.y + 
 export function pillLayout(input: PillInput): PillLayout {
   const { phase, meeting, dock } = input;
   const character: LayoutCharacter = input.character ?? "yappy";
-  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}|${input.card ? `c${Math.ceil(input.card.h)}` : ""}`;
+  // WF-13: an explicit hint reservation (the silent-mic row) is part of the
+  // geometric identity, or the memoised layout would never grow for it.
+  const hintKey = input.hintLines !== undefined ? `h${Math.max(1, Math.round(input.hintLines))}` : "";
+  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}|${input.card ? `c${Math.ceil(input.card.h)}` : ""}${hintKey ? `|${hintKey}` : ""}`;
   if (character === "legacy") {
     const w = LEGACY_PANEL.w, h = LEGACY_PANEL.h;
     const char = { x: 0, y: 0, w, h };

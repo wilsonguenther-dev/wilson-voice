@@ -26,7 +26,7 @@ import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
 import SilentMicRow from "./pill/SilentMicRow";
-import { forcedSilentMic, parseSilentMicWarning } from "./pill/silentMic";
+import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -619,7 +619,11 @@ function Float() {
   const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
   const cardH = useCardOnScreen();
-  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
+  // WF-13 — while "I can't hear <mic>" is up, the hint slot holds its two-row
+  // chip (SILENT_MIC_ROW_H), so the layout reserves SILENT_MIC_HINT_LINES.
+  const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
+  const silentMicUp = silentMicShows(silentMicWarning, phase);
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
@@ -701,7 +705,7 @@ function Float() {
       {/* WF-13 — "I can't hear <mic>" + Switch mic, while the take keeps
           recording. Takes the hint row; the style chip yields it (float.css). */}
       <SilentMicRow
-        warning={FORCED ? forcedSilentMic(window.location.search) : silentMic}
+        warning={silentMicWarning}
         phase={phase}
         forced={!!FORCED}
       />
@@ -720,8 +724,9 @@ function usePanelLayout(
   dock: BarDock,
   character: LayoutCharacter,
   cardH: number | null,
+  hintLines?: number,
 ): PillLayout {
-  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null, hintLines });
   return useMemo(() => next, [next.key]);
 }
 

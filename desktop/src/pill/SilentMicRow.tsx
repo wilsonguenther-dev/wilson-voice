@@ -2,6 +2,7 @@
  * WF-13 — the silent-mic row: "I can't hear <mic>" + a Switch mic button, in
  * the hint row while a take is recording (see `silentMic.ts` for the rules).
  *
+ * Two rows: the line (fitted to the row, never cut off) over the button.
  * The take never stops: this row is advice, not an error. It is a real
  * <button> (Enter/Space work) and widens the click-through hitbox under its own
  * owner, exactly like WF-20's style chip, which it replaces in that row while it
@@ -11,9 +12,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { extendPillHitbox } from "./drag";
 import type { LivePhase } from "./live";
+import { PILL_LAYOUT_EVENT } from "./state";
 import {
   LIST_MICROPHONES_COMMAND, NO_OTHER_MIC_LINE, nextMicrophone, SET_MICROPHONE_COMMAND,
-  silentMicAccessibleName, silentMicShows, SWITCH_FAILED_LINE, SWITCH_MIC_LABEL, switchedLine,
+  silentMicAccessibleName, silentMicLine, silentMicShows, SWITCH_FAILED_LINE, SWITCH_MIC_LABEL, switchedLine,
   type SilentMicList,
 } from "./silentMic";
 
@@ -34,7 +36,11 @@ export default function SilentMicRow({
   const shows = silentMicShows(warning, phase);
 
   // A new warning (a new take) starts with the button, not last take's answer.
-  useEffect(() => { setAfter(null); }, [warning]);
+  // One line per warning: whether the drawn line had to be shortened to fit.
+  useEffect(() => {
+    setAfter(null);
+    if (warning !== null) console.info("silent_mic row shown fitted=" + (silentMicLine(warning) === warning ? "0" : "1"));
+  }, [warning]);
 
   useEffect(() => {
     document.documentElement.dataset.silentMic = shows ? "true" : "false";
@@ -43,9 +49,20 @@ export default function SilentMicRow({
       extendPillHitbox(null, HITBOX_OWNER);
       return;
     }
-    const r = el.getBoundingClientRect();
-    extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, HITBOX_OWNER);
-    return () => extendPillHitbox(null, HITBOX_OWNER);
+    // Re-take the hitbox after every layout too: the layout grows the hint
+    // slot for this row after it mounts and MOVES it (a move is not a resize).
+    const take = () => {
+      const box = ref.current;
+      if (!box || !box.isConnected) return;
+      const r = box.getBoundingClientRect();
+      extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, HITBOX_OWNER);
+    };
+    take();
+    window.addEventListener(PILL_LAYOUT_EVENT, take);
+    return () => {
+      window.removeEventListener(PILL_LAYOUT_EVENT, take);
+      extendPillHitbox(null, HITBOX_OWNER);
+    };
   }, [shows, warning, after]);
 
   const switchMic = useCallback(() => {
@@ -82,7 +99,9 @@ export default function SilentMicRow({
       aria-label={after ?? silentMicAccessibleName(warning)}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <span className="silent-mic-line" title={after ?? warning}>{after ?? warning}</span>
+      {/* The drawn line is fitted to the row (silentMic.ts silentMicLine);
+          the tooltip and the accessible name keep the full warning. */}
+      <span className="silent-mic-line" title={after ?? warning}>{after ?? silentMicLine(warning)}</span>
       {after === null && (
         <button
           type="button"
