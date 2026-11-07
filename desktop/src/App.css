@@ -3756,6 +3756,8 @@ button.primary.big {
   .chart-skeleton {
     animation: none;
     opacity: 0.6;
+  }
+}
 
 /* yap-1106-news-prefs-onboarding — the one Yappy News interest picker (onboarding
    step, one-time Home card, Settings → Yappy News). Tokens only. */
