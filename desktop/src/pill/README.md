@@ -96,3 +96,6 @@ a small stack next to stop (`MeetingBadge` `meeting-stacked`); after stop the ba
 is the right-hand segment of the same shell. float.css paints the one
 `.meeting-shell` behind both. `meetingSurfaceProblems()` and the pill matrix's
 `meeting-second-surface` finding guard it.
+On a side dock (the vertical-dock world) Yappy keeps his <= 64 px tab/room and the
+clock is the inner-side segment flush to it, level with him; `meetingShellBox()` joins
+it to the strip of the room beside it, so the shell never sits behind the bubble.
