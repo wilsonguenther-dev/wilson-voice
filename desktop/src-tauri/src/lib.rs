@@ -3566,6 +3566,36 @@ pub fn backtrack_caught_payload(
     }))
 }
 
+/// WF-05 — "Polished — Reveal": the polish stage (on this Mac or in the cloud)
+/// rewrote the take that just landed. Payload: [`polish_reveal_payload`].
+pub const POLISH_REVEAL_EVENT: &str = "polish_reveal";
+
+/// WF-05 — the [`POLISH_REVEAL_EVENT`] payload, or `None` when the toast must
+/// not show: the polish changed fewer than
+/// [`dictation::POLISH_REVEAL_MIN_WORDS`] words once punctuation and capitals
+/// are ignored, or there is no raw take that differs from what was pasted, so
+/// "Use original" would have nothing to paste back. `text` is what was pasted,
+/// `raw` the take as dictated, `stages` the take's `stages_that_ran`.
+pub fn polish_reveal_payload(
+    id: &str,
+    polish_changed_words: usize,
+    text: &str,
+    raw: Option<&str>,
+    stages: Option<&str>,
+) -> Option<serde_json::Value> {
+    if !dictation::polish_reveal_worthy(polish_changed_words) {
+        return None;
+    }
+    let raw = dictation::undo_ai_edit_text(text, raw)?;
+    Some(serde_json::json!({
+        "id": id,
+        "raw": raw,
+        "text": text,
+        "stages": stages,
+        "changedWords": polish_changed_words,
+    }))
+}
+
 /// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
 /// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
 /// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
@@ -3962,6 +3992,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // (and how many it applied), carried out of the take closure so the
         // Dictated arm can raise the pill's "Backtrack caught" toast.
         let mut backtrack_caught: Option<(dictation::BacktrackCorrection, usize)> = None;
+        // WF-05 — how many words the polish stage changed (a count, never text),
+        // carried out the same way for the "Polished — Reveal" toast.
+        let mut polish_changed_words: usize = 0;
         let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
@@ -4604,6 +4637,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 .backtrack
                 .clone()
                 .map(|c| (c, formatting_trace.backtrack_corrections));
+            polish_changed_words = formatting_trace.polish_changed_words;
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
@@ -4650,6 +4684,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // WF-06 — "Dropped '2', kept '3'" with Undo. Only for a real
                 // spoken self-correction (filler-only cleanup never sets it),
                 // and only when there IS a raw take to paste back.
+                let mut backtrack_toast = false;
                 if let Some(payload) = backtrack_caught_payload(
                     &entry.id,
                     backtrack_caught.as_ref().map(|(c, _)| c),
@@ -4662,6 +4697,23 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                         backtrack_caught.as_ref().map_or(0, |(_, n)| *n)
                     );
                     let _ = app2.emit(BACKTRACK_CAUGHT_EVENT, payload);
+                    backtrack_toast = true;
+                }
+                // WF-05 — "Polished — Reveal". One toast per take: the
+                // backtrack receipt already offers the same raw-take Undo, so
+                // it wins when both apply.
+                if !backtrack_toast {
+                    if let Some(payload) = polish_reveal_payload(
+                        &entry.id,
+                        polish_changed_words,
+                        &entry.text,
+                        entry.raw_text.as_deref(),
+                        entry.stages_that_ran.as_deref(),
+                    ) {
+                        // Counts only — never the take's words.
+                        log::info!("dictation polish_reveal changed_words={polish_changed_words}");
+                        let _ = app2.emit(POLISH_REVEAL_EVENT, payload);
+                    }
                 }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 // Y8-C — one earcon for the landed take: achievement when it
@@ -8445,6 +8497,73 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
 /// change can be scored against real dissatisfaction rather than a guess. It is
 /// never transmitted: this command writes one row and returns, there is no
 /// network call on the path, and this app ships no analytics SDK.
+/// WF-05 "Use original" — swap the polished take back to the words as
+/// dictated, through the Undo AI Edit paste (the explicit re-paste into the
+/// frontmost field, which is still the take's field: the pill never takes
+/// focus and a new take clears the card). Refused unless `id` is still the
+/// newest take ([`dictation::use_original_for_take`]), so an old card can never
+/// paste stale words into whatever field has focus now.
+#[tauri::command]
+async fn use_original_take(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let newest = match state.db.list_transcripts(1, None) {
+        Ok(entries) => entries.into_iter().next(),
+        Err(err) => {
+            log::warn!("dictation polish_reveal_use_original failed=db_read: {err}");
+            return Err("Couldn’t read that take. Try Use original again.".into());
+        }
+    };
+    let Some(newest) = newest else {
+        log::info!("dictation polish_reveal_use_original refused=history_empty");
+        return Err("That take is gone from History.".into());
+    };
+    let raw = match dictation::use_original_for_take(
+        &id,
+        &newest.id,
+        &newest.text,
+        newest.raw_text.as_deref(),
+    ) {
+        Ok(raw) => raw.to_string(),
+        Err(why) => {
+            log::info!("dictation polish_reveal_use_original refused={}", why.tag());
+            return Err(match why {
+                dictation::UseOriginalRefusal::NotNewest => {
+                    "A newer take landed. Use History to paste this one.".into()
+                }
+                dictation::UseOriginalRefusal::NothingToUndo => {
+                    "This take has no original to paste.".into()
+                }
+            });
+        }
+    };
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Explicit re-paste, exactly like Undo AI Edit: the frontmost app is
+        // the intended target, so the YV21 source-app guard does not apply.
+        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
+        log::info!(
+            "dictation polish_reveal_use_original pasted={} copied={} ms={}",
+            o.pasted,
+            o.copied,
+            started.elapsed().as_millis()
+        );
+        if o.copied {
+            Ok(o.message)
+        } else {
+            log::warn!(
+                "dictation polish_reveal_use_original failed=paste: {}",
+                o.message
+            );
+            Err("Couldn’t paste the original. Try Use original again.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("paste task join failed: {e}"))?
+}
+
 #[tauri::command]
 fn set_take_feedback(
     state: tauri::State<'_, AppState>,
@@ -13301,6 +13420,7 @@ pub fn run() {
             copy_entry,
             paste_entry,
             set_take_feedback,
+            use_original_take,
             open_data_dir,
             open_logs_dir,
             list_crash_events,
