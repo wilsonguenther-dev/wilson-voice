@@ -124,7 +124,11 @@ export const CLOCK_REACH_PT = 12;
  * (was 72 x 22, which only fitted a face close-up: "the heads cropped").
  */
 export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
-/** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
+/**
+ * Yappy's widest open capsule, rounded up: the panel envelope. yap-1107-pill-matches-artifact-size:
+ * OPEN_CAPSULE is now the artifact's 228 x 54 (265 x 63 at the desk tier x 1.16); the envelope keeps
+ * its old 236 x 60 x 1.16 size so the window, hit targets and dock math do not move.
+ */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /**
  * The speech bubble's reserved row. yap-1106-yappy-states-and-motion: the

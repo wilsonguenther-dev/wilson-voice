@@ -56,7 +56,7 @@ import { DURATION } from "./motion";
 import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 // yap-1106-fb-10 — no character is ever cropped: the scene buffer, the pose
 // range, the resting capsule and the camera all come from one pure rule.
-import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera } from "./characterFit";
+import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera, scaleEvent } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
@@ -459,7 +459,7 @@ export default function YappyPill(
       () => dispatchSceneRef.current({ type: "context_restored", at: performance.now() }),
     );
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean; ink: number; elapsed: number }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean; ink: number; elapsed: number; lift: number }
 
     // the chick — front wing holds a pencil when noting / at the desk
     // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
@@ -476,8 +476,10 @@ export default function YappyPill(
       // notepad slides in from the side when noting — yap-1106-pill-props-detail:
       // the approved detail pass (clip, margin line, handwriting that grows).
       if (A.prop === "pad") drawNotepadHD(octx, cx, GY, A.propIn, C.paper, A.ink);
-      // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises.
-      drawChick(cx, feet, clampChickPose(A));
+      // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises;
+      // yap-1107-pill-matches-artifact-size — at the artifact's size the camera hands
+      // a lift budget (a smaller hop) so he stays whole at the bigger scale.
+      drawChick(cx, feet, clampChickPose(A, A.lift));
       // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
       // wood grain + edge highlight, carriage, return levers, keys that light in
       // sequence, a bouncing page, and a mug + pencils on the left.
@@ -491,6 +493,8 @@ export default function YappyPill(
     let W = 0, H = 0, DPR = backingScale(devicePixelRatio);
     // yap-1106-fb-10 — one log line per mount if the camera ever could not keep him whole.
     let warnedCrop = false;
+    // yap-1107-pill-matches-artifact-size — the last sprite scale logged (scaleEvent)
+    let loggedScale = { cell: 0, lift: -1, dpr: 0 };
     const resize = () => {
       DPR = backingScale(devicePixelRatio);
       const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -704,7 +708,7 @@ export default function YappyPill(
     // vdock.test.ts walks): a dark shell flush to the edge, the scene inside it
     // at a whole number of device px per art px, the right dock mirrored, and
     // the bubble opening inward beside the shell.
-    function drawSide(sd: SideDock, lay: PillLayout, A: SP, ov: number) {
+    function drawSide(sd: SideDock, lay: PillLayout, A: Omit<SP, "lift">, ov: number) {
       const f = vdockFrame(sd, ov, A.prop, A.propIn, DPR, lay.char);
       if (!f.fits && !warnedVCrop) { warnedVCrop = true; console.warn(vdockCropWarning(f, DPR)); }
       const vkey = `${sd}|${f.mode}`;
@@ -845,8 +849,11 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      const sp: SP = { hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed };
-      drawScene(sp);
+      // yap-1107-pill-matches-artifact-size — the scene is drawn below, once the
+      // camera has picked this frame's cell and lift budget (drawScene only
+      // touches the offscreen buffer, so the order is free). A side dock
+      // (yap-1106-pill-vertical-dock-world) draws from the same pose, unlifted.
+      const scenePose: Omit<SP, "lift"> = { hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed };
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
@@ -854,7 +861,7 @@ export default function YappyPill(
       // yap-1106-pill-vertical-dock-world — a side dock draws the tall room (open)
       // or the resting tab instead of the horizontal capsule.
       const sideLay = currentPillLayout(), sd = sideDock(document.documentElement.dataset.dock);
-      if (sd && sideLay && sideLay.dock === sd) { drawSide(sd, sideLay, sp, openV); return; }
+      if (sd && sideLay && sideLay.dock === sd) { drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
       // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
@@ -903,6 +910,12 @@ export default function YappyPill(
       // transform (the clip above is already in device space).
       const cam = pillCamera({ x: x0, y: y0, w: capW, h: capH }, DPR);
       if (!cam.fits && !warnedCrop) { warnedCrop = true; console.warn(cropWarning("yappy", { w: capW, h: capH }, DPR)); }
+      // one line when the settled sprite scale changes (open / rest, display, tier)
+      if ((openV < 0.01 || openV > 0.99) && (cam.blit.cell !== loggedScale.cell || cam.lift !== loggedScale.lift || DPR !== loggedScale.dpr)) {
+        loggedScale = { cell: cam.blit.cell, lift: cam.lift, dpr: DPR };
+        console.info(scaleEvent({ cell: cam.blit.cell, lift: cam.lift }, { w: capW, h: capH }, DPR));
+      }
+      drawScene({ ...scenePose, lift: cam.lift });
       const blit = cam.blit;
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
