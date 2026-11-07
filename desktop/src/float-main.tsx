@@ -28,6 +28,8 @@ import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LaunchWalk from "./pill/LaunchWalk";
+import { forcedLaunchWalk } from "./pill/launchWalk";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import MeetingDictationCard from "./pill/MeetingDictationCard";
 import { forcedMeetingNotice } from "./pill/meetingDictation";
@@ -664,6 +666,8 @@ function Float() {
     // The same handle `data-phase` gives a screenshot or a browser test.
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
+  // yap-1106-launch-walk — a headless capture can pin the walk (`?walk=40`).
+  const forcedWalk = FORCED ? forcedLaunchWalk(window.location.search) : null;
   const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
   // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
   // Badass only, and never in a meeting state (recording, or its after-view on
@@ -775,6 +779,15 @@ function Float() {
       <PanelFrameSync layout={target} />
       <div className="bar" {...bar}>
         {pill}
+        {/* yap-1106-launch-walk — Yappy walks to work while the engine loads
+            (drawn from the backend's load percentage). A take during the walk
+            still records: the walk only turns into a run. A matrix scene and a
+            meeting keep their own world. */}
+        <LaunchWalk
+          recording={isListening(phase)}
+          forced={forcedWalk}
+          suppressed={(Boolean(FORCED) && !forcedWalk) || meeting.status.recording || meetingAfter !== null}
+        />
       </div>
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
