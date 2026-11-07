@@ -10,7 +10,7 @@ import {
 } from "./meetings/progress";
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
-import { adviceFor, errorAdvice, errorCode, errorText, isLicenseRequired, pasteFailedToast } from "./errors";
+import { adviceFor, createPasteFailedGate, errorAdvice, errorCode, errorText, isLicenseRequired, pasteFailedToast } from "./errors";
 import { finishFailedToast } from "./recoveryToast";
 import { useToasts, type ToastAction, type ToastInput } from "./toast";
 import { useFormattingOptions } from "./formatting";
@@ -703,7 +703,13 @@ export function useAppShell() {
     // user's own copy is left alone), so the toast offers to put it back.
     // Y5-F fix round 1: the payload says whether the transcript IS on the
     // clipboard (take_error::paste_failed_payload) — the line is chosen by it.
+    // yap-1107: one toast per take, even if the event arrives twice.
+    const pasteFailedOnce = createPasteFailedGate();
     listen<{ id: string; code?: string | null }>("paste_failed", (e) => {
+      if (!pasteFailedOnce(e.payload?.id)) {
+        console.info("[yap] paste_failed repeat dropped for one take");
+        return;
+      }
       pushToast(pasteFailedToast(e.payload));
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — a failed take must be visible IN the app, not only as a macOS

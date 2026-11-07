@@ -5326,9 +5326,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 if !outcome.pasted && !outcome.copied {
                     log::warn!("take {}: {}", entry.id, outcome.message);
                 }
-                *state2.last_error.lock() = take_error::paste_last_error(
+                // yap-1107: a password-field hold withheld the clipboard on
+                // purpose — no "could not put the text on the clipboard" line.
+                let clipboard_withheld = outcome.clipboard_withheld();
+                *state2.last_error.lock() = take_error::take_paste_last_error(
                     outcome.copied,
                     outcome.pasted,
+                    clipboard_withheld,
                     settings.auto_paste,
                 );
                 // YV51: this take is now the newest, so it decides whether
@@ -5394,7 +5398,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // Y5-F fix round 1: the payload says whether the transcript IS
                 // on the clipboard, so the toast never claims it is when the
                 // user's own copy won or the clipboard write failed.
-                if attempted_paste && !outcome.pasted {
+                if take_error::should_emit_paste_failed(
+                    attempted_paste,
+                    outcome.pasted,
+                    clipboard_withheld,
+                ) {
+                    log::info!(
+                        "paste paste_failed_toast id={} copied={}",
+                        entry.id,
+                        outcome.copied
+                    );
                     let _ = app2.emit(
                         PASTE_FAILED_EVENT,
                         take_error::paste_failed_payload(&entry.id, outcome.copied),
