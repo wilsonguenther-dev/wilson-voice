@@ -2536,9 +2536,12 @@ mod globe_keycode_tests {
 
     /// fn down, hold armed: a live HOLD take.
     fn live_hold(m: &mut PttMachine) {
-        let down = m.edge(true, false, 0, EdgeSource::Tap);
+        let down = m.edge(true, false, 1_000, EdgeSource::Tap);
         let gen = down.arm_hold.expect("a fresh press arms the hold timer");
-        assert_eq!(m.hold_timer(gen, HOLD_ARM_MS).events, vec![PttEvent::Start]);
+        assert_eq!(
+            m.hold_timer(gen, 1_000 + HOLD_ARM_MS).events,
+            vec![PttEvent::Start]
+        );
     }
 
     #[test]
