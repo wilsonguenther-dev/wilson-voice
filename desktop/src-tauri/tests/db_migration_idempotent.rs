@@ -29,7 +29,9 @@ use support::{open_db, temp_dir};
 /// `detected_via`, which app's call a recording came from and how it was found.
 /// 11 = yap-1106-voiceprints' speaker profiles + samples. 12 = yap-1106-who-is-this's
 /// `meeting_cluster_voices`, one row per unknown voice the "Who was this?" cards ask about.
-const EXPECTED_VERSION: i64 = 12;
+/// 13 = yap-1106-auto-label-and-correct's `meeting_segments.speaker_locked` lock token
+/// and `speaker_negative_samples` ("this is someone else" corrections).
+const EXPECTED_VERSION: i64 = 13;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -41,6 +43,10 @@ const EXPECTED_VERSION: i64 = 12;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 13 {
+        sql.push_str("DROP TABLE speaker_negative_samples;\n");
+        sql.push_str("ALTER TABLE meeting_segments DROP COLUMN speaker_locked;\n");
+    }
     if version < 12 {
         sql.push_str("DROP TABLE meeting_cluster_voices;\n");
     }
