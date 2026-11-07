@@ -5,13 +5,20 @@
 # when release→text on the 240 s fixture is more than 20 % slower than the last
 # accepted row from the same machine and model.
 #
-#   scripts/qa/speed-bench.sh [--bin <wilson-voice>] [--note "<why>"] [--dry-run]
+#   scripts/qa/speed-bench.sh [--bin <wilson-voice>] [--note "<why>"] [--dry-run] [--keep-fixtures]
 #   scripts/qa/speed-bench.sh --from-json <bench.json>   # score a saved run
 #   scripts/qa/speed-bench.sh --self-test                # the gate on fake runs
 #
 # It never builds. The binary is --bin, $YAP_BENCH_BIN, or the newest of
 # desktop/target/{release,debug}/wilson-voice. Fixtures come from
-# scripts/eval/make-bench-fixtures.sh (made on first use).
+# scripts/eval/make-bench-fixtures.sh (made on first use, and deleted again at
+# exit unless --keep-fixtures or they were already there).
+#
+# State: the bench runs against a SCRATCH data dir (a fresh temp YAP_DATA_DIR,
+# deleted at exit) unless the caller sets YAP_DATA_DIR. On a scratch dir with no
+# settings the binary benches the SHIPPED default model, which it looks up in
+# YAP_MODEL_DIR (e.g. ~/code/wilson-voice-loop/cache/models) and never
+# downloads — no installed model is exit 2 with one sentence.
 #
 # Exit: 0 = row written (or --dry-run), within budget; 1 = 240 s release→text
 # regressed past the limit (the row is still written, marked REGRESSED, and is
@@ -27,6 +34,7 @@ NOTE=""
 DRY=0
 FROM_JSON=""
 SELF_TEST=0
+KEEP_FIXTURES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +43,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --from-json) FROM_JSON="${2:-}"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
+    --keep-fixtures) KEEP_FIXTURES=1; shift ;;
     *) echo "speed-bench: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -190,6 +199,24 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   exit 2
 fi
 
+FIX="$ROOT/scripts/eval/bench"
+WAVS=("$FIX/bench-20s.wav" "$FIX/bench-127s.wav" "$FIX/bench-240s.wav")
+# Fixtures this run generates are deleted at exit; ones already there are kept.
+MADE=()
+for w in "${WAVS[@]}"; do
+  [ -e "$w" ] || MADE+=("$w")
+done
+tmp="$(mktemp -d)"
+SCRATCH_DATA=""
+cleanup() {
+  rm -rf "$tmp"
+  [ -n "$SCRATCH_DATA" ] && rm -rf "$SCRATCH_DATA"
+  if [ "$KEEP_FIXTURES" != 1 ] && [ "${#MADE[@]}" -gt 0 ]; then
+    rm -f "${MADE[@]}"
+  fi
+}
+trap cleanup EXIT
+
 "$ROOT/scripts/eval/make-bench-fixtures.sh"
 rc=$?
 if [ "$rc" != 0 ]; then
@@ -197,15 +224,20 @@ if [ "$rc" != 0 ]; then
   exit 2
 fi
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-FIX="$ROOT/scripts/eval/bench"
-"$BIN" --bench "$FIX/bench-20s.wav" "$FIX/bench-127s.wav" "$FIX/bench-240s.wav" \
-  >"$tmp/bench.json" 2>"$tmp/bench.err"
+# Never the real data dir by default: a scratch root, removed at exit.
+if [ -z "${YAP_DATA_DIR:-}" ]; then
+  SCRATCH_DATA="$(mktemp -d)"
+  export YAP_DATA_DIR="$SCRATCH_DATA/yap-bench-state"
+  mkdir -p "$YAP_DATA_DIR"
+fi
+"$BIN" --bench "${WAVS[@]}" >"$tmp/bench.json" 2>"$tmp/bench.err"
 rc=$?
 if [ "$rc" != 0 ]; then
   echo "speed-bench: wilson-voice --bench exited $rc" >&2
   tail -5 "$tmp/bench.err" >&2
+  if [ "$rc" = 2 ] && [ -z "${YAP_MODEL_DIR:-}" ]; then
+    echo "speed-bench: set YAP_MODEL_DIR to a folder holding the shipped default model" >&2
+  fi
   exit 2
 fi
 echo "speed-bench: $(basename "$BIN") on $MACHINE at $COMMIT"
