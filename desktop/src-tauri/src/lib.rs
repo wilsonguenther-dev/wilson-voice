@@ -170,6 +170,7 @@ pub mod mic_select;
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
+pub mod live_transcript;
 pub mod net;
 /// yap-1106-news-feeds — Yappy News fetch from public feeds (gated on cloud + topics).
 pub mod news;
@@ -178,6 +179,8 @@ pub mod news_prefs;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
 pub mod nudge;
+/// yap-1106-friend-visits — Focus / Do Not Disturb (and screen share) quiet signal for pill friend visits.
+pub mod pill_quiet;
 // YV101 — the macOS 14.4 runtime gate for the system-audio process tap (plan
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
