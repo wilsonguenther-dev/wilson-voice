@@ -867,10 +867,10 @@ mod tests {
         let cfg = small();
         let min = cfg.frames_for(cfg.min_window_seconds);
         // Nothing below `min` frames ever cuts, however quiet…
-        let quiet: Vec<f32> = std::iter::repeat(0.0f32).take(min - 1).collect();
+        let quiet: Vec<f32> = std::iter::repeat_n(0.0f32, min - 1).collect();
         assert_eq!(find_cut(&quiet, &cfg), None);
         // …and steady speech under the maximum keeps listening.
-        let speech: Vec<f32> = std::iter::repeat(0.2f32).take(min).collect();
+        let speech: Vec<f32> = std::iter::repeat_n(0.2f32, min).collect();
         assert_eq!(find_cut(&speech, &cfg), None);
     }
 
