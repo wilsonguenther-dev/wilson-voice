@@ -1374,3 +1374,31 @@ describe("WF-17 pill message categories", () => {
     expect(withMuted(["error"], "news", false)).toEqual([]);
   });
 });
+
+// ── yap-1106-fb-04 — paste waits for a typing pause ─────────────────────────
+import {
+  PASTE_WAIT_LINE, pasteWaitHint, fitsSideDockStrip, reduceTakeStage as reduceStage4,
+} from "./live";
+
+describe("yap-1106-fb-04 paste waits for a typing pause", () => {
+  it("says the approved line, and it fits the strip", () => {
+    expect(PASTE_WAIT_LINE).toBe("Pastes when you pause");
+    expect(fitsSideDockStrip(PASTE_WAIT_LINE)).toBe(true);
+  });
+
+  it("paste_waiting keeps the take in the pasting phase", () => {
+    expect(reduceStage4("polishing", "paste_waiting")).toBe("pasting");
+    expect(reduceStage4("thinking", "paste_waiting")).toBe("pasting");
+    // a finished take is never resurrected by a late stage
+    expect(reduceStage4("idle", "paste_waiting")).toBe("idle");
+  });
+
+  it("shows the wait line only while held, then the phase line comes back", () => {
+    expect(pasteWaitHint("paste_waiting", "pasting")).toBe(PASTE_WAIT_LINE);
+    expect(pasteWaitHint("pasting", "pasting")).toBeNull();
+    expect(pasteWaitHint("paste_waiting", "done")).toBeNull();
+    expect(pasteWaitHint(null, "pasting")).toBeNull();
+    expect(stripLine("Pasting", false, pasteWaitHint("paste_waiting", "pasting"))).toBe(PASTE_WAIT_LINE);
+    expect(stripLine("Pasting", false, pasteWaitHint("pasting", "pasting"))).toBe("Pasting");
+  });
+});

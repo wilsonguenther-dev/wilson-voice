@@ -1370,6 +1370,7 @@ export const TAKE_STAGE_EVENT = "take_stage";
 export type TakeStageName =
   | "decoding"
   | "polishing"
+  | "paste_waiting"
   | "pasting"
   | "paste_confirmed"
   | "paste_not_confirmed"
@@ -1522,6 +1523,7 @@ export function reduceTakeStage(prev: LivePhase, stage: TakeStageName, words?: n
       return prev === "transcribing" ? prev : "thinking";
     case "polishing":
       return "polishing";
+    case "paste_waiting":
     case "pasting":
       return "pasting";
     case "paste_confirmed":
@@ -1568,6 +1570,23 @@ export const FN_HINT_LINE = "Hold fn⌃ — fn alone does nothing";
 export const FN_HINT_EVENT = "ptt_hint";
 /** How long the strip shows the hint before the phase line comes back. */
 export const FN_HINT_SHOW_MS = 3_500;
+
+/**
+ * yap-1106-fb-04 — the strip line while a finished take's paste is HELD because
+ * the user is typing in the target app (typing_pause.rs `PASTE_WAIT_LINE`, held
+ * equal by `paste_wait_line_matches_the_pill`). The take stays in the `pasting`
+ * phase; this line replaces "Pasting" until the backend's `pasting` stage says
+ * the paste is going out.
+ */
+export const PASTE_WAIT_LINE = "Pastes when you pause";
+
+/**
+ * yap-1106-fb-04 — the hint the strip shows for a held paste: only while the
+ * last stage was `paste_waiting` AND the pill is still in `pasting`.
+ */
+export function pasteWaitHint(lastStage: TakeStageName | null, phase: LivePhase): string | null {
+  return lastStage === "paste_waiting" && phase === "pasting" ? PASTE_WAIT_LINE : null;
+}
 
 /**
  * The phase-strip line: the still-recording prompt wins while live, then a

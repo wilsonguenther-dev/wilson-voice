@@ -1608,6 +1608,13 @@ unsafe extern "C" fn tap_callback(
         if !is_modifier_keycode(keycode) {
             state.fn_hint.lock().on_key_down();
         }
+        // yap-1106-fb-04 — "Pastes when you pause": note WHEN a typing key
+        // went down — no keycode, no character, no app. ⌘/⌃ chords are
+        // shortcuts, not typing (and Yap's own ⌘V carries ⌘), so they never
+        // hold a paste.
+        if !is_modifier_keycode(keycode) && !command && !control {
+            crate::typing_pause::note_key_down();
+        }
         let step = state.machine.lock().key_down(is_modifier_keycode(keycode));
         if !step.events.is_empty() {
             log::info!("PTT interrupted by keycode {keycode}");
