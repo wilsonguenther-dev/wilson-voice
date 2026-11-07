@@ -37,8 +37,11 @@ import { type LicenseStatus } from "../license/status";
  * yap-1106-retire-classic-pill — Classic is retired, so the matrix no longer
  * forces it: `?pill=classic` is an unknown style (null) and the page falls back
  * to settings, exactly like a stale setting falls back to Yappy.
+ *
+ * yap-1106-main-character-switch — the matrix forces every character that can
+ * sit in the pill (`?pill=hoot`), so each one's 17 states can be photographed.
  */
-export const PILL_STYLES = ["yappy"] as const;
+export const PILL_STYLES = ["yappy", "hoot", "tidy", "gulp", "shelly"] as const;
 export type PillStyle = (typeof PILL_STYLES)[number];
 export const PILL_DOCKS = ["bottom", "left", "right"] as const;
 export type PillDock = (typeof PILL_DOCKS)[number];
