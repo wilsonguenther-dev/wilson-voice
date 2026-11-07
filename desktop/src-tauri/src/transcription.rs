@@ -76,6 +76,36 @@ pub fn effective_decode_timeout(
     }
 }
 
+/// yap-1106-sp-01 — the timeout ONE dictation WINDOW of `window_seconds`
+/// gets: `latency::window_decode_timeout` (`clamp(window × max(rtf × 4, 0.1),
+/// 10 s, 60 s)` — the same formula as [`effective_decode_timeout`], with the
+/// window clamp), never above the manager's ceiling `cap`.
+pub fn effective_window_timeout(cap: Duration, window_seconds: f64, recent_rtf: f64) -> Duration {
+    crate::latency::window_decode_timeout(window_seconds, recent_rtf).min(cap)
+}
+
+/// yap-1106-sp-01 — what ONE lease decodes, which decides its timeout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DecodeBudget {
+    /// Decodes nothing (a language probe): the manager's ceiling.
+    Probe,
+    /// A whole decode of this many seconds (a short take, a meeting chunk, a
+    /// streamed window): [`effective_decode_timeout`].
+    Whole(f64),
+    /// One window of a windowed take: [`effective_window_timeout`].
+    Window(f64),
+}
+
+impl DecodeBudget {
+    /// The audio length, for the timeout log line. `None` for a probe.
+    pub fn audio_seconds(self) -> Option<f64> {
+        match self {
+            DecodeBudget::Probe => None,
+            DecodeBudget::Whole(s) | DecodeBudget::Window(s) => Some(s),
+        }
+    }
+}
+
 /// Seconds of 16 kHz mono audio in `samples` (the rate every decode runs at).
 fn audio_seconds_16k(samples: &[f32]) -> f64 {
     samples.len() as f64 / DICTATION_CHUNK_SAMPLE_RATE as f64
@@ -203,13 +233,12 @@ const ENGINE_IDLE_POLL: Duration = Duration::from_millis(50);
 // there was no partial result to keep, and the wall did not move when the take
 // got longer.
 //
-// MEASURED (2026-09-12, see `docs/BUDGETS.md`): a 601 s 16 kHz mono WAV through
-// the shipped headless path returned in 30.5 s INCLUDING model load — a
-// real-time factor of ~19.7x. So the 120 s wall sits around 45 minutes of
-// audio, not four; the cliff is real but far out. That is why the threshold
-// below is DERIVED from that measurement rather than set to the chunk width:
-// ordinary dictation must keep taking the byte-identical single-call path, and
-// only a take that is genuinely in the neighbourhood of the wall gets windowed.
+// yap-1106-sp-01 (2026-11-07): the threshold used to be DERIVED from a fast
+// bench (601 s decoded in 30.5 s, RTF ~19.7x -> ~591 s). On a throttled or
+// battery-bound Mac that number was fiction: the kept 214 s take 45b1e41d
+// went through ONE call and lost everything to the timeout. Now every take
+// over one window's width (35 s) decodes in windows, each under its own
+// `latency::window_decode_timeout`, so one slow window costs one window.
 //
 // Nothing here re-implements chunking. The geometry
 // ([`meeting_asr::plan_windows_fixed`]), the window shape
@@ -217,25 +246,13 @@ const ENGINE_IDLE_POLL: Duration = Duration::from_millis(50);
 // ([`meeting_asr::ChunkOutcome`]) and the seam dedupe + merge
 // ([`meeting_asr::assemble`]) are the meeting path's, called — not copied.
 
-/// The real-time factor a decode is assumed to achieve, measured rather than
-/// guessed: 601 s of audio decoded in 30.5 s of wall clock including the model
-/// load. Used ONLY to place [`DICTATION_CHUNK_THRESHOLD_SECONDS`].
-pub const DICTATION_MEASURED_RTF: f64 = 19.7;
-
-/// How much of the measured headroom we refuse to spend. A thermally throttled
-/// laptop, a cold Metal warm-up and a busy machine are all slower than the
-/// bench that produced [`DICTATION_MEASURED_RTF`], so the threshold sits at a
-/// quarter of where the wall actually is.
-pub const DICTATION_CHUNK_SAFETY_FACTOR: f64 = 4.0;
-
-/// A take longer than this decodes in WINDOWS; anything shorter takes the
-/// single-call path that shipped before Y3-B, byte for byte.
+/// A take longer than this decodes in WINDOWS; anything at or under it takes
+/// the single-call path that shipped before Y3-B, byte for byte.
 ///
-/// Derived, not chosen: `120 s * 19.7 / 4` ≈ 591 s ≈ 9.8 minutes. The ten-minute
-/// take is exactly the case the audit measured, and it is the first one that
-/// wants a partial result more than it wants one atomic decode.
-pub const DICTATION_CHUNK_THRESHOLD_SECONDS: f64 =
-    TRANSCRIBE_TIMEOUT.as_secs() as f64 * DICTATION_MEASURED_RTF / DICTATION_CHUNK_SAFETY_FACTOR;
+/// yap-1106-sp-01: 35 s — the widest window the default geometry cuts
+/// (`meeting_asr::ChunkConfig::default().max_seconds`), so a take that fits in
+/// one window decodes in one call and anything longer is windowed.
+pub const DICTATION_CHUNK_THRESHOLD_SECONDS: f64 = 35.0;
 
 /// Dictation is 16 kHz mono f32 everywhere above the capture layer.
 pub const DICTATION_CHUNK_SAMPLE_RATE: u32 = 16_000;
@@ -1059,7 +1076,7 @@ impl TranscriptionManager {
         let _claim = self.claim_interactive();
         let audio_s = audio_seconds_16k(&samples_16k_mono);
         // NOT preemptible: this take exists nowhere but in the samples above.
-        self.leased_interactive_on(expect, Some(audio_s), move |engine| {
+        self.leased_interactive_on(expect, DecodeBudget::Whole(audio_s), move |engine| {
             engine.transcribe(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -1086,19 +1103,17 @@ impl TranscriptionManager {
     fn leased_interactive_on<R: Send + 'static>(
         &self,
         expect: Option<(&str, &Path)>,
-        audio_seconds: Option<f64>,
+        budget: DecodeBudget,
         job: impl Fn(&mut dyn Transcriber) -> Result<R, String> + Send + Sync + 'static,
     ) -> Result<R, String> {
         let Some((model_id, model_path)) = expect else {
-            return self.leased(false, audio_seconds, job);
+            return self.leased(false, budget, job);
         };
         let job = Arc::new(job);
         let mut reloads = 0u32;
         loop {
             let run = job.clone();
-            match self.leased_on(false, Some(model_id), audio_seconds, move |engine| {
-                run(engine)
-            }) {
+            match self.leased_on(false, Some(model_id), budget, move |engine| run(engine)) {
                 // yap-1106-retry-failed-dictation — the slot is empty because a
                 // timed-out lease still holds the engine on its worker thread.
                 // Reloading here is what stacked engines on the GPU in the
@@ -1173,13 +1188,18 @@ impl TranscriptionManager {
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
         let audio_s = audio_seconds_16k(&samples_16k_mono);
-        self.leased_on(true, expect_model, Some(audio_s), move |engine| {
-            engine.transcribe_timed(
-                &samples_16k_mono,
-                language.as_deref(),
-                bias_prompt.as_deref(),
-            )
-        })
+        self.leased_on(
+            true,
+            expect_model,
+            DecodeBudget::Whole(audio_s),
+            move |engine| {
+                engine.transcribe_timed(
+                    &samples_16k_mono,
+                    language.as_deref(),
+                    bias_prompt.as_deref(),
+                )
+            },
+        )
     }
 
     /// True while an interactive decode (a dictation, the headless CLI) is
@@ -1351,10 +1371,10 @@ impl TranscriptionManager {
     fn leased<R: Send + 'static>(
         &self,
         preemptible: bool,
-        audio_seconds: Option<f64>,
+        budget: DecodeBudget,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
-        self.leased_on(preemptible, None, audio_seconds, job)
+        self.leased_on(preemptible, None, budget, job)
     }
 
     /// YAP-FX-04 — this manager's timeout for one decode of `audio_seconds`
@@ -1367,6 +1387,20 @@ impl TranscriptionManager {
         )
     }
 
+    /// yap-1106-sp-01 — this manager's timeout for one lease of `budget`: a
+    /// window gets [`effective_window_timeout`], everything else
+    /// [`Self::decode_timeout_for`].
+    pub fn budget_timeout(&self, budget: DecodeBudget) -> Duration {
+        match budget {
+            DecodeBudget::Window(window_s) => effective_window_timeout(
+                self.inner.transcribe_timeout,
+                window_s,
+                crate::latency::session_rtf_estimate(),
+            ),
+            other => self.decode_timeout_for(other.audio_seconds()),
+        }
+    }
+
     /// [`Self::leased`], but when `expect_model` is set the job runs ONLY on
     /// that catalog id. An engine of any other model is handed straight back
     /// and the caller gets [`NO_ENGINE_LOADED`] — the engine it needs is not
@@ -1376,9 +1410,10 @@ impl TranscriptionManager {
         &self,
         preemptible: bool,
         expect_model: Option<&str>,
-        audio_seconds: Option<f64>,
+        budget: DecodeBudget,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        let audio_seconds = budget.audio_seconds();
         // yap-1106-engine-owner — this decode is a job on the engine's queue.
         // It waits its turn behind the running one (dictation first), and the
         // ticket is held to the end of this function, i.e. until the engine
@@ -1487,8 +1522,9 @@ impl TranscriptionManager {
         });
 
         // YAP-FX-04 — the adaptive bound for THIS decode (audio length × the
-        // session's measured RTF, 30 s floor, 180 s cap), not a fixed 120 s.
-        let timeout = self.decode_timeout_for(audio_seconds);
+        // session's measured RTF, 30 s floor, 180 s cap), not a fixed 120 s;
+        // yap-1106-sp-01 — a dictation WINDOW gets the window clamp (10–60 s).
+        let timeout = self.budget_timeout(budget);
         let mut outcome = rx.recv_timeout(timeout);
         // yap-1106-engine-owner — an abandoned decode is never left running:
         // it is cancelled the moment the lease gives up on it. For the
@@ -1846,9 +1882,11 @@ impl TranscriptionManager {
         model_id: &str,
         model_path: &Path,
     ) -> Result<Option<crate::languages::LanguageSupport>, String> {
-        self.leased_interactive_on(Some((model_id, model_path)), None, |engine| {
-            Ok(engine.language_support())
-        })
+        self.leased_interactive_on(
+            Some((model_id, model_path)),
+            DecodeBudget::Probe,
+            |engine| Ok(engine.language_support()),
+        )
     }
 
     /// Y10-A — the language `model_id`'s engine detected on its last decode.
@@ -1859,9 +1897,11 @@ impl TranscriptionManager {
         model_id: &str,
         model_path: &Path,
     ) -> Result<Option<String>, String> {
-        self.leased_interactive_on(Some((model_id, model_path)), None, |engine| {
-            Ok(engine.last_detected_language())
-        })
+        self.leased_interactive_on(
+            Some((model_id, model_path)),
+            DecodeBudget::Probe,
+            |engine| Ok(engine.last_detected_language()),
+        )
     }
 
     /// The real body every take entry point delegates to. `expect` pins every
@@ -1912,12 +1952,13 @@ impl TranscriptionManager {
         // take and is never a fixed number), and it exists to surface time
         // burned OUTSIDE the decodes — handback waits, engine reloads, a
         // pathological load loop — which the per-window bound cannot see.
-        // YAP-FX-04: per window, the adaptive timeout of the WIDEST window
-        // (each decode is bounded by its own in `leased_on`).
+        // yap-1106-sp-01: per window, the WINDOW timeout of the widest window
+        // (`clamp(window × max(rtf × 4, 0.1), 10 s, 60 s)`; each decode is
+        // bounded by its own in `leased_on` via `DecodeBudget::Window`).
         let per_chunk = windows
             .iter()
             .map(|w| {
-                self.decode_timeout_for(Some(
+                self.budget_timeout(DecodeBudget::Window(
                     (w.audio_end_seconds - w.audio_start_seconds).max(0.0),
                 ))
             })
@@ -2012,6 +2053,27 @@ impl TranscriptionManager {
             }
         }
 
+        // yap-1106-sp-01 — one line per windowed take: how many windows, how
+        // many failed, and the RTF it actually ran at (wall / audio) next to
+        // the estimate the window timeouts planned with. No transcript text.
+        let elapsed = started.elapsed();
+        let take_rtf = if total_seconds > 0.0 {
+            elapsed.as_secs_f64() / total_seconds
+        } else {
+            0.0
+        };
+        log::info!(
+            "transcription take windows={} failed={} rtf={:.3} rtf_est={:.3} window_timeout_ms={} audio_ms={} elapsed_ms={} deadline_tripped={}",
+            windows.len(),
+            windows.len().saturating_sub(decoded),
+            take_rtf,
+            crate::latency::session_rtf_estimate(),
+            per_chunk.as_millis(),
+            (total_seconds * 1000.0).round() as i64,
+            elapsed.as_millis(),
+            deadline_tripped
+        );
+
         if decoded == 0 {
             // Nothing survived — this is an ordinary failed take, and the
             // caller's existing error path (which keeps the clip) is right.
@@ -2069,7 +2131,8 @@ impl TranscriptionManager {
         }
         let _claim = self.claim_interactive();
         let audio_s = audio_seconds_16k(&samples_16k_mono);
-        self.leased_interactive_on(expect, Some(audio_s), move |engine| {
+        // yap-1106-sp-01 — a WINDOW of a windowed take: its own 10–60 s bound.
+        self.leased_interactive_on(expect, DecodeBudget::Window(audio_s), move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -3236,5 +3299,241 @@ mod tests {
         let t = m.decode_timeout_for(Some(1.0));
         assert!(t >= DECODE_TIMEOUT_FLOOR && t <= cap, "{t:?}");
         assert_eq!(audio_seconds_16k(&[0.0f32; 8_000]), 0.5);
+    }
+
+    // ── yap-1106-sp-01 — every take over 35 s decodes in windows ──
+
+    const CLOCK_WORD_EVERY: f64 = 0.5;
+    const CLOCK_WORD_LEN: f64 = 0.4;
+
+    /// A fake engine that "hears" one word every 0.5 s of the take: word `k`
+    /// spans `[k × 0.5, k × 0.5 + 0.4)` s on the take's clock. Every sample
+    /// carries its own absolute index (exact in f32 below 2^24, and 214 s is
+    /// 3.4 M samples), so a window's slice tells the engine where in the take
+    /// it sits and the words come back with real window-relative timestamps —
+    /// exactly what the timed seam merge consumes from the real engine.
+    struct ClockEngine {
+        /// Take-clock second whose window fails instead of decoding.
+        fail_at_second: Option<f64>,
+    }
+
+    impl ClockEngine {
+        fn hear(&self, samples: &[f32]) -> Result<asr_engine::TimedTranscript, String> {
+            let rate = DICTATION_CHUNK_SAMPLE_RATE as f64;
+            let Some(first) = samples.first() else {
+                return Ok(asr_engine::TimedTranscript::text_only(String::new()));
+            };
+            let start = *first as f64 / rate;
+            let end = start + samples.len() as f64 / rate;
+            if let Some(at) = self.fail_at_second {
+                if start <= at && at < end {
+                    return Err("fake window decode failed".to_string());
+                }
+            }
+            let mut words = Vec::new();
+            let mut k = (start / CLOCK_WORD_EVERY - 1e-9).ceil().max(0.0) as u64;
+            while k as f64 * CLOCK_WORD_EVERY + CLOCK_WORD_LEN <= end + 1e-9 {
+                let at = k as f64 * CLOCK_WORD_EVERY;
+                words.push(asr_engine::TimedSpan {
+                    start_seconds: at - start,
+                    end_seconds: at + CLOCK_WORD_LEN - start,
+                    text: format!("w{k}"),
+                });
+                k += 1;
+            }
+            let text = words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(asr_engine::TimedTranscript {
+                text,
+                kind: asr_engine::TimedKind::Word,
+                segments: Vec::new(),
+                words,
+            })
+        }
+    }
+
+    impl Transcriber for ClockEngine {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.hear(samples).map(|t| t.text)
+        }
+
+        fn transcribe_timed(
+            &mut self,
+            samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<asr_engine::TimedTranscript, String> {
+            self.hear(samples)
+        }
+    }
+
+    fn clock_manager(fail_at_second: Option<f64>) -> TranscriptionManager {
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            Ok(Box::new(ClockEngine { fail_at_second }) as Box<dyn Transcriber>)
+        });
+        let m = TranscriptionManager::with_loader(
+            loader,
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            crate::latency::DECODE_TIMEOUT_CAP,
+        );
+        m.load("clock", &stub_model_file("clock"))
+            .expect("the clock engine loads");
+        m
+    }
+
+    /// `seconds` of take audio whose every sample is its own index.
+    fn clock_take(seconds: usize) -> Vec<f32> {
+        (0..seconds * DICTATION_CHUNK_SAMPLE_RATE as usize)
+            .map(|i| i as f32)
+            .collect()
+    }
+
+    /// Word error rate of `hypothesis` against `reference` (word Levenshtein
+    /// distance over reference length).
+    fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
+        let r: Vec<&str> = reference.split_whitespace().collect();
+        let h: Vec<&str> = hypothesis.split_whitespace().collect();
+        if r.is_empty() {
+            return if h.is_empty() { 0.0 } else { 1.0 };
+        }
+        let mut prev: Vec<usize> = (0..=h.len()).collect();
+        for (i, rw) in r.iter().enumerate() {
+            let mut cur = vec![i + 1; h.len() + 1];
+            for (j, hw) in h.iter().enumerate() {
+                let sub = prev[j] + usize::from(rw != hw);
+                cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+            }
+            prev = cur;
+        }
+        prev[h.len()] as f64 / r.len() as f64
+    }
+
+    /// THE ACCEPTANCE TEST. A 214 s take (the kept 45b1e41d's length) on a
+    /// fake engine at RTF 0.9: every window decodes inside its own
+    /// `clamp(window × max(rtf × 4, 0.1), 10 s, 60 s)` bound, nothing times
+    /// out, and the windowed text matches the single-call text within 0.5 WER
+    /// points.
+    #[test]
+    fn a_fake_engine_at_rtf_0_9_windows_a_214_s_take_with_no_timeout_and_matches_the_single_call() {
+        const RTF: f64 = 0.9;
+        let total = 214.0;
+        let plan = DictationChunking::default();
+        assert_eq!(plan.threshold_seconds, 35.0);
+        assert_eq!(DICTATION_CHUNK_THRESHOLD_SECONDS, 35.0);
+        assert!(total > plan.threshold_seconds);
+
+        // Timing half: at RTF 0.9 each window's simulated decode (width × 0.9)
+        // lands inside the bound the manager gives that window.
+        let windows =
+            dictation_window_planner()(total, meeting_asr::ResumePoint::start(), &plan.config, 0);
+        assert!(windows.len() >= 6, "214 s must window: {}", windows.len());
+        for w in &windows {
+            let width = w.audio_end_seconds - w.audio_start_seconds;
+            assert!(width <= plan.config.max_decode_seconds() + 1e-9, "{width}");
+            let bound = effective_window_timeout(crate::latency::DECODE_TIMEOUT_CAP, width, RTF);
+            assert_eq!(bound, crate::latency::window_decode_timeout(width, RTF));
+            assert!(
+                width * RTF < bound.as_secs_f64(),
+                "window {} ({width:.1} s) decodes in {:.1} s at RTF {RTF}, past its {bound:?} bound",
+                w.index,
+                width * RTF
+            );
+        }
+
+        // Text half: the windowed take through the manager vs one call.
+        let samples = clock_take(214);
+        let single = ClockEngine {
+            fail_at_second: None,
+        }
+        .hear(&samples)
+        .expect("single call decodes")
+        .text;
+        let m = clock_manager(None);
+        let take = m
+            .transcribe_take_with(samples, None, None, &plan)
+            .expect("the windowed take decodes");
+        assert!(take.windowed);
+        assert_eq!(take.chunks_total, windows.len());
+        assert_eq!(take.chunks_failed, 0, "{:?}", take.degraded_reason);
+        assert!(!take.degraded, "{:?}", take.degraded_reason);
+        let delta_points = word_error_rate(&single, &take.text) * 100.0;
+        assert!(
+            delta_points <= 0.5,
+            "windowed text drifted {delta_points:.2} WER points from the single call"
+        );
+    }
+
+    /// One failed window costs that window only: the take still returns the
+    /// other windows' words and is marked degraded.
+    #[test]
+    fn one_failed_window_marks_the_take_degraded_and_keeps_every_other_window() {
+        // 45 s sits mid-content in the second window, clear of both overlaps.
+        let m = clock_manager(Some(45.0));
+        let take = m
+            .transcribe_take_with(clock_take(214), None, None, &DictationChunking::default())
+            .expect("a take with one failed window still returns text");
+        assert!(take.windowed);
+        assert!(take.degraded);
+        assert_eq!(take.chunks_failed, 1);
+        assert!(take.degraded_reason.is_some());
+        let words: Vec<&str> = take.text.split_whitespace().collect();
+        assert!(words.contains(&"w0"), "the first window's words survive");
+        assert!(words.contains(&"w427"), "the last window's words survive");
+        assert!(
+            !words.contains(&"w90"),
+            "the failed window's words cannot appear"
+        );
+    }
+
+    /// The threshold is 35 s: a 35 s take is one call, a 36 s take windows.
+    #[test]
+    fn a_take_over_35_s_windows_and_one_at_35_s_decodes_in_one_call() {
+        let m = clock_manager(None);
+        let plan = DictationChunking::default();
+        let at = m
+            .transcribe_take_with(clock_take(35), None, None, &plan)
+            .expect("35 s decodes");
+        assert!(!at.windowed);
+        assert_eq!(at.chunks_total, 1);
+        let over = m
+            .transcribe_take_with(clock_take(36), None, None, &plan)
+            .expect("36 s decodes");
+        assert!(over.windowed, "a 36 s take must take the windowed path");
+        assert!(over.chunks_total >= 2);
+        assert!(!over.degraded, "{:?}", over.degraded_reason);
+    }
+
+    /// A window lease is bounded by the WINDOW clamp, everything else by the
+    /// whole-decode clamp, and a probe by the ceiling.
+    #[test]
+    fn a_window_lease_gets_the_window_timeout_and_a_whole_decode_keeps_fx04() {
+        use crate::latency::{DECODE_TIMEOUT_CAP, WINDOW_TIMEOUT_CAP, WINDOW_TIMEOUT_FLOOR};
+        let m = clock_manager(None);
+        let w = m.budget_timeout(DecodeBudget::Window(35.0));
+        assert!(
+            w >= WINDOW_TIMEOUT_FLOOR && w <= WINDOW_TIMEOUT_CAP,
+            "{w:?}"
+        );
+        // A whole decode keeps the fx-04 clamp (30–180 s). Bounds, not
+        // equality: the session RTF is process-global and other tests move it.
+        let whole = m.budget_timeout(DecodeBudget::Whole(35.0));
+        assert!(
+            whole >= crate::latency::DECODE_TIMEOUT_FLOOR && whole <= DECODE_TIMEOUT_CAP,
+            "{whole:?}"
+        );
+        assert_eq!(m.budget_timeout(DecodeBudget::Probe), DECODE_TIMEOUT_CAP);
+        assert_eq!(DecodeBudget::Window(2.0).audio_seconds(), Some(2.0));
+        assert_eq!(DecodeBudget::Probe.audio_seconds(), None);
+        let tiny = Duration::from_millis(50);
+        assert_eq!(effective_window_timeout(tiny, 35.0, 0.9), tiny);
     }
 }
