@@ -59,7 +59,10 @@ import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera, scaleEvent } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
-import { capsuleCentre, currentPillLayout } from "./state";
+import { capsuleCentre, currentPillLayout, type PillLayout } from "./state";
+// yap-1106-pill-vertical-dock-world — on a side dock the pill is a tall room
+// (or a 30 x 40 resting tab), flush to the edge and never wider than 64 px.
+import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDock, vdockCropWarning, vdockFrame, type SideDock } from "./vdock";
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
@@ -385,6 +388,10 @@ export default function YappyPill(
     // ONE device px per art px, with sky above him for a hop (characterFit PILL_SCENE).
     const PW = PILL_SCENE.w, PH = PILL_SCENE.h, GY = PILL_SCENE.groundY, FX = PILL_SCENE.faceX;   // grass starts at GY
     const os = document.createElement("canvas"); os.width = PW; os.height = PH; const octx = os.getContext("2d")!;
+    // yap-1106-pill-vertical-dock-world — the tall room (56 x 180 art px, one CSS px
+    // per art px) and the resting tab's chick, each in its own buffer.
+    const vroom = document.createElement("canvas"); vroom.width = VDOCK_SCENE.w; vroom.height = VDOCK_SCENE.h; const vctx = vroom.getContext("2d")!;
+    const vtab = document.createElement("canvas"); vtab.width = TAB_ART.w; vtab.height = TAB_ART.h; const tctx = vtab.getContext("2d")!;
     const C: Record<string, string> = {
       sun: "#fff2b0",
       body: "#ffd24a", light: "#ffe9a0", dark: "#eba21f", outline: "#6b3a2e", cavity: "#7a2e14", belly: "#fff2c4",
@@ -641,6 +648,63 @@ export default function YappyPill(
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
+    // ── yap-1106-pill-vertical-dock-world: the side dock ─────────────────────
+    // A rect rounded on the INNER side only: the edge side is flush to the screen.
+    function edgeRect(x: number, y: number, w: number, h: number, r: number, sd: SideDock) {
+      const k = Math.max(0, Math.min(r, w / 2, h / 2));
+      const rl = sd === "right" ? k : 0, rr2 = sd === "left" ? k : 0;
+      ctx.beginPath();
+      ctx.moveTo(x + rl, y);
+      ctx.lineTo(x + w - rr2, y); if (rr2) ctx.arcTo(x + w, y, x + w, y + rr2, rr2);
+      ctx.lineTo(x + w, y + h - rr2); if (rr2) ctx.arcTo(x + w, y + h, x + w - rr2, y + h, rr2);
+      ctx.lineTo(x + rl, y + h); if (rl) ctx.arcTo(x, y + h, x, y + h - rl, rl);
+      ctx.lineTo(x, y + rl); if (rl) ctx.arcTo(x, y, x + rl, y, rl);
+      ctx.closePath();
+    }
+    let warnedVCrop = false, lastVMode = "";
+    // The tall room / resting tab, placed by vdock.ts (the same functions
+    // vdock.test.ts walks): a dark shell flush to the edge, the scene inside it
+    // at a whole number of device px per art px, the right dock mirrored, and
+    // the bubble opening inward beside the shell.
+    function drawSide(sd: SideDock, lay: PillLayout, A: Omit<SP, "lift">, ov: number) {
+      const f = vdockFrame(sd, ov, A.prop, A.propIn, DPR, lay.char);
+      if (!f.fits && !warnedVCrop) { warnedVCrop = true; console.warn(vdockCropWarning(f, DPR)); }
+      const vkey = `${sd}|${f.mode}`;
+      if (vkey !== lastVMode) { lastVMode = vkey; console.info(`pill vdock_mode dock=${sd} mode=${f.mode} shellW=${Math.round(f.shell.w)}`); }
+      const s = f.shell, acc = ACC[phase];
+      reportPillHitbox(s.x, s.y, s.w, s.h);
+      const rad = f.mode === "room" ? VDOCK_RADIUS.open : VDOCK_RADIUS.tab;
+      ctx.save();
+      if (ov > .05) { ctx.shadowColor = `hsla(${acc}, ${.45 * ov})`; ctx.shadowBlur = 16 * ov; }
+      ctx.fillStyle = "#1d1c1a"; edgeRect(s.x, s.y, s.w, s.h, rad, sd); ctx.fill();
+      ctx.restore();
+      ctx.lineWidth = 1; ctx.strokeStyle = ov > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)";
+      edgeRect(s.x + .5, s.y + .5, s.w - 1, s.h - 1, rad, sd); ctx.stroke();
+      const d = f.innerD, a = f.art;
+      const pose = clampChickPose(A);
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+      rr(d.x, d.y, d.w, d.h, f.radiusD); ctx.clip(); ctx.imageSmoothingEnabled = false;
+      let src: HTMLCanvasElement;
+      if (f.mode === "room") {
+        vctx.clearRect(0, 0, VDOCK_SCENE.w, VDOCK_SCENE.h);
+        drawTallRoom(vctx, sky.look, pose, { prop: A.prop, propIn: A.propIn, ink: A.ink, elapsed: A.elapsed });
+        ctx.fillStyle = "#eccf92"; ctx.fillRect(d.x, d.y, d.w, d.h);
+        src = vroom;
+      } else {
+        const look = sky.look, g = ctx.createLinearGradient(0, d.y, 0, d.y + d.h);
+        g.addColorStop(0, look ? look.top : "#8fd6ff"); g.addColorStop(1, look ? look.bot : "#c6ecff");
+        ctx.fillStyle = g; ctx.fillRect(d.x, d.y, d.w, d.h);
+        tctx.clearRect(0, 0, TAB_ART.w, TAB_ART.h); drawTabChick(tctx, pose);
+        src = vtab;
+      }
+      if (sd === "right") { ctx.translate(a.x + a.w, a.y); ctx.scale(-1, 1); ctx.drawImage(src, 0, 0, a.w, a.h); }
+      else ctx.drawImage(src, a.x, a.y, a.w, a.h);
+      ctx.restore();
+      const bw = bubble.classList.contains("show") ? bubble.offsetWidth : 0, bb = lay.bubble;
+      bubble.style.left = (sd === "left" ? bb.x + bw / 2 : bb.x + bb.w - bw / 2) + "px";
+      bubble.style.top = (bb.y + bb.h) + "px";
+    }
+
     let raf = 0, tick = 0, lastDraw = 0;
     // YV81 — is every transient finished, so that what is LEFT to draw is only
     // ambient life (breathing, sway, drifting clouds, the next blink)? The
@@ -742,12 +806,17 @@ export default function YappyPill(
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
       // yap-1107-pill-matches-artifact-size — the scene is drawn below, once the
       // camera has picked this frame's cell and lift budget (drawScene only
-      // touches the offscreen buffer, so the order is free).
-      const scenePose = { hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed };
+      // touches the offscreen buffer, so the order is free). A side dock
+      // (yap-1106-pill-vertical-dock-world) draws from the same pose, unlifted.
+      const scenePose: Omit<SP, "lift"> = { hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed };
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
       ctx.clearRect(0, 0, W, H);
+      // yap-1106-pill-vertical-dock-world — a side dock draws the tall room (open)
+      // or the resting tab instead of the horizontal capsule.
+      const sideLay = currentPillLayout(), sd = sideDock(document.documentElement.dataset.dock);
+      if (sd && sideLay && sideLay.dock === sd) { drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
       // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
@@ -799,8 +868,8 @@ export default function YappyPill(
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
       // sparkles (done) inside the pill — 2 CSS px squares, snapped to whole device px
-      const sp = Math.max(1, Math.round(2 * DPR));
-      for (const q of sparkle) { ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; ctx.fillRect(Math.round((cx + q.x - 1) * DPR), Math.round((cy + q.y - 1) * DPR), sp, sp); }
+      const sparkPx = Math.max(1, Math.round(2 * DPR));
+      for (const q of sparkle) { ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; ctx.fillRect(Math.round((cx + q.x - 1) * DPR), Math.round((cy + q.y - 1) * DPR), sparkPx, sparkPx); }
       ctx.restore();
       ctx.restore();
       ctx.lineWidth = 1; ctx.strokeStyle = openV > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)"; rr(x0 + .5, y0 + .5, capW - 1, capH - 1, capH / 2); ctx.stroke();

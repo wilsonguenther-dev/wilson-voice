@@ -27,7 +27,9 @@ use support::{open_db, temp_dir};
 /// 9 = yap24-NT11's `meeting_segments.suppressed_as_echo`, the kept-but-hidden
 /// speaker-echo flag. 10 = yap-call-1's `meetings.detected_app` /
 /// `detected_via`, which app's call a recording came from and how it was found.
-const EXPECTED_VERSION: i64 = 11;
+/// 11 = yap-1106-voiceprints' speaker profiles + samples. 12 = yap-1106-who-is-this's
+/// `meeting_cluster_voices`, one row per unknown voice the "Who was this?" cards ask about.
+const EXPECTED_VERSION: i64 = 12;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -39,6 +41,9 @@ const EXPECTED_VERSION: i64 = 11;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 12 {
+        sql.push_str("DROP TABLE meeting_cluster_voices;\n");
+    }
     if version < 11 {
         sql.push_str("DROP TABLE speaker_samples;\n");
         sql.push_str("DROP TABLE speaker_profiles;\n");

@@ -2716,6 +2716,14 @@ mod engine_owner_tests {
                     samples += 1;
                     std::thread::sleep(Duration::from_millis(2));
                 }
+                // One last look after the decode returned: on a loaded CI
+                // runner the 2 ms sleep can overshoot the whole window between
+                // the kill and `stop`, so the loop may never have seen the
+                // stuck helper gone. Observed here is still observed AFTER the
+                // kill, so the deadline bounds below stay honest.
+                if first_gone_at.is_none() && !mine(&before).contains(&first) {
+                    first_gone_at = Some(Instant::now());
+                }
                 (max_helpers, max_live, samples, first_gone_at)
             })
         };
