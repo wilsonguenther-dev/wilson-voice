@@ -1,148 +1,102 @@
 import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
 import YappyHouse from "../home/YappyHouse";
-import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
+import DiffView from "../DiffView";
+import { type TranscriptEntry, retainedClipsLabel, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
-import { type RetryPhase, retryAllLabel, retryButtonLabel } from "../retryDictation";
+import { retryAllLabel, retryButtonLabel } from "../retryDictation";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
-import {
-  HOME_RECENT, attentionTitle, recentTakes, requestHistoryFocus, seeAllLabel, showNeedsAttention, statsLine, takePreview,
-} from "../home/homeLayout";
-
-/**
- * yap-1106-home-full-width-room — "Needs attention": failed and cancelled
- * takes, beside the latest take. The audio is still on disk, so nothing was
- * lost: Retry re-runs speech on that clip, Discard throws the row and its audio
- * away (clips are purged after 7 days). It renders NOTHING when empty.
- */
-export function NeedsAttention({
-  failed, retrying, retryAll, retryPhase, onRetry, onRetryAll, onDiscard,
-}: {
-  failed: readonly FailedDictation[];
-  retrying: string | null;
-  retryAll: { done: number; total: number } | null;
-  retryPhase?: RetryPhase | null;
-  onRetry: (id: string, keepPartial?: boolean) => void;
-  onRetryAll: () => void;
-  onDiscard: (id: string) => void;
-}) {
-  if (!showNeedsAttention(failed)) return null;
-  return (
-    <section className="needs-attention" data-home="needs-attention" aria-labelledby="needs-attention-h">
-      <div className="failed-head">
-        <h3 id="needs-attention-h">
-          Needs attention <span className="count">{failed.length}</span>
-        </h3>
-        {/* PRIV-B — retained audio is VISIBLE: the count, the window, the way out. */}
-        <span className="tiny" data-testid="retained-clips">
-          {retainedClipsLabel(failed.length)} — retry or discard. Nothing here is pasted for you.
-        </span>
-        {failed.length > 1 ? (
-          <button
-            className="ghost failed-retry-all"
-            data-testid="retry-all"
-            disabled={retryAll !== null || retrying !== null}
-            aria-busy={retryAll !== null}
-            onClick={onRetryAll}
-          >
-            {retryAllLabel({ running: retryAll !== null, done: retryAll?.done ?? 0, total: retryAll?.total ?? failed.length })}
-          </button>
-        ) : null}
-      </div>
-      <ul className="attention-list">
-        {failed.map((f) => (
-          <li key={f.id} className="attention-row">
-            <div className="card-meta">
-              <strong>{attentionTitle(f.error)}</strong>
-              <span>
-                {formatTime(f.createdAt)}
-                {f.sourceApp ? ` · ${f.sourceApp}` : ""}
-                {f.speechSeconds > 0 ? ` · ${f.speechSeconds.toFixed(1)}s of audio kept` : " · audio kept"}
-              </span>
-            </div>
-            <p className="failed-why">{f.error}</p>
-            {f.partialText ? (
-              <p className="failed-partial" title={f.partialText}>
-                Already transcribed: “{f.partialText}”
-              </p>
-            ) : null}
-            {f.attemptText && f.attemptText !== f.partialText ? (
-              <p className="failed-partial" title={f.attemptText}>
-                Transcribed so far: “{f.attemptText}”
-              </p>
-            ) : null}
-            <div className="actions">
-              <button
-                className="primary"
-                disabled={retrying === f.id || retryAll !== null}
-                onClick={() => onRetry(f.id)}
-              >
-                {retryButtonLabel({ retrying: retrying === f.id, phase: retryPhase ?? null, resumable: !!f.partialText })}
-              </button>
-              {f.attemptText ? (
-                <button
-                  className="ghost"
-                  disabled={retrying === f.id}
-                  onClick={() => {
-                    if (
-                      confirm(
-                        f.partialText
-                          ? "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this."
-                          : "Save the words shown for this take and delete its audio? Parts that didn't transcribe can't be recovered after this.",
-                      )
-                    )
-                      onRetry(f.id, true);
-                  }}
-                >
-                  Keep what was transcribed
-                </button>
-              ) : null}
-              <button className="ghost danger" onClick={() => onDiscard(f.id)}>
-                Discard
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
 export default function Home() {
   const {
-    bootError, bootErrors, booting, retryBoot, copyText, refreshAll,
-    failed, history, insights, meetingStatus, pasteText, perms, query,
-    retryAll, retryAllFailed, retryFailed, retrying, retryPhase, setFailed,
-    setNav, setQuery, dropRetry, settings, status, toastError, toggleRecord,
+    bootError, bootErrors, booting, retryBoot, clearAll, clearing, deleteAllRecordings, copyText, diffId, refreshAll,
+    failed, feedbackEdits, fixDraft, fixingId, history,
+    insights, loadHistory, loadOlderHistory, historyHasMore, loadingOlder, pasteText, perms, query, queryRef, refreshInsights,
+    retryAll, retryAllFailed, retryFailed, retrying, retryPhase, setActiveNoteId, setCandidates, setDiffId, setFailed,
+    setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
+    setNoteTitle, setQuery, dropRetry, setScratchComposing, settings, status, toast, toastError,
+    toggleRecord,
   } = useAppCtx();
-  // Y5-B fix round (#192) — bootError only replaces THIS view when this view's
-  // own data never landed; each of history and stats names its own error.
+  // Y5-B — was `if (!insights) return null`: a heading over a blank page on
+  // every fresh install, because insights is null until the first read lands.
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  // DO 3 — history and stats are this view's data; each names its own error.
   const homeError =
     bootErrors?.get_history ?? bootErrors?.get_insights ?? (insights == null ? bootError : null);
   const state = viewState(history, booting || !insights, homeError);
-  // H2 — nothing dictated yet, no search typed, and a dictation GRANT missing.
+  // H2 — nothing dictated yet, no search typed, and a dictation GRANT
+  // (Microphone / Accessibility) missing. A missing speech model is NOT a
+  // grant — ModelRibbon owns that case — so this never reads allCriticalOk.
   const missingGrants = missingDictationGrants(perms);
   const permsGate = history.length === 0 && !query && missingGrants.length > 0;
-
+  async function removeEntry(id: string) {
+    try {
+      await invoke("delete_entry", { id });
+      setHistory((h) => h.filter((e) => e.id !== id));
+    } catch (e) {
+      toastError(e);
+      return;
+    }
+    await refreshInsights();
+  }
   async function discardFailed(id: string) {
     try {
       await invoke("discard_failed_dictation", { id });
       setFailed((f) => f.filter((x) => x.id !== id));
       dropRetry(id);
-      console.info("home attention_discarded");
     } catch (e) {
-      console.warn("home attention_discard_failed");
       toastError(e);
     }
   }
-  function openInHistory(e: TranscriptEntry | null, from: string) {
-    requestHistoryFocus(e ? e.id : null);
-    console.info(`home open_history from=${from}`);
-    setNav("history");
+  function feedbackFor(e: TranscriptEntry): number | null {
+    return e.id in feedbackEdits ? feedbackEdits[e.id] : (e.feedback ?? null);
   }
-
+  function rateTake(id: string, value: number | null) {
+    setFeedbackEdits((prev) => ({ ...prev, [id]: value }));
+    invoke("set_take_feedback", { id, feedback: value }).catch((err) => {
+      // A failed write costs a future evaluation signal and costs this take
+      // nothing, so it must never surface as an error toast over the user's
+      // transcript. Roll the button back so it does not lie.
+      console.warn("set_take_feedback failed", err);
+      setFeedbackEdits((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    });
+  }
+  function startFix(e: TranscriptEntry) {
+    setFixingId(e.id);
+    setFixDraft(e.text);
+  }
+  async function saveFix() {
+    if (!fixingId || !fixDraft.trim()) return;
+    try {
+      const learned = await invoke<number>("correct_transcript", {
+        id: fixingId,
+        text: fixDraft.trim(),
+      });
+      setFixingId(null);
+      const [cands] = await Promise.all([
+        invoke<DictCandidate[]>("list_dict_candidates"),
+        loadHistory(queryRef.current),
+      ]);
+      setCandidates(cands);
+      toast(
+        learned > 0
+          ? `Fixed — ${learned} term${learned === 1 ? "" : "s"} to review in Dictionary`
+          : "Transcript fixed",
+      );
+    } catch (e) {
+      toastError(e);
+    }
+  }
   if (state === "error")
     return (
       <ErrorState
@@ -156,145 +110,361 @@ export default function Home() {
   if (state === "loading")
     return <LoadingState data-loading-state="home" noun="history" expected={insights?.totalSessions ?? null} onRetry={() => void refreshAll()} />;
 
-  const latest: TranscriptEntry | null = !query && history.length > 0 ? history[0] : null;
-  // The last 5 takes (the latest included, as on the approved mock), or the
-  // top 5 matches while a search is typed. Never more: Home has an end.
-  const recent = recentTakes(history);
-  const stats = statsLine({
-    wordsToday: insights?.wordsToday,
-    streakDays: insights?.streakDays,
-    totalTakes: insights?.totalSessions,
-  });
-  const total = insights?.totalSessions ?? null;
-
+  // Y5-B review fix — no model gate here. YV54 (#68): the recommended model
+  // downloads on its own once onboarding finishes and the slim <ModelRibbon>
+  // in App.tsx is the only surface; replacing Home would contradict that copy
+  // and hide history, search and failed-take recovery from any install whose
+  // selected model file is missing.
   return (
-    <div className="home-view">
-      <BootNote keys={["get_status", "list_failed_dictations", "list_crash_events"]} />
-      {/* The room, full column width at a whole-number scale. During a meeting
-          Hoot sits in it and its label carries the meeting clock — Home shows
-          no other timer. */}
-      <YappyHouse companionTone={settings?.companionTone} meeting={meetingStatus} />
+            <>
+              <BootNote keys={["get_status", "list_failed_dictations", "list_crash_events"]} />
+              <YappyHouse
+                wordsToday={insights?.wordsToday}
+                streakDays={insights?.streakDays}
+                companionTone={settings?.companionTone}
+              />
 
-      {/* The three stat tiles, now one quiet line under the room. */}
-      <p className="home-stats" data-home="stats">
-        {stats.length > 0 ? <span>{stats.join(" · ")}</span> : null}
-        <button type="button" className="link" onClick={() => setNav("insights")}>
-          Insights →
-        </button>
-      </p>
+              {/* yap-uiux-2026-10-16-H2 — with Microphone or Accessibility
+                  ungranted, "hold fn" cannot work, so the empty Home's first
+                  card and its one action is the thing that unblocks it: the
+                  Permissions view. It sits ABOVE the record button, so the
+                  hotkey hint reads as the step that follows, not the first. */}
+              {permsGate && (
+                <EmptyState
+                  data-empty-state="home:history"
+                  glyph={<WaveGlyph />}
+                  title="Grant permissions to start dictating"
+                  body={nameProduct(`Yap needs ${missingGrants.join(" and ")} before it can hear you and type for you. Grant ${missingGrants.length > 1 ? "them" : "it"}, then hold fn⌃ and talk.`, perms?.productName)}
+                  actionLabel="Grant permissions"
+                  onAction={() => setNav("permissions")}
+                />
+              )}
 
-      {/* yap-uiux-2026-10-16-H2 — with Microphone or Accessibility ungranted,
-          the empty Home's first card is the thing that unblocks dictation. */}
-      {permsGate && (
-        <EmptyState
-          data-empty-state="home:history"
-          glyph={<WaveGlyph />}
-          title="Grant permissions to start dictating"
-          body={nameProduct(`Yap needs ${missingGrants.join(" and ")} before it can hear you and type for you. Grant ${missingGrants.length > 1 ? "them" : "it"}, then hold fn⌃ and talk.`, perms?.productName)}
-          actionLabel="Grant permissions"
-          onAction={() => setNav("permissions")}
-        />
-      )}
-
-      {/* Y3-D — a take the user regrets can be stopped in either half
-          (recording or decoding); the audio is parked in Needs attention. */}
-      {(status.recording || status.busy) && (
-        <button
-          className="ghost cancel-take"
-          onClick={() => {
-            console.info("home take_cancel_requested");
-            void invoke("cancel_transcription");
-          }}
-        >
-          Cancel this take (esc)
-        </button>
-      )}
-
-      <div className={showNeedsAttention(failed) && latest ? "home-split" : "home-split single"}>
-        {latest ? (
-          <article className="card latest-take" data-home="latest" aria-live="polite">
-            <div className="card-meta">
-              <span>
-                <strong>Last take</strong> {formatTime(latest.createdAt)}
-                {latest.sourceApp ? ` · ${latest.sourceApp}` : ""}
-              </span>
-              <span>{(latest.wordCount ?? 0).toLocaleString("en-US")} words</span>
-            </div>
-            <p className="latest-text">{latest.text}</p>
-            <div className="actions">
-              <button onClick={() => copyText(latest.text)}>Copy</button>
-              <button className="primary" onClick={() => openInHistory(latest, "latest")}>
-                Open
+              <button
+                className={
+                  status.recording
+                    ? "record-btn live"
+                    : status.busy
+                      ? "record-btn busy"
+                      : "record-btn"
+                }
+                onClick={toggleRecord}
+                disabled={status.busy}
+              >
+                <span className="mic" aria-hidden>
+                  {status.recording ? "■" : status.busy ? "…" : "●"}
+                </span>
+                <span>
+                  {status.recording
+                    ? "Listening — release fn⌃ or tap to stop hands-free"
+                    : status.busy
+                      ? "Transcribing…"
+                      : "Hold fn⌃ · double-tap hands-free"}
+                </span>
               </button>
-              <button className="ghost" onClick={() => pasteText(latest.text)}>
-                Paste again
-              </button>
-            </div>
-          </article>
-        ) : null}
-        <NeedsAttention
-          failed={failed}
-          retrying={retrying}
-          retryAll={retryAll}
-          retryPhase={retryPhase}
-          onRetry={(id, keep) => void retryFailed(id, keep)}
-          onRetryAll={() => void retryAllFailed()}
-          onDiscard={(id) => void discardFailed(id)}
-        />
-      </div>
 
-      <div className="toolbar">
-        {/* yap-uiux-2026-10-16-H4 — what it does, not how it works. */}
-        <input
-          type="search"
-          aria-label="Search your dictations"
-          placeholder="Search everything you've said…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
+              {/* Y3-D — the button that did not exist. The record button above
+                  is DISABLED while `busy`, so from the moment the hold ended
+                  until the decode finished there was nothing on screen to
+                  press: a fifteen-minute take the user regretted the instant
+                  they let go ran to completion anyway. This is live for BOTH
+                  halves of a take (recording and decoding), because the user
+                  pressing "stop this" does not know or care which stage it is
+                  in. The audio is parked in recovery, not deleted — History
+                  offers it back. */}
+              {(status.recording || status.busy) && (
+                <button
+                  className="ghost cancel-take"
+                  onClick={() => {
+                    void invoke("cancel_transcription");
+                  }}
+                >
+                  Cancel this take (esc)
+                </button>
+              )}
 
-      {permsGate ? null : history.length === 0 ? (
-        <EmptyState
-          data-empty-state="home:history"
-          glyph={<WaveGlyph />}
-          title={query ? "Nothing matches that" : "No dictations yet"}
-          body={
-            query
-              ? "Search reads every word you have ever dictated. Try a shorter phrase."
-              : "Hold fn and say something. The text lands here, stored on this Mac and searchable forever."
-          }
-          actionLabel={query ? "Clear the search" : "Hold fn and say something"}
-          onAction={query ? () => setQuery("") : toggleRecord}
-        />
-      ) : (
-        <>
-          {recent.length > 0 ? (
-            <ul className="recent-takes" data-home="recent">
-              {recent.map((e) => (
-                <li key={e.id}>
-                  <button type="button" className="recent-row" onClick={() => openInHistory(e, "recent")}>
-                    <span className="recent-when">{formatTime(e.createdAt)}</span>
-                    <span className="recent-text">{takePreview(e.text)}</span>
-                    <span className="recent-words">{(e.wordCount ?? 0).toLocaleString("en-US")} w</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {/* Home's definite end: no list grows as you scroll. */}
-          <div className="home-end" data-home="see-all">
-            <span className="tiny">
-              {query
-                ? `The top ${HOME_RECENT} matches. Every match lives in History.`
-                : `That's the last ${HOME_RECENT}. Older takes live in History.`}
-            </span>
-            <button type="button" className="ghost" data-testid="home-see-all" onClick={() => openInHistory(null, "see_all")}>
-              {seeAllLabel(total, query)}
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+              <div className="toolbar">
+                {/* yap-uiux-2026-10-16-H4 — the placeholder named the index
+                    ("SQLite FTS5"), which is how it works, not what it does. */}
+                <input
+                  type="search"
+                  aria-label="Search your dictations"
+                  placeholder="Search everything you've said…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+                <button className="ghost" onClick={clearAll} disabled={clearing}>
+                  {clearing ? "Clearing…" : "Clear"}
+                </button>
+                {/* PRIV-B — the separate, explicit erase for audio only. */}
+                <button
+                  className="ghost danger"
+                  onClick={deleteAllRecordings}
+                  disabled={clearing}
+                >
+                  Delete all recordings
+                </button>
+              </div>
+
+              {/* YV52 — takes whose transcription failed. The audio is still on
+                  disk, so nothing was lost: retry re-runs ASR on that same clip,
+                  discard throws the row and its audio away. Clips are purged
+                  automatically after 7 days. */}
+              {failed.length > 0 && (
+                <section className="failed-takes">
+                  <div className="failed-head">
+                    <h3>Failed and unfinished dictations</h3>
+                    {/* PRIV-B — retained audio is VISIBLE: the count, the
+                        window, and the way out, in one line. */}
+                    <span className="tiny" data-testid="retained-clips">
+                      {retainedClipsLabel(failed.length)} — review or delete.
+                      Finish or retry when the engine is ready; nothing here is
+                      pasted for you. Clear removes them with your history.
+                    </span>
+                    {/* yap-fx-07 — every kept clip, one click: retried one at
+                        a time, stopping if the speech engine is not healthy. */}
+                    {failed.length > 1 ? (
+                      <button
+                        className="ghost failed-retry-all"
+                        data-testid="retry-all"
+                        disabled={retryAll !== null || retrying !== null}
+                        aria-busy={retryAll !== null}
+                        onClick={() => void retryAllFailed()}
+                      >
+                        {retryAllLabel({
+                          running: retryAll !== null,
+                          done: retryAll?.done ?? 0,
+                          total: retryAll?.total ?? failed.length,
+                        })}
+                      </button>
+                    ) : null}
+                  </div>
+                  <ul className="feed">
+                    {failed.map((f) => (
+                      <li key={f.id} className="card failed">
+                        <div className="card-meta">
+                          <span>
+                            {formatTime(f.createdAt)}
+                            {f.sourceApp ? ` · ${f.sourceApp}` : ""}
+                          </span>
+                          <span>
+                            {f.speechSeconds > 0
+                              ? `${f.speechSeconds.toFixed(1)}s of audio`
+                              : "audio saved"}
+                          </span>
+                        </div>
+                        <p className="failed-why">{f.error}</p>
+                        {f.partialText ? (
+                          <p className="failed-partial" title={f.partialText}>
+                            Already transcribed: “{f.partialText}”
+                          </p>
+                        ) : null}
+                        {f.attemptText && f.attemptText !== f.partialText ? (
+                          <p className="failed-partial" title={f.attemptText}>
+                            Transcribed so far: “{f.attemptText}”
+                          </p>
+                        ) : null}
+                        <div className="actions">
+                          <button
+                            className="primary"
+                            disabled={retrying === f.id || retryAll !== null}
+                            onClick={() => void retryFailed(f.id)}
+                          >
+                            {retryButtonLabel({
+                              retrying: retrying === f.id,
+                              phase: retryPhase ?? null,
+                              resumable: !!f.partialText,
+                            })}
+                          </button>
+                          {f.attemptText ? (
+                            <button
+                              className="ghost"
+                              disabled={retrying === f.id}
+                              onClick={() => {
+                                if (
+                                  confirm(
+                                    f.partialText
+                                      ? "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this."
+                                      : "Save the words shown for this take and delete its audio? Parts that didn't transcribe can't be recovered after this.",
+                                  )
+                                )
+                                  void retryFailed(f.id, true);
+                              }}
+                            >
+                              Keep what was transcribed
+                            </button>
+                          ) : null}
+                          <button
+                            className="ghost danger"
+                            onClick={() => discardFailed(f.id)}
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {permsGate ? null : history.length === 0 ? (
+                <EmptyState
+                  data-empty-state="home:history"
+                  glyph={<WaveGlyph />}
+                  title={query ? "Nothing matches that" : "No dictations yet"}
+                  body={
+                    query
+                      ? "Search reads every word you have ever dictated. Try a shorter phrase."
+                      : "Hold fn and say something. The text lands here, stored on this Mac and searchable forever."
+                  }
+                  actionLabel={query ? "Clear the search" : "Hold fn and say something"}
+                  onAction={query ? () => setQuery("") : toggleRecord}
+                />
+              ) : (
+                <ul className="feed">
+                  {history.map((e) => (
+                    <li key={e.id} className="card">
+                      <div className="card-meta">
+                        <span>
+                          {formatTime(e.createdAt)}
+                          {e.sourceApp ? ` · ${e.sourceApp}` : ""}
+                        </span>
+                        <span>
+                          {e.wordCount} words · {e.backend}
+                          {(e.speechSeconds ?? 0) > 0
+                            ? ` · ${e.speechSeconds!.toFixed(1)}s speech`
+                            : ""}
+                          {` · ${e.asrSeconds.toFixed(1)}s asr`}
+                          {(e.pipelineMs ?? 0) > 0
+                            ? ` · ${e.pipelineMs}ms hold→clip`
+                            : ""}
+                        </span>
+                      </div>
+                      {fixingId === e.id ? (
+                        <div className="fix-edit">
+                          <textarea
+                            value={fixDraft}
+                            onChange={(ev) => setFixDraft(ev.target.value)}
+                            aria-label="Corrected transcript"
+                            autoFocus
+                          />
+                          <p className="tiny">
+                            Correct the words Yap got wrong — it learns them as
+                            dictionary suggestions.
+                          </p>
+                          <div className="actions">
+                            <button className="primary" onClick={saveFix}>
+                              Save fix
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => setFixingId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p>{e.text}</p>
+                          <div className="actions">
+                            <button onClick={() => copyText(e.text)}>
+                              Copy
+                            </button>
+                            <button
+                              className="primary"
+                              onClick={() => pasteText(e.text)}
+                            >
+                              Paste
+                            </button>
+                            {/* YV51: only offered when the cleanup pipeline
+                                actually changed this take — otherwise "Paste
+                                raw" would be a duplicate of Paste. */}
+                            {undoAiEditText(e) && (
+                              <button
+                                className="ghost"
+                                title="Paste exactly what you said, before auto-cleanup"
+                                onClick={() =>
+                                  pasteText(undoAiEditText(e) as string)
+                                }
+                              >
+                                Paste raw
+                              </button>
+                            )}
+                            {/* Y4-G: offered on every row that stored a raw
+                                take, INCLUDING the ones the pipeline left
+                                alone — "nothing changed" is the answer a user
+                                who distrusts the formatting most needs. */}
+                            {e.rawText != null && (
+                              <button
+                                className="ghost"
+                                aria-expanded={diffId === e.id}
+                                onClick={() =>
+                                  setDiffId(diffId === e.id ? null : e.id)
+                                }
+                              >
+                                {diffId === e.id
+                                  ? "Hide changes"
+                                  : "See what changed"}
+                              </button>
+                            )}
+                            <button
+                              className="ghost"
+                              onClick={() => startFix(e)}
+                            >
+                              Fix transcription
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => {
+                                setNav("scratchpad");
+                                setScratchComposing(true);
+                                setNoteTitle(`From ${formatTime(e.createdAt)}`);
+                                setNoteBody(e.text);
+                                setActiveNoteId(null);
+                              }}
+                            >
+                              Scratchpad
+                            </button>
+                            <button
+                              className="ghost danger"
+                              onClick={() => removeEntry(e.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          {diffId === e.id && e.rawText != null && (
+                            <DiffView
+                              raw={e.rawText}
+                              formatted={e.text}
+                              stages={e.stagesThatRan}
+                              polishSkipReason={e.polishSkipReason}
+                              feedback={feedbackFor(e)}
+                              onFeedback={(v) => rateTake(e.id, v)}
+                              onUndo={
+                                undoAiEditText(e)
+                                  ? () => pasteText(undoAiEditText(e) as string)
+                                  : undefined
+                              }
+                            />
+                          )}
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {!permsGate && history.length > 0 && historyHasMore ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="history-show-older"
+                  disabled={loadingOlder}
+                  onClick={() => void loadOlderHistory()}
+                >
+                  {loadingOlder ? "Loading older takes…" : "Show older takes"}
+                </button>
+              ) : null}
+            </>
   );
 }

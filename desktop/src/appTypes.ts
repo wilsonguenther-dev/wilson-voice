@@ -9,8 +9,6 @@ import type {
 } from "./permission";
 export type Nav =
   | "home"
-  // yap-1106-home-full-width-room — the full list Home's "See all" row opens.
-  | "history"
   | "permissions"
   | "meetings"
   | "insights"

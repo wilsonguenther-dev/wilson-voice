@@ -59,14 +59,10 @@ function app(state: State): string {
 }
 
 describe("Home walk rows (yap-uiux-2026-10-16)", () => {
-  // yap-1106-home-full-width-room supersedes H1: the greeting is removed
-  // (Wilson's approved round two). Home is titled "Home" for a first-run and
-  // a returning user alike, so neither can be greeted wrongly.
-  it("H1 (round two): Home carries no greeting, first run or returning", () => {
-    for (const html of [app(base()), app(base({ insights: insights(40) }))]) {
-      expect(html).toContain("<h1>Home</h1>");
-      expect(html).not.toContain("Welcome");
-    }
+  it("H1: someone who has never dictated is welcomed, not welcomed back", () => {
+    expect(app(base())).toContain("Welcome, Smoke");
+    expect(app(base())).not.toContain("Welcome back");
+    expect(app(base({ insights: insights(40) }))).toContain("Welcome back, Smoke");
   });
 
   // A PermissionReport shaped like the real one (permissions.rs), with
@@ -88,9 +84,7 @@ describe("Home walk rows (yap-uiux-2026-10-16)", () => {
     const html = home(base(report({ mic: "unknown", ax: false })));
     expect(html).toContain("Grant permissions");
     expect(html).toContain("Yap needs Microphone and Accessibility");
-    // Round two: the Hold-fn card is gone; the grant card still leads the
-    // page's controls (it sits above the search box).
-    expect(html.indexOf("Grant permissions")).toBeLessThan(html.indexOf("Search your dictations"));
+    expect(html.indexOf("Grant permissions")).toBeLessThan(html.indexOf("double-tap hands-free"));
     expect(html).not.toContain("No dictations yet");
     const granted = home(base(report()));
     expect(granted).not.toContain("Grant permissions");

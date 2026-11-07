@@ -17,16 +17,10 @@
  *       backend aims it at the float pill and copies it to "main" when shown),
  *       so a hidden Home tab costs no per-frame IPC.
  *   (2) The sky phase follows the REAL system clock (new Date().getHours()).
- *   (3) yap-1106-home-full-width-room: the stat strip moved to Home's quiet stats
- *       line; the room is a whole-number scale (homeLayout.roomBox) of the column.
+ *   (3) The stat strip shows only REAL numbers passed in (words today / streak).
  *   (4) prefers-reduced-motion renders a single calm frame with no loop.
  */
-import { useEffect, useRef, useState } from "react";
-// yap-1106-home-full-width-room — Hoot (the approved FB-09 art) sits in the
-// room while a meeting records; the room's size is a whole-number scale of the
-// main column (homeLayout.roomBox).
-import { FRIENDS, H as artHelpers } from "../sprites/art";
-import { ROOM_H, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
+import { useEffect, useRef } from "react";
 import { toChatTone, type ChatTone } from "../pill/live";
 import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
 import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
@@ -37,17 +31,15 @@ import { subscribeHabitat } from "./habitat/events";
 import { backingScale, parseObjectPosition, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
 
 interface YappyHouseProps {
+  /** Words dictated today — from the real Insights rollup. Omitted → tile hidden. */
+  wordsToday?: number;
+  /** Current day streak — from the real Insights rollup. Omitted → tile hidden. */
+  streakDays?: number;
   /**
    * Companion tone (YV27): friendly | rude | rose — flavours Yappy's live mood
    * label. Read from settings (passed by App), never a hardcoded constant.
    */
   companionTone?: string;
-  /**
-   * yap-1106-home-full-width-room — the running meeting (shell meetingStatus,
-   * pushed by the backend's 1 Hz `meeting` event). While it records, Hoot sits
-   * on the desk lamp and the room label reads "Recording meeting · mm:ss".
-   */
-  meeting?: { recording: boolean; elapsedSeconds: number } | null;
 }
 
 // YV27 / Y5-K — the mood words are Yappy's own copy (pill/characters/yappy).
@@ -59,43 +51,11 @@ function phaseFromClock(): number {
 }
 
 export default function YappyHouse({
+  wordsToday,
+  streakDays,
   companionTone,
-  meeting,
 }: YappyHouseProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  // Reduced motion has no draw loop: the mount effect leaves its one-frame
-  // repaint here so a meeting starting or ending still redraws the room.
-  const repaintRef = useRef<(() => void) | null>(null);
-  // The room's whole-number scale for the column it sits in (5x / 4x / 3x).
-  const [scale, setScale] = useState<RoomScale>(3);
-  useEffect(() => {
-    const el = frameRef.current;
-    if (!el) return;
-    let last: RoomScale | null = null;
-    const measure = () => {
-      // The stage's own width is the frame's content box (the frame's padding
-      // is its wood), read live so a restyled frame never mis-scales the room.
-      const cs = getComputedStyle(el);
-      const inner = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
-      const next = roomBox(inner).scale;
-      if (next !== last) {
-        if (last !== null) console.info(`home room_scale from=${last} to=${next}`);
-        last = next;
-        setScale(next);
-      }
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  // Read inside the mount-once draw loop, so a meeting tick never restarts it.
-  const meetingRef = useRef<boolean>(!!meeting?.recording);
-  useEffect(() => {
-    meetingRef.current = !!meeting?.recording;
-    repaintRef.current?.();
-  }, [meeting?.recording]);
   const moodRef = useRef<HTMLSpanElement | null>(null);
   // YV27 — keep the live tone in a ref so the mood label (set inside the
   // mount-once render effect) reads the current tone without re-running the loop.
@@ -121,17 +81,6 @@ export default function YappyHouse({
     const g = os.getContext("2d");
     if (!g) return;
     g.imageSmoothingEnabled = false;
-
-    // Hoot, drawn once from the approved art into his own 40 x 40 buffer and
-    // blitted into the room at half size (nearest-neighbour, whole art px).
-    const hoot = document.createElement("canvas");
-    hoot.width = FRIENDS.hoot.w;
-    hoot.height = FRIENDS.hoot.h;
-    const hg = hoot.getContext("2d");
-    if (hg) {
-      hg.imageSmoothingEnabled = false;
-      FRIENDS.hoot.draw(hg, artHelpers(hg), 0);
-    }
 
     const reduce = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
@@ -757,11 +706,6 @@ export default function YappyHouse({
         state.face,
       );
       drawLampShade(sky);
-      // Meeting: Hoot perches on the lamp shade (top at y 52), lit with the room.
-      if (meetingRef.current && hg) {
-        g!.imageSmoothingEnabled = false;
-        g!.drawImage(hoot, 0, 0, hoot.width, hoot.height, 152, 33, 20, 20);
-      }
       lighting(sky, lamp, tGlobal, state.activity === "work" ? state.energy : 0);
       // blit upscaled (nearest-neighbour) on the integer grid. A display with a
       // different backing scale re-grids here: no resize event fires for that.
@@ -817,7 +761,6 @@ export default function YappyHouse({
     });
     ro.observe(stage);
 
-    if (reduce) repaintRef.current = () => render(phaseFromClock());
     if (reduce) {
       // one calm frame: Yappy asleep in the nest, sky from the real clock
       state.x = 26;
@@ -829,50 +772,52 @@ export default function YappyHouse({
 
     return () => {
       dead = true;
-      repaintRef.current = null;
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       unsubs.forEach((u) => u());
     };
   }, []);
 
-  const meetingLabel = meetingRoomLabel(meeting);
+  const showWords = typeof wordsToday === "number";
+  const showStreak = typeof streakDays === "number";
 
   return (
-    <div className="yappy-house" data-room-scale={scale}>
-      <div className="yh-frame" ref={frameRef}>
+    <div className="yappy-house">
+      <span className="yh-tag">home · live</span>
+      <div className="yh-frame">
         <canvas
           ref={canvasRef}
           className="yh-stage"
           width={192}
           height={128}
-          // Full column width, the room's height at the whole-number scale:
-          // YappyHouse grids the art at exactly `scale` CSS px per art px and
-          // paints the side margin in the room's own wall shade.
-          style={{ height: `${ROOM_H * scale}px` }}
           role="img"
-          aria-label={
-            meetingLabel
-              ? "Yappy's studio during a meeting: Hoot the owl sits on the desk lamp while Yap records."
-              : "A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
-          }
+          aria-label="A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
         />
       </div>
-      <p className="yh-label" data-room-label={meetingLabel ? "meeting" : "mood"}>
-        {meetingLabel ? (
-          <span className="yh-meeting" aria-live="off">
-            {meetingLabel}
-          </span>
-        ) : (
-          <>
-            Yappy ·{" "}
-            {/* live mood is announced to assistive tech as Yappy's state changes */}
-            <span ref={moodRef} aria-live="polite">
-              content
-            </span>
-          </>
+      <div className="yh-stats">
+        {showWords && (
+          <div className="yh-stat">
+            <span className="yh-k">Words today</span>
+            <span className="yh-v">{Math.max(0, Math.round(wordsToday!))}</span>
+          </div>
         )}
-      </p>
+        {showStreak && (
+          <div className="yh-stat">
+            <span className="yh-k">Day streak</span>
+            <span className="yh-v">
+              {Math.max(0, Math.round(streakDays!))}{" "}
+              <small>{streakDays === 1 ? "day" : "days"}</small>
+            </span>
+          </div>
+        )}
+        <div className="yh-stat">
+          <span className="yh-k">Mood</span>
+          {/* live Mood is announced to assistive tech as Yappy's state changes */}
+          <span className="yh-v" ref={moodRef} aria-live="polite">
+            content
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
