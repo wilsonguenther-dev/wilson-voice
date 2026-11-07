@@ -107,7 +107,8 @@ describe("friend visits — the pill reads the real take count on mount", () => 
     real = 100;
     const crossed = await t.transcript();
     expect(crossed).toBe(true);
-    expect(why(decideVisit("milestone", { ...calm, takesSoFar: t.takes() }, EMPTY_LEDGER, MORNING))).toBe("shown");
+    // Yappy's milestone shows only while someone else sits in the pill (friendVisits.ts:14).
+    expect(why(decideVisit("milestone", { ...calm, occupant: "hoot", takesSoFar: t.takes() }, EMPTY_LEDGER, MORNING))).toBe("shown");
     real = 101;
     expect(await t.transcript()).toBe(false);
   });

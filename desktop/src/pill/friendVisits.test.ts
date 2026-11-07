@@ -426,6 +426,9 @@ describe("friend visits — the real take count", () => {
     const t = takeTracker(read, () => 0, vi.fn());
     const seeded = t.seed();
     const landed = t.transcript();
+    // The serialised seed job starts on a microtask; wait until its read is
+    // pending (the transcript is queued behind it) before answering it.
+    while (calls === 0) await Promise.resolve();
     resolve(insights(3000));
     expect(await seeded).toBe("insights");
     expect(await landed).toBe(false);
