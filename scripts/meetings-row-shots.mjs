@@ -316,12 +316,12 @@ async function run() {
       await sleep(250);
       const rows = await measure(r.id);
       judge("hover", rows);
-      for (const now of rows) {
-        const was = idle.find((x) => x.id === now.id);
+      for (const cur of rows) {
+        const was = idle.find((x) => x.id === cur.id);
         if (!was) continue;
-        const dh = Math.abs(now.height - was.height);
-        const dt = Math.abs(now.top - was.top);
-        if (dh > 0.01 || dt > 0.01) fail("A2", `hover ${r.id}: row ${now.id} moved (height Δ${dh.toFixed(2)} px, top Δ${dt.toFixed(2)} px)`);
+        const dh = Math.abs(cur.height - was.height);
+        const dt = Math.abs(cur.top - was.top);
+        if (dh > 0.01 || dt > 0.01) fail("A2", `hover ${r.id}: row ${cur.id} moved (height Δ${dh.toFixed(2)} px, top Δ${dt.toFixed(2)} px)`);
       }
       if (r.id === idle[0].id) await shot(cdp, s, "hover");
     }
