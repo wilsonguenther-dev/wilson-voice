@@ -567,6 +567,7 @@ is the median decode RTF over the three files; `WER` is 20 s / 127 s / 240 s.
 <!-- speed-bench:rows:start -->
 | date (UTC) | commit | machine | model | vad | 20 s r→t | 127 s r→t | 240 s r→t | 240 s decode | rtf_p50 | WER | status | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-07T10:58Z | 48ead4c0 | Apple M4 Pro 24GB | handy-computer/parakeet-unified-en-0.6b-gguf | energy | 218 | 1929 | 5188 | 5182 | 0.015 | 0.000/0.007/0.003 | baseline | SP-03 baseline |
 <!-- speed-bench:rows:end -->
 
 **No downloads, no real state.** `--bench` benches the model the app would select — on a fresh
