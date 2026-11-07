@@ -9732,6 +9732,73 @@ fn meeting_speaker_names(
     state.db.meeting_speaker_names(&meeting_id)
 }
 
+/// yap-1106-auto-label-and-correct — the notes' speaker source: the name a
+/// saved voice or a correction gave a line (a person, `Named`), else the
+/// track-label source the transcript uses.
+struct CorrectedSpeakers {
+    names: std::collections::HashMap<String, String>,
+    fallback: summarize::TrackSpeakers,
+}
+
+impl CorrectedSpeakers {
+    fn new(names: Vec<(String, String)>, fallback: summarize::TrackSpeakers) -> Self {
+        Self {
+            names: names
+                .into_iter()
+                .filter(|(_, n)| !n.trim().is_empty())
+                .collect(),
+            fallback,
+        }
+    }
+}
+
+impl summarize::SpeakerSource for CorrectedSpeakers {
+    fn speaker_for(
+        &self,
+        segment: &meetings::MeetingSegment,
+    ) -> Option<summarize::SegmentSpeaker> {
+        match self.names.get(&segment.id) {
+            Some(name) => Some(summarize::SegmentSpeaker::Named(name.trim().to_string())),
+            None => summarize::SpeakerSource::speaker_for(&self.fallback, segment),
+        }
+    }
+}
+
+/// yap-1106-auto-label-and-correct — a speaker chip's Rename / This is someone
+/// else / Merge with… / Split this speaker. Returns the changed lines and the
+/// 10 s undo ticket.
+#[tauri::command]
+fn correct_meeting_speakers(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    correction: speaker_profiles::SpeakerCorrection,
+) -> Result<speaker_profiles::CorrectionApplied, String> {
+    let kind = correction.kind();
+    state
+        .db
+        .correct_meeting_speakers(&meeting_id, &correction)
+        .inspect_err(|e| {
+            log::warn!(
+                "speaker_profiles correction_failed kind={kind} meeting={meeting_id} error=\"{e}\""
+            )
+        })
+}
+
+/// yap-1106-auto-label-and-correct — "Undo" on a correction (asks the lock).
+#[tauri::command]
+fn undo_speaker_correction(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    undo: speaker_profiles::CorrectionUndo,
+) -> Result<speaker_profiles::CorrectionUndone, String> {
+    state
+        .db
+        .undo_speaker_correction(&meeting_id, &undo)
+        .inspect_err(|e| {
+            log::warn!("speaker_profiles undo_correction_failed meeting={meeting_id} error=\"{e}\"")
+        })
+}
+
 /// The card's clip as a base64 WAV, cut from the KEPT audio of that track.
 /// Purged audio (the 7-day retention) is an error the card turns into
 /// "The audio was deleted, so there is no clip. You can still name them."
@@ -10110,7 +10177,9 @@ fn cloud_notes(
     cancel: &summary_jobs::CancelToken,
 ) -> Option<String> {
     let app = MEETING_APP.get()?.clone();
-    let lines = meetings::render_transcript(segments, kind);
+    // yap-1106-auto-label-and-correct — the notes read the corrected names.
+    let names = state.db.meeting_speaker_names(id).unwrap_or_default();
+    let lines = meetings::render_transcript_named(segments, kind, &names);
     let transcript: String = lines
         .iter()
         .map(|l| format!("[{}] {}: {}\n", l.offset, l.label(), l.text))
@@ -11154,6 +11223,12 @@ pub(crate) fn summarize_meeting_with(
     // the transcript row it cites cannot come apart. On the clustering branch
     // this source declines and the summary is exactly what YV97 produced.
     let speakers = summarize::TrackSpeakers::for_meeting(meeting.kind(), &segments);
+    // yap-1106-auto-label-and-correct — a line a saved voice or a correction
+    // named is attributed to that PERSON in the notes, as on the transcript.
+    let speakers = CorrectedSpeakers::new(
+        db.meeting_speaker_names(id).unwrap_or_default(),
+        speakers,
+    );
     let summary = summarize::summarize_segments_with(&segments, &client, &speakers);
 
     let summary = summary.map_err(|e| match e {
@@ -14486,6 +14561,8 @@ pub fn run() {
             name_cluster,
             ignore_cluster,
             meeting_speaker_names,
+            correct_meeting_speakers,
+            undo_speaker_correction,
             meeting_cluster_clip,
             voices_enroll_me_choice,
             set_voices_enroll_me_choice,

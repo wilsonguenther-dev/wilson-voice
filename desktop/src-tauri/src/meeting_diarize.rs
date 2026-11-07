@@ -420,5 +420,14 @@ fn run(
             "meeting_diarize cluster_voices_failed meeting={meeting_id} track={track} error=\"{e}\""
         ),
     }
+    // yap-1106-auto-label-and-correct — known voices are named on their own:
+    // every `auto`-band cluster no person has touched takes the saved name.
+    // A failure leaves the lines "Speaker N" (the cards still ask).
+    if let Err(e) = db.auto_label_meeting(
+        meeting_id,
+        crate::speaker_profiles::MatchBands::from_env_or_provisional(),
+    ) {
+        log::warn!("meeting_diarize auto_label_failed meeting={meeting_id} error=\"{e}\"");
+    }
     outcome
 }
