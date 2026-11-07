@@ -126,6 +126,10 @@ pub mod meeting_matrix;
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
+// yap-1106-voiceprints — speaker profiles (saved voiceprints): the migration-11
+// SQL, the match bands and the centroid math. Public so tests/speaker_profiles.rs
+// drives the shipped matcher.
+pub mod speaker_profiles;
 // yap-byom-0 — bring your own model: provider model + per-task pick, API keys in
 // the Keychain bound to their host, and the one redirect-free HTTP client.
 pub mod http_client;
@@ -170,13 +174,17 @@ pub mod mic_select;
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
+pub mod live_transcript;
 pub mod net;
+/// yap-1106-news-feeds — Yappy News fetch from public feeds (gated on cloud + topics).
+pub mod news;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
-pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
 pub mod nudge;
+/// yap-1106-friend-visits — Focus / Do Not Disturb (and screen share) quiet signal for pill friend visits.
+pub mod pill_quiet;
 // YV101 — the macOS 14.4 runtime gate for the system-audio process tap (plan
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
@@ -274,6 +282,9 @@ pub mod style_chip;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
+// yap-1106-sp-05 — streaming decode during capture: the take is decoded in
+// pause-cut windows while it records, so release decodes only the tail.
+pub mod stream_decode;
 pub mod take_stage;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
@@ -311,6 +322,9 @@ pub mod tray_menu;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.
 pub mod vad;
+/// yap-1106-vocab-bias — the Dictionary rewrite applier shared by dictation and
+/// meeting transcripts, and the suggested misheard-words list.
+pub mod dict_apply;
 /// The words a packed log line is allowed to keep — Yap's own, and nothing
 /// else. Public so `support_bundle_redaction` can assert the guarantee from
 /// outside the module that relies on it.
@@ -2686,6 +2700,10 @@ const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(900);
 const EXIT_TAKE_TIMEOUT: Duration = Duration::from_millis(600);
 /// Poll interval for both waits above.
 const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
+/// yap-1106-quit-during-asr-crash — how long the drain step then waits to JOIN
+/// the meeting-pipeline worker. Sized so drain + join stay inside
+/// `QuitStep::AsrDrain`'s 1 s deadline.
+const EXIT_MEETING_JOIN_TIMEOUT: Duration = Duration::from_millis(90);
 
 /// Everything the app must do on its way out, in the ONE order that is safe.
 /// Returns the steps it ran, newest last, so the caller can log the shutdown
@@ -2717,8 +2735,21 @@ fn teardown_for_exit_with(
     drain: Duration,
     take: Duration,
 ) -> Vec<&'static str> {
+    teardown_for_exit_seamed(state, drain, take, &join_meeting_worker)
+}
+
+/// yap-1106-quit-during-asr-crash — the teardown with the meeting-worker join
+/// as a seam, so a test can stand in a stub worker and see the order in which
+/// its engine is dropped, the worker joined, and the teardown finished.
+#[cfg(test)]
+fn teardown_for_exit_seamed(
+    state: &Arc<AppState>,
+    drain: Duration,
+    take: Duration,
+    join: &dyn Fn(Duration) -> meeting_pipeline::WorkerJoin,
+) -> Vec<&'static str> {
     let mut steps = Vec::new();
-    exit_step_asr_drain(state, drain, &mut steps);
+    exit_step_asr_drain_with(state, drain, join, &mut steps);
     exit_step_await_take(state, take, &mut steps);
     exit_step_restore_output(state, &mut steps);
     exit_step_db_checkpoint(state, &mut steps);
@@ -2733,6 +2764,29 @@ fn teardown_for_exit_with(
 /// before YV69. The drain cancels the in-flight decode and waits (bounded) for
 /// the lease to come home first.
 fn exit_step_asr_drain(state: &AppState, drain: Duration, steps: &mut Vec<&'static str>) {
+    exit_step_asr_drain_with(state, drain, &join_meeting_worker, steps)
+}
+
+/// The installed meeting pipeline's worker, stopped and joined (bounded).
+fn join_meeting_worker(budget: Duration) -> meeting_pipeline::WorkerJoin {
+    meeting_pipeline::stop_and_join_installed(budget)
+}
+
+/// Step 1, with the meeting-worker join as a parameter (the test seam).
+///
+/// yap-1106-quit-during-asr-crash: the drain cancels the meeting chunk's decode
+/// and waits for its lease, but the engine is DROPPED on the meeting worker
+/// thread (`return_engine` while exiting), and nothing waited for that thread.
+/// A quit mid-meeting reached `exit()` with the device still owned there and
+/// ggml_abort()ed in `ggml_metal_rsets_free`. So the worker is now JOINED here,
+/// after the drain and before any later step: once it returns `Joined`, every
+/// ggml context the meeting job held was freed on its own thread.
+fn exit_step_asr_drain_with(
+    state: &AppState,
+    drain: Duration,
+    join: &dyn Fn(Duration) -> meeting_pipeline::WorkerJoin,
+    steps: &mut Vec<&'static str>,
+) {
     // yap-meetings-fix — a meeting job stands down at its next window instead
     // of re-loading the engine this drain is about to take away.
     meeting_pipeline::request_quit();
@@ -2741,7 +2795,48 @@ fn exit_step_asr_drain(state: &AppState, drain: Duration, steps: &mut Vec<&'stat
         transcription::DrainOutcome::Drained => steps.push("asr_drain"),
         transcription::DrainOutcome::TimedOut => steps.push("asr_drain_timeout"),
     }
+    match join(EXIT_MEETING_JOIN_TIMEOUT) {
+        meeting_pipeline::WorkerJoin::NotRunning => {}
+        meeting_pipeline::WorkerJoin::Joined => steps.push("meeting_join"),
+        meeting_pipeline::WorkerJoin::TimedOut => steps.push("meeting_join_timeout"),
+    }
     steps.push("asr_unload");
+}
+
+/// yap-1106-quit-during-asr-crash — what is still alive once the bounded
+/// teardown has returned, in the order it is named in the log. Anything here
+/// means `exit()`'s C++ static destructors would free a ggml Metal device that
+/// a live thread still owns.
+fn exit_leftovers(device_live: bool, meeting_worker_alive: bool) -> Vec<&'static str> {
+    let mut live = Vec::new();
+    if device_live {
+        live.push("asr_engine");
+    }
+    if meeting_worker_alive {
+        live.push("meeting_worker");
+    }
+    live
+}
+
+/// The one line a forced quit leaves.
+fn exit_forced_line(after_ms: u128, leftovers: &[&str]) -> String {
+    format!(
+        "exit forced_after_ms={after_ms} live={}",
+        leftovers.join(",")
+    )
+}
+
+/// The teardown could not free everything in time. The WAL checkpoint has
+/// already run (it is the plan's last step), so skip the C++ static
+/// destructors with `_exit` instead of letting `exit()` abort inside
+/// `ggml_metal_device_free`. The meetings it interrupted carry a quit marker;
+/// the next launch's reconcile re-queues them.
+fn force_exit_after_teardown(after_ms: u128, leftovers: &[&str]) -> ! {
+    log::warn!("{}", exit_forced_line(after_ms, leftovers));
+    log::Log::flush(log::logger());
+    // SAFETY: `_exit` takes no pointers and never returns; it ends the process
+    // without running atexit handlers or static destructors — which is the point.
+    unsafe { libc::_exit(0) }
 }
 
 /// Step 2 — YV70: the drained take is still mid-flight in its worker thread,
@@ -2955,6 +3050,147 @@ fn preload_engine_at_startup(
 /// A failure is only logged: `transcribe_native` calls `load` again and its
 /// error is the one the user sees, on the path that already knows how to
 /// report one.
+/// yap-1106-sp-05 — a streamed window decodes on the dictation's own pinned
+/// engine (inside the engine helper since yap-1106-engine-owner), in the
+/// take's one fixed language, biased by the same dictionary the batch decode
+/// uses. The bias prompt is read on the decode thread at the first window, so
+/// the key-press path never touches the database.
+struct EngineWindowDecoder {
+    state: Arc<AppState>,
+    model_id: String,
+    model_path: PathBuf,
+    language: String,
+    bias: std::sync::OnceLock<Option<String>>,
+}
+
+impl stream_decode::WindowDecoder for EngineWindowDecoder {
+    fn decode(&self, samples: Vec<f32>) -> Result<String, String> {
+        let bias = self
+            .bias
+            .get_or_init(|| match self.state.db.bias_terms(BIAS_TERM_LIMIT) {
+                Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                Err(e) => {
+                    log::warn!("stream_decode bias_unavailable error={e} — decoding unbiased");
+                    None
+                }
+            })
+            .clone();
+        self.state.transcription.transcribe_window_on(
+            &self.model_id,
+            &self.model_path,
+            samples,
+            Some(self.language.clone()),
+            bias,
+        )
+    }
+
+    /// The governor's "minimal" budget pauses the live meeting view; it stops
+    /// the streaming decode for the same reason (the take then decodes in
+    /// batch on release, losing nothing).
+    fn constrained(&self) -> bool {
+        resource_governor::live_transcript_paused()
+    }
+}
+
+/// yap-1106-sp-05 — arm the streaming decode for the take about to record.
+/// Called BEFORE the capture opens, so the stream sees the take's first sample
+/// (the seal in `record` proves it saw every one).
+fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
+    let (native, prefs) = {
+        let settings = state.settings.lock();
+        (settings.native_model.clone(), settings.language_prefs())
+    };
+    let Some((model_id, model_path)) = native_model_ready(&native) else {
+        stream_decode::disarm("no_model");
+        return;
+    };
+    let Some(language) =
+        stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    else {
+        stream_decode::disarm("auto_language");
+        log::info!("stream_decode skipped reason=auto_language");
+        return;
+    };
+    let take = stream_decode::next_take_id();
+    let decoder: Arc<dyn stream_decode::WindowDecoder> = Arc::new(EngineWindowDecoder {
+        state: state.clone(),
+        model_id,
+        model_path,
+        language,
+        bias: std::sync::OnceLock::new(),
+    });
+    let app_ev = app.clone();
+    let sink: stream_decode::PartialSink =
+        Arc::new(move |partial: &stream_decode::TranscriptPartial| {
+            if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
+                log::warn!(
+                    "stream_decode partial_emit_failed take={} error={e}",
+                    partial.take
+                );
+            }
+        });
+    stream_decode::arm(stream_decode::StreamDecoder::start(
+        take,
+        stream_decode::StreamConfig::default(),
+        decoder,
+        Some(sink),
+    ));
+    log::info!("stream_decode armed take={take}");
+}
+
+/// yap-1106-sp-05 — the take's streamed decode, when streaming carried it all
+/// the way: committed windows decoded during capture plus the tail decoded
+/// now. `None` means decode the whole take the way it always has (a short
+/// take, a degraded stream, a blank result, or the language plan changed) —
+/// `transcribe_native` then runs over every sample, so nothing is lost.
+fn streamed_asr_output(prefs: &languages::LanguagePrefs) -> Option<transcription::AsrOutput> {
+    let stream = stream_decode::take_active()?;
+    let take = stream.take_id();
+    let Some(language) =
+        stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    else {
+        log::info!("stream_decode discarded take={take} reason=language_changed");
+        return None;
+    };
+    let started = std::time::Instant::now();
+    match stream.finish() {
+        stream_decode::StreamOutcome::Streamed(s) if !s.text.trim().is_empty() => {
+            log::info!(
+                "stream_decode used take={take} windows={} tail_s={:.2} release_ms={}",
+                s.windows,
+                s.tail_seconds,
+                s.release_ms
+            );
+            Some(transcription::AsrOutput {
+                text: s.text,
+                backend: "native".into(),
+                seconds: started.elapsed().as_secs_f64(),
+                load_ms: 0,
+                decode_ms: s.release_ms as i64,
+                degraded: false,
+                chunks: s.windows,
+                chunks_failed: 0,
+                degraded_reason: None,
+                language,
+                language_notice: None,
+                language_outside: None,
+            })
+        }
+        stream_decode::StreamOutcome::Streamed(_) => {
+            log::info!("stream_decode fallback take={take} reason=blank");
+            None
+        }
+        stream_decode::StreamOutcome::NotUsed(reason) => {
+            log::info!("stream_decode fallback take={take} reason={reason}");
+            None
+        }
+        stream_decode::StreamOutcome::Degraded(reason) => {
+            log::info!("stream_decode fallback take={take} reason={reason} path=batch");
+            None
+        }
+    }
+}
+
 fn arm_asr_engine(app: &AppHandle, state: &Arc<AppState>) {
     if state.transcription.is_loaded() || state.transcription.is_loading() {
         return; // warm (or already coming up) — nothing to do
@@ -3159,6 +3395,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     } else {
         None
     };
+    // yap-1106-sp-05 — the streaming decode is armed before the capture opens.
+    arm_stream_decode(app, state);
     match record::start_recording(
         data_dir().join("recordings"),
         &recovery_dir(),
@@ -3269,6 +3507,7 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // Y5-F: the cpal/io text goes to the log; the user gets a sentence
             // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
+            stream_decode::disarm("capture_failed");
             let line =
                 "Yap could not open the microphone — check that an input device is connected.";
             *state.last_error.lock() = Some(take_error::LastError::new(
@@ -4303,6 +4542,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     rec.voiced_seconds,
                     rec.speech_present
                 );
+                stream_decode::disarm("no_speech");
                 return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
             // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
@@ -4362,15 +4602,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // SP-03 — the decoded audio's length, read before `rec.samples`
             // moves into the decode, for the latency line's rolling RTF.
             let decoded_audio_s = rec.samples.len() as f64 / f64::from(record::TARGET_RATE);
-            let asr = match transcribe_native(
-                &state2.transcription,
-                &model_id,
-                &model_path,
-                rec.samples,
-                &settings.language_prefs(),
-                bias_prompt,
-                &mut persist,
-            ) {
+            // yap-1106-sp-05 — most of the take was decoded WHILE it recorded;
+            // only its uncommitted tail is decoded here. Anything the stream
+            // could not vouch for decodes the whole take below, as before.
+            let decoded = match streamed_asr_output(&settings.language_prefs()) {
+                Some(asr) => Ok(asr),
+                None => transcribe_native(
+                    &state2.transcription,
+                    &model_id,
+                    &model_path,
+                    rec.samples,
+                    &settings.language_prefs(),
+                    bias_prompt,
+                    &mut persist,
+                ),
+            };
+            let asr = match decoded {
                 Ok(asr) => asr,
                 // Y3-D — the engine stopped because the user asked, which is
                 // not a decode failure. Compared against the CONSTANT, never a
@@ -7136,6 +7383,22 @@ fn add_dictionary_term(
     state.db.add_dictionary_term(term, preferred)
 }
 
+/// yap-1106-vocab-bias — the Dictionary's "Add suggested words" button.
+/// Returns how many words were added (0 = all were already there).
+#[tauri::command]
+fn add_suggested_dictionary_terms(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    match state.db.add_suggested_dictionary_terms() {
+        Ok(n) => {
+            log::info!("vocab suggested_added added={n}");
+            Ok(n)
+        }
+        Err(e) => {
+            log::warn!("vocab suggested_failed error={e}");
+            Err(e)
+        }
+    }
+}
+
 #[tauri::command]
 fn update_dictionary_term(
     state: State<'_, Arc<AppState>>,
@@ -9174,6 +9437,67 @@ fn rename_meeting(
     state.db.rename_meeting(&id, &title)
 }
 
+// ── yap-1106-voiceprints · Settings → Voices ────────────────────────────────
+//
+// Saved voiceprints, all on this Mac. Every command takes profile ids; none
+// returns a voiceprint (`SpeakerProfile.centroid` is never serialised). The
+// Database methods log one `speaker_profiles <event>` line each.
+#[tauri::command]
+fn list_voices(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<speaker_profiles::SpeakerProfile>, String> {
+    state.db.list_speaker_profiles()
+}
+
+#[tauri::command]
+fn rename_voice(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    name: String,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.rename_speaker_profile(id, &name)
+}
+
+#[tauri::command]
+fn merge_voices(
+    state: State<'_, Arc<AppState>>,
+    keep: i64,
+    absorb: i64,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.merge_speaker_profiles(keep, absorb)
+}
+
+#[tauri::command]
+fn delete_voice(state: State<'_, Arc<AppState>>, id: i64) -> Result<bool, String> {
+    state.db.delete_speaker_profile(id)
+}
+
+#[tauri::command]
+fn forget_all_voices(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    state.db.forget_all_voiceprints()
+}
+
+/// "This wasn't John": the voiceprint drops what it learned in this meeting.
+#[tauri::command]
+fn unlearn_voice_meeting(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    meeting_id: String,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.unlearn_meeting_from_profile(id, &meeting_id)
+}
+
+/// The one-time "save my voice from my dictation" answer; `None` = not asked.
+#[tauri::command]
+fn voices_enroll_me_choice(state: State<'_, Arc<AppState>>) -> Option<bool> {
+    state.db.enroll_me_choice()
+}
+
+#[tauri::command]
+fn set_voices_enroll_me_choice(state: State<'_, Arc<AppState>>, yes: bool) -> Result<(), String> {
+    state.db.set_enroll_me_choice(yes)
+}
+
 // ── yap-byom-0 · Settings → Model providers ─────────────────────────────────
 //
 // Every command takes ids, never a URL or a key: Test connection takes the
@@ -9202,6 +9526,13 @@ fn list_model_providers(app: AppHandle, state: State<'_, Arc<AppState>>) -> mode
 
 /// yap-1106-news-prefs-onboarding — the one record behind the onboarding step,
 /// the one-time Home card and Settings → Yappy News.
+/// yap-1106-friend-visits — the pill's quiet state, for a pill that mounted
+/// after the last `pill_quiet` event.
+#[tauri::command]
+fn pill_quiet_state() -> pill_quiet::QuietState {
+    pill_quiet::current()
+}
+
 #[tauri::command]
 fn get_news_prefs(state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
     news_prefs::view(&*state.db, news_prefs::now_ms())
@@ -13405,6 +13736,17 @@ pub fn run() {
                     &language,
                     &native_model_ready,
                 )?;
+                // yap-1106-vocab-bias: meetings get the same Dictionary decoder
+                // bias as dictation. The engine applies it only where it has a
+                // prompt hook (`accepts_initial_prompt`); the post-ASR rewrite in
+                // `meeting_pipeline::vocab_segment` covers every engine.
+                let bias_prompt = match asr_state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("vocab bias_unavailable track=meeting error={e}");
+                        None
+                    }
+                };
                 Ok(meeting_pipeline::MeetingEngine::new(
                     model_id.clone(),
                     Box::new(meeting_asr::WarmEngineChunkAsr::new(
@@ -13412,7 +13754,7 @@ pub fn run() {
                         model_id,
                         model_path,
                         Some("en".to_string()),
-                        None,
+                        bias_prompt,
                     )),
                 ))
             }),
@@ -13664,6 +14006,8 @@ pub fn run() {
             // yap-1106-news-prefs-onboarding — Yappy News interests.
             get_news_prefs,
             set_news_prefs,
+            // yap-1106-friend-visits — quiet state for friend visits.
+            pill_quiet_state,
             dismiss_news_offer,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
@@ -13735,6 +14079,7 @@ pub fn run() {
             monthly_series,
             list_dictionary,
             add_dictionary_term,
+            add_suggested_dictionary_terms,
             update_dictionary_term,
             set_dictionary_starred,
             delete_dictionary_term,
@@ -13793,6 +14138,14 @@ pub fn run() {
             retry_meeting,
             get_meeting,
             rename_meeting,
+            list_voices,
+            rename_voice,
+            merge_voices,
+            delete_voice,
+            forget_all_voices,
+            unlearn_voice_meeting,
+            voices_enroll_me_choice,
+            set_voices_enroll_me_choice,
             delete_meeting,
             export_meeting_markdown,
             copy_meeting_markdown,
@@ -14592,6 +14945,9 @@ pub fn run() {
             // appears for a dictation when the always-on setting is off, and the
             // watch is inert while the panel is hidden.
             float_pill::start_hover_watch(app.handle().clone());
+            // yap-1106-friend-visits — Focus / Do Not Disturb keeps friends
+            // away from the pill; 30 s poll, emits `pill_quiet` on a change.
+            pill_quiet::start_watch(app.handle().clone());
             // yap-notetaker-detect — event-driven + one 30 s timer; reads the
             // calendar only when "Use my calendar" is on AND access is granted.
             // WF-07 — the watcher hands the tray today's meetings (only when
@@ -14882,18 +15238,34 @@ pub fn run() {
                     log::info!("exit: stopped {stopped} notes sidecar(s)");
                 }
                 let engines = engine_owner::exit_snapshot();
+                let mut forced: Option<(std::time::Instant, Vec<&'static str>)> = None;
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    let exit_started = std::time::Instant::now();
                     let report = quit_teardown(app_handle, &state);
                     log::info!("{}", report.log_line());
                     // yap-1106 — one line a reader can grep for: did this quit
                     // close everything it meant to, and what did it close.
                     log::info!("{}", report.clean_line());
+                    // yap-1106-quit-during-asr-crash — a decode that outlived
+                    // the drain still owns an engine; `exit()` would abort
+                    // freeing it from a static destructor. Skip them instead
+                    // (after the helper reap below, so no helper is orphaned).
+                    let leftovers = exit_leftovers(
+                        state.transcription.device_live(),
+                        meeting_pipeline::installed_worker_alive(),
+                    );
+                    if !leftovers.is_empty() {
+                        forced = Some((exit_started, leftovers));
+                    }
                 }
                 // yap-1106-engine-owner — after the drain and the DB
                 // checkpoint: kill any helper still unreaped (by its PID),
                 // log `exit: engines freed=N waited_ms=… skipped_destructors=…`,
                 // and `_exit` if an in-process engine is somehow still live.
                 engine_owner::finish_exit(engines);
+                if let Some((exit_started, leftovers)) = forced {
+                    force_exit_after_teardown(exit_started.elapsed().as_millis(), &leftovers);
+                }
             }
             _ => {}
         });
@@ -16634,6 +17006,242 @@ mod tests {
             "…but it must actually have given the lease its budget, took {elapsed:?}"
         );
 
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- yap-1106-quit-during-asr-crash: JOIN the meeting worker -----------
+    //
+    // A quit while a meeting window was decoding aborted in
+    // `ggml_metal_rsets_free` from `exit()`'s static destructors: the drain
+    // cancelled the decode but nothing waited for the meeting worker thread
+    // that owned (and drops) the engine. The teardown now joins that worker.
+
+    /// A stub engine that records, in one shared log, the thread it is dropped
+    /// on — the "drop order" the teardown must get right.
+    struct DropRecordingEngine {
+        inner: SlowStubEngine,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl crate::transcription::Transcriber for DropRecordingEngine {
+        fn transcribe(
+            &mut self,
+            samples_16k_mono: &[f32],
+            language: Option<&str>,
+            bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            crate::transcription::Transcriber::transcribe(
+                &mut self.inner,
+                samples_16k_mono,
+                language,
+                bias_prompt,
+            )
+        }
+
+        fn cancel_handle(&self) -> Option<crate::transcription::CancelHandle> {
+            crate::transcription::Transcriber::cancel_handle(&self.inner)
+        }
+    }
+
+    impl Drop for DropRecordingEngine {
+        fn drop(&mut self) {
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_string();
+            if let Ok(mut log) = self.log.lock() {
+                log.push(format!("engine_drop@{thread}"));
+            }
+        }
+    }
+
+    /// A stand-in for the meeting-pipeline worker: a named thread that leases
+    /// the engine for one decode, then records that it left.
+    fn spawn_stub_meeting_worker(
+        manager: &crate::transcription::TranscriptionManager,
+        log: &Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> std::thread::JoinHandle<()> {
+        let m = manager.clone();
+        let log = log.clone();
+        std::thread::Builder::new()
+            .name("wv-meeting-pipeline".into())
+            .spawn(move || {
+                let _ = m.transcribe(vec![0.1; 16], None, None);
+                log.lock().unwrap().push("worker_exit".into());
+            })
+            .expect("stub meeting worker spawns")
+    }
+
+    /// The join seam over the stub worker, bounded like the real one.
+    fn stub_join(
+        handle: &std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+        log: &Arc<std::sync::Mutex<Vec<String>>>,
+        budget: Duration,
+    ) -> crate::meeting_pipeline::WorkerJoin {
+        let Some(h) = handle.lock().unwrap().take() else {
+            return crate::meeting_pipeline::WorkerJoin::NotRunning;
+        };
+        let deadline = Instant::now() + budget;
+        while !h.is_finished() {
+            if Instant::now() >= deadline {
+                *handle.lock().unwrap() = Some(h);
+                return crate::meeting_pipeline::WorkerJoin::TimedOut;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        h.join().unwrap();
+        log.lock().unwrap().push("worker_joined".into());
+        crate::meeting_pipeline::WorkerJoin::Joined
+    }
+
+    /// The order IS the fix: the meeting job's engine is dropped ON the worker
+    /// thread, the worker is joined, and only then does the teardown go on —
+    /// so nothing is left for `exit()`'s static destructors and no `_exit` is
+    /// needed.
+    #[test]
+    fn quit_mid_meeting_drops_the_engine_on_its_worker_then_joins_it() {
+        let dir = temp_dir("q1106-join");
+        let model = stub_model_in(&dir);
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (flag, engine_log) = (cancel.clone(), log.clone());
+        let manager = exit_manager(move || {
+            Box::new(DropRecordingEngine {
+                inner: SlowStubEngine {
+                    decode: Duration::from_secs(30),
+                    cancel: flag.clone(),
+                    cancellable: true,
+                },
+                log: engine_log.clone(),
+            })
+        });
+        manager.load("stub", &model).expect("stub model loads");
+        let state = exit_state(&dir, manager.clone());
+
+        let worker = std::sync::Mutex::new(Some(spawn_stub_meeting_worker(&manager, &log)));
+        wait_until("the meeting window to be decoding", || {
+            manager.status().transcribing
+        });
+
+        let join_log = log.clone();
+        let join = move |budget: Duration| stub_join(&worker, &join_log, budget);
+        let steps = super::teardown_for_exit_seamed(
+            &state,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+            &join,
+        );
+        log.lock().unwrap().push("teardown_done".into());
+
+        assert_eq!(
+            steps,
+            vec![
+                "asr_drain",
+                "meeting_join",
+                "asr_unload",
+                "restore_output",
+                "db_checkpoint"
+            ],
+            "the meeting worker is joined after the drain and before anything else"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "engine_drop@wv-meeting-pipeline".to_string(),
+                "worker_exit".to_string(),
+                "worker_joined".to_string(),
+                "teardown_done".to_string(),
+            ],
+            "the engine is dropped on its owning thread, before the join, before exit()"
+        );
+        assert!(
+            cancel.load(Ordering::SeqCst),
+            "the meeting decode was cancelled"
+        );
+        assert!(!manager.device_live(), "no ggml device survives to exit()");
+        assert!(
+            super::exit_leftovers(manager.device_live(), false).is_empty(),
+            "a clean teardown exits normally — no _exit"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A meeting decode that ignores the cancel: the join times out, the exit
+    /// path sees the live device and worker, and takes `_exit` with one line.
+    #[test]
+    fn a_wedged_meeting_decode_forces_exit_instead_of_running_static_destructors() {
+        let dir = temp_dir("q1106-forced");
+        let model = stub_model_in(&dir);
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+
+        let engine_log = log.clone();
+        let manager = exit_manager(move || {
+            Box::new(DropRecordingEngine {
+                inner: SlowStubEngine {
+                    decode: Duration::from_millis(800),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    cancellable: false,
+                },
+                log: engine_log.clone(),
+            })
+        });
+        manager.load("stub", &model).expect("stub model loads");
+        let state = exit_state(&dir, manager.clone());
+
+        let worker = Arc::new(std::sync::Mutex::new(Some(spawn_stub_meeting_worker(
+            &manager, &log,
+        ))));
+        wait_until("the meeting window to be decoding", || {
+            manager.status().transcribing
+        });
+
+        let (seam_worker, join_log) = (worker.clone(), log.clone());
+        let join = move |budget: Duration| stub_join(&seam_worker, &join_log, budget);
+        let steps = super::teardown_for_exit_seamed(
+            &state,
+            Duration::from_millis(100),
+            Duration::from_millis(20),
+            &join,
+        );
+
+        assert_eq!(
+            steps,
+            vec![
+                "asr_drain_timeout",
+                "meeting_join_timeout",
+                "asr_unload",
+                "restore_output",
+                "db_checkpoint"
+            ]
+        );
+        let worker_alive = worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| !h.is_finished());
+        let leftovers = super::exit_leftovers(manager.device_live(), worker_alive);
+        assert_eq!(leftovers, vec!["asr_engine", "meeting_worker"]);
+        assert_eq!(
+            super::exit_forced_line(1234, &leftovers),
+            "exit forced_after_ms=1234 live=asr_engine,meeting_worker"
+        );
+        assert!(
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.starts_with("engine_drop")),
+            "the wedged engine is still owned by its worker when the quit gives up"
+        );
+
+        // Let the stub decode finish so the fixture is cleaned up.
+        let h = worker.lock().unwrap().take();
+        if let Some(h) = h {
+            h.join().unwrap();
+        }
         drop(state);
         let _ = std::fs::remove_dir_all(&dir);
     }

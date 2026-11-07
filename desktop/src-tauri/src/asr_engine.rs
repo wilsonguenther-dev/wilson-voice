@@ -619,3 +619,301 @@ mod tests {
         assert_eq!(build_bias_prompt(&terms).unwrap(), "Supabase");
     }
 }
+
+// ---------------------------------------------------------------------------
+// yap-1106-sp-10-ane-engine-spike — the second engine, and the rule that
+// decides what it becomes.
+//
+// `yap-engine-ane` (desktop/yap-engine-ane, Swift + FluidAudio) runs Parakeet
+// on the Neural Engine behind the SAME wire protocol as `yap-asr`, so the
+// engine owner drives either one through `HelperEngine` unchanged. This item
+// does NOT change the default: `EngineKind::DEFAULT` is `Gguf`, and the ANE
+// helper is reached only when `YAP_ASR_ENGINE=ane` is set (the SP-10 bench,
+// scripts/qa/ane-bench.sh) or when the governor asks for its "constrained"
+// engine and the verdict below allows it.
+// ---------------------------------------------------------------------------
+
+/// Which speech helper the engine owner spawns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineKind {
+    /// `yap-asr`: transcribe-cpp on Metal (GGUF). The shipped default.
+    Gguf,
+    /// `yap-engine-ane`: Parakeet on the Neural Engine via Core ML.
+    Ane,
+}
+
+/// The environment switch the bench (and only the bench) sets.
+pub const ENGINE_ENV: &str = "YAP_ASR_ENGINE";
+
+impl EngineKind {
+    /// No change to the default engine in SP-10.
+    pub const DEFAULT: EngineKind = EngineKind::Gguf;
+
+    /// The sidecar's file name next to the app (tauri `externalBin` stem).
+    pub fn helper_bin(self) -> &'static str {
+        match self {
+            EngineKind::Gguf => "yap-asr",
+            EngineKind::Ane => "yap-engine-ane",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineKind::Gguf => "gguf",
+            EngineKind::Ane => "ane",
+        }
+    }
+
+    /// Parse the env value. Anything unknown is the default, never an error:
+    /// a typo must not leave the user with no engine.
+    pub fn parse(value: Option<&str>) -> EngineKind {
+        match value.map(|v| v.trim().to_ascii_lowercase()) {
+            Some(v) if v == "ane" => EngineKind::Ane,
+            _ => EngineKind::DEFAULT,
+        }
+    }
+
+    /// The engine the owner should spawn right now.
+    pub fn selected() -> EngineKind {
+        EngineKind::parse(std::env::var(ENGINE_ENV).ok().as_deref())
+    }
+
+    /// The governor's pick. Under pressure ("constrained": battery, thermal,
+    /// another heavy job) it may move to the ANE engine — but only once the
+    /// bench has run and the ANE helper is installed; otherwise it stays on
+    /// the default. `AdoptAsDefault` makes the ANE the pick everywhere, which
+    /// is a later item's change, not this one's.
+    pub fn for_governor(
+        constrained: bool,
+        verdict: Option<AneVerdict>,
+        ane_installed: bool,
+    ) -> EngineKind {
+        if !ane_installed {
+            return EngineKind::DEFAULT;
+        }
+        match (verdict, constrained) {
+            (Some(AneVerdict::AdoptAsDefault), _) => EngineKind::Ane,
+            (Some(AneVerdict::ConstrainedOnly), true) => EngineKind::Ane,
+            _ => EngineKind::DEFAULT,
+        }
+    }
+}
+
+/// One engine's SP-03 bench numbers on the 4 min fixture (bench-240s.wav).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct EngineBench {
+    /// Word error rate, 0.0..=1.0.
+    pub wer: f64,
+    /// Warm real-time factor as "times faster than real time" (audio / decode).
+    pub warm_rtfx: f64,
+    /// Mean package power (CPU + GPU + ANE, powermetrics "Combined Power") in mW.
+    pub package_mw: f64,
+    /// Mean GPU power in mW (powermetrics "GPU Power"). The rule's first
+    /// power bar: the spec's "GPU package power".
+    pub gpu_mw: f64,
+    /// First load on a Mac with no Core ML cache (ANE compile included), ms.
+    pub first_load_ms: u64,
+    /// Peak resident memory of the helper, MB.
+    pub peak_rss_mb: u64,
+}
+
+/// SP-10's ship decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AneVerdict {
+    /// All three bars met: a later item may make the ANE engine the default.
+    AdoptAsDefault,
+    /// Any bar missed: kept as the governor's "constrained" engine only.
+    ConstrainedOnly,
+}
+
+/// WER may be at most this many percentage points worse than the default.
+pub const ANE_MAX_WER_DELTA_PT: f64 = 0.5;
+/// Warm decode must be at least this many times faster than real time.
+pub const ANE_MIN_WARM_RTFX: f64 = 100.0;
+/// GPU power, and package power, must each drop by at least this percentage
+/// against the default engine.
+pub const ANE_MIN_POWER_DROP_PCT: f64 = 30.0;
+
+/// Percentage drop from `baseline` to `value`. A missing (zero, negative or
+/// non-finite) baseline is `-inf`, so it can never pass a power bar.
+fn power_drop_pct(baseline_mw: f64, value_mw: f64) -> f64 {
+    if baseline_mw.is_finite() && baseline_mw > 0.0 && value_mw.is_finite() {
+        (baseline_mw - value_mw) / baseline_mw * 100.0
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+/// The rule written into the PR: adopt as the default only if WER is within
+/// 0.5 pt, warm RTF >= 100x, and GPU power is lower by at least 30 %. Package
+/// power (CPU + GPU + ANE) must drop by the same 30 % too: moving work off the
+/// GPU always lowers GPU power by itself, so the GPU bar alone could adopt an
+/// engine that costs the battery more. A missing baseline never passes.
+pub fn ane_verdict(default_engine: &EngineBench, ane: &EngineBench) -> AneVerdict {
+    let wer_delta_pt = (ane.wer - default_engine.wer) * 100.0;
+    let gpu_drop_pct = power_drop_pct(default_engine.gpu_mw, ane.gpu_mw);
+    let package_drop_pct = power_drop_pct(default_engine.package_mw, ane.package_mw);
+    let pass = wer_delta_pt <= ANE_MAX_WER_DELTA_PT
+        && ane.warm_rtfx >= ANE_MIN_WARM_RTFX
+        && gpu_drop_pct >= ANE_MIN_POWER_DROP_PCT
+        && package_drop_pct >= ANE_MIN_POWER_DROP_PCT;
+    log::info!(
+        "asr_engine ane_verdict wer_delta_pt={wer_delta_pt:.2} warm_rtfx={:.1} gpu_drop_pct={gpu_drop_pct:.1} package_drop_pct={package_drop_pct:.1} pass={pass}",
+        ane.warm_rtfx
+    );
+    if pass {
+        AneVerdict::AdoptAsDefault
+    } else {
+        AneVerdict::ConstrainedOnly
+    }
+}
+
+#[cfg(test)]
+mod ane_engine_tests {
+    use super::*;
+
+    const SWIFT_WIRE: &str =
+        include_str!("../../yap-engine-ane/Sources/YapEngineANECore/Wire.swift");
+    const SWIFT_PACKAGE: &str = include_str!("../../yap-engine-ane/Package.swift");
+    const CATALOG: &str = include_str!("catalog.json");
+    const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+
+    /// GPU power moves with package power (40 % of it) unless a test sets it.
+    fn bench(wer: f64, rtfx: f64, mw: f64) -> EngineBench {
+        EngineBench {
+            wer,
+            warm_rtfx: rtfx,
+            package_mw: mw,
+            gpu_mw: mw * 0.4,
+            ..EngineBench::default()
+        }
+    }
+
+    #[test]
+    fn the_default_engine_is_unchanged() {
+        assert_eq!(EngineKind::DEFAULT, EngineKind::Gguf);
+        assert_eq!(EngineKind::DEFAULT.helper_bin(), "yap-asr");
+        assert_eq!(EngineKind::parse(None), EngineKind::Gguf);
+        assert_eq!(EngineKind::parse(Some("metal")), EngineKind::Gguf);
+        assert_eq!(EngineKind::parse(Some(" ANE ")), EngineKind::Ane);
+        assert_eq!(EngineKind::Ane.helper_bin(), "yap-engine-ane");
+    }
+
+    #[test]
+    fn ane_verdict_needs_all_three_bars() {
+        let base = bench(0.050, 40.0, 10_000.0);
+        assert_eq!(
+            ane_verdict(&base, &bench(0.054, 120.0, 6_500.0)),
+            AneVerdict::AdoptAsDefault
+        );
+        // WER 0.6 pt worse.
+        assert_eq!(
+            ane_verdict(&base, &bench(0.056, 120.0, 6_500.0)),
+            AneVerdict::ConstrainedOnly
+        );
+        // Warm RTF 99x.
+        assert_eq!(
+            ane_verdict(&base, &bench(0.050, 99.0, 6_500.0)),
+            AneVerdict::ConstrainedOnly
+        );
+        // Power only 29 % lower.
+        assert_eq!(
+            ane_verdict(&base, &bench(0.050, 150.0, 7_100.0)),
+            AneVerdict::ConstrainedOnly
+        );
+        // No baseline power: never adopted.
+        assert_eq!(
+            ane_verdict(&bench(0.05, 40.0, 0.0), &bench(0.05, 150.0, 1.0)),
+            AneVerdict::ConstrainedOnly
+        );
+        // Package power down 35 % but GPU power only 20 %: the GPU bar fails.
+        let mut gpu_heavy = bench(0.050, 150.0, 6_500.0);
+        gpu_heavy.gpu_mw = base.gpu_mw * 0.8;
+        assert_eq!(ane_verdict(&base, &gpu_heavy), AneVerdict::ConstrainedOnly);
+        // GPU power down 90 % but package power only 10 %: the battery bar fails.
+        let mut cpu_heavy = bench(0.050, 150.0, 9_000.0);
+        cpu_heavy.gpu_mw = base.gpu_mw * 0.1;
+        assert_eq!(ane_verdict(&base, &cpu_heavy), AneVerdict::ConstrainedOnly);
+        // No baseline GPU power: never adopted.
+        let mut no_gpu = base;
+        no_gpu.gpu_mw = 0.0;
+        assert_eq!(
+            ane_verdict(&no_gpu, &bench(0.050, 150.0, 6_500.0)),
+            AneVerdict::ConstrainedOnly
+        );
+    }
+
+    #[test]
+    fn governor_uses_ane_only_when_constrained_and_allowed() {
+        let c = Some(AneVerdict::ConstrainedOnly);
+        assert_eq!(EngineKind::for_governor(false, c, true), EngineKind::Gguf);
+        assert_eq!(EngineKind::for_governor(true, c, true), EngineKind::Ane);
+        assert_eq!(EngineKind::for_governor(true, c, false), EngineKind::Gguf);
+        assert_eq!(EngineKind::for_governor(true, None, true), EngineKind::Gguf);
+    }
+
+    #[test]
+    fn ane_wire_mirror_matches_the_rust_protocol() {
+        assert!(
+            SWIFT_WIRE.contains(&format!(
+                "asrProtocolVersion = \"{}\"",
+                crate::asr_protocol::ASR_PROTOCOL_VERSION
+            )),
+            "the Swift helper must speak the same protocol version as yap-asr"
+        );
+        // Every multi-word serde key of the Rust side must appear, quoted, in
+        // the Swift CodingKeys (single-word keys match by construction).
+        let mut keys: Vec<String> = Vec::new();
+        let req = crate::asr_protocol::AsrRequest::transcribe(1, "/p", Some("en"), Some("b"), true);
+        let mut load = crate::asr_protocol::AsrRequest::load(1, "/m");
+        load.samples_path = req.samples_path.clone();
+        for v in [
+            serde_json::to_value(&req).unwrap(),
+            serde_json::to_value(&load).unwrap(),
+            serde_json::to_value(crate::asr_protocol::WireCaps::default()).unwrap(),
+            serde_json::to_value(crate::asr_protocol::WireSpan::default()).unwrap(),
+        ] {
+            keys.extend(v.as_object().unwrap().keys().cloned());
+        }
+        for key in keys.iter().filter(|k| k.contains('_')) {
+            assert!(
+                SWIFT_WIRE.contains(&format!("\"{key}\"")),
+                "Wire.swift is missing the key {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn fluidaudio_is_pinned_and_licenses_are_recorded() {
+        let catalog: serde_json::Value = serde_json::from_str(CATALOG).unwrap();
+        let ane = catalog["ane_engines"]
+            .as_array()
+            .expect("catalog.json carries ane_engines");
+        let entry = &ane[0];
+        assert_eq!(entry["license"], "cc-by-4.0", "Parakeet weights license");
+        assert_eq!(
+            entry["runtime"]["license"], "apache-2.0",
+            "FluidAudio license"
+        );
+        assert_eq!(entry["default"], false, "SP-10 changes no default");
+        let version = entry["runtime"]["version"].as_str().unwrap();
+        assert!(
+            SWIFT_PACKAGE.contains(&format!("exact: \"{version}\"")),
+            "Package.swift must pin FluidAudio exactly at the catalog's {version}"
+        );
+        assert!(entry["revision"].as_str().unwrap().len() == 40);
+    }
+
+    #[test]
+    fn ane_helper_is_bundled_as_a_sidecar() {
+        let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).unwrap();
+        let bins: Vec<&str> = conf["bundle"]["externalBin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(bins.contains(&"binaries/yap-asr"));
+        assert!(bins.contains(&"binaries/yap-engine-ane"));
+    }
+}

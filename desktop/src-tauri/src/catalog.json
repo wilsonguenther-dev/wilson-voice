@@ -81,6 +81,29 @@
    "recommended_rank": 2
   }
  ],
+ "ane_engines": [
+  {
+   "id": "fluidinference/parakeet-tdt-0.6b-v3-coreml",
+   "role": "constrained",
+   "default": false,
+   "helper": "yap-engine-ane",
+   "repo": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+   "revision": "7dd20fe6b1797d35f5e3307e8b1732d9a178edfe",
+   "name": "Parakeet TDT 0.6B v3 (Core ML, Neural Engine)",
+   "base_model": "nvidia/parakeet-tdt-0.6b-v3",
+   "license": "cc-by-4.0",
+   "license_note": "Weights: NVIDIA Parakeet TDT 0.6B v3, CC-BY-4.0, converted to Core ML by FluidInference (same license). Attribution is owed in the app's licenses page if this engine ships.",
+   "runtime": {
+    "name": "FluidAudio",
+    "url": "https://github.com/FluidInference/FluidAudio",
+    "version": "0.18.2",
+    "license": "apache-2.0"
+   },
+   "compute_units": "cpu_and_neural_engine",
+   "min_macos": "14.0",
+   "description": "SP-10 spike (yap-1106-sp-10-ane-engine-spike). Not offered in the model picker and never the default here; reached only with YAP_ASR_ENGINE=ane (the bench) or as the resource governor's constrained engine after the SP-10 decision rule. The helper never downloads: the Core ML folder must already be on disk."
+  }
+ ],
  "models": [
   {
    "id": "handy-computer/parakeet-unified-en-0.6b-gguf",
