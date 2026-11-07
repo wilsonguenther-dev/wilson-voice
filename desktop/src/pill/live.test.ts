@@ -72,7 +72,7 @@ function take(seconds: number, level: (t: number) => number, tone: ChatTone = "f
   const state = createLiveState();
   const said: Array<{ t: number; line: string }> = [];
   let t = 0;
-  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null };
+  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null, glance: false };
   while (t < seconds) {
     t += FRAME;
     frame = advanceLive(state, FRAME, level(t), tone);

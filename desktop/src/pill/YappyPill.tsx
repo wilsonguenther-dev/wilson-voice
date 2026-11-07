@@ -23,6 +23,7 @@ import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMem
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
+  afterTakeLineAllowed, armGlance, GLANCE_LOOK_SEC, isNewUser, liveLinesLog, parseTakesSeen,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
   type TranscribeProgress,
 } from "./live";
@@ -48,7 +49,9 @@ import { capsuleCentre, currentPillLayout } from "./state";
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
-interface Transcript { wordCount: number; text: string }
+// `speechSeconds` = the backend's energy-VAD speech time for the take (db.rs
+// TranscriptEntry, camelCase) — what `live.lines` compares the estimate with.
+interface Transcript { wordCount: number; text: string; speechSeconds?: number }
 type Phase = LivePhase;
 type Prop = LiveProp;
 
@@ -68,6 +71,18 @@ function loadTakeMemory(): TakeLineMemory {
 function saveTakeMemory(m: TakeLineMemory): void {
   try { globalThis.localStorage?.setItem(TAKE_MEMORY_KEY, JSON.stringify(m)); }
   catch (e) { console.warn("pill voice_memory save_failed", e); }
+}
+// yap-1106-live-reactions-during-take — how many takes this pill has seen, so a
+// NEW user (isNewUser) gets the one listening glance. Storage failing costs
+// only the glance, never the take.
+const TAKES_SEEN_KEY = "yap.live.takesSeen";
+function loadTakesSeen(): number {
+  try { return parseTakesSeen(globalThis.localStorage?.getItem(TAKES_SEEN_KEY)); }
+  catch (e) { console.warn("pill live takes_seen load_failed", e); return 0; }
+}
+function saveTakesSeen(n: number): void {
+  try { globalThis.localStorage?.setItem(TAKES_SEEN_KEY, String(n)); }
+  catch (e) { console.warn("pill live takes_seen save_failed", e); }
 }
 const localDay = (): string => {
   const d = new Date();
@@ -322,11 +337,28 @@ export default function YappyPill(
     const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p; } };
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
-    let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
+    let chatterTimer = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
     // YV71 — the live commentary state machine (live.ts) owns the tier ladder,
     // the speech estimate and the chatter schedule for the whole take.
     const live = createLiveState();
     let liveProp: Prop = "none";
+    // yap-1106-live-reactions-during-take — the take's line tally. `afterLines`
+    // caps the post-release workLine chatter (AFTER_TAKE_MAX_LINES); `takeOpen`
+    // makes the `live.lines` telemetry fire exactly once per take; `glanceT` is
+    // the remaining eyes-forward time of a new user's listening glance.
+    let afterLines = 0, takeOpen = false, glanceT = 0;
+    let takesSeen = loadTakesSeen();
+    const logLiveLines = (vadSec: number | null) => {
+      if (!takeOpen) return;
+      takeOpen = false;
+      console.info(liveLinesLog({ during: live.lines, after: afterLines, voicedSec: live.voicedT, vadSec }));
+    };
+    const afterLine = (): string => {
+      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines)) return "";
+      const line = workLine(chatTone, words, afterLines);
+      afterLines++;
+      return line;
+    };
     // YV27 — live companion tone, read off settings (not a hardcoded constant).
     // Seeded from get_settings + kept current via the "settings" event the float
     // already emits on save, so a tone change takes effect without a remount.
@@ -383,10 +415,18 @@ export default function YappyPill(
       // ladder to `quick` and blank the bubble mid-sentence. `done` is exempt:
       // a fresh transcript re-fires its celebration.
       if (p === phase && p !== "done") return;
-      phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0; liveProp = "none";
+      // A take that ends WITHOUT a transcript (cancelled, empty, failed) still
+      // reports its live.lines — with no VAD time to compare against.
+      if (p === "listening" || (p !== "thinking" && p !== "transcribing" && p !== "done")) logLiveLines(null);
+      phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
-      if (p === "listening") { moodT = 0; hop(1); say(""); resetLive(live); }
-      else if (p === "thinking") { moodT = 0; say(chatty(chatTone, words) ? workLine(chatTone, words, 0) : ""); }
+      if (p === "listening") {
+        moodT = 0; hop(1); say(""); resetLive(live);
+        if (isNewUser(takesSeen)) armGlance(live);
+        takesSeen++; saveTakesSeen(takesSeen);
+        afterLines = 0; takeOpen = true;
+      }
+      else if (p === "thinking") { moodT = 0; say(afterLine()); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
       else { moodT = 0; say(""); }
     }
@@ -417,7 +457,11 @@ export default function YappyPill(
     };
     listen<boolean>("pill_visible", (e) => { shown = e.payload !== false; onVisibility(); }).then((u) => (dead ? u() : unsubs.push(u)));
     document.addEventListener("visibilitychange", onVisibility);
-    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<Transcript>("transcript", (e) => {
+      words = e.payload?.wordCount ?? 0;
+      const vad = e.payload?.speechSeconds;
+      logLiveLines(typeof vad === "number" && Number.isFinite(vad) ? vad : null);
+      setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
@@ -476,7 +520,10 @@ export default function YappyPill(
         const f = advanceLive(live, wallDt, level, chatTone, undefined, liveVoice);
         liveProp = f.prop;
         if (f.say) say(f.say);
+        // a new user's one listening glance: eyes up at you, a small hop
+        if (f.glance) { glanceT = GLANCE_LOOK_SEC; hop(.8); }
       }
+      if (glanceT > 0) glanceT = Math.max(0, glanceT - dt);
       const wantProp = wantPropFor(phase, words);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
       mood += (moodT - mood) * Math.min(1, dt * 10);
@@ -496,11 +543,13 @@ export default function YappyPill(
       beakHold -= dt;
       if (phase === "done") beakFrame = 0;
       else if (beakHold <= 0) { let w = beakFrame; if (beakFrame === 0 && beak > .28) w = 1; else if (beakFrame === 1 && beak > .6) w = 2; else if (beakFrame >= 2 && beak < .42) w = 1; else if (beakFrame === 1 && beak < .12) w = 0; if (w !== beakFrame) { beakFrame = w; beakHold = .05; } }
-      if (phase === "thinking" && chatty(chatTone, words)) { chatterTimer -= dt; if (chatterTimer <= 0) { chatterN++; say(workLine(chatTone, words, chatterN)); chatterTimer = .9 + Math.random() * .5; } }
+      // after release the chatter is CAPPED (AFTER_TAKE_MAX_LINES): the bubble keeps
+      // its last line instead of rotating every second while the take decodes.
+      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
       for (const p of sparkle) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 120 * dt; p.life -= dt * 1.2; }
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 
-      const lookMode: "down" | "fwd" = (wantProp !== "none" && propV > .5) ? "down" : "fwd";
+      const lookMode: "down" | "fwd" = glanceT > 0 ? "fwd" : (wantProp !== "none" && propV > .5) ? "down" : "fwd";
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
