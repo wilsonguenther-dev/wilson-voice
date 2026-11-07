@@ -295,6 +295,11 @@ teardown-order test (a stub engine waiting in 2 ms steps inside `#[cfg(test)] mo
 gains `20:1`, a fake engine's 20 ms decode in yap-1106-retry-replay-regression's `#[cfg(test)]`
 replay tests. No production wakeup was added to either file.
 
+Row change (2026-11-07, loop3 batch 9, yap-fx-04-adaptive-decode-timeout): transcription.rs
+`50:4 -> 50:5` is a 50 ms manager ceiling handed to `effective_decode_timeout` inside
+`#[cfg(test)] mod tests` to prove a ceiling below the floor wins. It is a value under test, never
+slept on. No production wakeup was added.
+
 Row change (2026-11-07, loop3 batch 8, yap-1106-quit-during-asr-crash): lib.rs gains `90:1`,
 `EXIT_MEETING_JOIN_TIMEOUT`, the one-shot bound the quit's drain step waits to JOIN the meeting-pipeline
 worker (sized so drain + join fit `QuitStep::AsrDrain`'s 1 s deadline); it runs once, at quit, and is
