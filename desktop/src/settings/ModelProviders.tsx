@@ -17,7 +17,7 @@ import { useAppCtx } from "../appShell";
 import { errorText } from "../errors";
 import { type ActiveLeave, leaveLines } from "../meetings/consent";
 
-export type ProviderKind = "bundled" | "open_ai_compatible";
+export type ProviderKind = "bundled" | "open_ai_compatible" | "cloud_key";
 export type Task = "notes" | "polish";
 
 export interface ProviderView {
@@ -55,9 +55,13 @@ export interface TestResult {
 
 export type TestState = { running: true } | { running: false; result: TestResult };
 
+// yap-1106: no vendor name on a customer-facing surface — the kind that
+// speaks the chat-completions API is a "Custom endpoint", the keyed hosted
+// model is "Cloud model (your key)".
 const KIND_LABEL: Record<ProviderKind, string> = {
   bundled: "Bundled",
-  open_ai_compatible: "OpenAI-compatible",
+  open_ai_compatible: "Custom endpoint",
+  cloud_key: "Cloud model (your key)",
 };
 
 /** Only the providers whose kind this build has wired. */

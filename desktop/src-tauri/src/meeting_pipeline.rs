@@ -55,12 +55,13 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::asr_engine::TimedKind;
+use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::meeting::{MIC_TRACK as MIC_TRACK_INDEX, SYSTEM_TRACK as SYSTEM_TRACK_INDEX};
 use crate::meeting_asr::{
-    ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand, JsonProgressStore, MeetingAsr,
-    MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows, VoiceActivity, WavWindows,
+    split_utterances, ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand,
+    JsonProgressStore, MeetingAsr, MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows,
+    VoiceActivity, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
 
@@ -512,6 +513,22 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 if id.is_empty() {
                     continue;
                 }
+                // yap-1106-resource-governor: on a starved Mac the decode
+                // waits — in the queue, row still `transcribing`, the pill's
+                // chip saying why — until wall power / full, a "Run anyway",
+                // or quit. The recording is already safe on disk.
+                if wait_for_governor(&id, &|| quitting() || (deps.quit)()) {
+                    log::info!(
+                        "meeting pipeline: {id} stays queued for next launch (quit while deferred)"
+                    );
+                    let (lock, cv) = &*worker_pending;
+                    if let Ok(mut p) = lock.lock() {
+                        p.queued.remove(&id);
+                        p.in_flight = p.in_flight.saturating_sub(1);
+                    }
+                    cv.notify_all();
+                    continue;
+                }
                 // R2: the whole job body is panic-contained — one panic fails
                 // that row and the FIFO keeps going.
                 crate::diagnostics::set_state("meeting.state", "processing");
@@ -579,6 +596,33 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
         worker: Arc::new(Mutex::new(worker)),
         progress_dir,
     }
+}
+
+/// yap-1106-resource-governor — hold the decode for `id` while the installed
+/// governor defers heavy work. One INFO line per reason change, one at the
+/// end with how long it waited. Returns `true` when `quit` fired first.
+pub fn wait_for_governor(id: &str, quit: &dyn Fn() -> bool) -> bool {
+    use crate::resource_governor::{heavy_work_deferred, DEFER_TICK};
+    let started = Instant::now();
+    let mut last: Option<String> = None;
+    while let Some(reason) = heavy_work_deferred(id) {
+        if last.as_deref() != Some(reason.as_str()) {
+            log::info!("meeting pipeline: {id} deferred reason={reason} governor=1");
+            crate::diagnostics::set_state("meeting.state", "deferred");
+            last = Some(reason);
+        }
+        if quit() {
+            return true;
+        }
+        std::thread::sleep(DEFER_TICK);
+    }
+    if last.is_some() {
+        log::info!(
+            "meeting pipeline: {id} defer_end waited_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+    false
 }
 
 // ── yap-audit-meeting-timings: the lines that explain a slow meeting ────────
@@ -1102,50 +1146,76 @@ pub fn reset_for_retry(db: &Database, dir: &Path, meeting_id: &str) -> Result<()
     db.set_meeting_state(meeting_id, MeetingState::Transcribing, None)
 }
 
-/// One window → at most one transcript segment on `track`.
+/// One window → the transcript segments it OWNS on `track`, one per utterance.
 ///
-/// Only what the window OWNS (its content span, not the overlap it decoded for
+/// Only what the window owns (its content span, not the overlap it decoded for
 /// context) is kept, so two neighbouring windows never both write the words at
-/// their seam.
-pub fn chunk_segment(chunk: &ChunkOutcome, track: i64) -> Option<NewMeetingSegment> {
+/// their seam — that ownership rule is the seam merge, and it runs FIRST.
+///
+/// yap-audit-utterance-segments: a window whose decode carried word times is
+/// then cut into utterances by [`split_utterances`] (silence-cut, re-joined
+/// into 3–12 s same-track turns), and each piece is one row with its own
+/// absolute times. A window with no times (`timestampKind none`) stays whole,
+/// exactly as before. Stored rows are never re-split: only a re-transcribe
+/// reaches here.
+pub fn chunk_segments(chunk: &ChunkOutcome, track: i64) -> Vec<NewMeetingSegment> {
     if chunk.status != ChunkStatus::Done {
-        return None;
+        return Vec::new();
     }
     let lo = chunk.content_start_seconds - 1e-6;
     let hi = chunk.content_end_seconds;
-    let owned: Vec<_> = chunk
+    let owned: Vec<TimedSpan> = chunk
         .spans
         .iter()
         .filter(|s| s.start_seconds >= lo && s.start_seconds < hi)
+        .cloned()
         .collect();
-    let joinable = matches!(chunk.timestamp_kind, TimedKind::Word | TimedKind::Segment);
-    let (start, end, text) = if joinable && !owned.is_empty() {
-        let text = owned
-            .iter()
-            .map(|s| s.text.trim())
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        (
-            owned.first().map(|s| s.start_seconds).unwrap_or(lo),
-            owned.last().map(|s| s.end_seconds).unwrap_or(hi),
-            text,
-        )
-    } else if chunk.spans.is_empty() || !joinable {
-        (
-            chunk.content_start_seconds,
-            chunk.content_end_seconds,
-            chunk.text.trim().to_string(),
-        )
-    } else {
-        // Spans exist but all of them sit in the overlap another window owns.
-        return None;
-    };
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.is_empty() {
-        return None;
+    let timed = chunk.timestamp_kind.has_times();
+    if timed && !owned.is_empty() {
+        return split_utterances(&owned)
+            .into_iter()
+            .filter_map(|u| {
+                let text = u.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                (!text.is_empty()).then(|| {
+                    NewMeetingSegment::new(
+                        u.start_seconds,
+                        u.end_seconds.max(u.start_seconds),
+                        text,
+                    )
+                    .on_track(track)
+                })
+            })
+            .collect();
     }
-    Some(NewMeetingSegment::new(start, end.max(start), text).on_track(track))
+    if !chunk.spans.is_empty() && timed {
+        // Spans exist but all of them sit in the overlap another window owns.
+        return Vec::new();
+    }
+    let text = chunk.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![NewMeetingSegment::new(
+        chunk.content_start_seconds,
+        chunk.content_end_seconds.max(chunk.content_start_seconds),
+        text,
+    )
+    .on_track(track)]
+}
+
+/// Median of `v` (mean of the middle two when even); 0.0 when empty.
+fn median_of(v: &[f64]) -> f64 {
+    let mut v: Vec<f64> = v.to_vec();
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let mid = v.len() / 2;
+    if v.len() % 2 == 1 {
+        v[mid]
+    } else {
+        (v[mid - 1] + v[mid]) / 2.0
+    }
 }
 
 /// The ledger the driver writes through: DB segment first, ledger second.
@@ -1161,6 +1231,10 @@ struct SegmentWritingStore<'a> {
     deps: &'a PipelineDeps,
     /// Decoder milliseconds summed over this run's windows on this track.
     decode_ms: u64,
+    /// yap-audit-utterance-segments — rows written on this track this run,
+    /// and the windows they came from, for the per-track `utterances` line.
+    rows_written: usize,
+    windows_written: usize,
 }
 
 impl SegmentWritingStore<'_> {
@@ -1191,9 +1265,26 @@ impl ProgressStore for SegmentWritingStore<'_> {
     }
 
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
-        if let Some(segment) = chunk_segment(chunk, self.track) {
+        let segments = chunk_segments(chunk, self.track);
+        if !segments.is_empty() {
             self.db
-                .append_meeting_segments(self.meeting_id, std::slice::from_ref(&segment))?;
+                .append_meeting_segments(self.meeting_id, &segments)?;
+            let lengths: Vec<f64> = segments
+                .iter()
+                .map(|s| (s.end_seconds - s.start_seconds).max(0.0))
+                .collect();
+            log::info!(
+                "meeting_pipeline utterances meeting={} track={} window={} timestamps={} rows={} longest_s={:.1} median_s={:.1}",
+                self.meeting_id,
+                self.track,
+                chunk.index,
+                chunk.timestamp_kind.as_str(),
+                segments.len(),
+                lengths.iter().copied().fold(0.0f64, f64::max),
+                median_of(&lengths),
+            );
+            self.rows_written += segments.len();
+            self.windows_written += 1;
         }
         self.inner.record_chunk(key, chunk)?;
         let through = self.inner.load(key)?.processed_through_seconds;
@@ -1436,6 +1527,8 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             duration: meeting.duration_seconds,
             deps,
             decode_ms: 0,
+            rows_written: 0,
+            windows_written: 0,
         };
         // Anything written past what the ledger promises is a crash between
         // the segment insert and the ledger write — it is about to be decoded
@@ -1455,6 +1548,17 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             config: deps.config.clone(),
         }
         .run(&key)?;
+        log::info!(
+            "meeting_pipeline track_utterances meeting={id} track={} windows={} rows={} rows_per_window={:.2}",
+            *track,
+            store.windows_written,
+            store.rows_written,
+            if store.windows_written > 0 {
+                store.rows_written as f64 / store.windows_written as f64
+            } else {
+                0.0
+            }
+        );
         log::info!(
             "{}",
             track_rtf_line(

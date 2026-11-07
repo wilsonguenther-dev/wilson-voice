@@ -2341,6 +2341,489 @@ pub fn meeting_availability_for(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// yap-audit-utterance-segments — a stored segment is an UTTERANCE, not a window
+// ---------------------------------------------------------------------------
+
+/// Raw cut, step one: a silence of at least this many seconds between two word
+/// rows ends an utterance on its own.
+pub const UTTERANCE_CUT_GAP_SECONDS: f64 = 0.6;
+/// Raw cut, step one: after a sentence end (`.`, `?`, `!`, `…`) a silence of
+/// this many seconds is enough.
+pub const UTTERANCE_SENTENCE_GAP_SECONDS: f64 = 0.25;
+/// Merge, step two: consecutive raw pieces of the same track re-join while the
+/// silence between them is SHORTER than this.
+pub const UTTERANCE_MERGE_GAP_SECONDS: f64 = 1.2;
+/// Merge, step two: no merge may produce a piece longer than this.
+pub const UTTERANCE_MAX_SECONDS: f64 = 20.0;
+/// Merge, step two: a piece shorter than this is a fragment, and joins a
+/// neighbour whenever the result stays under [`UTTERANCE_MAX_SECONDS`].
+pub const UTTERANCE_MIN_SECONDS: f64 = 3.0;
+/// Word times are milliseconds divided by 1000; a threshold compared to their
+/// difference needs a tolerance or `12.6 - 12.0 >= 0.6` is false in f64.
+const UTTERANCE_TIME_EPS: f64 = 1e-6;
+
+/// One utterance cut out of a window's word rows: absolute seconds (the rows
+/// were shifted onto the meeting's timeline by [`ChunkOutcome::from_transcript`])
+/// and the words, space-joined. The item spec writes this as
+/// `(start, end, text)`; named fields so a caller cannot swap start and end.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Utterance {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+impl Utterance {
+    pub fn seconds(&self) -> f64 {
+        (self.end_seconds - self.start_seconds).max(0.0)
+    }
+}
+
+/// Does this word row end a sentence? Closing quotes and brackets after the
+/// terminal mark are ignored, the same way `mid_sentence_end_rate` judges a
+/// stored segment in the eval harness.
+pub fn ends_sentence(text: &str) -> bool {
+    let trimmed = text.trim_end_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '\u{201D}' | '\u{2019}')
+    });
+    matches!(trimmed.chars().last(), Some('.' | '?' | '!' | '\u{2026}'))
+}
+
+/// Cut ONE track's word rows of one window into readable utterances.
+///
+/// Audit issue #4: every stored segment was 29.4–30.1 s long on every real
+/// meeting, because the pipeline kept one row per window and threw the word
+/// times away at insert. A two-person call therefore rendered as alternating
+/// 30 s paragraphs with one label each — unreadable as a conversation, and one
+/// MAP line per paragraph for the notes model.
+///
+/// **Why the rule is a merge and not a cut.** The raw gap rule alone (step one
+/// below) produced 440 pieces with a median of 1.8 s on a real 31-minute call:
+/// too fine to read, and too many lines for the 1.5B notes budget. So step two
+/// re-joins the fragments of the same track into 3–12 s turns (panel 3,
+/// 2026-10-26, both seats SOUND-WITH-CHANGES on exactly this rule).
+///
+/// 1. **Raw cut.** Between two consecutive rows, cut when the silence is at
+///    least [`UTTERANCE_CUT_GAP_SECONDS`], or when the previous row ends a
+///    sentence and the silence is at least [`UTTERANCE_SENTENCE_GAP_SECONDS`].
+///    The unit is the row, so a cut can never land inside a word.
+/// 2. **Merge.** Consecutive pieces re-join while the silence between them is
+///    under [`UTTERANCE_MERGE_GAP_SECONDS`] and the result is at most
+///    [`UTTERANCE_MAX_SECONDS`]. Then any piece under [`UTTERANCE_MIN_SECONDS`]
+///    joins the neighbour it is closest to (the other one when that does not
+///    fit), whenever the result stays under the cap. A short piece is kept on
+///    its own only when it is the whole window — or when no neighbour can take
+///    it under the cap, because the cap is a reading limit and dropping words
+///    is not an option.
+///
+/// Rows with empty text are ignored. Rows are taken in the order given; the
+/// caller passes the rows the window OWNS (after the seam rule), of one track.
+/// Windows whose decode carried no times never reach here: the pipeline keeps
+/// those whole (see `meeting_pipeline::chunk_segments`).
+pub fn split_utterances(spans: &[TimedSpan]) -> Vec<Utterance> {
+    let rows: Vec<&TimedSpan> = spans.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Step one — raw cut on silence.
+    let mut pieces: Vec<Utterance> = Vec::new();
+    let mut current: Vec<&TimedSpan> = vec![rows[0]];
+    for pair in rows.windows(2) {
+        let (prev, next) = (pair[0], pair[1]);
+        let gap = (next.start_seconds - prev.end_seconds).max(0.0);
+        let cut = gap + UTTERANCE_TIME_EPS >= UTTERANCE_CUT_GAP_SECONDS
+            || (ends_sentence(&prev.text)
+                && gap + UTTERANCE_TIME_EPS >= UTTERANCE_SENTENCE_GAP_SECONDS);
+        if cut {
+            pieces.extend(capped_pieces(&current));
+            current.clear();
+        }
+        current.push(next);
+    }
+    pieces.extend(capped_pieces(&current));
+
+    // Step two (a) — re-join neighbours across short silences, under the cap.
+    let mut merged: Vec<Utterance> = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        if let Some(last) = merged.last_mut() {
+            let gap = (piece.start_seconds - last.end_seconds).max(0.0);
+            let joined = piece.end_seconds - last.start_seconds;
+            if gap + UTTERANCE_TIME_EPS < UTTERANCE_MERGE_GAP_SECONDS
+                && joined <= UTTERANCE_MAX_SECONDS + UTTERANCE_TIME_EPS
+            {
+                join_into(last, &piece);
+                continue;
+            }
+        }
+        merged.push(piece);
+    }
+
+    // Step two (b) — fragments under the minimum join a neighbour that can
+    // take them. Left to right, repeated until nothing moves, so a run of
+    // fragments collapses into one turn rather than one fragment per pass.
+    loop {
+        let mut moved = false;
+        let mut i = 0;
+        while i < merged.len() {
+            if merged.len() > 1 && merged[i].seconds() < UTTERANCE_MIN_SECONDS {
+                let cap = UTTERANCE_MAX_SECONDS + UTTERANCE_TIME_EPS;
+                let fits_prev = i > 0 && merged[i].end_seconds - merged[i - 1].start_seconds <= cap;
+                let fits_next = i + 1 < merged.len()
+                    && merged[i + 1].end_seconds - merged[i].start_seconds <= cap;
+                let gap_prev = if i > 0 {
+                    merged[i].start_seconds - merged[i - 1].end_seconds
+                } else {
+                    f64::INFINITY
+                };
+                let gap_next = if i + 1 < merged.len() {
+                    merged[i + 1].start_seconds - merged[i].end_seconds
+                } else {
+                    f64::INFINITY
+                };
+                let into_prev = match (fits_prev, fits_next) {
+                    (true, true) => gap_prev <= gap_next,
+                    (true, false) => true,
+                    (false, true) => false,
+                    (false, false) => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                if into_prev {
+                    let piece = merged.remove(i);
+                    join_into(&mut merged[i - 1], &piece);
+                } else {
+                    let next = merged.remove(i + 1);
+                    join_into(&mut merged[i], &next);
+                }
+                moved = true;
+                continue;
+            }
+            i += 1;
+        }
+        if !moved {
+            break;
+        }
+    }
+    merged
+}
+
+/// A raw piece longer than the cap is a window whose word times show no
+/// pause at all — measured on the synthetic corpus: one 30 s window of
+/// `call-bleed-2voice` came back with 47 word rows spread continuously over
+/// 25 s although the far side spoke for half of it. Nothing in such a window
+/// can be cut by silence, so it is cut at the sentence end nearest its middle
+/// (any gap), else at its widest gap, until every piece fits the cap or is a
+/// single row. Never inside a row.
+fn capped_pieces(rows: &[&TimedSpan]) -> Vec<Utterance> {
+    let Some((first, last)) = rows.first().zip(rows.last()) else {
+        return Vec::new();
+    };
+    if rows.len() < 2 || last.end_seconds - first.start_seconds <= UTTERANCE_MAX_SECONDS {
+        return vec![piece_of(rows)];
+    }
+    let middle = (first.start_seconds + last.end_seconds) / 2.0;
+    // Candidate cut AFTER row i, for i in 0..len-1.
+    let sentence_cut = (0..rows.len() - 1)
+        .filter(|&i| ends_sentence(&rows[i].text))
+        .min_by(|&a, &b| {
+            (rows[a].end_seconds - middle)
+                .abs()
+                .total_cmp(&(rows[b].end_seconds - middle).abs())
+        });
+    let widest_gap = (0..rows.len() - 1).max_by(|&a, &b| {
+        (rows[a + 1].start_seconds - rows[a].end_seconds)
+            .total_cmp(&(rows[b + 1].start_seconds - rows[b].end_seconds))
+    });
+    let Some(at) = sentence_cut.or(widest_gap) else {
+        return vec![piece_of(rows)];
+    };
+    let mut out = capped_pieces(&rows[..=at]);
+    out.extend(capped_pieces(&rows[at + 1..]));
+    out
+}
+
+fn piece_of(rows: &[&TimedSpan]) -> Utterance {
+    let first = rows.first().expect("a piece has at least one row");
+    let last = rows.last().expect("a piece has at least one row");
+    Utterance {
+        start_seconds: first.start_seconds,
+        end_seconds: last.end_seconds.max(first.start_seconds),
+        text: rows
+            .iter()
+            .map(|r| r.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn join_into(into: &mut Utterance, piece: &Utterance) {
+    into.start_seconds = into.start_seconds.min(piece.start_seconds);
+    into.end_seconds = into.end_seconds.max(piece.end_seconds);
+    if !piece.text.is_empty() {
+        if !into.text.is_empty() {
+            into.text.push(' ');
+        }
+        into.text.push_str(&piece.text);
+    }
+}
+
+/// Median length of `pieces` in seconds — the number audit issue #4 is scored
+/// on (3–12 s is readable), logged per window by the pipeline. 0.0 for none.
+pub fn median_utterance_seconds(pieces: &[Utterance]) -> f64 {
+    let mut lengths: Vec<f64> = pieces.iter().map(Utterance::seconds).collect();
+    if lengths.is_empty() {
+        return 0.0;
+    }
+    lengths.sort_by(|a, b| a.total_cmp(b));
+    let mid = lengths.len() / 2;
+    if lengths.len() % 2 == 1 {
+        lengths[mid]
+    } else {
+        (lengths[mid - 1] + lengths[mid]) / 2.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ENGINEERING MUST (a) — speaker turns from ASR WORD times, no bleed
+// ---------------------------------------------------------------------------
+
+/// How much of a turn's edge an embedding skips (seconds, each side). The
+/// 0.2 s nearest a speaker switch is where the previous voice's tail and the
+/// segmentation model's own boundary error live; embedding it pulls a turn's
+/// vector toward the other speaker.
+pub const TURN_EMBED_GUARD_SECONDS: f64 = 0.2;
+
+/// One speaker turn: a run of WHOLE words on one track that all went to the
+/// same speaker. `start_seconds` / `end_seconds` are the first word's start
+/// and the last word's end, exactly — never a window, chunk or diarization
+/// time, never interpolated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeakerTurn {
+    pub track: i64,
+    /// The diarization cluster the words went to; `None` = an unattributed
+    /// segment (or no segment on this track at all).
+    pub cluster_index: Option<i64>,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    /// The words of this turn, as indices into the slice given to
+    /// [`build_speaker_turns`].
+    pub words: std::ops::Range<usize>,
+    pub text: String,
+}
+
+impl SpeakerTurn {
+    /// The span a speaker embedding may use: the turn minus
+    /// [`TURN_EMBED_GUARD_SECONDS`] at each end. `None` when nothing is left.
+    pub fn embedding_window(&self) -> Option<(f64, f64)> {
+        let start = self.start_seconds + TURN_EMBED_GUARD_SECONDS;
+        let end = self.end_seconds - TURN_EMBED_GUARD_SECONDS;
+        (end > start).then_some((start, end))
+    }
+
+    pub fn seconds(&self) -> f64 {
+        (self.end_seconds - self.start_seconds).max(0.0)
+    }
+}
+
+/// What [`build_speaker_turns`] produced, plus the evidence for the log line.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpeakerTurns {
+    pub turns: Vec<SpeakerTurn>,
+    /// Parallel to the input words: the index (into the segments slice) of the
+    /// diarization segment each word was assigned to. `None` only when the
+    /// track has no segment at all.
+    pub word_segment: Vec<Option<usize>>,
+    /// Words that overlap segments of two or more different speakers — a
+    /// switch falls inside the word — and were therefore placed by rule
+    /// (midpoint, then larger overlap) rather than by simple containment.
+    pub boundary_words_reassigned: usize,
+}
+
+/// Which speaker a segment stands for. An unattributed segment (`None`
+/// cluster) is its OWN speaker: two neighbouring unknowns may be two people,
+/// so their words never merge into one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnKey {
+    Cluster(i64),
+    Unattributed(usize),
+    NoSegment,
+}
+
+fn turn_key(segments: &[crate::diarize::DiarizedSegment], seg: Option<usize>) -> TurnKey {
+    match seg {
+        Some(i) => match segments[i].cluster_index {
+            Some(c) => TurnKey::Cluster(c),
+            None => TurnKey::Unattributed(i),
+        },
+        None => TurnKey::NoSegment,
+    }
+}
+
+fn overlap_seconds(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// The segment one word belongs to. The rule, in order:
+/// 1. a segment that covers the word's MIDPOINT (half-open `[start, end)`,
+///    the last segment's end inclusive); among several, the larger overlap;
+/// 2. no segment covers the midpoint (it fell in a gap): the segment with the
+///    larger overlap with the word;
+/// 3. the word touches no segment: the nearest segment on the track.
+///
+/// Rule 1 is what makes "no turn contains a word whose midpoint lies in
+/// another speaker's segment" true by construction.
+fn assign_word(
+    word: &TimedSpan,
+    segments: &[crate::diarize::DiarizedSegment],
+    on_track: &[usize],
+) -> Option<usize> {
+    let (w0, w1) = (word.start_seconds, word.end_seconds.max(word.start_seconds));
+    let mid = (w0 + w1) / 2.0;
+    let last_end = on_track
+        .iter()
+        .map(|&i| segments[i].end_seconds)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let covers = |i: usize| {
+        let s = &segments[i];
+        s.start_seconds <= mid
+            && (mid < s.end_seconds || (mid <= s.end_seconds && s.end_seconds >= last_end))
+    };
+    let overlap = |i: usize| {
+        let s = &segments[i];
+        overlap_seconds(w0, w1, s.start_seconds, s.end_seconds)
+    };
+    if let Some(i) = best_by(on_track.iter().copied().filter(|&i| covers(i)), overlap) {
+        return Some(i);
+    }
+    if let Some(i) = best_by(
+        on_track.iter().copied().filter(|&i| overlap(i) > 0.0),
+        overlap,
+    ) {
+        return Some(i);
+    }
+    best_by(on_track.iter().copied(), |i: usize| {
+        let s = &segments[i];
+        let distance = if mid < s.start_seconds {
+            s.start_seconds - mid
+        } else {
+            (mid - s.end_seconds).max(0.0)
+        };
+        -distance
+    })
+}
+
+/// The candidate with the highest score; the FIRST one on a tie.
+fn best_by(candidates: impl Iterator<Item = usize>, score: impl Fn(usize) -> f64) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for i in candidates {
+        let v = score(i);
+        let better = match best {
+            None => true,
+            Some((_, b)) => v > b,
+        };
+        if better {
+            best = Some((i, v));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Build speaker turns for ONE track from that track's ASR word rows (in time
+/// order, track-WAV seconds — the base `meeting_segments` is on) and the
+/// diarization segments (only those whose `track` matches are used).
+///
+/// A turn is a run of whole words; a word is never split. A word goes to the
+/// segment covering its midpoint (see `assign_word`), so a switch to another
+/// speaker never bleeds a word across the boundary. Turn bounds are the first
+/// word's start and the last word's end. Clips, embeddings
+/// ([`SpeakerTurn::embedding_window`]) and relabels use these bounds.
+pub fn build_speaker_turns(
+    track: i64,
+    words: &[TimedSpan],
+    segments: &[crate::diarize::DiarizedSegment],
+) -> SpeakerTurns {
+    let on_track: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.track == track && s.end_seconds > s.start_seconds)
+        .map(|(i, _)| i)
+        .collect();
+    let mut out = SpeakerTurns::default();
+    let mut current: Option<(TurnKey, usize)> = None;
+    for (wi, word) in words.iter().enumerate() {
+        let seg = assign_word(word, segments, &on_track);
+        let (w0, w1) = (word.start_seconds, word.end_seconds.max(word.start_seconds));
+        let mut speakers: Vec<TurnKey> = Vec::new();
+        for &i in &on_track {
+            let s = &segments[i];
+            if overlap_seconds(w0, w1, s.start_seconds, s.end_seconds) > 0.0 {
+                let key = turn_key(segments, Some(i));
+                if !speakers.contains(&key) {
+                    speakers.push(key);
+                }
+            }
+        }
+        if speakers.len() > 1 {
+            out.boundary_words_reassigned += 1;
+        }
+        out.word_segment.push(seg);
+        let key = turn_key(segments, seg);
+        match current {
+            Some((k, _)) if k == key => {}
+            Some((k, first)) => {
+                out.turns
+                    .push(turn_of(track, segments, k, words, first..wi));
+                current = Some((key, wi));
+            }
+            None => current = Some((key, wi)),
+        }
+    }
+    if let Some((k, first)) = current {
+        out.turns
+            .push(turn_of(track, segments, k, words, first..words.len()));
+    }
+    log::info!(
+        "meeting_asr turns built n={} words={} boundary_words_reassigned={} track={}",
+        out.turns.len(),
+        words.len(),
+        out.boundary_words_reassigned,
+        track
+    );
+    out
+}
+
+fn turn_of(
+    track: i64,
+    segments: &[crate::diarize::DiarizedSegment],
+    key: TurnKey,
+    words: &[TimedSpan],
+    range: std::ops::Range<usize>,
+) -> SpeakerTurn {
+    let cluster_index = match key {
+        TurnKey::Cluster(c) => Some(c),
+        TurnKey::Unattributed(i) => segments[i].cluster_index,
+        TurnKey::NoSegment => None,
+    };
+    let text = words[range.clone()]
+        .iter()
+        .map(|w| w.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    SpeakerTurn {
+        track,
+        cluster_index,
+        start_seconds: words[range.start].start_seconds,
+        end_seconds: words[range.end - 1].end_seconds,
+        words: range,
+        text,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
