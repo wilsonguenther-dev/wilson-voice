@@ -369,7 +369,12 @@ fn auto_paste_false_synthesizes_no_keystroke() {
         );
         assert_eq!(f.copies, vec![TAKE.to_string()]);
         assert!(out.copied && !out.pasted);
-        assert_eq!(out.message, "Copied to clipboard (⌘V to paste)");
+        // SP-02 — every copy-only outcome says the one copy line the pill uses.
+        assert_eq!(
+            out.message,
+            wilson_voice_lib::paste::COPY_CARD_MESSAGE_NO_REPAIR
+        );
+        assert_eq!(out.message, "Copied — press ⌘V.");
     }
 }
 

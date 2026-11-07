@@ -39,6 +39,7 @@ import {
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
   speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
   phaseRank, winningPhase,
+  COPY_ONLY_PILL_LINE, takeErrorLine,
   errorSentence, fitsSideDockStrip, isLegalTransition, phaseCopy, phaseHoldMs, reduceTakePhase,
   AMBIENT_FRAME_MS, ALL_LIVE_PHASES, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS,
   IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_COPY, PHASE_HOLD_MS,
@@ -1377,7 +1378,7 @@ describe("WF-17 pill message categories", () => {
 
 // ── yap-1106-fb-04 — paste waits for a typing pause ─────────────────────────
 import {
-  PASTE_WAIT_LINE, pasteWaitHint, fitsSideDockStrip, reduceTakeStage as reduceStage4,
+  PASTE_WAIT_LINE, pasteWaitHint, reduceTakeStage as reduceStage4,
 } from "./live";
 
 describe("yap-1106-fb-04 paste waits for a typing pause", () => {
@@ -1400,5 +1401,22 @@ describe("yap-1106-fb-04 paste waits for a typing pause", () => {
     expect(pasteWaitHint(null, "pasting")).toBeNull();
     expect(stripLine("Pasting", false, pasteWaitHint("paste_waiting", "pasting"))).toBe(PASTE_WAIT_LINE);
     expect(stripLine("Pasting", false, pasteWaitHint("pasting", "pasting"))).toBe("Pasting");
+  });
+});
+
+describe("SP-02 copy-only pill line", () => {
+  it("any copy-only outcome shows \"Copied — press ⌘V\" in the pill", () => {
+    expect(COPY_ONLY_PILL_LINE).toBe("Copied — press ⌘V.");
+    const line = takeErrorLine(
+      "paste_not_confirmed",
+      "The paste may not have landed — the text is on your clipboard.",
+    );
+    expect(line).toBe("Copied — press ⌘V.");
+    expect(fitsSideDockStrip(line!)).toBe(true);
+  });
+
+  it("every other code keeps its catalogue line", () => {
+    expect(takeErrorLine("clipboard_failed", "Clipboard was empty")).toBe("Clipboard was empty");
+    expect(takeErrorLine(null, null)).toBe(null);
   });
 });
