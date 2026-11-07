@@ -1175,7 +1175,12 @@ pub fn start_capture_session(
     );
     let grant_unknown = db
         .as_ref()
-        .map(|db| !matches!(db.system_audio_setup().verdict, meetings::SetupVerdict::Granted))
+        .map(|db| {
+            !matches!(
+                db.system_audio_setup().verdict,
+                meetings::SetupVerdict::Granted
+            )
+        })
         .unwrap_or(true);
     let pump = tap.map(|tap| {
         // Every track starts on the MIC's format because that is the only one

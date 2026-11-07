@@ -936,7 +936,10 @@ fn aec3_is_pinned_exactly_and_adds_one_crate() {
     assert_eq!(exact_pin(manifest, "aec3"), "0.4.0");
     assert_eq!(locked_version("aec3"), "0.4.0");
     let app = lockfile_closure("wilson-voice");
-    assert!(app.contains("aec3"), "aec3 must be reachable from wilson-voice");
+    assert!(
+        app.contains("aec3"),
+        "aec3 must be reachable from wilson-voice"
+    );
     let aec = lockfile_closure("aec3");
     let allowed: std::collections::BTreeSet<&str> = [
         "aec3",
@@ -963,13 +966,19 @@ fn aec3_is_pinned_exactly_and_adds_one_crate() {
     ]
     .into_iter()
     .collect();
-    let unexpected: Vec<&String> = aec.iter().filter(|p| !allowed.contains(p.as_str())).collect();
+    let unexpected: Vec<&String> = aec
+        .iter()
+        .filter(|p| !allowed.contains(p.as_str()))
+        .collect();
     assert!(
         unexpected.is_empty(),
         "aec3's dependency closure grew beyond the crates already in the graph: {unexpected:?}"
     );
     for banned in ["webrtc-audio-processing", "webrtc-audio-processing-sys"] {
-        assert!(!app.contains(banned), "{banned} is a second native C library and is rejected");
+        assert!(
+            !app.contains(banned),
+            "{banned} is a second native C library and is rejected"
+        );
     }
 }
 

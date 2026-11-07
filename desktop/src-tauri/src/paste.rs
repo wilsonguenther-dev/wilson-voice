@@ -823,7 +823,14 @@ pub fn insert_traced(
                 trace.path = InsertPath::CopyCard;
                 trace.fallback = InsertFallback::WrongTarget;
                 (
-                    hold_with(b, text, CopyCardReason::TargetMoved, true, why, NOTE_GONE_MESSAGE),
+                    hold_with(
+                        b,
+                        text,
+                        CopyCardReason::TargetMoved,
+                        true,
+                        why,
+                        NOTE_GONE_MESSAGE,
+                    ),
                     trace,
                 )
             }
@@ -1013,7 +1020,11 @@ pub fn insert_traced(
             )
         }
         Err(e) => {
-            diag_error!("paste", "paste failed: {err} — showing the Copy card", err = e);
+            diag_error!(
+                "paste",
+                "paste failed: {err} — showing the Copy card",
+                err = e
+            );
             trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::PasteFailed;
             (
@@ -1138,7 +1149,12 @@ impl InsertBackend for LiveInsert<'_> {
     fn show_copy_card(&mut self, card: CopyCard) {
         crate::float_pill::hold_copy_card(self.app, card.clone());
         if let Err(e) = self.app.emit(INSERT_COPY_CARD_EVENT, card) {
-            diag_warn!("paste", "emit {event}: {err}", event = INSERT_COPY_CARD_EVENT, err = e);
+            diag_warn!(
+                "paste",
+                "emit {event}: {err}",
+                event = INSERT_COPY_CARD_EVENT,
+                err = e
+            );
         }
     }
     fn no_receipt_detail(&mut self, reason: &str) -> String {
