@@ -371,7 +371,7 @@ pub fn meeting_recap_speakers(
     meeting_id: String,
     count: Option<u8>,
     confirm_merge: bool,
-) -> Result<crate::meetings::RecapOutcome, String> {
+) -> Result<RecapReply, String> {
     use tauri::Manager;
     let t0 = Instant::now();
     let st = app
@@ -384,8 +384,34 @@ pub fn meeting_recap_speakers(
             log::warn!("meeting_recap failure error=\"{e}\"");
             "Couldn't regroup the voices. Try again.".to_string()
         })?;
+    let rows = match &out {
+        crate::meetings::RecapOutcome::Applied { .. } => st.db.meeting_label_rows(&meeting_id).unwrap_or_else(|e| {
+            log::warn!("meeting_recap rows_failed error=\"{e}\"");
+            Vec::new()
+        }),
+        crate::meetings::RecapOutcome::NeedsConfirm { .. } => Vec::new(),
+    };
     log::info!("meeting_recap done ms={}", t0.elapsed().as_millis());
-    Ok(out)
+    Ok(RecapReply { outcome: out, rows })
+}
+
+/// What the after-meeting People change hands the webview: the outcome and,
+/// when it applied, every line's speaker state to merge in place.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecapReply {
+    pub outcome: crate::meetings::RecapOutcome,
+    pub rows: Vec<crate::speaker_profiles::LabelRow>,
+}
+
+/// The People count stored on a meeting (`None` = Auto).
+#[tauri::command]
+pub fn meeting_expected_speakers(app: tauri::AppHandle, meeting_id: String) -> Result<Option<u8>, String> {
+    use tauri::Manager;
+    let st = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .ok_or_else(|| "Yap is still starting. Try again in a moment.".to_string())?;
+    st.db.meeting_expected_speakers(&meeting_id)
 }
 
 /// The Tauri event the pill listens on for a live question.
@@ -1989,7 +2015,7 @@ mod tests {
             let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
             v.iter().map(|x| x / n).collect::<Vec<f32>>()
         };
-        let run = |people: Option<u8>| -> (Vec<LiveVoice>, usize) {
+        let run = |people: Option<u8>, ask: bool| -> (Vec<LiveVoice>, usize) {
             let embedder = Fixture::new(vec![
                 Some(maya.clone()),
                 Some(sam.clone()),
@@ -2005,7 +2031,7 @@ mod tests {
             let mut st = LiveState::new(Vec::new()).with_roster(LiveRoster::new(
                 profiles.clone(),
                 MatchBands::provisional(),
-                false,
+                ask,
             ));
             st.set_people(people, 1);
             let window = speech(6.0);
@@ -2016,19 +2042,22 @@ mod tests {
             (voices, st.roster().unwrap().speakers())
         };
 
-        let (capped, speakers) = run(Some(2));
+        let (capped, speakers) = run(Some(2), false);
         assert_eq!(speakers, 2, "the pool never grows past the count");
         for v in &capped[2..] {
             assert_eq!(v.cluster, Some(1), "the drifted window is Sam's voice: {v:?}");
             assert_ne!(v.name.as_deref(), Some(SOMEONE_NEW), "a full pool never says Someone new");
             assert_eq!(v.name.as_deref(), Some("Speaker 2"));
-            assert!(
-                v.hint.as_deref().is_some_and(|h| h.contains("60%")),
-                "a guess carries its reason: {v:?}"
-            );
         }
+        assert!(
+            capped[2].hint.as_deref().is_some_and(|h| h.contains("60%")),
+            "the low-confidence guess carries its reason: {:?}",
+            capped[2]
+        );
 
-        let (_, auto_speakers) = run(None);
+        // Auto, with the live roster on (FB-22a) so voices are counted: the
+        // same windows grow a third voice.
+        let (_, auto_speakers) = run(None, true);
         assert_eq!(auto_speakers, 3, "on Auto the drift becomes a new voice");
     }
 

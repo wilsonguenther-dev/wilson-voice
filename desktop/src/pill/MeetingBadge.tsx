@@ -18,7 +18,8 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, type CSSProperties } from "react";
+import { useCallback, useEffect, useReducer, useState, type CSSProperties } from "react";
+import PeopleStepper, { type People } from "../meetings/PeopleStepper";
 import MeetingWorld from "./MeetingWorld";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -145,6 +146,8 @@ export default function MeetingBadge({
   after = null,
   onOpen,
   stacked = false,
+  screenSharing = false,
+  attendees = null,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
@@ -159,7 +162,22 @@ export default function MeetingBadge({
    * error, ...), not only while listening.
    */
   stacked?: boolean;
+  /** yap-1106-fb-23 — the People stepper hides during a screen share. */
+  screenSharing?: boolean;
+  /** yap-1106-fb-23 — the invite's attendee count, when the calendar is on. */
+  attendees?: number | null;
 }) {
+  // yap-1106-fb-23 — "How many people are in this meeting?" (Auto = null).
+  // Applies from the next live window and is stored on the meeting row.
+  const [people, setPeople] = useState<People>(null);
+  const changePeople = (next: People) => {
+    const prev = people;
+    setPeople(next);
+    invoke("meeting_set_expected_speakers", { meetingId: status.id ?? null, count: next }).catch(() => {
+      setPeople(prev);
+      console.warn("meeting_people set_failed");
+    });
+  };
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
   const callApp = badgeCallLabel(useCallRecordingView());
@@ -250,6 +268,11 @@ export default function MeetingBadge({
             mic only
           </span>
         )
+      )}
+      {!screenSharing && !stacked && (
+        <span className="rec-people" onClick={(e) => e.stopPropagation()}>
+          <PeopleStepper compact value={people} attendees={attendees} onChange={changePeople} />
+        </span>
       )}
       <button
         type="button"
