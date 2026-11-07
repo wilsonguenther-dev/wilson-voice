@@ -221,6 +221,9 @@ pub enum ProviderError {
     Timeout { secs: u64 },
     KeyRejected,
     ModelNotFound { model: String },
+    // fix-l3b3-2 — a 404 from the cloud kind. Carries no model id: the
+    // cloud model's id is a vendor name and must never reach the UI.
+    CloudModelNotFound,
     RateLimited,
     Server { code: u16 },
     Http { code: u16 },
@@ -244,6 +247,9 @@ impl ProviderError {
             ProviderError::Timeout { secs } => format!("timed out — no answer within {secs} s"),
             ProviderError::KeyRejected => "the key was rejected (401)".into(),
             ProviderError::ModelNotFound { model } => format!("model {model} not found (404)"),
+            ProviderError::CloudModelNotFound => {
+                "the cloud did not recognise the model this key is set to use (404)".into()
+            }
             ProviderError::RateLimited => "rate limited (429) — try again shortly".into(),
             ProviderError::Server { code } => format!("server error ({code})"),
             ProviderError::Http { code } => format!("the server answered {code}"),
@@ -272,7 +278,9 @@ impl ProviderError {
             ProviderError::Unreachable { .. } => "unreachable",
             ProviderError::Timeout { .. } => "timeout",
             ProviderError::KeyRejected => "key_rejected",
-            ProviderError::ModelNotFound { .. } => "model_not_found",
+            ProviderError::ModelNotFound { .. } | ProviderError::CloudModelNotFound => {
+                "model_not_found"
+            }
             ProviderError::RateLimited => "rate_limited",
             ProviderError::Server { .. } => "server_error",
             ProviderError::Http { .. } => "http_status",
@@ -291,13 +299,15 @@ impl ProviderError {
     }
 
     /// yap-1106 — map a cloud-route failure (Test connection on the cloud kind).
-    pub fn from_cloud(e: crate::cloud_route::CloudError, model: &str) -> Self {
+    ///
+    /// fix-l3b3-2: `_model` is deliberately never put in the error — the cloud
+    /// model id is a vendor name, and `plain()` lands on Settings → Model
+    /// providers. A 404 keeps the `model_not_found` log tag.
+    pub fn from_cloud(e: crate::cloud_route::CloudError, _model: &str) -> Self {
         use crate::cloud_route::CloudError as C;
         match e {
             C::Status { code: 401, .. } | C::Status { code: 403, .. } => ProviderError::KeyRejected,
-            C::Status { code: 404, .. } => ProviderError::ModelNotFound {
-                model: model.to_string(),
-            },
+            C::Status { code: 404, .. } => ProviderError::CloudModelNotFound,
             C::Status { code: 429, .. } => ProviderError::RateLimited,
             C::Status { code, .. } if (500..600).contains(&code) => ProviderError::Server { code },
             C::Status { code, .. } => ProviderError::Http { code },
@@ -1088,7 +1098,7 @@ pub fn run_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_route::{CloudMode, MODE_KEY};
+    use crate::cloud_route::{CloudError, CloudMode, CLEANUP_MODEL, MODE_KEY, NOTES_MODEL_BEST};
     use crate::keychain::{MemoryKeychain, PRODUCTION_SERVICE};
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -1165,5 +1175,77 @@ mod tests {
         assert_eq!(v.active_leaves.len(), 2, "{:?}", v.active_leaves);
         assert_eq!(v.active_leaves[0].task, Task::Notes);
         assert_eq!(v.active_leaves[1].task, Task::Polish);
+    }
+
+    /// The words vendorStrings.test.ts bans from user-visible text.
+    const VENDOR_WORDS: &[&str] = &[
+        "anthropic",
+        "claude",
+        "openai",
+        "open ai",
+        "chatgpt",
+        "gpt",
+        "sonnet",
+        "opus",
+        "haiku",
+        "gemini",
+        "mistral",
+        "llama",
+        "ollama",
+        "openrouter",
+        "groq",
+        "deepseek",
+        "qwen",
+    ];
+
+    fn assert_vendor_free(text: &str) {
+        let lower = text.to_lowercase();
+        for w in VENDOR_WORDS {
+            assert!(!lower.contains(w), "{text:?} names a vendor/model ({w})");
+        }
+        assert!(
+            !text.contains(CLEANUP_MODEL),
+            "{text:?} carries the cloud model id"
+        );
+        assert!(
+            !text.contains(NOTES_MODEL_BEST),
+            "{text:?} carries the cloud model id"
+        );
+    }
+
+    #[test]
+    fn from_cloud_404_plain_names_no_vendor_or_model() {
+        let e = ProviderError::from_cloud(
+            CloudError::Status {
+                code: 404,
+                retry_after: None,
+            },
+            CLEANUP_MODEL,
+        );
+        assert_eq!(e, ProviderError::CloudModelNotFound);
+        assert_eq!(e.tag(), "model_not_found");
+        let plain = e.plain();
+        assert!(plain.contains("(404)"), "{plain:?}");
+        assert_vendor_free(&plain);
+    }
+
+    #[test]
+    fn from_cloud_404_hides_any_model_id_it_is_given() {
+        let e = ProviderError::from_cloud(
+            CloudError::Status {
+                code: 404,
+                retry_after: None,
+            },
+            NOTES_MODEL_BEST,
+        );
+        assert_vendor_free(&e.plain());
+    }
+
+    #[test]
+    fn from_http_404_still_names_the_users_own_model() {
+        // A custom endpoint's model string is the user's own — it stays.
+        let e = ProviderError::from_http(HttpError::Status { code: 404 }, "my-local-model");
+        assert_eq!(e.tag(), "model_not_found");
+        assert!(e.plain().contains("my-local-model"));
     }
 }

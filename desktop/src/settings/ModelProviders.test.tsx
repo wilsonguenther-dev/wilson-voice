@@ -8,11 +8,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import {
+  kindLine,
   ModelProvidersView,
   type ProviderView,
   type ProvidersView,
   testLine,
 } from "./ModelProviders";
+
+// The same pattern vendorStrings.test.ts bans from user-visible source text.
+// That scan cannot see values that arrive from Rust at runtime, so the
+// provider rows are checked here as rendered.
+const VENDORS =
+  /\b(anthropic|claude|openai|open ai|chatgpt|gpt-?\d|gpt|sonnet|opus|haiku|gemini|mistral|llama|ollama|openrouter|groq|deepseek|qwen)\b/i;
 
 const bundled: ProviderView = {
   id: "bundled",
@@ -45,6 +52,40 @@ const openrouter: ProviderView = {
   keyHint: "WXYZ",
   deletable: true,
 };
+
+// The cloud kind as list_model_providers returns it: its model field is
+// cloud_route::CLEANUP_MODEL. The leaves host is left out here — today it is
+// the cloud API's own host, a separate disclosure question flagged to the
+// loop, not this row's model id.
+const cloudKey: ProviderView = {
+  id: "cloud",
+  kind: "cloud_key",
+  label: "Cloud model (your key)",
+  baseUrl: "",
+  model: "claude-sonnet-5-5",
+  contextTokens: 200_000,
+  timeoutS: 60,
+  leaves: true,
+  leavesLabel: "Yes",
+  leavesHost: null,
+  keySaved: true,
+  keyHint: "WXYZ",
+  deletable: false,
+};
+
+// The sentence ProviderError::CloudModelNotFound.plain() returns (model_providers.rs).
+const CLOUD_404 = "the cloud did not recognise the model this key is set to use (404)";
+
+/** The visible text of one rendered provider row (tags stripped). */
+function rowText(html: string, id: string): string {
+  const start = html.indexOf(`data-provider="${id}"`);
+  expect(start).toBeGreaterThan(-1);
+  const end = html.indexOf("</li>", start);
+  return html
+    .slice(start, end)
+    .replace(/^[^>]*>/, "")
+    .replace(/<[^>]+>/g, " ");
+}
 
 const noop = () => {};
 const render = (view: ProvidersView, tests = {}) =>
@@ -149,5 +190,42 @@ describe("ModelProviders", () => {
         keyHint: "",
       }),
     ).toContain("redirected to evil.example — not followed");
+  });
+
+  it("never shows the cloud model id on the cloud row or its Test connection error", () => {
+    const html = render(
+      {
+        providers: [bundled, cloudKey],
+        notesProvider: "",
+        polishProvider: "",
+        wiredKinds: ["bundled", "cloud_key"],
+        activeLeaves: [],
+      },
+      {
+        cloud: {
+          running: false,
+          result: {
+            providerId: "cloud",
+            ok: false,
+            latencyMs: 120,
+            reply: null,
+            error: CLOUD_404,
+            keyHint: "WXYZ",
+          },
+        },
+      },
+    );
+    const row = rowText(html, "cloud");
+    expect(row).toContain("Cloud model (your key)");
+    expect(row).toContain("Failed after 120 ms");
+    expect(row).not.toContain("claude-sonnet-5-5");
+    expect(row).not.toMatch(VENDORS);
+    expect(html).not.toMatch(VENDORS);
+    expect(kindLine(cloudKey)).toBe("Cloud model (your key)");
+  });
+
+  it("keeps a custom endpoint's own model string on its row", () => {
+    expect(kindLine(openrouter)).toBe("Custom endpoint · openai/gpt-4o-mini");
+    expect(kindLine(bundled)).toBe("Bundled");
   });
 });
