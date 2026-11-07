@@ -107,9 +107,9 @@ export function noticeTtlMs(n: MeetingNotice): number | null {
 }
 
 /**
- * A meeting status arrived: a notice ABOUT a running meeting is moot once the
- * meeting has stopped (from the tray, ⌃⌘M, the badge). A stop failure stays:
- * it is cleared only by a stop that worked, which also ends the recording.
+ * A meeting status arrived: every notice is ABOUT a running meeting, so all
+ * three are moot once the meeting has stopped (from the tray, ⌃⌘M, the
+ * badge, or a Try again that worked). While it records, the notice stays.
  */
 export function noticeAfterMeetingStatus(n: MeetingNotice | null, recording: boolean): MeetingNotice | null {
   if (!n || recording) return n;
