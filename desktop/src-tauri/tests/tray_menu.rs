@@ -603,6 +603,96 @@ fn update_ready_line_is_inserted_and_gone_after_restart() {
     );
 }
 
+/// fix-b7-1 (WF-14) — the dictation stop edge counts as busy. `lib.rs` sets
+/// `recording` false, runs the context reads (seconds, worst case), and only
+/// then sets `busy` true; the take's `TakeGuard` must cover that window, so it
+/// is entered BEFORE the `recording = false` line, moved into the worker, and
+/// released only after the worker sets `busy` false (and before the final
+/// `emit_status`, so an armed restart fires on that transition). The order of
+/// `recording` / `busy` themselves is unchanged.
+/// `src` with `//` comment lines removed but every other line kept verbatim.
+/// Unlike [`code_only`] this keeps lines that start with `*` — the deref
+/// assignments `*state.recording.lock() = false;` the stop-edge test orders —
+/// and it does not re-indent, so [`fn_body`] still ends at the next top-level
+/// `fn`.
+fn code_keep_derefs(src: &str) -> String {
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn take_guard_spans_the_stop_edge_in_stop_and_transcribe() {
+    // Not `code_only`: it drops `*`-leading lines, i.e. the very
+    // `*state.recording.lock() = false;` / `*state.busy.lock() = true;` lines
+    // this test has to find.
+    let lib = code_keep_derefs(LIB_SRC);
+    let stop = fn_body(&lib, "stop_and_transcribe");
+    let at = |needle: &str| {
+        stop.find(needle)
+            .unwrap_or_else(|| panic!("stop_and_transcribe must still contain `{needle}`"))
+    };
+    let enter = at("let stop_edge_guard = tray_menu::TakeGuard::enter();");
+    let recording_false = at("*state.recording.lock() = false;");
+    let busy_true = at("*state.busy.lock() = true;");
+    assert!(
+        enter < recording_false,
+        "the TakeGuard must be held before recording goes false"
+    );
+    assert!(
+        recording_false < busy_true,
+        "recording/busy order changed — other code depends on it"
+    );
+    assert_eq!(
+        stop.matches("tray_menu::TakeGuard::enter()").count(),
+        1,
+        "one take, one guard"
+    );
+
+    let busy_guard = at("let mut busy_guard = WorkerBusyGuard {");
+    let moved = at("let take_guard = stop_edge_guard;");
+    assert!(
+        busy_guard < moved,
+        "the guard moves into the worker after busy_guard, so it drops first on unwind"
+    );
+    let busy_false = at("*state2.busy.lock() = false;");
+    let released = at("drop(take_guard);");
+    assert!(
+        busy_false < released,
+        "the TakeGuard is released only once busy is false"
+    );
+    assert!(
+        stop[released..].contains("emit_status(&app2, &state2);"),
+        "the end-of-take emit_status comes after the release, so a deferred restart fires there"
+    );
+
+    let activity = fn_body(&lib, "update_activity");
+    assert!(
+        activity.contains("tray_menu::take_in_flight("),
+        "update_activity must read the TakeGuard into take_in_flight"
+    );
+}
+
+/// fix-b7-1 — with a take's guard held and `recording` / `busy` both false
+/// (the stop edge), the gate is shut and an armed restart does not fire.
+#[test]
+fn a_held_take_guard_keeps_a_deferred_restart_waiting() {
+    let guard = tray_menu::TakeGuard::enter();
+    let edge = tray_menu::Activity {
+        dictating: false,
+        take_in_flight: tray_menu::take_in_flight(false, false),
+        ..tray_menu::Activity::default()
+    };
+    assert!(!tray_menu::restart_gate(edge));
+    assert!(!tray_menu::restart_when_quiet(true, true, edge));
+    assert_eq!(
+        tray_menu::update_ready_label(tray_menu::restart_blocker(edge), true),
+        "Will restart after this dictation \u{00b7} Cancel"
+    );
+    drop(guard);
+}
+
 // ─── WF-04 — the pill's right-click menu ─────────────────────────────────────
 
 fn quiet_pill() -> PillMenuInputs {
