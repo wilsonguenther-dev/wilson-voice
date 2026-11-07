@@ -402,6 +402,13 @@ export interface AppStatus {
   /** Holder + workaround line for the banner; null unless blocked. */
   secureInputDetail: string | null;
   /**
+   * yap-1107-secure-input-own-field-quiet — Secure Input is held by Yap's OWN
+   * masked key field (WebKit turns it on while that field has focus). Never
+   * true together with `secureInputBlocked`; renders one quiet neutral line,
+   * never the red banner. Optional: older builds omit it.
+   */
+  secureInputOwnField?: boolean;
+  /**
    * YV80 — the speech engine is loading right now. With the lazy default that
    * happens on the first take of a session, so `message` reads "Preparing your
    * speech engine…" rather than claiming a decode that has not started.

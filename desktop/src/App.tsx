@@ -27,6 +27,7 @@ import Insights from "./views/Insights";
 import Dictionary from "./views/Dictionary";
 import Scratchpad from "./views/Scratchpad";
 import Settings from "./views/Settings";
+import SecureInputBanner from "./SecureInputBanner";
 import "./App.css";
 
 export default function App() {
@@ -311,15 +312,10 @@ export default function App() {
             outranks every other banner because nothing below it can be reached
             with the hotkey while this is on, and it names the holder so the
             user knows which app to go release. */}
-        {status.secureInputBlocked && (
-          <div className="banner blocked">
-            <strong>
-              Dictation paused — another app is blocking keyboard monitoring
-              (Secure Input)
-            </strong>
-            <span className="banner-detail">{status.secureInputDetail}</span>
-          </div>
-        )}
+        {/* yap-1107-secure-input-own-field-quiet — when the holder is Yap's
+            own masked key field, SecureInputBanner renders one quiet neutral
+            line instead of the red banner. */}
+        <SecureInputBanner status={status} />
 
         {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
             not delivering and/or the dictate chord did not register, so the
