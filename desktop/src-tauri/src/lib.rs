@@ -17993,7 +17993,11 @@ mod retry_engine_tests {
             assert_eq!(phases, vec![RetryPhase::Decoding], "{id}: never queued");
             assert!(!m.is_busy(), "{id}: the engine is back in its slot");
         }
-        assert_eq!(m.engine_loads(), 1, "one engine for the whole Retry-all run");
+        assert_eq!(
+            m.engine_loads(),
+            1,
+            "one engine for the whole Retry-all run"
+        );
     }
 }
 
