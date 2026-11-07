@@ -4,3 +4,5 @@
 //! and at least one topic is set ([`feeds::gate`]).
 
 pub mod feeds;
+/// yap-1106-fb-14-news-quote-key — the optional own quote-feed key (Keychain).
+pub mod quote_key;

@@ -9335,6 +9335,42 @@ fn dismiss_news_offer(
     news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
 }
 
+/// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
+/// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
+fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
+    keychain::MacKeychain::with_service(news::quote_key::keychain_service_for(
+        &app.config().identifier,
+    ))
+}
+
+/// Settings → Yappy News → Advanced: which provider, whether a key is saved
+/// (last four characters only), and the tier the next refresh uses.
+#[tauri::command]
+fn get_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> news::quote_key::QuoteKeyView {
+    news::quote_key::view(&*state.db, &news_quote_keychain(&app))
+}
+
+#[tauri::command]
+fn set_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    provider: news::quote_key::QuoteProvider,
+    key: String,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::save(&*state.db, &news_quote_keychain(&app), provider, &key)
+}
+
+#[tauri::command]
+fn clear_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::clear(&*state.db, &news_quote_keychain(&app))
+}
+
 #[tauri::command]
 fn delete_model_provider(
     app: AppHandle,
@@ -13762,6 +13798,10 @@ pub fn run() {
             // yap-1106-friend-visits — quiet state for friend visits.
             pill_quiet_state,
             dismiss_news_offer,
+            // yap-1106-fb-14-news-quote-key — optional own quote-feed key.
+            get_news_quote_key,
+            set_news_quote_key,
+            clear_news_quote_key,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
