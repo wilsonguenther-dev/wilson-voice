@@ -16,7 +16,7 @@
   font-family: var(--font-body);
   font-size: 14px;
   line-height: var(--leading-body);
-  color: var(--text);
+  color: var(--text-primary);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
 }
@@ -51,7 +51,7 @@ button {
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg-elev);
-  color: var(--text);
+  color: var(--text-primary);
   border-radius: 10px;
   padding: 0.45rem 0.75rem;
 }
@@ -213,7 +213,7 @@ body:has(.float-pill),
     radial-gradient(1200px 600px at 10% -10%, var(--accent-soft), transparent 55%),
     radial-gradient(900px 500px at 100% 0%, var(--accent-data-soft), transparent 50%),
     var(--bg);
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .sidebar {
@@ -301,7 +301,7 @@ body:has(.float-pill),
 
 .nav-item.active {
   background: var(--bg-card);
-  color: var(--text);
+  color: var(--text-primary);
   box-shadow: var(--shadow);
 }
 
@@ -378,7 +378,7 @@ button.banner {
 .banner.update {
   background: var(--accent-soft);
   border: 1px solid var(--border);
-  color: var(--text);
+  color: var(--text-primary);
   cursor: default;
 }
 
@@ -774,7 +774,7 @@ code {
   margin: 4px 0 2px;
   font-family: var(--mono);
   font-size: 0.82rem;
-  color: var(--text);
+  color: var(--text-primary);
   word-break: break-word;
 }
 
@@ -854,7 +854,7 @@ code {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  color: var(--text);
+  color: var(--text-primary);
   padding: 0.6rem 0.75rem;
 }
 
@@ -876,7 +876,7 @@ code {
 }
 
 .empty h3 {
-  color: var(--text);
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 
@@ -1067,7 +1067,7 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 /* Every numeral in Insights speaks in the pixel voice, in the data colour —
@@ -1104,7 +1104,7 @@ code {
 }
 
 .kv strong {
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .ok {
@@ -1187,7 +1187,7 @@ button.star.on {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  color: var(--text);
+  color: var(--text-primary);
   padding: 0.55rem 0.7rem;
 }
 
@@ -1224,7 +1224,7 @@ button.star.on {
   background: var(--bg-card);
   border: 1px solid var(--accent);
   border-radius: 10px;
-  color: var(--text);
+  color: var(--text-primary);
   padding: 0.6rem 0.75rem;
   font: inherit;
 }
@@ -1336,12 +1336,12 @@ button.star.on {
 }
 
 .subnav-item:hover {
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .subnav-item.active {
   background: var(--bg-card);
-  color: var(--text);
+  color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }
 
@@ -1365,7 +1365,7 @@ button.star.on {
   border-radius: 13px;
   border: 1.5px solid var(--border);
   background: var(--bg-card);
-  color: var(--text);
+  color: var(--text-primary);
   cursor: pointer;
   transition:
     border-color 0.15s ease,
@@ -1431,7 +1431,7 @@ button.star.on {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .settings-section:first-child {
@@ -1445,6 +1445,15 @@ button.star.on {
   font-size: 0.8rem;
   line-height: 1.4;
   color: var(--muted);
+}
+
+/* yap-1106-chatter-setting — "Yappy talks": the take count that drives the
+   quieting sits right after its one plain sentence, set apart by weight only. */
+.chatter-explain .chatter-count {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* WF-10 — Settings › Audio › Microphone: the fallback order. */
@@ -1586,7 +1595,7 @@ button.star.on {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  color: var(--text);
+  color: var(--text-primary);
   font: inherit;
   padding: 0.6rem 0.75rem;
   resize: vertical;
@@ -1779,7 +1788,7 @@ button.star.on {
 
 .onboard-lede {
   font-size: 15px;
-  color: var(--text);
+  color: var(--text-primary);
   margin: 0 0 12px;
 }
 
@@ -1936,7 +1945,7 @@ button.star.on {
   padding-left: 1.3em;
   display: grid;
   gap: 6px;
-  color: var(--text);
+  color: var(--text-primary);
   font-size: 0.92rem;
   line-height: 1.45;
 }
@@ -2038,7 +2047,7 @@ button.star.on {
   border-radius: 12px;
   border: 1px solid var(--glass-border);
   background: var(--bg-elev);
-  color: var(--text);
+  color: var(--text-primary);
   cursor: pointer;
 }
 .onboard-record.live {
@@ -2285,7 +2294,7 @@ button.star.on {
 .license-chip-value {
   font-variant-numeric: tabular-nums;
   font-weight: 400;
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .license-chip.trial {
@@ -2491,7 +2500,7 @@ button.star.on {
 .mono-num {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  color: var(--text);
+  color: var(--text-primary);
   word-break: break-all;
 }
 
@@ -2630,7 +2639,7 @@ button.star.on {
 .meeting-title-edit {
   font-size: 1.25rem;
   font-weight: 620;
-  color: var(--text);
+  color: var(--text-primary);
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -2903,7 +2912,7 @@ button.star.on {
   border-radius: 999px;
   border: 1px solid hsl(38 92% 50% / 0.5);
   background: hsl(38 92% 50% / 0.16);
-  color: var(--text);
+  color: var(--text-primary);
   white-space: nowrap;
 }
 .call-audio-chip.is-on {
@@ -2924,7 +2933,7 @@ button.star.on {
   font-variant-numeric: tabular-nums;
   font-size: 1.05rem;
   letter-spacing: 0.02em;
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 /* The pulsing dot. A CSS animation on OPACITY only: it runs on the compositor,
@@ -3261,7 +3270,7 @@ button.primary.big {
   margin: 0;
   font-size: 17px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-primary);
   letter-spacing: -0.01em;
 }
 

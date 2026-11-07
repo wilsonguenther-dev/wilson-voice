@@ -165,6 +165,12 @@ export interface AppSettings {
    */
   companionTone?: string;
   /**
+   * yap-1106-chatter-setting (backend `yappy_talks`, default "less"): "Yappy
+   * talks" — always | less (quieter from the 50th take) | milestones. Read
+   * live by YappyPill and NudgeRow through float-main (`pill/chatter.ts`).
+   */
+  yappyTalks?: string;
+  /**
    * WF-17 — quiet mode (backend `muted_pill_categories`): the pill-message
    * categories switched off in Settings › Notifications. Only "tip", "news"
    * and "milestone" are honoured; errors, permission problems and recovery
