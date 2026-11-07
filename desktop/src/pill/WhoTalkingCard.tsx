@@ -213,7 +213,9 @@ export default function WhoTalkingCard({
       data-takes-focus={String(view.takesFocus)}
       role="group"
       aria-label={view.title}
-      onPointerDown={() => touched("press")}
+      // Not an action (the actions are the buttons and the field inside): a
+      // capture-phase "the user is answering" signal that restarts the 20 s.
+      onPointerDownCapture={() => touched("press")}
       onKeyDown={(e) => {
         if (e.key === "Escape") dispatch({ type: "skip", nowMs: Date.now() });
       }}
