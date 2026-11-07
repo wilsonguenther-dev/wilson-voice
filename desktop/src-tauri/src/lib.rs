@@ -2833,6 +2833,38 @@ fn await_in_flight_take(state: &AppState, wait: Duration) -> bool {
 const HUD_FPS: u64 = 20;
 const HUD_FRAME: std::time::Duration = std::time::Duration::from_millis(1_000 / HUD_FPS);
 
+/// SP-11 — how often the level thread re-reads whether the main window is
+/// shown. The visibility read is a main-thread round trip, so it runs at 2 Hz,
+/// not at HUD cadence.
+const LEVEL_MAIN_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// SP-11 — the windows one `audio_level` frame goes to. The float pill always
+/// gets it; the main window (the Home habitat) only while it is visible, so a
+/// hidden window costs no per-frame IPC. Each JS listener names its target
+/// (`float` / `main`), so neither window ever sees the other's copy.
+fn audio_level_targets(main_visible: bool) -> &'static [&'static str] {
+    if main_visible {
+        &["float", "main"]
+    } else {
+        &["float"]
+    }
+}
+
+/// Shown and not minimised. A missing window or a failed read is "hidden":
+/// the habitat's level beam is decoration, the pill is what must animate.
+fn main_window_shown(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// One `audio_level` frame, aimed (never `app.emit`'s broadcast to every webview).
+fn emit_audio_level(app: &AppHandle, value: f64, main_visible: bool) {
+    for target in audio_level_targets(main_visible) {
+        let _ = app.emit_to(*target, "audio_level", value);
+    }
+}
+
 /// YV80 — what LAUNCH does with the ASR engine, in one testable place.
 ///
 /// YV38 loaded the GGUF at startup so the user's first take wouldn't pay for
@@ -3154,9 +3186,17 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
                 use std::sync::atomic::Ordering;
                 // WF-10 — redraw the pill when the take moves to another mic.
                 let mut mic_switch_seen = record::mic_switch_seq();
+                // SP-11 — the main window's copy rides a cached visibility
+                // read, refreshed every LEVEL_MAIN_RECHECK.
+                let mut main_visible = main_window_shown(&app_lv);
+                let mut main_checked = std::time::Instant::now();
                 loop {
+                    if main_checked.elapsed() >= LEVEL_MAIN_RECHECK {
+                        main_visible = main_window_shown(&app_lv);
+                        main_checked = std::time::Instant::now();
+                    }
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
-                    let _ = app_lv.emit("audio_level", v);
+                    emit_audio_level(&app_lv, v, main_visible);
                     let mic_switch_now = record::mic_switch_seq();
                     if mic_switch_now != mic_switch_seen {
                         mic_switch_seen = mic_switch_now;
@@ -3191,7 +3231,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
                         break;
                     }
                 }
-                let _ = app_lv.emit("audio_level", 0.0);
+                // The zeroing frame always reaches both windows, so a habitat
+                // that was hidden mid-take never keeps a stale lit beam.
+                emit_audio_level(&app_lv, 0.0, true);
             });
         }
         Err(e) => {
@@ -14375,6 +14417,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// SP-11 — the float pill always gets the mic level; the main window only
+    /// while it is shown, and the visibility read never runs at HUD cadence.
+    #[test]
+    fn audio_level_targets_float_always_main_only_when_visible() {
+        assert_eq!(super::audio_level_targets(false).to_vec(), vec!["float"]);
+        assert_eq!(
+            super::audio_level_targets(true).to_vec(),
+            vec!["float", "main"]
+        );
+        assert!(super::LEVEL_MAIN_RECHECK > super::HUD_FRAME);
+    }
+
     /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
     /// recovery dir is LISTED (a `failed_dictations` row with a Retry) without
     /// waiting for a relaunch; a silent one is deleted instead; a second pass
