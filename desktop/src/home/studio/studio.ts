@@ -17,7 +17,14 @@
  *   - Shelly's nook: plugged in while the Mac charges; the meter shows the real
  *     battery level (no meter on a Mac without a battery).
  *   - Ember's window: one firefly per streak day, at night only, at most 7.
- *   - The back room: Sal on the furnace by the back door, Mochi on the frame.
+ *   - The back room (yap-1106-sal-and-mochi): Sal sits on the furnace by the
+ *     back door and LIGHTS it while the speech engine loads (the engine is
+ *     ready when the fire is; a cold furnace = the model is not on this Mac
+ *     yet). Mochi hangs over the door frame, and climbs down onto the door
+ *     itself during a Focus / Do Not Disturb or a screen share (the quiet
+ *     state pill_quiet.rs emits), the reason the whole crew goes silent.
+ *     Both are ROOM-ONLY: they never appear in the pill (friendVisits.ts
+ *     ROOM_ONLY, characterFit.ts PILL_CHARACTERS; salMochi.test.ts pins it).
  *   - Cinder delivers the news at the back door when a briefing is waiting.
  *
  * Budget (FB-08): idle redraw at most once a minute; reduce motion = one still
@@ -91,6 +98,14 @@ export interface StudioState {
   streakDays: number | null;
   /** A morning briefing is waiting: Cinder stands at the back door with it. */
   newsReady: boolean;
+  /** yap-1106-sal-and-mochi: the speech engine is loading (AppStatus.engineLoading). */
+  engineLoading: boolean;
+  /** The speech model is on this Mac (AppStatus.modelReady); null = not known yet. */
+  modelReady: boolean | null;
+  /** The screen is shared or presented (pill_quiet `screenSharing`). */
+  screenSharing: boolean;
+  /** A Focus / Do Not Disturb is on (pill_quiet `doNotDisturb`). */
+  doNotDisturb: boolean;
   yappy: YappyPose;
 }
 
@@ -103,6 +118,10 @@ export const EMPTY_STUDIO_INPUTS: StudioInputs = {
   battery: null,
   streakDays: null,
   newsReady: false,
+  engineLoading: false,
+  modelReady: null,
+  screenSharing: false,
+  doNotDisturb: false,
 };
 
 /* ── pure station rules ─────────────────────────────────────────────────── */
@@ -188,6 +207,61 @@ export function yappyPose(d: { appState: HabitatAppState; activity: string; reac
   return "rest";
 }
 
+/* ── the back room: Sal's furnace and Mochi's door (yap-1106-sal-and-mochi) ── */
+
+/** lit = the engine is ready; lighting = Sal is lighting it (engine loading); cold = no model yet. */
+export type FurnaceState = "lit" | "lighting" | "cold";
+
+/** The furnace follows the real speech engine: the engine is ready when the fire is. */
+export function furnaceState(s: Pick<StudioState, "engineLoading" | "modelReady">): FurnaceState {
+  if (s.engineLoading === true) return "lighting";
+  if (s.modelReady === false) return "cold";
+  return "lit";
+}
+
+/** One lighting loop (seconds): the flame grows from a spark to the full fire, then Sal strikes again. */
+export const LIGHTING_CYCLE_S = 1.2;
+/** The lit furnace's flame (art px radii), the approved artifact's fire. */
+export const FULL_FLAME = { rx: 6, ry: 5 } as const;
+
+/** The flame's radii at `t`, or null for a cold furnace. Lighting never outgrows the lit fire. */
+export function furnaceFlame(f: FurnaceState, t: number): { rx: number; ry: number } | null {
+  if (f === "cold") return null;
+  if (f === "lit") return { rx: FULL_FLAME.rx, ry: FULL_FLAME.ry };
+  const tt = finite(t) && t > 0 ? t : 0;
+  const k = Math.min(4, Math.floor(((tt % LIGHTING_CYCLE_S) / LIGHTING_CYCLE_S) * 5));
+  return { rx: 2 + k, ry: 1 + k };
+}
+
+/** Why Mochi is on the door, or null when she is up on the frame (a screen share outranks a Focus). */
+export function mochiQuietReason(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): "screen-sharing" | "do-not-disturb" | null {
+  if (s.screenSharing === true) return "screen-sharing";
+  if (s.doNotDisturb === true) return "do-not-disturb";
+  return null;
+}
+
+/** Mochi hangs on the door during a Focus / Do Not Disturb or a screen share. */
+export function mochiOnDoor(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): boolean {
+  return mochiQuietReason(s) !== null;
+}
+
+/** Mochi over the door frame (the approved spot) and on the door's upper panel (quiet). */
+export const MOCHI_ON_FRAME = { x: 278, y: 12 } as const;
+export const MOCHI_ON_DOOR = { x: 279, y: 36 } as const;
+
+/** Where Mochi hangs (her sprite's top-left, art px). */
+export function mochiSpot(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): { x: number; y: number } {
+  return mochiOnDoor(s) ? { ...MOCHI_ON_DOOR } : { ...MOCHI_ON_FRAME };
+}
+
+/** Sal's sprite frame: busy while lighting, dozing by a cold furnace, a slow blink when lit. */
+export function salFrame(f: FurnaceState, t: number): number {
+  const tt = finite(t) ? t : 0;
+  if (f === "lighting") return Math.floor(tt * 4) % 2 === 0 ? 0 : 1;
+  if (f === "cold") return 1;
+  return Math.floor(tt * 2) % 2 === 0 ? 0 : 1;
+}
+
 /** Reduce motion's one still frame is drawn at this t (no friend mid-blink). */
 export const STILL_T = 1;
 
@@ -214,6 +288,8 @@ export interface RedrawInputs {
   reacting: boolean;
   parallaxSettling: boolean;
   meetingRecording: boolean;
+  /** yap-1106-sal-and-mochi: Sal is lighting the furnace (the engine is loading) — the flame moves. */
+  furnaceLighting?: boolean;
 }
 
 /**
@@ -223,7 +299,7 @@ export interface RedrawInputs {
  */
 export function redrawPlan(i: RedrawInputs): { mode: RedrawMode; delayMs: number | null } {
   if (i.reduceMotion) return { mode: "still", delayMs: null };
-  if (i.appState !== "idle" || i.reacting || i.parallaxSettling) return { mode: "live", delayMs: LIVE_FRAME_MS };
+  if (i.appState !== "idle" || i.reacting || i.parallaxSettling || i.furnaceLighting === true) return { mode: "live", delayMs: LIVE_FRAME_MS };
   if (i.meetingRecording) return { mode: "tick", delayMs: MEETING_REDRAW_MS };
   return { mode: "idle", delayMs: IDLE_REDRAW_MS };
 }
@@ -353,10 +429,14 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   const cards = jarCards(s.dictionarySize);
   for (let n = 0; n < cards; n++) h.r(265 + ((n * 3) % 4), FLOOR - 4 - n * 3, 6, 2, n % 2 ? "#fff2b0" : "#fffdf5");
   stamp(o, "gulp", 220, FLOOR - 37, (t % 5) < 0.6 ? 1 : 0);
-  // The back room: Sal's furnace + Sal on top; Mochi on the door frame.
+  // The back room: Sal's furnace + Sal on top (lighting it while the engine
+  // loads); Mochi over the door frame, or ON the door during a Focus / DND / share.
   h.r(282, FLOOR - 28, 30, 28, "#2a2d35"); h.r(284, FLOOR - 26, 26, 24, "#3b3f4a"); h.r(296, FLOOR - 70, 4, 42, "#2a2d35");
-  stamp(o, "sal", 274, FLOOR - 56, fr);
-  stamp(o, "mochi", 278, 12, 1);
+  const furnace = furnaceState(s);
+  if (furnace === "cold") { h.r(291, FLOOR - 8, 12, 2, "#6a6a72"); h.r(293, FLOOR - 9, 3, 1, "#8a8a92"); h.r(299, FLOOR - 9, 2, 1, "#8a8a92"); }
+  stamp(o, "sal", 274, FLOOR - 56, salFrame(furnace, t));
+  const mochi = mochiSpot(s);
+  stamp(o, "mochi", mochi.x, mochi.y, 1);
   // Cinder's news delivery at the back door, when a briefing is waiting.
   if (s.newsReady) {
     stamp(o, "cinder", 240, FLOOR - 40, Math.floor(t * 3) % 2, { talk: Math.floor(t * 3) % 2 === 1, t });
@@ -390,7 +470,8 @@ export function drawFront(o: StudioCtx, s: StudioState, t: number): void {
  */
 export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: number, midDx: number): void {
   const band = skyBand(s.phase);
-  const fr = Math.floor(t * 2) % 2;
+  // A NaN or negative clock must still pick a real bunting colour (raster takes hex only).
+  const fr = finite(t) ? ((Math.floor(t * 2) % 2) + 2) % 2 : 0;
   o.save();
   o.translate(backDx, 0);
   const h = H(o);
@@ -416,7 +497,20 @@ export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: numb
   o.save();
   o.translate(midDx, 0);
   const m = H(o);
-  m.ell(297, FLOOR - 12, 6, 5, fr ? "#ff8a3c" : "#ffb04a"); m.ell(297, FLOOR - 11, 3, 3, "#ffe27a");
+  // Sal's furnace: the full fire when the engine is ready, a growing flame plus
+  // the sparks from Sal's tail while it loads, nothing when it is cold.
+  const furnace = furnaceState(s);
+  const flame = furnaceFlame(furnace, t);
+  if (flame) {
+    m.ell(297, FLOOR - 12, flame.rx, flame.ry, fr ? "#ff8a3c" : "#ffb04a");
+    m.ell(297, FLOOR - 11, Math.min(3, flame.rx - 1), Math.min(3, flame.ry), "#ffe27a");
+  }
+  if (furnace === "lighting") {
+    for (let i = 0; i < 3; i++) {
+      const p = (((finite(t) ? t : 0) * 1.5 + i / 3) % 1 + 1) % 1;
+      m.r(316 - Math.round(p * 12), FLOOR - 38 + Math.round(p * 24), 1, 1, i % 2 ? "#ffd23f" : "#fff2b0");
+    }
+  }
   const flies = fireflyCount(s.streakDays, band);
   for (let i = 0; i < flies; i++) {
     const [fx, fy] = FIREFLY_SPOTS[i];
@@ -439,20 +533,132 @@ export function roomTintAlpha(sky: Pick<StudioSky, "ambA"> | null | undefined): 
   return Math.max(0, Math.min(MAX_TINT, a * 0.7));
 }
 
+/* ── the wooden pixel frame (yap-1106-fb-24, home.html section 5) ───────────
+ * "The room now hangs in a wooden pixel frame: a dark edge, a lit top and left,
+ * shaded bottom and right, brass corner pegs and a small brass plate. It's drawn
+ * inside the picture at 3x, so it stays crisp and the room is still edge to edge."
+ * A byte-exact port of sideview.js `frame()`. It lives in the BUFFER (so it
+ * scales with the room at the same whole-number cell, no smoothing, no margin),
+ * it never moves with the parallax, and it is drawn ONCE into an offscreen
+ * canvas (`createFrameCache`) that every redraw blits, so the budget is unchanged.
+ * Pixel-art palette: named here beside the room art, not in tokens.css. */
+
+/** The frame's rail width in buffer px (artifact `F`). */
+export const FRAME_F = 5;
+/** The brass plate's width in buffer px, centred on the bottom rail. */
+export const PLATE_W = 28;
+/** The plate's left edge in buffer px (artifact `Math.floor(W / 2) - 14`). */
+export const PLATE_X = Math.floor(STUDIO_W / 2) - PLATE_W / 2;
+/** The four 2 x 2 brass corner pegs (top-left corners, buffer px). */
+export const FRAME_PEGS: readonly (readonly [number, number])[] = [
+  [2, 2],
+  [STUDIO_W - 4, 2],
+  [2, STUDIO_H - 4],
+  [STUDIO_W - 4, STUDIO_H - 4],
+];
+
+/** The frame's palette (artifact colours, verbatim). */
+export const FRAME_PAL = {
+  edgeLit: "#3a2418", // the dark outer edge, top + left (and the inner edge)
+  edgeShade: "#2a1a10", // the dark outer edge, bottom + right
+  faceTop: "#8a5a36",
+  faceLeft: "#7a4b2e",
+  faceShade: "#6b4428", // bottom + right rails
+  litTop: "#c48a52",
+  litLeft: "#b8763f",
+  shade: "#4a2c1e", // the shaded bottom + right bevel
+  grainLit: "#9a6a40", // grain dashes on the lit rails (every 11 / 13 px)
+  grainShade: "#5a3420", // grain dashes on the shaded rails, and the inner lower/right edge
+  innerShadow: "#000000", // drawn at INNER_SHADOW_TOP / INNER_SHADOW_LEFT alpha
+  peg: "#e8c86a",
+  pegShine: "#fff2b0",
+  plate: "#c9a03a",
+  plateLit: "#f0d27a",
+  plateShade: "#8a6a1f",
+  plateTick: "#6b4f15",
+} as const;
+/** The inner shadow under the top / left rails (artifact rgba(0,0,0,.18) / .12). */
+export const INNER_SHADOW_TOP = 0.18;
+export const INNER_SHADOW_LEFT = 0.12;
+
 /** The wooden pixel frame (artifact `frame`), in the buffer so it scales with the room. */
 export function drawFrame(o: PixelCtx): void {
-  const h = H(o), F = 5, W = STUDIO_W, Hh = STUDIO_H;
-  h.r(0, 0, W, F, "#8a5a36"); h.r(0, Hh - F, W, F, "#6b4428"); h.r(0, 0, F, Hh, "#7a4b2e"); h.r(W - F, 0, F, Hh, "#6b4428");
-  h.r(1, 1, W - 2, 1, "#c48a52"); h.r(1, 1, 1, Hh - 2, "#b8763f"); h.r(1, Hh - 2, W - 2, 1, "#4a2c1e"); h.r(W - 2, 1, 1, Hh - 2, "#4a2c1e");
-  for (let x = 8; x < W - 8; x += 11) { h.r(x, 2, 4, 1, "#9a6a40"); h.r(x + 5, Hh - 3, 3, 1, "#5a3420"); }
-  for (let y = 9; y < Hh - 9; y += 13) { h.r(2, y, 1, 4, "#9a6a40"); h.r(W - 3, y + 5, 1, 3, "#5a3420"); }
-  h.r(0, 0, W, 1, "#3a2418"); h.r(0, Hh - 1, W, 1, "#2a1a10"); h.r(0, 0, 1, Hh, "#3a2418"); h.r(W - 1, 0, 1, Hh, "#2a1a10");
-  h.r(F, F, W - F * 2, 1, "#3a2418"); h.r(F, F, 1, Hh - F * 2, "#3a2418"); h.r(F, Hh - F - 1, W - F * 2, 1, "#5a3420"); h.r(W - F - 1, F, 1, Hh - F * 2, "#5a3420");
-  h.r(F + 1, F + 1, W - F * 2 - 2, 1, "#000000", 0.18); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, "#000000", 0.12);
-  [[2, 2], [W - 4, 2], [2, Hh - 4], [W - 4, Hh - 4]].forEach((c) => { h.r(c[0], c[1], 2, 2, "#e8c86a"); h.r(c[0], c[1], 1, 1, "#fff2b0"); });
-  const px = Math.floor(W / 2) - 14;
-  h.r(px, Hh - F, 28, F, "#c9a03a"); h.r(px, Hh - F, 28, 1, "#f0d27a"); h.r(px, Hh - 1, 28, 1, "#8a6a1f"); h.r(px + 1, Hh - F + 1, 1, 1, "#8a6a1f"); h.r(px + 26, Hh - F + 1, 1, 1, "#8a6a1f");
-  for (let q = 0; q < 6; q++) h.r(px + 5 + q * 3, Hh - 3, 2, 1, "#6b4f15");
+  const h = H(o), F = FRAME_F, W = STUDIO_W, Hh = STUDIO_H, P = FRAME_PAL;
+  h.r(0, 0, W, F, P.faceTop); h.r(0, Hh - F, W, F, P.faceShade); h.r(0, 0, F, Hh, P.faceLeft); h.r(W - F, 0, F, Hh, P.faceShade);
+  h.r(1, 1, W - 2, 1, P.litTop); h.r(1, 1, 1, Hh - 2, P.litLeft); h.r(1, Hh - 2, W - 2, 1, P.shade); h.r(W - 2, 1, 1, Hh - 2, P.shade);
+  for (let x = 8; x < W - 8; x += 11) { h.r(x, 2, 4, 1, P.grainLit); h.r(x + 5, Hh - 3, 3, 1, P.grainShade); }
+  for (let y = 9; y < Hh - 9; y += 13) { h.r(2, y, 1, 4, P.grainLit); h.r(W - 3, y + 5, 1, 3, P.grainShade); }
+  h.r(0, 0, W, 1, P.edgeLit); h.r(0, Hh - 1, W, 1, P.edgeShade); h.r(0, 0, 1, Hh, P.edgeLit); h.r(W - 1, 0, 1, Hh, P.edgeShade);
+  h.r(F, F, W - F * 2, 1, P.edgeLit); h.r(F, F, 1, Hh - F * 2, P.edgeLit); h.r(F, Hh - F - 1, W - F * 2, 1, P.grainShade); h.r(W - F - 1, F, 1, Hh - F * 2, P.grainShade);
+  h.r(F + 1, F + 1, W - F * 2 - 2, 1, P.innerShadow, INNER_SHADOW_TOP); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, P.innerShadow, INNER_SHADOW_LEFT);
+  FRAME_PEGS.forEach((c) => { h.r(c[0], c[1], 2, 2, P.peg); h.r(c[0], c[1], 1, 1, P.pegShine); });
+  const px = PLATE_X;
+  h.r(px, Hh - F, PLATE_W, F, P.plate); h.r(px, Hh - F, PLATE_W, 1, P.plateLit); h.r(px, Hh - 1, PLATE_W, 1, P.plateShade); h.r(px + 1, Hh - F + 1, 1, 1, P.plateShade); h.r(px + PLATE_W - 2, Hh - F + 1, 1, 1, P.plateShade);
+  for (let q = 0; q < 6; q++) h.r(px + 5 + q * 3, Hh - 3, 2, 1, P.plateTick);
+}
+
+/** True for a buffer pixel the frame paints OPAQUE: the four rails plus the
+ *  1 px inner edge (the rgba inner shadow beyond it blends with the room). */
+export function isFramePixel(x: number, y: number): boolean {
+  const b = FRAME_F + 1;
+  return x < b || y < b || x >= STUDIO_W - b || y >= STUDIO_H - b;
+}
+
+/** The offscreen frame: drawn once on first use, blitted on every later redraw. */
+export interface FrameCache<C> {
+  /** The cached frame surface (STUDIO_W x STUDIO_H, transparent inside the rails). */
+  get(): C;
+  /** renders = times the frame was painted (1 after the first get); hits = later gets served from the cache. */
+  readonly stats: { renders: number; hits: number };
+}
+
+/** `make` returns a fresh STUDIO_W x STUDIO_H surface and its 2D context. */
+export function createFrameCache<C>(make: () => { surface: C; ctx: PixelCtx }): FrameCache<C> {
+  const stats = { renders: 0, hits: 0 };
+  let cached: C | null = null;
+  return {
+    stats,
+    get() {
+      if (cached !== null) {
+        stats.hits++;
+        return cached;
+      }
+      const { surface, ctx } = make();
+      drawFrame(ctx);
+      stats.renders++;
+      cached = surface;
+      return surface;
+    },
+  };
+}
+
+/** What the compositor needs (a 2D canvas context and the test Raster both satisfy it). */
+export interface StudioBlitter<S> extends StudioCtx {
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
+  drawImage(src: S, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
+}
+
+/**
+ * One studio picture into the STUDIO_W x STUDIO_H buffer `o`: the three
+ * painted layers (each PAD wider per side) at their parallax offsets, the sky
+ * tint, the lights, then the cached frame at (0, 0) — the frame never shifts.
+ */
+export function composeStudio<S>(
+  o: StudioBlitter<S>,
+  layers: readonly S[],
+  frame: S,
+  offs: readonly [number, number, number],
+  s: StudioState,
+  t: number,
+): void {
+  const W = STUDIO_W, Hh = STUDIO_H, LW = STUDIO_W + PAD * 2;
+  o.setTransform(1, 0, 0, 1, 0, 0);
+  o.clearRect(0, 0, W, Hh);
+  layers.forEach((c, i) => o.drawImage(c, 0, 0, LW, Hh, -PAD + offs[i], 0, LW, Hh));
+  drawTint(o, s);
+  drawLights(o, s, t, offs[0], offs[1]);
+  o.drawImage(frame, 0, 0, W, Hh, 0, 0, W, Hh);
 }
 
 /** The three layer painters, back to front (each is drawn into a PAD-wide layer). */
@@ -473,6 +679,25 @@ export function studioAriaLabel(s: StudioState): string {
   const flies = fireflyCount(s.streakDays, band);
   if (flies > 0) parts.push(`Ember has ${flies} ${flies === 1 ? "firefly" : "fireflies"} out for your streak.`);
   if (s.newsReady) parts.push("Cinder is at the back door with the news.");
-  parts.push("Sal keeps the furnace warm in the back room and Mochi hangs over the door.");
+  parts.push(studioBackRoomLabel(s));
   return parts.join(" ");
+}
+
+/** The back room in plain words (Sal's furnace, Mochi's spot), from the same rules the picture draws. */
+export function studioBackRoomLabel(s: Pick<StudioState, "engineLoading" | "modelReady" | "screenSharing" | "doNotDisturb">): string {
+  const furnace = furnaceState(s);
+  const sal =
+    furnace === "lighting"
+      ? "Sal is lighting the furnace in the back room while the speech engine loads."
+      : furnace === "cold"
+        ? "Sal waits by a cold furnace in the back room: the speech engine is not ready yet."
+        : "Sal keeps the furnace warm in the back room.";
+  const why = mochiQuietReason(s);
+  const mochi =
+    why === "screen-sharing"
+      ? "Mochi hangs on the door, so the crew stays quiet while your screen is shared."
+      : why === "do-not-disturb"
+        ? "Mochi hangs on the door, so the crew stays quiet during Do Not Disturb."
+        : "Mochi hangs over the door.";
+  return `${sal} ${mochi}`;
 }

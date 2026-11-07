@@ -159,6 +159,35 @@ describe("the Meetings view source", () => {
     expect(body.indexOf("{hero}")).toBeLessThan(body.indexOf('className="meetings-panes"'));
   });
 
+  it("yap-1107: a row's hover/focus changes colour only — no revealed bar, no hidden date, no reflow", () => {
+    // No rule anywhere in the Meetings CSS reveals, hides or repositions on row hover/focus.
+    expect(meetingsCss).not.toMatch(/\.meeting-row:(hover|focus-within)\s+\.actions/);
+    expect(meetingsCss).not.toMatch(/\.meeting-row:(hover|focus-within)\s+\.meeting-row-when/);
+    expect(meetingsCss).not.toMatch(/\.meeting-row\s+\.actions/);
+    // The one hover rule in the list pane sets a background and nothing else.
+    const hover = meetingsCss.match(/\.meetings-list-pane \.meeting-row:hover\s*\{([^}]*)\}/);
+    expect(hover).not.toBeNull();
+    const props = (hover?.[1] ?? "").split(";").map((d) => d.split(":")[0].trim()).filter(Boolean);
+    expect(props).toEqual(["background"]);
+    // The row does not wrap (the old hover bar wrapped onto a second line).
+    expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row\s*\{[^}]*flex-wrap:\s*nowrap/);
+    // The status column is laid out in every state: no opacity/visibility/display/position toggles.
+    const status = meetingsCss.match(/\.meeting-row-status\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(status).toContain("flex: none");
+    expect(status).not.toMatch(/opacity|visibility|display:\s*none|position/);
+  });
+
+  it("yap-1107: the old one-pane title-button styles are gone and the whole row is the open button", () => {
+    const title = meetingsCss.match(/\.meeting-row-title\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(title).not.toContain("cursor");
+    expect(meetingsCss).not.toMatch(/\.meeting-row-title:hover/);
+    expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row-main\s*\{[^}]*align-self:\s*stretch/);
+    expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row\s*\{[^}]*padding:\s*0/);
+    // Export's list is fixed-position (portalled), never absolute inside a clipping row.
+    expect(meetingsCss).toMatch(/\.floating-menu\s*\{[^}]*position:\s*fixed/);
+    expect(meetingsCss).not.toContain(".export-menu-list");
+  });
+
   it("deletes through the 10 s Undo, never at once", () => {
     expect(meetingsView).toContain("schedulePendingDelete(");
     expect(meetingsView).toContain("<UndoDeleteBar");
