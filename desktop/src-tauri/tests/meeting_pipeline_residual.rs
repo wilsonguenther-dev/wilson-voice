@@ -810,7 +810,10 @@ fn a_meeting_interrupted_by_quit_is_requeued_at_reconcile_and_completes() {
     let pipeline = meeting_pipeline::spawn(d);
     pipeline.enqueue(&id);
     let started = Instant::now();
-    assert_eq!(pipeline.stop_and_join(Duration::from_secs(5)), WorkerJoin::Joined);
+    assert_eq!(
+        pipeline.stop_and_join(Duration::from_secs(5)),
+        WorkerJoin::Joined
+    );
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "the stop cuts the start delay short"
@@ -821,7 +824,11 @@ fn a_meeting_interrupted_by_quit_is_requeued_at_reconcile_and_completes() {
         WorkerJoin::NotRunning,
         "a second join has nothing to join"
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "no window decoded after the quit");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no window decoded after the quit"
+    );
     assert_eq!(state_of(&db, &id).0, "transcribing");
     assert!(quit_marker_path(&dir, &id).exists(), "the quit is recorded");
     // A forced `_exit` never reaches the worker's own clear of the attempt
@@ -840,12 +847,23 @@ fn a_meeting_interrupted_by_quit_is_requeued_at_reconcile_and_completes() {
     let mut relaunch = Vec::new();
     let seen = Mutex::new(&mut relaunch);
     let out = reconcile_stranded_meetings(&db, &dir, &|m| seen.lock().unwrap().push(m.to_string()));
-    assert_eq!(relaunch, vec![id.clone()], "the interrupted meeting is re-queued");
+    assert_eq!(
+        relaunch,
+        vec![id.clone()],
+        "the interrupted meeting is re-queued"
+    );
     assert_eq!(
         out,
-        vec![(id.clone(), "transcribing".to_string(), "transcribing".to_string())]
+        vec![(
+            id.clone(),
+            "transcribing".to_string(),
+            "transcribing".to_string()
+        )]
     );
-    assert!(!quit_marker_path(&dir, &id).exists(), "the quit marker is consumed");
+    assert!(
+        !quit_marker_path(&dir, &id).exists(),
+        "the quit marker is consumed"
+    );
     assert!(
         read_attempt_marker(&dir, &id).is_none(),
         "a quit never counts toward the crash-loop guard"
@@ -862,6 +880,9 @@ fn a_meeting_interrupted_by_quit_is_requeued_at_reconcile_and_completes() {
     assert_eq!(state_of(&db, &id).0, "complete");
     assert!(calls.load(Ordering::SeqCst) > 0);
     assert!(!quit_marker_path(&dir, &id).exists());
-    assert_eq!(pipeline.stop_and_join(Duration::from_secs(5)), WorkerJoin::Joined);
+    assert_eq!(
+        pipeline.stop_and_join(Duration::from_secs(5)),
+        WorkerJoin::Joined
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

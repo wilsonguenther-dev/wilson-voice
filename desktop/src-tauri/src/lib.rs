@@ -175,9 +175,6 @@ pub mod net;
 pub mod news;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
-/// yap-1106-friend-visits — Focus / Do Not Disturb (and screen share) quiet signal for pill friend visits.
-pub mod pill_quiet;
-pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
 pub mod nudge;
@@ -2813,7 +2810,10 @@ fn exit_leftovers(device_live: bool, meeting_worker_alive: bool) -> Vec<&'static
 
 /// The one line a forced quit leaves.
 fn exit_forced_line(after_ms: u128, leftovers: &[&str]) -> String {
-    format!("exit forced_after_ms={after_ms} live={}", leftovers.join(","))
+    format!(
+        "exit forced_after_ms={after_ms} live={}",
+        leftovers.join(",")
+    )
 }
 
 /// The teardown could not free everything in time. The WAL checkpoint has
@@ -16877,7 +16877,10 @@ mod tests {
             ],
             "the engine is dropped on its owning thread, before the join, before exit()"
         );
-        assert!(cancel.load(Ordering::SeqCst), "the meeting decode was cancelled");
+        assert!(
+            cancel.load(Ordering::SeqCst),
+            "the meeting decode was cancelled"
+        );
         assert!(!manager.device_live(), "no ggml device survives to exit()");
         assert!(
             super::exit_leftovers(manager.device_live(), false).is_empty(),
@@ -16948,7 +16951,10 @@ mod tests {
             "exit forced_after_ms=1234 live=asr_engine,meeting_worker"
         );
         assert!(
-            !log.lock().unwrap().iter().any(|e| e.starts_with("engine_drop")),
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.starts_with("engine_drop")),
             "the wedged engine is still owned by its worker when the quit gives up"
         );
 

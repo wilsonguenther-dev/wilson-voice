@@ -5932,8 +5932,15 @@ mod tests {
     #[test]
     fn misheard_seed_runs_once_on_wilsons_install_only() {
         let (db, dir) = fresh_db("vocab-seed-wilson");
-        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "empty history");
-        assert!(db.setting_get(MISHEARD_SEED_KEY).is_none(), "re-checked next open");
+        assert_eq!(
+            db.seed_misheard_if_wilsons_install().unwrap(),
+            0,
+            "empty history"
+        );
+        assert!(
+            db.setting_get(MISHEARD_SEED_KEY).is_none(),
+            "re-checked next open"
+        );
         db.insert_transcript(
             "send the Drivia deck to Jeisil".into(),
             "native".into(),
@@ -5945,7 +5952,11 @@ mod tests {
         .unwrap();
         assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 9);
         assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("seeded"));
-        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "one-time");
+        assert_eq!(
+            db.seed_misheard_if_wilsons_install().unwrap(),
+            0,
+            "one-time"
+        );
         let dict = db.list_dictionary().unwrap();
         let pair = |t: &str| {
             dict.iter()
@@ -5970,8 +5981,15 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0);
-        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("skipped"));
-        assert!(db.list_dictionary().unwrap().iter().all(|d| d.term != "Trivia"));
+        assert_eq!(
+            db.setting_get(MISHEARD_SEED_KEY).as_deref(),
+            Some("skipped")
+        );
+        assert!(db
+            .list_dictionary()
+            .unwrap()
+            .iter()
+            .all(|d| d.term != "Trivia"));
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -5983,7 +6001,8 @@ mod tests {
         let (db, dir) = fresh_db("vocab-dictation");
         assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 9);
         assert_eq!(
-            db.apply_dictionary("ask Gunther about Plus Lane and trivia night").unwrap(),
+            db.apply_dictionary("ask Gunther about Plus Lane and trivia night")
+                .unwrap(),
             "ask Guenther about Postline and trivia night"
         );
         let (out, n) = db

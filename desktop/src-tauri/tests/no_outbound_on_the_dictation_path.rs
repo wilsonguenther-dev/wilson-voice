@@ -187,10 +187,7 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
         // sends the user's topic words as search words, tickers and the
         // user's quote key — never audio, text, history or anything dictated.
         "Yappy News",
-        &[
-            ("news/feeds.rs", "use"),
-            ("news/feeds.rs", "news_feed_get"),
-        ],
+        &[("news/feeds.rs", "use"), ("news/feeds.rs", "news_feed_get")],
     ),
 ];
 

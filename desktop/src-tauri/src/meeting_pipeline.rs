@@ -588,7 +588,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
     let worker = match spawned {
         Ok(handle) => Some(handle),
         Err(e) => {
-            diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
+            diag_error!(
+                "meeting_pipeline",
+                "meeting pipeline: worker thread failed to spawn: {err}",
+                err = e
+            );
             None
         }
     };
@@ -854,7 +858,12 @@ pub fn write_quit_marker(dir: &Path, meeting_id: &str) {
     let path = quit_marker_path(dir, meeting_id);
     let _ = std::fs::create_dir_all(dir);
     if let Err(e) = std::fs::write(&path, b"quit\n") {
-        diag_warn!("meeting_pipeline", "meeting pipeline: cannot write {file}: {err}", file = crate::diagnostics::basename(&path), err = e);
+        diag_warn!(
+            "meeting_pipeline",
+            "meeting pipeline: cannot write {file}: {err}",
+            file = crate::diagnostics::basename(&path),
+            err = e
+        );
     }
 }
 

@@ -1710,8 +1710,7 @@ pub fn reconcile_stranded_meetings(
         // mid-job. Consumed for every stranded row (so no marker outlives its
         // row's reconcile); the marker also clears the attempt marker, so a
         // quit never counts toward the crash-loop guard.
-        let interrupted_by_quit =
-            crate::meeting_pipeline::take_quit_marker(progress_dir, &m.id);
+        let interrupted_by_quit = crate::meeting_pipeline::take_quit_marker(progress_dir, &m.id);
         let new_state = if state == MeetingState::Summarizing && m.segment_count > 0 {
             // Only the summary was interrupted. The pre-summary state was never
             // stored, and every shipped writer of `summarizing` cleared `error`
@@ -1800,7 +1799,10 @@ mod tests {
             requeue_reason(MeetingState::Transcribing, true),
             "interrupted_by_quit"
         );
-        assert_eq!(requeue_reason(MeetingState::Transcribing, false), "stranded");
+        assert_eq!(
+            requeue_reason(MeetingState::Transcribing, false),
+            "stranded"
+        );
         assert_eq!(
             requeue_reason(MeetingState::Recording, false),
             "crashed_while_recording"
