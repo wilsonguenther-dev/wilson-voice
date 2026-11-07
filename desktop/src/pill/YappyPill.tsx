@@ -22,6 +22,10 @@ import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { bucketFor } from "./tone";
 import { curseAllowed, noteTakeSignal, parseMemory, takeDoneLine, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
+// yap-1106-reaction-words — the 48 approved reaction words, matched against the
+// take's committed live words (transcript_partial), at most one per take.
+import { REACTION_IDLE, reactToPartial, type ReactionState } from "./reactionWords";
+import { parsePartial, TRANSCRIPT_PARTIAL_EVENT } from "./partialTranscript";
 // fix-b6-1-done-line-no-false-paste — the Copy card event, so the done line never claims a paste the card contradicts.
 import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import {
@@ -613,6 +617,43 @@ export default function YappyPill(
     // `cap = false` and is never cut.
     const say = (raw: string, cap = true) => bubbleQ.say(cap ? shortenBubble(raw, policy.maxChars) : raw);
     sayRef.current = (t: string) => say(t, false);
+    // yap-1106-reaction-words — Yappy reacts to a reaction word WHILE you talk.
+    // Only the committed words count (a word must be heard clearly; the
+    // tentative tail is a guess), at most one reaction per take (the state is
+    // keyed by the partial's take id), and only inside a take. The voice's own
+    // column decides the line: Professional answers only its plain-reply rows
+    // and Rose never reacts. Curse lines need `curseAllowed` (toggle on, Badass,
+    // no meeting) — the same belt-and-braces gate as the done line — and the
+    // strongest word shares the take lines' once-a-day memory. The chatter
+    // setting holds a reaction back the way it holds back a tier line.
+    let reaction: ReactionState = REACTION_IDLE;
+    const onPartial = (payload: unknown) => {
+      const p = parsePartial(payload);
+      if (!p) return;
+      try {
+        const today = localDay();
+        const out = reactToPartial(reaction, p.take, p.committed, {
+          voice: liveVoice,
+          listening: phase === "listening",
+          chatterAllows: allowDuringLine(policy, true, 0),
+          meeting: meetingRef.current,
+          curse: curseAllowed({ enabled: curseRef.current, voice: liveVoice, meeting: meetingRef.current, screenShared: false }),
+          rand: Math.random,
+          strongUsedToday: takeMemory.strongDay === today,
+        });
+        reaction = out.state;
+        if (out.log) console.info(out.log);
+        if (!out.reaction) return;
+        if (out.reaction.strongest) {
+          takeMemory = { ...takeMemory, strongDay: today };
+          saveTakeMemory(takeMemory);
+        }
+        say(out.reaction.line);
+      } catch (e) {
+        // A reaction is decoration: it must never break the take or the pill.
+        console.warn("pill reaction failed", e);
+      }
+    };
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
     // `LivePhase` without an accent here is a compile error, never a blank pill.
@@ -678,6 +719,7 @@ export default function YappyPill(
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
     listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<unknown>(TRANSCRIPT_PARTIAL_EVENT, (e) => onPartial(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
     listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }, { target: "float" }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV81 — the pill window's own visibility. Two sources, because neither is
     // complete on its own: `pill_visible` is the panel being ordered out/in by

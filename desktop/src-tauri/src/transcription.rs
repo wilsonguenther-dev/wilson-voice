@@ -1291,6 +1291,12 @@ impl TranscriptionManager {
                 return Err("the app is exiting".into());
             }
             self.inner.generation.fetch_add(1, Ordering::AcqRel);
+            // Reset the idle clock BEFORE the engine becomes visible, under the
+            // slot lock. `last_activity_ms` still holds the time of the last
+            // use — after an idle unload that is already past `idle_timeout` —
+            // so an idle watcher tick landing between this store and the
+            // `touch()` below would unload the engine we just built.
+            self.touch();
             *slot = Some(LoadedEngine {
                 model_id: model_id.to_string(),
                 engine,
