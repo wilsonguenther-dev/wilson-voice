@@ -1,7 +1,9 @@
 import { useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { FRIEND_EVENT } from "../pill/friendVisits";
 import { type DictEntry, type DictCandidate } from "../appTypes";
-import { raiseFriendEvent, useAppCtx } from "../appShell";
+import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 
@@ -85,7 +87,7 @@ export default function Dictionary() {
       // The pill decides whether he visits (quiet rules); a failed emit costs
       // only the visit, never the add.
       try {
-        raiseFriendEvent("word-added").catch((err: unknown) =>
+        emit(FRIEND_EVENT, { event: "word-added" }).catch((err: unknown) =>
           console.warn(`dictionary friend_event_failed reason=${err instanceof Error ? err.name : "unknown"}`));
       } catch (err) {
         console.warn(`dictionary friend_event_failed reason=${err instanceof Error ? err.name : "unknown"}`);

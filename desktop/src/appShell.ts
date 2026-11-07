@@ -3,8 +3,7 @@
 // No state field was renamed, no effect reordered, no listener duplicated.
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
-import { FRIEND_EVENT, type FriendEvent } from "./pill/friendVisits";
+import { listen } from "@tauri-apps/api/event";
 import {
   MEETING_PROGRESS_EVENT, foldProgress, notesStatusEvent, reloadsMeetings,
   type MeetingProgressEvent, type NotesStatus,
@@ -1604,16 +1603,6 @@ export type AppCtx = ReturnType<typeof useAppShell>;
 export const AppContext = createContext<AppCtx | null>(null);
 
 /** The one way a view reaches shell state. Throws if rendered outside App. */
-/**
- * yap-1106-friend-visits — a view raises a friend's own event (Gulp's
- * "word-added") through the shell, the one bridge to the backend's event bus,
- * so no view module imports @tauri-apps/api/event. The pill decides whether the
- * friend visits (quiet rules).
- */
-export function raiseFriendEvent(event: FriendEvent): Promise<void> {
-  return emit(FRIEND_EVENT, { event });
-}
-
 export function useAppCtx(): AppCtx {
   const v = useContext(AppContext);
   if (!v) throw new Error("useAppCtx must be used inside <AppContext.Provider>");

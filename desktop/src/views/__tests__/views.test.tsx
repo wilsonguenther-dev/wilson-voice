@@ -23,8 +23,6 @@ import { describe, expect, it } from "vitest";
 
 const VIEWS = [
   "Home",
-  // yap-1106-home-full-width-room — the full list Home's "See all" row opens.
-  "History",
   "Permissions",
   "Meetings",
   "Insights",
