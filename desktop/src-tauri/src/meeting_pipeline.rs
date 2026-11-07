@@ -269,7 +269,33 @@ pub struct MeetingPipeline {
     /// the recording clock straight to "Transcribing 0%" instead of going
     /// quiet while the ASR model loads for the first window.
     sink: ProgressSink,
+    /// yap-1106-quit-during-asr-crash — set by [`MeetingPipeline::stop_and_join`]:
+    /// the job in flight stands down at its next window and the worker thread
+    /// leaves its loop instead of starting the next queued meeting.
+    stop: Arc<AtomicBool>,
+    /// The worker thread, so the exit teardown can JOIN it — the engine a job
+    /// holds is dropped on that thread, and the join is how the quit knows it
+    /// was dropped BEFORE `exit()` runs ggml's C++ static destructors.
+    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Where the quit markers go (beside the resume ledgers).
+    progress_dir: PathBuf,
 }
+
+/// What [`MeetingPipeline::stop_and_join`] got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerJoin {
+    /// No worker thread to join (never spawned, or already joined).
+    NotRunning,
+    /// The worker left its loop and was joined inside the budget: every engine
+    /// its job held has been dropped on that thread.
+    Joined,
+    /// The worker is still inside a job when the budget ran out. The caller
+    /// must not let `exit()` run static destructors under it (`_exit` instead).
+    TimedOut,
+}
+
+/// Poll step for the bounded join.
+const JOIN_POLL: Duration = Duration::from_millis(5);
 
 impl MeetingPipeline {
     /// Queue a meeting. A meeting already queued is not queued twice.
@@ -292,6 +318,70 @@ impl MeetingPipeline {
             log::info!("meeting pipeline: queued {id}");
             (self.sink)(&queued_event(id));
         }
+    }
+
+    /// yap-1106-quit-during-asr-crash — the exit teardown's half of the worker:
+    /// tell the job in flight to stand down, mark every meeting still queued or
+    /// mid-job as interrupted by the quit (the next launch's reconcile re-queues
+    /// it and does not count the quit as a crash), wake an idle worker, and JOIN
+    /// the thread within `budget`.
+    ///
+    /// `TimedOut` leaves the handle in place, so [`worker_alive`] keeps saying
+    /// the thread is still running — the exit path then skips static
+    /// destructors with `_exit` rather than let ggml tear down a Metal device
+    /// a live decode is still using.
+    ///
+    /// [`worker_alive`]: Self::worker_alive
+    pub fn stop_and_join(&self, budget: Duration) -> WorkerJoin {
+        let started = Instant::now();
+        self.stop.store(true, Ordering::SeqCst);
+        let interrupted: Vec<String> = {
+            let (lock, _) = &*self.pending;
+            lock.lock()
+                .map(|p| p.queued.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        for id in &interrupted {
+            write_quit_marker(&self.progress_dir, id);
+        }
+        // An idle worker is blocked on the channel: an empty id wakes it, and
+        // the stop flag makes it leave instead of running anything.
+        if let Ok(tx) = self.tx.lock() {
+            let _ = tx.send(String::new());
+        }
+        let handle = self.worker.lock().ok().and_then(|mut h| h.take());
+        let Some(handle) = handle else {
+            return WorkerJoin::NotRunning;
+        };
+        while !handle.is_finished() {
+            if started.elapsed() >= budget {
+                if let Ok(mut slot) = self.worker.lock() {
+                    *slot = Some(handle);
+                }
+                log::warn!(
+                    "meeting_pipeline stop outcome=timed_out waited_ms={} interrupted={}",
+                    started.elapsed().as_millis(),
+                    interrupted.len()
+                );
+                return WorkerJoin::TimedOut;
+            }
+            std::thread::sleep(JOIN_POLL);
+        }
+        let _ = handle.join();
+        log::info!(
+            "meeting_pipeline stop outcome=joined waited_ms={} interrupted={}",
+            started.elapsed().as_millis(),
+            interrupted.len()
+        );
+        WorkerJoin::Joined
+    }
+
+    /// Is the worker thread still running? `false` once it has been joined.
+    pub fn worker_alive(&self) -> bool {
+        self.worker
+            .lock()
+            .map(|h| h.as_ref().is_some_and(|h| !h.is_finished()))
+            .unwrap_or(false)
     }
 
     /// Is a meeting queued or being transcribed? (yap24-NT4 R4)
@@ -363,8 +453,33 @@ pub fn enqueue(id: &str) -> bool {
     }
 }
 
+/// yap-1106-quit-during-asr-crash — the installed pipeline's worker is still
+/// running (the exit path's "may static destructors run?" question). `false`
+/// with no pipeline installed.
+pub fn installed_worker_alive() -> bool {
+    INSTALLED.get().is_some_and(MeetingPipeline::worker_alive)
+}
+
+/// yap-1106-quit-during-asr-crash — stop and join the installed pipeline's
+/// worker; `NotRunning` when none is installed.
+pub fn stop_and_join_installed(budget: Duration) -> WorkerJoin {
+    INSTALLED
+        .get()
+        .map(|p| p.stop_and_join(budget))
+        .unwrap_or(WorkerJoin::NotRunning)
+}
+
 /// Spawn the ONE worker thread.
 pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
+    let stop = Arc::new(AtomicBool::new(false));
+    // The job's own quit check also hears this pipeline's stop, so a job in
+    // flight stands down at its next window when the exit teardown asks.
+    let mut deps = deps;
+    let outer_quit = Arc::clone(&deps.quit);
+    let job_stop = Arc::clone(&stop);
+    deps.quit = Arc::new(move || job_stop.load(Ordering::SeqCst) || outer_quit());
+    let worker_stop = Arc::clone(&stop);
+    let progress_dir = deps.progress_dir.clone();
     let (tx, rx) = mpsc::channel::<String>();
     let pending = Arc::new((
         Mutex::new(Pending {
@@ -387,6 +502,16 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 waited += step;
             }
             for id in rx {
+                // yap-1106-quit-during-asr-crash — a quit leaves the loop here,
+                // so the next queued meeting never starts on an engine the exit
+                // teardown is taking away; it stays `transcribing` for the next
+                // launch's reconcile.
+                if worker_stop.load(Ordering::SeqCst) || quitting() {
+                    break;
+                }
+                if id.is_empty() {
+                    continue;
+                }
                 // R2: the whole job body is panic-contained — one panic fails
                 // that row and the FIFO keeps going.
                 crate::diagnostics::set_state("meeting.state", "processing");
@@ -403,6 +528,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 // Any in-process end of the job (including a caught panic)
                 // clears the crash marker: only a dead PROCESS leaves it.
                 clear_attempt_marker(&deps.progress_dir, &id);
+                // A job that reached an end state is no longer interrupted —
+                // only a stand-down (`transcribing`) keeps its quit marker.
+                if !matches!(&result, Ok(Ok(MeetingState::Transcribing))) {
+                    clear_quit_marker(&deps.progress_dir, &id);
+                }
                 match result {
                     Ok(Ok(state)) => {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
@@ -434,13 +564,20 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 cv.notify_all();
             }
         });
-    if let Err(e) = spawned {
-        diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
-    }
+    let worker = match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
+            None
+        }
+    };
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
         pending,
         sink,
+        stop,
+        worker: Arc::new(Mutex::new(worker)),
+        progress_dir,
     }
 }
 
@@ -655,6 +792,42 @@ fn clear_attempt_marker(dir: &Path, meeting_id: &str) {
     let _ = std::fs::remove_file(attempt_marker_path(dir, meeting_id));
 }
 
+// ── yap-1106-quit-during-asr-crash: a quit is not a crash ───────────────────
+
+/// `<progress_dir>/<id>.quit-interrupted` — written by the exit teardown for
+/// every meeting still queued or mid-job when the app quit. Its presence tells
+/// the next launch's reconcile WHY the row is `transcribing`.
+pub fn quit_marker_path(dir: &Path, meeting_id: &str) -> PathBuf {
+    dir.join(format!("{meeting_id}.quit-interrupted"))
+}
+
+/// Record that the quit interrupted this meeting's job.
+pub fn write_quit_marker(dir: &Path, meeting_id: &str) {
+    let path = quit_marker_path(dir, meeting_id);
+    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = std::fs::write(&path, b"quit\n") {
+        diag_warn!("meeting_pipeline", "meeting pipeline: cannot write {file}: {err}", file = crate::diagnostics::basename(&path), err = e);
+    }
+}
+
+fn clear_quit_marker(dir: &Path, meeting_id: &str) {
+    let _ = std::fs::remove_file(quit_marker_path(dir, meeting_id));
+}
+
+/// Launch side: was this meeting's job interrupted by a quit? Consumes the
+/// marker. When it was, the attempt marker that job left (a forced `_exit`
+/// never reaches the worker's clear) is removed too — quitting is not the
+/// meeting taking Yap down, so it must never count toward the crash-loop guard.
+pub fn take_quit_marker(dir: &Path, meeting_id: &str) -> bool {
+    let path = quit_marker_path(dir, meeting_id);
+    if !path.exists() {
+        return false;
+    }
+    clear_quit_marker(dir, meeting_id);
+    clear_attempt_marker(dir, meeting_id);
+    true
+}
+
 /// Ledger progress summed over both tracks — what "progress" means for R2.
 fn ledger_progress(dir: &Path, meeting_id: &str) -> f64 {
     let store = JsonProgressStore::new(dir);
@@ -764,6 +937,7 @@ pub fn meeting_sidecar_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
                     rest.ends_with(".asr-progress.json")
                         || rest == "asr-progress.json"
                         || rest == "index.jsonl"
+                        || rest == "quit-interrupted"
                         || (rest.starts_with('t') && rest.ends_with(".index.jsonl"))
                 })
                 .map(|e| e.path())
