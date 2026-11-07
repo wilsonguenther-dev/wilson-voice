@@ -2239,6 +2239,131 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
+    /// yap-1106-engine-owner (absorbs quit-during-asr-crash) — a stub engine
+    /// that records what happens to it, in order.
+    struct DropOrderStub {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl DropOrderStub {
+        fn decode(&self) -> Result<String, String> {
+            self.events.lock().push("decode_started");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if self.cancel.load(Ordering::Acquire) {
+                    self.events.lock().push("decode_returned");
+                    return Err("aborted".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.events.lock().push("decode_returned");
+            Ok("ran to the end".to_string())
+        }
+    }
+
+    impl Transcriber for DropOrderStub {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.decode()
+        }
+
+        fn transcribe_timed(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<asr_engine::TimedTranscript, String> {
+            self.decode().map(asr_engine::TimedTranscript::text_only)
+        }
+
+        fn cancel_handle(&self) -> Option<CancelHandle> {
+            let flag = self.cancel.clone();
+            let events = self.events.clone();
+            Some(Arc::new(move || {
+                events.lock().push("cancel");
+                flag.store(true, Ordering::Release);
+            }))
+        }
+
+        fn reset_cancel(&mut self) {
+            self.cancel.store(false, Ordering::Release);
+        }
+    }
+
+    impl Drop for DropOrderStub {
+        fn drop(&mut self) {
+            self.events.lock().push("engine_dropped");
+        }
+    }
+
+    /// The teardown order the quit crash needed: quit cancels the decode in
+    /// flight, the decode returns, the engine is DROPPED, and only then does
+    /// the drain return — i.e. before `exit()` could run any C++ static
+    /// destructor over a live Metal device.
+    #[test]
+    fn exit_teardown_cancels_the_decode_and_frees_the_engine_before_the_drain_returns() {
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let path = stub_model_file("stub.gguf");
+        let loader_events = events.clone();
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(DropOrderStub {
+                    events: loader_events.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        m.load("stub/model", &path).expect("load");
+        let chunk_manager = m.clone();
+        let chunk = std::thread::spawn(move || {
+            chunk_manager.transcribe_timed(vec![0.1f32; 16_000], None, None)
+        });
+        let started = Instant::now();
+        while !events.lock().contains(&"decode_started") {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the decode never started"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let outcome = m.drain_and_unload(Duration::from_secs(5));
+        events.lock().push("drain_returned");
+
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert_eq!(
+            chunk.join().expect("chunk thread").err().as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        let seen = events.lock().clone();
+        let at = |name: &str| {
+            seen.iter()
+                .position(|e| *e == name)
+                .unwrap_or_else(|| panic!("{name} never happened: {seen:?}"))
+        };
+        assert!(at("decode_started") < at("cancel"), "{seen:?}");
+        assert!(at("cancel") < at("decode_returned"), "{seen:?}");
+        assert!(at("decode_returned") < at("engine_dropped"), "{seen:?}");
+        assert!(
+            at("engine_dropped") < at("drain_returned"),
+            "the engine must be freed before the drain returns: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|e| **e == "engine_dropped").count(),
+            1,
+            "one engine, freed once: {seen:?}"
+        );
+        assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     /// yap-1106-engine-owner — quit closes the engine's job queue: a meeting
     /// chunk turned away is `ABANDONED_FOR_EXIT` (re-decoded next launch,
     /// never recorded as failed) and a dictation gets the plain quitting line.
