@@ -962,8 +962,17 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   gap: 6px;
   width: max-content;
   max-width: 96%;
-  padding: 5px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  /* yap-1106-fb-02 (batch-8 bounce) — the 1pt edge is an INSET SHADOW, not a
+     border, and the padding grows by the 1pt it gave back (same 26pt chip).
+     The square hit layer (`[data-pill-control]::after`, inset 0) covers the
+     PADDING box; with a real border its right and bottom edges sat exactly on
+     the probe's inner corners, which hit-test half-open, so the press fell
+     into the rounded border and through to Yappy's canvas (top-right,
+     bottom-left, bottom-right missed; top-left alone landed). With no border
+     the padding box IS the drawn box and every corner is 1pt inside the layer. */
+  padding: 6px 11px;
+  border: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   background: rgba(24, 24, 27, 0.92);
   color: rgba(255, 255, 255, 0.78);
@@ -972,6 +981,7 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   -webkit-app-region: no-drag;
 }
 .kami-blocked svg {
+  flex: none;
   width: 14px;
   height: 14px;
   fill: none;
@@ -981,12 +991,23 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   stroke-linejoin: round;
 }
 .kami-blocked .slash { stroke: var(--status-blocked); }
+/* The chip is clamped to Yappy's width (one-pill rule below). Its label gives
+   way inside it rather than spilling past the chip's right edge, where the
+   drawn text would sit outside the hit layer. The chip itself never clips:
+   an overflow clip on a 999px stadium would round the square layer off again. */
+.kami-blocked > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Y2-C — Yappy's refused-press chip, same capsule as the mic refusal above. */
 .kami-blocked.gated {
-  border-color: rgba(251, 191, 36, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.28);
   color: rgba(255, 255, 255, 0.86);
 }
 .kami-gated-glyph {
+  flex: none;
   font-style: normal;
   font-size: 13px;
   line-height: 1;

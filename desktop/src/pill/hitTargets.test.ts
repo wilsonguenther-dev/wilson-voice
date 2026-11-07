@@ -255,6 +255,40 @@ describe("fb-02 — the browser hit test agrees with the panel's rects", () => {
     }
   });
 
+  it("blocked_chip_corners_inside_its_hit_layer — the chip's edge is an inset shadow, so the square layer covers the drawn box", () => {
+    // Batch-8 bounce: with a 1pt border the layer (inset 0 = the PADDING box)
+    // ended exactly on the probe's right/bottom inner corners, which hit-test
+    // half-open, so top-right, bottom-left and bottom-right fell through the
+    // rounded border to Yappy's canvas. No border: padding box == drawn box.
+    const base = ruleBody(".kami-blocked");
+    expect(base.border).toBe("0");
+    expect(base["box-shadow"]).toMatch(/^inset 0 0 0 1px /);
+    expect(base.overflow).toBeUndefined(); // a clip on the 999px stadium would round the layer off
+    const gated = ruleBody(".kami-blocked.gated");
+    expect(gated["border-color"]).toBeUndefined();
+    expect(gated["box-shadow"]).toMatch(/^inset 0 0 0 1px /);
+    // Same 26pt chip as before: the padding took back the 1pt the border gave up.
+    const [pv, ph] = base.padding.split(/\s+/).map(px);
+    expect(14 + 2 * pv).toBe(26);
+    expect(ph).toBe(11);
+    // Every probe point of a chip, at its narrowest legal size, is strictly
+    // inside the layer (a half-open hit test can never put it on the edge).
+    const layer = ruleBody("[data-pill-control]:not(.slot, .ctrl)::after");
+    expect(layer.inset).toBe("0");
+    const chip: Rect4 = [10.5, 20.25, hit.MIN_HIT_PT + 0.5, 26];
+    for (const [x, y] of hit.probePoints(chip)) {
+      expect(x).toBeGreaterThan(chip[0]);
+      expect(x).toBeLessThan(chip[0] + chip[2]);
+      expect(y).toBeGreaterThan(chip[1]);
+      expect(y).toBeLessThan(chip[1] + chip[3]);
+    }
+    // The label gives way inside the chip instead of spilling past its edge.
+    const label = ruleBody(".kami-blocked > span");
+    expect(label["min-width"]).toBe("0");
+    expect(label.overflow).toBe("hidden");
+    expect(label["white-space"]).toBe("nowrap");
+  });
+
   it("blocked_chip_never_covers_another_slot — mic/Trial chip sits inside Yappy's box in every dock x meeting", async () => {
     const st = await import("./state");
     const { BAR_DOCKS } = await import("./dock");
@@ -263,7 +297,7 @@ describe("fb-02 — the browser hit test agrees with the panel's rects", () => {
     expect(chip.top).toBe("calc(var(--char-y) + var(--char-h) - 6px)");
     expect(chip.translate).toBe("-50% -100%");
     expect(chip["max-width"]).toBe("var(--char-w)");
-    const CHIP_H = 26; // .kami-blocked: 14pt glyph + 2 x 5pt padding + 2 x 1pt border
+    const CHIP_H = 26; // .kami-blocked: 14pt glyph + 2 x 6pt padding (its 1pt edge is an inset shadow)
     let n = 0;
     for (const phase of ["blocked", "gated"] as const) {
       for (const meeting of ["none", "recording", "after"] as const) {

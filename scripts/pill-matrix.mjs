@@ -133,7 +133,7 @@ function parseArgs(argv) {
   return a;
 }
 function usage(msg) {
-  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--sky <dawn|day|dusk|night|all>] [--self-test-must-fail]");
+  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--sky <dawn|day|dusk|night|all>] [--clicks] [--self-test-must-fail]");
   process.exit(2);
 }
 const ARGS = parseArgs(process.argv.slice(2));
