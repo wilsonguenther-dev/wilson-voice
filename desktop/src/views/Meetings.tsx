@@ -5,7 +5,7 @@ import {
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
 import NotesView from "../meetings/NotesView";
-import ExportMenu, { type ExportAction } from "../meetings/ExportMenu";
+import ExportMenu, { FloatingMenu, exportItems, type ExportAction } from "../meetings/ExportMenu";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
 import LiveTranscript from "../meetings/LiveTranscript";
@@ -63,6 +63,9 @@ export default function Meetings() {
   const [filter, setFilter] = useState<MeetingFilter>(NO_FILTER);
   const [tab, setTab] = useState<DetailTab>("transcript");
   const [selected, setSelected] = useState<string | null>(null);
+  // yap-1107-meetings-row-actions-no-overlay — the row's right-click menu
+  // (Export ×3 + Delete), opened at the pointer; one at a time.
+  const [rowMenu, setRowMenu] = useState<{ id: string; title: string; x: number; y: number } | null>(null);
   const [pending, setPending] = useState<PendingDelete[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [narrow, setNarrow] = useState(() => (typeof window === "undefined" ? false : isNarrow(window.innerWidth)));
@@ -187,6 +190,15 @@ export default function Meetings() {
   function openRow(id: string) {
     setSelected(id);
     void openMeetingDetail(id);
+  }
+  function openRowMenu(e: { preventDefault: () => void; clientX: number; clientY: number; currentTarget: Element }, id: string, title: string) {
+    e.preventDefault();
+    // The keyboard context-menu key reports 0,0: anchor to the row instead.
+    const r = e.currentTarget.getBoundingClientRect();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    setSelected(id);
+    setRowMenu({ id, title, x: keyboard ? r.left + 24 : e.clientX, y: keyboard ? r.top + r.height / 2 : e.clientY });
+    logUi("row_menu", { id: shortId(id), keyboard });
   }
   function closeDetail() {
     if (!openMeeting) return;
@@ -547,6 +559,8 @@ export default function Meetings() {
                       const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
                       const isOpen = openId === m.id;
                       const isSelected = selected === m.id;
+                      const hasStatusActions =
+                        actions.includes("retry") || actions.includes("cancel-notes") || actions.includes("notes");
                       return (
                         <li
                           key={m.id}
@@ -554,6 +568,7 @@ export default function Meetings() {
                           data-meeting-id={m.id}
                           data-meeting-state={m.state}
                           aria-current={isOpen ? "true" : undefined}
+                          onContextMenu={(e) => openRowMenu(e, m.id, m.title)}
                         >
                           <button type="button" className="meeting-row-main" title={m.title} onClick={() => openRow(m.id)}>
                             <span className="meeting-row-head">
@@ -586,31 +601,30 @@ export default function Meetings() {
                             ) : null}
                             <PeopleChips people={listPeople(m)} />
                           </button>
-                          <div className="actions">
-                            {actions.includes("retry") && (
-                              <button onClick={() => void retryMeeting(m.id)}>Retry</button>
-                            )}
-                            {actions.includes("cancel-notes") && (
-                              <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
-                                Cancel notes
-                              </button>
-                            )}
-                            {actions.includes("notes") && (
-                              <button onClick={() => void notesAction(retryNotes, m.id)}>
-                                {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
-                                  ? "Retry notes"
-                                  : retryNotesLabel(progress[m.id])}
-                              </button>
-                            )}
-                            <ExportMenu meetingId={m.id} disabled={meetingBusy} onAction={onExportAction} />
-                            <button
-                              className="ghost danger"
-                              disabled={meetingBusy}
-                              onClick={() => requestDelete(m.id, m.title)}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {/* yap-1107-meetings-row-actions-no-overlay — the row keeps no
+                              hover bar: Export and Delete live in the detail header, on
+                              ⌫ for the selected row, and in the right-click menu. Only
+                              status buttons stay, in a column that is laid out in every
+                              state (hover changes colour, never layout). */}
+                          {hasStatusActions && (
+                            <div className="meeting-row-status" data-meeting-row-status>
+                              {actions.includes("retry") && (
+                                <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                              )}
+                              {actions.includes("cancel-notes") && (
+                                <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
+                                  Cancel notes
+                                </button>
+                              )}
+                              {actions.includes("notes") && (
+                                <button onClick={() => void notesAction(retryNotes, m.id)}>
+                                  {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
+                                    ? "Retry notes"
+                                    : retryNotesLabel(progress[m.id])}
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </li>
                       );
                     })}
@@ -792,6 +806,27 @@ export default function Meetings() {
           )}
         </section>
       </div>
+      {rowMenu && (
+        <FloatingMenu
+          key={rowMenu.id + ":" + rowMenu.x + ":" + rowMenu.y}
+          anchor={() => ({ left: rowMenu.x, right: rowMenu.x, top: rowMenu.y, bottom: rowMenu.y })}
+          align="start"
+          label={`Actions for ${rowMenu.title}`}
+          name="row"
+          meetingId={rowMenu.id}
+          items={[
+            ...exportItems(rowMenu.id, onExportAction, meetingBusy),
+            {
+              key: "delete",
+              label: "Delete meeting",
+              danger: true,
+              disabled: meetingBusy,
+              onSelect: () => requestDelete(rowMenu.id, rowMenu.title),
+            },
+          ]}
+          onClose={() => setRowMenu(null)}
+        />
+      )}
       <UndoDeleteBar pending={pending} now={now} onUndo={undoDelete} />
     </div>
   );

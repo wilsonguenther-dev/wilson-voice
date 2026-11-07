@@ -130,8 +130,8 @@ export function FloatingMenu({ anchor, align = "end", label, name, meetingId, it
     const flipped = place();
     console.info(meetingsLogLine("menu_open", { menu: name, id: shortId(meetingId), flipped: Boolean(flipped) }));
     list.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
-    // Opened once per mount; the name/id of an open menu do not change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Runs once per open: `place` is stable for a mounted menu, and the
+    // name/id of an open menu do not change.
   }, [mounted, place]);
 
   useEffect(() => {
