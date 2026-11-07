@@ -30,6 +30,7 @@
 // only `../license/status` (both pure, neither imports this file), so this adds
 // a leaf dependency and no cycle.
 import { GATED_HEADLINE } from "./license";
+import { DURATION } from "./motion";
 import type { MilestoneId, NudgeId } from "./nudge";
 // yap-1106-voice-modes — the voices table is a leaf (imports nothing from here).
 import { duringLines, type VoiceId } from "./voices";
@@ -776,7 +777,9 @@ export const CANCELLED_SETTLE_MS = 1400;
  * is: the SYSTEM notification stays rate-limited, and this cheap in-place signal
  * answers every single press.
  */
-export const GATED_SETTLE_MS = 2500;
+// yap-1106-pill-trial-clickable — the refusal became the Buy button, so it
+// now holds 6 s (`DURATION.gateHold`, longer while hovered: pill/gateClick.ts).
+export const GATED_SETTLE_MS: number = DURATION.gateHold;
 
 /**
  * Y2-C — which phase wins when more than one is true at once, most urgent

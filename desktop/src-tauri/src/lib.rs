@@ -73,6 +73,9 @@ pub mod focus;
 pub mod formatting_options;
 /// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
 mod pill_click;
+/// yap-1106-pill-trial-clickable — the `yapvoice://license/activate` link back
+/// from the purchase page (strict, pure parser).
+mod deep_link;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -12140,6 +12143,97 @@ fn open_purchase_page() -> Result<(), String> {
     }
 }
 
+/// yap-1106-pill-trial-clickable — a click on the "Trial ended" pill (the
+/// whole capsule, its chip, or the resting nub's lock).
+///
+/// Takes a SURFACE and a TARGET NAME, never a URL: `target="purchase_page"`
+/// delegates to [`open_purchase_page`], whose destination is the compile-time
+/// `license::PURCHASE_PAGE_URL`; `target="license_tab"` (a paying customer
+/// whose stored key is in trouble, Y2-F) raises Settings → License instead.
+/// Unknown values are clamped, so the webview cannot widen what this does.
+/// One `pill gate.click` line per click (telemetry: `gate.click`).
+#[tauri::command]
+fn pill_gate_click(app: AppHandle, surface: String, target: String) -> Result<(), String> {
+    let surface = match surface.as_str() {
+        "pill" | "chip" | "nub" => surface.as_str(),
+        _ => "other",
+    };
+    let target = match target.as_str() {
+        "license_tab" => "license_tab",
+        _ => "purchase_page",
+    };
+    log::info!(
+        "pill gate.click surface={surface} target={target} purchase_open={}",
+        license::PURCHASE_OPEN
+    );
+    if target == "license_tab" {
+        present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
+        let _ = app.emit("navigate", "settings");
+        let _ = app.emit("settings-tab", "license");
+        return Ok(());
+    }
+    let opened = open_purchase_page();
+    if opened.is_err() {
+        // The browser would not open: land on the in-app purchase sheet, which
+        // shows the page address, so the click still goes somewhere useful.
+        log::warn!("pill gate.click failure=open surface={surface} fallback=purchase_sheet");
+        reveal_purchase_prompt(app);
+    }
+    opened
+}
+
+/// yap-1106-pill-trial-clickable — every URL macOS hands the app
+/// (`RunEvent::Opened`). Only `yapvoice://license/activate?key=DCL-…` does
+/// anything: the key goes through the SAME `LicenseClient::activate` a paste
+/// does, on a blocking thread; success emits `license` (every surface
+/// re-renders) and `yappy-hop`. A refusal is logged with its reason and
+/// nothing else happens; the key is never logged.
+fn handle_deep_links(app: &AppHandle, urls: Vec<String>) {
+    for raw in urls {
+        let key = match deep_link::parse(&raw) {
+            Ok(deep_link::DeepLink::Activate { key }) => key,
+            Err(refusal) => {
+                log::warn!("license deep_link refused reason={}", refusal.as_str());
+                continue;
+            }
+        };
+        let Some(client) = app.try_state::<Arc<license_client::LicenseClient>>() else {
+            log::warn!("license deep_link activate failure=no_client");
+            continue;
+        };
+        let client = client.inner().clone();
+        let app = app.clone();
+        log::info!("license deep_link activate start");
+        tauri::async_runtime::spawn(async move {
+            let started = std::time::Instant::now();
+            let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
+            let ms = started.elapsed().as_millis();
+            match joined {
+                Ok(Ok(status)) => {
+                    log::info!("license deep_link activate ok ms={ms}");
+                    let _ = app.emit("license", &status);
+                    let _ = app.emit(deep_link::YAPPY_HOP_EVENT, ());
+                }
+                Ok(Err(e)) => {
+                    log::warn!("license deep_link activate failure={} ms={ms}", e.code);
+                    // One sentence + one action: the key can still be pasted.
+                    notify(
+                        &app,
+                        "Yap could not activate your license",
+                        format!("{} Open Settings, then License, to paste your key.", e.message),
+                    );
+                    present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
+                    let _ = app.emit("navigate", "settings");
+                    let _ = app.emit("settings-tab", "license");
+                }
+                Err(_) => {
+                    log::warn!("license deep_link activate failure=join ms={ms}");
+                }
+            }
+        });
+    }
+}
+
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
 ///
@@ -13527,6 +13621,7 @@ pub fn run() {
             license_status,
             activate_license,
             deactivate_license,
+            pill_gate_click,
             open_purchase_page,
             reveal_purchase_prompt
         ])
@@ -14507,6 +14602,15 @@ pub fn run() {
         .build(context)
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| match event {
+            // yap-1106-pill-trial-clickable — `yapvoice://license/activate`
+            // from the purchase page. The arm only dispatches.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                handle_deep_links(
+                    app_handle,
+                    urls.iter().map(|u| u.as_str().to_string()).collect(),
+                );
+            }
             // yap-lifecycle — a Dock click / Finder double-click / `open -a
             // Yap` on a running Yap. The arm only dispatches; the decision is
             // lifecycle::activation_action (which deliberately ignores

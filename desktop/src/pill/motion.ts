@@ -118,6 +118,15 @@ export const DURATION = {
    * way OUT, not the oscillation fix — the 12 px margin below is (geometry).
    */
   hoverCollapse: 160,
+  /**
+   * yap-1106-pill-trial-clickable — how long the "Trial ended" refusal (now the
+   * Buy button) stays up when nobody touches it. Hover holds it longer.
+   */
+  gateHold: 6000,
+  /** …and how long it lingers after the pointer leaves, once past `gateHold`. */
+  gateHoverGrace: 1200,
+  /** One Yappy hop when a license arrives by deep link from the site. */
+  yappyHop: 720,
 } as const;
 
 /**
@@ -405,5 +414,6 @@ export function applyMotionVars(root: HTMLElement): void {
   root.style.setProperty("--dur-morph", `${DURATION.phaseMorph}ms`);
   root.style.setProperty("--dur-expand", `${DURATION.expand}ms`);
   root.style.setProperty("--dur-collapse", `${DURATION.collapse}ms`);
+  root.style.setProperty("--dur-hop", `${DURATION.yappyHop}ms`);
   root.style.setProperty("--ease-state", EASE_STATE_CHANGE);
 }
