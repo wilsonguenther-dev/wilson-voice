@@ -73,9 +73,7 @@ describe("control first, one-line hint after", () => {
     expect((html.match(/class="settings-hint"/g) ?? []).length).toBe(4);
   });
   it("Companion: the Classic pill is retired — never offered, and a stale \"classic\" reads as Yappy", () => {
-    // yap-1106-main-character-switch — who sits in the pill: Yappy first, then
-    // Hoot, Tidy, Gulp, Shelly; never Classic, never a room-only friend.
-    expect(PILL_STYLE_CHOICES.map(([id]) => id)).toEqual(["yappy", "hoot", "tidy", "gulp", "shelly"]);
+    expect(PILL_STYLE_CHOICES.map(([id]) => id)).toEqual(["yappy"]);
     for (const saved of [{}, { pillStyle: "classic" }, { pillStyle: "yappy" }]) {
       const html = render(<Companion />, { settings: saved, saveSettings: () => undefined });
       expect(html).not.toMatch(/Classic|waveform capsule/);
@@ -85,19 +83,6 @@ describe("control first, one-line hint after", () => {
     expect(activePillStyle("classic")).toBe("yappy");
     expect(activePillStyle(undefined)).toBe("yappy");
     expect(activePillStyle("yappy")).toBe("yappy");
-  });
-  it("Companion: Who sits in the pill offers Yappy, Hoot, Tidy, Gulp and Shelly, and a saved friend is the active one", () => {
-    for (const id of ["hoot", "tidy", "gulp", "shelly"]) {
-      expect(activePillStyle(id)).toBe(id);
-      const html = render(<Companion />, { settings: { pillStyle: id }, saveSettings: () => undefined });
-      expect(html).toContain("Who sits in the pill");
-      expect(html).toMatch(new RegExp(`data-main-character="${id}" class="profile active"`));
-      expect(html).toMatch(/data-main-character="yappy" class="profile"/);
-      expect(html).toContain("Yappy stays in the studio and visits for your milestones");
-    }
-    for (const roomOnly of ["ember", "sal", "mochi", "cinder"]) expect(activePillStyle(roomOnly)).toBe("yappy");
-    const hoot = render(<Companion />, { settings: { pillStyle: "hoot" }, saveSettings: () => undefined });
-    expect(hoot).toContain("Hoot records your meetings himself");
   });
   it("save / reset actions live in the pinned footer", () => {
     const privacy = paneSrc["../settings/Privacy.tsx"];

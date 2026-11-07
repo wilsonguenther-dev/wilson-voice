@@ -16,7 +16,6 @@
 import type { Character } from "./types";
 import { classic } from "./classic";
 import { yappy } from "./yappy";
-import { gulp, hoot, shelly, tidy } from "./friends";
 
 const REGISTRY = new Map<string, Character>();
 
@@ -58,13 +57,3 @@ export function resolveCharacter(id?: string | null): Character {
 }
 
 registerCharacter(yappy);
-// yap-1106-main-character-switch — who can sit in the pill (companions.html
-// section 04): Yappy first, then Hoot, Tidy, Gulp and Shelly. Ember, Sal and
-// Mochi are room-only and are never registered.
-registerCharacter(hoot);
-registerCharacter(tidy);
-registerCharacter(gulp);
-registerCharacter(shelly);
-
-/** The ids offered in Settings → Companion → Who sits in the pill, in order. */
-export const PILL_CHARACTER_IDS: readonly string[] = ["yappy", "hoot", "tidy", "gulp", "shelly"];
