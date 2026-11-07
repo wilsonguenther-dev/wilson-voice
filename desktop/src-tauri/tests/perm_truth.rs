@@ -538,7 +538,7 @@ fn merge_adds_the_desktop_copy_launchservices_knows() {
     make_app(&me, perm_truth::BUNDLE_ID);
     let desktop_copy = desk.join("Yap.app");
     make_app(&desktop_copy, perm_truth::BUNDLE_ID);
-    let scanned = find_duplicate_bundles(&[apps.clone()], perm_truth::BUNDLE_ID, &me);
+    let scanned = find_duplicate_bundles(std::slice::from_ref(&apps), perm_truth::BUNDLE_ID, &me);
     assert!(
         scanned.is_empty(),
         "the folder scan never lists the Desktop"

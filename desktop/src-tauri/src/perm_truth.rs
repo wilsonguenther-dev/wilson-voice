@@ -637,7 +637,7 @@ pub fn duplicate_copies_notice(
     all.sort();
     all.dedup();
     let canonical = canonical_bundle_path(product);
-    let keep = if all.iter().any(|p| *p == canonical) {
+    let keep = if all.contains(&canonical) {
         canonical
     } else {
         running.to_string()
