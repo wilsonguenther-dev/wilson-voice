@@ -110,11 +110,8 @@ fn find_whole(hay: &str, needle: &str, case_sensitive: bool) -> Vec<usize> {
             } else {
                 window.eq_ignore_ascii_case(needle)
             };
-            let left_ok = hay[..i]
-                .chars()
-                .next_back()
-                .map_or(true, |c| !is_word_char(c));
-            let right_ok = hay[end..].chars().next().map_or(true, |c| !is_word_char(c));
+            let left_ok = !matches!(hay[..i].chars().next_back(), Some(c) if is_word_char(c));
+            let right_ok = !matches!(hay[end..].chars().next(), Some(c) if is_word_char(c));
             if hit && left_ok && right_ok {
                 found.push(i);
                 i = end;
@@ -129,7 +126,7 @@ fn find_whole(hay: &str, needle: &str, case_sensitive: bool) -> Vec<usize> {
 /// Apply `rules` (`(term, preferred)`, in order) to `text`. Pure: no DB, no
 /// logging — callers log `vocab applied track=… replacements=…`.
 pub fn apply_rules(text: &str, rules: &[(String, String)]) -> Applied {
-    let context = text.to_string();
+    let context = text;
     let mut out = text.to_string();
     let mut hits = vec![0usize; rules.len()];
     for (idx, (term, preferred)) in rules.iter().enumerate() {
@@ -140,7 +137,7 @@ pub fn apply_rules(text: &str, rules: &[(String, String)]) -> Applied {
         }
         let case_sensitive = term.chars().any(char::is_uppercase);
         let gated = case_sensitive && is_single_capitalised_word(&term);
-        let preferred_in_context = gated && !find_whole(&context, preferred, false).is_empty();
+        let preferred_in_context = gated && !find_whole(context, preferred, false).is_empty();
         let starts = find_whole(&out, &term, case_sensitive);
         if starts.is_empty() {
             continue;

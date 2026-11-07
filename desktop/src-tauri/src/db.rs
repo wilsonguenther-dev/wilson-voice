@@ -5870,6 +5870,82 @@ mod tests {
     // These prove the numbers Wilson watches are exactly right, under the real
     // edge cases: legacy speech=0 rows, multi-day history, streak grace + gaps.
 
+    /// yap-1106-vocab-bias: the misheard list is seeded ONCE into an install
+    /// whose history says Drivia, never into a stranger's, and the suggested
+    /// words button is idempotent.
+    #[test]
+    fn misheard_seed_runs_once_on_wilsons_install_only() {
+        let (db, dir) = fresh_db("vocab-seed-wilson");
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "empty history");
+        assert!(db.setting_get(MISHEARD_SEED_KEY).is_none(), "re-checked next open");
+        db.insert_transcript(
+            "send the Drivia deck to Jeisil".into(),
+            "native".into(),
+            0.5,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 9);
+        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("seeded"));
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "one-time");
+        let dict = db.list_dictionary().unwrap();
+        let pair = |t: &str| {
+            dict.iter()
+                .find(|d| d.term == t)
+                .and_then(|d| d.preferred.clone())
+        };
+        assert_eq!(pair("Trivia").as_deref(), Some("Drivia"));
+        assert_eq!(pair("Plus Lane").as_deref(), Some("Postline"));
+        assert_eq!(pair("ClassPlank").as_deref(), Some("ClassLink"));
+        assert_eq!(pair("Whisper Fill").as_deref(), Some("Wispr Flow"));
+        // The button after the seed adds nothing new.
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 0);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn misheard_seed_skips_a_strangers_install() {
+        let (db, dir) = fresh_db("vocab-seed-stranger");
+        for _ in 0..50 {
+            db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None)
+                .unwrap();
+        }
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0);
+        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("skipped"));
+        assert!(db.list_dictionary().unwrap().iter().all(|d| d.term != "Trivia"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Dictation uses the same applier: the pairs are fixed, "trivia night"
+    /// is not, and the rules that fired gain hits.
+    #[test]
+    fn dictation_dictionary_fixes_pairs_without_false_positives() {
+        let (db, dir) = fresh_db("vocab-dictation");
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 9);
+        assert_eq!(
+            db.apply_dictionary("ask Gunther about Plus Lane and trivia night").unwrap(),
+            "ask Guenther about Postline and trivia night"
+        );
+        let (out, n) = db
+            .apply_dictionary_counted("we went to trivia night")
+            .unwrap();
+        assert_eq!((out.as_str(), n), ("we went to trivia night", 0));
+        let hits = db
+            .list_dictionary()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.term == "Gunther")
+            .map(|d| d.hits)
+            .unwrap();
+        assert_eq!(hits, 1);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn fresh_db(tag: &str) -> (Database, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("wv-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
