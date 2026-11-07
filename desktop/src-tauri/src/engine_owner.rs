@@ -1944,6 +1944,7 @@ mod engine_owner_tests {
     // and the process must be gone (macOS frees its GPU memory with it).
     #[test]
     fn quit_while_the_helper_is_mid_decode_kills_it_by_pid() {
+        let _serial = helper_serial();
         use std::os::unix::fs::PermissionsExt;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1996,6 +1997,16 @@ mod engine_owner_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The helper-process tests share one PID registry (and the quit test
+    /// SIGKILLs everything in it), so they run one at a time.
+    static HELPER_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn helper_serial() -> std::sync::MutexGuard<'static, ()> {
+        HELPER_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// A fake `yap-asr` that speaks the real wire protocol, "loads", takes one
     /// decode and then hangs in it, never reading the cancel line.
     fn fake_hanging_helper(tag: &str) -> (PathBuf, PathBuf) {
@@ -2027,6 +2038,7 @@ mod engine_owner_tests {
     // the helper's GPU memory is freed instead of being left running.
     #[test]
     fn an_ignored_cancel_kills_the_helper_by_pid_after_the_grace() {
+        let _serial = helper_serial();
         let (dir, script) = fake_hanging_helper("escalate");
         let mut engine =
             HelperEngine::spawn(&script, &dir.join("never-read.gguf")).expect("fake helper up");
@@ -2070,6 +2082,7 @@ mod engine_owner_tests {
     // the manager loaded exactly one engine for it.
     #[test]
     fn a_lease_timeout_frees_the_abandoned_helper_instead_of_leaving_it_running() {
+        let _serial = helper_serial();
         let (dir, script) = fake_hanging_helper("lease");
         let model = dir.join("model.gguf");
         std::fs::write(&model, b"GGUF").expect("stub model file");
@@ -2082,11 +2095,16 @@ mod engine_owner_tests {
             Duration::from_secs(600),
             Duration::from_millis(200),
         );
+        let before_load = spawned_helper_pids();
         manager
             .load("fake/model", &model)
             .expect("fake helper loads");
         assert_eq!(manager.engine_loads(), 1);
-        let pids_before = spawned_helper_pids();
+        let mine: Vec<u32> = spawned_helper_pids()
+            .into_iter()
+            .filter(|p| !before_load.contains(p))
+            .collect();
+        assert_eq!(mine.len(), 1, "one helper for one load: {mine:?}");
         let err = manager
             .transcribe(vec![0.0f32; 16_000], None, None)
             .unwrap_err();
@@ -2099,7 +2117,7 @@ mod engine_owner_tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        for pid in pids_before {
+        for pid in mine {
             assert!(
                 !spawned_helper_pids().contains(&pid),
                 "helper {pid} still registered after the lease gave up on it"
