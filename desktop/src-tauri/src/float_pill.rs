@@ -2060,18 +2060,36 @@ mod wf02_drag_tests {
     #[test]
     fn a_fresh_esc_or_a_click_outside_closes_the_reveal() {
         // Esc: only a fresh press, only while the reveal is up.
-        assert_eq!(reveal_close_reason(true, false, true, false, false, true), Some("esc"));
-        assert_eq!(reveal_close_reason(true, true, true, false, false, false), None);
-        assert_eq!(reveal_close_reason(false, false, true, false, true, false), None);
+        assert_eq!(
+            reveal_close_reason(true, false, true, false, false, true),
+            Some("esc")
+        );
+        assert_eq!(
+            reveal_close_reason(true, true, true, false, false, false),
+            None
+        );
+        assert_eq!(
+            reveal_close_reason(false, false, true, false, true, false),
+            None
+        );
         // A fresh press outside the reveal closes it; on the reveal it does not.
         assert_eq!(
             reveal_close_reason(true, false, false, false, true, false),
             Some("click_outside")
         );
-        assert_eq!(reveal_close_reason(true, false, false, false, true, true), None);
+        assert_eq!(
+            reveal_close_reason(true, false, false, false, true, true),
+            None
+        );
         // A button held since before the reveal (or since the last slice) is not a press.
-        assert_eq!(reveal_close_reason(true, false, false, true, true, false), None);
-        assert_eq!(reveal_close_reason(true, false, false, false, false, false), None);
+        assert_eq!(
+            reveal_close_reason(true, false, false, true, true, false),
+            None
+        );
+        assert_eq!(
+            reveal_close_reason(true, false, false, false, false, false),
+            None
+        );
     }
 
     #[test]

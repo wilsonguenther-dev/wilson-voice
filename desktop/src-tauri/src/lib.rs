@@ -17373,15 +17373,24 @@ mod tests {
         };
         write_settings_file(&path, &on).expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read settings");
-        assert!(raw.contains("\"keepPolishRevealOpen\": true") || raw.contains("\"keepPolishRevealOpen\":true"));
-        assert!(load_settings(&path).keep_polish_reveal_open, "on survives a restart");
+        assert!(
+            raw.contains("\"keepPolishRevealOpen\": true")
+                || raw.contains("\"keepPolishRevealOpen\":true")
+        );
+        assert!(
+            load_settings(&path).keep_polish_reveal_open,
+            "on survives a restart"
+        );
 
         let off = AppSettings {
             keep_polish_reveal_open: false,
             ..on
         };
         write_settings_file(&path, &off).expect("write settings off");
-        assert!(!load_settings(&path).keep_polish_reveal_open, "off survives a restart");
+        assert!(
+            !load_settings(&path).keep_polish_reveal_open,
+            "off survives a restart"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

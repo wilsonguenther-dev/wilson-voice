@@ -14,9 +14,11 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement, ReactNode } from "react";
 import DiffView from "../DiffView";
-import { PolishRevealView, pasteOriginal, polishRevealShows } from "./PolishRevealCard";
+import { PolishRevealView, pasteOriginal, polishRevealShows, reportRevealState } from "./PolishRevealCard";
+import { REVEAL_CLOSE_REASONS } from "./revealDwell";
 import {
   LOCAL_ROUTE_LABEL,
+  POLISH_REVEAL_CLOSE_EVENT,
   POLISH_REVEAL_EVENT,
   POLISH_REVEAL_TTL_MS,
   SAMPLE_POLISH_REVEAL,
@@ -60,10 +62,11 @@ const buttons = (el: ReactElement): Btn[] => walk(el).filter((e) => e.type === "
 const noop = () => {};
 
 describe("WF-05 polish reveal — model", () => {
-  it("names the event and the command the Rust side uses, and a 4-second toast", () => {
+  it("names the event and the command the Rust side uses, and an 8-second minimum toast", () => {
     expect(POLISH_REVEAL_EVENT).toBe("polish_reveal");
     expect(USE_ORIGINAL_COMMAND).toBe("use_original_take");
-    expect(POLISH_REVEAL_TTL_MS).toBe(4_000);
+    // yap-1107-reveal-stays-until-read: at least 8 s (was 4 s).
+    expect(POLISH_REVEAL_TTL_MS).toBe(8_000);
   });
 
   it("accepts only a complete payload that really changed the take", () => {
@@ -272,7 +275,7 @@ describe("WF-05 polish reveal — view", () => {
     expect(html).toContain("diff-added");
     expect(html).toContain("Cloud");
     expect(html).toContain('role="dialog"');
-    const bs = buttons(el);
+    const bs = buttons(el).filter((b) => b.props.className !== "polish-reveal-close");
     expect(bs.map((b) => b.props.children)).toEqual(["Use original", "Keep"]);
     bs[0].props.onClick?.();
     expect(onUseOriginal).toHaveBeenCalledTimes(1);
@@ -318,6 +321,54 @@ describe("WF-05 polish reveal — matrix scenes", () => {
     expect(forcedPolishReveal("?polish=card")?.view).toBe("card");
     expect(forcedPolishReveal("?phase=idle")).toBeNull();
     expect(isPolishReveal(SAMPLE_POLISH_REVEAL)).toBe(true);
-    expect(matrixPolishRevealScenes().map((s) => s.query)).toEqual(["polish=toast", "polish=card"]);
+    expect(matrixPolishRevealScenes().map((s) => s.query)).toEqual([
+      "polish=toast",
+      "polish=card",
+      "polish=toast-hover",
+      "polish=card-hover",
+    ]);
+    expect(forcedPolishReveal("?polish=toast-hover")).toEqual({ reveal: SAMPLE_POLISH_REVEAL, view: "toast", hover: true });
+    expect(forcedPolishReveal("?polish=card-hover")?.view).toBe("card");
+  });
+});
+
+// yap-1107-reveal-stays-until-read
+describe("polish reveal — close button", () => {
+  for (const view of ["toast", "card"] as const) {
+    it(`the ${view} has a visible close button with an accessible name that closes it`, () => {
+      const onClose = vi.fn();
+      const onKeep = vi.fn();
+      const el = PolishRevealView({
+        reveal: REVEAL,
+        view,
+        onReveal: noop,
+        onUseOriginal: noop,
+        onKeep,
+        onClose,
+      }) as ReactElement;
+      const html = renderToStaticMarkup(el);
+      expect(html).toContain('class="polish-reveal-close"');
+      expect(html).toContain('aria-label="Close"');
+      const close = buttons(el).find((b) => b.props.className === "polish-reveal-close");
+      expect(close).toBeDefined();
+      close?.props.onClick?.();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(onKeep).not.toHaveBeenCalled();
+    });
+  }
+
+  it("reports open / close to the backend with an allowlisted reason and never throws", async () => {
+    const call = vi.fn().mockRejectedValue(new Error("no backend"));
+    await expect(reportRevealState(false, "close_button", 9_123.4, call)).resolves.toBeUndefined();
+    expect(call).toHaveBeenCalledWith("pill_reveal_state", { open: false, reason: "close_button", dwellMs: 9_123 });
+    const ok = vi.fn().mockResolvedValue(null);
+    await reportRevealState(true, "shown", 0, ok);
+    expect(ok).toHaveBeenCalledWith("pill_reveal_state", { open: true, reason: "shown", dwellMs: 0 });
+  });
+
+  it("the backend close event name matches float_pill.rs", () => {
+    const rs = readFileSync(new URL("../../src-tauri/src/float_pill.rs", import.meta.url), "utf8") as string;
+    expect(rs).toContain(`POLISH_REVEAL_CLOSE_EVENT: &str = "${POLISH_REVEAL_CLOSE_EVENT}"`);
+    for (const r of REVEAL_CLOSE_REASONS) expect(rs).toContain(`"${r}",`);
   });
 });
