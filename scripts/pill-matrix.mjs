@@ -64,11 +64,20 @@
  * USAGE
  *   node scripts/pill-matrix.mjs --out <dir>             every phase x 3 docks x 2 characters
  *   node scripts/pill-matrix.mjs --out <dir> --only gated  one phase x 3 x 2 (what each PILL item runs)
+ *   node scripts/pill-matrix.mjs --out <dir> --phase meeting-saved  the Saved stop beat x 3 docks
  *   node scripts/pill-matrix.mjs --self-test-must-fail   prove the detectors are not blind
  *
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
  *           for a PR, never a commit — do not point this inside the repo.
  *   --only  a phase by variant (model-loading) or product id (model_loading).
+ *   --phase meeting-saved — fix-b8-1: only the "Saved" stop beat, on the idle
+ *           and listening (stopped mid-take) rows, at every dock. The meeting
+ *           records, the page settles, then the matrix emits the `meeting`
+ *           status "stopped" through the page's own listener (the event name is
+ *           READ from desktop/src/meetings/consent.ts) and captures inside the
+ *           2.4 s hold. A beat that is not painted is a saved-beat-missing
+ *           finding; a page with no listener to stop is phase-not-applied.
+ *           The full matrix runs the saved state too (MEETINGS).
  *   --sky   yap-1106-pill-sky: the time of day the pill's sky is pinned to
  *           (dawn|day|dusk|night, or "all" to walk every phase x dock under
  *           each of the four). Default day, so a PNG never depends on the
@@ -99,7 +108,10 @@ const DOCKS = ["bottom", "left", "right"];
 /* yap-1106-retire-classic-pill — Classic is retired; Yappy is the only pill. */
 const CHARACTERS = ["yappy"];
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
-const MEETINGS = ["none", "recording"];
+/* fix-b8-1-meeting-saved-beat-gets-a-slot — and in the 2.4 s "Saved" stop beat. */
+let MEETINGS = ["none", "recording", "saved"];
+/* What the matrix waits after emitting the stop, before it fits and shoots (well inside SAVED_HOLD_MS). */
+const SAVED_EMIT_SETTLE_MS = 300;
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
 /* yap-1106-pill-sky — the Home room's four times of day (desktop/src/pill/sky.ts SKY_TIMES). */
 const SKY_TIMES = ["dawn", "day", "dusk", "night"];
@@ -109,24 +121,27 @@ const CHROME =
 /* ── args ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const a = { out: null, only: null, sky: "day", selfTest: false };
+  const a = { out: null, only: null, sky: "day", phase: null, selfTest: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
-    if (k === "--out" || k === "--only" || k === "--sky") {
+    if (k === "--out" || k === "--only" || k === "--sky" || k === "--phase") {
       const v = argv[++i];
       if (!v || v.startsWith("--")) usage(k + " needs a value");
       a[k.slice(2)] = v;
     } else if (k.startsWith("--out=")) a.out = k.slice(6);
     else if (k.startsWith("--only=")) a.only = k.slice(7);
     else if (k.startsWith("--sky=")) a.sky = k.slice(6);
+    else if (k.startsWith("--phase=")) a.phase = k.slice(8);
     else if (k === "--self-test-must-fail") a.selfTest = true;
     else usage("unknown argument " + k);
   }
+  if (a.phase !== null && a.phase !== "meeting-saved") usage("--phase knows one scene: meeting-saved");
+  if (a.phase !== null && a.only !== null) usage("--phase and --only are exclusive");
   if (a.sky !== "all" && !SKY_TIMES.includes(a.sky)) usage("--sky must be one of " + SKY_TIMES.join("|") + "|all");
   return a;
 }
 function usage(msg) {
-  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--sky <dawn|day|dusk|night|all>] [--self-test-must-fail]");
+  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--phase meeting-saved] [--sky <dawn|day|dusk|night|all>] [--self-test-must-fail]");
   process.exit(2);
 }
 const ARGS = parseArgs(process.argv.slice(2));
@@ -149,7 +164,8 @@ function fixtureScript(tones) {
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
     // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
     // layout makes (answered, so it is never an unhandled rejection).
-    meeting_status: q.get("meeting") === "recording"
+    // fix-b8-1 — "saved" starts recording too; the matrix stops it after settle.
+    meeting_status: q.get("meeting") === "recording" || q.get("meeting") === "saved"
       // yap-1106-pill-rec-headphones-hoot-tape — elapsed=<seconds> in the URL puts the
       // sun clock at any minute (0, 600 = the glance, 3600 = dusk, 3660 = moon).
       ? (() => { const e = Math.max(0, Math.floor(Number(q.get("elapsed") ?? 217)) || 0); const p = (n) => String(n).padStart(2, "0"); return { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: e, elapsedLabel: p(Math.floor(e / 3600)) + ":" + p(Math.floor((e % 3600) / 60)) + ":" + p(e % 60), captureAvailable: true }; })()
@@ -159,6 +175,50 @@ function fixtureScript(tones) {
 })();
 `;
 }
+
+/* fix-b8-1 — the meeting status event name, READ from its one declaration
+   (desktop/src/meetings/consent.ts MEETING_EVENT), never re-typed here. */
+function meetingEventFromConsent() {
+  const src = readFileSync(join(DESKTOP, "src", "meetings", "consent.ts"), "utf8");
+  const m = /export const MEETING_EVENT = "([^"]+)"/.exec(src);
+  if (!m) {
+    console.error("pill-matrix: MEETING_EVENT not found in desktop/src/meetings/consent.ts (INSTRUMENT failure)");
+    process.exit(3);
+  }
+  return m[1];
+}
+/*
+ * fix-b8-1 — runs AFTER TAURI_SHIM: remembers every listener the page registers
+ * for the meeting status event, and exposes __YAP_MATRIX_STOP_MEETING__(),
+ * which delivers one "stopped" status to them exactly as the backend would
+ * (Tauri v2 calls the transformCallback'd handler with { event, id, payload }).
+ * Returns how many listeners heard it, so a stop nobody heard is a finding.
+ */
+function meetingStopShim(eventName) {
+  return String.raw`
+(() => {
+  const T = window.__TAURI_INTERNALS__;
+  if (!T) return;
+  const NAME = ${JSON.stringify(eventName)};
+  const inner = T.invoke;
+  const handlers = [];
+  T.invoke = (cmd, payload) => {
+    if (cmd === "plugin:event|listen" && payload && payload.event === NAME) handlers.push(payload.handler);
+    return inner(cmd, payload);
+  };
+  window.__YAP_MATRIX_STOP_MEETING__ = () => {
+    const stopped = { recording: false, id: null, title: null, elapsedSeconds: 0, elapsedLabel: "00:00:00", captureAvailable: true };
+    let n = 0;
+    for (const h of handlers) {
+      const f = window["_" + h];
+      if (typeof f === "function") { f({ event: NAME, id: 0, payload: stopped }); n++; }
+    }
+    return n;
+  };
+})();
+`;
+}
+const MEETING_STOP_SHIM = meetingStopShim(meetingEventFromConsent());
 
 /* ── the detectors, evaluated inside the page ───────────────────────────── */
 /*
@@ -216,8 +276,9 @@ function __pillDetect(want) {
     // no meeting banner holds the bar.
     if (want.id === "rail" && want.pill === "classic") {
       if (!document.querySelector('.slots[data-rail="open"]')) bad.push("rail scene drew no open rail");
-      const wantAxis = want.dock === "bottom" || want.meeting === "recording" ? "row" : "column";
-      if (capsule && want.meeting !== "recording" && capsule.getAttribute("data-bar-axis") !== wantAxis) {
+      const meetingOn = want.meeting === "recording" || want.meeting === "saved";
+      const wantAxis = want.dock === "bottom" || meetingOn ? "row" : "column";
+      if (capsule && !meetingOn && capsule.getAttribute("data-bar-axis") !== wantAxis) {
         bad.push("rail axis " + capsule.getAttribute("data-bar-axis") + " at " + want.dock + " (want " + wantAxis + ")");
       }
     }
@@ -347,6 +408,15 @@ function __pillDetect(want) {
     const clock = painted.find((p) => p[0] === "clock");
     // WF-02 — a dragged pill is the blob, Yappy's face and nothing else: the clock steps aside by design.
     if (want && want.meeting === "recording" && !clock && want.drag !== "blob") out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
+    // fix-b8-1 — the stop beat must be PAINTED in its own reserved slot, not clipped to 0x0.
+    if (want && want.meeting === "saved" && want.drag !== "blob") {
+      const beat = document.querySelector('[data-meeting-phase="saved"]');
+      const r = beat ? beat.getBoundingClientRect() : null;
+      if (!want.stopped) out.push({ id: "phase-not-applied", detail: "meeting-saved: the page registered no meeting listener to stop" });
+      else if (!r || r.width < 1 || r.height < 1) out.push({ id: "saved-beat-missing", detail: "the meeting stopped but no Saved beat is painted" + (r ? " (" + r.width.toFixed(1) + "x" + r.height.toFixed(1) + ")" : "") });
+      else if (!clock) out.push({ id: "clock-detached", detail: "the Saved beat is on screen but the layout reserved no clock slot" });
+      if (de.dataset.meetingPhase !== "saved") out.push({ id: "phase-not-applied", detail: "html[data-meeting-phase]=" + de.dataset.meetingPhase + " (asked saved)" });
+    }
     if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
     const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
@@ -423,7 +493,7 @@ async function openPage(cdp, tones) {
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
   // A flat dark desktop behind the transparent window, so white copy reads.
   await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 46, g: 49, b: 56, a: 1 } }, s);
-  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: fixtureScript(tones) + "\n" + TAURI_SHIM }, s);
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: fixtureScript(tones) + "\n" + TAURI_SHIM + "\n" + MEETING_STOP_SHIM }, s);
   return s;
 }
 
@@ -464,7 +534,7 @@ async function contactSheet(cdp, rows, outDir) {
   const width = 24 + 150 + cols * (CW + 12);
   const height = 60 + Math.ceil(rows.length / cols) * (CH + 30);
   await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }, s);
-  const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.flatMap((d) => MEETINGS.map((m) => c + " · " + d + (m === "none" ? "" : " · meeting"))))];
+  const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.flatMap((d) => MEETINGS.map((m) => c + " · " + d + (m === "none" ? "" : m === "saved" ? " · saved" : " · meeting"))))];
   const byPhase = new Map();
   // yap-1106-pill-sky — under --sky all, one row per phase x time of day.
   const skyRows = new Set(rows.map((r) => r.sky)).size > 1;
@@ -536,6 +606,15 @@ async function run() {
     if (ARGS.selfTest) return await selfTest(cdp, base, phases);
 
     let todo = phases;
+    if (ARGS.phase === "meeting-saved") {
+      // fix-b8-1 — the stop beat at rest and stopped mid-take, every dock.
+      todo = phases.filter((p) => (p.phase === "idle" || p.phase === "listening") && !p.license && !p.query);
+      MEETINGS = ["saved"];
+      if (!todo.length) {
+        console.error("pill-matrix: --phase meeting-saved found no plain idle/listening row (INSTRUMENT failure)");
+        return 3;
+      }
+    }
     if (ARGS.only) {
       // A license scene (yap24-PILL1) rides the idle phase; `--only idle` means the plain idle row.
       todo = phases.filter((p) => p.id === ARGS.only || (p.phase === ARGS.only && !p.license && !p.query));
@@ -557,9 +636,15 @@ async function run() {
             await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
             await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
             await settle(cdp, s, p.phaseId || p.id);
+            // fix-b8-1 — stop the meeting the page is recording, then capture inside the beat.
+            let stopped = 0;
+            if (meeting === "saved") {
+              stopped = Number(await evaluate(cdp, s, "window.__YAP_MATRIX_STOP_MEETING__ ? window.__YAP_MATRIX_STOP_MEETING__() : 0")) || 0;
+              await sleep(SAVED_EMIT_SETTLE_MS);
+            }
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting, sky }) + ")");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting, sky, stopped }) + ")");
             const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + (skies.length > 1 ? "__" + sky : "") + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
