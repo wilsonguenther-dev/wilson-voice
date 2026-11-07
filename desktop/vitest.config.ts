@@ -54,6 +54,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/chatter.ts": { lines: 95, branches: 90, functions: 95, statements: 95 },
   "pill/characters/types.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/copyCardModel.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
