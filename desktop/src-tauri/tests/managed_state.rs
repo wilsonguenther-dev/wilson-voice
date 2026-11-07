@@ -65,8 +65,8 @@ fn clean(src: &str) -> String {
         let prev = if i > 0 { Some(c[i - 1]) } else { None };
         let prev2 = if i > 1 { Some(c[i - 2]) } else { None };
         let raw_start = ch == 'r'
-            && (prev.map_or(true, |p| !is_ident(p))
-                || (prev == Some('b') && prev2.map_or(true, |p| !is_ident(p))));
+            && (prev.is_none_or(|p| !is_ident(p))
+                || (prev == Some('b') && prev2.is_none_or(|p| !is_ident(p))));
         if raw_start {
             let mut j = i + 1;
             let mut hashes = 0usize;
@@ -130,8 +130,8 @@ fn clean(src: &str) -> String {
                     j += 1;
                 }
                 out.push_str("'x'");
-                for k in (i + 3)..j.min(n) {
-                    blank(&mut out, c[k]);
+                for &ck in &c[(i + 3).min(n)..j.min(n)] {
+                    blank(&mut out, ck);
                 }
                 i = (j + 1).min(n);
                 continue;
@@ -364,7 +364,7 @@ fn resolve(s: &str, pos: usize, expr: &str, depth: usize) -> Result<String, Stri
         p.rsplit("::")
             .next()
             .and_then(|seg| seg.chars().next())
-            .map_or(false, |c| c.is_ascii_uppercase())
+            .is_some_and(|c| c.is_ascii_uppercase())
     };
     if rest.starts_with('{') && last_upper(path.as_str()) {
         return Ok(normalize(&path));
