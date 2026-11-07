@@ -397,11 +397,12 @@ fn evaluate_upcoming(db: &Database, s: &DetectSettings) {
     let events = sys::events_between(now - IN_PROGRESS_SECS, local_day_end(now, offset));
     // SP-11 — this read runs on every watcher wake (each mic change plus the
     // 30 s backstop), so its duration line is written only when it was slow;
-    // the stat is kept on every read.
+    // the stat is kept on every read. The name carries no `_ms`: the line
+    // appends it (`upcoming_read_ms=4`, not the old `upcoming_read_ms_ms=4`).
     let read_ms = started.elapsed().as_millis() as u64;
     crate::diagnostics::record_duration_quiet(
         "meeting_detect",
-        "upcoming_read_ms",
+        "upcoming_read",
         read_ms,
         crate::call_signals::snapshot_duration_due(read_ms, false),
     );
@@ -677,12 +678,13 @@ fn evaluate_calls(
         (Err("call detection is macOS-only".to_string()), None)
     };
     // SP-11 — the duration stat is kept on every snapshot; its log line is
-    // written only when the snapshot was slow or its result changed.
+    // written only when the snapshot was slow or its result changed. The line
+    // reads `call_signals duration snapshot_ms=4` (it used to say `_ms_ms`).
     let record_ms = |changed: bool| {
         if let Some(ms) = snapshot_ms {
             crate::diagnostics::record_duration_quiet(
                 "call_signals",
-                "snapshot_ms",
+                "snapshot",
                 ms,
                 call_signals::snapshot_duration_due(ms, changed),
             );
@@ -984,6 +986,22 @@ mod sys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SP-11 — both watcher-wake duration lines go through the quiet recorder
+    /// (logged only when slow or changed), and neither name carries its own
+    /// `_ms` (record_duration_quiet appends it; the old lines read `_ms_ms`).
+    #[test]
+    fn sp11_watcher_wake_durations_are_quiet_and_named_once() {
+        let src = include_str!("meeting_detect.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        assert!(
+            !body.contains("record_duration("),
+            "a watcher-wake read logs on every wake"
+        );
+        assert_eq!(body.matches("record_duration_quiet(").count(), 2);
+        assert!(!body.contains("\"snapshot_ms\""));
+        assert!(!body.contains("\"upcoming_read_ms\""));
+    }
 
     /// #272 fix round 1 — a pending offer holds the pill the way a Copy card
     /// does: `after_recording` ORs `pending().is_some()` into its keep-visible.
