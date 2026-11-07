@@ -875,11 +875,17 @@ fn migration_eleven_adds_speaker_profiles_without_touching_existing_rows() {
         "n_samples",
         "last_heard_at",
     ] {
-        assert!(profiles.contains(&col.to_string()), "{col} missing: {profiles:?}");
+        assert!(
+            profiles.contains(&col.to_string()),
+            "{col} missing: {profiles:?}"
+        );
     }
     let samples = columns(&path, "speaker_samples");
     for col in ["profile_id", "meeting_id", "embedding", "seconds"] {
-        assert!(samples.contains(&col.to_string()), "{col} missing: {samples:?}");
+        assert!(
+            samples.contains(&col.to_string()),
+            "{col} missing: {samples:?}"
+        );
     }
     let rows = db.list_meeting_segments(&id).unwrap();
     assert_eq!(rows.len(), 2);
