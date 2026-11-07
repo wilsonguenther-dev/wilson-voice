@@ -46,9 +46,12 @@ export const SCENE_LAYOUT = {
   groundY: 34,
   hoot: { x: 1, y: 12, size: 24 },
   tape: { x: 24, y: 20, w: 22, h: 14, reels: [{ x: 30, y: 26 }, { x: 40, y: 26 }] },
-  yappy: { cx: 74, feetY: 38 },
-  /** The right ear cup of Yappy's headphones — the recording light. */
-  cup: { x: 84, y: 24, w: 4, h: 6 },
+  /** feetY 36, not 38: the detail-pass Yappy (yap-1106-yappy-detail-pass) has
+   * toes to feetY + 2 and a ground shadow to feetY + 3, so 36 is the lowest
+   * he stands with every pixel inside the 40-row buffer. */
+  yappy: { cx: 74, feetY: 36 },
+  /** The right ear cup of Yappy's headphones — the recording light (moves with him). */
+  cup: { x: 84, y: 22, w: 4, h: 6 },
 } as const;
 
 export type SkyPhase = "day" | "dusk";
