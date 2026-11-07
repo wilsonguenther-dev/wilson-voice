@@ -177,6 +177,14 @@
   /* WF-13 — "I can't hear <mic>": a soft amber, advice not an error. */
   --pill-silent-mic-text: rgba(253, 230, 138, 0.92);
   --pill-silent-mic-button-hover: rgba(255, 255, 255, 0.28);
+  /* yap-1106-pill-trial-clickable — the "Trial ended" chip's Buy button and its
+     tooltip, measured from design-2026-11-06/pill.html §13 (.cbtn, the Hover
+     frame's fill and the tooltip under the pill). */
+  --pill-gate-cta-surface: #efece4;
+  --pill-gate-cta-surface-hover: #ffd23f;
+  --pill-gate-cta-text: #1d1c1a;
+  --pill-gate-tooltip-surface: #1d1c1a;
+  --pill-gate-tooltip-text: #ffffff;
 
   /* The Copy card — the dark glass card the float window raises when dictation
      cannot be inserted (CopyCard.tsx). It sits over the user's screen like the

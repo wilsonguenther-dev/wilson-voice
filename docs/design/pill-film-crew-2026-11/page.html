@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yap Pill, section 16: meetings as a film crew (option C) 2026-11</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/review.css">
+<style>
+.ypill{position:relative;display:inline-flex;align-items:center;gap:4px;padding:4px;background:var(--shell);color:var(--on-shell);font:500 12px/1 var(--body);box-shadow:inset 0 0 0 1px var(--shell-line),0 6px 16px rgba(0,0,0,.28);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ypill .win{display:block;flex:none}
+.ypill .seg{display:flex;align-items:center;gap:6px;padding:0 6px;color:var(--on-shell)}
+.ypill .seg .sub{color:var(--on-shell-2);font-weight:400}
+.ypill.muted .win{filter:grayscale(.85) brightness(.9)}
+.ypill.dim{opacity:.72}
+.ic{flex:none}
+.recdot{width:8px;height:8px;border-radius:4px;background:var(--rec);flex:none;animation:rec 2s ease-in-out infinite}
+@keyframes rec{50%{opacity:.45}}
+.sbtn{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:var(--shell-2);color:var(--on-shell);border:0}
+.sbtn.red{color:#ff8a8d}
+.cbtn{height:24px;padding:0 9px;border-radius:8px;background:#efece4;color:#1d1c1a;font:500 12px/24px var(--body);border:0}
+.bar{width:44px;height:3px;border-radius:2px;background:rgba(255,255,255,.14);overflow:hidden}
+.bar i{display:block;height:100%;background:#f2c14e}
+.stack{display:grid;gap:3px;justify-items:start}
+.stack .t{font:500 11px/1 var(--mono);color:var(--on-shell)}
+.ybub{position:absolute;left:var(--bx,40%);transform:translateX(-50%);background:#fffdf7;color:#1d1c1a;font:500 12px/1.2 var(--body);padding:6px 10px;border-radius:9px;box-shadow:0 2px 8px rgba(0,0,0,.2);white-space:nowrap;z-index:2}
+.ybub::before{content:"";position:absolute;left:50%;width:8px;height:8px;background:inherit;transform:translateX(-50%) rotate(45deg)}
+.ybub.below{top:calc(100% + 9px)} .ybub.below::before{top:-4px}
+.ybub.above{bottom:calc(100% + 9px)} .ybub.above::before{bottom:-4px}
+.ybub.inward{right:calc(100% + 10px);left:auto;top:50%;transform:translateY(-50%)} .ybub.inward::before{right:-4px;left:auto;top:50%;transform:translateY(-50%) rotate(45deg)}
+.screen{position:relative;width:100%;height:190px;border-radius:12px;background:#262a31;overflow:hidden}
+.screen::before{content:"";position:absolute;inset:0 0 auto 0;height:24px;background:rgba(255,255,255,.06)}
+.notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:150px;height:24px;background:#000;border-radius:0 0 10px 10px}
+.screen .slot{position:absolute;top:32px;left:50%;transform:translateX(-50%)}
+.screen.side .slot{top:50%;left:auto;right:0;transform:translateY(-50%)}
+.screen .text{position:absolute;left:16px;right:16px;bottom:14px;height:58px;background:repeating-linear-gradient(transparent 0 12px,rgba(255,255,255,.07) 12px 14px)}
+.nowcap{font:500 11px var(--body);color:rgba(255,255,255,.72);margin-top:6px;text-align:center}
+.nowbox{display:grid;place-items:center;background:#262a31;border-radius:12px;padding:18px;min-height:150px}
+.nowbox.none{color:var(--ink-3);background:#e9e7e1;font-size:13px;text-align:center}
+.state-name{font:500 18px/1.2 var(--display);margin:0 0 6px}
+.why{font-size:13px;color:var(--ink-2);margin-top:8px}
+.motion{font:400 12px/1.5 var(--mono);color:var(--ink-2);margin-top:10px;background:rgba(29,28,26,.04);border-radius:8px;padding:8px 10px}
+.motion b{color:var(--ink);font-weight:500}
+.tray{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:4px;background:var(--shell);border-radius:14px;box-shadow:inset 0 0 0 1px var(--shell-line),0 6px 16px rgba(0,0,0,.28)}
+.tray .sbtn{width:30px;height:30px;border-radius:10px;background:transparent;color:var(--on-shell)}
+.tray .sbtn.on{background:var(--shell-2)}
+.tip{position:absolute;top:calc(100% + 54px);left:50%;transform:translateX(-50%);background:#fffdf7;color:#1d1c1a;font:500 12px var(--body);padding:5px 8px;border-radius:8px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.dock-t{position:absolute;border:1.5px dashed rgba(255,255,255,.35);border-radius:14px}
+.blob{position:absolute;width:36px;height:36px;border-radius:18px;background:var(--shell);padding:4px;box-shadow:inset 0 0 0 1px var(--shell-line),0 10px 22px rgba(0,0,0,.38)}
+.diagram{overflow-x:auto}
+.diagram svg{min-width:1100px;display:block}
+.diagram text{font-family:var(--body)}
+.mock-menu{background:#f6f5f2;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:6px;width:280px;font-size:13px;color:#1d1c1a}
+.mock-menu .it{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 8px;border-radius:6px}
+.mock-menu .it:first-child{background:#e9e6de}
+.mock-menu .pv{display:block;color:var(--ink-3);font-size:12px;margin-top:2px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mock-menu hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+.mock-menu .k{font:400 11px var(--mono);color:var(--ink-3)}
+.pop{background:#fffdf7;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:14px;width:260px;font-size:13px;color:#1d1c1a}
+.pop .row{display:flex;gap:8px;align-items:center;margin-top:10px}
+.scratch{width:330px;background:#fbfaf7;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.3);overflow:hidden;color:#1d1c1a;font-size:13px}
+.scratch .bar2{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)}
+.scratch .tabx{padding:3px 8px;border-radius:6px;background:#efece4;font-size:12px}
+.scratch .body{padding:12px;min-height:120px;color:var(--ink-2);line-height:1.5}
+.scratch .foot{display:flex;justify-content:flex-end;gap:6px;padding:8px 10px}
+.scratch .ghost{height:26px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:#fff;font:500 12px/24px var(--body);display:inline-flex;gap:6px;align-items:center}
+.scratch .solid{height:26px;padding:0 10px;border-radius:8px;background:#1d1c1a;color:#fff;font:500 12px/26px var(--body);display:inline-flex;gap:6px;align-items:center}
+.desc{border:1.5px dashed var(--line);border-radius:12px;padding:14px;color:var(--ink-2);font-size:13px;background:var(--sheet)}
+.desc b{color:var(--ink);font-weight:500}
+.clockrow{display:grid;grid-template-columns:180px 1fr;gap:16px;padding:16px 0;border-top:1px solid var(--line)}
+.clockrow:first-child{border-top:0}
+.cells{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.cell{display:grid;gap:6px}
+.mini{position:relative;background:#262a31;border-radius:10px;height:96px;display:grid;place-items:center}
+.mini.tall{height:150px;align-items:start;padding-top:14px}
+.pv-time{position:absolute;transform:translateX(-50%);font:500 10px/1 "Pixelify Sans",monospace;color:#20361a;background:rgba(255,253,245,.75);padding:1px 3px;border-radius:3px;pointer-events:none}
+.story{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-top:10px}
+.fr{background:var(--sheet);border:1px solid var(--line);border-radius:12px;padding:10px;display:grid;gap:8px;align-content:start}
+.fr .tm{font:500 12px var(--mono);color:var(--red)}
+.fr .cap{font-size:13px;color:var(--ink-2)}
+.hoot2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.story.s4{grid-template-columns:repeat(2,1fr)}#warmS.s4,#trialS.s4{grid-template-columns:repeat(4,1fr)}
+.zoomc{display:block;image-rendering:pixelated;border-radius:10px;margin-top:6px}
+.cmp2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}.cmp2 .card{display:grid;gap:8px;justify-items:start}
+.vstage{position:relative;height:330px;border-radius:14px;background:#e9e6de;overflow:hidden;box-shadow:inset 0 0 0 1px var(--line)}
+.vstage .txt{position:absolute;left:90px;right:90px;top:90px;display:grid;gap:9px}.vstage .txt i{display:block;height:7px;border-radius:4px;background:#d4d0c5}
+.vshell{position:absolute;background:var(--shell);padding:4px;display:grid;gap:4px;justify-items:center;box-shadow:inset 0 0 0 1px var(--shell-line),0 6px 16px rgba(0,0,0,.28)}
+.vshell.l{left:0;border-radius:0 16px 16px 0}.vshell.r{right:0;border-radius:16px 0 0 16px}
+.vlab{position:absolute;font:500 11px var(--mono);color:var(--ink-3)}
+.cursor{position:absolute;width:12px;height:18px;pointer-events:none}
+.browser{border-radius:10px;background:#fff;box-shadow:0 0 0 1px var(--line);overflow:hidden;font-size:12px}.browser .ubar{background:#efeee9;padding:6px 10px;font:400 11px var(--mono);color:var(--ink-2)}.browser .bd{padding:10px;display:grid;gap:6px}
+.fig{margin:0}.fig figcaption{font-size:13px;color:var(--ink-2);margin-top:8px}
+</style>
+<style>
+/* Section 16 only: one row per moment, one column per option. */
+.fc-grid{width:100%;border-collapse:separate;border-spacing:10px 10px;table-layout:fixed}
+.fc-grid th{font:500 13px var(--body);text-align:left;color:var(--ink);vertical-align:bottom;padding:0 2px}
+.fc-grid th .sub{display:block;font-weight:400;color:var(--ink-2);font-size:12px;margin-top:2px}
+.fc-grid th.approved{color:var(--ok)}
+.fc-grid td{vertical-align:top;padding:0}
+.fc-grid td.lab{width:130px}
+.fc-grid td.lab b{font-weight:500;display:block;font:500 12px var(--mono);color:var(--red)}
+.fc-grid td.lab p{font-size:12px;color:var(--ink-2);margin:6px 0 0}
+.fc-cell{background:var(--sheet);border:1px solid var(--line);border-radius:12px;padding:8px;display:grid;gap:6px}
+.fc-cell .screen{height:96px}
+.fc-cell .cap{font-size:12px;color:var(--ink-2);line-height:1.4}
+.fc-cell .zl{font:400 10px var(--mono);color:var(--ink-3)}
+.ypill .kbd{font:500 11px/1 var(--mono);color:var(--on-shell);background:var(--shell-2);border-radius:5px;padding:4px 6px;box-shadow:inset 0 -1px 0 rgba(0,0,0,.35)}
+.fc-pick{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+.fc-pick .card h3{margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap" style="max-width:1760px">
+<section id="filmcrew" data-shot="section">
+  <div class="sec-head"><span class="sec-num">16</span><h2>Meetings as a film crew: option C, next to A and B</h2><span style="font:500 11px var(--mono);background:#fff3d6;color:#8a5a12;border-radius:6px;padding:3px 8px;margin-left:10px;vertical-align:middle">Your pick: A, B or C</span></div>
+  <p>Your words: "like a movie production, like a cameraman recording with a boom mic", and "should we give Hoot a boom mic". In option C the meeting pill becomes a small production. Yappy works a camera on a tripod, Hoot holds a boom mic over the scene, and the recording light is the red REC light on the camera, so it stays on the gear and never on a character. A clapperboard opens the meeting and a "notes ready" slate closes it. The sun still crosses the sky as the meeting clock, and the pill still docks top-center with the timer inside it.</p>
+  <p>Each row is one moment of a real meeting. The columns are A (Hoot takes the desk), B (Hoot runs the tape beside Yappy, the one you approved), C (the film crew alone), and C on top of B, which is how the two combine if you want both. Every cell shows the pill at true size on a strip of screen, with a 2x zoom of the scene underneath.</p>
+  <div class="card" style="padding:12px 10px;overflow-x:auto">
+    <table class="fc-grid" aria-label="Meeting pill, option A, B, C and C on top of B, six moments">
+      <thead><tr><th style="width:130px"></th>
+        <th>A · Hoot takes the desk<span class="sub">Yappy hands over and leaves</span></th>
+        <th class="approved">B · Hoot on the tape<span class="sub">approved in section 9</span></th>
+        <th>C · Film crew<span class="sub">camera, boom, clapper, slate</span></th>
+        <th>C on top of B<span class="sub">tape, camera and boom together</span></th>
+      </tr></thead>
+      <tbody id="fcRows"></tbody>
+    </table>
+  </div>
+  <div class="fc-pick">
+    <div class="card"><h3>What C costs</h3><p class="note">Nothing new at runtime. The REC light blinks once every 1.6 s and the boom sways 1 px every 4 s; everything else holds still between the once-a-minute sun steps, the same power as the red-dot version. With reduce motion on, the REC light stays solid, the clapper is drawn closed and the boom never sways.</p></div>
+    <div class="card"><h3>C on top of B, honestly</h3><p class="note">It works, but at true size the 140 px window carries five things at once: Hoot, the reels, Yappy in headphones, the camera and the boom. The REC light and the red ear cup also say "recording" twice. If you like both, the calmer mix is B for the hour with C's two bookends: the clapper at start and the "notes ready" slate at stop. Those only show for a few seconds, so they cost no space during the meeting.</p></div>
+    <div class="card" style="border-color:rgba(185,58,38,.35)"><h3>Your call</h3><p class="note">Pick A, B, C, or C on top of B before the recording-headphones item builds its Hoot half. Until you pick, that item keeps building B, which is already approved. Whatever you pick, Yappy stays the main character and Hoot is the only friend who stays longer than 4 seconds.</p></div>
+  </div>
+</section>
+</div>
+<script src="assets/yappy.js"></script>
+<script src="assets/pill-kit.js"></script>
+<script src="assets/friends-hd.js"></script>
+<script src="assets/pill-r3.js"></script>
+<script src="film-crew.js"></script>
+</body>
+</html>
