@@ -13,17 +13,17 @@ mod diagnostics;
 // are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
 // eval harness).
 pub mod asr_engine;
-/// yap-1106-engine-owner — the ONLY code that brings a speech engine up: the
-/// `yap-asr` helper process, its job queue, health state and quit.
-pub mod engine_owner;
 /// yap-1106-engine-owner — wire protocol shared with the `yap-asr` helper.
 pub mod asr_protocol;
-/// Y10-A — the dictation language set, auto-detect held to it, and which
-/// cleanup stages are language-agnostic.
-pub mod languages;
 pub mod channel;
 mod cli;
 pub mod command_mode;
+/// yap-1106-engine-owner — the ONLY code that brings a speech engine up: the
+/// `yap-asr` helper process, its job queue, health state and quit.
+pub mod engine_owner;
+/// Y10-A — the dictation language set, auto-detect held to it, and which
+/// cleanup stages are language-agnostic.
+pub mod languages;
 pub mod take_error;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
@@ -12037,7 +12037,7 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                         emit_status(&h, &st);
                         float_pill::show_for_recording(&h);
                         log::info!("hands-free ON source=fn_double_tap");
-                        ask_hands_free_during_meeting(&h, &st, "fn_double_tap");
+                    ask_hands_free_during_meeting(&h, &st, "fn_double_tap");
                     }
                     ptt_macos::PttEvent::HandsFreeOff => {
                         *st.hands_free.lock() = false;

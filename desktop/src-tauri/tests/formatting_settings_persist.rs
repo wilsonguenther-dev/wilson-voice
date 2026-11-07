@@ -381,7 +381,10 @@ fn old_blob_migrates_without_resetting_carried_fields() {
     assert_eq!(loaded.command_binding, defaults.command_binding);
     assert_eq!(loaded.pill_position, defaults.pill_position);
     // yap-1106-curse-setting — a store from before the toggle never swears.
-    assert!(!loaded.companion_curse, "curse mode is OFF for an old store");
+    assert!(
+        !loaded.companion_curse,
+        "curse mode is OFF for an old store"
+    );
 
     // (c) The migration stamped the current version and rewrote the file once,
     //     so a relaunch is a no-op rather than a second migration.
