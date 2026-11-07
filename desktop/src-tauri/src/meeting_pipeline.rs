@@ -1222,6 +1222,29 @@ fn median_of(v: &[f64]) -> f64 {
     }
 }
 
+/// yap-1106-vocab-bias — apply the user's Dictionary to one MEETING segment
+/// before it is stored, exactly as dictation applies it (same rules, same
+/// applier: [`Database::apply_dictionary_counted`]). Before this, the Dictionary
+/// only reached dictation, so a meeting kept "Trivia" for Drivia. A Dictionary
+/// read failure keeps the recogniser's text: it never fails a meeting window.
+/// Returns the segment and how many replacements fired.
+pub fn vocab_segment(db: &Database, mut segment: NewMeetingSegment) -> (NewMeetingSegment, usize) {
+    match db.apply_dictionary_counted(&segment.text) {
+        Ok((text, n)) => {
+            if n > 0 && !text.trim().is_empty() {
+                segment.text = text;
+                (segment, n)
+            } else {
+                (segment, 0)
+            }
+        }
+        Err(e) => {
+            log::warn!("vocab failed track={} error={e}", segment.track);
+            (segment, 0)
+        }
+    }
+}
+
 /// The ledger the driver writes through: DB segment first, ledger second.
 struct SegmentWritingStore<'a> {
     inner: JsonProgressStore,
@@ -1235,6 +1258,9 @@ struct SegmentWritingStore<'a> {
     deps: &'a PipelineDeps,
     /// Decoder milliseconds summed over this run's windows on this track.
     decode_ms: u64,
+    /// yap-1106-vocab-bias: Dictionary replacements made on this track's
+    /// segments (logged once per track as `vocab applied track=… replacements=…`).
+    vocab_replacements: usize,
     /// yap-audit-utterance-segments — rows written on this track this run,
     /// and the windows they came from, for the per-track `utterances` line.
     rows_written: usize,
@@ -1269,7 +1295,15 @@ impl ProgressStore for SegmentWritingStore<'_> {
     }
 
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
-        let segments = chunk_segments(chunk, self.track);
+        // yap-1106-vocab-bias: every utterance row passes through the
+        // Dictionary before it is stored, as dictation does.
+        let raw = chunk_segments(chunk, self.track);
+        let mut segments: Vec<NewMeetingSegment> = Vec::with_capacity(raw.len());
+        for segment in raw {
+            let (segment, replaced) = vocab_segment(self.db, segment);
+            self.vocab_replacements += replaced;
+            segments.push(segment);
+        }
         if !segments.is_empty() {
             self.db
                 .append_meeting_segments(self.meeting_id, &segments)?;
@@ -1531,6 +1565,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             duration: meeting.duration_seconds,
             deps,
             decode_ms: 0,
+            vocab_replacements: 0,
             rows_written: 0,
             windows_written: 0,
         };
@@ -1579,6 +1614,11 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
                     interrupted: transcript.interrupted,
                 },
             )
+        );
+        log::info!(
+            "vocab applied track={} replacements={} meeting={id}",
+            track,
+            store.vocab_replacements
         );
         if transcript.interrupted {
             log::info!(
@@ -1677,6 +1717,57 @@ mod nt6_retry_tests {
         ));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
+    }
+
+    /// yap-1106-vocab-bias: the Dictionary reaches MEETING segments. The 8
+    /// misheard pairs on a meeting-segment fixture come out spelled right, are
+    /// stored that way, and the track keeps its attribution.
+    #[test]
+    fn vocab_fixes_the_eight_pairs_on_a_meeting_segment() {
+        let db = Database::open_in_memory().expect("db");
+        assert_eq!(db.add_suggested_dictionary_terms().expect("suggest"), 9);
+        let m = db
+            .create_meeting("Pipeline review", "mic")
+            .expect("meeting");
+        let raw = NewMeetingSegment::new(
+            12.0,
+            41.5,
+            "so Trivia and Gunther pitched Plus Lane to ClassLank, ClassPlank and St. Marcos \
+             over Whisper Fill, Henshake and TechServe.",
+        )
+        .on_track(1);
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 9);
+        assert_eq!(seg.track, 1);
+        assert_eq!(
+            seg.text,
+            "so Drivia and Guenther pitched Postline to ClassLink, ClassLink and San Marcos \
+             over Wispr Flow, Handshake and TechServ."
+        );
+        db.append_meeting_segments(&m.id, std::slice::from_ref(&seg))
+            .expect("append");
+        let stored = db.list_meeting_segments(&m.id).expect("segments");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].text, seg.text);
+    }
+
+    /// No false positive in a meeting: "trivia night" stays when Drivia is not
+    /// in the speaker's context, and nothing is counted.
+    #[test]
+    fn vocab_leaves_trivia_night_alone_in_a_meeting() {
+        let db = Database::open_in_memory().expect("db");
+        db.add_suggested_dictionary_terms().expect("suggest");
+        let raw = NewMeetingSegment::new(
+            0.0,
+            8.0,
+            "Trivia night is Thursday, bring a team for trivia.",
+        );
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 0);
+        assert_eq!(
+            seg.text,
+            "Trivia night is Thursday, bring a team for trivia."
+        );
     }
 
     #[test]

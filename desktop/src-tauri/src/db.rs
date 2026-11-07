@@ -408,6 +408,9 @@ fn new_transcript_entry(
     }
 }
 
+/// `settings_kv` key of the yap-1106-vocab-bias one-time misheard-list seed.
+pub const MISHEARD_SEED_KEY: &str = "vocab.misheard_seed_v1";
+
 /// Seed dictionary terms — proper nouns that deliberately WON'T auto-harvest
 /// (they're plain first-capitalized words; see is_jargon_token).
 const SEED_TERMS: &[&str] = &[
@@ -1256,6 +1259,10 @@ impl Database {
         // Always rebuild daily rollups from transcripts (source of truth)
         if let Err(e) = db.recompute_daily_stats() {
             log::warn!("daily_stats recompute on open: {e}");
+        }
+        // yap-1106-vocab-bias: one-time misheard-list seed for Wilson's install.
+        if let Err(e) = db.seed_misheard_if_wilsons_install() {
+            log::warn!("vocab seed failed on open: {e}");
         }
         Ok(db)
     }
@@ -4067,7 +4074,22 @@ impl Database {
     }
 
     /// Apply dictionary preferred forms to ASR text (case-insensitive whole-token replace).
+    /// Apply the Dictionary's rewrite rules to a DICTATION (YV10 stage 1).
+    /// Logs `vocab applied track=dictation replacements=N`.
     pub fn apply_dictionary(&self, text: &str) -> Result<String, String> {
+        let (out, n) = self.apply_dictionary_counted(text)?;
+        if n > 0 {
+            log::info!("vocab applied track=dictation replacements={n}");
+        }
+        Ok(out)
+    }
+
+    /// yap-1106-vocab-bias — the one Dictionary applier, shared by dictation and
+    /// meeting segments (`meeting_pipeline::SegmentWritingStore`). Matching is
+    /// whole-word, phrase-aware and case-aware; see [`crate::dict_apply`].
+    /// Returns the rewritten text and how many replacements fired; each rule
+    /// that fired gets its `hits` raised by its count. Does not log.
+    pub fn apply_dictionary_counted(&self, text: &str) -> Result<(String, usize), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -4080,39 +4102,80 @@ impl Database {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
-        let mut replacements: Vec<(String, String)> = Vec::new();
+        let mut rules: Vec<(String, String)> = Vec::new();
         for r in rows {
-            replacements.push(r.map_err(|e| e.to_string())?);
+            rules.push(r.map_err(|e| e.to_string())?);
         }
-        let mut out = text.to_string();
-        for (term, preferred) in replacements {
-            let lower = out.to_lowercase();
-            let needle = term.to_lowercase();
-            if !lower.contains(&needle) {
-                continue;
-            }
-            // token-wise replace preserving surrounding punctuation loosely
-            let tokens: Vec<String> = out
-                .split_whitespace()
-                .map(|tok| {
-                    let bare = tok.trim_matches(|c: char| !c.is_alphanumeric());
-                    if bare.eq_ignore_ascii_case(&term) {
-                        tok.replacen(bare, &preferred, 1)
-                    } else {
-                        tok.to_string()
-                    }
-                })
-                .collect();
-            let next = tokens.join(" ");
-            if next != out {
-                out = next;
+        drop(stmt);
+        let applied = crate::dict_apply::apply_rules(text, &rules);
+        for ((term, _), &n) in rules.iter().zip(applied.hits.iter()) {
+            if n > 0 {
                 let _ = conn.execute(
-                    "UPDATE dictionary SET hits = hits + 1 WHERE term = ?1 COLLATE NOCASE",
-                    params![term],
+                    "UPDATE dictionary SET hits = hits + ?2 WHERE term = ?1 COLLATE NOCASE",
+                    params![term, n as i64],
                 );
             }
         }
-        Ok(out)
+        let n = applied.replacements();
+        Ok((applied.text, n))
+    }
+
+    /// yap-1106-vocab-bias — the Dictionary's "Add suggested words" button:
+    /// insert every [`crate::dict_apply::SUGGESTED_MISHEARD`] pair that is not
+    /// already a term. A term the user already has keeps their spelling.
+    /// Returns how many rows were added.
+    pub fn add_suggested_dictionary_terms(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let mut added = 0usize;
+        for (term, preferred) in crate::dict_apply::SUGGESTED_MISHEARD {
+            added += conn
+                .execute(
+                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, ?3, 0, ?4, 'seed')",
+                    params![Uuid::new_v4().to_string(), term, preferred, now],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(added)
+    }
+
+    /// yap-1106-vocab-bias — one-time migration: seed the misheard list into
+    /// Wilson's install. "Wilson's install" = history that already says Drivia
+    /// or Guenther. Runs at most once (`settings_kv` key
+    /// [`MISHEARD_SEED_KEY`]); an install with 50+ dictations and no match is
+    /// judged "not Wilson's" and never re-checked, a newer one is re-checked on
+    /// the next open. Returns rows added (0 when skipped or already done).
+    pub fn seed_misheard_if_wilsons_install(&self) -> Result<usize, String> {
+        if self.setting_get(MISHEARD_SEED_KEY).is_some() {
+            return Ok(0);
+        }
+        let (matched, total) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let matched: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM transcripts
+                       WHERE text LIKE '%Drivia%' OR text LIKE '%Guenther%')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            (matched, total)
+        };
+        if !matched {
+            if total >= 50 {
+                self.setting_set(MISHEARD_SEED_KEY, "skipped")?;
+                log::info!("vocab seed skipped reason=not_wilsons_install");
+            }
+            return Ok(0);
+        }
+        let added = self.add_suggested_dictionary_terms()?;
+        self.setting_set(MISHEARD_SEED_KEY, "seeded")?;
+        log::info!("vocab seed applied added={added}");
+        Ok(added)
     }
 
     // ── Y9-C spoken preference rules (append-only) ──────────────────────────
@@ -5862,6 +5925,82 @@ mod tests {
     // ── Analytics math (total words / WPM / streaks / words-today) ────────────
     // These prove the numbers Wilson watches are exactly right, under the real
     // edge cases: legacy speech=0 rows, multi-day history, streak grace + gaps.
+
+    /// yap-1106-vocab-bias: the misheard list is seeded ONCE into an install
+    /// whose history says Drivia, never into a stranger's, and the suggested
+    /// words button is idempotent.
+    #[test]
+    fn misheard_seed_runs_once_on_wilsons_install_only() {
+        let (db, dir) = fresh_db("vocab-seed-wilson");
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "empty history");
+        assert!(db.setting_get(MISHEARD_SEED_KEY).is_none(), "re-checked next open");
+        db.insert_transcript(
+            "send the Drivia deck to Jeisil".into(),
+            "native".into(),
+            0.5,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 9);
+        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("seeded"));
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0, "one-time");
+        let dict = db.list_dictionary().unwrap();
+        let pair = |t: &str| {
+            dict.iter()
+                .find(|d| d.term == t)
+                .and_then(|d| d.preferred.clone())
+        };
+        assert_eq!(pair("Trivia").as_deref(), Some("Drivia"));
+        assert_eq!(pair("Plus Lane").as_deref(), Some("Postline"));
+        assert_eq!(pair("ClassPlank").as_deref(), Some("ClassLink"));
+        assert_eq!(pair("Whisper Fill").as_deref(), Some("Wispr Flow"));
+        // The button after the seed adds nothing new.
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 0);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn misheard_seed_skips_a_strangers_install() {
+        let (db, dir) = fresh_db("vocab-seed-stranger");
+        for _ in 0..50 {
+            db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None)
+                .unwrap();
+        }
+        assert_eq!(db.seed_misheard_if_wilsons_install().unwrap(), 0);
+        assert_eq!(db.setting_get(MISHEARD_SEED_KEY).as_deref(), Some("skipped"));
+        assert!(db.list_dictionary().unwrap().iter().all(|d| d.term != "Trivia"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Dictation uses the same applier: the pairs are fixed, "trivia night"
+    /// is not, and the rules that fired gain hits.
+    #[test]
+    fn dictation_dictionary_fixes_pairs_without_false_positives() {
+        let (db, dir) = fresh_db("vocab-dictation");
+        assert_eq!(db.add_suggested_dictionary_terms().unwrap(), 9);
+        assert_eq!(
+            db.apply_dictionary("ask Gunther about Plus Lane and trivia night").unwrap(),
+            "ask Guenther about Postline and trivia night"
+        );
+        let (out, n) = db
+            .apply_dictionary_counted("we went to trivia night")
+            .unwrap();
+        assert_eq!((out.as_str(), n), ("we went to trivia night", 0));
+        let hits = db
+            .list_dictionary()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.term == "Gunther")
+            .map(|d| d.hits)
+            .unwrap();
+        assert_eq!(hits, 1);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn fresh_db(tag: &str) -> (Database, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("wv-{tag}-{}", std::process::id()));

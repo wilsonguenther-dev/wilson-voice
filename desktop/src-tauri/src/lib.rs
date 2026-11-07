@@ -315,6 +315,9 @@ pub mod tray_menu;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.
 pub mod vad;
+/// yap-1106-vocab-bias — the Dictionary rewrite applier shared by dictation and
+/// meeting transcripts, and the suggested misheard-words list.
+pub mod dict_apply;
 /// The words a packed log line is allowed to keep — Yap's own, and nothing
 /// else. Public so `support_bundle_redaction` can assert the guarantee from
 /// outside the module that relies on it.
@@ -7218,6 +7221,22 @@ fn add_dictionary_term(
     state.db.add_dictionary_term(term, preferred)
 }
 
+/// yap-1106-vocab-bias — the Dictionary's "Add suggested words" button.
+/// Returns how many words were added (0 = all were already there).
+#[tauri::command]
+fn add_suggested_dictionary_terms(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    match state.db.add_suggested_dictionary_terms() {
+        Ok(n) => {
+            log::info!("vocab suggested_added added={n}");
+            Ok(n)
+        }
+        Err(e) => {
+            log::warn!("vocab suggested_failed error={e}");
+            Err(e)
+        }
+    }
+}
+
 #[tauri::command]
 fn update_dictionary_term(
     state: State<'_, Arc<AppState>>,
@@ -13467,6 +13486,17 @@ pub fn run() {
                     &language,
                     &native_model_ready,
                 )?;
+                // yap-1106-vocab-bias: meetings get the same Dictionary decoder
+                // bias as dictation. The engine applies it only where it has a
+                // prompt hook (`accepts_initial_prompt`); the post-ASR rewrite in
+                // `meeting_pipeline::vocab_segment` covers every engine.
+                let bias_prompt = match asr_state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("vocab bias_unavailable track=meeting error={e}");
+                        None
+                    }
+                };
                 Ok(meeting_pipeline::MeetingEngine::new(
                     model_id.clone(),
                     Box::new(meeting_asr::WarmEngineChunkAsr::new(
@@ -13474,7 +13504,7 @@ pub fn run() {
                         model_id,
                         model_path,
                         Some("en".to_string()),
-                        None,
+                        bias_prompt,
                     )),
                 ))
             }),
@@ -13799,6 +13829,7 @@ pub fn run() {
             monthly_series,
             list_dictionary,
             add_dictionary_term,
+            add_suggested_dictionary_terms,
             update_dictionary_term,
             set_dictionary_starred,
             delete_dictionary_term,
