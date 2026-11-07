@@ -901,6 +901,7 @@ fn headless_deps(
         sink: Arc::new(|e: &meeting_pipeline::MeetingProgressEvent| {
             log::debug!("cli meeting_progress state={} percent={}", e.state, e.percent);
         }),
+        diarize: crate::meeting_diarize::DiarizeBackend::Shipped,
         after_transcript: None,
         config: meeting_asr::MeetingAsrConfig::default(),
         start_delay: Duration::ZERO,
