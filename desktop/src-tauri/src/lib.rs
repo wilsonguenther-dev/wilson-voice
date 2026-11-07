@@ -3781,6 +3781,32 @@ pub fn keep_cancelled_take(
     }
 }
 
+/// SP-02 — what a `PttEvent::Interrupted` (fn + an ordinary key) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PttInterruptAction {
+    /// The take is still recording: discard it ([`cancel_recording`]).
+    CancelRecording,
+    /// The take is decoding, polishing or pasting (or there is none): log and
+    /// ignore. `paste_generation` is NOT bumped, so the take still pastes.
+    Ignore,
+}
+
+/// SP-02 — an fn interrupt cancels only a take that is still recording.
+///
+/// Before this, the interrupt went straight to [`cancel_recording`], whose
+/// YV39 bump runs BEFORE its recording check — so a Globe-key key-down that
+/// arrived while a 155-word take was decoding turned it into a copy-only stale
+/// take (Wilson 2026-11-06 16:41Z). The explicit cancel (Esc / the pill's X)
+/// still invalidates an in-flight take through `cancel_take`; only the fn
+/// interrupt is narrowed here.
+fn ptt_interrupt_action(recording: bool) -> PttInterruptAction {
+    if recording {
+        PttInterruptAction::CancelRecording
+    } else {
+        PttInterruptAction::Ignore
+    }
+}
+
 /// Discard in-flight take (FN interrupt / cancel) — no ASR.
 fn cancel_recording(app: &AppHandle, state: &AppState) {
     // YV39: bump BEFORE the recording check. A cancel that arrives while a
@@ -12690,8 +12716,26 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                         );
                     }
                     ptt_macos::PttEvent::Interrupted => {
-                        *st.hands_free.lock() = false;
-                        cancel_recording(&h, &st);
+                        // SP-02 — an fn interrupt cancels only a take that is
+                        // still RECORDING. Once it is decoding, polishing or
+                        // pasting, the take is the user's finished words: the
+                        // interrupt is logged and ignored, so `paste_generation`
+                        // is not bumped and the take still pastes.
+                        let recording = *st.recording.lock();
+                        let busy = *st.busy.lock();
+                        match ptt_interrupt_action(recording) {
+                            PttInterruptAction::CancelRecording => {
+                                log::info!("ptt interrupt action=cancel stage=recording");
+                                *st.hands_free.lock() = false;
+                                cancel_recording(&h, &st);
+                            }
+                            PttInterruptAction::Ignore => {
+                                log::info!(
+                                    "ptt interrupt action=ignored stage={} reason=take_past_recording",
+                                    if busy { "in_flight" } else { "idle" }
+                                );
+                            }
+                        }
                     }
                     ptt_macos::PttEvent::HandsFreeOn => {
                         *st.hands_free.lock() = true;
@@ -15612,6 +15656,53 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod sp02_interrupt_tests {
+    use super::{ptt_interrupt_action, PttInterruptAction};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The dispatch arm's effect on the paste generation, without a window:
+    /// only `CancelRecording` reaches `cancel_recording`, whose first act is
+    /// the YV39 bump.
+    fn interrupt(recording: bool, paste_generation: &AtomicU64) -> PttInterruptAction {
+        let action = ptt_interrupt_action(recording);
+        if action == PttInterruptAction::CancelRecording {
+            paste_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        action
+    }
+
+    /// (b) Interrupted during decoding leaves the take's generation current,
+    /// and it pastes.
+    #[test]
+    fn interrupted_during_decoding_keeps_generation_and_pastes() {
+        let paste_generation = AtomicU64::new(7);
+        // The take stopped: the worker captured its generation.
+        let generation = paste_generation.load(Ordering::SeqCst);
+        // fn + a key arrives while the take is decoding (recording == false).
+        assert_eq!(
+            interrupt(false, &paste_generation),
+            PttInterruptAction::Ignore
+        );
+        let current = paste_generation.load(Ordering::SeqCst);
+        assert_eq!(current, generation, "an ignored interrupt never bumps");
+        assert!(crate::paste::should_paste(true, generation, current, true));
+    }
+
+    /// A take still recording is cancelled, as today, and its paste is void.
+    #[test]
+    fn interrupted_while_recording_still_cancels() {
+        let paste_generation = AtomicU64::new(7);
+        let generation = paste_generation.load(Ordering::SeqCst);
+        assert_eq!(
+            interrupt(true, &paste_generation),
+            PttInterruptAction::CancelRecording
+        );
+        let current = paste_generation.load(Ordering::SeqCst);
+        assert!(!crate::paste::should_paste(true, generation, current, true));
+    }
 }
 
 #[cfg(test)]
