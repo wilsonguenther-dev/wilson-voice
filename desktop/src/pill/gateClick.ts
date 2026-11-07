@@ -88,6 +88,14 @@ export const GATE_HOLD_MS: number = DURATION.gateHold;
  */
 export const GATE_HOVER_GRACE_MS: number = DURATION.gateHoverGrace;
 
+/**
+ * The `extendPillHitbox` owners for the gated chip and the nub lock: each is
+ * unioned into the click-through panel's hitbox while it is mounted, so a click
+ * on it reaches the webview instead of the app underneath.
+ */
+export const GATE_HITBOX_OWNER_CHIP = "gate-chip";
+export const GATE_HITBOX_OWNER_LOCK = "gate-lock";
+
 /** Which part of the pill was clicked. Logged; never a destination. */
 export type GateSurface = "pill" | "chip" | "nub";
 

@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import YappyPill from "./YappyPill";
 import FLOAT_CSS from "../float.css?raw";
 import TOKENS_CSS from "../tokens.css?raw";
+import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
 import { pillLicense, type PillLicense } from "./license";
 import { sceneLicense } from "./forced";
 import { DURATION } from "./motion";
@@ -26,7 +27,7 @@ import {
   GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_HOLD_IDLE, GATE_HOLD_MS, GATE_HOVER_GRACE_MS,
   GATE_CTA_LABEL, GATE_OPENING_LABEL, GATE_PRESS_MS, gateChipCopy,
   GATE_LOCK_LABEL, YAPPY_HOP_EVENT, gateClickArgs, gateClickRoute, gateHovered, gateSettleDueIn, nubLockVisible,
-  onGateHover, reduceGateHold, setGateHover,
+  onGateHover, reduceGateHold, setGateHover, GATE_HITBOX_OWNER_CHIP, GATE_HITBOX_OWNER_LOCK,
 } from "./gateClick";
 
 const ended = (): PillLicense => pillLicense(sceneLicense("ended"));
@@ -188,5 +189,20 @@ describe("yap-1106-pill-trial-clickable — pill.html §13 frames", () => {
       expect(FLOAT_CSS).toContain(`var(${v}`);
     }
     expect(FLOAT_CSS).toMatch(/\.kami-blocked\.gated\.is-pressed\s*\{\s*transform:\s*scale\(0\.97\)/);
+  });
+});
+
+describe("yap-1106-pill-trial-clickable — the click reaches the webview", () => {
+  it("gate_chip_and_nub_lock_are_unioned_into_the_click_through_hitbox", () => {
+    // The panel is click-through outside the published hitbox, and the chip
+    // (with its "Get Yap" button) and the nub lock can sit outside the canvas
+    // capsule. Each is unioned in under its own owner while mounted.
+    expect(GATE_HITBOX_OWNER_CHIP).not.toBe(GATE_HITBOX_OWNER_LOCK);
+    expect(GATE_HITBOX_OWNER_CHIP).not.toBe("capsule");
+    expect(GATE_HITBOX_OWNER_LOCK).not.toBe("capsule");
+    expect(YAPPY_PILL_SRC).toContain('[GATE_HITBOX_OWNER_CHIP, ".kami-blocked.gated"]');
+    expect(YAPPY_PILL_SRC).toContain('[GATE_HITBOX_OWNER_LOCK, ".kami-gate-lock"]');
+    expect(YAPPY_PILL_SRC).toContain("extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, owner)");
+    expect(YAPPY_PILL_SRC).toContain("for (const [owner] of owners) extendPillHitbox(null, owner)");
   });
 });

@@ -36,6 +36,7 @@ import {
 // copy, hover hold and the resting nub's lock come from one pure module.
 import {
   GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_LOCK_LABEL, GATE_PRESS_MS, YAPPY_HOP_EVENT, YAPPY_HOP_MS,
+  GATE_HITBOX_OWNER_CHIP, GATE_HITBOX_OWNER_LOCK,
   gateChipCopy, gateClickArgs, nubLockVisible, setGateHover, type GateSurface,
 } from "./gateClick";
 import { PILL_HOVER_OUT_EVENT } from "./hitbox";
@@ -855,6 +856,41 @@ export default function YappyPill(
       extendPillHitbox(null);
     };
   }, []);
+  // yap-1106-pill-trial-clickable — the gated chip (now wider: "Trial ended" +
+  // its "Get Yap" button) and the resting nub's lock can sit OUTSIDE the canvas
+  // capsule this pill reports as its hitbox; on the click-through panel their
+  // clicks would fall through to the app underneath. Each one, while mounted,
+  // is unioned into the hitbox under its own owner (the badge above keeps the
+  // default owner), and unmount hands that share back.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const owners: ReadonlyArray<readonly [string, string]> = [
+      [GATE_HITBOX_OWNER_CHIP, ".kami-blocked.gated"],
+      [GATE_HITBOX_OWNER_LOCK, ".kami-gate-lock"],
+    ];
+    const push = () => {
+      for (const [owner, sel] of owners) {
+        const el = stage.querySelector<HTMLElement>(sel);
+        if (!el || !el.isConnected) {
+          extendPillHitbox(null, owner);
+          continue;
+        }
+        const r = el.getBoundingClientRect();
+        extendPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, owner);
+      }
+    };
+    const ro = new ResizeObserver(push);
+    for (const [, sel] of owners) {
+      const el = stage.querySelector<HTMLElement>(sel);
+      if (el) ro.observe(el);
+    }
+    push();
+    return () => {
+      ro.disconnect();
+      for (const [owner] of owners) extendPillHitbox(null, owner);
+    };
+  }, [gated, showLock, gateChip.lead, gateChip.cta]);
 
   return (
     <div
