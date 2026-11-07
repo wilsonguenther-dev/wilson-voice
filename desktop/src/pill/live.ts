@@ -1726,7 +1726,9 @@ export type PillMessageId =
   /** The detected-meeting offer (it has its own switch in Settings › Meetings). */
   | "meeting-offer"
   /** WF-06 — "Backtrack caught": a spoken self-correction was applied; Undo pastes the raw take. */
-  | "backtrack-caught";
+  | "backtrack-caught"
+  /** WF-05 — "Polished — Reveal": the polish stage rewrote the take; Reveal shows the diff. */
+  | "polish-reveal";
 
 /** THE table. One category per pill message; nothing shows without a row. */
 export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
@@ -1756,6 +1758,10 @@ export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
   // WF-06 — a receipt that Yap changed the take, with its Undo. Not a tip:
   // muting tips must never hide a change made to what the user said.
   "backtrack-caught": "status",
+  // WF-05 — an after-take offer to look at the polish, so it is a TIP: the
+  // Tips switch in Settings › Notifications mutes it. The edit itself stays
+  // undoable from History and Undo AI Edit, so muting hides no change.
+  "polish-reveal": "tip",
   "nudge:no-text-field": "tip",
   "nudge:code-editor": "tip",
   "nudge:meetings": "news",

@@ -30,6 +30,8 @@ export type SettingsTab =
   | "privacy"
   | "diagnostics"
   | "notifications"
+  // yap-1106-news-prefs-onboarding — Settings → Yappy News.
+  | "news"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -43,6 +45,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "companion", label: "Companion" },
   // WF-17 — quiet mode: which of the pill's soft messages show.
   { id: "notifications", label: "Notifications" },
+  // yap-1106-news-prefs-onboarding — topics, tickers, on/off, last refresh.
+  { id: "news", label: "Yappy News" },
   { id: "advanced", label: "Advanced" },
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },
@@ -250,6 +254,8 @@ export interface AppSettings {
    * app's id (e.g. "com.apple.mail"): "markdown" | "plain" | "off".
    */
   structureAppOverrides?: Record<string, string>;
+  /// yap-1106-resource-governor — "Pause heavy work on battery below N%" (1..=99).
+  pauseHeavyWorkBelowPercent?: number;
   /**
    * Denoise the captured clip with RNNoise before transcription (backend
    * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)
@@ -337,12 +343,23 @@ export interface HotkeysStatus {
     | { state: "secureInput"; reason: string };
 }
 
+/** yap-1106-byom-cloud-fast-path — where the last job ran and why. */
+export interface CloudRouteChip {
+  route: "cloud" | "local";
+  reason: "online" | "offline" | "breaker" | "timeout" | "cap" | "user" | "error" | "constrained" | "no_key";
+  label: string;
+  tooltip: string;
+  job: "polish" | "format" | "notes";
+}
+
 export interface AppStatus {
   recording: boolean;
   busy: boolean;
   lastError: string | null;
   /** Y5-F — the catalogue code behind `lastError` (errors.ts). */
   lastErrorCode?: string | null;
+  /** yap-1106 — the last take's route: the pill chip "Cloud" / "On this Mac". */
+  cloudRoute?: CloudRouteChip | null;
   message: string;
   accessibility: boolean;
   /** The Carbon dictate chord's register result and the fn tap's delivery. */
@@ -597,6 +614,13 @@ export interface MeetingStats {
   lastMeetingAt?: string | null;
   meetingsWithAudio: number;
   audioRetentionDays: number;
+  /**
+   * yap-1106-insights-redesign — talk time per named person, longest first.
+   * Filled once speaker profiles exist (yap-1106-voiceprints); absent on a
+   * backend that does not name speakers, which the Insights meetings section
+   * shows as "not yet", never as "nobody".
+   */
+  topPeople?: { name: string; seconds: number; meetings: number }[] | null;
 }
 
 /** YV94 — one recorded meeting. Mirrors the `meetings` row. */

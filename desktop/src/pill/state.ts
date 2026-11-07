@@ -36,6 +36,7 @@ import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
 import { REST_CAPSULE } from "./characterFit";
+import { BUBBLE_MAX_H_PX, BUBBLE_MAX_WIDTH_PX } from "./bubble";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
 export type MeetingMode = "none" | "recording" | "after";
@@ -111,9 +112,13 @@ export const CLOCK_REACH_PT = 12;
 export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
-/** The speech bubble's reserved row (12 px bold + 5 px padding + border). */
-export const BUBBLE_W = 200;
-export const BUBBLE_H = 26;
+/**
+ * The speech bubble's reserved row. yap-1106-yappy-states-and-motion: the
+ * bubble clamps to TWO lines (bubble.ts), so the row holds two — a 2-line
+ * bubble grows upward inside its own row and never over the hint above it.
+ */
+export const BUBBLE_W = BUBBLE_MAX_WIDTH_PX;
+export const BUBBLE_H = BUBBLE_MAX_H_PX;
 /** The bubble's tail + air between it and the capsule (YappyPill: y0 - 10). */
 export const BUBBLE_LIFT = 10;
 /** `.phase-strip` max-width (SIDE_DOCK_TEXT_PX) and its 11px/1.25 line. */
@@ -143,7 +148,10 @@ export const CARD_W = 284;
  * `pillLayout` as `card`; float.css places each one in that row. A card left
  * off this list is neither measured nor placed, so it is drawn over Yappy.
  */
-export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row"] as const;
+// WF-05's "Polished — Reveal" toast/card (`.polish-reveal-wrap`) is a card too:
+// the opened diff card is taller than the resting panel, so the layout must
+// reserve its row or Use original / Keep fall outside the window.
+export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row", "polish-reveal-wrap"] as const;
 export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
 /** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
 export const CARD_STACK_VAR = "--card-stack-y";
@@ -188,7 +196,10 @@ const shift = (b: Box, dx: number, dy: number): Box => ({ x: b.x + dx, y: b.y + 
 export function pillLayout(input: PillInput): PillLayout {
   const { phase, meeting, dock } = input;
   const character: LayoutCharacter = input.character ?? "yappy";
-  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}|${input.card ? `c${Math.ceil(input.card.h)}` : ""}`;
+  // WF-13: an explicit hint reservation (the silent-mic row) is part of the
+  // geometric identity, or the memoised layout would never grow for it.
+  const hintKey = input.hintLines !== undefined ? `h${Math.max(1, Math.round(input.hintLines))}` : "";
+  const key = `${character}|${dock}|${meeting}|${RESTING_PHASES.has(phase) ? "rest" : "open"}|${phase === "blind" ? "b" : ""}|${phase === PROGRESS_PHASE ? "p" : ""}|${input.card ? `c${Math.ceil(input.card.h)}` : ""}${hintKey ? `|${hintKey}` : ""}`;
   if (character === "legacy") {
     const w = LEGACY_PANEL.w, h = LEGACY_PANEL.h;
     const char = { x: 0, y: 0, w, h };

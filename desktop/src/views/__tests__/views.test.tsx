@@ -41,6 +41,7 @@ const SETTINGS_TABS = [
   "Privacy",
   "Diagnostics",
   "Notifications",
+  "News",
   "License",
 ];
 

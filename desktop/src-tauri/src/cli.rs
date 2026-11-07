@@ -542,8 +542,11 @@ fn bench_take(
     let leveled = record::bench_capture_chain(&raw);
     drop(raw);
 
+    // SP-06 — the fade, RNNoise and Silero stream during capture in the app,
+    // so the bench streams them here, before the release clock, too.
+    let streamed = record::bench_capture_stream(&leveled, settings.denoise, vad);
     let t_release = Instant::now();
-    let dsp = record::bench_release_dsp(&leveled, settings.denoise, vad)?;
+    let dsp = record::bench_release_streamed(&leveled, settings.denoise, vad, streamed)?;
     let dsp_ms = ms_since(t_release);
     let decoded_s = dsp.samples.len() as f64 / f64::from(record::TARGET_RATE);
     let asr = crate::transcribe_native(
@@ -897,6 +900,7 @@ fn headless_deps(
         sink: Arc::new(|e: &meeting_pipeline::MeetingProgressEvent| {
             log::debug!("cli meeting_progress state={} percent={}", e.state, e.percent);
         }),
+        diarize: crate::meeting_diarize::DiarizeBackend::Shipped,
         after_transcript: None,
         config: meeting_asr::MeetingAsrConfig::default(),
         start_delay: Duration::ZERO,

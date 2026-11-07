@@ -35,6 +35,11 @@ const CI_YML: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_YML: &str = include_str!("../../../.github/workflows/release.yml");
 const PACKAGE_JSON: &str = include_str!("../../package.json");
 const ASR_ENGINE_RS: &str = include_str!("../src/asr_engine.rs");
+/// The analyzer chain's research doc (ENGINEERING MUSTS (b)). Its `pins` block
+/// is the one written record of which diarization crates and model bytes were
+/// chosen; the test below makes it the same numbers as the manifests and the
+/// model catalog.
+const ANALYZER_RESEARCH: &str = include_str!("../../../docs/ANALYZER-RESEARCH.md");
 
 /// The CSP has to exist, and has to be the policy this app was verified
 /// against. Every allowance below is something the frontend genuinely loads
@@ -1098,4 +1103,108 @@ fn app_binary_does_not_link_the_speech_model() {
         !helper_lines.is_empty() && helper_lines.iter().all(|l| !l.contains("optional")),
         "the yap-asr helper is the binary that links the speech model: {helper_lines:?}"
     );
+}
+
+/// The fenced `pins` block under `## Pinned versions` in ANALYZER-RESEARCH.md,
+/// one `Vec` of whitespace-separated fields per non-empty line.
+fn analyzer_research_pins() -> Vec<Vec<String>> {
+    let section = ANALYZER_RESEARCH
+        .split("\n## Pinned versions")
+        .nth(1)
+        .expect("docs/ANALYZER-RESEARCH.md has a `## Pinned versions` section");
+    let block = section
+        .split("```pins")
+        .nth(1)
+        .expect("`## Pinned versions` carries a ```pins block")
+        .split("```")
+        .next()
+        .expect("the pins block is closed");
+    block
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split_whitespace().map(str::to_string).collect())
+        .collect()
+}
+
+/// ENGINEERING MUSTS (b): the research doc's pick is the pin. The sherpa-onnx
+/// pin in the sidecar manifest, the lockfile's word-time source and every
+/// diarization model digest in the catalog must equal the doc, so a swap or
+/// an upgrade cannot land without the doc (and its reasoning) moving with it.
+#[test]
+fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
+    assert!(
+        ANALYZER_RESEARCH.contains("\n## Pick\n"),
+        "the doc ends its survey with `## Pick`"
+    );
+    assert!(
+        ANALYZER_RESEARCH.contains("\n## 1. Word timestamps\n"),
+        "section 1 is the word-timestamp source"
+    );
+    let pins = analyzer_research_pins();
+    assert!(!pins.is_empty(), "the pins block is not empty");
+
+    let mut crates_seen = Vec::new();
+    let mut model_sha_seen = Vec::new();
+    for pin in &pins {
+        let fields: Vec<&str> = pin.iter().map(String::as_str).collect();
+        match fields.as_slice() {
+            ["crate", name, version] => {
+                let doc = version.strip_prefix('=').unwrap_or_else(|| {
+                    panic!("doc pin for {name} must be `=x.y.z`, got {version}")
+                });
+                assert_eq!(
+                    exact_pin(DIARIZE_CARGO_TOML, name),
+                    doc,
+                    "{name}: yap-diarize/Cargo.toml and ANALYZER-RESEARCH.md disagree"
+                );
+                crates_seen.push(name.to_string());
+            }
+            ["locked", name, version] => {
+                assert_eq!(
+                    locked_version(name),
+                    *version,
+                    "{name}: Cargo.lock and ANALYZER-RESEARCH.md disagree"
+                );
+            }
+            ["model", id, field, value] => {
+                let m = wilson_voice_lib::models::diarize_model(id)
+                    .unwrap_or_else(|| panic!("doc pins model {id}, which is not in the catalog"));
+                let catalog: &str = match *field {
+                    "sha256" => {
+                        model_sha_seen.push(id.to_string());
+                        &m.file.sha256
+                    }
+                    "extracted_sha256" => {
+                        &m.archive
+                            .as_ref()
+                            .unwrap_or_else(|| {
+                                panic!("{id}: doc pins an extracted digest, catalog has no archive")
+                            })
+                            .extracted_sha256
+                    }
+                    "revision" => &m.revision,
+                    other => panic!("unknown model pin field `{other}` for {id}"),
+                };
+                assert_eq!(
+                    catalog, *value,
+                    "{id} {field}: catalog and ANALYZER-RESEARCH.md disagree"
+                );
+            }
+            other => panic!("unparsable pins line in ANALYZER-RESEARCH.md: {other:?}"),
+        }
+    }
+    for required in ["sherpa-onnx", "sherpa-onnx-sys"] {
+        assert!(
+            crates_seen.iter().any(|c| c == required),
+            "ANALYZER-RESEARCH.md must pin {required}"
+        );
+    }
+    for m in wilson_voice_lib::models::diarize_models() {
+        assert!(
+            model_sha_seen.contains(&m.id),
+            "catalog model {} has no sha256 line in ANALYZER-RESEARCH.md",
+            m.id
+        );
+    }
 }

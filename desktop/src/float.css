@@ -494,9 +494,16 @@ body,
   image-rendering: pixelated;
   cursor: pointer;
 }
+/* yap-1106-yappy-states-and-motion — the approved bubble motion (pill.html §03):
+   in = fade up 4 px and grow 96 → 100 percent (--dur-bubble-in, ease-out);
+   out = fade only (--dur-bubble-out), the transform snapping back only after
+   the fade has finished. At most 200 px wide (bubble.ts BUBBLE_MAX_WIDTH_PX)
+   and clamped to two lines by .kami-bubble-text, so a long line can never
+   reach across the screen or under the dock edge. */
 .kami-bubble {
   position: absolute;
-  transform: translate(-50%, -100%) scale(0.9);
+  transform: translate(-50%, calc(-100% + 4px)) scale(0.96);
+  width: max-content;
   background: var(--pill-bubble-surface);
   color: var(--pill-bubble-text);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -506,16 +513,49 @@ body,
   font-weight: 700;
   letter-spacing: -0.01em;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  max-width: 92%;
+  white-space: normal;
+  max-width: min(200px, 92%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.25s, transform 0.3s var(--spring-pop);
+  transition:
+    opacity var(--dur-bubble-out, 120ms) var(--ease-out, ease-out),
+    transform 0s linear var(--dur-bubble-out, 120ms);
   z-index: 3;
 }
 .kami-bubble.show {
   opacity: 1;
   transform: translate(-50%, -100%) scale(1);
+  transition:
+    opacity var(--dur-bubble-in, 160ms) var(--ease-out, ease-out),
+    transform var(--dur-bubble-in, 160ms) var(--ease-out, ease-out);
+}
+.kami-bubble-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Reduce motion: the bubble only crossfades — no lift, no grow. */
+  .kami-bubble,
+  .kami-bubble.show {
+    transform: translate(-50%, -100%) scale(1);
+    transition: opacity var(--dur-bubble-out, 100ms) linear;
+  }
+}
+/* The phase transition table (transitions.ts) publishes --phase-dur /
+   --phase-ease / --phase-delay on the stage for each gate change; a refusal
+   note enters on that row (the capsule-grows-for-its-note entry). */
+@keyframes kami-phase-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.kami-stage .kami-blocked {
+  animation: kami-phase-in var(--phase-dur, 100ms) var(--phase-ease, ease-out) var(--phase-delay, 0ms) both;
 }
 .kami-bubble::after {
   content: "";
@@ -1241,6 +1281,80 @@ html[data-dock="right"] .style-chip { left: auto; right: var(--flow-bar-inset); 
   top: 50%;
   transform: translateY(-50%);
 }
+
+/* WF-13 — "I can't hear <mic>" + Switch mic. Takes the same hint row as the
+   style chip (which yields it while the warning is up), placed the same way at
+   every dock. The take keeps recording, so this is amber advice, not the red
+   error voice. Clickable: SilentMicRow.tsx widens the hitbox to cover it. */
+.silent-mic-row {
+  position: fixed;
+  z-index: 6;
+  left: 50%;
+  bottom: calc(50% + 16px);
+  transform: translateX(-50%);
+  /* Two rows (loop3 bounce fix): the line gets the whole width, the button
+     sits under it. Beside the button the line had ~105 px and "I can't hear
+     MacBook Pro Microphone" was cut off. silentMic.ts fits every line to
+     SILENT_MIC_LINE_PX (192 - 2 x 8); SILENT_MIC_ROW_H (36) is this box's
+     height and the layout reserves SILENT_MIC_HINT_LINES for it. */
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  max-width: 192px; /* HINT_W in pill/state.ts = SILENT_MIC_ROW_W */
+  height: 36px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: var(--pill-chip-surface);
+  color: var(--pill-silent-mic-text);
+  font: 500 11px/14px ui-sans-serif, -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+/* After a switch the button is gone: one line, so a one-line chip. */
+.silent-mic-row[data-silent-mic-row="switched"] { height: 20px; }
+html[data-dock="left"] .silent-mic-row { align-items: flex-start; }
+html[data-dock="right"] .silent-mic-row { align-items: flex-end; }
+.silent-mic-line {
+  max-width: 100%;
+  height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.silent-mic-switch {
+  flex: none;
+  height: 14px;
+  line-height: 14px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--pill-chip-surface-hover);
+  color: var(--pill-chip-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.silent-mic-switch:hover { background: var(--pill-silent-mic-button-hover); }
+.silent-mic-switch[aria-busy="true"] { cursor: progress; }
+html[data-silent-mic="true"] .style-chip { visibility: hidden; }
+html[data-dock="left"] .silent-mic-row { left: var(--flow-bar-inset); right: auto; transform: none; }
+html[data-dock="right"] .silent-mic-row { left: auto; right: var(--flow-bar-inset); transform: none; }
+.bar[data-bar-position="left"][data-bar-orientation="strip"] ~ .silent-mic-row {
+  left: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.bar[data-bar-position="right"][data-bar-orientation="strip"] ~ .silent-mic-row {
+  right: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .silent-mic-switch { transition: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .style-chip { transition: none; }
 }
@@ -1549,6 +1663,73 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 /* Y5-J — focus ring for .backtrack-caught-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 .backtrack-caught-actions .backtrack-caught-undo { background: var(--overlay-action); color: var(--overlay-text-on-action); }
 .backtrack-caught-actions button:disabled { opacity: 0.6; cursor: default; }
+/* ── WF-05 — "Polished — Reveal" (pill/PolishRevealCard.tsx) ──
+   The toast is the Backtrack caught surface at one line: a quiet label and
+   Reveal. Reveal grows it into the diff card (the shared DiffView, restyled
+   for the dark pill surface) with Use original as the primary answer. */
+.polish-reveal-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.polish-reveal {
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: var(--overlay-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.polish-reveal p { margin: 0; }
+.polish-reveal-toast { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.polish-reveal-label { font-weight: 600; }
+.polish-reveal-title { font-size: 11px; opacity: 0.72; }
+.polish-reveal-error { margin-top: 4px; font-size: 11px; color: var(--overlay-text-urgent); }
+.polish-reveal-actions { display: flex; gap: 6px; }
+.polish-reveal-card .polish-reveal-actions { margin-top: 6px; }
+.polish-reveal-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+}
+/* Focus ring for .polish-reveal-actions buttons: drawn once, globally, by src/a11y/focus.css. */
+.polish-reveal-actions .polish-reveal-open,
+.polish-reveal-actions .polish-reveal-original { background: var(--overlay-action); color: var(--overlay-text-on-action); }
+.polish-reveal-actions button:disabled { opacity: 0.6; cursor: default; }
+.polish-reveal .diff-view { margin-top: 5px; }
+.polish-reveal .diff-summary,
+.polish-reveal .diff-stages,
+.polish-reveal .diff-route { font-size: 11px; opacity: 0.72; }
+.polish-reveal .diff-body {
+  margin: 4px 0;
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.polish-reveal .diff-added { background: var(--overlay-diff-added); border-radius: 3px; }
+.polish-reveal .diff-removed { background: var(--overlay-diff-removed); border-radius: 3px; text-decoration: line-through; opacity: 0.8; }
+.polish-reveal .diff-route-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.polish-reveal .diff-actions:empty { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .polish-reveal-wrap { animation: polish-reveal-in 140ms ease-out; }
+  @keyframes polish-reveal-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+}
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
  * capsule says which way that runs (a column only for a strip phase at a side
@@ -1698,6 +1879,63 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 .pill-lang:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
 .pill-lang.has-notice { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
 
+/* yap-1106 · the route chip: Cloud / On this Mac, with the reason as its tooltip. */
+.pill-route {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.62);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: default;
+}
+.pill-route[data-tone="cloud"] { color: rgba(147, 197, 253, 0.95); background: rgba(96, 165, 250, 0.16); }
+.pill-route[data-tone="limit"] { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
+
+/* ── yap-1106-resource-governor — the "going easy" chip ──
+   One dot, one short clause, one optional action. Same family as the
+   meeting badge; the dot is static (no pulse: a saving-battery chip that
+   animates would be the joke). */
+.governor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--pill-fg, rgba(255, 255, 255, 0.86));
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+.governor-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--accent-busy));
+  flex: none;
+}
+.governor-chip.minimal .governor-dot { background: hsl(var(--accent-meeting)); }
+.governor-run {
+  margin-left: 2px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.governor-run:disabled { opacity: 0.5; cursor: default; }
 /* ── yap-1106-one-pill — every DOM slot from the ONE layout ─────────────────
  * float-main writes the layout (pill/state.ts `layoutVars`) onto <html> as
  * custom properties and sets data-one-pill. Under it the hint, the bubble, the
@@ -1720,6 +1958,26 @@ html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-or
 }
 html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
   text-align: right;
+}
+/* WF-13 — the silent-mic row sits IN the hint slot, its bottom on the slot's
+ * bottom (just above the bubble), aligned to the dock edge like the phase
+ * line. float-main reserves SILENT_MIC_HINT_LINES for the slot while it is up,
+ * so the 36 px row is inside the panel. */
+html[data-one-pill="true"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: calc(var(--hint-x) + var(--hint-w) / 2);
+  top: calc(var(--hint-y) + var(--hint-h));
+  right: auto;
+  bottom: auto;
+  max-width: var(--hint-w);
+  transform: translate(-50%, -100%);
+}
+html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: var(--hint-x);
+  transform: translateY(-100%);
+}
+html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: calc(var(--hint-x) + var(--hint-w));
+  transform: translate(-100%, -100%);
 }
 /* No free-floating clock: until the first layout has placed it (one frame at
  * mount), Yappy's clock slot is not painted anywhere. */
@@ -1752,7 +2010,8 @@ html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
 html[data-one-pill="true"] .language-offer-wrap,
-html[data-one-pill="true"][data-dock] .nudge-row {
+html[data-one-pill="true"][data-dock] .nudge-row,
+html[data-one-pill="true"] .polish-reveal-wrap {
   left: var(--card-x);
   top: calc(var(--card-y) + var(--card-stack-y, 0px));
   right: auto;
