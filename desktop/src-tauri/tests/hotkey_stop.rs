@@ -340,5 +340,8 @@ fn the_pill_and_the_backend_say_the_same_still_recording_line() {
     .expect("read float-main.tsx");
     // yap-qa-hotkey-walk-binding added the fn hint as a third, lower-ranked
     // argument; still-recording still wins inside `stripLine`.
-    assert!(float.contains("stripLine(line, stillRecording, fnHint, chordLabel)"));
+    // yap-1106-fb-04 falls back to the paste-wait hint when no fn hint is up.
+    assert!(float.contains(
+        "stripLine(line, stillRecording, fnHint ?? pasteWaitHint(lastStage, phase), chordLabel)"
+    ));
 }
