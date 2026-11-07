@@ -230,7 +230,8 @@ export function pillLayout(input: PillInput): PillLayout {
   // 1 — everything placed relative to the character's top-left at (0, 0).
   const char0: Box = { x: 0, y: 0, w: env.w, h: env.h };
   // A box of width `w` aligned to the character's dock edge (centred at the bottom dock).
-  const alignX = (w: number) => (dock === "left" ? 0 : dock === "right" ? env.w - w : (env.w - w) / 2);
+  // (side docks returned above through sideLayout, so only the bottom dock reaches here.)
+  const alignX = (w: number) => (env.w - w) / 2;
   // The next free row under the character.
   let below = env.h + SLOT_GAP;
   let clock0: Box | null = null;
