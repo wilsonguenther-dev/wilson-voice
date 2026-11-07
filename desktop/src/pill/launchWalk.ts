@@ -251,6 +251,20 @@ export function launchWalkModel(i: WalkInput): WalkModel {
   };
 }
 
+/**
+ * A forced walk for headless captures (scripts/pill-matrix.mjs, dev builds
+ * only — `FORCED` in float-main): `walk=40`, `walk=95:waiting`,
+ * `walk=60:failed`, `walk=100:ready`. Anything else is null.
+ */
+export function forcedLaunchWalk(search: string): EngineLoadProgress | null {
+  const raw = new URLSearchParams(search).get("walk");
+  if (!raw) return null;
+  const [pctS, stageS] = raw.split(":");
+  const pct = Number(pctS);
+  const stage = stageS ?? (pct >= 100 ? "ready" : pct >= HOLD_PCT ? "waiting" : pct <= 0 ? "starting" : "reading");
+  return parseLoadProgress({ pct, stage, modelId: "forced", elapsedMs: 0 });
+}
+
 /** A key that changes only when a reduce-motion still frame must repaint. */
 export function stillFrameKey(m: WalkModel): string {
   return `${m.mode}|${m.pct}|${m.showRetry ? 1 : 0}`;

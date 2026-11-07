@@ -14,6 +14,7 @@ import {
   parseLoadProgress,
   scrollForPct,
   stillFrameKey,
+  forcedLaunchWalk,
   type EngineLoadProgress,
   type LoadStage,
   type WalkInput,
@@ -46,6 +47,7 @@ describe("launch walk — bound to engine load, never a timer", () => {
     let changedAt = 0;
     let readyFrom = 0;
     let frames = 0;
+    let sawReady = false;
     let next = 0;
     for (let t = 0; t < readyAt + READY_SHOW_MS + 100; t += 16) {
       while (next < events.length && events[next].atMs <= t) {
@@ -60,6 +62,7 @@ describe("launch walk — bound to engine load, never a timer", () => {
           sinceReadyMs: last?.stage === "ready" ? t - readyAt : null, readyFromPct: readyFrom, reduceMotion, tMs: t,
         }));
         frames++;
+        if (m.mode === "ready") sawReady = true;
         if (t < readyAt) {
           expect(m.mode).not.toBe("ready");
           expect(m.officeOpen).toBe(false);
@@ -70,6 +73,7 @@ describe("launch walk — bound to engine load, never a timer", () => {
       }
     }
     expect(frames).toBeGreaterThan(1000);
+    expect(sawReady).toBe(true);
   });
 
   it("position comes from the percentage alone: the clock never moves the ground", () => {
@@ -177,5 +181,15 @@ describe("launch walk — bound to engine load, never a timer", () => {
     expect(parseLoadProgress(null)).toBeNull();
     expect(parseLoadProgress({ pct: Number.NaN, stage: "reading" })).toBeNull();
     expect(parseLoadProgress({ pct: 12.4, stage: "reading" })).toEqual({ pct: 12, stage: "reading", modelId: "", elapsedMs: 0 });
+  });
+
+  it("a forced walk (headless captures) parses pct and stage", () => {
+    expect(forcedLaunchWalk("?walk=40")).toEqual({ pct: 40, stage: "reading", modelId: "forced", elapsedMs: 0 });
+    expect(forcedLaunchWalk("?walk=95")?.stage).toBe("waiting");
+    expect(forcedLaunchWalk("?walk=60:failed")?.stage).toBe("failed");
+    expect(forcedLaunchWalk("?walk=100")?.stage).toBe("ready");
+    expect(forcedLaunchWalk("?walk=0")?.stage).toBe("starting");
+    expect(forcedLaunchWalk("?phase=idle")).toBeNull();
+    expect(forcedLaunchWalk("?walk=abc")).toBeNull();
   });
 });
