@@ -341,3 +341,219 @@ fn probe_the_running_process_identity_and_the_real_application_folders() {
     );
     println!("sameIdBundles={dups:?}");
 }
+
+// ── yap-fx-08 · the one-time duplicate-copies notice ───────────────────────
+
+use wilson_voice_lib::mic_auth::MicAuth;
+use wilson_voice_lib::perm_truth::{
+    canonical_bundle_path, duplicate_copies_notice, is_user_copy_path, merge_registered_copies,
+    microphone_holder_sentence, should_show_duplicate_notice, trash_failed_sentence,
+    DUPLICATE_NOTICE_KEY,
+};
+
+const DESKTOP_YAP: &str = "/Users/w/Desktop/Yap.app";
+
+#[test]
+fn two_copies_notice_asks_wilsons_question_word_for_word() {
+    let n = duplicate_copies_notice(YAP, &[DESKTOP_YAP.to_string()], "Yap", MicAuth::Authorized)
+        .expect("a second copy with our bundle id is warned about");
+    assert_eq!(
+        n.title,
+        "Two copies of Yap are installed — keep /Applications/Yap.app and move the other to the Trash?"
+    );
+    assert_eq!(n.keep, YAP);
+    assert_eq!(n.running, YAP);
+    assert_eq!(n.to_trash, vec![DESKTOP_YAP.to_string()]);
+    assert_eq!(canonical_bundle_path("Yap"), YAP);
+}
+
+#[test]
+fn notice_names_the_running_copy_and_the_microphone_holder() {
+    let n = duplicate_copies_notice(YAP, &[DESKTOP_YAP.to_string()], "Yap", MicAuth::Authorized)
+        .unwrap();
+    assert!(
+        n.detail.contains("Running now: /Applications/Yap.app."),
+        "{}",
+        n.detail
+    );
+    assert!(
+        n.detail.contains(
+            "The Microphone permission is held by the running copy (/Applications/Yap.app)."
+        ),
+        "{}",
+        n.detail
+    );
+
+    // Run from the Desktop, denied the mic: the grant sits with the other copy.
+    let d =
+        duplicate_copies_notice(DESKTOP_YAP, &[YAP.to_string()], "Yap", MicAuth::Denied).unwrap();
+    assert!(
+        d.detail.contains("Running now: /Users/w/Desktop/Yap.app."),
+        "{}",
+        d.detail
+    );
+    assert!(
+        d.detail
+            .contains("held by the other copy (/Applications/Yap.app)"),
+        "{}",
+        d.detail
+    );
+    let nd = microphone_holder_sentence(MicAuth::NotDetermined, DESKTOP_YAP, &[YAP.to_string()]);
+    assert!(
+        nd.contains("held by the other copy (/Applications/Yap.app)"),
+        "{nd}"
+    );
+    assert!(microphone_holder_sentence(MicAuth::Restricted, YAP, &[]).contains("device policy"));
+}
+
+#[test]
+fn running_from_the_desktop_keeps_applications_and_trashes_the_running_copy() {
+    let n = duplicate_copies_notice(DESKTOP_YAP, &[YAP.to_string()], "Yap", MicAuth::Authorized)
+        .unwrap();
+    assert_eq!(n.keep, YAP);
+    assert_eq!(n.to_trash, vec![DESKTOP_YAP.to_string()]);
+    assert!(
+        n.detail
+            .contains("This running copy moves to the Trash too")
+            && n.detail.contains("then open /Applications/Yap.app"),
+        "{}",
+        n.detail
+    );
+    assert!(n
+        .title
+        .starts_with("Two copies of Yap are installed — keep /Applications/Yap.app"));
+}
+
+#[test]
+fn without_an_applications_copy_the_running_one_is_kept() {
+    let mine = "/Users/w/Applications/Yap.app";
+    let n = duplicate_copies_notice(mine, &[DESKTOP_YAP.to_string()], "Yap", MicAuth::Authorized)
+        .unwrap();
+    assert_eq!(n.keep, mine);
+    assert_eq!(n.to_trash, vec![DESKTOP_YAP.to_string()]);
+    assert!(!n.detail.contains("moves to the Trash too"));
+}
+
+#[test]
+fn three_copies_say_the_others() {
+    let n = duplicate_copies_notice(
+        YAP,
+        &[
+            DESKTOP_YAP.to_string(),
+            "/Users/w/Downloads/Yap.app".to_string(),
+        ],
+        "Yap",
+        MicAuth::Authorized,
+    )
+    .unwrap();
+    assert_eq!(
+        n.title,
+        "Three copies of Yap are installed — keep /Applications/Yap.app and move the others to the Trash?"
+    );
+    assert_eq!(n.to_trash.len(), 2);
+    assert!(!n.to_trash.contains(&YAP.to_string()));
+}
+
+#[test]
+fn no_notice_without_a_second_copy_or_without_a_bundle() {
+    assert!(duplicate_copies_notice(YAP, &[], "Yap", MicAuth::Authorized).is_none());
+    assert!(duplicate_copies_notice(YAP, &[YAP.to_string()], "Yap", MicAuth::Authorized).is_none());
+    // A `cargo run` dev binary is not a bundle: nothing to keep or trash.
+    assert!(duplicate_copies_notice(
+        "/Users/w/code/wilson-voice/desktop/src-tauri/target/debug/wilson-voice",
+        &[YAP.to_string()],
+        "Yap",
+        MicAuth::Authorized
+    )
+    .is_none());
+}
+
+#[test]
+fn notice_shows_once_per_set_of_copies() {
+    let n = duplicate_copies_notice(YAP, &[DESKTOP_YAP.to_string()], "Yap", MicAuth::Authorized)
+        .unwrap();
+    assert!(should_show_duplicate_notice(None, &n), "never shown → show");
+    assert!(
+        !should_show_duplicate_notice(Some(n.fingerprint.as_str()), &n),
+        "already shown for this set → silent on every later launch"
+    );
+    // The same two copies seen from the other side are the same set.
+    let flipped =
+        duplicate_copies_notice(DESKTOP_YAP, &[YAP.to_string()], "Yap", MicAuth::Denied).unwrap();
+    assert_eq!(flipped.fingerprint, n.fingerprint);
+    // A new copy is a new situation.
+    let three = duplicate_copies_notice(
+        YAP,
+        &[
+            DESKTOP_YAP.to_string(),
+            "/Users/w/Downloads/Yap.app".to_string(),
+        ],
+        "Yap",
+        MicAuth::Authorized,
+    )
+    .unwrap();
+    assert!(should_show_duplicate_notice(
+        Some(n.fingerprint.as_str()),
+        &three
+    ));
+    assert_eq!(
+        DUPLICATE_NOTICE_KEY,
+        "perm_truth.duplicate_notice_fingerprint"
+    );
+}
+
+#[test]
+fn trash_failure_is_one_sentence_with_one_action() {
+    assert_eq!(
+        trash_failed_sentence(DESKTOP_YAP),
+        "Yap could not move /Users/w/Desktop/Yap.app to the Trash — drag it to the Trash in Finder."
+    );
+}
+
+#[test]
+fn registered_copies_skip_build_trash_and_disk_image_paths() {
+    assert!(is_user_copy_path(Path::new(YAP)));
+    assert!(is_user_copy_path(Path::new(DESKTOP_YAP)));
+    assert!(is_user_copy_path(Path::new(
+        "/Users/w/Applications/Old builds/Yap.app"
+    )));
+    for p in [
+        "/Users/w/code/wilson-voice/desktop/src-tauri/target/release/bundle/macos/Yap.app",
+        "/Users/w/Library/Developer/Xcode/DerivedData/x/Build/Products/Debug/Yap.app",
+        "/Users/w/.Trash/Yap.app",
+        "/Volumes/Yap 0.9.3/Yap.app",
+        "/private/var/folders/ab/T/AppTranslocation/1234/d/Yap.app",
+        "/Applications/Yap.app/Contents/Helpers/Yap.app",
+        "/Users/w/Desktop/Yap",
+    ] {
+        assert!(!is_user_copy_path(Path::new(p)), "{p} is not a user copy");
+    }
+}
+
+#[test]
+fn merge_adds_the_desktop_copy_launchservices_knows() {
+    let apps = temp_root("merge-apps");
+    let desk = temp_root("merge-desktop");
+    let me = apps.join("Yap.app");
+    make_app(&me, perm_truth::BUNDLE_ID);
+    let desktop_copy = desk.join("Yap.app");
+    make_app(&desktop_copy, perm_truth::BUNDLE_ID);
+    let scanned = find_duplicate_bundles(&[apps.clone()], perm_truth::BUNDLE_ID, &me);
+    assert!(
+        scanned.is_empty(),
+        "the folder scan never lists the Desktop"
+    );
+
+    let registered = vec![
+        desktop_copy.clone(),
+        me.clone(),                          // the running copy itself
+        desk.join("Deleted.app"),            // LaunchServices remembers deleted bundles
+        desk.join("target").join("Yap.app"), // a build product
+        desktop_copy.clone(),                // listed twice
+    ];
+    let merged = merge_registered_copies(scanned, registered, &me);
+    assert_eq!(merged, vec![desktop_copy.clone()]);
+
+    let _ = fs::remove_dir_all(&apps);
+    let _ = fs::remove_dir_all(&desk);
+}

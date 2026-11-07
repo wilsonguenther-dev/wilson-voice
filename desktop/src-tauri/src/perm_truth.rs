@@ -12,6 +12,8 @@
 //! - [`failing_conditions`]: the exact OS calls that said no.
 //! - [`stale_grant`]: a grant last seen working under a DIFFERENT signature.
 //! - [`find_duplicate_bundles`]: another Yap.app that may be the one holding it.
+//! - [`duplicate_copies_notice`]: yap-fx-08 — the one-time "Two copies of Yap
+//!   are installed" question, naming the running copy and the Microphone holder.
 //!
 //! Every decision is a pure function (unit-tested in `tests/perm_truth.rs`).
 //! Nothing here reads or writes TCC. The identity and the duplicate scan are
@@ -440,20 +442,380 @@ pub fn running_identity() -> &'static RunningIdentity {
     })
 }
 
-/// Other bundles claiming our id. Scanned ONCE per launch (see [`prime`]).
-pub fn duplicate_bundles() -> &'static [String] {
-    static DUPS: OnceLock<Vec<String>> = OnceLock::new();
-    DUPS.get_or_init(|| {
-        let me = running_identity();
-        find_duplicate_bundles(
-            &default_scan_roots(),
-            &me.bundle_id,
-            Path::new(&me.bundle_path),
-        )
-        .into_iter()
-        .map(|p| p.display().to_string())
-        .collect()
+/// Other bundles claiming our id. Scanned ONCE per launch (see [`prime`]):
+/// the `/Applications` + `~/Applications` folder scan, joined with every copy
+/// LaunchServices has registered under our id (yap-fx-08 — that is how the
+/// Desktop copy is found without listing the Desktop, which would raise the
+/// macOS "access files in your Desktop folder" prompt). A copy the user moved
+/// to the Trash from the duplicate notice is dropped via [`forget_duplicates`].
+pub fn duplicate_bundles() -> Vec<String> {
+    let mut guard = match DUPS.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    guard
+        .get_or_insert_with(|| {
+            let me = running_identity();
+            let own = Path::new(&me.bundle_path);
+            let scanned = find_duplicate_bundles(&default_scan_roots(), &me.bundle_id, own);
+            merge_registered_copies(scanned, registered_copies(&me.bundle_id), own)
+                .into_iter()
+                .map(|p| p.display().to_string())
+                .collect()
+        })
+        .clone()
+}
+
+static DUPS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Drop copies that no longer exist (moved to the Trash from the duplicate
+/// notice) from the per-launch cache, so the banner stops naming them.
+pub fn forget_duplicates(gone: &[String]) {
+    let mut guard = match DUPS.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Some(list) = guard.as_mut() {
+        list.retain(|p| !gone.contains(p));
+    }
+}
+
+/// Is a LaunchServices-registered path a copy a PERSON installed? Pure. Build
+/// products (`target/`, `DerivedData/`), Trash contents, mounted disk images
+/// (`/Volumes/…`), Gatekeeper's translocation mounts and anything nested
+/// inside another bundle are registered too, but they are not copies to warn
+/// about — on a dev Mac every cargo build would otherwise count.
+pub fn is_user_copy_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    if !s.ends_with(".app") || s.starts_with("/Volumes/") {
+        return false;
+    }
+    let comps: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    let parents = &comps[..comps.len().saturating_sub(1)];
+    !parents.iter().any(|c| {
+        matches!(
+            c.as_str(),
+            ".Trash" | ".Trashes" | "target" | "DerivedData" | "AppTranslocation"
+        ) || c.ends_with(".app")
     })
+}
+
+/// The folder scan joined with the LaunchServices list, pure apart from an
+/// existence check on the registered paths (LaunchServices keeps entries for
+/// deleted bundles). Never the running bundle, never a non-user path, sorted
+/// and deduplicated so the banner and the notice read the same every launch.
+pub fn merge_registered_copies(
+    scanned: Vec<PathBuf>,
+    registered: Vec<PathBuf>,
+    own_path: &Path,
+) -> Vec<PathBuf> {
+    let mut out = scanned;
+    for p in registered {
+        if !is_user_copy_path(&p) || same_place(&p, own_path) || !p.is_dir() {
+            continue;
+        }
+        if out.iter().any(|q| same_place(q, &p)) {
+            continue;
+        }
+        out.push(p);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every bundle LaunchServices knows under `bundle_id`
+/// (`NSWorkspace URLsForApplicationsWithBundleIdentifier:`, macOS 12+). Lists
+/// no folder, so it raises no Files & Folders prompt.
+#[cfg(target_os = "macos")]
+fn registered_copies(bundle_id: &str) -> Vec<PathBuf> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
+    let urls = NSWorkspace::sharedWorkspace()
+        .URLsForApplicationsWithBundleIdentifier(&NSString::from_str(bundle_id));
+    urls.iter().filter_map(|u| u.to_file_path()).collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn registered_copies(_bundle_id: &str) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+// ── yap-fx-08 · the one-time duplicate-copies notice ───────────────────────
+
+/// What the notice asks and what "Move to Trash" would do. Built by
+/// [`duplicate_copies_notice`], pure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateCopiesNotice {
+    /// The question, e.g. "Two copies of Yap are installed — keep
+    /// /Applications/Yap.app and move the other to the Trash?"
+    pub title: String,
+    /// Which copy is running and which one holds the Microphone permission.
+    pub detail: String,
+    /// The copy that stays.
+    pub keep: String,
+    /// The copies "Move to Trash" moves, in order.
+    pub to_trash: Vec<String>,
+    /// `NSBundle.mainBundle.bundlePath` of this process.
+    pub running: String,
+    /// Every copy, sorted and newline-joined: the notice shows once per set.
+    pub fingerprint: String,
+}
+
+/// Where the shipped app lives: `/Applications/<product>.app`.
+pub fn canonical_bundle_path(product: &str) -> String {
+    format!("/Applications/{product}.app")
+}
+
+fn count_word(n: usize) -> String {
+    match n {
+        2 => "Two".into(),
+        3 => "Three".into(),
+        4 => "Four".into(),
+        5 => "Five".into(),
+        n => n.to_string(),
+    }
+}
+
+/// The microphone sentence. Yap never reads TCC, so it states what macOS told
+/// THIS process and, when that is not "allowed", which other copy the grant
+/// may sit with — a TCC grant follows the bundle id AND the signature.
+pub fn microphone_holder_sentence(
+    mic: crate::mic_auth::MicAuth,
+    running: &str,
+    others: &[String],
+) -> String {
+    use crate::mic_auth::MicAuth;
+    let others = others.join(", ");
+    match mic {
+        MicAuth::Authorized => {
+            format!("The Microphone permission is held by the running copy ({running}).")
+        }
+        MicAuth::Denied => format!(
+            "The running copy is denied the Microphone; if you allowed it before, that permission is held by the other copy ({others})."
+        ),
+        MicAuth::NotDetermined => format!(
+            "The running copy has not been given the Microphone yet; if you allowed it before, that permission is held by the other copy ({others})."
+        ),
+        MicAuth::Restricted => {
+            "The Microphone is restricted by a device policy for every copy.".to_string()
+        }
+    }
+}
+
+/// The notice DECISION, pure. `None` when there is nothing to warn about: no
+/// other copy, or a running binary that is not an `.app` bundle (a `cargo run`
+/// dev build). The copy to keep is `/Applications/<product>.app` when it is one
+/// of the copies, otherwise the running one. The running copy can be among the
+/// copies to trash (run from the Desktop while /Applications holds the real
+/// one): macOS lets a running bundle move to the Trash, and it keeps working
+/// until it quits — the detail says so.
+pub fn duplicate_copies_notice(
+    running: &str,
+    duplicates: &[String],
+    product: &str,
+    mic: crate::mic_auth::MicAuth,
+) -> Option<DuplicateCopiesNotice> {
+    let running = running.trim_end_matches('/');
+    if !running.ends_with(".app") {
+        return None;
+    }
+    let others: Vec<String> = duplicates
+        .iter()
+        .map(|d| d.trim_end_matches('/').to_string())
+        .filter(|d| d != running)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let mut all: Vec<String> = others.clone();
+    all.push(running.to_string());
+    all.sort();
+    all.dedup();
+    let canonical = canonical_bundle_path(product);
+    let keep = if all.iter().any(|p| *p == canonical) {
+        canonical
+    } else {
+        running.to_string()
+    };
+    let to_trash: Vec<String> = all.iter().filter(|p| **p != keep).cloned().collect();
+    let other_word = if to_trash.len() == 1 {
+        "the other"
+    } else {
+        "the others"
+    };
+    let title = format!(
+        "{} copies of {product} are installed — keep {keep} and move {other_word} to the Trash?",
+        count_word(all.len())
+    );
+    let mut detail = format!("Running now: {running}.");
+    if keep != running {
+        detail.push_str(&format!(
+            " This running copy moves to the Trash too; it keeps working until you quit it, then open {keep}."
+        ));
+    }
+    detail.push(' ');
+    detail.push_str(&microphone_holder_sentence(mic, running, &others));
+    Some(DuplicateCopiesNotice {
+        title,
+        detail,
+        keep,
+        to_trash,
+        running: running.to_string(),
+        fingerprint: all.join("\n"),
+    })
+}
+
+/// `settings_kv` key holding the fingerprint of the copy set last warned about.
+pub const DUPLICATE_NOTICE_KEY: &str = "perm_truth.duplicate_notice_fingerprint";
+
+/// One-time rule, pure: show unless this exact set of copies was already shown.
+/// A NEW set (a third copy appears later) is a new situation and is shown once.
+pub fn should_show_duplicate_notice(stored: Option<&str>, notice: &DuplicateCopiesNotice) -> bool {
+    stored != Some(notice.fingerprint.as_str())
+}
+
+/// The sentence shown when a copy could not be moved: one line, one action.
+pub fn trash_failed_sentence(path: &str) -> String {
+    format!("Yap could not move {path} to the Trash — drag it to the Trash in Finder.")
+}
+
+/// Launch-time, off the main thread: wait for the window to settle, decide,
+/// and — once per set of copies, ever — ask on an app-modal alert. The
+/// fingerprint is written BEFORE the alert shows, so a crash or a force-quit
+/// on top of it never turns "one-time" into "every launch".
+pub fn spawn_duplicate_copies_notice(
+    app: tauri::AppHandle,
+    db: std::sync::Arc<crate::db::Database>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("perm-truth-duplicates".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            let me = running_identity();
+            let dups = duplicate_bundles();
+            let product = crate::channel::current().product_name;
+            let mic = crate::mic_auth::authorization_status();
+            let Some(notice) = duplicate_copies_notice(&me.bundle_path, &dups, product, mic) else {
+                return;
+            };
+            let stored = db.setting_get(DUPLICATE_NOTICE_KEY);
+            if !should_show_duplicate_notice(stored.as_deref(), &notice) {
+                log::info!(
+                    "perm_truth duplicate_notice skipped reason=already_shown copies={}",
+                    notice.to_trash.len() + 1
+                );
+                return;
+            }
+            if let Err(e) = db.setting_set(DUPLICATE_NOTICE_KEY, &notice.fingerprint) {
+                log::warn!("perm_truth duplicate_notice persist_failed err={e}");
+            }
+            log::info!(
+                "perm_truth duplicate_notice shown copies={} running_is_keep={} mic={}",
+                notice.to_trash.len() + 1,
+                notice.keep == notice.running,
+                mic.as_str()
+            );
+            let Some(trash) = ask_on_main(&app, &notice.title, &notice.detail, true) else {
+                log::warn!("perm_truth duplicate_notice failed reason=main_thread");
+                return;
+            };
+            log::info!(
+                "perm_truth duplicate_notice choice={}",
+                if trash { "trash" } else { "keep" }
+            );
+            if !trash {
+                return;
+            }
+            let started = std::time::Instant::now();
+            let mut moved: Vec<String> = Vec::new();
+            let mut failed: Vec<String> = Vec::new();
+            for path in &notice.to_trash {
+                match move_to_trash(path) {
+                    Ok(()) => moved.push(path.clone()),
+                    Err(e) => {
+                        log::warn!("perm_truth duplicate_trash failed err={e}");
+                        failed.push(path.clone());
+                    }
+                }
+            }
+            log::info!(
+                "perm_truth duplicate_trash moved={} failed={} ms={}",
+                moved.len(),
+                failed.len(),
+                started.elapsed().as_millis()
+            );
+            forget_duplicates(&moved);
+            if !moved.is_empty() {
+                crate::permissions::poke(crate::permissions::WatchReason::Focus);
+            }
+            if let Some(first) = failed.first() {
+                let _ = ask_on_main(&app, &trash_failed_sentence(first), "", false);
+            }
+        });
+}
+
+/// Run an app-modal NSAlert on the main thread and wait for the answer.
+/// `question` = two buttons ("Move to Trash" / "Not Now", `Some(true)` for the
+/// first); otherwise one "OK" button. `None` when the main thread is gone.
+#[cfg(target_os = "macos")]
+fn ask_on_main(app: &tauri::AppHandle, title: &str, detail: &str, question: bool) -> Option<bool> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let title = title.to_string();
+    let detail = detail.to_string();
+    app.run_on_main_thread(move || {
+        use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn};
+        use objc2_foundation::NSString;
+        // Dropping `tx` unsent reads as "no answer" (None) on the other side.
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(&title));
+        alert.setInformativeText(&NSString::from_str(&detail));
+        if question {
+            let _ = alert.addButtonWithTitle(&NSString::from_str("Move to Trash"));
+            let _ = alert.addButtonWithTitle(&NSString::from_str("Not Now"));
+        } else {
+            let _ = alert.addButtonWithTitle(&NSString::from_str("OK"));
+        }
+        let answer = alert.runModal();
+        let _ = tx.send(question && answer == NSAlertFirstButtonReturn);
+    })
+    .ok()?;
+    rx.recv().ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ask_on_main(
+    _app: &tauri::AppHandle,
+    _title: &str,
+    _detail: &str,
+    _question: bool,
+) -> Option<bool> {
+    None
+}
+
+/// `-[NSFileManager trashItemAtURL:resultingItemURL:error:]` — the Finder's
+/// own "Move to Trash" (recoverable with Put Back), never a delete.
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &str) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        // The error CODE only: its description names the bundle, and log
+        // lines never carry paths.
+        .map_err(|e| format!("nserror_code={}", e.code()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_to_trash(_path: &str) -> Result<(), String> {
+    Err("move to Trash is macOS-only".into())
 }
 
 /// Launch-time warm-up, off the main thread: the signature read and the

@@ -12584,6 +12584,12 @@ pub fn run() {
             // The running binary's signature and the duplicate-bundle scan,
             // computed once, off the main thread, before the banner needs them.
             perm_truth::prime();
+            // yap-fx-08 — two copies of Yap on disk (the Desktop copy beside
+            // /Applications/Yap.app) split the TCC grants between them. Ask
+            // ONCE per set of copies, naming the running copy and which one
+            // holds the Microphone, whether to keep /Applications/Yap.app and
+            // move the rest to the Trash.
+            perm_truth::spawn_duplicate_copies_notice(app.handle().clone(), state.db.clone());
             // yap-p0-perm-repair: persist the last-run signature EVERY launch.
             perm_probe::prime();
 
