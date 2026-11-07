@@ -1,7 +1,5 @@
 import { useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
-import { FRIEND_EVENT } from "../pill/friendVisits";
 import { type DictEntry, type DictCandidate } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -83,15 +81,6 @@ export default function Dictionary() {
       setDictQuery("");
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term added");
-      // yap-1106-friend-visits — Gulp's event: a word went into the Dictionary.
-      // The pill decides whether he visits (quiet rules); a failed emit costs
-      // only the visit, never the add.
-      try {
-        emit(FRIEND_EVENT, { event: "word-added" }).catch((err: unknown) =>
-          console.warn(`dictionary friend_event_failed reason=${err instanceof Error ? err.name : "unknown"}`));
-      } catch (err) {
-        console.warn(`dictionary friend_event_failed reason=${err instanceof Error ? err.name : "unknown"}`);
-      }
     } catch (e) {
       toastError(e);
     }
