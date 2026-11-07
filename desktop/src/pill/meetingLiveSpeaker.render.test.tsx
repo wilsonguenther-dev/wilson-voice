@@ -72,7 +72,7 @@ describe("fix-l3b4-1 — MeetingBadge shows the live speaker", () => {
     expect(renderToStaticMarkup(<MeetingBadge status={RECORDING} live={call} />)).toMatch(/data-live-speaker="track"[^>]*>Call<\/span>/);
   });
 
-  it("mid-take (the 96 px stack) the speaker rides the stack tooltip and the Stop label", () => {
+  it("mid-take (the 96 px stack) the speaker rides the stack tooltip and its screen-reader line", () => {
     const html = renderToStaticMarkup(<MeetingBadge status={RECORDING} live={ALEX_LIVE} stacked />);
     expect(html).toContain('data-live-speaker="name"');
     expect(html).toContain(`Talking now: ${HINT}`);

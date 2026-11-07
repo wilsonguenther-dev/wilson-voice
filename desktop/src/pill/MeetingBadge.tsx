@@ -165,9 +165,10 @@ export function useLiveSpeaker(recording: boolean, meetingId: string | null = nu
   // (a take starts or ends); the last speaker of THIS meeting carries over so
   // the word does not blank until the next ~10 s tick. A new meeting id, or
   // none, starts empty.
-  const [state, dispatch] = useReducer(liveSpeakerReducer, meetingId, (id: string | null) =>
-    id !== null && liveCarry?.id === id ? liveCarry.state : LIVE_SPEAKER_IDLE,
-  );
+  const [state, dispatch] = useReducer(liveSpeakerReducer, meetingId, (id: string | null): LiveSpeakerState => {
+    const carry = liveCarry;
+    return id !== null && carry !== null && carry.id === id ? carry.state : LIVE_SPEAKER_IDLE;
+  });
   useEffect(() => {
     if (recording && meetingId !== null) liveCarry = { id: meetingId, state };
   }, [recording, meetingId, state]);
