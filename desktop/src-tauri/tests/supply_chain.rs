@@ -963,7 +963,6 @@ fn aec3_is_pinned_exactly_and_adds_one_crate() {
     }
 }
 
-
 /// The fenced `pins` block under `## Pinned versions` in ANALYZER-RESEARCH.md,
 /// one `Vec` of whitespace-separated fields per non-empty line.
 fn analyzer_research_pins() -> Vec<Vec<String>> {
@@ -992,7 +991,10 @@ fn analyzer_research_pins() -> Vec<Vec<String>> {
 /// an upgrade cannot land without the doc (and its reasoning) moving with it.
 #[test]
 fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
-    assert!(ANALYZER_RESEARCH.contains("\n## Pick\n"), "the doc ends its survey with `## Pick`");
+    assert!(
+        ANALYZER_RESEARCH.contains("\n## Pick\n"),
+        "the doc ends its survey with `## Pick`"
+    );
     assert!(
         ANALYZER_RESEARCH.contains("\n## 1. Word timestamps\n"),
         "section 1 is the word-timestamp source"
@@ -1006,9 +1008,9 @@ fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
         let fields: Vec<&str> = pin.iter().map(String::as_str).collect();
         match fields.as_slice() {
             ["crate", name, version] => {
-                let doc = version
-                    .strip_prefix('=')
-                    .unwrap_or_else(|| panic!("doc pin for {name} must be `=x.y.z`, got {version}"));
+                let doc = version.strip_prefix('=').unwrap_or_else(|| {
+                    panic!("doc pin for {name} must be `=x.y.z`, got {version}")
+                });
                 assert_eq!(
                     exact_pin(DIARIZE_CARGO_TOML, name),
                     doc,
@@ -1034,13 +1036,18 @@ fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
                     "extracted_sha256" => {
                         &m.archive
                             .as_ref()
-                            .unwrap_or_else(|| panic!("{id}: doc pins an extracted digest, catalog has no archive"))
+                            .unwrap_or_else(|| {
+                                panic!("{id}: doc pins an extracted digest, catalog has no archive")
+                            })
                             .extracted_sha256
                     }
                     "revision" => &m.revision,
                     other => panic!("unknown model pin field `{other}` for {id}"),
                 };
-                assert_eq!(catalog, *value, "{id} {field}: catalog and ANALYZER-RESEARCH.md disagree");
+                assert_eq!(
+                    catalog, *value,
+                    "{id} {field}: catalog and ANALYZER-RESEARCH.md disagree"
+                );
             }
             other => panic!("unparsable pins line in ANALYZER-RESEARCH.md: {other:?}"),
         }

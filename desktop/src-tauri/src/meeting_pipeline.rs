@@ -59,8 +59,8 @@ use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::meeting::{MIC_TRACK as MIC_TRACK_INDEX, SYSTEM_TRACK as SYSTEM_TRACK_INDEX};
 use crate::meeting_asr::{
-    ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand, JsonProgressStore, MeetingAsr,
-    split_utterances, MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows,
+    split_utterances, ChunkAsr, ChunkOutcome, ChunkStatus, ChunkTiming, EngineDemand,
+    JsonProgressStore, MeetingAsr, MeetingAsrConfig, MeetingProgress, ProgressStore, SampleWindows,
     VoiceActivity, WavWindows,
 };
 use crate::meetings::{MeetingState, NewMeetingSegment};
@@ -393,7 +393,9 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 // chip saying why — until wall power / full, a "Run anyway",
                 // or quit. The recording is already safe on disk.
                 if wait_for_governor(&id, &|| quitting() || (deps.quit)()) {
-                    log::info!("meeting pipeline: {id} stays queued for next launch (quit while deferred)");
+                    log::info!(
+                        "meeting pipeline: {id} stays queued for next launch (quit while deferred)"
+                    );
                     let (lock, cv) = &*worker_pending;
                     if let Ok(mut p) = lock.lock() {
                         p.queued.remove(&id);
@@ -1001,8 +1003,12 @@ pub fn chunk_segments(chunk: &ChunkOutcome, track: i64) -> Vec<NewMeetingSegment
             .filter_map(|u| {
                 let text = u.text.split_whitespace().collect::<Vec<_>>().join(" ");
                 (!text.is_empty()).then(|| {
-                    NewMeetingSegment::new(u.start_seconds, u.end_seconds.max(u.start_seconds), text)
-                        .on_track(track)
+                    NewMeetingSegment::new(
+                        u.start_seconds,
+                        u.end_seconds.max(u.start_seconds),
+                        text,
+                    )
+                    .on_track(track)
                 })
             })
             .collect();
@@ -1087,7 +1093,8 @@ impl ProgressStore for SegmentWritingStore<'_> {
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
         let segments = chunk_segments(chunk, self.track);
         if !segments.is_empty() {
-            self.db.append_meeting_segments(self.meeting_id, &segments)?;
+            self.db
+                .append_meeting_segments(self.meeting_id, &segments)?;
             let lengths: Vec<f64> = segments
                 .iter()
                 .map(|s| (s.end_seconds - s.start_seconds).max(0.0))

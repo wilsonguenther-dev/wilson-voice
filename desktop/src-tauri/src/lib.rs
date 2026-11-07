@@ -121,8 +121,8 @@ pub mod http_client;
 pub mod keychain;
 pub mod model_providers;
 // yap-1106-byom-cloud-fast-path — the cloud route (policy) and its SSE client.
-pub mod cloud_route;
 pub mod cloud_client;
+pub mod cloud_route;
 // yap-notetaker-onboard — Set up Notetaker: Apple Calendar (read-only) and
 // Otter file import.
 pub mod calendar;
@@ -8991,7 +8991,10 @@ pub(crate) fn cloud_last_route() -> Option<cloud_route::RouteChip> {
 }
 
 fn note_cloud_route(chip: cloud_route::RouteChip) {
-    if let Ok(mut g) = CLOUD_LAST_ROUTE.get_or_init(|| std::sync::Mutex::new(None)).lock() {
+    if let Ok(mut g) = CLOUD_LAST_ROUTE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
         *g = Some(chip);
     }
 }
@@ -9027,8 +9030,10 @@ fn cloud_run<R>(
     };
     let model = cloud_client::model_for(job, notes_best);
     let budget = cloud_route::budget_for(job);
-    let constrained_notes_allowed =
-        db.setting_get(cloud_route::CONSTRAINED_NOTES_KEY).as_deref() == Some("allow");
+    let constrained_notes_allowed = db
+        .setting_get(cloud_route::CONSTRAINED_NOTES_KEY)
+        .as_deref()
+        == Some("allow");
     let ctx = cloud_route::RouteContext {
         mode,
         has_key: provider.is_some(),
@@ -9054,18 +9059,15 @@ fn cloud_run<R>(
             cfg.model.trim()
         };
         cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
-            model,
-            job,
-            system,
-            cloud_text,
-            max_tokens,
-            budget,
-            cancel,
-            on_delta,
+            model, job, system, cloud_text, max_tokens, budget, cancel, on_delta,
         )
     };
     let routed = cloud_route::run_routed(&ctx, &mut cloud, accept, local);
-    note_cloud_route(cloud_route::RouteChip::new(routed.route, routed.reason, job));
+    note_cloud_route(cloud_route::RouteChip::new(
+        routed.route,
+        routed.reason,
+        job,
+    ));
     routed
 }
 
@@ -9224,7 +9226,10 @@ fn set_cloud_notes_model(
 ) -> Result<CloudRouteView, String> {
     state
         .db
-        .setting_set(cloud_route::NOTES_MODEL_KEY, if best { "best" } else { "fast" })
+        .setting_set(
+            cloud_route::NOTES_MODEL_KEY,
+            if best { "best" } else { "fast" },
+        )
         .map_err(|e| {
             log::error!("byom notes_model_save_failed error={e}");
             "The notes model choice could not be saved.".to_string()
@@ -10222,7 +10227,9 @@ fn store_meeting_summary(
     }
     let now = db.get_meeting(id).map_err(NotesError::Summary)?;
     let now_segments = db.list_meeting_segments(id).map_err(NotesError::Summary)?;
-    if !now.as_ref().is_some_and(|m| summary_jobs::transcript_settled(&m.state))
+    if !now
+        .as_ref()
+        .is_some_and(|m| summary_jobs::transcript_settled(&m.state))
         || !summary_jobs::same_transcript(read_segments, &now_segments)
     {
         log::warn!("summary: meeting {id}'s transcript changed under its notes — nothing stored");
