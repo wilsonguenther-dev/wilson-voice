@@ -5,12 +5,16 @@
  * one shell flush to Yappy, and at rest the meeting scene IS the pill.
  */
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import MeetingBadge from "./MeetingBadge";
 import { ALL_LIVE_PHASES } from "./live";
 import { BAR_DOCKS } from "./dock";
-import { stackClockLabel } from "./meeting";
+import { IDLE_MEETING, stackClockLabel, type MeetingStatus } from "./meeting";
+import { SCENE_W } from "./meetingScene";
 import {
   CLOCK_H, CLOCK_STACK_W, CLOCK_W, RESTING_PHASES,
-  boxGap, clockWidth, layoutProblems, layoutVars, meetingShellBox, meetingSurfaceProblems, pillLayout, unionBox,
+  boxGap, clockWidth, layoutProblems, layoutVars, meetingClockStacked, meetingShellBox, meetingSurfaceProblems, pillLayout, unionBox,
   type MeetingMode,
 } from "./state";
 
@@ -107,5 +111,75 @@ describe("one pill during a meeting", () => {
     expect(stackClockLabel("00:03:37")).toBe("03:37");
     expect(stackClockLabel("01:03:37")).toBe("01:03:37");
     expect(stackClockLabel("")).toBe("");
+  });
+});
+
+/**
+ * fix-l3b1-1-meeting-stack-matches-layout — the layout reserved the 96 px stack
+ * box for every non-resting phase, but the badge only stacked while listening,
+ * so transcribing / done / error / ... drew the 112 px scene (a second Yappy)
+ * clipped inside it, Stop cut off. These render the badge with exactly the prop
+ * the shells compute (`meetingClockStacked(gate)`, YappyPill and PillShell).
+ */
+const RECORDING: MeetingStatus = {
+  ...IDLE_MEETING,
+  recording: true,
+  id: "m1",
+  title: "Standup",
+  elapsedSeconds: 724,
+  elapsedLabel: "00:12:04",
+  captureAvailable: true,
+};
+
+const badgeHtml = (phase: (typeof ALL_LIVE_PHASES)[number]): string =>
+  renderToStaticMarkup(createElement(MeetingBadge, { status: RECORDING, stacked: meetingClockStacked(phase) }));
+
+describe("fix-l3b1-1 — the meeting badge stacks whenever the layout reserves the stack box", () => {
+  it("meeting_clock_stacked_is_the_test_clock_width_uses", () => {
+    for (const phase of ALL_LIVE_PHASES) {
+      expect(meetingClockStacked(phase), phase).toBe(!RESTING_PHASES.has(phase));
+      expect(clockWidth("recording", !meetingClockStacked(phase)), phase).toBe(
+        meetingClockStacked(phase) ? CLOCK_STACK_W : CLOCK_W.recording,
+      );
+    }
+  });
+
+  it("badge_is_stacked_iff_the_layout_clock_box_is_the_stack_box", () => {
+    const bad: string[] = [];
+    for (const phase of ALL_LIVE_PHASES) for (const dock of BAR_DOCKS) {
+      const l = pillLayout({ phase, meeting: "recording", dock });
+      expect(l.clock, `${phase}/${dock}`).not.toBeNull();
+      const stackBox = l.clock!.w === CLOCK_STACK_W;
+      const stacked = badgeHtml(phase).includes('data-meeting-phase="stacked"');
+      if (stacked !== stackBox) bad.push(`${phase}/${dock}: badge stacked=${stacked} but clock box w=${l.clock!.w}`);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("no_phase_draws_the_scene_into_a_clock_box_narrower_than_the_scene", () => {
+    const bad: string[] = [];
+    for (const phase of ALL_LIVE_PHASES) for (const dock of BAR_DOCKS) {
+      const l = pillLayout({ phase, meeting: "recording", dock });
+      const scene = badgeHtml(phase).includes("data-meeting-scene");
+      const room = l.sceneCharacter || l.clock!.w >= SCENE_W;
+      if (scene !== room) bad.push(`${phase}/${dock}: scene=${scene} in a ${l.clock!.w} px clock box (sceneCharacter=${l.sceneCharacter})`);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("the_stacked_stop_is_there_in_transcribing_done_and_error", () => {
+    for (const phase of ["transcribing", "polishing", "pasting", "done", "error", "cancelled", "blind"] as const) {
+      const html = badgeHtml(phase);
+      expect(html, phase).toContain('data-meeting-phase="stacked"');
+      expect(html, phase).toContain('class="rec-stop"');
+      expect(html, phase).toContain("Stop meeting — recording for 00:12:04");
+      expect(html, phase).not.toContain("data-meeting-scene");
+    }
+    // At rest the scene IS the pill, Stop included.
+    for (const phase of Array.from(RESTING_PHASES)) {
+      const html = badgeHtml(phase);
+      expect(html, phase).toContain("data-meeting-scene");
+      expect(html, phase).toContain('class="rec-stop"');
+    }
   });
 });

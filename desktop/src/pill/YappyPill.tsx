@@ -29,7 +29,7 @@ import {
   TAKES_SEEN_KEY, type ChatterMode, type ChatterPolicy,
 } from "./chatter";
 import {
-  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
+  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, TAKE_STAGE_EVENT, transcribeLine,
   afterTakeLineAllowed, armGlance, GLANCE_LOOK_SEC, isNewUser, liveLinesLog, parseTakesSeen,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
@@ -59,7 +59,7 @@ import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
-import { capsuleCentre, currentPillLayout, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
+import { capsuleCentre, currentPillLayout, meetingClockStacked, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
 // yap-1106-pill-vertical-dock-world — on a side dock the pill is a tall room
 // (or a 30 x 40 resting tab), flush to the edge and never wider than 64 px.
 import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDock, vdockCropWarning, vdockFrame, type SideDock } from "./vdock";
@@ -1178,7 +1178,7 @@ export default function YappyPill(
           <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
         </button>
       )}
-      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
+      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} />
       <GovernorChip />
     </div>
   );
