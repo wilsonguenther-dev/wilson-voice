@@ -216,6 +216,15 @@ export function cssPerArtPx(fit: Pick<PillFit, "cell">, dprRaw: number): number 
 }
 
 /** One structured line when the pill's sprite scale changes (no content, numbers only). */
+/**
+ * yap-1107-parity-pill — one structured line when Yappy's camera framing changes
+ * ("whole" <-> "head", i.e. the 72 x 28 resting nub on a display below 2x).
+ * Numbers and enums only, never content.
+ */
+export function restFramingEvent(framing: PillCamera["framing"], capsule: Size, dpr: number): string {
+  return `pill camera-framing framing=${framing} capW=${Math.round(capsule.w)} capH=${Math.round(capsule.h)} dpr=${dpr}`;
+}
+
 export function scaleEvent(fit: PillFit, capsule: Size, dpr: number): string {
   return `pill sprite-scale cell=${fit.cell} lift=${fit.lift} cssPerArt=${cssPerArtPx(fit, dpr).toFixed(3)} capW=${Math.round(capsule.w)} capH=${Math.round(capsule.h)} dpr=${dpr}`;
 }
@@ -309,6 +318,15 @@ export interface PillCamera {
   fits: boolean;
   /** The lift budget the scene must clamp his pose to this frame (clampChickPose(pose, lift)). */
   lift: number;
+  /**
+   * yap-1107-parity-pill — "whole": his whole box is centred inside the stadium
+   * (`fits`). "head": the capsule is too short for any whole cell on this
+   * display (the approved 72 x 28 resting nub on a 1x / 1.5x screen), so the
+   * camera pins the TOP of his box under the stadium's top edge: the sprout,
+   * eyes and beak stay on screen and only his feet leave it — never his face
+   * alone, never a cropped head (the fb-10 regression Wilson saw).
+   */
+  framing: "whole" | "head";
 }
 
 /**
@@ -324,10 +342,19 @@ export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
   const fit = pillFit(stadium, dpr);
   const env = chickBoxFor(fit.lift);
   const cell = Math.max(fit.cell, coverCell(clip.w, clip.h, PILL_SCENE.w, PILL_SCENE.h));
+  const view = { w: clip.w / cell, h: clip.h / cell };
+  // yap-1107-parity-pill — whole when a whole cell holds his box; otherwise
+  // (only the 28 px resting nub below 2x) the top of his box sits
+  // ROUNDING_GUARD + POSITION_GUARD device px under the clip's top edge.
+  const whole = largestFittingCell(stadium, env, POSITION_GUARD) >= 1;
+  const headPad = (ROUNDING_GUARD + POSITION_GUARD) / cell;
+  const centre = whole
+    ? { x: env.x + env.w / 2, y: env.y + env.h / 2 }
+    : { x: env.x + env.w / 2, y: env.y - headPad + view.h / 2 };
   const blit = sceneBlit({
     rect: inset(capsule, CAPSULE_BORDER),
-    view: { w: clip.w / cell, h: clip.h / cell },
-    centre: { x: env.x + env.w / 2, y: env.y + env.h / 2 },
+    view,
+    centre,
     buffer: { w: PILL_SCENE.w, h: PILL_SCENE.h },
     dpr,
     cell,
@@ -338,7 +365,7 @@ export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
     w: env.w * blit.cell,
     h: env.h * blit.cell,
   };
-  return { blit, char, stadium, fits: stadiumContains(stadium, char), lift: fit.lift };
+  return { blit, char, stadium, fits: stadiumContains(stadium, char), lift: fit.lift, framing: whole ? "whole" : "head" };
 }
 
 /* ── the capsule for a state ────────────────────────────────────────────── */
@@ -346,10 +373,18 @@ export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
 /**
  * The approved Pill artifact's shells (design-2026-11-06 pill.html): the
  * listening / hands-free / done shell is 228 x 52 (pill-kit 4 px padding round a
- * 220 x 44 window); the item's acceptance gives the resting pill 56 px tall.
+ * 220 x 44 window). The resting nub is 72 x 28 (pill.html: Resting, Asleep,
+ * the hover tray and every storyboard frame draw PK.pill({ h: 28, win: { w: 64,
+ * h: 20 } }), 4 px padding round the window; "Shell grows from 72 x 28 to
+ * 228 x 52 from its top edge").
+ *
+ * yap-1107-parity-pill (batch-7 bounce fix): the item's own text said the idle
+ * pill is 56 tall; the senior standard says "if the artifact and your item
+ * conflict, build the artifact", so the resting capsule IS the page's 72 x 28.
  */
 export const ARTIFACT_OPEN_SHELL = { w: 228, h: 52 } as const;
-export const ARTIFACT_REST_H = 56;
+export const ARTIFACT_REST_SHELL = { w: 72, h: 28 } as const;
+export const ARTIFACT_REST_H = ARTIFACT_REST_SHELL.h;
 
 /**
  * Yappy's open capsule at tier 1 (YappyPill: openCapsuleFor(tier)).
@@ -380,11 +415,12 @@ export function openCapsuleFor(tier: number): Size {
 }
 
 /**
- * yap-1107-pill-matches-artifact-size (bounce fix) — the resting capsule is never
- * taller than the artifact's 56 when a capsule that short holds everyone (the
- * least-area search alone picked 80 x 59, +5.4 percent).
+ * yap-1107-pill-matches-artifact-size (bounce fix) — restCapsuleFor's search cap:
+ * never taller than 56 when a capsule that short holds everyone at 1x (the
+ * least-area search alone picked 80 x 59). No longer the resting capsule's size
+ * (yap-1107-parity-pill: REST_CAPSULE is the page's 72 x 28).
  */
-export const REST_MAX_H = ARTIFACT_REST_H;
+export const REST_MAX_H = 56;
 
 /**
  * The smallest resting capsule (CSS px, whole) that holds every pill
@@ -413,8 +449,15 @@ function restCapsuleUpTo(arts: readonly Size[], maxH: number): Size | null {
   return best;
 }
 
-/** The resting capsule every pill character fits (computed once from the manifests). */
-export const REST_CAPSULE: Readonly<Size> = Object.freeze(restCapsuleFor(PILL_CHARACTERS.map(characterArt)));
+/**
+ * The resting capsule: the approved page's 72 x 28 nub, exactly (yap-1107-parity-pill).
+ * On a 2x display every pill character sits in it whole at one device px per
+ * art px (2x clip 140 x 52, stadium 138 x 50, the largest box 46 x 43 with the
+ * 2 px guard each side); below 2x no whole cell fits 26 px, and Yappy's camera
+ * keeps his head in view ("head" framing). restCapsuleFor stays: it is the
+ * least capsule that holds everyone at 1x (80 x 56, the build before this fix).
+ */
+export const REST_CAPSULE: Readonly<Size> = Object.freeze({ w: ARTIFACT_REST_SHELL.w, h: ARTIFACT_REST_SHELL.h });
 
 /** The capsule a dock draws, given the horizontal capsule size: `side-tall` turns it on its end. */
 export function capsuleForDock(size: Size, dock: FitDock): Size {
