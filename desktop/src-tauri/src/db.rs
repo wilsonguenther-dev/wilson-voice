@@ -3337,14 +3337,24 @@ impl Database {
                 track,
                 cluster_index,
                 ..
-            } => Some((*track, *cluster_index, resolved.as_ref().map(|r| r.profile_id))),
+            } => Some((
+                *track,
+                *cluster_index,
+                resolved.as_ref().map(|r| r.profile_id),
+            )),
             C::SomeoneElse {
                 track, segment_ids, ..
             } => speaker_profiles::whole_cluster_of(&rows, *track, segment_ids)
                 .map(|c| (*track, c, resolved.as_ref().map(|r| r.profile_id))),
             C::Merge {
-                track, from_cluster, ..
-            } => Some((*track, *from_cluster, written.first().and_then(|w| w.profile_id))),
+                track,
+                from_cluster,
+                ..
+            } => Some((
+                *track,
+                *from_cluster,
+                written.first().and_then(|w| w.profile_id),
+            )),
             C::Split { .. } => None,
         };
         let mut positive_sample_ids = Vec::new();
@@ -3355,13 +3365,13 @@ impl Database {
                 old.sort_unstable();
                 old.dedup();
                 for p in old.into_iter().filter(|p| Some(*p) != new_profile) {
-                    negative_sample_ids.push(Self::add_negative_sample_on(
-                        &tx, p, meeting_id, &voice,
-                    )?);
+                    negative_sample_ids
+                        .push(Self::add_negative_sample_on(&tx, p, meeting_id, &voice)?);
                 }
                 if let Some(p) = new_profile {
                     if !prior.iter().all(|r| r.profile_id == Some(p)) {
-                        if let Some(id) = Self::add_positive_sample_on(&tx, p, meeting_id, &voice)? {
+                        if let Some(id) = Self::add_positive_sample_on(&tx, p, meeting_id, &voice)?
+                        {
                             positive_sample_ids.push(id);
                         }
                     }
@@ -3409,8 +3419,16 @@ impl Database {
         let (restore, skipped_changed) =
             speaker_profiles::undo_plan(&current, &undo.prior, undo.lock);
         Self::write_label_rows_on(&tx, meeting_id, &restore)?;
+        // When a later correction took over every line, that later answer
+        // stands, and so do the samples that agree with it.
+        let keep_samples = restore.is_empty() && !skipped_changed.is_empty();
+        let (positive_ids, negative_ids): (&[i64], &[i64]) = if keep_samples {
+            (&[], &[])
+        } else {
+            (&undo.positive_sample_ids, &undo.negative_sample_ids)
+        };
         let mut touched: Vec<i64> = Vec::new();
-        for id in &undo.positive_sample_ids {
+        for id in positive_ids {
             let profile: Option<i64> = tx
                 .query_row(
                     "SELECT profile_id FROM speaker_samples WHERE id = ?1 AND meeting_id = ?2",
@@ -3425,7 +3443,7 @@ impl Database {
                 touched.push(p);
             }
         }
-        for id in &undo.negative_sample_ids {
+        for id in negative_ids {
             tx.execute(
                 "DELETE FROM speaker_negative_samples WHERE id = ?1 AND meeting_id = ?2",
                 params![id, meeting_id],
@@ -3442,7 +3460,7 @@ impl Database {
             "speaker_profiles undo_correction meeting={meeting_id} restored={} skipped_changed={} samples_removed={}",
             restore.len(),
             skipped_changed.len(),
-            undo.positive_sample_ids.len() + undo.negative_sample_ids.len()
+            positive_ids.len() + negative_ids.len()
         );
         Ok(speaker_profiles::CorrectionUndone {
             rows: restore,
@@ -3490,7 +3508,13 @@ impl Database {
                     "UPDATE meeting_segments SET speaker_profile_id = ?4, speaker_name = ?5
                       WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3
                         AND speaker_locked = 0 AND speaker_name IS NULL",
-                    params![meeting_id, a.track, a.cluster_index, a.profile_id, a.display_name],
+                    params![
+                        meeting_id,
+                        a.track,
+                        a.cluster_index,
+                        a.profile_id,
+                        a.display_name
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
             tx.execute(

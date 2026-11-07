@@ -234,3 +234,33 @@ No crate or model changes; the pins above are untouched, so
   voice" keep nothing (`Database::dismiss_meeting_cluster`). "Forget all
   voices" and deleting the meeting clear the kept cluster voices.
 - Everything stays on this Mac ("Leaves this Mac: No").
+
+## 2026-11-07 — yap-1106-auto-label-and-correct: auto-labels and corrections (no new package)
+
+No crate or model changes; the pins above are untouched, so `tests/supply_chain.rs`
+keeps asserting the same digests.
+
+- Future meetings: after the clustering pass keeps each cluster's voice,
+  `Database::auto_label_meeting` names every `auto`-band cluster (the shared
+  provisional 0.70) with the saved voice's name — one cluster per person per
+  track (the best match), never a line a person already named or corrected.
+  This is the hedgehog analyzer's DIARIZE.md "Pipeline" idea of one saved
+  centroid per known person, applied to new meetings.
+- Corrections (a speaker chip's Rename / This is someone else / Merge with… /
+  Split this speaker) are pure reducers over the meeting's lines
+  (`speaker_profiles::apply_correction`). Lines are the word-exact turns of
+  section 2, so a correction moves whole turns and never leaves a word with the
+  old speaker. Each corrected line carries the correction's lock token
+  (migration 13, `meeting_segments.speaker_locked`).
+- A correction that moves a whole speaker feeds the voiceprints: the cluster's
+  kept voice becomes a positive sample of the new name and a negative sample
+  (`speaker_negative_samples`) of the old one. A match that a negative sample
+  sits at least as close to as the profile's own centroid is not trusted for
+  auto-labelling (`speaker_profiles::vetoed_by_negatives`). Partial moves and
+  splits have no voice of their own and feed nothing.
+- Undo lasts 10 s and asks the lock (the YV130 rule): only lines still carrying
+  that correction's token are restored, so a later correction — even to the
+  same name — stands.
+- The Markdown export and both notes paths read the corrected names
+  (`meetings::render_markdown_named`, `render_transcript_named`).
+- Everything stays on this Mac ("Leaves this Mac: No").

@@ -1210,7 +1210,9 @@ mod correction_tests {
         assert!(out
             .iter()
             .all(|r| r.speaker_name.as_deref() == Some("Alex") && r.profile_id == Some(7)));
-        assert!(out.iter().all(|r| r.locked == 42 && r.cluster_index == Some(0)));
+        assert!(out
+            .iter()
+            .all(|r| r.locked == 42 && r.cluster_index == Some(0)));
     }
 
     #[test]
@@ -1231,7 +1233,11 @@ mod correction_tests {
         let out = apply_correction(&meeting(), &c, Some(&alex()), 5).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].segment_id, "s3");
-        assert_eq!(out[0].cluster_index, Some(2), "a fresh cluster, so a later rename of John never sweeps it back");
+        assert_eq!(
+            out[0].cluster_index,
+            Some(2),
+            "a fresh cluster, so a later rename of John never sweeps it back"
+        );
         assert_eq!(out[0].speaker_name.as_deref(), Some("Alex"));
     }
 
@@ -1246,7 +1252,10 @@ mod correction_tests {
         };
         let out = apply_correction(&meeting(), &c, Some(&alex()), 5).unwrap();
         assert!(out.iter().all(|r| r.cluster_index == Some(1)));
-        assert_eq!(whole_cluster_of(&meeting(), 0, &["s2".into(), "s4".into()]), Some(1));
+        assert_eq!(
+            whole_cluster_of(&meeting(), 0, &["s2".into(), "s4".into()]),
+            Some(1)
+        );
         assert_eq!(whole_cluster_of(&meeting(), 0, &["s2".into()]), None);
     }
 
@@ -1329,7 +1338,9 @@ mod correction_tests {
         let ids: Vec<&str> = restore.iter().map(|r| r.segment_id.as_str()).collect();
         assert_eq!(ids, ["s1", "s5"]);
         assert_eq!(skipped, vec!["s3".to_string()]);
-        assert!(restore.iter().all(|r| r.speaker_name.as_deref() == Some("John") && r.locked == 0));
+        assert!(restore
+            .iter()
+            .all(|r| r.speaker_name.as_deref() == Some("John") && r.locked == 0));
     }
 
     fn auto(profile: i64, name: &str, sim: f32) -> VoiceMatch {
@@ -1378,8 +1389,19 @@ mod correction_tests {
         let centroid = vec![1.0, 0.0, 0.0];
         let voice = vec![0.6, 0.8, 0.0];
         assert!(!vetoed_by_negatives(&voice, &centroid, &[]));
-        assert!(vetoed_by_negatives(&voice, &centroid, &[vec![0.0, 1.0, 0.0]]));
-        assert!(!vetoed_by_negatives(&voice, &centroid, &[vec![0.0, 0.0, 1.0]]));
-        assert!(!vetoed_by_negatives(&voice, &centroid, &[vec![1.0, 0.0]]), "another dimension is ignored");
+        assert!(vetoed_by_negatives(
+            &voice,
+            &centroid,
+            &[vec![0.0, 1.0, 0.0]]
+        ));
+        assert!(!vetoed_by_negatives(
+            &voice,
+            &centroid,
+            &[vec![0.0, 0.0, 1.0]]
+        ));
+        assert!(
+            !vetoed_by_negatives(&voice, &centroid, &[vec![1.0, 0.0]]),
+            "another dimension is ignored"
+        );
     }
 }
