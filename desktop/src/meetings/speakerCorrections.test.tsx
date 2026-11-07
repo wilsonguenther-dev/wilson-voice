@@ -109,6 +109,19 @@ describe("chip menu helpers", () => {
       "Split into a new speaker",
     );
   });
+
+  it("names every correction kind, including the fallbacks without a typed name", () => {
+    expect(correctionSentence({ kind: "rename", track: 0, clusterIndex: 0, target: { kind: "profile", profileId: 7 } })).toBe(
+      "Speaker renamed",
+    );
+    expect(
+      correctionSentence({ kind: "someoneElse", track: 0, segmentIds: ["s3"], target: { kind: "newName", name: "Priya" } }),
+    ).toBe("1 line moved to Priya");
+    expect(correctionSentence({ kind: "someoneElse", track: 0, segmentIds: ["s3", "s5"], target: { kind: "me" } })).toBe(
+      "2 lines moved to someone else",
+    );
+    expect(correctionSentence({ kind: "merge", track: 0, fromCluster: 1, intoCluster: 0 })).toBe("Speakers merged");
+  });
 });
 
 describe("TranscriptList speaker chips", () => {
