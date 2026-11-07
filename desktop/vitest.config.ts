@@ -96,6 +96,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/silentMic.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  // fix-l3b4-1-pill-shows-live-speaker — who is talking, in the pill: newest line, name / Someone new / track word.
+  "pill/liveSpeaker.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
   "pill/governor.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-partial-transcript-stream — the live words: take lifecycle, governor gate, tail, throttle.
   "pill/partialTranscript.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },

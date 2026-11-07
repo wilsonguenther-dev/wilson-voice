@@ -68,6 +68,11 @@ describe("fix-l3b4-1 — the pill's live speaker picker", () => {
     expect(liveSpeakerLine(s)).toContain("Talking now: Someone new");
   });
 
+  it("Someone new keeps a hint when the backend sends one", () => {
+    const s = pickLiveSpeaker(snap(call(["hm"], [{ name: SOMEONE_NEW, hint: "Not a voice Yap knows" }])), true);
+    expect(liveSpeakerTitle(s)).toBe("Not a voice Yap knows");
+  });
+
   it("a mic-only meeting with no match shows nothing", () => {
     const mic: LiveTrack = { track: 0, speaker: null, lines: ["just me talking"], voices: [none] };
     expect(pickLiveSpeaker(snap(mic), true)).toBe(NO_SPEAKER);

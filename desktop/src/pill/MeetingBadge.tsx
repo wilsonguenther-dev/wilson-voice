@@ -18,7 +18,7 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, type CSSProperties } from "react";
+import { useCallback, useEffect, useReducer, useRef, type CSSProperties } from "react";
 import MeetingWorld from "./MeetingWorld";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -41,6 +41,17 @@ import {
   type MeetingStatus,
 } from "./meeting";
 import { callAudioChip } from "../meetings/callAudio";
+import { LIVE_EVENT, type LiveSnapshot } from "../meetings/liveSnapshot";
+import {
+  LIVE_SPEAKER_IDLE,
+  liveSpeakerLine,
+  liveSpeakerLog,
+  liveSpeakerTitle,
+  pickLiveSpeaker,
+  stepLiveSpeaker,
+  type LiveSpeaker,
+  type LiveSpeakerState,
+} from "./liveSpeaker";
 import { stopMeetingFromPill } from "./MeetingDictationCard";
 
 interface MeetingPillState {
@@ -131,6 +142,51 @@ export function useMeetingPill(): {
   return { status: state.status, phase: state.phase, dismiss };
 }
 
+type LiveSpeakerAction = { type: "live"; payload: LiveSnapshot | null } | { type: "clear" };
+
+function liveSpeakerReducer(s: LiveSpeakerState, a: LiveSpeakerAction): LiveSpeakerState {
+  // A payload only arrives while the listener is armed, i.e. while the
+  // meeting records; "clear" is the stop / unmount.
+  return a.type === "clear" ? LIVE_SPEAKER_IDLE : stepLiveSpeaker(s, a.payload, true);
+}
+
+/**
+ * fix-l3b4-1-pill-shows-live-speaker — who is talking right now, from the
+ * `meeting:live` snapshot live_transcript.rs broadcasts (app.emit, so the
+ * pill window receives it). Listens ONLY while `recording`; stop or unmount
+ * unlistens and clears. One `pill live_speaker shown=<kind>` line per change
+ * of what the pill shows — never the name or any transcript text.
+ */
+export function useLiveSpeaker(recording: boolean): LiveSpeaker {
+  const [state, dispatch] = useReducer(liveSpeakerReducer, LIVE_SPEAKER_IDLE);
+  useEffect(() => {
+    if (!recording) return;
+    // Same late-listener guard as useMeetingPill: a cleanup that runs before
+    // listen() resolves unsubscribes the listener when it lands.
+    let dead = false;
+    let un: (() => void) | null = null;
+    listen<LiveSnapshot>(LIVE_EVENT, (e) => dispatch({ type: "live", payload: e.payload }))
+      .then((u) => (dead ? u() : (un = u)))
+      .catch((err) => console.warn(`pill live_speaker listen_failed error=${String(err).slice(0, 80)}`));
+    return () => {
+      dead = true;
+      un?.();
+      dispatch({ type: "clear" });
+    };
+  }, [recording]);
+  const speaker = recording ? state.speaker : LIVE_SPEAKER_IDLE.speaker;
+  // The change key holds the word so a new name logs again, but the line
+  // itself carries only the kind. Mounting with nothing shown logs nothing.
+  const key = `${speaker.shown}|${speaker.word ?? ""}`;
+  const lastKey = useRef("none|");
+  useEffect(() => {
+    if (lastKey.current === key) return;
+    lastKey.current = key;
+    console.info(liveSpeakerLog(speaker));
+  }, [key, speaker]);
+  return speaker;
+}
+
 /**
  * Open one meeting in the main window's Meetings view: the backend shows the
  * window, sends the `navigate` event (`meetings:<id>`) and clears the tray's
@@ -145,6 +201,7 @@ export default function MeetingBadge({
   after = null,
   onOpen,
   stacked = false,
+  live,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
@@ -159,10 +216,21 @@ export default function MeetingBadge({
    * error, ...), not only while listening.
    */
   stacked?: boolean;
+  /**
+   * fix-l3b4-1 — a fixed live snapshot (render tests, the pill matrix). When
+   * given, the badge draws its speaker and does not listen; when omitted the
+   * badge listens to `meeting:live` itself while the meeting records.
+   */
+  live?: LiveSnapshot | null;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
   const callApp = badgeCallLabel(useCallRecordingView());
+  // fix-l3b4-1 — the hook runs on every render (rules of hooks) but only
+  // listens while the meeting records and no fixture snapshot was handed in.
+  const heard = useLiveSpeaker(status.recording && live === undefined);
+  const speaker = live === undefined ? heard : pickLiveSpeaker(live, status.recording);
+  const speakerLine = liveSpeakerLine(speaker);
   if (!status.recording) {
     // yap-1106-pill-rec-headphones-hoot-tape / fix-b8-1 — the stop beat:
     // Hoot hands over the tape and the pill reads "Saved". It is the shell's
@@ -196,20 +264,24 @@ export default function MeetingBadge({
   // while listening: the layout's box and this branch share one source.
   if (stacked) {
     const audioLine = callAudio ? `${callAudio.label}. ${callAudio.detail}` : systemAudio ?? "";
+    // fix-l3b4-1 — the 96 px stack has no room for a word: who is talking
+    // rides the stack's tooltip and the Stop label, next to the call-audio line.
+    const stackLines = [audioLine, speakerLine ?? ""].filter(Boolean);
     const time = stackClockLabel(elapsedLabel(status));
     return (
       <div className="meeting-badge meeting-stacked" data-pill-slot="clock" data-meeting-phase="stacked" role="status" aria-live="off">
         <span
           className="meeting-stack"
           data-meeting-stack
-          title={[callApp ? `Recording ${callApp} call` : "Recording a meeting", audioLine].filter(Boolean).join(" · ")}
+          data-live-speaker={speaker.word ? speaker.shown : undefined}
+          title={[callApp ? `Recording ${callApp} call` : "Recording a meeting", ...stackLines].join(" · ")}
         >
           <span className="meeting-stack-time" data-scene-time>{time}</span>
         </span>
         <button
           type="button"
           className="rec-stop"
-          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
+          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${stackLines.map((l) => `. ${l}`).join("")}`}
           onClick={(e) => {
             e.stopPropagation();
             // yap-fx-06 — the same one-click Stop as the scene's: a failure is
@@ -224,6 +296,22 @@ export default function MeetingBadge({
       </div>
     );
   }
+  const audioChip = callAudio ? (
+    <span
+      className={`rec-sysaudio call-audio-chip is-${callAudio.state}`}
+      data-call-audio={callAudio.state}
+      title={systemAudio ? `${callAudio.detail} ${systemAudio}` : callAudio.detail}
+      aria-label={`${callAudio.label}. ${callAudio.detail}`}
+    >
+      call {callAudio.state}
+    </span>
+  ) : (
+    systemAudio && (
+      <span className="rec-sysaudio" title={systemAudio} aria-label={systemAudio}>
+        mic only
+      </span>
+    )
+  );
   return (
     <div className="meeting-badge" data-pill-slot="clock" role="status" aria-live="off">
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
@@ -235,21 +323,24 @@ export default function MeetingBadge({
           {callApp}
         </span>
       )}
-      {callAudio ? (
-        <span
-          className={`rec-sysaudio call-audio-chip is-${callAudio.state}`}
-          data-call-audio={callAudio.state}
-          title={systemAudio ? `${callAudio.detail} ${systemAudio}` : callAudio.detail}
-          aria-label={`${callAudio.label}. ${callAudio.detail}`}
-        >
-          call {callAudio.state}
+      {/* fix-l3b4-1 — who is talking: one word stacked OVER the call-audio
+          chip in one column, so the clock row (CLOCK_W 208) gains no width.
+          The hint is the title / label, so a name always reads as a guess.
+          No speaker = the row is exactly what it was. */}
+      {speaker.word ? (
+        <span className="rec-side" data-live-speaker-side>
+          <span
+            className={`rec-speaker is-${speaker.shown}`}
+            data-live-speaker={speaker.shown}
+            title={liveSpeakerTitle(speaker) ?? undefined}
+            aria-label={speakerLine ?? undefined}
+          >
+            {speaker.word}
+          </span>
+          {audioChip}
         </span>
       ) : (
-        systemAudio && (
-          <span className="rec-sysaudio" title={systemAudio} aria-label={systemAudio}>
-            mic only
-          </span>
-        )
+        audioChip
       )}
       <button
         type="button"
