@@ -621,6 +621,18 @@ export function useAppShell() {
           // The meeting just closed out — pull the row it wrote.
           loadMeetings(meetingQuery);
           refreshInsights();
+          // yap-1106-fb-22b-who-was-this-cards — Stop opens the meeting in
+          // Meetings right away, while the summary is still being written,
+          // so the "Who was this?" cards can be answered meanwhile. Deferred
+          // out of the state updater (no setState inside an updater).
+          const stoppedId = prev.id;
+          if (stoppedId) {
+            window.setTimeout(() => {
+              setNav("meetings");
+              void openMeetingDetail(stoppedId);
+              console.info("meetings who_is_this open_on_stop");
+            }, 0);
+          }
         }
         return e.payload;
       });

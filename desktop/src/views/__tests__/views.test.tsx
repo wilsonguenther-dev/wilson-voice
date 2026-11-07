@@ -43,6 +43,7 @@ const SETTINGS_TABS = [
   "Diagnostics",
   "Notifications",
   "News",
+  "Voices",
   "License",
 ];
 
