@@ -471,3 +471,299 @@ pub fn clean_display_name(name: &str) -> Result<String, String> {
     }
     Ok(t.chars().take(80).collect())
 }
+
+// ── yap-1106-who-is-this — the "Who was this?" cards ─────────────────────────
+//
+// After a meeting is diarized, each cluster with enough speech that matches no
+// saved voice becomes a card (design meetings.html §B, approved 2026-11-06):
+// at most [`MAX_VOICE_CARDS`], most speaking time first, a
+// [`VOICE_CLIP_SECONDS`] clip cut inside ONE word-exact turn (so a clip never
+// crosses a speaker switch), "Who was this?", Save / That's me / Not sure /
+// Ignore this voice. Asked only AFTER the meeting, never during it.
+
+/// Migration 12 — one row per (meeting, track, cluster): the cluster's voice
+/// (the normalised mean of its turn embeddings, NULL when the pass produced
+/// none or the person chose "Not sure" / "Ignore") and what the person decided.
+/// Deleting the meeting deletes its rows; the voiceprint a Save fed lives on
+/// in `speaker_samples`.
+pub const MIGRATION_12_CLUSTER_VOICES: &str = r#"
+CREATE TABLE IF NOT EXISTS meeting_cluster_voices (
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  track INTEGER NOT NULL,
+  cluster_index INTEGER NOT NULL,
+  embedder_digest TEXT,
+  embedding BLOB,
+  seconds REAL NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'unknown',
+  profile_id INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (meeting_id, track, cluster_index)
+);
+"#;
+
+/// A cluster needs at least this much speech before Yap asks who it was
+/// (spec §9: "each cluster with ≥ 20 s of speech").
+pub const UNKNOWN_VOICE_MIN_SECONDS: f64 = 20.0;
+/// Never more than five cards (design: "five at most").
+pub const MAX_VOICE_CARDS: usize = 5;
+/// The clip length (design: "a 3-second clip").
+pub const VOICE_CLIP_SECONDS: f64 = 3.0;
+
+/// What the person decided about one cluster. `NotSure` leaves "Speaker N"
+/// and keeps nothing; `Ignored` never asks about this voice in this meeting
+/// again and keeps nothing either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClusterVoiceState {
+    Unknown,
+    Named,
+    Me,
+    NotSure,
+    Ignored,
+}
+
+impl ClusterVoiceState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClusterVoiceState::Unknown => "unknown",
+            ClusterVoiceState::Named => "named",
+            ClusterVoiceState::Me => "me",
+            ClusterVoiceState::NotSure => "not_sure",
+            ClusterVoiceState::Ignored => "ignored",
+        }
+    }
+
+    pub fn parse(s: &str) -> ClusterVoiceState {
+        match s {
+            "named" => ClusterVoiceState::Named,
+            "me" => ClusterVoiceState::Me,
+            "not_sure" => ClusterVoiceState::NotSure,
+            "ignored" => ClusterVoiceState::Ignored,
+            _ => ClusterVoiceState::Unknown,
+        }
+    }
+}
+
+/// One stored cluster voice (the embedding never goes to the webview).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterVoice {
+    pub track: i64,
+    pub cluster_index: i64,
+    pub embedder_digest: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+    pub seconds: f64,
+    pub state: ClusterVoiceState,
+}
+
+/// One transcript row of a cluster, as the card picker sees it: a word-exact
+/// turn (diarize-wire splits rows at every speaker switch).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterLine {
+    pub segment_id: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+    /// Already labelled with a saved voice.
+    pub labelled: bool,
+}
+
+/// The clearest clip of a cluster: the LONGEST of its turns, cut to at most
+/// [`VOICE_CLIP_SECONDS`] from that turn's first word. It never leaves the
+/// turn, so it never crosses a speaker switch. `None` when no turn has length.
+pub fn clearest_clip(lines: &[ClusterLine]) -> Option<(f64, f64, usize)> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let len = l.end_seconds - l.start_seconds;
+        if !len.is_finite() || len <= 0.0 {
+            continue;
+        }
+        if best.is_none_or(|(_, b)| len > b) {
+            best = Some((i, len));
+        }
+    }
+    best.map(|(i, len)| {
+        let l = &lines[i];
+        (
+            l.start_seconds,
+            l.start_seconds + len.min(VOICE_CLIP_SECONDS),
+            i,
+        )
+    })
+}
+
+/// One "Who was this?" card, as the webview gets it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceCard {
+    pub track: i64,
+    pub cluster_index: i64,
+    /// Talk seconds of the cluster's turns in this meeting.
+    pub seconds: f64,
+    pub lines: usize,
+    /// The line the clip comes from (design: "the line it came from").
+    pub line: String,
+    pub clip_start: Option<f64>,
+    pub clip_end: Option<f64>,
+    /// "Same person as Alex?" — an `ask`-band (or `auto`-band, until the
+    /// auto-label item labels those itself) match, with its reason.
+    pub suggestion: Option<VoiceSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSuggestion {
+    pub profile_id: i64,
+    pub display_name: String,
+    pub similarity: CosineSimilarity,
+}
+
+/// One cluster's inputs to [`pick_voice_cards`].
+#[derive(Debug, Clone)]
+pub struct ClusterCandidate {
+    pub track: i64,
+    pub cluster_index: i64,
+    pub state: ClusterVoiceState,
+    pub lines: Vec<ClusterLine>,
+    /// The cluster voice's match against the saved profiles; `None` when the
+    /// pass stored no voice (the card can still be named from text).
+    pub voice_match: Option<VoiceMatch>,
+    /// The profile id of "You", so a voice that sounds like you is never asked
+    /// about (design: "You are never asked about yourself").
+    pub me_profile_id: Option<i64>,
+}
+
+/// Which clusters get a card: still `Unknown`, no line already labelled,
+/// at least [`UNKNOWN_VOICE_MIN_SECONDS`] of speech, not "You"; most speaking
+/// time first (ties: track, then cluster), at most [`MAX_VOICE_CARDS`].
+pub fn pick_voice_cards(candidates: &[ClusterCandidate]) -> Vec<VoiceCard> {
+    let mut cards: Vec<VoiceCard> = Vec::new();
+    for c in candidates {
+        if c.state != ClusterVoiceState::Unknown || c.lines.iter().any(|l| l.labelled) {
+            continue;
+        }
+        let seconds: f64 = c
+            .lines
+            .iter()
+            .map(|l| (l.end_seconds - l.start_seconds).max(0.0))
+            .sum();
+        if seconds < UNKNOWN_VOICE_MIN_SECONDS {
+            continue;
+        }
+        let suggestion = match &c.voice_match {
+            Some(VoiceMatch::Auto {
+                profile_id,
+                display_name,
+                similarity,
+            })
+            | Some(VoiceMatch::Ask {
+                profile_id,
+                display_name,
+                similarity,
+            }) => {
+                if Some(*profile_id) == c.me_profile_id {
+                    continue;
+                }
+                Some(VoiceSuggestion {
+                    profile_id: *profile_id,
+                    display_name: display_name.clone(),
+                    similarity: *similarity,
+                })
+            }
+            _ => None,
+        };
+        let clip = clearest_clip(&c.lines);
+        cards.push(VoiceCard {
+            track: c.track,
+            cluster_index: c.cluster_index,
+            seconds,
+            lines: c.lines.len(),
+            line: clip
+                .map(|(_, _, i)| c.lines[i].text.clone())
+                .unwrap_or_default(),
+            clip_start: clip.map(|(s, _, _)| s),
+            clip_end: clip.map(|(_, e, _)| e),
+            suggestion,
+        });
+    }
+    cards.sort_by(|a, b| {
+        b.seconds
+            .partial_cmp(&a.seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.track.cmp(&b.track))
+            .then(a.cluster_index.cmp(&b.cluster_index))
+    });
+    cards.truncate(MAX_VOICE_CARDS);
+    cards
+}
+
+/// What naming a cluster targets.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NameTarget {
+    /// An existing saved voice (a suggestion accepted, or picked from the list).
+    #[serde(rename_all = "camelCase")]
+    Profile { profile_id: i64 },
+    /// A new name typed into the card.
+    #[serde(rename_all = "camelCase")]
+    NewName { name: String },
+    /// "That's me".
+    Me,
+}
+
+/// What [`crate::db::Database::name_meeting_cluster`] did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedCluster {
+    pub profile_id: i64,
+    pub display_name: String,
+    /// Transcript lines relabelled in this meeting.
+    pub relabelled: usize,
+    /// A voice sample went into the voiceprint (false = named from text only,
+    /// e.g. the audio was deleted before the pass stored a voice).
+    pub sample_added: bool,
+}
+
+/// The display name "That's me" saves.
+pub const ME_DISPLAY_NAME: &str = "You";
+
+/// The longest clip [`wav_clip_bytes`] cuts, whatever the caller asks for.
+pub const MAX_CLIP_SECONDS: f64 = 10.0;
+
+/// Cut `[start, end)` (seconds, at most [`MAX_CLIP_SECONDS`]) out of a kept
+/// meeting WAV into a standalone WAV in memory: the "▶ 0:03" a card plays.
+/// Seeks rather than decoding the whole recording. Nothing leaves this Mac.
+pub fn wav_clip_bytes(path: &std::path::Path, start: f64, end: f64) -> Result<Vec<u8>, String> {
+    if !start.is_finite() || !end.is_finite() || end <= start {
+        return Err("That clip has no length.".into());
+    }
+    let end = end.min(start + MAX_CLIP_SECONDS);
+    let mut reader = hound::WavReader::open(path).map_err(|e| format!("open audio: {e}"))?;
+    let spec = reader.spec();
+    let rate = f64::from(spec.sample_rate);
+    let total = reader.duration();
+    let from = ((start.max(0.0) * rate) as u32).min(total);
+    let to = ((end.max(0.0) * rate) as u32).min(total).max(from);
+    reader.seek(from).map_err(|e| format!("seek audio: {e}"))?;
+    let n = (to - from) as usize * usize::from(spec.channels);
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut w =
+            hound::WavWriter::new(&mut out, spec).map_err(|e| format!("write clip: {e}"))?;
+        match spec.sample_format {
+            hound::SampleFormat::Float => {
+                for s in reader.samples::<f32>().take(n) {
+                    w.write_sample(s.map_err(|e| format!("read audio: {e}"))?)
+                        .map_err(|e| format!("write clip: {e}"))?;
+                }
+            }
+            hound::SampleFormat::Int => {
+                for s in reader.samples::<i32>().take(n) {
+                    w.write_sample(s.map_err(|e| format!("read audio: {e}"))?)
+                        .map_err(|e| format!("write clip: {e}"))?;
+                }
+            }
+        }
+        w.finalize().map_err(|e| format!("write clip: {e}"))?;
+    }
+    Ok(out.into_inner())
+}

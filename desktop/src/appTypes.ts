@@ -683,6 +683,8 @@ export interface MeetingSegment {
   /** 0 = mic ("You"), 1 = system audio ("Call"). Absent = mic, per the column's
    *  `DEFAULT 0`: every row written before migration 3 really was the mic. */
   track?: number | null;
+  /** yap-1106-who-is-this — the saved voice's name for this line, merged in after "Who was this?". */
+  speakerName?: string | null;
 }
 
 /** YV125 — one choice on the start-of-meeting kind picker. Mirrors
