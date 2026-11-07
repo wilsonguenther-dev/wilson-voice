@@ -1480,6 +1480,249 @@ fn owner_loop(shared: Arc<OwnerShared>) {
     shared.cv.notify_all();
 }
 
+// ---------------------------------------------------------------------------
+// The production job queue: every decode the app makes is a job here
+// ---------------------------------------------------------------------------
+//
+// `TranscriptionManager` keeps the one engine (the `yap-asr` helper built by
+// `load_engine`) and lends it out per decode. Every one of those leases —
+// dictation, a retry of a failed dictation, a meeting chunk, meeting recovery —
+// first takes a ticket from the manager's `JobQueue`. Exactly one ticket runs
+// at a time; waiting tickets are admitted dictation first, then retry, then
+// meeting/recovery, FIFO inside a kind. A take that cannot get its turn inside
+// its wait cap fails with the plain `CATCHING_UP` sentence (its audio is kept
+// by the caller), a full queue fails fast with `QUEUE_FULL`, and once quit has
+// closed the queue nothing new is admitted (`OWNER_QUITTING`). Nothing here
+// can start a second engine: the queue only ever decides WHO decodes next on
+// the engine that exists.
+
+thread_local! {
+    static JOB_KIND: std::cell::Cell<Option<JobKind>> = std::cell::Cell::new(None);
+}
+
+/// Run `f` with every decode it makes on THIS thread filed as `kind` — how a
+/// retry of a failed dictation is queued as a retry and not as a live take.
+/// The previous kind is restored afterwards, even on unwind.
+pub fn as_job<R>(kind: JobKind, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<JobKind>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0;
+            JOB_KIND.with(|k| k.set(previous));
+        }
+    }
+    let previous = JOB_KIND.with(|k| k.replace(Some(kind)));
+    let _restore = Restore(previous);
+    f()
+}
+
+/// The kind a lease taken on this thread is filed as: an explicit [`as_job`]
+/// wins; otherwise a preemptible lease is a meeting chunk and anything else is
+/// a live dictation.
+pub fn current_job_kind(preemptible: bool) -> JobKind {
+    JOB_KIND.with(|k| k.get()).unwrap_or(if preemptible {
+        JobKind::Meeting
+    } else {
+        JobKind::Dictation
+    })
+}
+
+/// Tickets allowed to wait at once before one more fails fast.
+pub const JOB_QUEUE_MAX_WAITING: usize = 32;
+
+struct JobQueueState {
+    running: Option<(u64, JobKind)>,
+    waiting: Vec<(u64, JobKind)>,
+    next_id: u64,
+    closed: bool,
+}
+
+impl JobQueueState {
+    /// The waiting ticket that runs next: highest priority, then oldest.
+    fn best(&self) -> Option<u64> {
+        self.waiting
+            .iter()
+            .min_by_key(|(id, kind)| (kind.priority(), *id))
+            .map(|(id, _)| *id)
+    }
+
+    fn forget(&mut self, id: u64) {
+        self.waiting.retain(|(w, _)| *w != id);
+    }
+}
+
+/// One engine's queue of decode jobs. See the section comment above.
+pub struct JobQueue {
+    state: Mutex<JobQueueState>,
+    cv: Condvar,
+    max_waiting: usize,
+}
+
+/// The right to decode on the engine. Dropping it hands the turn on.
+pub struct JobTicket<'a> {
+    queue: &'a JobQueue,
+    id: u64,
+    kind: JobKind,
+    admitted: Instant,
+}
+
+impl JobTicket<'_> {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn kind(&self) -> JobKind {
+        self.kind
+    }
+}
+
+impl Drop for JobTicket<'_> {
+    fn drop(&mut self) {
+        let waiting = {
+            let mut st = self.queue.state.lock();
+            if matches!(st.running, Some((id, _)) if id == self.id) {
+                st.running = None;
+            }
+            self.queue.cv.notify_all();
+            st.waiting.len()
+        };
+        log::info!(
+            "engine job done id={} kind={} ran_ms={} queued={waiting}",
+            self.id,
+            self.kind.as_str(),
+            self.admitted.elapsed().as_millis()
+        );
+        if health() == EngineHealth::Busy {
+            let to = if engines_live() > 0 {
+                EngineHealth::Ready
+            } else {
+                EngineHealth::Idle
+            };
+            publish(to, "job_done", self.kind.as_str());
+        }
+    }
+}
+
+impl JobQueue {
+    pub fn new(max_waiting: usize) -> JobQueue {
+        JobQueue {
+            state: Mutex::new(JobQueueState {
+                running: None,
+                waiting: Vec::new(),
+                next_id: 1,
+                closed: false,
+            }),
+            cv: Condvar::new(),
+            max_waiting,
+        }
+    }
+
+    /// Wait for this job's turn (at most `wait_cap`) and take it.
+    pub fn admit(&self, kind: JobKind, wait_cap: Duration) -> Result<JobTicket<'_>, String> {
+        let started = Instant::now();
+        let deadline = started + wait_cap;
+        let mut st = self.state.lock();
+        if st.closed {
+            log::info!("engine job refused kind={} reason=quitting", kind.as_str());
+            return Err(OWNER_QUITTING.to_string());
+        }
+        let id = st.next_id;
+        st.next_id += 1;
+        if st.running.is_none() && st.waiting.is_empty() {
+            st.running = Some((id, kind));
+            drop(st);
+            return Ok(self.started(id, kind, started));
+        }
+        if st.waiting.len() >= self.max_waiting {
+            log::warn!(
+                "engine job refused id={id} kind={} reason=queue_full queued={}",
+                kind.as_str(),
+                st.waiting.len()
+            );
+            return Err(QUEUE_FULL.to_string());
+        }
+        st.waiting.push((id, kind));
+        let ahead = st.running.map(|(_, k)| k.as_str()).unwrap_or("none");
+        log::info!(
+            "engine job queued id={id} kind={} queued={} behind={ahead}",
+            kind.as_str(),
+            st.waiting.len()
+        );
+        loop {
+            if st.closed {
+                st.forget(id);
+                self.cv.notify_all();
+                log::info!(
+                    "engine job refused id={id} kind={} reason=quitting",
+                    kind.as_str()
+                );
+                return Err(OWNER_QUITTING.to_string());
+            }
+            if st.running.is_none() && st.best() == Some(id) {
+                st.forget(id);
+                st.running = Some((id, kind));
+                drop(st);
+                return Ok(self.started(id, kind, started));
+            }
+            if self.cv.wait_until(&mut st, deadline).timed_out() {
+                if !st.closed && st.running.is_none() && st.best() == Some(id) {
+                    continue;
+                }
+                st.forget(id);
+                // This ticket may have been the best one: let the next look.
+                self.cv.notify_all();
+                drop(st);
+                log::warn!(
+                    "engine job gave_up id={id} kind={} wait_ms={}",
+                    kind.as_str(),
+                    started.elapsed().as_millis()
+                );
+                return Err(CATCHING_UP.to_string());
+            }
+        }
+    }
+
+    fn started(&self, id: u64, kind: JobKind, queued_at: Instant) -> JobTicket<'_> {
+        log::info!(
+            "engine job started id={id} kind={} waited_ms={}",
+            kind.as_str(),
+            queued_at.elapsed().as_millis()
+        );
+        publish(EngineHealth::Busy, "job_started", kind.as_str());
+        JobTicket {
+            queue: self,
+            id,
+            kind,
+            admitted: Instant::now(),
+        }
+    }
+
+    /// Quit: admit nothing more and fail every waiting ticket with
+    /// [`OWNER_QUITTING`]. The running job keeps its ticket; the drain
+    /// cancels it. Returns how many waiting jobs were turned away.
+    pub fn close(&self) -> usize {
+        let mut st = self.state.lock();
+        st.closed = true;
+        let turned_away = st.waiting.len();
+        self.cv.notify_all();
+        turned_away
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.state.lock().closed
+    }
+
+    /// Jobs waiting for their turn (not counting the running one).
+    pub fn waiting(&self) -> usize {
+        self.state.lock().waiting.len()
+    }
+
+    /// The kind of the job decoding right now, if any.
+    pub fn running(&self) -> Option<JobKind> {
+        self.state.lock().running.map(|(_, k)| k)
+    }
+}
+
 #[cfg(test)]
 mod engine_owner_tests {
     use super::*;
@@ -2125,5 +2368,168 @@ mod engine_owner_tests {
         }
         assert_eq!(manager.engine_loads(), 1, "nothing reloaded on its own");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// yap-1106-engine-owner — the production queue every `TranscriptionManager`
+/// lease takes a ticket from.
+#[cfg(test)]
+mod job_queue_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn wait_for_waiting(queue: &JobQueue, n: usize) {
+        let started = Instant::now();
+        while queue.waiting() < n {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "only {} of {n} jobs reached the queue",
+                queue.waiting()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn the_job_queue_runs_dictation_before_retry_before_meeting() {
+        let queue = Arc::new(JobQueue::new(JOB_QUEUE_MAX_WAITING));
+        let order = Arc::new(Mutex::new(Vec::<JobKind>::new()));
+        let first = queue
+            .admit(JobKind::Meeting, Duration::from_secs(5))
+            .expect("an idle queue admits at once");
+        assert_eq!(queue.running(), Some(JobKind::Meeting));
+        let mut threads = Vec::new();
+        // Queued worst-first, so FIFO alone would get the order wrong.
+        for (n, kind) in [JobKind::Meeting, JobKind::Retry, JobKind::Dictation]
+            .into_iter()
+            .enumerate()
+        {
+            let q = queue.clone();
+            let o = order.clone();
+            threads.push(std::thread::spawn(move || {
+                let ticket = q
+                    .admit(kind, Duration::from_secs(5))
+                    .expect("admitted in turn");
+                o.lock().push(ticket.kind());
+                std::thread::sleep(Duration::from_millis(5));
+            }));
+            wait_for_waiting(&queue, n + 1);
+        }
+        drop(first);
+        for t in threads {
+            t.join().expect("job thread");
+        }
+        assert_eq!(
+            *order.lock(),
+            vec![JobKind::Dictation, JobKind::Retry, JobKind::Meeting]
+        );
+        assert_eq!(queue.running(), None);
+        assert_eq!(queue.waiting(), 0);
+    }
+
+    #[test]
+    fn only_one_job_holds_the_engine_at_a_time() {
+        let queue = Arc::new(JobQueue::new(JOB_QUEUE_MAX_WAITING));
+        let inside = Arc::new(AtomicU64::new(0));
+        let peak = Arc::new(AtomicU64::new(0));
+        let threads: Vec<_> = (0..10)
+            .map(|_| {
+                let q = queue.clone();
+                let inside = inside.clone();
+                let peak = peak.clone();
+                std::thread::spawn(move || {
+                    let _ticket = q
+                        .admit(JobKind::Dictation, Duration::from_secs(10))
+                        .expect("admitted");
+                    let now = inside.fetch_add(1, Ordering::AcqRel) + 1;
+                    peak.fetch_max(now, Ordering::AcqRel);
+                    std::thread::sleep(Duration::from_millis(3));
+                    inside.fetch_sub(1, Ordering::AcqRel);
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("job thread");
+        }
+        assert_eq!(peak.load(Ordering::Acquire), 1, "never two decodes at once");
+    }
+
+    #[test]
+    fn a_take_that_cannot_get_its_turn_says_catching_up() {
+        let queue = JobQueue::new(JOB_QUEUE_MAX_WAITING);
+        let _running = queue
+            .admit(JobKind::Dictation, Duration::from_secs(1))
+            .expect("admitted");
+        let started = Instant::now();
+        let err = queue
+            .admit(JobKind::Dictation, Duration::from_millis(40))
+            .err()
+            .expect("the engine is held");
+        assert_eq!(err, CATCHING_UP);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(queue.waiting(), 0, "a job that gave up leaves the queue");
+    }
+
+    #[test]
+    fn a_full_queue_fails_fast_with_a_plain_sentence() {
+        let queue = Arc::new(JobQueue::new(1));
+        let running = queue
+            .admit(JobKind::Meeting, Duration::from_secs(5))
+            .expect("admitted");
+        let q = queue.clone();
+        let waiter = std::thread::spawn(move || {
+            q.admit(JobKind::Meeting, Duration::from_secs(5))
+                .map(|t| t.kind())
+        });
+        wait_for_waiting(&queue, 1);
+        let started = Instant::now();
+        let err = queue
+            .admit(JobKind::Dictation, Duration::from_secs(5))
+            .err()
+            .expect("the queue is full");
+        assert_eq!(err, QUEUE_FULL);
+        assert!(started.elapsed() < Duration::from_secs(1), "fails fast");
+        drop(running);
+        assert_eq!(waiter.join().expect("waiter"), Ok(JobKind::Meeting));
+    }
+
+    #[test]
+    fn quit_closes_the_queue_and_turns_every_waiting_job_away() {
+        let queue = Arc::new(JobQueue::new(JOB_QUEUE_MAX_WAITING));
+        let running = queue
+            .admit(JobKind::Meeting, Duration::from_secs(5))
+            .expect("admitted");
+        let q = queue.clone();
+        let waiter = std::thread::spawn(move || {
+            q.admit(JobKind::Dictation, Duration::from_secs(5))
+                .map(|t| t.kind())
+        });
+        wait_for_waiting(&queue, 1);
+        assert_eq!(queue.close(), 1);
+        assert_eq!(
+            waiter.join().expect("waiter"),
+            Err(OWNER_QUITTING.to_string())
+        );
+        assert!(queue.is_closed());
+        drop(running);
+        assert_eq!(
+            queue
+                .admit(JobKind::Dictation, Duration::from_secs(1))
+                .err()
+                .as_deref(),
+            Some(OWNER_QUITTING)
+        );
+    }
+
+    #[test]
+    fn as_job_files_the_kind_and_restores_it() {
+        assert_eq!(current_job_kind(false), JobKind::Dictation);
+        assert_eq!(current_job_kind(true), JobKind::Meeting);
+        let inner = as_job(JobKind::Retry, || {
+            let nested = as_job(JobKind::Recovery, || current_job_kind(true));
+            (nested, current_job_kind(false))
+        });
+        assert_eq!(inner, (JobKind::Recovery, JobKind::Retry));
+        assert_eq!(current_job_kind(false), JobKind::Dictation, "restored");
     }
 }

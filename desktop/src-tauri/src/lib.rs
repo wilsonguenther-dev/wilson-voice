@@ -7737,7 +7737,9 @@ fn retry_decode_bounded(
     let remaining = deadline.saturating_sub(started.elapsed());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(decode());
+        // yap-1106-engine-owner — the retry is a job on the engine's queue,
+        // filed as a retry: a live dictation that arrives meanwhile goes first.
+        let _ = tx.send(engine_owner::as_job(engine_owner::JobKind::Retry, decode));
     });
     let result = match rx.recv_timeout(remaining) {
         Ok(r) => r,

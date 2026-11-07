@@ -601,6 +601,10 @@ struct Inner {
     idle_timeout: Duration,
     idle_check_interval: Duration,
     transcribe_timeout: Duration,
+    /// yap-1106-engine-owner — every lease is a job on this queue first:
+    /// one decode at a time, dictation before retry before meeting, a plain
+    /// "catching up" sentence instead of a parallel engine, closed at quit.
+    jobs: crate::engine_owner::JobQueue,
 }
 
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
@@ -668,6 +672,9 @@ impl TranscriptionManager {
                 idle_timeout,
                 idle_check_interval,
                 transcribe_timeout,
+                jobs: crate::engine_owner::JobQueue::new(
+                    crate::engine_owner::JOB_QUEUE_MAX_WAITING,
+                ),
             }),
         };
         manager.spawn_idle_watcher();
@@ -786,6 +793,13 @@ impl TranscriptionManager {
     /// [`unload`]: Self::unload
     pub fn drain_and_unload(&self, wait: Duration) -> DrainOutcome {
         self.inner.exiting.store(true, Ordering::Release);
+        // yap-1106-engine-owner — quit stops the queue first: nothing new is
+        // admitted and every waiting job fails with a plain sentence, so the
+        // only decode left to end is the one running now.
+        let turned_away = self.inner.jobs.close();
+        if turned_away > 0 {
+            log::info!("exit: engine queue closed turned_away={turned_away}");
+        }
         if !self.engine_in_flight() {
             self.unload();
             return DrainOutcome::Idle;
@@ -1308,6 +1322,27 @@ impl TranscriptionManager {
         expect_model: Option<&str>,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        // yap-1106-engine-owner — this decode is a job on the engine's queue.
+        // It waits its turn behind the running one (dictation first), and the
+        // ticket is held to the end of this function, i.e. until the engine
+        // is back in its slot (or dropped) and the lease count is down.
+        let kind = crate::engine_owner::current_job_kind(preemptible);
+        // A meeting chunk keeps the words its driver already understands:
+        // turned away by quit it is `ABANDONED_FOR_EXIT` (re-decoded next
+        // launch, never written as a failure), and out-waited it is the same
+        // `NO_ENGINE_LOADED` the handback wait always gave it. A dictation
+        // that cannot get its turn gets the plain `CATCHING_UP` sentence and
+        // keeps its audio — it never loads a second engine to jump the queue.
+        let _job = match self.inner.jobs.admit(kind, self.job_wait_cap()) {
+            Ok(ticket) => ticket,
+            Err(e) if preemptible && e == crate::engine_owner::OWNER_QUITTING => {
+                return Err(ABANDONED_FOR_EXIT.into())
+            }
+            Err(e) if preemptible && e == crate::engine_owner::CATCHING_UP => {
+                return Err(NO_ENGINE_LOADED.into())
+            }
+            Err(e) => return Err(e),
+        };
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let mut engine = self.take_engine()?;
@@ -1482,6 +1517,19 @@ impl TranscriptionManager {
             None => {}
         }
         result
+    }
+
+    /// yap-1106-engine-owner — how long one decode job waits for its turn on
+    /// the queue: the job ahead of it is ended by its own lease timeout, and
+    /// a chunk handback is bounded by `ENGINE_HANDBACK_WAIT`, so this is
+    /// never the wait that fails a healthy take.
+    fn job_wait_cap(&self) -> Duration {
+        self.inner.transcribe_timeout + ENGINE_HANDBACK_WAIT
+    }
+
+    /// yap-1106-engine-owner — decode jobs waiting for their turn right now.
+    pub fn jobs_waiting(&self) -> usize {
+        self.inner.jobs.waiting()
     }
 
     /// Y3-D — arm a new take: drop any cancel latch left by the previous one.
@@ -2188,6 +2236,37 @@ mod tests {
         );
         // The abandoned engine stays with the worker thread; nothing is resident.
         assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// yap-1106-engine-owner — quit closes the engine's job queue: a meeting
+    /// chunk turned away is `ABANDONED_FOR_EXIT` (re-decoded next launch,
+    /// never recorded as failed) and a dictation gets the plain quitting line.
+    #[test]
+    fn after_quit_the_queue_turns_new_jobs_away_with_their_own_words() {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            stub_loader("never", Duration::ZERO, false),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        m.load("stub/model", &path).expect("load");
+        assert_eq!(
+            m.drain_and_unload(Duration::from_secs(1)),
+            DrainOutcome::Idle
+        );
+        assert_eq!(
+            m.transcribe_timed(vec![0.1; 16], None, None)
+                .err()
+                .as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        assert_eq!(
+            m.transcribe(vec![0.1; 16], None, None).err().as_deref(),
+            Some(crate::engine_owner::OWNER_QUITTING)
+        );
+        assert_eq!(m.jobs_waiting(), 0);
+        assert_eq!(m.engine_loads(), 1, "quit never loads another engine");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
