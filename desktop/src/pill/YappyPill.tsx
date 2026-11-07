@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { drawChick as drawChickArt } from "../sprites/art";
+import { drawDeskHD, drawNotepadHD, growPadInk } from "../sprites/props";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
@@ -375,7 +376,6 @@ export default function YappyPill(
       paper: "#fffdf5", paperL: "#c9c3ad", desk: "#b06a3a", deskD: "#8a4f28", glass: "#2c2a36",
       pencil: "#ffcf3a", pencilT: "#ff8fb0", tw: "#4a4a55", twD: "#33333d", twKey: "#d8d8e2",
     };
-    const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
     // yap-1106-pill-sky — the sky, sun/moon and grass for the Home room's time of
     // day, painted into its OWN cached surface only when the time of day changes
     // (at most four times a day; the clock is read at most every 30 s). Each
@@ -394,7 +394,7 @@ export default function YappyPill(
     // when the time of day or the capsule's box changes
     let capGrad: CanvasGradient | null = null, capGradKey = "";
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean; ink: number; elapsed: number }
 
     // the chick — front wing holds a pencil when noting / at the desk
     // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
@@ -408,24 +408,15 @@ export default function YappyPill(
       // nothing in the sky moves between time-of-day changes).
       blitSky<HTMLCanvasElement>(octx, sky, performance.now(), Math.max(0.8, w));
       const cx = FX - (A.prop === "desk" ? CHICK_DESK_SHIFT : 0), feet = GY;
-      // notepad slides in from the side when noting
-      if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
-        octx.globalAlpha = A.propIn; rct(px, py, 11, 12, C.paperL); rct(px + 1, py + 1, 9, 10, C.paper);
-        for (let i = 0; i < 3; i++) rct(px + 2, py + 3 + i * 2, 7, 1, C.paperL); octx.globalAlpha = 1;
-      }
+      // notepad slides in from the side when noting — yap-1106-pill-props-detail:
+      // the approved detail pass (clip, margin line, handwriting that grows).
+      if (A.prop === "pad") drawNotepadHD(octx, cx, GY, A.propIn, C.paper, A.ink);
       // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises.
       drawChick(cx, feet, clampChickPose(A));
-      // receptionist desk + a little pixel TYPEWRITER
-      if (A.prop === "desk" && A.propIn > .05) { const dy = GY - 2 + (1 - A.propIn) * 16;
-        octx.globalAlpha = Math.min(1, A.propIn + .2);
-        rct(4, dy, PW - 8, 8, C.desk); rct(4, dy, PW - 8, 2, C.deskD); rct(4, dy + 7, PW - 8, 1, C.deskD);
-        const tx = cx + 14, ty = dy - 6;
-        rct(tx, ty + 2, 14, 5, C.tw); rct(tx, ty + 2, 14, 1, C.twD); rct(tx + 2, ty, 10, 3, C.tw);        // body + carriage
-        rct(tx + 4, ty - 3, 6, 3, C.paper);                                                              // paper sticking up
-        for (let k = 0; k < 4; k++) rct(tx + 2 + k * 3, ty + 5, 2, 1, C.twKey);                          // keys
-        rct(cx - 26, dy + 1, 4, 5, C.sun);                                                               // small stamp/lamp
-        octx.globalAlpha = 1;
-      }
+      // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
+      // wood grain + edge highlight, carriage, return levers, keys that light in
+      // sequence, a bouncing page, and a mug + pencils on the left.
+      if (A.prop === "desk") drawDeskHD(octx, cx, GY, PW, A.propIn, A.elapsed, C.paper);
     }
 
     // yap24-UI1 — the backing store is WHOLE device px of the CSS box at the REAL
@@ -459,6 +450,10 @@ export default function YappyPill(
     // makes the `live.lines` telemetry fire exactly once per take; `glanceT` is
     // the remaining eyes-forward time of a new user's listening glance.
     let afterLines = 0, takeOpen = false, glanceT = 0;
+    // yap-1106-pill-props-detail — how much of the notepad page is written (0..1):
+    // it grows while he notes during a take and clears once the pad has gone.
+    // `shownProp` makes the `pill prop_change` line fire once per change, not per frame.
+    let padInk = 0, shownProp: Prop = "none";
     let takesSeen = loadTakesSeen();
     const logLiveLines = (vadSec: number | null) => {
       if (!takeOpen) return;
@@ -654,6 +649,9 @@ export default function YappyPill(
       if (glanceT > 0) glanceT = Math.max(0, glanceT - dt);
       const wantProp = wantPropFor(phase, words);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
+      if (wantProp === "pad" && phase === "listening") padInk = growPadInk(padInk, dt);
+      else if (wantProp !== "pad" && propV < 0.01) padInk = 0;
+      if (wantProp !== shownProp) { console.info(`pill prop_change from=${shownProp} to=${wantProp} detail=hd`); shownProp = wantProp; }
       mood += (moodT - mood) * Math.min(1, dt * 10);
       const grav = 2600;
       if (J.phase === "crouch") { J.t += dt; J.crouch = Math.min(1, J.t / .1); if (J.t >= .1) { J.phase = "air"; J.vy = -300 * J.power; J.crouch = 0; } }
@@ -681,7 +679,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked" });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked", ink: padInk, elapsed });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
