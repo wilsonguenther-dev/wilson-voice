@@ -19,6 +19,11 @@ export const LIVE_EVENT = "meeting:live";
 export interface LiveVoice {
   name: string | null;
   hint: string | null;
+  /**
+   * yap-1106-fb-22a — the live voice (a `LiveRoster` index) when "Ask who's
+   * talking" is on; a name given live relabels every line of it backend-side.
+   */
+  cluster?: number | null;
 }
 
 /** Mirrors `live_transcript::LiveTrack`. */
@@ -67,7 +72,11 @@ export function reduceLive(next: LiveSnapshot | null | undefined, recording: boo
         if (line.length === 0) return;
         const v = t.voices?.[i];
         lines.push(line);
-        voices.push({ name: v?.name?.trim() || null, hint: v?.hint ?? null });
+        voices.push({
+          name: v?.name?.trim() || null,
+          hint: v?.hint ?? null,
+          ...(typeof v?.cluster === "number" ? { cluster: v.cluster } : {}),
+        });
       });
       return { track: t.track, speaker: t.speaker ?? null, lines, voices };
     }),

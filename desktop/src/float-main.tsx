@@ -35,6 +35,7 @@ import WarmupEngine from "./pill/WarmupEngine";
 import { forcedWarmup } from "./pill/warmup";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import MeetingDictationCard from "./pill/MeetingDictationCard";
+import WhoTalkingCard from "./pill/WhoTalkingCard";
 import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
@@ -875,6 +876,9 @@ function Float() {
       {/* yap-fx-06 — "Dictation cancelled — meeting still recording. Stop meeting?",
           the once-per-meeting hands-free question, and a Stop that failed. */}
       <MeetingDictationCard forced={FORCED ? forcedMeetingNotice(window.location.search) : null} />
+      {/* yap-1106-fb-22a — "Who's talking right now?" (off by default; never
+          during a screen share; never takes focus). pill/whoTalking.ts. */}
+      <WhoTalkingCard recording={meeting.status.recording} />
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
