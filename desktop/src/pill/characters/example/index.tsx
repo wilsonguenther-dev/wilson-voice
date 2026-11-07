@@ -41,6 +41,7 @@ export const example: Character = {
   label: "Example",
   render: (frame) => {
     const size = fitSquare(frame.box, 24);
+    const crisp = Math.max(1, Math.floor(Math.min(size.w, size.h) / 8)) * 8;
     return {
       art: EXAMPLE_PHASE_ART[frame.phase],
       copy: phaseVisual(frame.phase, frame.chordLabel).label,
@@ -52,7 +53,8 @@ export const example: Character = {
           width={8}
           height={8}
           aria-hidden
-          style={{ width: size.w, height: size.h, imageRendering: "pixelated" }}
+          // FB-09: a whole multiple of the 8 px art, so CSS never scales it by a fraction.
+          style={{ width: crisp, height: crisp, imageRendering: "pixelated" }}
           ref={(el) => {
             const ctx = el?.getContext("2d");
             if (ctx) paintBlob(ctx);

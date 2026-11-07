@@ -30,6 +30,9 @@
 // only `../license/status` (both pure, neither imports this file), so this adds
 // a leaf dependency and no cycle.
 import { GATED_HEADLINE } from "./license";
+import type { MilestoneId, NudgeId } from "./nudge";
+// yap-1106-voice-modes — the voices table is a leaf (imports nothing from here).
+import { duringLines, type VoiceId } from "./voices";
 
 /** The user's companion tone (YV27). Anything unknown reads as friendly. */
 export type ChatTone = "rude" | "friendly" | "rose";
@@ -119,7 +122,13 @@ export interface LiveTuning {
   speakRatio: number;
   /** …but never less than this above the floor (a steady hiss is not speech). */
   speakMargin: number;
-  /** Keep counting voiced time through this long a gap (between words). */
+  /**
+   * Bridge a between-words gap up to this long — but only once speech RESUMES
+   * inside it (yap-1106-live-reactions-during-take). The same 0.30 s bridge the
+   * backend's energy VAD uses (`record.rs::voiced_frames`), so the live
+   * speaking-time estimate and the VAD's speech time measure the same thing: a
+   * phrase's trailing hold is never counted as speech.
+   */
   holdSec: number;
 }
 
@@ -130,8 +139,72 @@ export const DEFAULT_LIVE: LiveTuning = {
   peakFall: 0.25,
   speakRatio: 0.3,
   speakMargin: 0.006,
-  holdSec: 0.35,
+  holdSec: 0.3,
 };
+
+/**
+ * yap-1106-live-reactions-during-take — a NEW user's one listening glance: after
+ * this many seconds of actual speech Yappy looks up at you (and says a listening
+ * line), so the first takes prove he is hearing you WHILE you talk.
+ */
+export const GLANCE_AFTER_SEC = 1.5;
+/** How long the glance holds Yappy's eyes forward, in seconds (the pill's clock). */
+export const GLANCE_LOOK_SEC = 0.9;
+/** A user is "new" for this many takes (counted in the pill's localStorage). */
+export const NEW_USER_TAKES = 5;
+/** Takes seen so far, from storage. Anything unreadable is 0 (a new user). */
+export function parseTakesSeen(raw: unknown): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+export const isNewUser = (takesSeen: number): boolean => parseTakesSeen(takesSeen) < NEW_USER_TAKES;
+
+/**
+ * After-take chatter cap: the workLine lines YappyPill says while the take
+ * decodes. Before this a take released into a ~1 s rotation of lines, so the
+ * chatter landed AFTER you talked instead of while you did.
+ */
+export const AFTER_TAKE_MAX_LINES = 2;
+export const afterTakeLineAllowed = (saidAfter: number): boolean => saidAfter < AFTER_TAKE_MAX_LINES;
+
+/** The live speaking-time estimate must stay within this share of VAD speech time. */
+export const ESTIMATE_TOLERANCE = 0.2;
+/** (estimate − VAD) / VAD, or null when there is no VAD time to compare with. */
+export function estimateDrift(voicedSec: number, vadSec: number | null | undefined): number | null {
+  if (typeof vadSec !== "number" || !Number.isFinite(vadSec) || vadSec <= 0) return null;
+  if (!Number.isFinite(voicedSec)) return null;
+  return (voicedSec - vadSec) / vadSec;
+}
+export const estimateWithinTolerance = (voicedSec: number, vadSec: number | null | undefined): boolean | null => {
+  const d = estimateDrift(voicedSec, vadSec);
+  return d === null ? null : Math.abs(d) <= ESTIMATE_TOLERANCE;
+};
+
+/** One take's live-line tally — the `live.lines` telemetry line's fields. */
+export interface LiveLinesStats {
+  /** Lines said WHILE the take was live (glance included). */
+  during: number;
+  /** workLine chatter said after release, while the take decoded. */
+  after: number;
+  /** live.ts's speaking-time estimate (`LiveState.voicedT`). */
+  voicedSec: number;
+  /** The backend's energy-VAD speech time for the take, or null (no transcript). */
+  vadSec: number | null;
+}
+
+/**
+ * The ONE `live.lines` telemetry line, logged at the end of every take. Counts
+ * and seconds only — never a line's text or the transcript.
+ */
+export function liveLinesLog(st: LiveLinesStats): string {
+  const n = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+  const sec = (v: number) => (Number.isFinite(v) ? Math.max(0, v).toFixed(1) : "0.0");
+  const drift = estimateDrift(st.voicedSec, st.vadSec);
+  const vad = st.vadSec === null || !Number.isFinite(st.vadSec) ? "na" : sec(st.vadSec);
+  const pct = drift === null ? "na" : String(Math.round(drift * 100));
+  const within = drift === null ? "na" : String(Math.abs(drift) <= ESTIMATE_TOLERANCE);
+  return `live.lines during=${n(st.during)} after=${n(st.after)} voicedSec=${sec(st.voicedSec)} vadSec=${vad} driftPct=${pct} within20=${within}`;
+}
 
 export interface LiveState {
   /** Wall seconds since the take started. */
@@ -150,20 +223,38 @@ export interface LiveState {
   chatterT: number;
   /** Monotonic line counter — rotates the pool deterministically. */
   chatterN: number;
+  /** Gap time inside the current hold, counted as speech only if speech resumes. */
+  pending: number;
+  /** False until the first frame seeds floor/peak from the room's own level. */
+  primed: boolean;
+  /** 0 = a listening glance is armed (new user), -1 = none / already given. */
+  glance: number;
+  /** Lines said during this take (what `live.lines during=` reports). */
+  lines: number;
 }
 
 export function createLiveState(cfg: LiveTuning = DEFAULT_LIVE): LiveState {
   return {
     wallT: 0, voicedT: 0, floor: cfg.floorMin, peak: cfg.floorMin, hold: 0,
     said: -1, chatterT: CHATTER_GAP.quick, chatterN: 0,
+    pending: 0, primed: false, glance: -1, lines: 0,
   };
+}
+
+/** Arm this take's one listening glance (new users only — see `isNewUser`). */
+export function armGlance(s: LiveState): void {
+  if (s.voicedT < GLANCE_AFTER_SEC) s.glance = 0;
+}
+
+/** The glance's line: the voice's (or tone's) first listening line. */
+export function glanceLine(tone: ChatTone, voice?: VoiceId): string {
+  if (voice) return duringLines(voice, 0, LIVE_TIERS.length)[0] ?? LIVE_WORK.quick[tone][0];
+  return LIVE_WORK.quick[tone][0];
 }
 
 /** Reset in place — a NEW take, not a mid-take status event. */
 export function resetLive(s: LiveState, cfg: LiveTuning = DEFAULT_LIVE): void {
-  const fresh = createLiveState(cfg);
-  s.wallT = fresh.wallT; s.voicedT = fresh.voicedT; s.floor = fresh.floor; s.peak = fresh.peak;
-  s.hold = fresh.hold; s.said = fresh.said; s.chatterT = fresh.chatterT; s.chatterN = fresh.chatterN;
+  Object.assign(s, createLiveState(cfg));
 }
 
 export interface LiveFrame {
@@ -175,6 +266,8 @@ export interface LiveFrame {
   speaking: boolean;
   /** A line to put in the bubble, or null to leave it as it is. */
   say: string | null;
+  /** True on the ONE frame a new user's listening glance fires. */
+  glance: boolean;
 }
 
 /**
@@ -197,8 +290,22 @@ export function advanceLive(
   level: number,
   tone: ChatTone,
   cfg: LiveTuning = DEFAULT_LIVE,
+  /**
+   * yap-1106-voice-modes — when given, the during-take lines come from this
+   * voice (voices.ts: Best friend, Badass, Professional, Rose) instead of the
+   * tone tables below. Omitted, behaviour is exactly as before.
+   */
+  voice?: VoiceId,
 ): LiveFrame {
   s.wallT += dt;
+  // yap-1106-live-reactions-during-take — seed the room from the take's FIRST
+  // frame. Starting the floor at `floorMin` read a fan or a hot mic as speech
+  // for the ~4 s the slow-rising floor took to climb to it.
+  if (!s.primed) {
+    s.primed = true;
+    s.floor = Math.max(cfg.floorMin, Number.isFinite(level) ? level : 0);
+    s.peak = s.floor;
+  }
 
   // ── speech vs room tone ──────────────────────────────────────────────────
   // Floor falls fast / rises slowly, so the between-word dips of a long take
@@ -213,9 +320,20 @@ export function advanceLive(
   const loud = level > speechThreshold(s.floor, s.peak, cfg);
   // A hold carries the estimate across the gaps between words/syllables, so a
   // normal sentence counts as one stretch of speech instead of a dotted line.
-  if (loud) s.hold = cfg.holdSec; else s.hold = Math.max(0, s.hold - dt);
+  // The gap is only BANKED when speech resumes inside the hold — exactly the
+  // energy VAD's bridge — so the end of every phrase is not counted as talking
+  // (that overcount ran the estimate 20-25% over VAD on a fan or a hot mic).
+  if (loud) {
+    if (s.hold > 0) s.voicedT += s.pending;
+    s.pending = 0;
+    s.hold = cfg.holdSec;
+    s.voicedT += dt;
+  } else if (s.hold > 0) {
+    s.hold = Math.max(0, s.hold - dt);
+    s.pending += dt;
+    if (s.hold <= 0) s.pending = 0;
+  }
   const speaking = loud || s.hold > 0;
-  if (speaking) s.voicedT += dt;
 
   // ── tier ladder ──────────────────────────────────────────────────────────
   const estWords = wordsFromVoiced(s.voicedT);
@@ -225,21 +343,35 @@ export function advanceLive(
   if (idx > s.said) {
     // crossed into a new tier — react to it immediately
     s.said = idx;
-    const line = LIVE_LINE[tier];
-    if (line) { say = line[tone]; s.chatterN = 0; }
+    if (voice) {
+      // A voice speaks its own tier slice; quick stays quiet on entry like LIVE_LINE.
+      if (tier !== "quick") { say = duringLines(voice, idx, LIVE_TIERS.length)[0] ?? null; s.chatterN = 1; }
+    } else {
+      const line = LIVE_LINE[tier];
+      if (line) { say = line[tone]; s.chatterN = 0; }
+    }
     s.chatterT = CHATTER_GAP[tier];
   } else {
     // ── repeating chatter ── the take keeps running, so Yappy keeps talking.
     s.chatterT -= dt;
     if (s.chatterT <= 0) {
-      const pool = LIVE_WORK[tier][tone];
+      const pool = voice ? duringLines(voice, idx, LIVE_TIERS.length) : LIVE_WORK[tier][tone];
       say = pool[s.chatterN % pool.length];
       s.chatterN++;
       s.chatterT = CHATTER_GAP[tier];
     }
   }
 
-  return { tier, prop: LIVE_PROP[tier], estWords, speaking, say };
+  // ── the new user's one listening glance ── after 1.5 s of real speech.
+  let glance = false;
+  if (s.glance === 0 && s.voicedT >= GLANCE_AFTER_SEC) {
+    s.glance = -1;
+    glance = true;
+    if (say === null) say = glanceLine(tone, voice);
+  }
+  if (say !== null) s.lines++;
+
+  return { tier, prop: LIVE_PROP[tier], estWords, speaking, say, glance };
 }
 
 // ── Y3-C: real progress through a chunked decode ───────────────────────────
@@ -1528,3 +1660,153 @@ export function withBlind(phase: LivePhase, blind: BlindState | null): LivePhase
 
 /** The sample a forced `blind` matrix capture draws (forced.ts). */
 export const SAMPLE_BLIND: BlindState = { cause: "secure-input", app: "Google Chrome", chord: "⌃⌥⌘Space" };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WF-17 — quiet mode for tips, feature news and milestones.
+//
+// Wispr sorts its toasts into Suggestions, Announcements and Milestones, each
+// with a mute switch, and its errors can never be muted. Yap does the same with
+// ONE table: every message the pill can say is tagged with exactly one
+// category here, Settings › Notifications mutes the three soft ones, and
+// `pillMessageAllowed` is the single gate every soft message passes through.
+// Errors, permission problems and recovery lines are not in MUTABLE_CATEGORIES,
+// so no stored setting — not even a hand-edited "error" — can hide them.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What kind of thing a pill message is. Exactly one per message. */
+export type PillCategory =
+  /** The pill saying what it is doing right now (listening, done, …). */
+  | "status"
+  /** A take failed, or produced nothing, and the user has to know. */
+  | "error"
+  /** macOS is blocking something Yap needs. */
+  | "permission"
+  /** Yap is telling the user how to get out of a jam (fn misfire, paste fell back). */
+  | "recovery"
+  /** A lesson about the take just done (`nudge.ts`). Mutable. */
+  | "tip"
+  /** A feature the user has not tried yet. Mutable. */
+  | "news"
+  /** A count worth celebrating. Mutable. */
+  | "milestone";
+
+export const PILL_CATEGORIES: readonly PillCategory[] = [
+  "status",
+  "error",
+  "permission",
+  "recovery",
+  "tip",
+  "news",
+  "milestone",
+];
+
+/** The only categories a user may mute. Mirrors lib.rs `MUTABLE_PILL_CATEGORIES`. */
+export const MUTABLE_CATEGORIES = ["tip", "news", "milestone"] as const;
+export type MutableCategory = (typeof MUTABLE_CATEGORIES)[number];
+
+export const isMutableCategory = (c: string): c is MutableCategory =>
+  (MUTABLE_CATEGORIES as readonly string[]).includes(c);
+
+/**
+ * Every message the pill can show, by id. Phases are `phase:<LivePhase>`, the
+ * coaching nudges `nudge:<NudgeId>`, milestones `milestone:<MilestoneId>`. The
+ * `Record` over this union is the compile-time half of the "every message has
+ * a category" rule; `live.test.ts` is the runtime half.
+ */
+export type PillMessageId =
+  | `phase:${LivePhase}`
+  | `nudge:${NudgeId}`
+  | `milestone:${MilestoneId}`
+  /** `stillRecordingLine` — the take outlived the key that started it. */
+  | "still-recording"
+  /** `FN_HINT_LINE` — fn pressed without its modifier. */
+  | "fn-hint"
+  /** The Copy card: the paste had nowhere to land, the text is kept. */
+  | "copy-card"
+  /** The detected-meeting offer (it has its own switch in Settings › Meetings). */
+  | "meeting-offer"
+  /** WF-06 — "Backtrack caught": a spoken self-correction was applied; Undo pastes the raw take. */
+  | "backtrack-caught";
+
+/** THE table. One category per pill message; nothing shows without a row. */
+export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
+  "phase:idle": "status",
+  "phase:listening": "status",
+  "phase:listening-locked": "status",
+  "phase:thinking": "status",
+  "phase:transcribing": "status",
+  "phase:polishing": "status",
+  "phase:pasting": "status",
+  "phase:model-loading": "status",
+  "phase:done": "status",
+  "phase:sleepy": "status",
+  "phase:cancelled": "status",
+  // Trial over: a refused take is something the user must hear about.
+  "phase:gated": "status",
+  "phase:error": "error",
+  "phase:empty": "error",
+  "phase:blocked": "permission",
+  "phase:waiting": "permission",
+  // Secure Input deafens fn; the line names the chord that still works.
+  "phase:blind": "recovery",
+  "still-recording": "recovery",
+  "fn-hint": "recovery",
+  "copy-card": "recovery",
+  "meeting-offer": "status",
+  // WF-06 — a receipt that Yap changed the take, with its Undo. Not a tip:
+  // muting tips must never hide a change made to what the user said.
+  "backtrack-caught": "status",
+  "nudge:no-text-field": "tip",
+  "nudge:code-editor": "tip",
+  "nudge:meetings": "news",
+  "milestone:takes-100": "milestone",
+  "milestone:takes-1000": "milestone",
+};
+
+/** The category of `id`, straight out of the table. */
+export const pillMessageCategory = (id: PillMessageId): PillCategory => PILL_MESSAGES[id];
+
+/**
+ * The muted set out of the settings payload (`mutedPillCategories`). Anything
+ * that is not a mutable category is dropped, so a stored "error" mutes nothing.
+ */
+export function parseMutedCategories(raw: unknown): ReadonlySet<MutableCategory> {
+  const out = new Set<MutableCategory>();
+  if (!Array.isArray(raw)) return out;
+  for (const v of raw) if (typeof v === "string" && isMutableCategory(v)) out.add(v);
+  return out;
+}
+
+/** Toggle `cat` in a muted list, returned in table order (what Settings saves). */
+export function withMuted(
+  current: readonly string[] | null | undefined,
+  cat: MutableCategory,
+  muted: boolean,
+): MutableCategory[] {
+  const set = new Set(parseMutedCategories(current ?? []));
+  if (muted) set.add(cat);
+  else set.delete(cat);
+  return MUTABLE_CATEGORIES.filter((c) => set.has(c));
+}
+
+/**
+ * THE gate. A message may reach the pill unless its category is mutable AND
+ * muted. An unknown id (a message nobody tagged) is refused rather than shown
+ * uncategorised — the table, not the caller, decides what is soft.
+ */
+export function pillMessageAllowed(id: PillMessageId, muted: ReadonlySet<string>): boolean {
+  const cat = PILL_MESSAGES[id] as PillCategory | undefined;
+  if (!cat) return false;
+  return !(isMutableCategory(cat) && muted.has(cat));
+}
+
+/** How a soft message introduces itself to a screen reader ("Tip: …"). */
+export const CATEGORY_NOUN: Record<PillCategory, string> = {
+  status: "Status",
+  error: "Error",
+  permission: "Permission",
+  recovery: "Heads up",
+  tip: "Tip",
+  news: "New",
+  milestone: "Milestone",
+};

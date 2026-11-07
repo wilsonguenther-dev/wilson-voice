@@ -3,8 +3,9 @@
  *
  * Three of the four states this feature has are unreachable by hand: a trial
  * with exactly three days left needs eleven days of waiting, a lifetime license
- * needs $29 and a live Stripe link (which is deliberately `active: false` until
- * launch), and the post-trial prompt needs both. So the REAL components are
+ * needs $29 and open sales on drivia.consulting/yap (closed until launch), and
+ * the post-trial prompt needs both. `#open` and `#prompt-open` show the
+ * `purchase_open: true` wording (yap-1106-lic-02); the rest show it closed. So the REAL components are
  * mounted here against mocked `LicenseStatus` payloads — the same objects the
  * backend serialises — inside the app's own header/sub-nav chrome, so a
  * screenshot of this page is a screenshot of the shipping UI.
@@ -73,6 +74,24 @@ const MOCKS: Record<string, LicenseStatus> = {
     trial_days_left: 0,
     trial_expires_at_ms: EXPIRES,
     ...base,
+  },
+  // yap-1106-lic-02 — the same trial / sheet with checkout OPEN.
+  open: {
+    state: "trial",
+    days_left: 11,
+    expires_at_ms: EXPIRES,
+    trial_days_left: 11,
+    trial_expires_at_ms: EXPIRES,
+    ...base,
+    purchase_open: true,
+  },
+  "prompt-open": {
+    state: "license_required",
+    reason: "trial_expired",
+    trial_days_left: 0,
+    trial_expires_at_ms: EXPIRES,
+    ...base,
+    purchase_open: true,
   },
 };
 
@@ -224,8 +243,8 @@ function Preview() {
         </div>
       </section>
 
-      {scene === "prompt" && (
-        <PurchasePrompt foundingOpen={false} onBuy={noop} onEnterKey={() => setScene("trial")} onDismiss={noop} />
+      {(scene === "prompt" || scene === "prompt-open") && (
+        <PurchasePrompt purchaseOpen={status.purchase_open} foundingOpen={false} onBuy={noop} onEnterKey={() => setScene("trial")} onDismiss={noop} />
       )}
 
       {/* Harness controls, deliberately unstyled by the app's own classes so

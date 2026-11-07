@@ -1,0 +1,1 @@
+Hey team, quick update before the weekly review. The new onboarding flow is finished and the copy has been checked twice. I still need someone to look at the settings page on a small screen, because the buttons wrap in a strange way. Let me know by Friday if that works for you.

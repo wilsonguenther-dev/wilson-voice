@@ -1,6 +1,6 @@
 # Yap — Privacy Policy
 
-_Last updated: October 27, 2026_
+_Last updated: November 6, 2026_
 
 Yap is a dictation app that runs **entirely on your Mac**. This policy explains, plainly, what happens to your data. The short version: **your voice and your words never leave your device, and we never see them.**
 
@@ -8,7 +8,7 @@ Yap is a dictation app that runs **entirely on your Mac**. This policy explains,
 
 **Nothing about your dictation.** Yap has no account, no sign-in, and no server that receives your speech, your transcripts, or anything about how you use the app.
 
-The one thing we do hold is what it takes to honour a license you bought, and it is described in full below.
+The one thing we do hold is what it takes to honour a license you bought, and which Macs it is activated on. Both are described in full below.
 
 ## How your dictation is handled
 
@@ -27,22 +27,26 @@ Your name, your address, your transcripts, and anything you dictated are not in 
 
 ## The only times Yap uses the network
 
-For transparency, here is **every** network connection Yap makes. There are exactly three. The first two **never carry your audio or your text**; the third exists only if you set it up yourself:
+For transparency, here is **every** network connection Yap makes. There are exactly four. The first, second and fourth **never carry your audio or your text**; the third exists only if you set it up yourself:
 
 1. **Model downloads.** Yap downloads the models it runs on your Mac — the speech model the first time you use it, and the voice-detection, polish and speaker models when a feature needs them — from fixed, pinned addresses, and checks every file against a fingerprint built into the app before it is used. A download asks for a file; it sends nothing you said or typed. After that, transcription is fully offline.
 2. **Update checks.** Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings. The check asks whether a newer Yap exists; it sends no audio and no text.
 3. **A model provider you add yourself — optional, and off unless you add one.** Yap ships with a bundled model that runs on your Mac, and that stays the default. Under Settings › Advanced › Model providers you can add another provider for meeting notes or for polish. Every choice there says plainly whether it leaves this Mac — **"Leaves this Mac: Yes — <the server's name>"** or **"No"** — and when any choice is Yes, the notice that says "Nothing is uploaded" stops saying it. Notes would send the meeting transcript; polish would send every dictation. Your API key is kept in your Mac's Keychain, tied to that one server; it is never written to Yap's database, settings or logs, and changing the server deletes it. Yap never follows a redirect to a different server. "Test connection" sends a two-word test prompt ("Say OK.") and asks for a reply of at most ten tokens — nothing you said. The same applies to **"Cloud model (your key)"** (yap-1106): it is off for every new install ("Always on this Mac"); only after you paste your own key and pick "Cloud when online" does dictation cleanup or a meeting transcript go to that server, and when you are offline, over your daily limit, or the server is slow or failing, the same job runs on this Mac instead. The pill shows "Cloud" or "On this Mac" after every take.
+4. **Activating, renewing and removing your license.** Licenses come from drivia.consulting, and this is the only request Yap makes to it — a single address, built into the app. It happens at exactly three moments:
+   - **When you paste a license key.** One request activates it on this Mac. It sends the key, a random install identifier Yap created for this Mac (kept in your Mac's Keychain with a copy in the license file, and not derived from your Apple ID or hardware serial), your Mac's name as set in System Settings (so you can tell your Macs apart when one needs to free a seat), "macos", your macOS version and your Yap version. What comes back is a signed license token.
+   - **When that token is close to running out.** A token is checked **on your Mac**, against a public key compiled into the app, every time it is read. Only when it has **less than 7 days left** does Yap ask for a fresh one, and at most **once every 24 hours**. That request sends the token, the install identifier, your macOS version and your Yap version. (If your license is on hold while a payment dispute is reviewed, Yap asks once each time it starts, so the hold lifts as soon as it is resolved.) A launch with a token that has more than 7 days left makes **no request at all**. If you are offline, Yap keeps working until the token runs out plus a 30-day grace period.
+   - **When you press Remove from this Mac.** One request frees this Mac's seat; it sends only the token.
 
-Licensing makes **no** network call. Your license is verified **on your Mac**, against a public key compiled into the app — activating it, and every launch after, involves no server at all, and Yap never contacts us to check, renew or confirm it.
+   Every one of these requests also carries Yap's public app identifier, which tells the service the request is from Yap and is the same for everyone. None of them carries audio, transcripts, your history, your writing samples, your settings, or anything about how you use Yap. Like any web server, drivia.consulting sees the network address a request comes from.
 
-Those three are the complete list. Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
+Those four are the complete list. Apart from what the licensing requests above name, Yap sends **no** analytics, telemetry, crash reports, usage data, or personal information to us or anyone else. There is a **Send crash report to Wilson** button in Settings, and it is not an exception to that: it writes a diagnostics file to your Desktop, shows you every line of it first, and then hands it to *your* mail app — Yap has no way to upload it, and nothing is sent unless you press send in your own email.
 
 ### How you can check this
 
 These claims are not just written down — they are a test in Yap's source, named `no_outbound_on_the_dictation_path`, and it fails if any of them stops being true. What it proves, in its own words:
 
 - **No module on the dictation path references an HTTP client, a socket or a URL.** That path is everything a dictation passes through: recording, voice detection, transcription, polish, paste, snippets and the local history database.
-- **The only network call sites in the whole app are the model download, the updater check and the one client for a model provider you add** — an explicit list, by file and function. A new one anywhere, for any reason, fails the test until this page is changed to name it.
+- **The only network call sites in the whole app are the model download, the updater check, the one client for a model provider you add, and the one licensing request** — an explicit list, by file and function. A new one anywhere, for any reason, fails the test until this page is changed to name it.
 - **Nothing in crash capture or the support bundle can upload.** The bundle is a file written to your Desktop for you to send yourself; at most Yap opens a draft in your own mail app, and nothing leaves until you press send.
 - **The app's window can connect to nothing but the app itself**, and the polish and speaker helpers that run beside it have no network code of their own.
 
@@ -53,7 +57,7 @@ Yap contains no analytics, telemetry or crash-reporting SDK of any kind — no S
 - **Transcripts** (the text of what you dictated) and a custom **dictionary** are stored in a local SQLite database in your Library folder. Yap does **not** keep the audio of a successful dictation — that recording is deleted once the transcript is saved.
 - **The audio of a failed take is kept, on your Mac, for up to 7 days.** A take whose transcription errors out, or that a quality gate rejects, has its recording moved into a `recovery` folder beside that database and listed under **Failed dictations** in History, so you can press **Retry** instead of saying it all over again. **Discard** deletes the recording immediately; anything you leave alone is deleted automatically after 7 days, whether you ever open History or not. Retrying re-transcribes it on your Mac exactly like the first attempt — the audio is never uploaded, to us or to anyone.
 - **Your writing samples** — the emails or messages you paste under **Settings › Dictation › Writing style**, and any custom rules you write there — are stored in the same local database, in a table named `user_context`. They are used for one thing: they are shown to the polish model **running on your Mac** as examples of how you write, so the cleaned-up text sounds like you. They are never uploaded, never sent to us or to anyone (some other dictation apps send theirs to a cloud model; Yap does not), never written to a log, and never included in a diagnostics file or crash report. Remove a sample from Settings and it is deleted from the database.
-- **Your license key** is stored in a small file alongside them, and is re-verified from that file on every read. Removing the license from a Mac is a button in Settings.
+- **Your license** — the signed token drivia.consulting issued for this Mac — is stored in a small file alongside them, and is re-verified on your Mac from that file on every read. The random install identifier it is tied to is kept in your Mac's Keychain. Removing the license from a Mac is a button in Settings (**Remove from this Mac**); it frees that Mac's seat with drivia.consulting first, so it needs a connection.
 - You can **delete any transcript**, **clear your entire history**, and **export diagnostics** at any time from within the app. Diagnostic logs contain **no transcript text** — and since the crash-report button can put those logs in a file you might email, that is enforced rather than intended. Every line is run through a redaction pass before it is packed: file paths, your account name, email addresses, long tokens and long numbers are replaced with a visible marker, and then the line itself has to be, in full, a message Yap ships inside itself — one of its own log messages, or a system error string from a fixed list — with only values like numbers and file names filling the gaps. Anything else is replaced with a marker and a count. A sentence you spoke is never one of Yap's own messages, however short it is and wherever in the app it was written down, and a number you spoke is not a value Yap put there. Yap shows you the redacted contents before it writes anything, and the bundle never contains a recording, a database, a transcript or one of your writing samples.
 - Because the history is stored in a standard local database, we recommend keeping **macOS FileVault** turned on so your data is encrypted at rest along with the rest of your disk.
 

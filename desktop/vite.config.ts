@@ -69,6 +69,8 @@ export default defineConfig(async () => ({
         float: resolve(__dirname, "float.html"),
         // DB-D — the Scratchpad panel, its own React tree like the pill.
         scratchpad: resolve(__dirname, "scratchpad.html"),
+        // yap-call-1 — the call offer, its own content-protected window.
+        callOffer: resolve(__dirname, "call-offer.html"),
         ...(devTooling
           ? {
               licensePreview: resolve(__dirname, "dev/license-preview.html"),
@@ -100,6 +102,18 @@ export default defineConfig(async () => ({
               systemAudioPreview: resolve(
                 __dirname,
                 "dev/system-audio-preview.html",
+              ),
+              // WF-18 — the extra-shortcuts editor (several / full /
+              // overlap) for the batch's headless before/after PNGs.
+              shortcutsEditorPreview: resolve(
+                __dirname,
+                "dev/shortcuts-editor-preview.html",
+              ),
+              // WF-19 — the mouse-button panel (off / hold / handsfree /
+              // listening / refused) for the batch's headless PNGs.
+              mousePttPreview: resolve(
+                __dirname,
+                "dev/mouse-ptt-preview.html",
               ),
             }
           : {}),

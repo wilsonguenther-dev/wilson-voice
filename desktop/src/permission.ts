@@ -15,7 +15,7 @@
 //
 // The System Settings URL is deliberately NOT here. It is a compile-time
 // constant in `permissions.rs` (`open_privacy_pane`), the same discipline
-// `license.rs` applies to `PAYMENT_LINK_URL`: a deep link that has to be
+// `license.rs` applies to `PURCHASE_PAGE_URL`: a deep link that has to be
 // verified against a real OS build belongs on the side of the wire that can be
 // verified, not in a string the frontend can drift.
 

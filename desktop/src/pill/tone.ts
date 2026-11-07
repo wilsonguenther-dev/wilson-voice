@@ -11,7 +11,7 @@
  */
 
 import type { ChatTone } from "./live";
-import type { NudgeId } from "./nudge";
+import type { MilestoneId, NudgeId } from "./nudge";
 
 export type Tone = "rude" | "friendly" | "rose" | "off";
 
@@ -129,4 +129,26 @@ export const NUDGE_LINES: Record<NudgeId, Record<ChatTone, string>> = {
 /** The nudge line for `id` in `tone`. */
 export function nudgeLine(id: NudgeId, tone: ChatTone): string {
   return NUDGE_LINES[id][tone];
+}
+
+// ── WF-17 — milestones, in the same voice ──────────────────────────────────
+//
+// Same rules as the nudge lines (`nudge.test.ts` checks them): a line per tone,
+// three distinct voices, no money, no key named, one side-dock strip line.
+export const MILESTONE_LINES: Record<MilestoneId, Record<ChatTone, string>> = {
+  "takes-100": {
+    rude: "100 takes. fine, impressive.",
+    friendly: "that's 100 takes. nice!",
+    rose: "100 takes with you 🌹",
+  },
+  "takes-1000": {
+    rude: "1,000 takes. you never stop.",
+    friendly: "1,000 takes. legend!",
+    rose: "1,000 takes, my love 🌹",
+  },
+};
+
+/** The milestone line for `id` in `tone`. */
+export function milestoneLine(id: MilestoneId, tone: ChatTone): string {
+  return MILESTONE_LINES[id][tone];
 }

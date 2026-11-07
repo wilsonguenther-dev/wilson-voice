@@ -1,7 +1,9 @@
 //! DB-D — the Scratchpad as a real second window.
 //!
-//! The window is declared in `tauri.conf.json` (label [`WINDOW_LABEL`], entry
-//! `scratchpad.html`, hidden, unfocused) and converted ONCE to a
+//! The window is made on FIRST USE by [`ensure_window`] (label
+//! [`WINDOW_LABEL`], entry `scratchpad.html`, hidden, unfocused; yap-1106-one-pill
+//! moved it out of `tauri.conf.json` so launch opens two windows, main and the
+//! pill panel) and converted ONCE to a
 //! non-activating `NSPanel` the first time it opens — the same mechanism the
 //! Dictate pill uses (`float_pill.rs`). A non-activating panel can become the
 //! KEY window, so you can type and dictate into it, while the app you were in
@@ -126,12 +128,45 @@ tauri_nspanel::tauri_panel! {
     })
 }
 
+/// fix-b5-1 — the note the next open must land on (the pill's timestamped
+/// meeting note). A PULL slot rather than an event payload: on the very first
+/// open the window is created by [`open`] and its webview has no listener yet
+/// when `scratchpad-shown` fires, so the window takes this on its first load
+/// AND on every later show (`scratchpad_take_open_note`). Taken once.
+static OPEN_NOTE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Ask the next Scratchpad load/show to open `note_id` as the active tab.
+/// An empty id clears the request.
+pub fn request_open_note(note_id: Option<String>) {
+    let mut slot = OPEN_NOTE.lock().unwrap_or_else(|p| p.into_inner());
+    *slot = note_id.filter(|id| !id.is_empty());
+}
+
+/// The pending note to open, once: a second call returns `None`.
+pub fn take_open_note() -> Option<String> {
+    OPEN_NOTE.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// Open the Scratchpad ON `note_id` (fix-b5-1: the pill's Note during a
+/// meeting). Same non-activating open as [`open`]; a failed open drops the
+/// request so a later plain open does not jump to a stale note.
+pub fn open_note(app: &AppHandle, note_id: String) -> Result<(), String> {
+    request_open_note(Some(note_id));
+    let r = open(app);
+    match &r {
+        Ok(()) => log::info!("scratchpad open_note ok"),
+        Err(e) => {
+            request_open_note(None);
+            log::warn!("scratchpad open_note failed err={e}");
+        }
+    }
+    r
+}
+
 /// Open the Scratchpad without activating Yap. Safe from any thread: AppKit
 /// panel calls are dispatched to the main thread.
 pub fn open(app: &AppHandle) -> Result<(), String> {
-    if app.get_webview_window(WINDOW_LABEL).is_none() {
-        return Err("the Scratchpad window is missing from tauri.conf.json".into());
-    }
+    ensure_window(app)?;
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         if let Err(e) = open_on_main(&app2) {
@@ -201,6 +236,159 @@ fn open_on_main(app: &AppHandle) -> Result<(), String> {
     w.show().map_err(|e| e.to_string())?;
     let _ = app.emit_to(WINDOW_LABEL, SHOWN_EVENT, ());
     Ok(())
+}
+
+/// yap-1106-one-pill — make the Scratchpad window the first time it is
+/// needed, never at launch (the target is two windows at launch: main and the
+/// one pill panel). Same shape the old `tauri.conf.json` entry declared, and
+/// the same close/blur handling the launch path used to install: the red X
+/// HIDES it (its notes and the webview survive), and losing key drops the
+/// dictation target so a take started elsewhere goes to the app guard.
+/// Idempotent: a window that already exists is left alone.
+pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window(WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+    let t0 = std::time::Instant::now();
+    let w = tauri::WebviewWindowBuilder::new(
+        app,
+        WINDOW_LABEL,
+        tauri::WebviewUrl::App("scratchpad.html".into()),
+    )
+    .title("Scratchpad")
+    .inner_size(DEFAULT_LOGICAL_SIZE.0, DEFAULT_LOGICAL_SIZE.1)
+    .min_inner_size(480.0, 320.0)
+    .resizable(true)
+    .fullscreen(false)
+    .center()
+    .decorations(true)
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| {
+        log::warn!("scratchpad create_failed err={e}");
+        format!("scratchpad window: {e}")
+    })?;
+    // WF-16 — a Scratchpad opened during a recorded meeting is built hidden
+    // from screen capture; `float_pill::sync_capture_hidden` restores it on stop.
+    crate::call_offer::apply_content_protection(&w);
+    let w2 = w.clone();
+    w.on_window_event(move |e| match e {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            hide(w2.app_handle());
+        }
+        tauri::WindowEvent::Focused(false) => set_focused_note(false, None),
+        _ => {}
+    });
+    log::info!(
+        "scratchpad created_lazily ms={} windows_open={}",
+        t0.elapsed().as_millis(),
+        app.webview_windows().len()
+    );
+    Ok(())
+}
+
+/// WF-15 — a window frame in physical pixels: the OUTER top-left (what
+/// `set_position` moves) and the INNER (content) size (what `set_size` sets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The size `ensure_window` builds the Scratchpad with (logical
+/// points). Collapsing with no remembered frame (expanded across a relaunch)
+/// goes back to this, centred on the screen it is on.
+pub const DEFAULT_LOGICAL_SIZE: (f64, f64) = (760.0, 520.0);
+
+/// The frame the panel had before Expand; `None` while it is not expanded.
+static PRIOR_FRAME: Mutex<Option<Frame>> = Mutex::new(None);
+
+/// WF-15 — the frame that fills a screen's work area (menu bar and Dock
+/// excluded). `chrome` = outer size − inner size (the title bar), so the whole
+/// window, title bar included, fits the work area exactly.
+pub fn fill_frame(work: Frame, chrome: (u32, u32)) -> Frame {
+    Frame {
+        x: work.x,
+        y: work.y,
+        width: work.width.saturating_sub(chrome.0).max(1),
+        height: work.height.saturating_sub(chrome.1).max(1),
+    }
+}
+
+/// WF-15 — the declared default size at `scale`, centred in `work`, never
+/// larger than the work area.
+pub fn centered_default(work: Frame, scale: f64) -> Frame {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let width = ((DEFAULT_LOGICAL_SIZE.0 * scale).round() as u32).min(work.width.max(1));
+    let height = ((DEFAULT_LOGICAL_SIZE.1 * scale).round() as u32).min(work.height.max(1));
+    Frame {
+        x: work.x + (work.width.saturating_sub(width) / 2) as i32,
+        y: work.y + (work.height.saturating_sub(height) / 2) as i32,
+        width,
+        height,
+    }
+}
+
+/// WF-15 — where Collapse goes: the remembered frame, else the default.
+pub fn restore_frame(prior: Option<Frame>, fallback: Frame) -> Frame {
+    prior.unwrap_or(fallback)
+}
+
+/// WF-15 — Expand (fill the current screen) or collapse (back to the frame
+/// before). Expanding twice keeps the FIRST remembered frame, so a persisted
+/// "expanded" re-applied on show never forgets where the panel was.
+pub fn set_expanded(app: &AppHandle, expanded: bool) -> Result<bool, String> {
+    let w = app
+        .get_webview_window(WINDOW_LABEL)
+        .ok_or_else(|| "the Scratchpad window does not exist".to_string())?;
+    let monitor = w
+        .current_monitor()
+        .map_err(|e| format!("current monitor: {e}"))?
+        .ok_or_else(|| "no screen under the Scratchpad".to_string())?;
+    let area = monitor.work_area();
+    let work = Frame {
+        x: area.position.x,
+        y: area.position.y,
+        width: area.size.width,
+        height: area.size.height,
+    };
+    let mut prior = PRIOR_FRAME.lock().unwrap_or_else(|p| p.into_inner());
+    let target = if expanded {
+        let pos = w
+            .outer_position()
+            .map_err(|e| format!("outer position: {e}"))?;
+        let inner = w.inner_size().map_err(|e| format!("inner size: {e}"))?;
+        let outer = w.outer_size().map_err(|e| format!("outer size: {e}"))?;
+        if prior.is_none() {
+            *prior = Some(Frame {
+                x: pos.x,
+                y: pos.y,
+                width: inner.width,
+                height: inner.height,
+            });
+        }
+        let chrome = (
+            outer.width.saturating_sub(inner.width),
+            outer.height.saturating_sub(inner.height),
+        );
+        fill_frame(work, chrome)
+    } else {
+        restore_frame(prior.take(), centered_default(work, monitor.scale_factor()))
+    };
+    w.set_size(tauri::PhysicalSize::new(target.width, target.height))
+        .map_err(|e| format!("set size: {e}"))?;
+    w.set_position(tauri::PhysicalPosition::new(target.x, target.y))
+        .map_err(|e| format!("set position: {e}"))?;
+    Ok(expanded)
 }
 
 /// Hide the panel and drop the dictation target with it.

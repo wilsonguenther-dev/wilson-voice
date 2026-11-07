@@ -51,6 +51,7 @@ const panel = (founding_open: boolean) =>
 const prompt = (founding_open: boolean) =>
   renderToStaticMarkup(
     <PurchasePrompt
+      purchaseOpen={founding_open}
       foundingOpen={founding_open}
       onBuy={noop}
       onEnterKey={noop}
@@ -65,14 +66,16 @@ describe("founding copy follows founding_open", () => {
 
   it("founding_open false: LicensePanel shows no FOUNDING19 and no Founding price", () => {
     const html = panel(false);
-    expect(html).toContain("Buy Yap");
+    // purchase_open is false here too (yap-1106-lic-02): the button still
+    // opens the page, worded "See Yap pricing".
+    expect(html).toContain("See Yap pricing");
     expect(html).not.toContain("FOUNDING19");
     expect(html).not.toContain("Founding price");
   });
 
   it("founding_open false: PurchasePrompt shows no FOUNDING19 and no Founding price", () => {
     const html = prompt(false);
-    expect(html).toContain("Buy Yap");
+    expect(html).toContain("See Yap pricing");
     expect(html).not.toContain("FOUNDING19");
     expect(html).not.toContain("Founding price");
   });

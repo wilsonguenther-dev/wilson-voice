@@ -281,6 +281,22 @@ the quit's step deadlines (`lifecycle::QuitStep::deadline`, summing to `QUIT_BUD
 is a one-shot bound on a wait that only happens at quit, not a polling interval; the 10 ms
 `EXIT_WAIT_POLL` that the take wait loops on was already in the row.
 
+Row change (2026-11-06, yap-1106-retry-failed-dictation): transcription.rs `50:3 -> 50:4` is
+`ENGINE_IDLE_POLL`, the interval a queued retry re-checks `TranscriptionManager::is_busy` while a
+live take still owns the single engine. It is bounded by the clip-scaled retry deadline (30 s floor,
+clip + 15 s, 180 s ceiling) and only runs while a retry is queued behind a live take — background
+work waiting its turn, coarser than the 10 ms handback poll on purpose. lib.rs grows to
+`{5:5, 10:2, 50:1, 100:2, 150:2, 200:1, 300:2, 350:1, 400:2, 500:1, 600:1, 900:1}`; every added
+literal is inside `#[cfg(test)] mod retry_engine_tests` (fake-engine decode durations, test
+deadlines, and 5/10 ms sleeps in test-only wait loops). No production wakeup was added to lib.rs.
+
+Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
+`ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
+disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
+mic. It runs only while audio is wanted (test `the_worker_ticks_fast_only_while_audio_is_wanted`);
+the idle stream keeps `IDLE_TICK`, and a failed device is retried no more often than `FAILED_RETRY`
+(1 s), so an unplugged mic with nothing to fall back to does not spin the HAL.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a
@@ -493,3 +509,53 @@ assumption anywhere downstream would be wrong there.
 | NT0 call-bleed-2voice (275 s) | 33.5 dB (p90 35.3) | 0.49 dB | 60.0 ms | 67.3 s (debug) |
 | headphones control | coupling None, nothing derived | - | - | - |
 
+
+---
+
+## speed_bench (SP-03)
+
+**What it measures:** the release side of a dictation, stage by stage, on three fixed recordings,
+through the shipped pipeline with no window and no paste:
+
+```
+scripts/qa/speed-bench.sh --note "<what changed>"     # needs a built wilson-voice; never builds
+wilson-voice --bench <wav> [<wav>…] [--no-cleanup]     # the command it drives; one JSON object on stdout
+```
+
+`--bench` loads the model once (`cold_load_ms`), then for each file: levels the samples the way
+capture does while the key is held (off the clock), starts the **release clock**, runs the
+release-side DSP + VAD (`record::bench_release_dsp` — gain, edge fade, denoise at the shipped
+default, energy VAD, pauses, and the Silero trim when its model is already on disk; never a
+download), the warm decode (`transcribe_native`, the dictation path itself, shipped default
+language set), and the cleanup pipeline at the shipped default level. The LLM polish stage is
+always **skipped** headless and nothing is pasted. Per file it reports `dsp_ms`, `asr_load_ms`,
+`asr_decode_ms`, `cleanup_ms`, `release_text_ms` (one wall span from the release clock to cleaned
+text, not a sum), `rtf` (`asr_decode_ms / decoded audio ms`; lower is faster), `release_rtf`,
+windows, and `wer` against the fixture's reference text.
+
+**Fixtures:** `scripts/eval/bench/bench-{20s,127s,240s}.txt` are the reference texts (dictation-style
+prose, 53 / 295 / 643 words). `scripts/eval/make-bench-fixtures.sh` speaks each with macOS `say`
+(voice pinned, `$YAP_BENCH_VOICE`, default Samantha) into a 16 kHz mono WAV beside it, padded with
+trailing silence to exactly 20 s, 127 s and 240 s. The WAVs are generated, never committed, and
+never captured user audio.
+
+**The gate:** each run appends one dated row below. It **fails (exit 1)** when `240 s r→t ms` is
+more than **20 %** over the last accepted row from the **same machine and model** — the row is
+still written, marked `REGRESSED`, and is never the base for the next comparison, so a regression
+cannot become the new normal by being re-run. The first row for a machine + model is `baseline`.
+`scripts/qa/speed-bench.sh --self-test` proves the gate on synthetic runs without a binary.
+
+**In the app:** every `latency …` line now ends with `rtf_p50=… rtf_last=…` — this take's decode
+RTF and the median over the session's last 10 takes (`latency::record_decode_rtf`). SP-01 sizes
+its windows from those.
+
+Columns: release→text (`r→t`) in ms per fixture; `240 s decode` is `asr_decode_ms` alone; `rtf_p50`
+is the median decode RTF over the three files; `WER` is 20 s / 127 s / 240 s.
+
+<!-- speed-bench:rows:start -->
+| date (UTC) | commit | machine | model | vad | 20 s r→t | 127 s r→t | 240 s r→t | 240 s decode | rtf_p50 | WER | status | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+<!-- speed-bench:rows:end -->
+
+The baseline row is written by the batch integrator's first `scripts/qa/speed-bench.sh` run on the
+merged build (builders in this loop do not compile), and must land before SP-04..SP-10 start.

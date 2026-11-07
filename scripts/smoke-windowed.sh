@@ -210,7 +210,7 @@ if [ "${YAP_SMOKE_SKIP_PILL:-0}" = "1" ]; then
   note 1
 else
   echo ""
-  echo "── pill: every LivePhase x bottom/left/right x classic/yappy ──"
+  echo "── pill: every LivePhase x bottom/left/right x yappy ──"
   set +e
   YAP_PILL_PORT="$PORT" node "$ROOT/scripts/pill-matrix.mjs" --out "$ROOT/$SHOTS_ROOT/$RUN/pill"
   rc=$?

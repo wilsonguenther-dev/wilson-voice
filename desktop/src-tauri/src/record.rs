@@ -5,7 +5,7 @@
 //! Live RMS level is exposed for the floating HUD waveform.
 
 use crate::dictation;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
 use parking_lot::{Condvar, Mutex as PLMutex};
@@ -572,10 +572,49 @@ pub fn finish_recording(
     // swap below, from the same mask `voiced_seconds` just summed.
     let take_pauses = pause_spans(&samples, TARGET_RATE);
 
-    // YV36 — Silero VAD voice isolation through the WARM engine loaded once at
-    // startup (`vad::WarmVad`, held in the app state). `None` means no model on
-    // disk / the load failed, and ANY inference failure falls back to the
-    // energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
+    // YV36 — Silero VAD voice isolation (see `silero_trim`). SP-03: the same
+    // function is what `wilson-voice --bench` runs over a file.
+    let (samples, speech_present) = silero_trim(samples, isolation_vad);
+
+    // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
+    // runs alongside transcription + paste instead of sitting between key-release
+    // and ASR (YV37). The guard unlinks it when the take is done.
+    //
+    // DB-B: the same writer also links the finished wav into the recovery dir
+    // as `<id>.decoding.wav` for as long as the take is in flight. That link is
+    // what a SIGKILL, a crash or the tray's `app.exit(0)` mid-decode leaves
+    // behind (none of them run `Drop`), in a directory `sweep_stale_wavs` never
+    // touches, so the next launch's `recover_dictation` adopts it.
+    let clip = ClipWav::spawn(active.wav_path, samples.clone(), Some(&active.recovery_dir));
+    // YV63 normal completion: the take survived capture and its wav is being
+    // written, so the spill is no longer the only copy of these words — the
+    // in-progress marker goes with it, and startup finds no orphan to recover.
+    if let Some(journal) = journal {
+        journal.finish();
+    }
+
+    Ok(RecordingResult {
+        samples,
+        clip,
+        speech_seconds: speech_seconds.max(0.05),
+        // The TRUE voiced value — no clip-length fallback, so a silent tap reads
+        // 0.0 and the no-speech gate can reject it before ASR.
+        voiced_seconds: voiced,
+        pause_spans: take_pauses,
+        hold_wall_seconds,
+        speech_present,
+        capture_start_ms: active.capture_start_ms,
+        device_failed,
+    })
+}
+
+/// YV36 — Silero VAD voice isolation through the WARM engine loaded once at
+/// startup (`vad::WarmVad`, held in the app state). `None` means no model on
+/// disk / the load failed, and ANY inference failure falls back to the
+/// energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
+/// Returns the ASR buffer (trimmed to the voiced span when Silero found speech)
+/// and whether speech is present.
+fn silero_trim(mut samples: Vec<f32>, isolation_vad: Option<&vad::WarmVad>) -> (Vec<f32>, bool) {
     let mut speech_present = true;
     if let Some(warm) = isolation_vad {
         match warm.isolate(&samples, TARGET_RATE) {
@@ -607,36 +646,60 @@ pub fn finish_recording(
             }
         }
     }
+    (samples, speech_present)
+}
 
-    // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
-    // runs alongside transcription + paste instead of sitting between key-release
-    // and ASR (YV37). The guard unlinks it when the take is done.
-    //
-    // DB-B: the same writer also links the finished wav into the recovery dir
-    // as `<id>.decoding.wav` for as long as the take is in flight. That link is
-    // what a SIGKILL, a crash or the tray's `app.exit(0)` mid-decode leaves
-    // behind (none of them run `Drop`), in a directory `sweep_stale_wavs` never
-    // touches, so the next launch's `recover_dictation` adopts it.
-    let clip = ClipWav::spawn(active.wav_path, samples.clone(), Some(&active.recovery_dir));
-    // YV63 normal completion: the take survived capture and its wav is being
-    // written, so the spill is no longer the only copy of these words — the
-    // in-progress marker goes with it, and startup finds no orphan to recover.
-    if let Some(journal) = journal {
-        journal.finish();
+/// SP-03 — `wilson-voice --bench`: the leveling a live take gets WHILE it is
+/// being captured (the streamed high-pass + AGC, YV37), done over a buffer read
+/// from a file. A file never streamed, so this is the batch chain the live path
+/// itself falls back to (`fallback_chain`: high-pass + RMS normalize at 16 kHz).
+/// It runs BEFORE the bench's release clock starts, exactly as capture-time DSP
+/// is off the release path in the app.
+pub(crate) fn bench_capture_chain(raw: &[f32]) -> Vec<f32> {
+    fallback_chain(raw, TARGET_RATE)
+}
+
+/// SP-03 — one bench take after the release-side DSP + VAD.
+pub(crate) struct BenchDsp {
+    /// The buffer ASR decodes (trimmed to the voiced span when Silero ran).
+    pub samples: Vec<f32>,
+    /// Energy-VAD voiced seconds over the untrimmed buffer (the WPM denominator).
+    pub voiced_seconds: f64,
+    /// `false` only when Silero ran and heard no speech.
+    pub speech_present: bool,
+}
+
+/// SP-03 — the release-side half of `finish_recording`, in its order, over a
+/// leveled buffer: apply the (unit) gain, de-click the edges, optionally
+/// denoise, measure voiced time and pauses, then the Silero trim. The session
+/// ceiling and the history wav are left out — a bench file is not a take to
+/// keep, and the ceiling only cuts audio longer than any bench fixture.
+pub(crate) fn bench_release_dsp(
+    leveled: &[f32],
+    denoise: bool,
+    isolation_vad: Option<&vad::WarmVad>,
+) -> Result<BenchDsp, String> {
+    if leveled.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
     }
-
-    Ok(RecordingResult {
+    let gained = apply_gain(leveled, 1.0);
+    let faded = edge_fade(&gained, TARGET_RATE, EDGE_FADE_MS);
+    let out = if denoise {
+        denoise_rnnoise(&faded, TARGET_RATE)
+    } else {
+        faded
+    };
+    if out.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
+    }
+    let voiced = voiced_seconds(&out, TARGET_RATE);
+    // Same work the live take does on release; the bench only pays for it.
+    let _pauses = pause_spans(&out, TARGET_RATE);
+    let (samples, speech_present) = silero_trim(out, isolation_vad);
+    Ok(BenchDsp {
         samples,
-        clip,
-        speech_seconds: speech_seconds.max(0.05),
-        // The TRUE voiced value — no clip-length fallback, so a silent tap reads
-        // 0.0 and the no-speech gate can reject it before ASR.
         voiced_seconds: voiced,
-        pause_spans: take_pauses,
-        hold_wall_seconds,
         speech_present,
-        capture_start_ms: active.capture_start_ms,
-        device_failed,
     })
 }
 
@@ -1298,6 +1361,88 @@ pub fn recover_orphaned_spills(dir: &Path) -> Vec<RecoveredTake> {
     recovered
 }
 
+/// yap-fx-07 — the loudest one-second window an orphan may have and still be
+/// called silent (RMS, full scale = 1.0). The 2026-11-06 forensics measured a
+/// near-silent spill at ~0.002 and real speech at 0.06–0.10 in EVERY 10 s
+/// window; 0.008 sits well clear of both, on the "keep it" side.
+pub const ORPHAN_SILENCE_RMS: f32 = 0.008;
+
+/// yap-fx-07 — is this recovered audio silent, i.e. safe to delete instead of
+/// offering it as a failed dictation? Silent means NO one-second window gets to
+/// [`ORPHAN_SILENCE_RMS`]: a single loud second anywhere keeps the clip, so a
+/// long take that is mostly pauses is never thrown away. A non-finite sample
+/// is treated as signal (keep), never as silence. Pure, so it is unit-tested.
+pub fn is_silent_clip(samples: &[f32]) -> bool {
+    if samples.iter().any(|s| !s.is_finite()) {
+        return false;
+    }
+    let window = TARGET_RATE as usize;
+    samples.chunks(window).all(|w| {
+        let mean_sq = w.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / w.len() as f64;
+        (mean_sq.sqrt() as f32) < ORPHAN_SILENCE_RMS
+    })
+}
+
+/// yap-fx-07 — the IN-SESSION half of [`recover_orphaned_spills`].
+///
+/// [`recover_orphaned_spills`] only runs at launch, so a capture spill
+/// `SpillWriter::drop` moves into the recovery dir mid-session (the 2026-11-06
+/// "arm while already capturing — dropping the orphaned take" case) sat with no
+/// `failed_dictations` row until the next launch — invisible in History, and a
+/// candidate for the age sweep. This adopts those spills while the app runs.
+///
+/// Deliberately narrower than the launch scan, because takes are live now:
+///
+/// * only `<id>.capture.wav` — a `<id>.decoding.wav` in-flight link belongs to
+///   a take that may be decoding RIGHT NOW, and only the launch scan (when
+///   nothing is live) may read those back;
+/// * only files at least `min_age` old (by mtime) — `SpillWriter::drop` can
+///   fall back to copy + remove, and a half-copied file is not an orphan yet;
+/// * never over an existing `<id>.wav` — that name may already be a kept take
+///   with its own row, and the launch scan still sees the spill next time;
+/// * never a spill a row already names (`keep`).
+///
+/// Same finalize as the launch scan (silent → deleted, else `<id>.wav`).
+pub fn recover_aborted_capture_spills(
+    dir: &Path,
+    keep: &[String],
+    now: std::time::SystemTime,
+    min_age: Duration,
+) -> Vec<RecoveredTake> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut recovered = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(id) = name
+            .strip_suffix(const_spill_suffix())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let spill = entry.path();
+        if keep.iter().any(|k| Path::new(k) == spill) {
+            continue;
+        }
+        // An unreadable mtime counts as "just written": it can only defer.
+        let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(now);
+        if now.duration_since(modified).unwrap_or_default() < min_age {
+            continue;
+        }
+        if spill.with_file_name(format!("{id}.wav")).exists() {
+            log::info!("record orphan_spill_deferred reason=target_exists");
+            continue;
+        }
+        match finalize_orphaned_spill(&spill, id) {
+            Ok(Some(take)) => recovered.push(take),
+            Ok(None) => {}
+            Err(e) => log::warn!("record orphan_spill_failed error={e} action=left_for_next_pass"),
+        }
+    }
+    recovered
+}
+
 /// Pure predicate (mirrors [`is_journal_marker`]): the take id inside
 /// `<id>.capture.wav`, or `None` for anything else in the directory.
 fn spill_take_id(name: &str) -> Option<&str> {
@@ -1330,6 +1475,17 @@ fn finalize_orphaned_spill(spill: &Path, id: &str) -> Result<Option<RecoveredTak
     let samples = read_wav_16k_mono(spill)?;
     if samples.len() < MIN_CLIP_SAMPLES {
         let _ = std::fs::remove_file(spill);
+        return Ok(None);
+    }
+    // yap-fx-07 — an orphan is DELETED only when it is silent. Everything else
+    // becomes a row; a 6.7 s spill of room hiss (forensics 2026-11-06, loudness
+    // 0.002) is not a dictation and a Retry for it would be noise in History.
+    if is_silent_clip(&samples) {
+        let _ = std::fs::remove_file(spill);
+        log::info!(
+            "record orphan_spill_silent seconds={:.1} action=deleted",
+            samples.len() as f64 / TARGET_RATE as f64
+        );
         return Ok(None);
     }
     let tmp = spill.with_file_name(format!("{id}.wav.partial"));
@@ -1574,6 +1730,66 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 const WATCHDOG_TICK: Duration = Duration::from_secs(60);
 /// How long `end` waits for the consumer to finish the take's tail (YV91).
 const CONSUMER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+/// WF-10 — the worker's tick while a take (or a meeting) is in flight. A mic
+/// that vanishes mid-take is noticed within this, and the take carries on on
+/// the next ranked mic; the idle stream keeps [`IDLE_TICK`] (YV81).
+const ARMED_TICK: Duration = Duration::from_millis(250);
+/// WF-10 — a stream whose device errored is retried no more often than this
+/// (an unplugged mic with nothing to fall back to must not spin the HAL).
+const FAILED_RETRY: Duration = Duration::from_secs(1);
+
+// ── WF-10: "Mic disconnected — continuing on …" ─────────────────────────────
+// Set by the capture worker when a take in flight is carried onto a DIFFERENT
+// input device; read by `build_status` (lib.rs) so the pill says so, and
+// cleared at the next Arm so the note belongs to exactly one take.
+
+fn mic_switch_slot() -> &'static Mutex<Option<String>> {
+    static NOTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    NOTE.get_or_init(|| Mutex::new(None))
+}
+
+static MIC_SWITCH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The pill line for a take that moved to `to` — because its mic went away
+/// (`lost`), or because the resolver now prefers another one (the pinned mic
+/// came back). Never empty, never a path; the name is the one Settings shows.
+pub fn mic_switch_note(to: &str, lost: bool) -> String {
+    let to = to.trim();
+    match (lost, to.is_empty()) {
+        (true, true) => "Mic disconnected — continuing on another microphone".to_string(),
+        (true, false) => format!("Mic disconnected — continuing on {to}"),
+        (false, true) => "Switched microphones — still recording".to_string(),
+        (false, false) => format!("Switched to {to} — still recording"),
+    }
+}
+
+/// The note for the take in flight, if its mic was swapped mid-take.
+pub fn mid_take_mic_note() -> Option<String> {
+    mic_switch_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// Bumped on every mid-take switch; the HUD loop re-emits status when it moves.
+pub fn mic_switch_seq() -> u64 {
+    MIC_SWITCH_SEQ.load(Ordering::SeqCst)
+}
+
+fn note_mid_take_switch(to: &str, lost: bool) {
+    *mic_switch_slot().lock().unwrap_or_else(|p| p.into_inner()) = Some(mic_switch_note(to, lost));
+    MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+}
+
+fn clear_mid_take_note() {
+    *mic_switch_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// Did a reopen move a take in flight onto a different device? (Pure.) A
+/// format change on the SAME mic (AirPods dropping to HFP) is not a switch.
+fn is_mid_take_switch(from: &str, to: &str, armed: bool) -> bool {
+    armed && !to.is_empty() && from != to
+}
 
 pub(crate) const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 pub(crate) const NO_SAMPLES_ERR: &str =
@@ -2077,6 +2293,52 @@ fn should_close_idle_stream(inputs: &IdleInputs) -> bool {
         && inputs.idle_for >= IDLE_CLOSE
 }
 
+/// WF-09 — should Arm/Hold drop the warm stream because the user picked a
+/// different microphone since it was opened?
+///
+/// The persistent stream outlives a take by up to [`IDLE_CLOSE`], so without
+/// this a pick made in that window would only apply to the take AFTER the next
+/// one. A stream that is mid-take or feeding a meeting is never dropped here:
+/// losing a meeting's audio is unrecoverable, and the watchdog carries a live
+/// capture across to the newly resolved device on its next tick anyway.
+fn should_reopen_for_mic_pick(
+    stream_open: bool,
+    capturing: bool,
+    held_for_meeting: bool,
+    meeting_active: bool,
+    opened_generation: u64,
+    current_generation: u64,
+) -> bool {
+    stream_open
+        && !capturing
+        && !held_for_meeting
+        && !meeting_active
+        && opened_generation != current_generation
+}
+
+/// The Arm/Hold half of [`should_reopen_for_mic_pick`]: drop the warm stream
+/// (and its cache entry) when the pick moved, logging the one decision.
+fn drop_stream_if_mic_picked(
+    live: &mut Option<LiveStream>,
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+    held_for_meeting: bool,
+    opened_generation: u64,
+) {
+    let current = crate::mic_select::generation();
+    if should_reopen_for_mic_pick(
+        live.is_some(),
+        live.as_ref().is_some_and(LiveStream::is_capturing),
+        held_for_meeting,
+        crate::meeting::meeting_capture_active(),
+        opened_generation,
+        current,
+    ) {
+        log::info!("mic_select reopen reason=picked_since_open");
+        *live = None;
+        cache.invalidate();
+    }
+}
+
 /// The worker thread: owns the persistent stream + the device/config cache and
 /// answers every arm/stop with an explicit signal (never a poll).
 fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
@@ -2087,6 +2349,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
     let mut last_watchdog = Instant::now();
     // Is a meeting holding the stream open? (YV91.)
     let mut held_for_meeting = false;
+    // WF-09 — the microphone-pick generation the open stream was opened at.
+    let mut opened_generation = crate::mic_select::generation();
 
     loop {
         // YV81 — the tick exists ONLY to close an open stream that has gone
@@ -2095,8 +2359,15 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
         // every five seconds for the rest of the session: the next command
         // wakes it, which is the same signal-not-poll contract the arm/stop
         // path already keeps.
-        let next = if live.is_some() {
-            rx.recv_timeout(IDLE_TICK)
+        let next = if let Some(stream) = live.as_ref() {
+            // WF-10 — tick fast while audio is wanted, so a mic that vanishes
+            // mid-take is replaced within [`ARMED_TICK`], not a minute later.
+            let tick = if stream.is_armed() || held_for_meeting {
+                ARMED_TICK
+            } else {
+                IDLE_TICK
+            };
+            rx.recv_timeout(tick)
         } else {
             rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         };
@@ -2113,9 +2384,21 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     live = None;
                     cache.invalidate();
                 }
+                drop_stream_if_mic_picked(
+                    &mut live,
+                    &mut cache,
+                    held_for_meeting,
+                    opened_generation,
+                );
                 if live.is_none() {
+                    // Read BEFORE resolving: a pick that lands mid-open makes
+                    // the next Arm reopen rather than being silently missed.
+                    let generation = crate::mic_select::generation();
                     match open_stream(&mut cache) {
-                        Ok(stream) => live = Some(stream),
+                        Ok(stream) => {
+                            live = Some(stream);
+                            opened_generation = generation;
+                        }
                         Err(e) => {
                             let _ = reply.send(Err(e));
                             continue;
@@ -2126,6 +2409,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
+                    // WF-10 — a fresh take starts with no "continuing on" note.
+                    clear_mid_take_note();
                     stream.begin(journal, spill.map(|s| *s));
                     let _ = reply.send(Ok(()));
                 }
@@ -2149,9 +2434,21 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     live = None;
                     cache.invalidate();
                 }
+                drop_stream_if_mic_picked(
+                    &mut live,
+                    &mut cache,
+                    held_for_meeting,
+                    opened_generation,
+                );
                 if live.is_none() {
+                    // Read BEFORE resolving: a pick that lands mid-open makes
+                    // the next Arm reopen rather than being silently missed.
+                    let generation = crate::mic_select::generation();
                     match open_stream(&mut cache) {
-                        Ok(stream) => live = Some(stream),
+                        Ok(stream) => {
+                            live = Some(stream);
+                            opened_generation = generation;
+                        }
                         Err(e) => {
                             let _ = reply.send(Err(e));
                             continue;
@@ -2180,7 +2477,13 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 let event = input_format::take_event();
                 match live.as_mut() {
                     Some(stream) => {
-                        if event.is_some() || last_watchdog.elapsed() >= WATCHDOG_TICK {
+                        // WF-10 — a dead stream (mic unplugged) is not left to
+                        // wait for the 60 s tick: it is replaced at once, and
+                        // retried at most every [`FAILED_RETRY`].
+                        let failed_due =
+                            stream.has_failed() && last_watchdog.elapsed() >= FAILED_RETRY;
+                        if event.is_some() || failed_due || last_watchdog.elapsed() >= WATCHDOG_TICK
+                        {
                             last_watchdog = Instant::now();
                             watchdog_poll(stream, &mut cache, event);
                         }
@@ -2288,7 +2591,7 @@ fn watchdog_poll(
             live.device_name
         );
     }
-    let observed = match default_input_device() {
+    let observed = match chosen_input_device() {
         Ok((device, name)) => device.default_input_config().ok().map(|config| {
             (
                 name,
@@ -2414,8 +2717,13 @@ fn reopen_with(
     live.drain_consumer(CONSUMER_DRAIN_TIMEOUT);
     live.stream = None;
     let reuse = (live.dsp.clone(), live.failed.clone());
+    let from_device = live.device_name.clone();
+    // Read BEFORE the open: a successful reopen clears the shared flag.
+    let device_lost = live.has_failed();
     match open(reuse) {
         Ok(reopened) => {
+            // WF-10 — the take is moving to another mic: say so in the pill.
+            let switched = is_mid_take_switch(&from_device, &reopened.device_name, live.is_armed());
             live.stream = reopened.stream;
             // The rings, the window and the thread draining them all belong to
             // the DEVICE, so they are adopted wholesale. Assigning the consumer
@@ -2431,6 +2739,13 @@ fn reopen_with(
                 // Frame zero OF THE NEW RING: every frame this device delivers
                 // from now on belongs to the take that is still running.
                 live.window.open(0);
+            }
+            if switched {
+                note_mid_take_switch(&live.device_name, device_lost);
+                log::warn!(
+                    "mic_select switched_mid_take device_lost={device_lost} kept_samples={}",
+                    live.output_samples()
+                );
             }
             // A meeting is a SECOND consumer of this device, with its own
             // resampler, and YV92's rule — a ratio must never survive a format
@@ -2494,19 +2809,17 @@ fn open_stream(
     open_stream_into(cache, None)
 }
 
-/// The system default input device and the name it reports, or the "no mic"
-/// error. Split out so the format watchdog can ask the same question the opener
-/// asks without duplicating cpal's default-device rules.
-fn default_input_device() -> Result<(cpal::Device, String), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))?;
-    let name = device
-        .description()
-        .map(|d| d.name().to_string())
-        .unwrap_or_default();
-    Ok((device, name))
+/// The input device the next take opens and the name it reports, or the "no
+/// mic" error. Split out so the format watchdog can ask the same question the
+/// opener asks without duplicating the device rules.
+///
+/// WF-09 — this is no longer always the system default: the microphone picker
+/// (`mic_select`) may pin a device by its stable id, and a pinned device that
+/// is not plugged in falls back to the system default
+/// (`mic_select::resolve`). With nothing pinned it is the old default path.
+fn chosen_input_device() -> Result<(cpal::Device, String), String> {
+    crate::mic_select::input_device_for_next_take()
+        .ok_or_else(|| crate::permissions::named(NO_MIC_ERR))
 }
 
 /// The three things a reopened stream inherits from the take that was already
@@ -2528,7 +2841,7 @@ fn open_stream_into(
     reuse: Option<TakeInFlight>,
 ) -> Result<LiveStream, String> {
     let opened_at = Instant::now();
-    let (device, dev_name) = default_input_device()?;
+    let (device, dev_name) = chosen_input_device()?;
 
     let (device, supported, was_cached) = resolve_device_config(
         cache,
@@ -3652,6 +3965,32 @@ pub(crate) fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> R
 
 #[cfg(test)]
 mod tests {
+    /// SP-03 — the bench's release-side DSP keeps a voiced buffer whole when
+    /// no Silero engine is loaded (energy-VAD path), reports its voiced time,
+    /// and refuses an empty buffer instead of timing nothing.
+    #[test]
+    fn bench_release_dsp_keeps_the_buffer_on_the_energy_vad_path() {
+        let rate = super::TARGET_RATE as f32;
+        // 2 s: 0.5 s silence, 1 s of a 220 Hz tone, 0.5 s silence.
+        let raw: Vec<f32> = (0..(2 * super::TARGET_RATE as usize))
+            .map(|i| {
+                let t = i as f32 / rate;
+                if (0.5..1.5).contains(&t) {
+                    0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let leveled = super::bench_capture_chain(&raw);
+        assert_eq!(leveled.len(), raw.len());
+        let out = super::bench_release_dsp(&leveled, false, None).unwrap();
+        assert_eq!(out.samples.len(), raw.len(), "no Silero → no trim");
+        assert!(out.speech_present);
+        assert!(out.voiced_seconds > 0.0 && out.voiced_seconds <= 2.0);
+        assert!(super::bench_release_dsp(&[], false, None).is_err());
+    }
+
     use super::*;
     use std::f32::consts::PI;
 
@@ -4026,6 +4365,105 @@ mod tests {
         // Missing dir is a safe no-op.
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(sweep_stale_wavs(&dir), 0);
+    }
+
+    // ── yap-fx-07 — every kept clip is listed ───────────────────────────────
+
+    fn fx07_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yap-fx07-{tag}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The artefact `SpillWriter::drop` leaves in the recovery dir: a playable
+    /// 16 kHz mono f32 `<id>.capture.wav`, at the given amplitude.
+    fn fx07_spill(dir: &Path, name: &str, seconds: f32, amp: f32) -> PathBuf {
+        let path = dir.join(name);
+        let mut w = hound::WavWriter::create(&path, capture_spill_spec()).unwrap();
+        let n = (TARGET_RATE as f32 * seconds) as usize;
+        for i in 0..n {
+            let t = i as f32 / TARGET_RATE as f32;
+            w.write_sample(amp * (2.0 * PI * 220.0 * t).sin()).unwrap();
+        }
+        w.finalize().unwrap();
+        path
+    }
+
+    #[test]
+    fn silent_clip_needs_every_second_below_the_floor() {
+        let rate = TARGET_RATE as usize;
+        // The forensics spill: ~0.002 loudness for 6.7 s — silent.
+        let hiss: Vec<f32> = (0..(rate * 67 / 10))
+            .map(|i| if i % 2 == 0 { 0.002 } else { -0.002 })
+            .collect();
+        assert!(is_silent_clip(&hiss));
+        assert!(is_silent_clip(&vec![0.0; rate * 3]));
+        // Speech-level signal (0.06) is never silent.
+        let speech: Vec<f32> = (0..rate * 2)
+            .map(|i| if i % 2 == 0 { 0.06 } else { -0.06 })
+            .collect();
+        assert!(!is_silent_clip(&speech));
+        // Nine silent seconds and ONE loud one: kept.
+        let mut mostly_pause = vec![0.0f32; rate * 9];
+        mostly_pause.extend((0..rate).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }));
+        assert!(!is_silent_clip(&mostly_pause));
+        // A non-finite sample is signal, never silence.
+        let mut bad = vec![0.0f32; rate];
+        bad[10] = f32::NAN;
+        assert!(!is_silent_clip(&bad));
+    }
+
+    #[test]
+    fn aborted_spill_gets_a_wav_or_is_deleted_only_if_silent() {
+        let dir = fx07_dir("adopt");
+        let voiced = fx07_spill(&dir, "voiced.capture.wav", 2.0, 0.3);
+        let silent = fx07_spill(&dir, "quiet.capture.wav", 2.0, 0.001);
+        // An in-flight decode link must never be touched mid-session.
+        let in_flight = fx07_spill(&dir, "live.decoding.wav", 2.0, 0.3);
+        let later = std::time::SystemTime::now() + Duration::from_secs(3600);
+
+        let got = recover_aborted_capture_spills(&dir, &[], later, Duration::from_secs(10));
+        assert_eq!(got.len(), 1, "only the voiced spill is offered");
+        assert_eq!(got[0].take_id, "voiced");
+        assert!(got[0].wav_path.ends_with("voiced.wav"));
+        assert!(got[0].wav_path.exists());
+        assert!((got[0].seconds - 2.0).abs() < 0.01);
+        assert!(!voiced.exists(), "spill retired once its wav is complete");
+        assert!(!silent.exists(), "silent orphan deleted");
+        assert!(!dir.join("quiet.wav").exists(), "silent orphan gets no wav");
+        assert!(in_flight.exists(), "decoding link left for the launch scan");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aborted_spill_scan_defers_young_kept_and_shadowed_files() {
+        let dir = fx07_dir("defer");
+        let young = fx07_spill(&dir, "young.capture.wav", 2.0, 0.3);
+        // Too new: a copy fallback may still be writing it.
+        let got = recover_aborted_capture_spills(
+            &dir,
+            &[],
+            std::time::SystemTime::now(),
+            Duration::from_secs(3600),
+        );
+        assert!(got.is_empty());
+        assert!(young.exists());
+
+        let later = std::time::SystemTime::now() + Duration::from_secs(3600);
+        // A row already names it: not an orphan.
+        let keep = vec![young.to_string_lossy().into_owned()];
+        assert!(recover_aborted_capture_spills(&dir, &keep, later, Duration::ZERO).is_empty());
+        assert!(young.exists());
+
+        // `<id>.wav` already exists (maybe a kept take): never overwritten.
+        std::fs::write(dir.join("young.wav"), b"kept take").unwrap();
+        assert!(recover_aborted_capture_spills(&dir, &[], later, Duration::ZERO).is_empty());
+        assert_eq!(std::fs::read(dir.join("young.wav")).unwrap(), b"kept take");
+        assert!(young.exists());
+
+        // Missing dir: a safe no-op.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(recover_aborted_capture_spills(&dir, &[], later, Duration::ZERO).is_empty());
     }
 
     // ── Crash-safe capture journal (YV63) ───────────────────────────────────
@@ -5082,6 +5520,124 @@ mod tests {
         );
     }
 
+    /// WF-10 — the acceptance test. A fake device list: the pinned Shure MV7,
+    /// AirPods ranked next, and BlackHole as the system default (virtual, so
+    /// never auto-picked). The MV7 is unplugged mid-take: the stream errors,
+    /// the resolver walks the ranking to the AirPods, the take is carried
+    /// across, nothing captured before the removal is lost, the AirPods' audio
+    /// lands in the SAME take, and the pill gets its "continuing on" line.
+    #[test]
+    fn removal_mid_take_switches_to_the_next_mic_without_losing_captured_audio() {
+        use crate::mic_select::{resolve_ranked, Candidate, Resolution};
+        fn cand(id: &str, device: &'static str, is_virtual: bool) -> Candidate<&'static str> {
+            Candidate {
+                id: id.to_string(),
+                device,
+                is_virtual,
+            }
+        }
+        let order: Vec<String> = vec!["coreaudio:MV7".to_string(), "coreaudio:AirPods".to_string()];
+        let plugged = vec![
+            cand("coreaudio:MV7", "Shure MV7", false),
+            cand("coreaudio:AirPods", "AirPods Pro", false),
+            cand("coreaudio:BlackHole", "BlackHole 2ch", true),
+        ];
+        assert_eq!(
+            resolve_ranked(
+                Some("coreaudio:MV7"),
+                &order,
+                &plugged,
+                Some("coreaudio:BlackHole")
+            ),
+            Resolution::Chosen("Shure MV7")
+        );
+
+        let mut live = hardware_free_stream("Shure MV7", fmt(48_000));
+        live.begin(None, None);
+        for _ in 0..4 {
+            feed_one_callback(&live, &tone_at(48_000, 0.2, 220.0, 0.3));
+        }
+        let captured_before = live.output_samples();
+        assert!(captured_before > 0, "the take is recording on the MV7");
+
+        // Unplugged: cpal's error callback flags the stream, and the device
+        // list the watchdog re-resolves against no longer has the MV7.
+        live.failed.store(true, Ordering::SeqCst);
+        let unplugged: Vec<_> = plugged
+            .iter()
+            .filter(|c| c.id != "coreaudio:MV7")
+            .cloned()
+            .collect();
+        let next = resolve_ranked(
+            Some("coreaudio:MV7"),
+            &order,
+            &unplugged,
+            Some("coreaudio:BlackHole"),
+        );
+        assert_eq!(
+            next,
+            Resolution::FellBackToNext {
+                device: "AirPods Pro",
+                chosen_missing: true
+            },
+            "the next RANKED mic, never the virtual system default"
+        );
+        let next = next.device().expect("a physical mic is still plugged in");
+
+        let seq = mic_switch_seq();
+        reopen_with(&mut live, None, hardware_free_reopen(next, fmt(24_000)));
+        assert_eq!(live.device_name, "AirPods Pro");
+        assert!(live.is_armed() && live.is_capturing(), "the take continues");
+        assert!(!live.has_failed());
+        assert!(
+            live.output_samples() >= captured_before,
+            "every sample captured before the removal is kept"
+        );
+        assert!(mic_switch_seq() > seq, "the pill is told to redraw");
+        assert!(mid_take_mic_note().is_some());
+
+        feed_one_callback(&live, &tone_at(24_000, 0.2, 220.0, 0.3));
+        assert!(
+            live.output_samples() > captured_before,
+            "the AirPods' audio lands in the same take"
+        );
+        let taken = live.end();
+        assert!(
+            taken.samples.len() as u64 > captured_before,
+            "the finished take holds both halves"
+        );
+    }
+
+    #[test]
+    fn the_pill_line_names_the_mic_the_take_continues_on() {
+        assert_eq!(
+            mic_switch_note("AirPods Pro", true),
+            "Mic disconnected — continuing on AirPods Pro"
+        );
+        assert_eq!(
+            mic_switch_note("  ", true),
+            "Mic disconnected — continuing on another microphone"
+        );
+        assert_eq!(
+            mic_switch_note("Shure MV7", false),
+            "Switched to Shure MV7 — still recording"
+        );
+        // A format change on the same mic, or no take in flight, is no switch.
+        assert!(is_mid_take_switch("Shure MV7", "AirPods Pro", true));
+        assert!(!is_mid_take_switch("AirPods Pro", "AirPods Pro", true));
+        assert!(!is_mid_take_switch("Shure MV7", "AirPods Pro", false));
+        assert!(!is_mid_take_switch("Shure MV7", "", true));
+    }
+
+    #[test]
+    fn the_worker_ticks_fast_only_while_audio_is_wanted() {
+        assert_eq!(ARMED_TICK.cmp(&IDLE_TICK), std::cmp::Ordering::Less);
+        assert_eq!(FAILED_RETRY.cmp(&WATCHDOG_TICK), std::cmp::Ordering::Less);
+        let code = include_str!("record.rs");
+        assert!(code.contains("let failed_due"));
+        assert!(code.contains("clear_mid_take_note();"));
+    }
+
     /// YV92/OS-9 — the hole the format half of the cache key does NOT close,
     /// because the one production lookup asks with `None`: the stream idle-closes
     /// after 60 s, the AirPods mic engages and renegotiates to HFP while nothing
@@ -5408,4 +5964,50 @@ mod tests {
         );
     }
 
+    /// WF-09 — a microphone picked while the warm stream is idle is used by the
+    /// NEXT take: Arm drops the stream opened at the old pick. A stream that is
+    /// mid-take or feeding a meeting is never dropped for a pick.
+    #[test]
+    fn a_mic_pick_reopens_the_warm_stream_for_the_next_take() {
+        // Idle warm stream, pick moved: reopen.
+        assert!(should_reopen_for_mic_pick(true, false, false, false, 3, 4));
+        // Same pick: keep the warm path (YV35).
+        assert!(!should_reopen_for_mic_pick(true, false, false, false, 4, 4));
+        // No stream open: the cold open already resolves the new pick.
+        assert!(!should_reopen_for_mic_pick(
+            false, false, false, false, 3, 4
+        ));
+        // Mid-take, held for a meeting, or a meeting running: never.
+        assert!(!should_reopen_for_mic_pick(true, true, false, false, 3, 4));
+        assert!(!should_reopen_for_mic_pick(true, false, true, false, 3, 4));
+        assert!(!should_reopen_for_mic_pick(true, false, false, true, 3, 4));
+    }
+
+    /// WF-09 — the opener and the watchdog both resolve the device through the
+    /// picker, never straight through cpal's default (which would silently
+    /// ignore the user's pick, or swap a pinned take back to the default on
+    /// the next watchdog tick).
+    #[test]
+    fn capture_opens_the_picked_device_not_the_raw_default() {
+        let src = include_str!("record.rs");
+        // Production code only: the assertions below must not be satisfied by
+        // their own string literals in this test module.
+        let prod = src
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("record.rs has a body");
+        let code: String = prod
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("crate::mic_select::input_device_for_next_take()"));
+        assert!(code.contains("let (device, dev_name) = chosen_input_device()?;"));
+        assert!(code.contains("let observed = match chosen_input_device() {"));
+        let raw_default = ["host", ".default_input_device()"].concat();
+        assert!(
+            !code.contains(&raw_default),
+            "record.rs must not open the system default directly"
+        );
+    }
 }

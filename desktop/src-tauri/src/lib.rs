@@ -66,9 +66,14 @@ pub mod focus;
 /// Y4-H — the formatting screen's copy, derived from the pipeline's own
 /// `runs_*` predicates so it cannot drift from what the pipeline does.
 pub mod formatting_options;
+/// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
+mod pill_click;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
+// yap-1106 — the launch-time leftovers sweep (tmp/, finished ledgers, expired
+// recovery clips, the retired Python sidecar, stray root exports).
+pub mod leftovers;
 // YV92 — the input format-change state machine (AirPods mid-meeting) plus the
 // CoreAudio listeners that make it prompt. Public because the state machine is
 // the falsifiable half: `tests/input_format_change_handler.rs` drives it with a
@@ -88,6 +93,10 @@ pub mod license;
 // yap-lic-01 — offline verifier for drivia.consulting license tokens (compact
 // JWS, EdDSA, EMBEDDED keys only). Wired into `license` as the v2 path.
 pub mod license_v2;
+// yap-1106-lic-03 — the drivia.consulting activation client: activate /
+// refresh / deactivate over `license::LicenseTransport` (the only module that
+// reaches the licensing service). Tokens are verified offline by `license_v2`.
+pub mod license_client;
 // yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
 pub mod lifecycle;
 mod logging;
@@ -128,7 +137,11 @@ pub mod meeting_control;
 /// yap-notetaker-detect — notice a meeting, offer to record it (never auto-records).
 pub mod meeting_detect;
 // yap-call-0 — the call signal matrix (per-process mic state + catalog + score).
+/// yap-call-1 — the call offer: countdown, chip, Offer / Never per app, Call ended.
+pub mod call_offer;
 pub mod call_signals;
+/// yap-call-2 — Chromium-family browser calls told apart by the front tab's AX window title.
+pub mod call_titles;
 pub mod meeting_energy;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
@@ -139,6 +152,8 @@ pub mod meeting_echo;
 // AVAuthorizationStatus discriminants and the call-site sweep without a
 // microphone, a grant or a window server.
 pub mod mic_auth;
+// WF-09 — the microphone picker: pinned input device, resolved by stable id.
+pub mod mic_select;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
@@ -240,6 +255,8 @@ use hotkeys::{HotkeyEdge, HotkeySource};
 /// directly — the signature block is the one stage that copies bytes verbatim
 /// after polish, so undo has to be asserted against the real function.
 pub mod snippets;
+// WF-20 — the pill's per-app style chip and its 15-minute override. Pure.
+pub mod style_chip;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
@@ -477,6 +494,12 @@ pub struct AppSettings {
     /// (⌥) | off. Independent of `ptt_binding` so plain dictation is unaffected.
     #[serde(default = "default_command_binding")]
     pub command_binding: String,
+    /// WF-19 — a mouse button as push-to-talk: `""` (off, default), `middle`
+    /// or `button<N>` (N ≥ 3, the maker's number), plus `:hands_free` for
+    /// click-to-toggle. Left and right click are refused on save
+    /// (`ptt_macos::MouseBinding::parse`).
+    #[serde(default)]
+    pub ptt_mouse_binding: String,
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
@@ -500,7 +523,14 @@ pub struct AppSettings {
     /// Y8-A — the Open Scratchpad chord rebind. `None` = ⌃⌘J.
     #[serde(default)]
     pub scratchpad_chord: Option<hotkeys::ChordSetting>,
-    /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
+    /// WF-18 — each always-global action's 2nd … 4th shortcut (the primary
+    /// stays in its own field above). Validated by `shortcuts::editor` on
+    /// every save and again at launch. Empty = one shortcut per action.
+    #[serde(default)]
+    pub extra_chords: Vec<shortcuts::editor::ExtraBinding>,
+    /// Floating pill style: "yappy" (pixel pet). "classic" (the obsidian
+    /// capsule) is retired: the v2 → v3 migration rewrites it to "yappy", and
+    /// the pill's character registry resolves any stale id to Yappy too.
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
     /// Where the pill docks on screen (YV53): "bottom" (centred island, the
@@ -623,6 +653,11 @@ pub struct AppSettings {
     /// would rather spend the memory all day than the one-time first-take wait.
     #[serde(default)]
     pub preload_model: bool,
+    /// yap-1106 — where meeting Markdown exports are written. `None` = the
+    /// default, `~/Documents/Yap/Meetings` (`app_paths::default_meeting_export_dir`),
+    /// created on first export. Changeable from Settings › Meetings.
+    #[serde(default)]
+    pub meeting_export_dir: Option<String>,
     /// Launch Yap at login (YV42), applied through tauri-plugin-autostart's
     /// macOS LaunchAgent. Defaults OFF — nothing installs a login item behind
     /// the user's back; the toggle is applied immediately on save and re-applied
@@ -660,12 +695,39 @@ pub struct AppSettings {
     /// so the store is written in a stable order.
     #[serde(default)]
     pub structure_app_overrides: std::collections::BTreeMap<String, String>,
+    /// WF-17 — quiet mode: the pill-message categories the user switched off
+    /// in Settings › Notifications. Only `tip`, `news` and `milestone` can be
+    /// stored ([`sanitize_muted_pill_categories`]): errors, permission problems
+    /// and recovery messages always show. The category table is
+    /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
+    #[serde(default)]
+    pub muted_pill_categories: Vec<String>,
+    /// WF-16 — "Hide Yap from screen sharing during meetings". On by default:
+    /// while a meeting records, the pill (and its meeting chip) and the
+    /// Scratchpad are kept out of screen shares and screenshots; they come
+    /// back in captures when it stops. `float_pill::sync_capture_hidden`.
+    #[serde(default = "default_true")]
+    pub hide_from_capture_in_meetings: bool,
+}
+
+/// WF-17 — the pill-message categories a user may mute. Mirrors
+/// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
+pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
+
+/// WF-17 — keep only mutable categories, once each, in table order. A stored
+/// `"error"` (or anything unknown) is dropped: an error can never be muted.
+pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
+    MUTABLE_PILL_CATEGORIES
+        .iter()
+        .filter(|c| raw.iter().any(|r| r == *c))
+        .map(|c| (*c).to_string())
+        .collect()
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
 /// arm in `apply_settings_migrations` that upgrades stores written at the
 /// previous version.
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 {
     CURRENT_SETTINGS_SCHEMA_VERSION
@@ -677,7 +739,7 @@ fn default_command_binding() -> String {
     "command".into()
 }
 fn default_pill_style() -> String {
-    "classic".into()
+    "yappy".into()
 }
 fn default_pill_position() -> String {
     "bottom".into()
@@ -734,6 +796,7 @@ impl Default for AppSettings {
             show_floating_pill: true,
             ptt_binding: "fn_control".into(),
             command_binding: "command".into(),
+            ptt_mouse_binding: String::new(),
             keep_cmd_shift_v: false,
             dictate_toggle: None,
             meeting_chord: None,
@@ -741,7 +804,8 @@ impl Default for AppSettings {
             hands_free_chord: None,
             copy_last_chord: None,
             scratchpad_chord: None,
-            pill_style: "classic".into(),
+            extra_chords: Vec::new(),
+            pill_style: default_pill_style(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
@@ -762,12 +826,15 @@ impl Default for AppSettings {
             calibration_sample: None,
             native_model: default_native_model(),
             preload_model: false,
+            meeting_export_dir: None,
             autostart: false,
             check_updates: true,
             skipped_update_version: None,
             legacy_json_migrated: false,
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
+            muted_pill_categories: Vec::new(),
+            hide_from_capture_in_meetings: true,
         }
     }
 }
@@ -909,6 +976,18 @@ struct AppState {
     /// sure). Disabled while a meeting is recording, for the same reason the
     /// item above becomes "Stop meeting": there is nothing to pick a kind FOR.
     tray_meeting_kind: PLMutex<Option<Submenu<Wry>>>,
+    /// yap-1106 — the disabled "Recording · <title>" header and the separator
+    /// under it, INSERTED at the top of the menu while a meeting records and
+    /// removed when it stops (`apply_meeting_menu`).
+    tray_meeting_header: PLMutex<Option<MenuItem<Wry>>>,
+    tray_meeting_sep: PLMutex<Option<PredefinedMenuItem<Wry>>>,
+    /// yap-1106 — what the meeting block of the menu LAST SUCCESSFULLY showed.
+    /// Recorded only after the menu mutation returned Ok, so a failed hop is
+    /// retried by the next status instead of being latched as done.
+    tray_meeting_menu: tray_menu::MeetingMenuLatch,
+    /// yap-1106 (e) — a meeting stop was requested and has not returned. The
+    /// tray shows "Stopping…" disabled and a second toggle is refused while set.
+    meeting_stop_in_flight: AtomicBool,
     /// yap24-NT7 — "Meeting notes ready — Open". Built with the tray and held
     /// here so it can be INSERTED when a meeting's notes land and REMOVED when
     /// they are opened (or the next meeting starts) — muda has no hidden item.
@@ -921,7 +1000,8 @@ struct AppState {
     /// from [`license::tray_line`], the same decision the pill renders, so the
     /// menu bar and the pill cannot disagree about the trial.
     tray_license: PLMutex<Option<MenuItem<Wry>>>,
-    /// Y2-E — "Upgrade Yap — $29 once". Held so `sync_tray` can INSERT it into
+    /// Y2-E — the upgrade line (`license::upgrade_tray_label`: "See Yap pricing"
+    /// while checkout is closed). Held so `sync_tray` can INSERT it into
     /// and REMOVE it from the menu rather than grey it out: muda has no hidden
     /// item, and a disabled upgrade line is still the wrong sentence sitting in
     /// front of someone who already paid.
@@ -985,6 +1065,12 @@ struct AppState {
     /// send has to write those same bytes; rebuilding at send time would make
     /// the preview a preview of a different file.
     support_bundle: PLMutex<Option<support::PreparedBundle>>,
+    /// WF-20 — the chip's per-app mode picks, each holding 15 minutes. In
+    /// memory only: a relaunch forgets them (see `style_chip`).
+    style_overrides: PLMutex<style_chip::StyleOverrides>,
+    /// WF-20 — the frontmost app read when the CURRENT take started; the app a
+    /// chip click scopes its pick to. `None` until read, or without AX.
+    style_chip_app: PLMutex<Option<String>>,
 }
 
 /// The environment variable that relocates the app's ENTIRE state root (Y0-D).
@@ -1050,51 +1136,175 @@ impl AppState {
 /// string, so the clock cannot disagree with itself.
 ///
 /// OS-12 fix (1) lives here: this is called once per second by the controller's
-/// ticker, and the only thing it does per tick is emit. The tray label is
-/// touched on the recording EDGE only — a menu mutation is a main-thread hop,
-/// and 10,800 of them over a meeting is the exact cost this item exists to not
-/// pay.
+/// ticker, and the only thing it does per tick is emit. The tray is touched
+/// only when `tray_menu::tray_meeting_menu` says the menu's TEXT changes: on
+/// the recording edge, and once a minute for the clock on the Stop item — a
+/// menu mutation is a main-thread hop, and 10,800 of them over a meeting is
+/// the exact cost OS-12 exists to not pay.
+///
+/// yap-1106: the decision "is the menu already showing this?" is the
+/// `MeetingMenuLatch` in `AppState`, which records a state ONLY after the
+/// mutation succeeded on the main thread. The old process-wide `AtomicBool`
+/// flipped before the hop ran, so a hop that failed — or that found
+/// `tray_meeting` still `None`, because the controller (and a recovered
+/// meeting's first status) exists before the tray does — left "Record a
+/// meeting" on screen for the whole session with nothing to retry it.
 fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
-    static TRAY_SHOWS_RECORDING: AtomicBool = AtomicBool::new(false);
     Arc::new(move |status| {
         let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
-        if TRAY_SHOWS_RECORDING.swap(status.recording, Ordering::SeqCst) == status.recording {
+        // WF-16 — hide the pill / Scratchpad from capture on the start edge,
+        // restore on stop (edge-latched: a no-op on every other tick).
+        float_pill::sync_capture_hidden(&app);
+        // yap-call-1 — "Call ended" reads off THIS tick (no new timer).
+        call_offer_meeting_tick(&app, status.recording);
+        let Some(state) = app.try_state::<Arc<AppState>>() else {
+            return;
+        };
+        let want = tray_menu::tray_meeting_menu(
+            status,
+            state.meeting_stop_in_flight.load(Ordering::SeqCst),
+        );
+        if !state.tray_meeting_menu.needs(&want) {
             return;
         }
-        let recording = status.recording;
         let app_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
+        let status = status.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
             if let Some(state) = app_main.try_state::<Arc<AppState>>() {
-                if let Some(item) = state.tray_meeting.lock().clone() {
-                    let _ = item.set_text(if recording {
-                        "Stop meeting"
-                    } else {
-                        MEETING_TRAY_START_LABEL
-                    });
-                }
-                // YV125 — a kind is something you pick FOR a meeting you are
-                // about to start. While one is running there is nothing to pick
-                // it for, and a live submenu would read as "change this
-                // meeting's kind", which it is not.
-                if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
-                    let _ = submenu.set_enabled(!recording);
-                }
-                // yap24-NT7 — a new meeting supersedes the last one's "notes
-                // ready" line, exactly as it does on the pill.
-                if recording {
-                    clear_notes_ready_on_main(&state);
-                }
+                meeting_tray_sync_on_main(&state, &status);
             }
-        });
+        }) {
+            // Not latched: the next tick (≤ 1 s away) tries again.
+            log::warn!("tray meeting_menu hop_failed err={e}");
+        }
     })
 }
 
-/// The tray item's idle label. A verb and a noun, so the item reads the same way
-/// to somebody who has never heard of this feature — the acceptance line for
-/// this item is a user who has not read a changelog.
-const MEETING_TRAY_START_LABEL: &str = "Record a meeting";
+/// yap-1106 — bring the menu bar's meeting block in line with `status`.
+/// MAIN THREAD only. Re-reads the stop-in-flight flag here (it can flip between
+/// the sink's decision and the hop) and goes through the latch, so a mutation
+/// that fails is never recorded as shown.
+fn meeting_tray_sync_on_main(state: &AppState, status: &meeting_control::MeetingStatus) {
+    let want =
+        tray_menu::tray_meeting_menu(status, state.meeting_stop_in_flight.load(Ordering::SeqCst));
+    if let Err(e) = state
+        .tray_meeting_menu
+        .apply(want, |want, prev| apply_meeting_menu(state, want, prev))
+    {
+        log::warn!("tray meeting_menu sync_failed err={e}");
+    }
+}
+
+/// yap-1106 — re-sync the meeting block from `controller.status()`: called
+/// after the tray is built and around a stop, from any thread.
+fn request_meeting_tray_sync(app: &AppHandle) {
+    let app_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            if let Some(controller) = state.meeting() {
+                meeting_tray_sync_on_main(&state, &controller.status());
+            }
+        }
+    });
+}
+
+/// yap-1106 — the ONE place the meeting block of the menu is mutated. MAIN
+/// THREAD only; called through `MeetingMenuLatch::apply`, so returning `Err`
+/// means "not shown, try again on the next status".
+///
+/// While recording the block moves to the TOP of the menu: the disabled
+/// "Recording · <title>" header, then "Stop meeting · 12:00", then a
+/// separator — so the way to stop is the first thing the user sees. On stop
+/// the three go back: header and separator out, the toggle item back above
+/// "Record a meeting as…". Structure is decided from the menu's CURRENT items
+/// (not from `prev`), so a retry after a half-applied failure is idempotent.
+fn apply_meeting_menu(
+    state: &AppState,
+    want: &tray_menu::MeetingMenu,
+    prev: Option<&tray_menu::MeetingMenu>,
+) -> Result<(), String> {
+    let item = state
+        .tray_meeting
+        .lock()
+        .clone()
+        .ok_or("tray not built yet")?;
+    let menu = state.tray_menu.lock().clone().ok_or("tray not built yet")?;
+    let header = state.tray_meeting_header.lock().clone();
+    let sep = state.tray_meeting_sep.lock().clone();
+    item.set_text(&want.toggle_text)
+        .map_err(|e| format!("set_text: {e}"))?;
+    item.set_enabled(want.toggle_enabled)
+        .map_err(|e| format!("set_enabled: {e}"))?;
+    // YV125 — a kind is something you pick FOR a meeting you are about to
+    // start. While one is running there is nothing to pick it for, and a live
+    // submenu would read as "change this meeting's kind", which it is not.
+    if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
+        submenu
+            .set_enabled(want.kind_enabled)
+            .map_err(|e| format!("kind set_enabled: {e}"))?;
+    }
+    let ids: Vec<String> = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .map(|k| k.id().as_ref().to_string())
+        .collect();
+    let header_shown = ids.iter().any(|id| id == tray_menu::ID_MEETING_HEADER);
+    match (&want.header, header, sep) {
+        (Some(text), Some(header), Some(sep)) => {
+            header
+                .set_text(text)
+                .map_err(|e| format!("header set_text: {e}"))?;
+            if !header_shown {
+                // yap24-NT7 — a new meeting supersedes the last one's "notes
+                // ready" line, exactly as it does on the pill.
+                clear_notes_ready_on_main(state);
+                let _ = menu.remove(&item);
+                menu.insert(&header, 0)
+                    .map_err(|e| format!("header insert: {e}"))?;
+                menu.insert(&item, 1)
+                    .map_err(|e| format!("toggle insert: {e}"))?;
+                menu.insert(&sep, 2)
+                    .map_err(|e| format!("separator insert: {e}"))?;
+            }
+        }
+        (None, Some(header), Some(sep)) if header_shown => {
+            let _ = menu.remove(&header);
+            let _ = menu.remove(&sep);
+            let _ = menu.remove(&item);
+            let at = menu
+                .items()
+                .map_err(|e| format!("items: {e}"))?
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_MEETING_KIND)
+                .unwrap_or(0);
+            menu.insert(&item, at)
+                .map_err(|e| format!("toggle reinsert: {e}"))?;
+        }
+        _ => {}
+    }
+    let edge = prev.map(|p| p.header.is_some()) != Some(want.header.is_some());
+    if edge {
+        log::info!(
+            "tray meeting_menu synced edge=true recording={} enabled={}",
+            want.header.is_some(),
+            want.toggle_enabled
+        );
+    } else {
+        log::debug!(
+            "tray meeting_menu synced edge=false text_changed=true enabled={}",
+            want.toggle_enabled
+        );
+    }
+    Ok(())
+}
+
+/// The tray item's idle label (`tray_menu::MEETING_START_LABEL`): a verb and a
+/// noun, so the item reads the same way to somebody who has never heard of
+/// this feature.
+const MEETING_TRAY_START_LABEL: &str = tray_menu::MEETING_START_LABEL;
 
 /// YV95 — every entry point (tray item, ⌃⌘M, the pill's stop control, the
 /// Meetings empty state) funnels through here, so all four do exactly one thing.
@@ -1115,9 +1325,22 @@ fn toggle_meeting(
 ) -> Result<meeting_control::MeetingStatus, String> {
     let controller = state.meeting().ok_or("Yap is still starting up")?;
     let was_recording = controller.is_recording();
+    // yap-1106 (e) — while the stop runs (ticker join, wav finalize, three
+    // SQLite rows) the tray shows "Stopping…" disabled and a second press is
+    // refused in `toggle_meeting_off_thread`. Cleared on every exit path.
+    let _stopping = was_recording.then(|| {
+        state.meeting_stop_in_flight.store(true, Ordering::SeqCst);
+        request_meeting_tray_sync(app);
+        StopInFlight {
+            app: app.clone(),
+            state: state.clone(),
+        }
+    });
     let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         meeting_detect::clear(app, None);
+        // fix-b1-1 — the call offer / chip goes too (the pill-never-lies rule).
+        call_offer_meeting_started_elsewhere(app, "toggle");
         if idle_pill_on(state) {
             float_pill::show_for_recording(app);
         }
@@ -1134,6 +1357,22 @@ fn toggle_meeting(
         }
     }
     Ok(status)
+}
+
+/// yap-1106 (e) — clears `meeting_stop_in_flight` and re-syncs the tray when
+/// the stop returns, whichever way it returns.
+struct StopInFlight {
+    app: AppHandle,
+    state: Arc<AppState>,
+}
+
+impl Drop for StopInFlight {
+    fn drop(&mut self) {
+        self.state
+            .meeting_stop_in_flight
+            .store(false, Ordering::SeqCst);
+        request_meeting_tray_sync(&self.app);
+    }
 }
 
 /// YV95 — the same toggle, but never on the main thread.
@@ -1160,16 +1399,46 @@ fn toggle_meeting_off_thread(
     kind: meetings::MeetingKind,
 ) {
     let app = app.clone();
+    let app_on_spawn_failure = app.clone();
     let state = state.clone();
-    std::thread::Builder::new()
+    let module = if source.starts_with("the tray") {
+        "tray"
+    } else {
+        "hotkey"
+    };
+    // yap-1106 (e) — a press that lands while a stop is in flight is NOT a
+    // second toggle: the controller would see "idle" and START a new meeting.
+    if state.meeting_stop_in_flight.load(Ordering::SeqCst) {
+        log::info!(
+            "{module} meeting_toggle clicked recording_before=true result=ignored:stop_in_flight source=\"{source}\""
+        );
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
         .name("yap-meeting-toggle".into())
         .spawn(move || {
-            if let Err(e) = toggle_meeting(&app, &state, kind) {
-                log::warn!("meeting toggle from {source}: {e}");
-                notify(&app, "Yap", e);
+            let recording_before = state.meeting().is_some_and(|c| c.is_recording());
+            match toggle_meeting(&app, &state, kind) {
+                Ok(status) => log::info!(
+                    "{module} meeting_toggle clicked recording_before={recording_before} result={} source=\"{source}\"",
+                    if status.recording { "started" } else { "stopped" }
+                ),
+                Err(e) => {
+                    log::warn!(
+                        "{module} meeting_toggle clicked recording_before={recording_before} result=error:{e} source=\"{source}\""
+                    );
+                    notify(&app, "Yap", e);
+                }
             }
         })
-        .ok();
+    {
+        log::error!("{module} meeting_toggle clicked result=error:thread_spawn:{e} source=\"{source}\"");
+        notify(
+            &app_on_spawn_failure,
+            "Yap",
+            "Yap could not run that — try again".to_string(),
+        );
+    }
 }
 
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
@@ -1312,6 +1581,12 @@ fn build_status(state: &AppState) -> AppStatus {
         ptt: &ptt,
         session_cap_warned: *state.session_cap_warned.lock(),
     });
+    // WF-10 — the mic vanished mid-take and capture carried on on the next
+    // one: the live take's line says so (the ceiling notice still outranks it).
+    let message = match record::mid_take_mic_note() {
+        Some(note) if recording && !*state.session_cap_warned.lock() => note,
+        _ => message,
+    };
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::still_recording_message(&chord_label)
@@ -1382,6 +1657,9 @@ fn emit_status(app: &AppHandle, state: &AppState) {
 /// `emit_status` is sometimes invoked from the ASR worker thread, so the actual
 /// updates are hopped onto the main thread with cheap Arc-backed handle clones.
 fn sync_tray(app: &AppHandle, state: &AppState) {
+    // WF-14 — the "Update ready" line, and a deferred restart that was waiting
+    // for this very transition to quiet.
+    sync_update_ready(app, state);
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
@@ -1406,6 +1684,7 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let license = state.license.status();
     let (license_line, urgent) = license::tray_line(&license);
     let offers_purchase = license::tray_offers_purchase(&license);
+    let upgrade_label = license::upgrade_tray_label(license.purchase_open);
     let license_item = state.tray_license.lock().clone();
     let upgrade_item = state.tray_upgrade.lock().clone();
     let tray_menu = state.tray_menu.lock().clone();
@@ -1458,6 +1737,9 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
         // separator, so the money line reads as part of the license block and
         // not as the first of the dictation controls.
         if let (Some(menu), Some(item)) = (tray_menu.as_ref(), upgrade_item.as_ref()) {
+            // yap-1106-lic-02 — the line reads `purchase_open`: "See Yap
+            // pricing" while checkout is closed, the price once it is open.
+            let _ = item.set_text(upgrade_label);
             if offers_purchase && !upgrade_shown {
                 let _ = menu.insert(item, 1);
             } else if !offers_purchase && upgrade_shown {
@@ -1506,6 +1788,100 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
                         if urgent { "urgent" } else { "idle" }
                     ),
                 }
+            }
+        }
+    });
+}
+
+/// WF-14 — the menu-bar "Update ready" line's handle. Built with the tray,
+/// inserted only while a downloaded release waits for a restart.
+static TRAY_UPDATE_READY: std::sync::Mutex<Option<MenuItem<Wry>>> = std::sync::Mutex::new(None);
+
+/// WF-14 — what Yap is doing right now, for the restart gate. A dictation, a
+/// take still decoding, a polish pass, meeting notes being written, or a
+/// meeting recording each keep the restart waiting.
+fn update_activity(state: &AppState) -> tray_menu::Activity {
+    let notes = SUMMARY_JOBS
+        .get()
+        .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
+        .unwrap_or(false);
+    tray_menu::Activity {
+        dictating: *state.recording.lock(),
+        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        polishing: tray_menu::polish_in_flight(),
+        notes,
+        meeting: state.meeting().is_some_and(|c| c.is_recording()),
+    }
+}
+
+/// WF-14 — reflect `tray_menu::UPDATE_READY` into the menu, and fire a
+/// deferred restart the moment Yap is quiet. Called from `sync_tray` (every
+/// state transition), from `install_update` and from the item's own click.
+/// The line sits directly under the status header (under the upgrade line when
+/// that shows) and is removed when no newer release is waiting — so a fresh
+/// process, already running the installed build, never shows it.
+fn sync_update_ready(app: &AppHandle, state: &AppState) {
+    let ready = tray_menu::UPDATE_READY.version();
+    let running = app.package_info().version.to_string();
+    let visible = tray_menu::update_item_visible(ready.as_deref(), &running);
+    let was_shown = tray_menu::UPDATE_READY.swap_shown(visible);
+    if !visible && !was_shown {
+        return;
+    }
+    let activity = update_activity(state);
+    let blocker = tray_menu::restart_blocker(activity);
+    let armed = tray_menu::UPDATE_READY.is_armed();
+    if tray_menu::restart_when_quiet(visible, armed, activity) {
+        tray_menu::UPDATE_READY.set_armed(false);
+        log::info!(
+            "update restart_deferred_fired version={}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+        // Through RunEvent::Exit and its bounded quit teardown, then relaunch.
+        app.request_restart();
+        return;
+    }
+    if visible && !was_shown {
+        log::info!(
+            "tray update_ready shown version={} running={running}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+    } else if !visible && was_shown {
+        log::info!("tray update_ready removed running={running}");
+    }
+    let label = tray_menu::update_ready_label(blocker, armed);
+    let item = TRAY_UPDATE_READY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let menu = state.tray_menu.lock().clone();
+    let (Some(item), Some(menu)) = (item, menu) else {
+        return; // tray not built yet; the next transition places it
+    };
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(label);
+        let items = menu.items().unwrap_or_default();
+        let present = items
+            .iter()
+            .any(|k| k.id().as_ref() == tray_menu::ID_UPDATE_READY);
+        if visible && !present {
+            let mut at = items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_LICENSE_HEADER)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if items
+                .get(at)
+                .is_some_and(|k| k.id().as_ref() == tray_menu::ID_UPGRADE)
+            {
+                at += 1;
+            }
+            if let Err(e) = menu.insert(&item, at) {
+                log::warn!("tray update_ready insert failed: {e}");
+            }
+        } else if !visible && present {
+            if let Err(e) = menu.remove(&item) {
+                log::warn!("tray update_ready remove failed: {e}");
             }
         }
     });
@@ -1606,7 +1982,489 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
                 start_recording(app, state);
             }
         }
+        // WF-07 — Record one of today's calendar meetings from the submenu.
+        TrayCommand::RecordUpcoming(index) => {
+            record_upcoming_meeting(app, state, index);
+        }
+        // WF-09 — pick a microphone from the submenu. Resolved against the rows
+        // ON SCREEN; saved off the main thread; the device watcher is woken by
+        // `mic_select::choose` and redraws the submenu with the new check.
+        TrayCommand::PickMicrophone(index) => {
+            pick_microphone_from_tray(app, index);
+        }
+        // WF-11 — pick Auto-detect or a language from the submenu, resolved
+        // against the rows ON SCREEN and written through the ONE writer the
+        // bar's chip and Settings use, which redraws the submenu and tells
+        // every window.
+        TrayCommand::PickLanguage(index) => {
+            pick_language_from_tray(app, state, index);
+        }
+        // WF-14 — "Update ready — Restart to update". Never restarts out from
+        // under a take, a polish or a meeting: busy, the click arms a deferred
+        // restart (`sync_update_ready` fires it on the first quiet
+        // transition) and a second click cancels it.
+        TrayCommand::RestartToUpdate => {
+            let ready = tray_menu::UPDATE_READY.version();
+            let armed = tray_menu::UPDATE_READY.is_armed();
+            let activity = update_activity(state);
+            let blocker = tray_menu::restart_blocker(activity);
+            let action = tray_menu::restart_click(ready.is_some(), armed, activity);
+            log::info!(
+                "tray restart_to_update action={action:?} blocker={} version={}",
+                blocker.map(tray_menu::Busy::as_str).unwrap_or("none"),
+                ready.as_deref().unwrap_or("none")
+            );
+            match action {
+                tray_menu::RestartAction::Nothing => {}
+                tray_menu::RestartAction::RestartNow => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    app.request_restart();
+                }
+                tray_menu::RestartAction::Arm => {
+                    tray_menu::UPDATE_READY.set_armed(true);
+                    sync_update_ready(app, state);
+                }
+                tray_menu::RestartAction::Disarm => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    sync_update_ready(app, state);
+                }
+            }
+        }
+        // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
+        TrayCommand::OpenLanguageSettings => {
+            log::info!("tray open_language_settings");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("navigate", "settings");
+            let _ = app.emit("settings-tab", tray_menu::LANGUAGE_SETTINGS_TAB);
+        }
+        // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
+        // and re-publishes, which redraws the calendar rows.
+        TrayCommand::ToggleHideMeetingTitles => {
+            let on = !meeting_detect::load_hide_titles(&state.db);
+            match meeting_detect::save_hide_titles(&state.db, on) {
+                Ok(()) => log::info!("tray hide_meeting_titles toggled on={on}"),
+                Err(e) => {
+                    log::warn!("tray hide_meeting_titles failed error={e:?}");
+                    // The check item flipped itself on the click; redraw the
+                    // rows from the unchanged snapshot so it reads true again.
+                    apply_upcoming_menu_on_main(
+                        app,
+                        state,
+                        meeting_detect::upcoming_snapshot().as_ref(),
+                    );
+                    notify(app, "Yap", "Yap could not save that setting — try again");
+                }
+            }
+        }
     }
+}
+
+/// WF-07 — start a recording for the "Today's Meetings" row the user clicked,
+/// named after the event (the hidden-titles toggle only hides it in the menu).
+/// Off the main thread, like every tray meeting start. Recording it snoozes
+/// the pill offer for the same occurrence.
+fn record_upcoming_meeting(app: &AppHandle, state: &Arc<AppState>, index: usize) {
+    let Some(row) = tray_menu::upcoming_row(index) else {
+        log::warn!("tray upcoming_record clicked index={index} result=ignored:stale_row");
+        return;
+    };
+    if state.meeting_stop_in_flight.load(Ordering::SeqCst)
+        || state.meeting().is_some_and(|c| c.is_recording())
+    {
+        log::info!("tray upcoming_record clicked index={index} result=ignored:meeting_running");
+        notify(app, "Yap", "A meeting is already recording — stop it first");
+        return;
+    }
+    let app = app.clone();
+    let app_on_spawn_failure = app.clone();
+    let st = state.clone();
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("yap-meeting-upcoming".into())
+        .spawn(move || {
+            let has_title = row.title.is_some();
+            match begin_meeting(&app, &st, row.title.clone(), kind) {
+                Ok(status) => {
+                    log::info!(
+                        "tray upcoming_record clicked index={index} result={} has_title={has_title} linked={}",
+                        if status.recording { "started" } else { "not_started" },
+                        row.has_link
+                    );
+                    if meeting_detect::respond(&row.key).is_some() {
+                        meeting_detect::emit_clear(&app);
+                        release_offer_pill(&app);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("tray upcoming_record clicked index={index} result=error:{e}");
+                    notify(&app, "Yap", e);
+                }
+            }
+        })
+    {
+        log::error!("tray upcoming_record clicked result=error:thread_spawn:{e}");
+        notify(
+            &app_on_spawn_failure,
+            "Yap",
+            "Yap could not run that — try again".to_string(),
+        );
+    }
+}
+
+/// WF-09 — the tray half of a microphone pick. A disabled row (a pinned mic
+/// that is not connected) never dispatches; any other row saves its choice.
+fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
+    let Some(row) = tray_menu::microphone_row(index) else {
+        log::warn!("tray pick_microphone stale_row index={index}");
+        return;
+    };
+    if !row.enabled {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("wv-mic-pick".into())
+        .spawn(move || {
+            if mic_select::choose(row.choice.clone(), row.name.clone(), "tray").is_err() {
+                // The check item flipped itself on the click; the watcher's next
+                // publish (poked by a later pick, or the device list moving)
+                // redraws it — and the user is told now.
+                mic_select::poke();
+                notify(
+                    &app,
+                    "Yap",
+                    "Yap could not save that microphone — try again",
+                );
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("tray pick_microphone spawn_failed error={e}");
+    }
+}
+
+/// WF-11 — the tray half of a language pick. The row carries the exact prefs
+/// the chip would write for the same choice (`tray_menu::prefs_for_pick`).
+fn pick_language_from_tray(app: &AppHandle, state: &AppState, index: usize) {
+    let Some(row) = tray_menu::language_row(index) else {
+        log::warn!("tray pick_language stale_row index={index}");
+        sync_language_menu(app);
+        return;
+    };
+    match write_dictation_languages(app, state, &row.prefs, "tray") {
+        Ok(_) => log::info!("tray pick_language index={index} pick={}", row.pick),
+        Err(e) => {
+            log::warn!("tray pick_language failed pick={} error={e}", row.pick);
+            // The check item flipped itself on the click; redraw from the
+            // unchanged settings so it reads true again — and say so.
+            sync_language_menu(app);
+            notify(app, "Yap", "Yap could not switch the language — try again");
+        }
+    }
+}
+
+/// WF-11 — redraw the Languages submenu from the live settings. Safe from any
+/// thread: the mutation hops to the main thread.
+fn sync_language_menu(app: &AppHandle) {
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            apply_language_menu_on_main(&app_main, &state);
+        }
+    });
+    if let Err(e) = hop {
+        log::warn!("tray language_menu hop_failed error={e}");
+    }
+}
+
+/// WF-11 — the ONE place the Languages submenu is mutated. MAIN THREAD only.
+/// Built from the live prefs and the LAST probed model support (never loads
+/// the model to draw a check); what was drawn is recorded in
+/// `tray_menu::LANG_SHOWN` only on success.
+fn apply_language_menu_on_main(app: &AppHandle, state: &AppState) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray language_menu skipped reason=tray_not_built");
+        return;
+    };
+    let prefs = state.settings.lock().language_prefs();
+    let support = tray_menu::LANG_SHOWN.support();
+    let opts = languages::language_options(&prefs, support.as_ref());
+    let plan = tray_menu::language_menu(&opts);
+    match place_language_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray language_menu synced rows={} checked={} probed={}",
+                plan.rows.len(),
+                plan.checked_pick().unwrap_or("none"),
+                support.is_some()
+            );
+            tray_menu::LANG_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray language_menu apply_failed error={e}");
+            tray_menu::LANG_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_language_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::LanguageMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_LANGUAGES)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, in the Dictation group: under Microphone once the device list has
+    // landed (the Microphone submenu is always re-placed directly under
+    // Hands-free, so the order stays Hands-free, Microphone, Languages), else
+    // directly under Hands-free.
+    let items = menu.items().map_err(|e| format!("items: {e}"))?;
+    let at = items
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        })
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the languages submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| CheckMenuItem::with_id(app, r.id.as_str(), &r.text, true, r.checked, None::<&str>))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| format!("separator: {e}"))?;
+    let settings_i = MenuItem::with_id(
+        app,
+        tray_menu::ID_LANGUAGE_SETTINGS,
+        tray_menu::LANGUAGE_SETTINGS_LABEL,
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("settings item: {e}"))?;
+    let mut entries: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = children
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    entries.push(&separator);
+    entries.push(&settings_i);
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_LANGUAGES,
+        tray_menu::label(tray_menu::ID_LANGUAGES),
+        true,
+        &entries,
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
+}
+
+/// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
+/// The submenu is found by id and replaced whole, so a retry after a
+/// half-applied failure is idempotent; what was drawn is recorded in
+/// `tray_menu::MIC_SHOWN` only on success.
+fn apply_microphone_menu_on_main(app: &AppHandle, state: &AppState, list: &mic_select::MicList) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray microphone_menu skipped reason=tray_not_built");
+        return;
+    };
+    let plan = tray_menu::microphone_menu(list);
+    match place_microphone_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray microphone_menu synced rows={} chosen={} chosen_missing={}",
+                plan.rows.len(),
+                list.chosen_id.is_some(),
+                list.chosen_missing
+            );
+            tray_menu::MIC_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray microphone_menu apply_failed error={e}");
+            tray_menu::MIC_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_microphone_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::MicMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, directly under Hands-free: the Dictation group.
+    let at = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the microphone submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| {
+            CheckMenuItem::with_id(
+                app,
+                r.id.as_str(),
+                &r.text,
+                r.enabled,
+                r.checked,
+                None::<&str>,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_MICROPHONE,
+        tray_menu::label(tray_menu::ID_MICROPHONE),
+        true,
+        &children
+            .iter()
+            .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
+}
+
+/// WF-07 — the ONE place the calendar rows of the menu are mutated. MAIN
+/// THREAD only. `snap == None` (calendar off, or no grant) removes them. The
+/// rows are found by id, so a retry after a half-applied failure is
+/// idempotent; what was drawn is recorded in `tray_menu::UPCOMING_SHOWN` only
+/// on success, so a click always resolves against the rows on screen.
+fn apply_upcoming_menu_on_main(
+    app: &AppHandle,
+    state: &AppState,
+    snap: Option<&meeting_detect::UpcomingSnapshot>,
+) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray upcoming_menu skipped reason=tray_not_built");
+        return;
+    };
+    let plan = snap.map(tray_menu::upcoming_menu);
+    match place_upcoming_rows(app, &menu, plan.as_ref()) {
+        Ok(()) => {
+            log::info!(
+                "tray upcoming_menu synced calendar={} rows={}",
+                plan.is_some(),
+                plan.as_ref().map_or(0, |p| p.rows.len())
+            );
+            tray_menu::UPCOMING_SHOWN.set(plan);
+        }
+        Err(e) => {
+            log::warn!("tray upcoming_menu apply_failed error={e}");
+            // Whatever is left on screen must not resolve a click to a row
+            // that is gone; the next publish redraws.
+            tray_menu::UPCOMING_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_upcoming_rows(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: Option<&tray_menu::UpcomingMenu>,
+) -> Result<(), String> {
+    // Out with the old rows.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| tray_menu::is_upcoming_row(k.id().as_ref()))
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    // In, directly under "Record a meeting as…": the Meeting group.
+    let mut at = menu
+        .items()
+        .map_err(|e| format!("items: {e}"))?
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MEETING_KIND)
+        .map(|i| i + 1)
+        .ok_or("tray: no kind picker to anchor the calendar rows")?;
+    let next = MenuItem::with_id(
+        app,
+        tray_menu::ID_NEXT_MEETING,
+        &plan.next_text,
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| format!("next item: {e}"))?;
+    menu.insert(&next, at)
+        .map_err(|e| format!("next insert: {e}"))?;
+    at += 1;
+    if !plan.rows.is_empty() {
+        let children = plan
+            .rows
+            .iter()
+            .map(|r| MenuItem::with_id(app, r.id.as_str(), &r.text, true, None::<&str>))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row item: {e}"))?;
+        let submenu = Submenu::with_id_and_items(
+            app,
+            tray_menu::ID_UPCOMING,
+            tray_menu::label(tray_menu::ID_UPCOMING),
+            true,
+            &children
+                .iter()
+                .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| format!("submenu: {e}"))?;
+        menu.insert(&submenu, at)
+            .map_err(|e| format!("submenu insert: {e}"))?;
+        at += 1;
+    }
+    let hide = CheckMenuItem::with_id(
+        app,
+        tray_menu::ID_HIDE_MEETING_TITLES,
+        tray_menu::label(tray_menu::ID_HIDE_MEETING_TITLES),
+        true,
+        plan.hide_titles,
+        None::<&str>,
+    )
+    .map_err(|e| format!("hide item: {e}"))?;
+    menu.insert(&hide, at)
+        .map_err(|e| format!("hide insert: {e}"))?;
+    Ok(())
 }
 
 /// Y2-D — the ONE way the pill (and the menu bar) asks for the purchase SHEET.
@@ -1615,14 +2473,14 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
 /// It must never open a browser, and it must never be the thing that shows a
 /// price: the $29 / $19-founding copy, the seats line and the keep-forever
 /// promise all live in `src/license/PurchasePrompt.tsx`, and dropping somebody
-/// into a Stripe checkout straight from a corner of their screen would put them
+/// onto the purchase page straight from a corner of their screen would put them
 /// in front of a payment form with none of that context.
 ///
 /// So the caller's job ends at "ask the main window". This command unminimizes
 /// and focuses `main` (`present_main_window`, the same activation path the tray
 /// uses) and emits `show_purchase`; `appShell.ts` listens and raises the sheet
 /// that already exists. No new money surface, no second price string, no second
-/// Payment Link.
+/// purchase URL.
 ///
 /// Y2-E's menu-bar "upgrade" item calls this same function. That item used to
 /// land on Settings -> License "until Y2-D's dedicated purchase sheet lands";
@@ -2203,6 +3061,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             arm_asr_engine(app, state);
             let _ = app.emit("recording", true);
             emit_status(app, state);
+            // WF-20 — the style chip: which app-aware mode this app gets.
+            emit_style_chip_for_take(app, state);
             // Wispr-style: glass island appears for the hold
             float_pill::show_for_recording(app);
             // Stream mic levels to the float HUD at HUD_FPS. YV38: the thread
@@ -2219,9 +3079,16 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             let state_lv = state.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
+                // WF-10 — redraw the pill when the take moves to another mic.
+                let mut mic_switch_seen = record::mic_switch_seq();
                 loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
+                    let mic_switch_now = record::mic_switch_seq();
+                    if mic_switch_now != mic_switch_seen {
+                        mic_switch_seen = mic_switch_now;
+                        emit_status(&app_lv, &state_lv);
+                    }
                     let warned = *state_lv.session_cap_warned.lock();
                     match record::session_cap_tick(started.elapsed(), warned) {
                         record::SessionCapAction::Continue => {}
@@ -2599,6 +3466,33 @@ pub const PASTE_FAILED_EVENT: &str = "paste_failed";
 /// was ever consulted.
 pub const POLISH_SKIPPED_EVENT: &str = "polish_skipped";
 
+/// WF-06 — the pill's "Backtrack caught" toast: a spoken self-correction was
+/// applied to the take that just landed. Payload: [`backtrack_caught_payload`].
+pub const BACKTRACK_CAUGHT_EVENT: &str = "backtrack_caught";
+
+/// WF-06 — the [`BACKTRACK_CAUGHT_EVENT`] payload, or `None` when the toast must
+/// not show: no correction was applied (a filler-only cleanup included), or the
+/// take has no raw text that differs from what was pasted, so Undo would have
+/// nothing to paste back. `raw` is the take as dictated — what Undo pastes.
+pub fn backtrack_caught_payload(
+    id: &str,
+    correction: Option<&dictation::BacktrackCorrection>,
+    text: &str,
+    raw: Option<&str>,
+) -> Option<serde_json::Value> {
+    let c = correction?;
+    if c.dropped.trim().is_empty() || c.kept.trim().is_empty() {
+        return None;
+    }
+    let raw = dictation::undo_ai_edit_text(text, raw)?;
+    Some(serde_json::json!({
+        "id": id,
+        "dropped": c.dropped,
+        "kept": c.kept,
+        "raw": raw,
+    }))
+}
+
 /// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
 /// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
 /// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
@@ -2743,6 +3637,7 @@ fn transcribe_native(
         language,
         notice: language_notice,
         redecoded,
+        outside: language_outside,
         ..
     } = languages::decode_in_set(
         manager,
@@ -2780,6 +3675,7 @@ fn transcribe_native(
         degraded_reason: take.degraded_reason,
         language,
         language_notice,
+        language_outside,
     })
 }
 
@@ -2811,6 +3707,8 @@ fn run_model_transform_take(
             cursor_context.before_caret.as_deref(),
             cursor_context.browser_mode,
         );
+    // WF-20 — a running chip pick for this app replaces the resolved mode.
+    let mode = apply_style_override(app, &settings.dictation_mode, source_app, mode);
     let cfg = polish::PolishConfig::from_settings(settings, mode);
     let mut result = transforms::run_installed(def, selection, mode, &cfg);
     if result.status == transforms::TransformStatus::Succeeded {
@@ -2987,6 +3885,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // tell the UI WHICH failure this was.
         // yap24-PILL2: this take's stage reporter (see `take_stage.rs`).
         let take_stages = take_stage::TakeStages::new(&app2);
+        // WF-06 — the spoken self-correction this take's backtrack stage applied
+        // (and how many it applied), carried out of the take closure so the
+        // Dictated arm can raise the pill's "Backtrack caught" toast.
+        let mut backtrack_caught: Option<(dictation::BacktrackCorrection, usize)> = None;
         let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
@@ -3149,6 +4051,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let db_ref: &Database = &db;
             let mut persist = PersistTakeChunks::new(&mut progress, db_ref, take_id.as_deref());
             take_stages.emit(take_stage::TakeStage::Decoding, None);
+            // SP-03 — the decoded audio's length, read before `rec.samples`
+            // moves into the decode, for the latency line's rolling RTF.
+            let decoded_audio_s = rec.samples.len() as f64 / f64::from(record::TARGET_RATE);
             let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -3350,6 +4255,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 cursor_context.before_caret.as_deref(),
                 cursor_context.browser_mode,
             );
+            // WF-20 — the pill's style chip: a pick the user made for THIS app
+            // in the last 15 minutes replaces the resolved mode. Only while
+            // app-aware modes are on; a fixed Settings mode still wins.
+            let dictation_mode = apply_style_override(
+                &app2,
+                &settings.dictation_mode,
+                source_app.as_deref().unwrap_or_default(),
+                dictation_mode,
+            );
             // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
             // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
             // stage is guarded so a non-empty transcript can never become empty (falls
@@ -3405,6 +4319,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // user turned it on and a key exists; the SAME polish runs on
                 // the bundled model when it is off, offline, slow or failing.
                 take_stages.polishing(|t| {
+                    // WF-14 — the restart gate reads this while it is held
+                    // (cloud or local: a polish is in flight either way).
+                    let _polish = tray_menu::PolishGuard::enter();
                     cloud_polish(&app, &db, t, &|t| {
                         polish::polish_llm_result(t, dictation_mode, &polish_config)
                     })
@@ -3540,9 +4457,25 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 nudge::TAKE_CONTEXT_EVENT,
                 nudge::TakeContext::new(text_field_focused, source_app.as_deref(), outcome.pasted),
             );
+            // WF-12 — "Sounded like Spanish — Add Spanish?", at most once per
+            // language per 7 days (the ledger in `languages::take_offer`).
+            // Carries a language code, never text.
+            if asr.language_outside.is_some() {
+                let prefs = state2.settings.lock().language_prefs();
+                if let Some(offer) = languages::take_offer(
+                    &state2.db,
+                    &prefs,
+                    asr.language_outside.as_deref(),
+                    chrono::Utc::now().timestamp_millis(),
+                ) {
+                    let _ = app2.emit(languages::LANGUAGE_OFFER_EVENT, &offer);
+                }
+            }
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
+            // SP-03 — this take's decode RTF joins the session's rolling window.
+            let (rtf_p50, rtf_last) = latency::record_decode_rtf(asr.decode_ms, decoded_audio_s);
             // YV40: the whole take as disjoint spans in one stable key=value
             // line (see `latency`) — press side, capture, DSP finalize, ASR load
             // vs decode, cleanup, paste — instead of the old cumulative mix.
@@ -3559,6 +4492,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     paste_ms,
                     backend: &asr.backend,
                     pasted: outcome.pasted,
+                    rtf_p50,
+                    rtf_last,
                 }
                 .summary_line()
             );
@@ -3592,6 +4527,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             }
             entry.stages_that_ran = Some(stages);
             entry.polish_skip_reason = formatting_trace.llm_skip_reason.map(|r| r.to_string());
+            backtrack_caught = formatting_trace
+                .backtrack
+                .clone()
+                .map(|c| (c, formatting_trace.backtrack_corrections));
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
@@ -3634,6 +4573,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // so the pill can show it without reading the history row.
                 if let Some(reason) = entry.polish_skip_reason.as_deref() {
                     let _ = app2.emit(POLISH_SKIPPED_EVENT, reason);
+                }
+                // WF-06 — "Dropped '2', kept '3'" with Undo. Only for a real
+                // spoken self-correction (filler-only cleanup never sets it),
+                // and only when there IS a raw take to paste back.
+                if let Some(payload) = backtrack_caught_payload(
+                    &entry.id,
+                    backtrack_caught.as_ref().map(|(c, _)| c),
+                    &entry.text,
+                    entry.raw_text.as_deref(),
+                ) {
+                    // Counts only — never the dropped/kept words.
+                    log::info!(
+                        "dictation backtrack_caught corrections={}",
+                        backtrack_caught.as_ref().map_or(0, |(_, n)| *n)
+                    );
+                    let _ = app2.emit(BACKTRACK_CAUGHT_EVENT, payload);
                 }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 // Y8-C — one earcon for the landed take: achievement when it
@@ -4102,6 +5057,51 @@ fn adopt_recovered_takes(
     recovered
 }
 
+/// yap-fx-07 — the error an in-session orphaned capture spill carries in
+/// History: the take was cut off before it was transcribed (the 2026-11-06
+/// "arm while already capturing" case), and its audio is all there is.
+const ABORTED_TAKE_ERROR: &str = "recording cut off before it was transcribed";
+
+/// yap-fx-07 — how old (mtime) an aborted capture spill must be before the
+/// in-session scan adopts it. `SpillWriter::drop`'s copy fallback can still be
+/// writing a younger one; ten seconds is far past any copy of a take's audio.
+const ABORTED_SPILL_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// yap-fx-07 — "every kept clip is listed": adopt the capture spills a take
+/// aborted mid-session left in the recovery dir, so each gets a
+/// `failed_dictations` row (and a Retry) NOW rather than at the next launch —
+/// or is deleted, when it is silent (`record::is_silent_clip`). Runs before
+/// every History list and every hygiene pass. Never touches an in-flight
+/// `.decoding.wav` link (a live decode owns it) and never decodes or pastes.
+/// A row list that cannot be read skips the scan: it cannot tell an orphan
+/// from a kept clip without it. Returns how many rows were added.
+fn adopt_aborted_spills(db: &Database, dir: &Path) -> usize {
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>(),
+        Err(e) => {
+            log::warn!("recovery orphan_scan_skipped reason=rows_unreadable error={e}");
+            return 0;
+        }
+    };
+    let started = std::time::Instant::now();
+    let takes = record::recover_aborted_capture_spills(
+        dir,
+        &keep,
+        std::time::SystemTime::now(),
+        ABORTED_SPILL_MIN_AGE,
+    );
+    if takes.is_empty() {
+        return 0;
+    }
+    let adopted = adopt_recovered_takes(db, takes, ABORTED_TAKE_ERROR, "yap-fx-07 aborted spill");
+    log::info!(
+        "recovery orphan_spills_adopted count={adopted} ms={}",
+        started.elapsed().as_millis()
+    );
+    diagnostics::record_duration("recovery", "orphan_spills_adopted", adopted as u64);
+    adopted
+}
+
 /// DB-B — the launch sweep for a LONG take the app died in the middle of.
 ///
 /// While a take decodes, its finished clip is hard-linked into the recovery
@@ -4249,8 +5249,44 @@ fn purge_expired_meeting_audio(db: &Database) -> usize {
 /// A row list that cannot be read yields `None`, which makes `hygiene::sweep`
 /// skip the recovery directory entirely rather than delete audio it cannot
 /// prove is unreachable.
+/// yap-1106 — the launch-time leftovers pass (`leftovers::sweep`). Reads the
+/// complete-meeting ids and the recovery keep-list from the DB; a DB that cannot
+/// answer makes the sweep skip the class that needs the answer, never guess.
+fn run_leftovers_sweep(db: &Database) {
+    let completed = match db.meeting_ids_in_state(meetings::MeetingState::Complete.as_str()) {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("leftovers: complete-meeting list unreadable ({e}); ledgers kept");
+            Vec::new()
+        }
+    };
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => Some(rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>()),
+        Err(e) => {
+            log::warn!("leftovers: recovery sweep skipped, row list unreadable ({e})");
+            None
+        }
+    };
+    let export_dir = {
+        let settings = load_settings(&data_dir().join("settings.json"));
+        meeting_export_dir(&settings)
+    };
+    let outcome = leftovers::sweep(
+        &data_dir(),
+        &completed,
+        keep.as_deref(),
+        &export_dir,
+        std::time::SystemTime::now(),
+    );
+    log::info!("{}", outcome.log_line());
+    diagnostics::record_duration("leftovers", "swept_files", outcome.swept() as u64);
+}
+
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
+    // yap-fx-07 — orphans become rows (or, silent, are deleted) BEFORE the
+    // keep-list below is read, so the sweep never sees one as row-less.
+    adopt_aborted_spills(db, &recovery_dir());
     // YV94 — same posture, one window later: expired meeting audio is dropped
     // before the orphan sweep runs, so the sweep never sees those WAVs as
     // "unreachable files I should think about".
@@ -4517,7 +5553,7 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
     // persists the whole `AppSettings` struct, so `cleanupLevel` is present in
     // every store the moment onboarding saves, and v1 records no provenance
     // anywhere. From v2 on, `cleanup_level_set_by_user` records it, and a v2
-    // store never re-enters this function at all (the early return above).
+    // store never re-enters this arm (it is guarded on `stored_version < 2`).
     //
     // Only "light" moves. "none" is verbatim mode — a real user need — and
     // "high" is already past the gate.
@@ -4530,8 +5566,34 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
         settings.formatting_notice_pending = true;
     }
 
+    // v2 → v3 (yap-1106-retire-classic-pill): the Classic pill is retired.
+    // A store that saved "classic", or never saved a style at all, moves to
+    // "yappy" — the one pill that docks the meeting timer. Read off the RAW
+    // store: serde has already defaulted a missing field, so the struct alone
+    // cannot tell "never saved" from "saved yappy".
+    if stored_version < 3 {
+        if let Some(from) = retired_pill_style(stored.get("pillStyle")) {
+            log::info!(
+                "settings pill_style_migrated from={from} to=yappy schema_from=v{stored_version}"
+            );
+            settings.pill_style = default_pill_style();
+        }
+    }
+
     settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     true
+}
+
+/// yap-1106-retire-classic-pill — the stored `pillStyle` the v2 → v3 arm must
+/// move, named for the log line: `"unset"` (missing, null, empty or not a
+/// string) or `"classic"` (any case). `None` = keep it: the user saved a style
+/// that still ships.
+pub fn retired_pill_style(stored: Option<&serde_json::Value>) -> Option<&'static str> {
+    match stored.and_then(|v| v.as_str()).map(str::trim) {
+        None | Some("") => Some("unset"),
+        Some(s) if s.eq_ignore_ascii_case("classic") => Some("classic"),
+        Some(_) => None,
+    }
 }
 
 /// yap-p0-insertion-bridge-fallback — the Copy card the pill should show (a
@@ -4563,7 +5625,17 @@ fn nudge_ledger(state: State<'_, Arc<AppState>>) -> nudge::NudgeLedger {
 /// launch. `Ok(false)` = it was already recorded (or not a valid slug).
 #[tauri::command]
 fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Result<bool, String> {
-    nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis())
+    let res = nudge::mark_shown(&state.db, &condition, chrono::Utc::now().timestamp_millis());
+    // WF-17 — one line per pill note shown (the condition is a short slug,
+    // never user text): how often tips actually reach people.
+    match &res {
+        Ok(stored) => log::info!(
+            "nudge shown condition_len={} stored={stored}",
+            condition.len()
+        ),
+        Err(e) => log::warn!("nudge mark_failed err={e}"),
+    }
+    res
 }
 
 /// Y10-A — the language picker's view (Settings and the bar): the prefs, the
@@ -4573,6 +5645,7 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
 /// honest `supportsDetect: null`, never a guess.
 #[tauri::command]
 async fn language_options(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<languages::LanguageOptions, String> {
     let state = state.inner().clone();
@@ -4593,16 +5666,21 @@ async fn language_options(
             }
             None => None,
         };
+        // WF-11 — the tray's Languages submenu draws from the last probe (it
+        // never loads the model itself); a probe that changed what the model
+        // can do redraws it so its check matches the chip's.
+        if tray_menu::LANG_SHOWN.support() != support {
+            tray_menu::LANG_SHOWN.remember_support(support.clone());
+            sync_language_menu(&app);
+        }
         Ok(languages::language_options(&prefs, support.as_ref()))
     })
     .await
     .map_err(|e| format!("language probe failed: {e}"))?
 }
 
-/// Y10-A — the ONE writer of the three language fields, for the Settings
-/// control and the bar's picker alike. Normalizes (known codes only, primary
-/// first, at most `languages::MAX_LANGUAGE_SET`), persists, and broadcasts the
-/// same `settings` event every other settings write does.
+/// Y10-A — the Settings control's and the bar's picker's door to the ONE
+/// writer of the three language fields ([`write_dictation_languages`]).
 #[tauri::command]
 fn set_dictation_languages(
     app: AppHandle,
@@ -4611,7 +5689,26 @@ fn set_dictation_languages(
     set: Vec<String>,
     auto: bool,
 ) -> Result<AppSettings, String> {
-    let prefs = languages::LanguagePrefs::from_settings(&primary, &set, auto);
+    let prefs = languages::LanguagePrefs { primary, set, auto };
+    write_dictation_languages(&app, state.inner().as_ref(), &prefs, "app")
+}
+
+/// Y10-A / WF-11 — THE writer of the three language fields, for the Settings
+/// control, the bar's chip, the offer card and the tray's Languages submenu
+/// alike. Normalizes (known codes only, primary first, at most
+/// `languages::MAX_LANGUAGE_SET`), persists, broadcasts the same `settings`
+/// event every other settings write does PLUS
+/// `languages::LANGUAGES_CHANGED_EVENT` with the new prefs (so every window's
+/// language store applies it at once), and redraws the tray submenu — one
+/// store, every surface follows it.
+fn write_dictation_languages(
+    app: &AppHandle,
+    state: &AppState,
+    requested: &languages::LanguagePrefs,
+    source: &str,
+) -> Result<AppSettings, String> {
+    let prefs =
+        languages::LanguagePrefs::from_settings(&requested.primary, &requested.set, requested.auto);
     let next = {
         let mut settings = state.settings.lock();
         settings.language = prefs.primary.clone();
@@ -4619,15 +5716,57 @@ fn set_dictation_languages(
         settings.language_auto = prefs.auto;
         settings.clone()
     };
-    persist_settings(&next)?;
+    if let Err(e) = persist_settings(&next) {
+        log::warn!("dictation languages: persist_failed source={source} error={e}");
+        return Err(e);
+    }
     let _ = app.emit("settings", &next);
+    let _ = app.emit(languages::LANGUAGES_CHANGED_EVENT, &prefs);
     log::info!(
-        "dictation languages: primary={} set={:?} auto={}",
+        "dictation languages: source={source} primary={} set={:?} auto={}",
         prefs.primary,
         prefs.set,
         prefs.auto
     );
+    sync_language_menu(app);
     Ok(next)
+}
+
+/// WF-12 — the answer to the pill's "Sounded like Spanish — Add Spanish?"
+/// card. Add puts the language in the set (auto-detect on) through the ONE
+/// language writer, so Settings and the bar's picker update off the same
+/// `settings` event; Not now silences that language for
+/// `languages::LANGUAGE_OFFER_QUIET_DAYS` days from the click.
+#[tauri::command]
+fn language_offer_respond(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    code: String,
+    add: bool,
+) -> Result<AppSettings, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if !add {
+        if let Err(e) = languages::snooze_offer(&state.db, &code, now_ms) {
+            log::warn!("languages offer_snooze_failed err={e}");
+            return Err(format!("Yap couldn't snooze that suggestion: {e}"));
+        }
+        log::info!("languages offer_answered choice=not_now code={code}");
+        return Ok(state.settings.lock().clone());
+    }
+    let prefs = state.settings.lock().language_prefs();
+    let next = languages::prefs_with_added(&prefs, &code);
+    if !next.set.iter().any(|c| c.eq_ignore_ascii_case(code.trim())) {
+        log::warn!(
+            "languages offer_add_refused code={code} set_len={}",
+            prefs.set.len()
+        );
+        return Err(format!(
+            "Yap couldn't add {} — remove a language in Settings first.",
+            languages::language_name(code.trim())
+        ));
+    }
+    log::info!("languages offer_answered choice=add code={code}");
+    set_dictation_languages(app, state, next.primary, next.set, next.auto)
 }
 
 #[tauri::command]
@@ -4666,6 +5805,22 @@ fn save_settings(
         // Y6-A: proof that a take pasted is a fact, not a preference — a
         // frontend save carrying a stale `false` must not erase it.
         next.dictation_proven = live.dictation_proven || next.dictation_proven;
+        // WF-17 — quiet mode: only tips, feature news and milestones can be
+        // muted; anything else a frontend sends is dropped before it is stored.
+        next.muted_pill_categories = sanitize_muted_pill_categories(&next.muted_pill_categories);
+        if next.muted_pill_categories != live.muted_pill_categories {
+            log::info!(
+                "settings pill_quiet_changed muted={} count={}",
+                next.muted_pill_categories.join(","),
+                next.muted_pill_categories.len()
+            );
+        }
+        if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
+            log::info!(
+                "settings capture_hide_changed on={}",
+                next.hide_from_capture_in_meetings
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -4673,6 +5828,19 @@ fn save_settings(
         "both" | "fn_or_fn_control" => "fn / fn⌃".into(),
         _ => "fn⌃".into(),
     };
+    // WF-19 — a mouse push-to-talk button. Left / right click (and anything
+    // that is not a real button) are refused here, before anything persists;
+    // an accepted value is stored in its canonical form.
+    #[cfg(target_os = "macos")]
+    {
+        match ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding) {
+            Ok(b) => next.ptt_mouse_binding = b.map(|b| b.to_settings()).unwrap_or_default(),
+            Err(why) => {
+                log::warn!("ptt_mouse bind_refused reason={why}");
+                return Err(CommandError::refused(why));
+            }
+        }
+    }
     let dictate_changed = state.settings.lock().dictate_toggle != next.dictate_toggle;
     if dictate_changed {
         // Validate BEFORE persisting: a refused rebind is an error the
@@ -4709,7 +5877,25 @@ fn save_settings(
             let (sc, label) = hotkey_table::resolve(a, chord_setting(&next, a));
             all.push((a, sc, label));
         }
-        hotkey_table::check_distinct(&all).map_err(CommandError::refused)?;
+        // WF-18 — every extra shortcut passes the same gate as a primary and
+        // joins the distinctness check, so no two actions share a chord.
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let extras =
+            shortcuts::editor::validate_extras(&primaries, &next.extra_chords).map_err(|why| {
+                log::warn!(
+                    "shortcuts extra_refused count={} reason={why}",
+                    next.extra_chords.len()
+                );
+                CommandError::refused(why)
+            })?;
+        all.extend(extras);
+        hotkey_table::check_distinct(&all).map_err(|why| {
+            log::warn!("shortcuts overlap_refused reason={why}");
+            CommandError::refused(why)
+        })?;
     }
     // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
     // PERSIST, then APPLY the chords; an apply that fails rolls back every
@@ -4767,7 +5953,14 @@ fn save_settings(
     // (the chord is taken) or an uncatalogued `command_failed` (anything else,
     // which the toast never shows verbatim). Only Yap's own constant sentences
     // ("finish the current take …") are built as `refused` here directly.
+    // WF-18 — the extra shortcuts held before this save, so a later refusal
+    // can put them back alongside every primary.
+    let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
+        // fix-b2-1: the PRIMARIES are restored first and the extras last, so
+        // (a) the extras' drop plan sees the restored primaries and never
+        // unregisters a chord one of them holds, and (b) a primary swap-back
+        // that drops a chord a restored extra holds is re-registered below.
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -4789,6 +5982,40 @@ fn save_settings(
                 log::warn!("dictate chord rollback failed: {e}");
             }
         }
+        // Every extra held before this save is re-asserted, not only the
+        // diff: a primary swap-back above may have dropped one (a save that
+        // moved ⌃⌘J from an extra to a primary, refused in step 2b before the
+        // alias set changed, swaps the primary back and unregisters ⌃⌘J).
+        let aliases_now = hotkey_table::active_aliases();
+        let restored_primaries = live_primary_chords(dictate_toggle_chord(&prev).0);
+        let drop_now =
+            hotkey_table::alias_unregister_plan(&aliases_now, &aliases_before, &restored_primaries);
+        let mut restored = 0usize;
+        if smoke::global_hotkeys_allowed() {
+            let gs = app.global_shortcut();
+            for sc in &drop_now {
+                if gs.is_registered(*sc) {
+                    if let Err(e) = gs.unregister(*sc) {
+                        log::warn!("shortcuts extra_rollback_unregister_failed ({e})");
+                    }
+                }
+            }
+            for (_, sc, _) in &aliases_before {
+                if !gs.is_registered(*sc) {
+                    match gs.register(*sc) {
+                        Ok(()) => restored += 1,
+                        Err(e) => log::warn!("shortcuts extra_rollback_failed ({e})"),
+                    }
+                }
+            }
+        }
+        if aliases_now != aliases_before || restored > 0 {
+            log::info!(
+                "shortcuts extras_rolled_back restored={restored} dropped={}",
+                drop_now.len()
+            );
+        }
+        hotkey_table::set_active_aliases(aliases_before.clone());
         if let Err(e) = persist_settings(&prev) {
             log::warn!("settings rollback persist failed: {e}");
         }
@@ -4832,6 +6059,97 @@ fn save_settings(
         hotkey_table::set_active_chord(a, (new_chord, new_label));
         applied.push((a, old));
     }
+    // 2b. WF-18 — the extra shortcuts: register the new ones first, drop the
+    // ones this save removed only after that, roll back on a refusal.
+    {
+        let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+            .iter()
+            .map(|a| (*a, chord_setting(&next, *a)))
+            .collect();
+        let new_extras = shortcuts::editor::validate_extras(&primaries, &next.extra_chords)
+            .map_err(CommandError::refused)?;
+        let old_extras = hotkey_table::active_aliases();
+        if new_extras != old_extras {
+            let (to_reg, removed) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            // fix-b2-1: the primaries as they stand after step 2. A removed
+            // extra that one of them now holds (reset-all handing ⌃⌘J back to
+            // Open Scratchpad) stays registered — step 2's swap skipped its
+            // register because the extra already held it.
+            let live_primaries = live_primary_chords(dictate_toggle_chord(&next).0);
+            let to_unreg =
+                hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live_primaries);
+            let kept_for_primary = removed.len().saturating_sub(to_unreg.len());
+            if kept_for_primary > 0 {
+                log::info!("shortcuts extra_now_primary kept={kept_for_primary}");
+            }
+            // A NEW extra a live primary already holds passed the gate only by
+            // a bug (check_distinct refuses it): log it and refuse the save.
+            let conflicts =
+                hotkey_table::alias_register_conflicts(&old_extras, &new_extras, &live_primaries);
+            if let Some((action, _, label)) = conflicts.first() {
+                log::error!(
+                    "shortcuts extra_on_live_primary action={} label={label} count={}",
+                    action.title(),
+                    conflicts.len()
+                );
+                return Err(rollback(
+                    CommandError::refused(format!(
+                        "{label} is already another action's shortcut — pick a different one"
+                    )),
+                    dictate_applied,
+                    &applied,
+                ));
+            }
+            if smoke::global_hotkeys_allowed() {
+                let gs = app.global_shortcut();
+                let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
+                for sc in &to_reg {
+                    if gs.is_registered(*sc) {
+                        // Not a live primary (checked above), yet held: a
+                        // leftover registration. Keep it, but never silently.
+                        let who = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(a, ..)| a.title())
+                            .unwrap_or("unknown");
+                        log::warn!("shortcuts extra_already_registered action={who}");
+                        continue;
+                    }
+                    if let Err(e) = gs.register(*sc) {
+                        let label = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(.., l)| l.clone())
+                            .unwrap_or_default();
+                        log::warn!("shortcuts extra_register_failed label={label}");
+                        for d in &done {
+                            let _ = gs.unregister(*d);
+                        }
+                        return Err(rollback(
+                            chord_rebind_error(&label, &e.to_string()),
+                            dictate_applied,
+                            &applied,
+                        ));
+                    }
+                    done.push(*sc);
+                }
+                for sc in &to_unreg {
+                    if gs.is_registered(*sc) {
+                        if let Err(e) = gs.unregister(*sc) {
+                            log::warn!("shortcuts extra_unregister_failed ({e})");
+                        }
+                    }
+                }
+            }
+            log::info!(
+                "shortcuts extras_saved count={} added={} removed={}",
+                new_extras.len(),
+                to_reg.len(),
+                to_unreg.len()
+            );
+            hotkey_table::set_active_aliases(new_extras);
+        }
+    }
     let meeting_applied = applied
         .iter()
         .any(|(a, _)| *a == hotkey_table::BindingAction::RecordMeeting);
@@ -4867,11 +6185,17 @@ fn save_settings(
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
+    // WF-11 — a full-settings save may carry the language fields; the tray's
+    // Languages submenu follows the store.
+    sync_language_menu(&app);
     // YV53: the dock edge moves the NSPanel itself, so it must land before the
     // show below re-parks — and `reposition` covers the still-recording case
     // where the pill stays up without a show call.
     float_pill::set_position(float_pill::PillPosition::from_settings(&next.pill_position));
     float_pill::reposition(&app);
+    // WF-16 — switching the setting mid-meeting applies at once.
+    float_pill::set_hide_from_capture(next.hide_from_capture_in_meetings);
+    float_pill::sync_capture_hidden(&app);
     if tray_menu::idle_pill_visible(
         next.show_floating_pill,
         state.pill_hide.is_hidden(std::time::Instant::now()),
@@ -4886,6 +6210,11 @@ fn save_settings(
         ptt_macos::set_command_binding(ptt_macos::CommandBinding::from_settings(
             &next.command_binding,
         ));
+        // WF-19 — validated above, so this parse cannot fail; off on the
+        // impossible error rather than a guess.
+        ptt_macos::set_mouse_binding(
+            ptt_macos::MouseBinding::parse(&next.ptt_mouse_binding).unwrap_or(None),
+        );
     }
     // YV42: the login item follows the toggle immediately, not on next launch.
     apply_autostart(&app, next.autostart);
@@ -4901,11 +6230,194 @@ fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
 }
 
+/// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
+/// asks for the panel frame that is exactly the union of its content boxes plus
+/// a margin, and the point the character sits at inside it. The panel is
+/// resized to it and re-parked by that anchor, so Yappy stays put on screen.
+#[tauri::command]
+fn pill_set_panel_frame(app: tauri::AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
+    float_pill::set_panel_frame(&app, w, h, anchor_x, anchor_y);
+}
+
+/// WF-20 — read the frontmost app for the take that just started and tell the
+/// pill which app-aware mode it gets. Off the calling thread: the AX read talks
+/// to the user's app and can stall, and this runs on the take-start path.
+fn emit_style_chip_for_take(app: &AppHandle, state: &Arc<AppState>) {
+    *state.style_chip_app.lock() = None;
+    let app = app.clone();
+    let state = state.clone();
+    std::thread::spawn(move || {
+        let name = focus::frontmost_app_name();
+        let setting = state.settings.lock().dictation_mode.clone();
+        let now = style_chip::monotonic_ms();
+        let chip = style_chip::chip_for(
+            &setting,
+            name.as_deref(),
+            &state.style_overrides.lock(),
+            now,
+        );
+        *state.style_chip_app.lock() = name;
+        log::info!(
+            "style_chip shown visible={} mode={} overridden={}",
+            chip.visible,
+            chip.mode,
+            chip.overridden
+        );
+        let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    });
+}
+
+/// WF-20 — the chip pick for `source_app`, if one is running, replaces the
+/// resolved mode (`style_chip::effective_mode`). Logs only when it does.
+fn apply_style_override(
+    app: &AppHandle,
+    setting: &str,
+    source_app: &str,
+    resolved: dictation::DictationMode,
+) -> dictation::DictationMode {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return resolved;
+    };
+    let now = style_chip::monotonic_ms();
+    let mode = style_chip::effective_mode(
+        setting,
+        source_app,
+        resolved,
+        &state.style_overrides.lock(),
+        now,
+    );
+    if mode != resolved {
+        log::info!(
+            "style_chip applied mode={} over={}",
+            style_chip::mode_word(mode),
+            style_chip::mode_word(resolved)
+        );
+    }
+    mode
+}
+
+/// WF-20 — a click on the pill's style chip: cycle THIS take's app to the next
+/// of the six app-aware modes for the next 15 minutes, and return the chip to
+/// render. Refused (an error the pill shows as a toast) when no take is
+/// listening, when app-aware modes are off, or when no app was read.
+#[tauri::command]
+fn pill_cycle_style(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<style_chip::StyleChip, String> {
+    let state = state.inner().clone();
+    if !*state.recording.lock() {
+        log::info!("style_chip cycle_refused reason=not_listening");
+        return Err("The style chip only changes while Yap is listening.".into());
+    }
+    let setting = state.settings.lock().dictation_mode.clone();
+    if !style_chip::app_aware_on(&setting) {
+        log::info!("style_chip cycle_refused reason=app_aware_off");
+        return Err("App-aware modes are off. Turn them on in Formatting.".into());
+    }
+    let Some(name) = state.style_chip_app.lock().clone() else {
+        log::info!("style_chip cycle_refused reason=no_app");
+        return Err("Yap could not tell which app this is.".into());
+    };
+    let now = style_chip::monotonic_ms();
+    let chip = {
+        let mut overrides = state.style_overrides.lock();
+        let shown = style_chip::shown_mode(&setting, &name, &overrides, now);
+        if overrides.cycle(&name, shown, now).is_none() {
+            log::info!("style_chip cycle_refused reason=no_app");
+            return Err("Yap could not tell which app this is.".into());
+        }
+        style_chip::chip_for(&setting, Some(&name), &overrides, now)
+    };
+    log::info!(
+        "style_chip cycled mode={} ttl_ms={} live_overrides={}",
+        chip.mode,
+        style_chip::OVERRIDE_TTL_MS,
+        state.style_overrides.lock().len()
+    );
+    let _ = app.emit(style_chip::STYLE_CHIP_EVENT, &chip);
+    Ok(chip)
+}
+
 /// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
 /// re-park loop for the duration of the gesture.
 #[tauri::command]
 fn pill_drag_start(app: AppHandle) {
+    // yap-wf-01-click-the-pill-to — every press is also a potential CLICK, so
+    // latch the app that has focus right now (never Yap itself): a stop click
+    // hands focus back to it before the paste target is read.
+    pill_click::PRESS.lock().press(
+        pill_click::frontmost(),
+        &app.config().identifier,
+        std::process::id() as i32,
+        hotkeys::now_ms(),
+    );
     float_pill::drag_start(&app);
+}
+
+/// yap-wf-01-click-the-pill-to — WF-01: a CLICK on the pill (pointer-down and
+/// pointer-up under 4 px and 300 ms, classified in pill/drag.ts) toggles a
+/// hands-free take. The start half is license-gated exactly like
+/// `manual_toggle`; the stop half never is. On stop, focus is returned to the
+/// pre-click app (latched by `pill_drag_start`) BEFORE `stop_take` reads the
+/// paste target, so the text lands where the user was typing.
+#[tauri::command]
+fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
+    let state = state.inner();
+    if !*state.recording.lock() {
+        if *state.busy.lock() {
+            log::info!("pill click action=ignored reason=busy");
+            return Ok(());
+        }
+        if !license_allows_new_dictation(&app, state) {
+            log::info!("pill click action=refused reason=license");
+            return Err(CommandError::license_required());
+        }
+        start_recording(&app, state);
+        if *state.recording.lock() {
+            // A click take is hands-free: nothing is held, so key release or
+            // an fn edge must not finalize it. The next click (or any stop)
+            // ends it through `stop_take`, which clears this latch.
+            *state.hands_free.lock() = true;
+            *state.hands_free_by_chord.lock() = false;
+            log::info!("pill click action=start hands_free=true");
+        } else {
+            log::warn!("pill click action=start_failed reason=take_did_not_start");
+        }
+        emit_status(&app, state);
+        return Ok(());
+    }
+    let pre = pill_click::PRESS
+        .lock()
+        .pre_click(hotkeys::now_ms())
+        .cloned();
+    match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
+        pill_click::PasteTarget::Keep => {
+            log::info!("pill click action=stop refocus=false");
+            stop_take(&app, state, StopOrigin::OnScreen);
+        }
+        pill_click::PasteTarget::Refocus(target) => {
+            // Activation lands through the main run loop, so the wait for it
+            // runs OFF the main thread; the stop follows once the pre-click
+            // app is frontmost (or the bounded wait gives up).
+            let app = app.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                let asked = pill_click::refocus(&target);
+                let front = asked && pill_click::wait_until_front(&target);
+                if !front {
+                    log::warn!("pill click refocus_failed asked={asked}");
+                }
+                log::info!(
+                    "pill click action=stop refocus=true front={front} wait_ms={}",
+                    t0.elapsed().as_millis()
+                );
+                stop_take(&app, &state, StopOrigin::OnScreen);
+            });
+        }
+    }
+    Ok(())
 }
 
 /// YV65 — live move. `dx`/`dy` are the cursor's total travel since
@@ -5090,6 +6602,36 @@ fn microphone_status() -> String {
     mic_auth::authorization_status().as_str().to_string()
 }
 
+/// WF-09 — Settings → Audio → Microphone: every input device plugged in now,
+/// the saved pick and the device the next take opens. `async` so the HAL
+/// enumeration never runs on the main thread.
+#[tauri::command]
+async fn list_microphones() -> Result<mic_select::MicList, String> {
+    Ok(mic_select::list())
+}
+
+/// WF-09 — save the pick (`id: null` = System Default). Used by the NEXT take;
+/// the watcher re-publishes so the tray submenu and every open picker redraw.
+#[tauri::command]
+async fn set_microphone(
+    id: Option<String>,
+    name: Option<String>,
+) -> Result<mic_select::MicList, String> {
+    mic_select::choose(id, name, "settings")
+        .map_err(|_| "Yap could not save that microphone. Try again.".to_string())?;
+    Ok(mic_select::list())
+}
+
+/// WF-10 — save the fallback ranking (stable ids, best first) from Settings.
+/// When the chosen mic disappears — before a take or in the middle of one —
+/// Yap continues on the first ranked mic still plugged in. Virtual inputs are
+/// never auto-picked, ranked or not.
+#[tauri::command]
+async fn set_microphone_order(ids: Vec<String>) -> Result<mic_select::MicList, String> {
+    mic_select::set_order(ids)
+        .map_err(|_| "Yap could not save the microphone order. Try again.".to_string())
+}
+
 #[tauri::command]
 fn get_insights(state: State<'_, Arc<AppState>>) -> Result<Insights, String> {
     state.db.insights()
@@ -5164,14 +6706,30 @@ fn correct_transcript(
 /// Expired ones are purged (audio included) before the list is built, so the
 /// UI can never offer a retry against a clip retention already removed.
 #[tauri::command]
-fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
-    purge_expired_failed_takes(&state.db);
-    Ok(state
-        .db
-        .list_failed_dictations()?
-        .into_iter()
-        .map(failed_row_for_display)
-        .collect())
+///
+/// yap-fx-07 — async, with the work on a blocking thread: adopting an aborted
+/// spill reads and rewrites its audio, which must never run on the main thread
+/// a sync command would hold.
+async fn list_failed_dictations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FailedDictation>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FailedDictation>, String> {
+        purge_expired_failed_takes(&state.db);
+        // yap-fx-07 — a spill a mid-session abort left behind is listed too.
+        adopt_aborted_spills(&state.db, &recovery_dir());
+        Ok(state
+            .db
+            .list_failed_dictations()?
+            .into_iter()
+            .map(failed_row_for_display)
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        log::error!("recovery list_failed worker failed: {e}");
+        "Couldn't load the kept clips — try again".to_string()
+    })?
 }
 
 /// yap-recovery-followups (f) — the row as History shows it. "Already
@@ -5270,6 +6828,7 @@ fn recovered_only_output() -> transcription::AsrOutput {
     transcription::AsrOutput {
         language: "en".into(),
         language_notice: None,
+        language_outside: None,
         text: String::new(),
         backend: "recovered".to_string(),
         seconds: 0.0,
@@ -5881,166 +7440,345 @@ fn finish_preconditions<M>(
 /// `keep_partial` + `confirm` ("Keep what was transcribed"): see
 /// [`keep_what_was_transcribed`]. The backend requires `confirm: true` there in
 /// ADDITION to the UI's confirm dialog (yap-recovery-followups (b)).
+///
+/// yap-1106-retry-failed-dictation — `async` + `spawn_blocking`, because a
+/// plain `fn` command runs ON THE MAIN THREAD in Tauri, and this one decodes
+/// minutes of audio: that was the beach ball and the "wall of doom" Wilson
+/// saw on every Retry. The body runs inside the `spawn_blocking` closure below,
+/// unchanged otherwise (kept inline so the finish-path tripwire in
+/// tests/long_take_recovery.rs reads the real pipeline); the engine stage runs
+/// through [`retry_decode_bounded`] (one engine, a queue, a deadline).
 #[tauri::command]
-fn retry_failed_dictation(
+async fn retry_failed_dictation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
     keep_partial: Option<bool>,
     confirm: Option<bool>,
 ) -> Result<TranscriptEntry, String> {
-    let keep_partial = keep_partial.unwrap_or(false);
-    let settings = state.settings.lock().clone();
-    // Y9-B: read once per retry, same as a live take reads it once per take.
-    let style_profile = state.db.style_profile();
-    // Y10-A: set to the decoded take's language before the retry's cleanup.
-    let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
-    // Same cleanup pipeline as a live take, minus the caret context: the retry
-    // happens in Yap, so there is no cursor to join onto.
-    let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
-        let mode = dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        );
-        // Y9-C: a retry matches rules by mode and language; its row stores no
-        // bundle id, so `app:` rules cannot match it (they never guess).
-        let polish_config = polish::PolishConfig::from_settings(&settings, mode).with_preferences(
-            state.db.matching_voice_preferences(&voice_prefs::TakeContext {
-                mode,
-                bundle_id: "",
-                language: &settings.language,
-            }),
-        )
-        .with_profile(style_profile.clone());
-        // A retry has no live paste target (the row stores the app's title, not
-        // its bundle id), so it gets the conservative unknown-target format.
-        let structure_format = dictation::structure_format_for_take(
-            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-            &settings.structure_app_overrides,
-            "",
-            mode,
-        );
-        let (text, _) = dictation::run_cleanup_for_language(
-            raw_text,
-            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-            mode,
-            structure_format,
-            polish_config.style,
-            &[],
-            // Y10-A: the language the retry decoded in (the primary for a
-            // "keep what was transcribed", which decodes nothing).
-            &retry_language.borrow(),
-            |t| {
-                state
-                    .db
-                    .apply_dictionary(t)
-                    .unwrap_or_else(|_| t.to_string())
-            },
-            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-        );
-        text
-    };
-    let result = if keep_partial {
-        match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
-            Ok(entry) => Ok(entry),
-            // A refusal is not a failure of the take: the row's reason stays.
-            Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
-            Err(RecoveryError::Failed(e)) => Err(e),
-        }
-    } else {
-        // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
-        let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
-            return Err(RecoveryRefusal::RetryInFlight.to_string());
-        };
-        // One closure, so every early `return Err` below lands in the label update.
-        (|| -> Result<TranscriptEntry, String> {
-            let row = state
-                .db
-                .get_failed_dictation(&id)?
-                .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-            let wav = PathBuf::from(&row.wav_path);
-            let (model_id, model_path) = finish_preconditions(
-                &state.db,
-                &row,
-                wav.exists(),
-                native_model_ready(&settings.native_model),
-            )?;
-            let samples = record::read_wav_16k_mono(&wav)?;
-            // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
-            // recovered mid-decode already has words in `take_chunks` and an
-            // `end_sample` saying how far into its audio they go, so decode the
-            // REMAINDER and keep what exists (`finish_recovered_decode`, called by
-            // `decode_failed_take`).
-            let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
-                Ok(terms) => asr_engine::build_bias_prompt(&terms),
-                Err(e) => {
-                    log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
-                    None
-                }
-            };
-            // The recovered words and the freshly decoded remainder are ONE
-            // transcript from here down. Everything after this line — the
-            // hallucination gate, the dictionary, the cleanup pipeline, the polish
-            // pass — sees exactly what it would have seen had the take never been
-            // interrupted. A decode with ANY failed window comes back `Err` here,
-            // so the row and the clip are never converted or deleted for it.
-            let (partial_text, resume_sample) = match row.take_id.as_deref() {
-                Some(take_id) => (
-                    row.partial_text.clone(),
-                    state.db.take_resume_sample(take_id),
-                ),
-                None => (None, Ok(0)),
-            };
-            let (raw_text, asr) = decode_failed_take(
-                &state.db,
-                &row,
-                partial_text,
-                resume_sample,
-                &samples,
-                |remaining| {
-                    transcribe_native(
-                        &state.transcription,
-                        &model_id,
-                        &model_path,
-                        remaining,
-                        &settings.language_prefs(),
-                        bias_prompt,
-                        // A retry or recovery from History has no live pill to fill:
-                        // the user is looking at the history row, not at a recording
-                        // indicator.
-                        &mut transcribe_progress::NoObserver,
-                    )
-                },
-            )?;
-            if raw_text.trim().is_empty() {
-                return Err("There is nothing left to transcribe in this take".into());
-            }
-            *retry_language.borrow_mut() = asr.language.clone();
-            let text = cleanup(&row, &raw_text);
-            convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
-        })()
-    };
-    match result {
-        Ok(entry) => {
-            // The entry's text: on a merge that kept a longer live entry, that
-            // is what history holds, so that is what goes on the clipboard.
-            let text = entry.text.clone();
-            let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-            log::info!(
-                "YV52 recovery: retry succeeded words={} ({})",
-                entry.word_count,
-                outcome.message
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<TranscriptEntry, String> {
+        let keep_partial = keep_partial.unwrap_or(false);
+        let settings = state.settings.lock().clone();
+        // Y9-B: read once per retry, same as a live take reads it once per take.
+        let style_profile = state.db.style_profile();
+        // Y10-A: set to the decoded take's language before the retry's cleanup.
+        let retry_language = std::cell::RefCell::new(settings.language_prefs().primary);
+        // Same cleanup pipeline as a live take, minus the caret context: the retry
+        // happens in Yap, so there is no cursor to join onto.
+        let cleanup = |row: &FailedDictation, raw_text: &str| -> String {
+            let mode = dictation::resolve_mode(
+                &settings.dictation_mode,
+                row.source_app.as_deref().unwrap_or_default(),
             );
-            let _ = app.emit("transcript", &entry);
-            Ok(entry)
+            // Y9-C: a retry matches rules by mode and language; its row stores no
+            // bundle id, so `app:` rules cannot match it (they never guess).
+            let polish_config =
+                polish::PolishConfig::from_settings(&settings, mode)
+                    .with_preferences(state.db.matching_voice_preferences(
+                        &voice_prefs::TakeContext {
+                            mode,
+                            bundle_id: "",
+                            language: &settings.language,
+                        },
+                    ))
+                    .with_profile(style_profile.clone());
+            // A retry has no live paste target (the row stores the app's title, not
+            // its bundle id), so it gets the conservative unknown-target format.
+            let structure_format = dictation::structure_format_for_take(
+                settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+                &settings.structure_app_overrides,
+                "",
+                mode,
+            );
+            let (text, _) = dictation::run_cleanup_for_language(
+                raw_text,
+                dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+                mode,
+                structure_format,
+                polish_config.style,
+                &[],
+                // Y10-A: the language the retry decoded in (the primary for a
+                // "keep what was transcribed", which decodes nothing).
+                &retry_language.borrow(),
+                |t| {
+                    state
+                        .db
+                        .apply_dictionary(t)
+                        .unwrap_or_else(|_| t.to_string())
+                },
+                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+            );
+            text
+        };
+        let result = if keep_partial {
+            match keep_what_was_transcribed(&state.db, &RECOVERY_CLAIMS, &id, confirm, cleanup) {
+                Ok(entry) => Ok(entry),
+                // A refusal is not a failure of the take: the row's reason stays.
+                Err(RecoveryError::Refused(r)) => return Err(r.to_string()),
+                Err(RecoveryError::Failed(e)) => Err(e),
+            }
+        } else {
+            // (b) One Finish/Retry per row at a time; Keep refuses while it runs.
+            let Some(_claim) = RECOVERY_CLAIMS.claim(&id) else {
+                return Err(RecoveryRefusal::RetryInFlight.to_string());
+            };
+            // One closure, so every early `return Err` below lands in the label update.
+            (|| -> Result<TranscriptEntry, String> {
+                let row = state
+                    .db
+                    .get_failed_dictation(&id)?
+                    .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+                let wav = PathBuf::from(&row.wav_path);
+                let (model_id, model_path) = finish_preconditions(
+                    &state.db,
+                    &row,
+                    wav.exists(),
+                    native_model_ready(&settings.native_model),
+                )?;
+                let samples = record::read_wav_16k_mono(&wav)?;
+                // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
+                // recovered mid-decode already has words in `take_chunks` and an
+                // `end_sample` saying how far into its audio they go, so decode the
+                // REMAINDER and keep what exists (`finish_recovered_decode`, called by
+                // `decode_failed_take`).
+                let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+                    Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                    Err(e) => {
+                        log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+                        None
+                    }
+                };
+                // The recovered words and the freshly decoded remainder are ONE
+                // transcript from here down. Everything after this line — the
+                // hallucination gate, the dictionary, the cleanup pipeline, the polish
+                // pass — sees exactly what it would have seen had the take never been
+                // interrupted. A decode with ANY failed window comes back `Err` here,
+                // so the row and the clip are never converted or deleted for it.
+                let (partial_text, resume_sample) = match row.take_id.as_deref() {
+                    Some(take_id) => (
+                        row.partial_text.clone(),
+                        state.db.take_resume_sample(take_id),
+                    ),
+                    None => (None, Ok(0)),
+                };
+                // yap-1106-retry-failed-dictation — the deadline is the CLIP's,
+                // read off the samples the retry really decodes (a resume decodes
+                // less, and gets the same allowance: the engine, not the audio,
+                // is what the deadline guards against).
+                let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+                let deadline = retry_deadline(clip_secs);
+                let deadline_ms = deadline.as_millis() as u64;
+                let mut on_phase = |phase: RetryPhase| {
+                    let payload = RetryPhasePayload {
+                        id: id.clone(),
+                        phase: match phase {
+                            RetryPhase::Queued => "queued",
+                            RetryPhase::Decoding => "decoding",
+                        },
+                        deadline_ms,
+                    };
+                    if let Err(e) = app.emit(RETRY_PHASE_EVENT, &payload) {
+                        log::warn!("retry_dictation id={id} phase event not delivered: {e}");
+                    }
+                };
+                let manager = state.transcription.clone();
+                let language_prefs = settings.language_prefs();
+                let (raw_text, asr) = decode_failed_take(
+                    &state.db,
+                    &row,
+                    partial_text,
+                    resume_sample,
+                    &samples,
+                    |remaining| {
+                        let (decode_manager, model_id, model_path) =
+                            (manager.clone(), model_id.clone(), model_path.clone());
+                        retry_decode_bounded(
+                            &manager,
+                            &id,
+                            clip_secs,
+                            deadline,
+                            &mut on_phase,
+                            move || {
+                                transcribe_native(
+                                    &decode_manager,
+                                    &model_id,
+                                    &model_path,
+                                    remaining,
+                                    &language_prefs,
+                                    bias_prompt,
+                                    // A retry or recovery from History has no live pill to fill:
+                                    // the user is looking at the history row, not at a recording
+                                    // indicator.
+                                    &mut transcribe_progress::NoObserver,
+                                )
+                            },
+                        )
+                    },
+                )?;
+                if raw_text.trim().is_empty() {
+                    return Err("There is nothing left to transcribe in this take".into());
+                }
+                *retry_language.borrow_mut() = asr.language.clone();
+                let text = cleanup(&row, &raw_text);
+                convert_and_drop_clip(&state.db, &row, &wav, text, asr, Some(raw_text))
+            })()
+        };
+        match result {
+            Ok(entry) => {
+                // The entry's text: on a merge that kept a longer live entry, that
+                // is what history holds, so that is what goes on the clipboard.
+                let text = entry.text.clone();
+                let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+                log::info!(
+                    "YV52 recovery: retry succeeded words={} ({})",
+                    entry.word_count,
+                    outcome.message
+                );
+                let _ = app.emit("transcript", &entry);
+                Ok(entry)
+            }
+            Err(e) => {
+                // The row's reason is the CURRENT failure, not the original one (a
+                // no-op when the row was converted or dropped).
+                let _ = state.db.note_failed_retry(&id, &e, None);
+                Err(e)
+            }
         }
-        Err(e) => {
-            // The row's reason is the CURRENT failure, not the original one (a
-            // no-op when the row was converted or dropped).
-            let _ = state.db.note_failed_retry(&id, &e, None);
-            Err(e)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("retry_dictation worker failed: {e}");
+        RETRY_DEADLINE_ERROR.to_string()
+    })?
+}
+
+/// yap-1106-retry-failed-dictation — the deadline a retry gets, scaled to the
+/// clip: a fixed allowance plus one second per second of audio, never under
+/// [`RETRY_DEADLINE_MIN_SECS`] and never over [`RETRY_DEADLINE_MAX_SECS`]. A
+/// healthy engine decodes a minute of audio in a few seconds, so the deadline
+/// is a backstop against a stuck engine, not a budget a good decode spends.
+/// Mirrored in `desktop/src/retryDictation.ts` (`retryDeadlineMs`).
+fn retry_deadline(clip_secs: f64) -> Duration {
+    let secs = (RETRY_DEADLINE_BASE_SECS + clip_secs.max(0.0))
+        .clamp(RETRY_DEADLINE_MIN_SECS, RETRY_DEADLINE_MAX_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+const RETRY_DEADLINE_BASE_SECS: f64 = 15.0;
+const RETRY_DEADLINE_MIN_SECS: f64 = 30.0;
+const RETRY_DEADLINE_MAX_SECS: f64 = 180.0;
+/// The one plain sentence the UI shows when a retry ran out of time. The clip
+/// stays kept; the button says Try again.
+const RETRY_DEADLINE_ERROR: &str = "Couldn't transcribe this clip — Try again";
+/// A retry that queued behind a live dictation and never got its turn.
+const RETRY_ENGINE_BUSY_ERROR: &str =
+    "The speech engine stayed busy with a live dictation — Try again";
+/// The event the retry emits as it moves through its phases, so the Retry
+/// button can say "Waiting for the speech engine…" while it queues and arm
+/// its own watchdog on the same deadline the backend holds itself to.
+const RETRY_PHASE_EVENT: &str = "retry-dictation";
+
+/// Where a retry is right now, as the UI sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RetryPhase {
+    /// The engine is leased to a live take or still loading; the retry waits.
+    Queued,
+    /// The retry holds (or is about to hold) the engine.
+    Decoding,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RetryPhasePayload {
+    id: String,
+    phase: &'static str,
+    /// The whole retry's deadline, in ms from when the retry was admitted.
+    deadline_ms: u64,
+}
+
+/// yap-1106-retry-failed-dictation — THE ENGINE STAGE OF A RETRY. One engine,
+/// never two: the retry is admitted only onto the engine dictation uses.
+///
+/// * An engine a timed-out lease abandoned is still running: fail fast with
+///   [`transcription::ENGINE_STUCK`]. Nothing loads.
+/// * The engine is leased to a live take or loading: QUEUE (`on_phase(Queued)`,
+///   `result=queued` logged) and wait for it to come back, up to the deadline.
+/// * Then decode on a worker thread and wait at most what is left of the
+///   deadline. Past it the caller gets [`RETRY_DEADLINE_ERROR`] and the row
+///   and clip stay; the decode is not killed (that would mean cancelling a
+///   latch a live take shares), it simply finishes unobserved and the engine
+///   goes back to the slot when it does.
+///
+/// Logs exactly one `retry_dictation … result=<ok|error:…>` line at the end
+/// (plus one `result=queued` line when it queued), with the wall time and the
+/// number of engine loads that happened meanwhile — 0 is the whole point.
+fn retry_decode_bounded(
+    manager: &transcription::TranscriptionManager,
+    id: &str,
+    clip_secs: f64,
+    deadline: Duration,
+    on_phase: &mut dyn FnMut(RetryPhase),
+    decode: impl FnOnce() -> Result<transcription::AsrOutput, String> + Send + 'static,
+) -> Result<transcription::AsrOutput, String> {
+    let started = std::time::Instant::now();
+    let loads_before = manager.engine_loads();
+    let report = |result: &Result<transcription::AsrOutput, String>| {
+        let outcome = match result {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("error:{}", e.replace('\n', " ")),
+        };
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            started.elapsed().as_millis(),
+            manager.engine_loads().saturating_sub(loads_before)
+        );
+    };
+    if manager.abandoned_engines() > 0 {
+        let r = Err(transcription::ENGINE_STUCK.to_string());
+        report(&r);
+        return r;
+    }
+    if manager.is_busy() {
+        on_phase(RetryPhase::Queued);
+        log::info!(
+            "retry_dictation id={id} clip_s={clip_secs:.1} result=queued wall_ms={} engine_loads_during=0",
+            started.elapsed().as_millis()
+        );
+        if !manager.wait_until_idle(deadline) {
+            let r = Err(RETRY_ENGINE_BUSY_ERROR.to_string());
+            report(&r);
+            return r;
+        }
+        // The decode the retry waited on may itself have timed out and left
+        // its engine running — the same refusal as above, one check later.
+        if manager.abandoned_engines() > 0 {
+            let r = Err(transcription::ENGINE_STUCK.to_string());
+            report(&r);
+            return r;
         }
     }
+    on_phase(RetryPhase::Decoding);
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode());
+    });
+    let result = match rx.recv_timeout(remaining) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::warn!(
+                "retry_dictation id={id} deadline_s={:.0} passed — the decode is left to finish unobserved",
+                deadline.as_secs_f64()
+            );
+            Err(RETRY_DEADLINE_ERROR.to_string())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("The speech engine stopped unexpectedly — Try again".to_string())
+        }
+    };
+    report(&result);
+    result
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
@@ -6212,9 +7950,21 @@ fn delete_scratch(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
 
 // --- DB-D Scratchpad window ---
 
+/// fix-b5-1 — `note_id`: the note to land on (the pill's meeting note);
+/// `None` keeps the plain open on whatever note was last active.
 #[tauri::command]
-fn open_scratchpad(app: AppHandle) -> Result<(), String> {
-    scratchpad::open(&app)
+fn open_scratchpad(app: AppHandle, note_id: Option<String>) -> Result<(), String> {
+    match note_id.filter(|id| !id.is_empty()) {
+        Some(id) => scratchpad::open_note(&app, id),
+        None => scratchpad::open(&app),
+    }
+}
+
+/// fix-b5-1 — the Scratchpad webview asks, on load and on every show, which
+/// note it was opened for (taken once; `None` = keep the active note).
+#[tauri::command]
+fn scratchpad_take_open_note() -> Option<String> {
+    scratchpad::take_open_note()
 }
 
 #[tauri::command]
@@ -6226,6 +7976,38 @@ fn hide_scratchpad(app: AppHandle) {
 #[tauri::command]
 fn scratchpad_focus(focused: bool, note_id: Option<String>) {
     scratchpad::set_focused_note(focused, note_id);
+}
+
+/// WF-15 — the Scratchpad's floating Copy: the whole note as plain text, with
+/// the transient marker so clipboard managers skip it. `async` so the
+/// sequenced copy runs OFF the main thread (it waits on it).
+#[tauri::command]
+async fn copy_note_transient(app: AppHandle, text: String) -> Result<usize, String> {
+    let chars = text.chars().count();
+    tauri::async_runtime::spawn_blocking(move || paste::copy_text_transient(&app, &text))
+        .await
+        .map_err(|e| format!("copy task join failed: {e}"))?
+        .map_err(|e| {
+            log::warn!("scratchpad copy failed chars={chars} err={e}");
+            "Couldn't put the note on the clipboard. Select the text and press ⌘C instead."
+                .to_string()
+        })?;
+    log::info!("scratchpad copy ok chars={chars}");
+    diagnostics::bump("scratchpad", "copy_note");
+    Ok(chars)
+}
+
+/// WF-15 — the Scratchpad's expand button: fill the current screen's work
+/// area, or go back to the frame it had before. Returns the new state.
+#[tauri::command]
+fn scratchpad_set_expanded(app: AppHandle, expanded: bool) -> Result<bool, String> {
+    let now = scratchpad::set_expanded(&app, expanded).map_err(|e| {
+        log::warn!("scratchpad expand failed expanded={expanded} err={e}");
+        format!("Couldn't resize the Scratchpad ({e}). Drag its edge instead.")
+    })?;
+    log::info!("scratchpad expand ok expanded={now}");
+    diagnostics::bump("scratchpad", if now { "expand" } else { "collapse" });
+    Ok(now)
 }
 
 #[tauri::command]
@@ -7466,6 +9248,10 @@ async fn run_system_audio_setup(
     let db = Arc::clone(&state.db);
     tauri::async_runtime::spawn_blocking(move || {
         let verdict = prewarm_system_audio();
+        // yap-1106-call-audio-truth — one line per run: this is also the chip's
+        // "Turn on call audio" action, and a run that lands here without a
+        // `granted` is the next thing a Diagnostics reader asks about.
+        log::info!("meeting system_audio_setup ran verdict={verdict:?}");
         db.record_system_audio_setup(verdict)
     })
     .await
@@ -8234,21 +10020,189 @@ fn export_meeting_markdown(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<ExportResult, String> {
-    write_meeting_markdown(&state.db, &id)
+    let dir = meeting_export_dir(&state.settings.lock());
+    let started = std::time::Instant::now();
+    match write_meeting_markdown(&state.db, &id, &dir) {
+        Ok(r) => {
+            let name = Path::new(&r.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            log::info!("meetings export ok file={name} segments={}", r.count);
+            diagnostics::record_duration("meetings", "export", started.elapsed().as_millis() as u64);
+            Ok(r)
+        }
+        Err(e) => {
+            log::warn!("meetings export failed id={id} err={e}");
+            Err(format!("Couldn't export this meeting ({e}). Check the export folder in Settings › Meetings."))
+        }
+    }
+}
+
+/// yap-1106 — the export folder the settings name, or the default.
+pub(crate) fn meeting_export_dir(settings: &AppSettings) -> PathBuf {
+    match settings.meeting_export_dir.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => PathBuf::from(expand_tilde(s)),
+        _ => app_paths::default_meeting_export_dir(),
+    }
+}
+
+/// `~/x` → `<home>/x`; anything else unchanged.
+fn expand_tilde(s: &str) -> String {
+    match s.strip_prefix("~/") {
+        Some(rest) => home_dir().join(rest).display().to_string(),
+        None if s == "~" => home_dir().display().to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// yap-1106 — the path an export of `id` would have (or has): the folder plus
+/// `meetings::export_file_name`. Pure over the row; does not touch the disk.
+fn meeting_export_path(db: &Database, settings: &AppSettings, id: &str) -> Result<PathBuf, String> {
+    let meeting = db.get_meeting(id)?.ok_or_else(|| format!("no meeting {id}"))?;
+    Ok(meeting_export_dir(settings).join(meetings::export_file_name(&meeting.title, meeting.started_at)))
+}
+
+/// yap-1106 — Copy as Markdown: the same bytes the export writes, on the
+/// clipboard. `async` so the sequenced copy runs OFF the main thread (it waits
+/// on it; see `paste::copy_text_sequenced`).
+#[tauri::command]
+async fn copy_meeting_markdown(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<usize, String> {
+    let (_, markdown) = state.db.meeting_markdown(&id).map_err(|e| {
+        log::warn!("meetings copy failed id={id} err={e}");
+        format!("Couldn't read this meeting ({e}). Open it again and retry.")
+    })?;
+    let chars = markdown.chars().count();
+    tauri::async_runtime::spawn_blocking(move || paste::copy_text_sequenced(&app, &markdown))
+        .await
+        .map_err(|e| format!("copy task join failed: {e}"))?
+        .map_err(|e| {
+            log::warn!("meetings copy failed id={id} err={e}");
+            "Couldn't put the Markdown on the clipboard. Try Export Markdown instead.".to_string()
+        })?;
+    log::info!("meetings copy ok chars={chars}");
+    diagnostics::bump("meetings", "copy_markdown");
+    Ok(chars)
+}
+
+/// yap-1106 — what Show in Finder revealed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevealResult {
+    pub path: String,
+    /// `"file"` — the export was selected in Finder; `"folder"` — no export of
+    /// this meeting exists yet, so the export folder was opened.
+    pub target: String,
+}
+
+/// yap-1106 — Show in Finder: select the meeting's export when it exists,
+/// otherwise open the export folder (created on demand).
+#[tauri::command]
+fn reveal_meeting_export(state: State<'_, Arc<AppState>>, id: String) -> Result<RevealResult, String> {
+    let path = meeting_export_path(&state.db, &state.settings.lock(), &id).map_err(|e| {
+        log::warn!("meetings reveal failed id={id} err={e}");
+        format!("Couldn't find this meeting ({e}).")
+    })?;
+    if path.is_file() {
+        support::reveal_in_finder(&path);
+        log::info!("meetings reveal target=file");
+        return Ok(RevealResult { path: path.display().to_string(), target: "file".into() });
+    }
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(app_paths::default_meeting_export_dir);
+    open_folder(&dir, "meetings reveal")?;
+    log::info!("meetings reveal target=folder");
+    Ok(RevealResult { path: dir.display().to_string(), target: "folder".into() })
+}
+
+/// Create `dir` and open it in Finder. One sentence + one action on failure.
+fn open_folder(dir: &Path, who: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        log::warn!("{who} folder create failed err={e}");
+        format!("Couldn't create the export folder ({e}). Pick another folder in Settings › Meetings.")
+    })?;
+    std::process::Command::new("/usr/bin/open").arg(dir).spawn().map_err(|e| {
+        log::warn!("{who} open failed err={e}");
+        format!("Couldn't open the folder in Finder ({e}).")
+    })?;
+    Ok(())
+}
+
+/// yap-1106 — Settings › Meetings › Open meetings folder.
+#[tauri::command]
+fn open_meeting_export_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let dir = meeting_export_dir(&state.settings.lock());
+    open_folder(&dir, "meetings open-folder")?;
+    log::info!("meetings open-folder ok");
+    Ok(dir.display().to_string())
+}
+
+/// yap-1106 — what Settings › Meetings shows about the export folder.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingExportLocation {
+    pub path: String,
+    pub is_default: bool,
+    pub default_path: String,
+}
+
+#[tauri::command]
+fn meeting_export_location(state: State<'_, Arc<AppState>>) -> MeetingExportLocation {
+    let settings = state.settings.lock();
+    MeetingExportLocation {
+        path: meeting_export_dir(&settings).display().to_string(),
+        is_default: settings.meeting_export_dir.as_deref().map(str::trim).is_none_or(str::is_empty),
+        default_path: app_paths::default_meeting_export_dir().display().to_string(),
+    }
+}
+
+/// yap-1106 — change the export folder. `None` / blank = back to the default.
+/// The folder is created here, so a path that cannot be written is refused at
+/// save time rather than on the next export.
+#[tauri::command]
+fn set_meeting_export_dir(
+    state: State<'_, Arc<AppState>>,
+    path: Option<String>,
+) -> Result<MeetingExportLocation, String> {
+    let next = path.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(expand_tilde);
+    if let Some(p) = next.as_deref() {
+        let dir = Path::new(p);
+        if !dir.is_absolute() {
+            return Err("Use a full path, like ~/Documents/Yap/Meetings.".into());
+        }
+        std::fs::create_dir_all(dir).map_err(|e| {
+            log::warn!("meetings export-dir set failed err={e}");
+            format!("Couldn't create that folder ({e}). Pick one you can write to.")
+        })?;
+    }
+    {
+        let mut settings = state.settings.lock();
+        settings.meeting_export_dir = next;
+        persist_settings(&settings).map_err(|e| {
+            log::warn!("meetings export-dir persist failed err={e}");
+            format!("The folder was not saved ({e}). Try again.")
+        })?;
+    }
+    log::info!("meetings export-dir set default={}", path.as_deref().map(str::trim).is_none_or(str::is_empty));
+    Ok(meeting_export_location(state))
 }
 
 /// yap24-NT9 — the export itself, shared by the `export_meeting_markdown`
 /// command and the headless `--transcribe-meeting` proof, so the file the CLI
 /// asserts on is byte-for-byte the file the Meetings view writes.
-pub(crate) fn write_meeting_markdown(db: &Database, id: &str) -> Result<ExportResult, String> {
+pub(crate) fn write_meeting_markdown(db: &Database, id: &str, dir: &Path) -> Result<ExportResult, String> {
     use std::io::Write;
 
     let (meeting, markdown) = db.meeting_markdown(id)?;
-    let dir = data_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = meetings::export_file_stem(&meeting.title, meeting.started_at);
-    let path = dir.join(format!("{stem}.md"));
-    let tmp = dir.join(format!(".{stem}.md.part"));
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // yap-1106 — `<date> <title>.md` in the export folder (default
+    // `~/Documents/Yap/Meetings`), through the same sanitiser as before.
+    let name = meetings::export_file_name(&meeting.title, meeting.started_at);
+    let path = dir.join(&name);
+    let tmp = dir.join(format!(".{name}.part"));
 
     let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
     let mut w = std::io::BufWriter::new(file);
@@ -8320,6 +10274,78 @@ fn meeting_kind_choices() -> Vec<meeting_control::KindChoice> {
     meeting_control::KIND_PICKER.to_vec()
 }
 
+/// WF-08 — what the pill's Meeting popover shows: today's next three meetings,
+/// "No upcoming meetings", or "Connect calendar". Decided by
+/// `calendar::meeting_popover` from the SAME snapshot the menu bar's "Today's
+/// Meetings" reads (`meeting_detect::upcoming_snapshot`), so the pill and the
+/// tray never disagree. Never reads EventKit, never asks for access.
+#[tauri::command]
+fn meeting_popover(state: State<'_, Arc<AppState>>) -> calendar::MeetingPopover {
+    let setup = state.db.notetaker_setup();
+    let snap = meeting_detect::upcoming_snapshot();
+    let pop = calendar::meeting_popover(
+        snap.as_ref(),
+        chrono::Local::now().timestamp(),
+        !setup.dismissed && !setup.calendar,
+    );
+    log::info!(
+        "pill meeting_popover opened state={} rows={} connect_nav={}",
+        pop.state,
+        pop.meetings.len(),
+        pop.connect.as_ref().map_or("none", |c| c.nav.as_str())
+    );
+    pop
+}
+
+/// WF-08 — a Record row of the pill's Meeting popover. Looks the row up by its
+/// occurrence key in the current snapshot, starts the recording named after
+/// the event (Virtual when it carries a link, as the tray's Record does), and
+/// snoozes the pill offer for that same occurrence. A row that left today's
+/// list since the popover opened is refused in words.
+#[tauri::command]
+fn meeting_popover_record(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let snap = meeting_detect::upcoming_snapshot();
+    let Some(row) = calendar::popover_meeting_for(snap.as_ref(), &key) else {
+        log::warn!("pill meeting_popover_record result=ignored:stale_row");
+        return Err(calendar::POPOVER_STALE_ERROR.to_string());
+    };
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    let st = state.inner().clone();
+    let started = std::time::Instant::now();
+    match begin_meeting(&app, &st, row.title.clone(), kind) {
+        Ok(status) => {
+            let result = if status.recording {
+                "started"
+            } else {
+                "not_started"
+            };
+            log::info!(
+                "pill meeting_popover_record result={result} has_title={} linked={} ms={}",
+                row.title.is_some(),
+                row.has_link,
+                started.elapsed().as_millis()
+            );
+            if meeting_detect::respond(&row.key).is_some() {
+                meeting_detect::emit_clear(&app);
+                release_offer_pill(&app);
+            }
+            Ok(status)
+        }
+        Err(e) => {
+            log::warn!("pill meeting_popover_record result=error:{e}");
+            Err(e)
+        }
+    }
+}
+
 /// Start a meeting. Errors (no capture engine, one already running) come back as
 /// a string the UI shows verbatim — this is the button a first-time user
 /// presses, and a silent failure here is the whole of finding #6 all over again.
@@ -8346,9 +10372,31 @@ fn begin_meeting(
     title: Option<String>,
     kind: meetings::MeetingKind,
 ) -> Result<meeting_control::MeetingStatus, String> {
+    begin_meeting_from(app, st, title, kind, StartOrigin::Elsewhere).map(|(status, _)| status)
+}
+
+/// fix-b1-1 — who is starting the meeting. Every start that is NOT the call
+/// offer's own [Record] withdraws the call offer and chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    /// `accept_call_offer` → `Effect::StartRecording`.
+    CallOffer,
+    /// The pill, the Meetings tab, the tray's Upcoming row, the calendar offer.
+    Elsewhere,
+}
+
+/// `begin_meeting`, also saying whether THIS call began the recording (false:
+/// a meeting was already running and its status came back unchanged).
+fn begin_meeting_from(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    title: Option<String>,
+    kind: meetings::MeetingKind,
+    origin: StartOrigin,
+) -> Result<(meeting_control::MeetingStatus, bool), String> {
     let controller = st.meeting().ok_or("Yap is still starting up")?;
     if controller.is_recording() {
-        return Ok(controller.status());
+        return Ok((controller.status(), false));
     }
     controller.start_with_kind(&meetings_dir(), title, kind)?;
     // yap-notetaker-notes — the light live transcript; it ends by itself when
@@ -8357,10 +10405,14 @@ fn begin_meeting(
     let status = controller.status();
     // A recording started: whatever offer the pill was holding is answered.
     meeting_detect::clear(app, None);
+    if origin == StartOrigin::Elsewhere {
+        // fix-b1-1 — and the call offer / chip, which this start did not answer.
+        call_offer_meeting_started_elsewhere(app, "begin_meeting");
+    }
     if idle_pill_on(st) {
         float_pill::show_for_recording(app);
     }
-    Ok(status)
+    Ok((status, true))
 }
 
 /// yap-notetaker-detect — the offer the pill should show, for a pill webview
@@ -8425,6 +10477,355 @@ pub(crate) fn release_offer_pill(app: &AppHandle) {
     // Y6-B: the idle pill obeys an hour-hide too.
     let show = idle_pill_on(&st);
     float_pill::after_recording(app, float_pill::pill_visible_after_card(show, in_flight));
+}
+
+// ── yap-call-1 · the call offer ─────────────────────────────────────────────
+
+/// Create (once) the small offer window, content-protected so a screen share
+/// never shows it. The pill (`float`) and its recording dot stay visible.
+fn ensure_call_offer_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+        return Ok(w);
+    }
+    let (w, h) = (340.0, 176.0);
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        call_offer::CALL_OFFER_WINDOW,
+        tauri::WebviewUrl::App("call-offer.html".into()),
+    )
+    .title("")
+    .inner_size(w, h)
+    .resizable(false)
+    .decorations(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .visible_on_all_workspaces(true);
+    #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
+    {
+        builder = builder.transparent(true);
+    }
+    let win = builder
+        .build()
+        .map_err(|e| format!("call-offer window: {e}"))?;
+    call_offer::apply_content_protection(&win);
+    let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    // Park it just above the pill (bottom-centre of the pill's monitor).
+    if let (Some(pill), Ok(Some(mon))) = (app.get_webview_window("float"), win.current_monitor()) {
+        if let Ok(pos) = pill.outer_position() {
+            let scale = mon.scale_factor();
+            let x = pos.x as f64 / scale;
+            let y = (pos.y as f64 / scale - h - 8.0).max(0.0);
+            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+        }
+    }
+    Ok(win)
+}
+
+/// Apply the machine's effects. The ONE place a call offer becomes a recording
+/// (`Effect::StartRecording`, only ever produced by `UserChoice::Record`).
+fn apply_call_offer_effects(
+    app: &AppHandle,
+    st: &Arc<AppState>,
+    effects: Vec<call_offer::Effect>,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    use call_offer::Effect;
+    let mut started = None;
+    let mut error = None;
+    for fx in effects {
+        match fx {
+            Effect::ShowOffer | Effect::ShowChip | Effect::ShowEndPrompt => {
+                match ensure_call_offer_window(app) {
+                    Ok(w) => {
+                        let _ = w.show();
+                    }
+                    Err(e) => log::warn!("call_offer window_failed err={e}"),
+                }
+            }
+            Effect::Withdraw | Effect::HideEndPrompt => {
+                if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                    let _ = w.hide();
+                }
+            }
+            Effect::StartRecording {
+                offer_id,
+                bundle_id,
+                title,
+                detected_via,
+            } => {
+                log::info!(
+                    "call_offer record bundle={bundle_id} via={} offer={offer_id}",
+                    detected_via.as_str()
+                );
+                // fix-b1-1 — read BEFORE begin_meeting: a meeting the offer did
+                // not start is never stamped with this call's app / via.
+                let already = st.meeting().is_some_and(|c| c.is_recording());
+                let begun = match call_offer::offer_start_decision(already) {
+                    call_offer::OfferStart::AlreadyRecording => None,
+                    call_offer::OfferStart::Begin => Some(begin_meeting_from(
+                        app,
+                        st,
+                        Some(title),
+                        meetings::MeetingKind::Virtual,
+                        StartOrigin::CallOffer,
+                    )),
+                };
+                match begun {
+                    None | Some(Ok((_, false))) => {
+                        log::info!(
+                            "call_offer start_refused reason=already_recording bundle={bundle_id}"
+                        );
+                        crate::diagnostics::bump("call_offer", "already_recording");
+                        // Recording → Chip → withdrawn and spent: no chip stays
+                        // claiming the call is not recorded.
+                        let policy = call_offer::load_policy(&st.db);
+                        let _ = call_offer::drive(call_offer::Input::StartFailed, &policy);
+                        let _ =
+                            call_offer::drive(call_offer::Input::MeetingStartedElsewhere, &policy);
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        error = Some(call_offer::ALREADY_RECORDING_MSG.to_string());
+                    }
+                    Some(Ok((status, true))) => {
+                        if call_offer::may_stamp_detection(already, true) {
+                            if let Some(id) = status.id.as_deref() {
+                                if let Err(e) = st.db.set_meeting_detection(
+                                    id,
+                                    &bundle_id,
+                                    detected_via.as_str(),
+                                ) {
+                                    log::warn!("call_offer detection_store_failed err={e}");
+                                }
+                            }
+                        }
+                        if let Some(w) = app.get_webview_window(call_offer::CALL_OFFER_WINDOW) {
+                            let _ = w.hide();
+                        }
+                        crate::diagnostics::bump("call_offer", "recorded");
+                        started = Some(status);
+                    }
+                    Some(Err(e)) => {
+                        log::warn!("call_offer start_failed bundle={bundle_id} err={e}");
+                        let (more, _, _) = call_offer::drive(
+                            call_offer::Input::StartFailed,
+                            &call_offer::load_policy(&st.db),
+                        );
+                        // StartFailed only ever yields ShowChip: keep the window up.
+                        let _ = more;
+                        error = Some(e);
+                    }
+                }
+            }
+            Effect::Rejected { reason } => {
+                log::info!("call_offer rejected reason={reason:?}");
+                error = Some(reason);
+            }
+            Effect::SaveNever { bundle_id } => {
+                log::info!("call_offer never bundle={bundle_id}");
+                if let Err(e) = call_offer::set_app_policy(
+                    &st.db,
+                    &bundle_id,
+                    Some(call_offer::AppPolicy::Never),
+                ) {
+                    log::warn!("call_offer never_save_failed err={e}");
+                    error = Some(format!("Couldn't save Never for this app: {e}"));
+                }
+            }
+            Effect::StopRecording => {
+                log::info!("call_offer stop_after_call_ended");
+                if let Some(c) = st.meeting() {
+                    if c.is_recording() {
+                        if let Err(e) = c.stop("call ended, user stopped") {
+                            error = Some(e);
+                        } else if !*st.recording.lock() {
+                            float_pill::after_recording(app, idle_pill_on(st));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = app.emit(call_offer::CALL_OFFER_EVENT, call_offer::current_view());
+    match error {
+        Some(e) => Err(e),
+        None => Ok(started),
+    }
+}
+
+/// Feed the call signal into the machine (`meeting_detect::evaluate_calls`).
+pub(crate) fn on_call_sighting(app: &AppHandle, sighting: Option<call_offer::Sighting>) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::Seen {
+            sighting,
+            now_ms: call_offer::now_ms(),
+        },
+        &policy,
+    );
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowOffer) {
+            log::info!("call_offer offered");
+            crate::diagnostics::bump("call_offer", "offered");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// fix-b1-1 — a meeting started any way but the call offer's own [Record]
+/// (pill, ⌃⌘M, tray, the tray's Upcoming row, the Meetings tab, the calendar
+/// offer), or the calendar raised its offer: the call offer and chip are
+/// withdrawn and that call is spent. A no-op while the offer's own recording
+/// runs, and when nothing is offered. `source` is a fixed word for the log.
+pub(crate) fn call_offer_meeting_started_elsewhere(app: &AppHandle, source: &'static str) {
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    // The policy is not read by this input: no settings read per wake.
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::MeetingStartedElsewhere,
+        &call_offer::PolicyMap::new(),
+    );
+    if fx.is_empty() {
+        return;
+    }
+    if fx.contains(&call_offer::Effect::Withdraw) {
+        log::info!("call_offer withdrawn reason=meeting_started_elsewhere source={source}");
+        crate::diagnostics::bump("call_offer", "withdrawn_elsewhere");
+    }
+    let _ = apply_call_offer_effects(app, &st, fx);
+}
+
+/// The 1 s meeting tick (no new timer): "Call ended" while recording a
+/// detected call, and "the recording stopped" for the machine.
+fn call_offer_meeting_tick(app: &AppHandle, recording: bool) {
+    let Some(bundle) = call_offer::recording_bundle() else {
+        return;
+    };
+    let Some(st) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let st = st.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let input = if !recording {
+        call_offer::Input::RecordingStopped
+    } else {
+        #[cfg(target_os = "macos")]
+        let running = crate::call_signals::sys::snapshot(
+            crate::call_signals::catalog(),
+            crate::call_signals::AxSource::Unknown,
+            false,
+            None,
+        )
+        .ok()
+        .map(|snap| {
+            crate::call_signals::bundle_input_running(
+                &snap,
+                crate::call_signals::catalog(),
+                &bundle,
+            )
+        });
+        #[cfg(not(target_os = "macos"))]
+        let running: Option<bool> = {
+            let _ = &bundle;
+            None
+        };
+        call_offer::Input::Tick {
+            now_ms: call_offer::now_ms(),
+            app_input_running: running,
+        }
+    };
+    let (fx, _, _) = call_offer::drive(input, &policy);
+    if !fx.is_empty() {
+        if fx.contains(&call_offer::Effect::ShowEndPrompt) {
+            log::info!("call_offer call_ended_prompt bundle={bundle}");
+        }
+        let _ = apply_call_offer_effects(app, &st, fx);
+    }
+}
+
+/// yap-call-1 — [Record] on the offer or the chip. Starts ONLY if `offer_id`
+/// is the LIVE candidate's id; a stale or invented id is rejected here, in the
+/// backend, whatever the webview sends.
+#[tauri::command]
+fn accept_call_offer(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+) -> Result<Option<meeting_control::MeetingStatus>, String> {
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(
+        call_offer::Input::User {
+            choice: call_offer::UserChoice::Record,
+            offer_id,
+        },
+        &policy,
+    );
+    apply_call_offer_effects(&app, &st, fx)
+}
+
+/// yap-call-1 — Not now (also the countdown's expiry), Never for <App>,
+/// and the "Call ended" prompt's Stop / Keep going.
+#[tauri::command]
+fn call_offer_choose(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    offer_id: String,
+    choice: String,
+) -> Result<(), String> {
+    let choice = call_offer::UserChoice::parse(&choice)
+        .filter(|c| *c != call_offer::UserChoice::Record)
+        .ok_or_else(|| format!("unknown call offer choice: {choice}"))?;
+    log::info!("call_offer choose choice={choice:?}");
+    let st = state.inner().clone();
+    let policy = call_offer::load_policy(&st.db);
+    let (fx, _, _) = call_offer::drive(call_offer::Input::User { choice, offer_id }, &policy);
+    apply_call_offer_effects(&app, &st, fx).map(|_| ())
+}
+
+/// yap-call-1 — what the offer window should draw (for a webview that mounted
+/// after the emit).
+#[tauri::command]
+fn call_offer_state() -> call_offer::CallOfferView {
+    call_offer::current_view()
+}
+
+/// yap-call-1 — Settings › Meetings: the apps set to Never.
+#[tauri::command]
+fn call_offer_never_list(state: State<'_, Arc<AppState>>) -> Vec<call_offer::NeverRow> {
+    call_offer::never_rows(
+        &call_offer::load_policy(&state.db),
+        crate::call_signals::catalog(),
+    )
+}
+
+/// yap-call-1 — Reset one app (or every app when `bundle_id` is absent) to Offer.
+#[tauri::command]
+fn call_offer_reset(
+    state: State<'_, Arc<AppState>>,
+    bundle_id: Option<String>,
+) -> Result<Vec<call_offer::NeverRow>, String> {
+    let map = match bundle_id {
+        Some(b) => call_offer::set_app_policy(&state.db, &b, None)?,
+        None => {
+            state
+                .db
+                .setting_set(call_offer::CALL_OFFER_POLICY_KEY, "{}")?;
+            call_offer::PolicyMap::new()
+        }
+    };
+    let rows = call_offer::never_rows(&map, crate::call_signals::catalog());
+    log::info!("call_offer reset never_left={}", rows.len());
+    meeting_detect::wake();
+    Ok(rows)
 }
 
 /// Settings › Meetings — both toggles and where calendar access stands.
@@ -8789,6 +11190,24 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
     )
 }
 
+/// fix-b2-1 (WF-18) — every chord a PRIMARY holds right now: the
+/// always-global rebindable chords (Record meeting included), the dictate
+/// toggle `dictate`, and the cancel key while a take has it armed. The extras'
+/// unregister plan never drops one of these.
+fn live_primary_chords(
+    dictate: tauri_plugin_global_shortcut::Shortcut,
+) -> Vec<tauri_plugin_global_shortcut::Shortcut> {
+    let mut v: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+        .iter()
+        .map(|a| hotkey_table::active_chord(*a).0)
+        .collect();
+    v.push(dictate);
+    if let Some(c) = hotkey_table::armed_cancel() {
+        v.push(c);
+    }
+    v
+}
+
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
 fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
@@ -8942,6 +11361,16 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
     let command_binding = ptt_macos::CommandBinding::from_settings(
         &state.settings.lock().command_binding,
     );
+    // WF-19 — the mouse button rides the same tap. A stored value that no
+    // longer parses (hand-edited file) is logged and treated as off.
+    let mouse = match ptt_macos::MouseBinding::parse(&state.settings.lock().ptt_mouse_binding) {
+        Ok(b) => b,
+        Err(why) => {
+            log::warn!("ptt_mouse bind_refused at_launch reason={why}");
+            None
+        }
+    };
+    ptt_macos::set_mouse_binding(mouse);
     let st = state.clone();
     let h = app.clone();
     ptt_macos::start(
@@ -9173,14 +11602,41 @@ fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
 }
 
 /// Paste a license key. Verified BEFORE it is written, so a bad paste never
-/// lands on disk. Activation is entirely local (yap-lic-00): the key is checked
-/// against the compiled-in public key and no network call is made.
+/// lands on disk.
+///
+/// yap-1106-lic-03 — a `DCL-` key goes to drivia.consulting: ONE
+/// `POST /api/v1/licensing/activate` (`license_client`), on a blocking thread
+/// so the webview never waits on the main thread. The returned token is
+/// verified offline by `license_v2` before it is stored. Any other paste (a v1
+/// key, or a token) is checked locally with no network call, as before.
 #[tauri::command]
-fn activate_license(
+async fn activate_license(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    client: State<'_, Arc<license_client::LicenseClient>>,
     key: String,
 ) -> Result<license::LicenseStatus, CommandError> {
+    if license_client::is_dcl_key(&key) {
+        let client = client.inner().clone();
+        let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
+        return match joined {
+            Ok(Ok(status)) => {
+                let _ = app.emit("license", &status);
+                Ok(status)
+            }
+            Ok(Err(e)) => Err(CommandError {
+                code: e.code,
+                message: e.message,
+            }),
+            Err(_) => {
+                log::warn!("license_client activate failure=join");
+                Err(CommandError {
+                    code: "server".to_string(),
+                    message: license_client::message_for("server").to_string(),
+                })
+            }
+        };
+    }
     match state.license.activate(&key) {
         Ok(status) => {
             let _ = app.emit("license", &status);
@@ -9193,45 +11649,80 @@ fn activate_license(
     }
 }
 
-/// YP3 — open Stripe's hosted checkout in the user's browser.
+/// YP3 / yap-1106-lic-02 — open the drivia.consulting Yap page in the user's
+/// browser. Every Buy lands there, never on a Stripe link: the page starts
+/// checkout once sales are open and says "not open yet" until then.
 ///
 /// Takes **no argument on purpose**. The destination is
-/// `license::PAYMENT_LINK_URL`, a compile-time constant, handed to `open(1)` as
+/// `license::PURCHASE_PAGE_URL`, a compile-time constant, handed to `open(1)` as
 /// one argv element — never a shell string, and never a URL the webview
 /// supplied. A command that accepted a URL would be a "open anything on this
 /// Mac" primitive reachable from any script that reaches the frontend.
 #[tauri::command]
 fn open_purchase_page() -> Result<(), String> {
+    let purchase_open = license::PURCHASE_OPEN;
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(license::PAYMENT_LINK_URL)
+        let result = std::process::Command::new("open")
+            .arg(license::PURCHASE_PAGE_URL)
             .spawn()
             .map(|_| ())
             .map_err(|e| {
                 format!(
-                    "Could not open your browser ({e}). The link is {}",
-                    license::PAYMENT_LINK_URL
+                    "Could not open your browser ({e}). The page is {}",
+                    license::PURCHASE_PAGE_URL
                 )
-            })
+            });
+        match &result {
+            Ok(()) => log::info!("license purchase_page_open ok purchase_open={purchase_open}"),
+            Err(_) => {
+                log::warn!("license purchase_page_open failure=spawn purchase_open={purchase_open}")
+            }
+        }
+        result
     }
     #[cfg(not(target_os = "macos"))]
     {
+        log::warn!(
+            "license purchase_page_open failure=unsupported_os purchase_open={purchase_open}"
+        );
         Err(format!(
-            "Open {} in your browser to buy Yap.",
-            license::PAYMENT_LINK_URL
+            "Open {} in your browser to see Yap pricing.",
+            license::PURCHASE_PAGE_URL
         ))
     }
 }
 
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
+///
+/// yap-1106-lic-03 — a drivia.consulting token frees its seat server-side
+/// FIRST (`license_client::LicenseClient::deactivate`); offline, the license
+/// stays and the error says why. A Mac with no token clears locally.
 #[tauri::command]
-fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
-    state.license.deactivate();
-    let status = state.license.status();
-    let _ = app.emit("license", &status);
-    status
+async fn deactivate_license(
+    app: AppHandle,
+    client: State<'_, Arc<license_client::LicenseClient>>,
+) -> Result<license::LicenseStatus, CommandError> {
+    let client = client.inner().clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || client.deactivate()).await;
+    match joined {
+        Ok(Ok(status)) => {
+            let _ = app.emit("license", &status);
+            Ok(status)
+        }
+        Ok(Err(e)) => Err(CommandError {
+            code: e.code,
+            message: e.message,
+        }),
+        Err(_) => {
+            log::warn!("license_client deactivate failure=join");
+            Err(CommandError {
+                code: "server".to_string(),
+                message: license_client::message_for("server").to_string(),
+            })
+        }
+    }
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -9815,6 +12306,12 @@ async fn install_update(app: AppHandle) -> Result<String, String> {
             e.to_string()
         })?;
     log::info!("Yap {version} installed — applies on relaunch");
+    // WF-14 — the menu bar now offers "Update ready — Restart to update"; the
+    // restart itself waits for a quiet Yap (`tray_menu::restart_gate`).
+    tray_menu::UPDATE_READY.mark_ready(&version);
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        sync_update_ready(&app, &state);
+    }
     Ok(version)
 }
 
@@ -10073,6 +12570,10 @@ pub fn run() {
         pill_hide: tray_menu::PillHide::new(),
         tray_meeting: PLMutex::new(None),
         tray_meeting_kind: PLMutex::new(None),
+        tray_meeting_header: PLMutex::new(None),
+        tray_meeting_sep: PLMutex::new(None),
+        tray_meeting_menu: tray_menu::MeetingMenuLatch::new(),
+        meeting_stop_in_flight: AtomicBool::new(false),
         tray_notes_ready: PLMutex::new(None),
         notes_ready_meeting: PLMutex::new(None),
         tray_license: PLMutex::new(None),
@@ -10089,6 +12590,8 @@ pub fn run() {
         license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
         support_bundle: PLMutex::new(None),
+        style_overrides: PLMutex::new(style_chip::StyleOverrides::new()),
+        style_chip_app: PLMutex::new(None),
     });
 
     // yap-meetings-fix (A, B) — the meeting transcription pipeline: ONE worker
@@ -10253,6 +12756,11 @@ pub fn run() {
                 // dictation emits (`hygiene::log_snapshot_async`) bracket the
                 // model, so the rss_mb delta between them IS the engine.
                 log::info!("{}", hygiene::collect(&data_dir()).summary_line());
+                // yap-1106 — the leftovers sweep runs at EVERY launch, right
+                // away (not after the 30 s delay): it only touches files
+                // nothing in this build is writing, and its line is how a
+                // launch proves it left nothing behind.
+                run_leftovers_sweep(&db);
                 std::thread::sleep(hygiene::STARTUP_SWEEP_DELAY);
                 run_disk_sweep(&db);
                 let mut since_sweep = Duration::ZERO;
@@ -10417,16 +12925,26 @@ pub fn run() {
             save_settings,
             // Y10-A — the language picker (Settings + the bar).
             language_options,
+            language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_set_panel_frame,
+            pill_cycle_style,
             pending_copy_card,
             dismiss_copy_card,
             // yap-notetaker-detect — the pill's offer + Settings › Meetings.
             pending_meeting_offer,
             meeting_offer_respond,
+            // yap-call-1 — the call offer window's commands.
+            accept_call_offer,
+            call_offer_choose,
+            call_offer_state,
+            call_offer_never_list,
+            call_offer_reset,
             meeting_detect_settings,
             set_meeting_detect_settings,
             pill_drag_start,
+            pill_click_toggle,
             pill_drag_move,
             pill_drag_end,
             get_history,
@@ -10440,6 +12958,9 @@ pub fn run() {
             relaunch_app,
             request_microphone,
             microphone_status,
+            list_microphones,
+            set_microphone,
+            set_microphone_order,
             get_insights,
             daily_series,
             monthly_series,
@@ -10471,8 +12992,11 @@ pub fn run() {
             delete_snippet,
             list_scratch,
             open_scratchpad,
+            scratchpad_take_open_note,
             hide_scratchpad,
             scratchpad_focus,
+            copy_note_transient,
+            scratchpad_set_expanded,
             list_notes,
             search_notes,
             save_note_draft,
@@ -10501,6 +13025,11 @@ pub fn run() {
             rename_meeting,
             delete_meeting,
             export_meeting_markdown,
+            copy_meeting_markdown,
+            reveal_meeting_export,
+            open_meeting_export_dir,
+            meeting_export_location,
+            set_meeting_export_dir,
             // YV96 — the one-time capture notice. Two reads and one write on a
             // single `settings_kv` row; nothing here can block a recording.
             meeting_consent,
@@ -10517,6 +13046,9 @@ pub fn run() {
             meeting_status,
             toggle_meeting_recording,
             meeting_kind_choices,
+            // WF-08 — the pill's Meeting popover.
+            meeting_popover,
+            meeting_popover_record,
             start_meeting,
             stop_meeting,
             export_history,
@@ -10634,20 +13166,48 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
-            // DB-D — the Scratchpad panel's red X HIDES it (its notes and the
-            // webview survive), and a panel that loses key drops the dictation
-            // target so a take started elsewhere goes to the app guard.
-            if let Some(sp) = app.get_webview_window(scratchpad::WINDOW_LABEL) {
-                let sp2 = sp.clone();
-                sp.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
-                        api.prevent_close();
-                        scratchpad::hide(sp2.app_handle());
-                    } else if let WindowEvent::Focused(false) = e {
-                        scratchpad::set_focused_note(false, None);
-                    }
-                });
+            // yap-1106-lic-03 — the activation client, on the licensing
+            // Keychain service of the RUNNING bundle id (a test channel keeps
+            // its own seat). Then the launch-time refresh check, on its own
+            // thread: it makes NO request while the token is fresh
+            // (`license_client::refresh_due`), and never blocks startup.
+            let lic_client = Arc::new(license_client::LicenseClient::new(
+                state.license.clone(),
+                Arc::new(license_client::HttpTransport),
+                Arc::new(keychain::MacKeychain::with_service(
+                    license_client::keychain_service_for(&app.config().identifier),
+                )),
+            ));
+            app.manage(lic_client.clone());
+            {
+                let handle = app.handle().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("license-refresh".into())
+                    .spawn(move || {
+                        let outcome = lic_client.refresh_if_due();
+                        if outcome.changes_status() {
+                            let status = lic_client.status();
+                            let _ = handle.emit("license", &status);
+                            if let license_client::RefreshOutcome::Deleted(code) = &outcome {
+                                // The activation screen states the reason.
+                                let _ = handle.emit(
+                                    "license_notice",
+                                    serde_json::json!({
+                                        "code": code,
+                                        "message": license_client::message_for(code),
+                                    }),
+                                );
+                            }
+                        }
+                    });
+                if spawned.is_err() {
+                    log::warn!("license_client refresh_thread failure=spawn");
+                }
             }
+
+            // DB-D — the Scratchpad's close/blur handling now rides with the
+            // window itself: yap-1106-one-pill makes it on first use
+            // (scratchpad::ensure_window), never here at launch.
             if let Some(win) = app.get_webview_window("main") {
                 if smoke::release_armed() {
                     // yap-p0-release-smoke: the run inserts into TextEdit, so
@@ -10694,6 +13254,12 @@ pub fn run() {
             // The running binary's signature and the duplicate-bundle scan,
             // computed once, off the main thread, before the banner needs them.
             perm_truth::prime();
+            // yap-fx-08 — two copies of Yap on disk (the Desktop copy beside
+            // /Applications/Yap.app) split the TCC grants between them. Ask
+            // ONCE per set of copies, naming the running copy and which one
+            // holds the Microphone, whether to keep /Applications/Yap.app and
+            // move the rest to the Trash.
+            perm_truth::spawn_duplicate_copies_notice(app.handle().clone(), state.db.clone());
             // yap-p0-perm-repair: persist the last-run signature EVERY launch.
             perm_probe::prime();
 
@@ -10929,6 +13495,17 @@ pub fn run() {
                     .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
                     .collect::<Vec<_>>(),
             )?;
+            // yap-1106 (b) — the disabled "Recording · <title>" header and the
+            // separator under it; both INSERTED at the top of the menu by
+            // `apply_meeting_menu` while a meeting records, never laid out.
+            let meeting_header_i = MenuItem::with_id(
+                app,
+                tm::ID_MEETING_HEADER,
+                tm::label(tm::ID_MEETING_HEADER),
+                false,
+                None::<&str>,
+            )?;
+            let meeting_sep_i = PredefinedMenuItem::separator(app)?;
             // Y2-E — the license header, seeded from the same decision
             // `sync_tray` refreshes it with, so the menu bar is already correct
             // the first time it is opened rather than after the first state
@@ -10957,6 +13534,15 @@ pub fn run() {
                 app,
                 MEETING_NOTES_TRAY_ID,
                 MEETING_NOTES_TRAY_LABEL,
+                true,
+                None::<&str>,
+            )?;
+            // WF-14 — built now, inserted only while an installed release
+            // waits for a restart (`sync_update_ready`).
+            let update_ready_i = MenuItem::with_id(
+                app,
+                tm::ID_UPDATE_READY,
+                tm::label(tm::ID_UPDATE_READY),
                 true,
                 None::<&str>,
             )?;
@@ -11071,10 +13657,29 @@ pub fn run() {
             *state.tray_show_pill.lock() = Some(show_pill_i);
             *state.tray_meeting.lock() = Some(meeting_i);
             *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
+            *state.tray_meeting_header.lock() = Some(meeting_header_i);
+            *state.tray_meeting_sep.lock() = Some(meeting_sep_i);
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
+            *TRAY_UPDATE_READY.lock().unwrap_or_else(|p| p.into_inner()) = Some(update_ready_i);
+            tm::UPDATE_READY.reset_shown();
             *state.tray_menu.lock() = Some(menu.clone());
+            // yap-1106 (a) — the meeting block is re-synced from
+            // `controller.status()` whenever the tray is built, so a status that
+            // raced the build (the controller exists before the tray does; a
+            // recovered meeting emits at launch) is never lost.
+            state.tray_meeting_menu.reset();
+            if let Some(controller) = state.meeting() {
+                meeting_tray_sync_on_main(&state, &controller.status());
+            }
+            // WF-07 — and the calendar rows from the last published snapshot
+            // (none at first launch: the watcher starts after the tray).
+            apply_upcoming_menu_on_main(
+                app.handle(),
+                &state,
+                meeting_detect::upcoming_snapshot().as_ref(),
+            );
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -11115,6 +13720,9 @@ pub fn run() {
             float_pill::set_position(float_pill::PillPosition::from_settings(
                 &state.settings.lock().pill_position,
             ));
+            // WF-16 — before any window is built, so each one reads the real
+            // setting through `call_offer::apply_content_protection`.
+            float_pill::set_hide_from_capture(state.settings.lock().hide_from_capture_in_meetings);
             // Y6-D: a cold launch (no settings file → not onboarded) lands on
             // onboarding and does NOT put up an idle pill it cannot honour; the
             // pill appears when onboarding saves settings (`save_settings`
@@ -11132,6 +13740,19 @@ pub fn run() {
             } else {
                 float_pill::hide_float(app.handle());
             }
+            // yap-1106-one-pill — the launch window count, as a log line the
+            // acceptance reads: main + the one pill panel, the Scratchpad is
+            // made on first use (scratchpad::ensure_window).
+            {
+                let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+                labels.sort();
+                log::info!(
+                    "lifecycle launch windows open={} labels={} scratchpad_lazy={}",
+                    labels.len(),
+                    labels.join(","),
+                    !labels.iter().any(|l| l == scratchpad::WINDOW_LABEL)
+                );
+            }
             if show_setting {
                 // Idle while the pill is hidden (it reads `is_shown` first), so
                 // a pill shown after onboarding still gets re-parked.
@@ -11144,11 +13765,46 @@ pub fn run() {
             float_pill::start_hover_watch(app.handle().clone());
             // yap-notetaker-detect — event-driven + one 30 s timer; reads the
             // calendar only when "Use my calendar" is on AND access is granted.
+            // WF-07 — the watcher hands the tray today's meetings (only when
+            // "Use my calendar" is on and access is granted), and only when
+            // they changed; the rows are redrawn on the main thread.
+            let upcoming_app = app.handle().clone();
+            meeting_detect::set_upcoming_sink(move |snap| {
+                let app_main = upcoming_app.clone();
+                let hop = upcoming_app.run_on_main_thread(move || {
+                    if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                        apply_upcoming_menu_on_main(&app_main, &state, snap.as_ref());
+                    }
+                });
+                if let Err(e) = hop {
+                    log::warn!("tray upcoming_menu hop_failed error={e}");
+                }
+            });
             meeting_detect::start_watch(
                 app.handle().clone(),
                 state.db.clone(),
                 float_pill::meeting_recording,
             );
+            // WF-09 — the device-list watcher fills the Microphone submenu at
+            // launch and redraws it (and tells every open Settings picker)
+            // whenever a mic is plugged in, unplugged, or picked.
+            let mic_app = app.handle().clone();
+            mic_select::start_watch(move |list| {
+                let _ = mic_app.emit(mic_select::CHANGED_EVENT, list);
+                let app_main = mic_app.clone();
+                let list = list.clone();
+                let hop = mic_app.run_on_main_thread(move || {
+                    if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                        apply_microphone_menu_on_main(&app_main, &state, &list);
+                    }
+                });
+                if let Err(e) = hop {
+                    log::warn!("tray microphone_menu hop_failed error={e}");
+                }
+            });
+            // WF-11 — the Languages submenu is drawn at launch from the saved
+            // prefs, then redrawn by every language write.
+            sync_language_menu(app.handle());
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
@@ -11286,6 +13942,29 @@ pub fn run() {
                         }
                         hotkey_table::set_chord_status(a, hotkeys::CarbonStatus::from_result(&r));
                     }
+                    // WF-18 — each action's extra shortcuts, re-validated (a
+                    // stored extra a rule now refuses is dropped and logged).
+                    {
+                        let extras = {
+                            let settings = st.settings.lock();
+                            let primaries: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+                                .iter()
+                                .map(|a| (*a, chord_setting(&settings, *a)))
+                                .collect();
+                            shortcuts::editor::resolve_extras_lenient(&primaries, &settings.extra_chords)
+                        };
+                        let mut live = Vec::new();
+                        for (a, sc, label) in extras {
+                            match h.global_shortcut().register(sc) {
+                                Ok(()) => {
+                                    log::info!("shortcuts extra_registered action={a:?} label={label}");
+                                    live.push((a, sc, label));
+                                }
+                                Err(e) => log::warn!("shortcuts extra_register_failed action={a:?} label={label} ({e})"),
+                            }
+                        }
+                        hotkey_table::set_active_aliases(live);
+                    }
                     {
                         // The binding table at launch, once the tap thread has
                         // answered — the first line to read in a hotkey report.
@@ -11367,6 +14046,9 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let report = quit_teardown(app_handle, &state);
                     log::info!("{}", report.log_line());
+                    // yap-1106 — one line a reader can grep for: did this quit
+                    // close everything it meant to, and what did it close.
+                    log::info!("{}", report.clean_line());
                 }
             }
             _ => {}
@@ -11375,6 +14057,62 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
+    /// recovery dir is LISTED (a `failed_dictations` row with a Retry) without
+    /// waiting for a relaunch; a silent one is deleted instead; a second pass
+    /// adds nothing.
+    #[test]
+    fn aborted_spill_is_listed_or_deleted_only_if_silent() {
+        let dir = temp_dir("fx07-adopt");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        std::fs::create_dir_all(&recovery).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        for (name, amp) in [
+            ("voiced.capture.wav", 0.3f32),
+            ("hiss.capture.wav", 0.002f32),
+        ] {
+            let path = recovery.join(name);
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..(16_000 * 3) {
+                let t = i as f32 / 16_000.0;
+                w.write_sample(amp * (2.0 * std::f32::consts::PI * 220.0 * t).sin())
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 1);
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(rows.len(), 1, "the voiced spill is listed");
+        assert_eq!(rows[0].error, super::ABORTED_TAKE_ERROR);
+        assert!(rows[0].wav_path.ends_with("voiced.wav"));
+        assert!(std::path::Path::new(&rows[0].wav_path).exists());
+        assert!((rows[0].speech_seconds - 3.0).abs() < 0.01);
+        assert!(!recovery.join("voiced.capture.wav").exists());
+        assert!(
+            !recovery.join("hiss.capture.wav").exists(),
+            "silent spill deleted"
+        );
+        assert!(!recovery.join("hiss.wav").exists());
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 0, "idempotent");
+        assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn take_stage_terminal_for_each_outcome() {
         use super::{terminal_stage, TakeOutcome};
@@ -12835,6 +15573,10 @@ mod tests {
             pill_hide: crate::tray_menu::PillHide::new(),
             tray_meeting: super::PLMutex::new(None),
             tray_meeting_kind: super::PLMutex::new(None),
+            tray_meeting_header: super::PLMutex::new(None),
+            tray_meeting_sep: super::PLMutex::new(None),
+            tray_meeting_menu: crate::tray_menu::MeetingMenuLatch::new(),
+            meeting_stop_in_flight: std::sync::atomic::AtomicBool::new(false),
             tray_notes_ready: super::PLMutex::new(None),
             notes_ready_meeting: super::PLMutex::new(None),
             tray_license: super::PLMutex::new(None),
@@ -12851,6 +15593,8 @@ mod tests {
             license,
             transcription,
             support_bundle: super::PLMutex::new(None),
+            style_overrides: super::PLMutex::new(crate::style_chip::StyleOverrides::new()),
+            style_chip_app: super::PLMutex::new(None),
         })
     }
 
@@ -13152,6 +15896,7 @@ mod tests {
         Ok(crate::transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: words.join(" "),
             backend: "native".into(),
             seconds: 0.1,
@@ -13983,6 +16728,7 @@ mod db_b_recovery_followups {
         transcription::AsrOutput {
             language: "en".into(),
             language_notice: None,
+            language_outside: None,
             text: text.to_string(),
             backend: "stub".into(),
             seconds: 0.1,
@@ -14603,5 +17349,415 @@ mod hands_free_stop_label_tests {
             hands_free_stop_label(false, true, "fn / fn⌃", "⌃⌘H"),
             "fn / fn⌃"
         );
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the engine stage of a retry, with fake
+/// engines that hang or dawdle. Wilson's words: "I've never pressed retry and
+/// it worked, ever. It always infinitely loads." Every case here ends inside
+/// its deadline, and none of them loads a second engine.
+#[cfg(test)]
+mod retry_engine_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A throwaway directory for the fake model file, removed on drop.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "yap-retry-engine-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `Result<AsrOutput, _>` has no `Debug`; the error, or a panic.
+    fn err_of(r: Result<transcription::AsrOutput, String>) -> String {
+        match r {
+            Ok(out) => panic!(
+                "expected an error, got a transcript of {} chars",
+                out.text.len()
+            ),
+            Err(e) => e,
+        }
+    }
+
+    /// Decodes forever — until `release` is raised. The 2026-11-06 stuck
+    /// engine: no cancel hook, never returns on its own.
+    struct HangingEngine {
+        release: Arc<AtomicBool>,
+    }
+
+    impl transcription::Transcriber for HangingEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("released at last".into())
+        }
+    }
+
+    /// Takes `decode` of real time, then answers. The live take a retry queues
+    /// behind.
+    struct SlowEngine {
+        decode: Duration,
+    }
+
+    impl transcription::Transcriber for SlowEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.decode);
+            Ok("slow but sure".into())
+        }
+    }
+
+    fn manager(
+        loader: impl Fn() -> Box<dyn transcription::Transcriber> + Send + Sync + 'static,
+        timeout: Duration,
+    ) -> (transcription::TranscriptionManager, PathBuf, ScratchDir) {
+        let dir = ScratchDir::new();
+        let path = dir.0.join("fake.gguf");
+        std::fs::write(&path, b"not a model").unwrap();
+        let m = transcription::TranscriptionManager::with_loader(
+            Arc::new(move |_p: &Path| Ok(loader())),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            timeout,
+        );
+        (m, path, dir)
+    }
+
+    fn retry(
+        m: &transcription::TranscriptionManager,
+        deadline: Duration,
+        phases: &mut Vec<RetryPhase>,
+    ) -> (Result<transcription::AsrOutput, String>, Duration) {
+        let decode_mgr = m.clone();
+        let started = Instant::now();
+        let r = retry_decode_bounded(
+            m,
+            "row-1",
+            5.0,
+            deadline,
+            &mut |p| phases.push(p),
+            move || {
+                decode_mgr
+                    .transcribe(vec![0.01; 16_000], None, None)
+                    .map(|text| transcription::AsrOutput {
+                        text,
+                        ..recovered_only_output()
+                    })
+            },
+        );
+        (r, started.elapsed())
+    }
+
+    #[test]
+    fn retry_deadline_scales_with_the_clip_between_30_and_180_seconds() {
+        assert_eq!(retry_deadline(5.0), Duration::from_secs(30));
+        assert_eq!(retry_deadline(82.3), Duration::from_secs_f64(97.3));
+        assert_eq!(retry_deadline(153.1), Duration::from_secs_f64(168.1));
+        assert_eq!(retry_deadline(900.0), Duration::from_secs(180));
+        assert_eq!(retry_deadline(-1.0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_retry_fails_fast_while_an_abandoned_engine_is_still_running_and_loads_nothing() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_millis(100),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        // The live take that hung: the lease times out and the engine is left
+        // on its worker thread, exactly the state Retry was pressed in.
+        let err = m.transcribe(vec![0.01; 16_000], None, None).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert_eq!(m.abandoned_engines(), 1);
+        assert!(!m.is_busy(), "the lease is released at the timeout");
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
+        assert_eq!(err_of(result), transcription::ENGINE_STUCK);
+        assert!(
+            wall < Duration::from_secs(1),
+            "fail fast, not at the deadline: {wall:?}"
+        );
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        assert!(
+            phases.is_empty(),
+            "it never queued and never decoded: {phases:?}"
+        );
+
+        // When the stuck engine finally returns it is counted out, not reused.
+        release.store(true, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while m.abandoned_engines() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(m.abandoned_engines(), 0);
+        assert!(
+            !m.is_loaded(),
+            "the abandoned engine is dropped, never put back"
+        );
+    }
+
+    #[test]
+    fn a_retry_queues_behind_a_busy_engine_then_completes_on_it() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(400),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        // Let the live take lease the engine.
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(m.is_busy());
+
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_secs(10), &mut phases);
+        assert_eq!(result.unwrap().text, "slow but sure");
+        assert_eq!(phases, vec![RetryPhase::Queued, RetryPhase::Decoding]);
+        assert!(
+            wall >= Duration::from_millis(350),
+            "it waited its turn: {wall:?}"
+        );
+        assert_eq!(
+            m.engine_loads(),
+            1,
+            "one engine, shared — never a second load"
+        );
+        assert_eq!(live_take.join().unwrap().unwrap(), "slow but sure");
+    }
+
+    #[test]
+    fn a_retry_whose_decode_hangs_comes_back_at_its_deadline_with_the_plain_sentence() {
+        let release = Arc::new(AtomicBool::new(false));
+        let r = release.clone();
+        // The manager's own per-decode wall is LONGER than the retry's deadline
+        // (production: 120 s per window vs 30–180 s per retry), so the retry's
+        // clock is what ends the wait.
+        let (m, path, _dir) = manager(
+            move || Box::new(HangingEngine { release: r.clone() }),
+            Duration::from_secs(30),
+        );
+        m.load("fake", &path).unwrap();
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(300), &mut phases);
+        assert_eq!(err_of(result), RETRY_DEADLINE_ERROR);
+        assert!(
+            wall >= Duration::from_millis(300) && wall < Duration::from_secs(3),
+            "at the deadline, not forever: {wall:?}"
+        );
+        assert_eq!(phases, vec![RetryPhase::Decoding]);
+        assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_retry_that_queues_past_its_deadline_gives_up_in_plain_words() {
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_secs(2),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        let live = m.clone();
+        let live_take = std::thread::spawn(move || live.transcribe(vec![0.01; 16_000], None, None));
+        let until = Instant::now() + Duration::from_secs(2);
+        while !m.is_busy() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut phases = Vec::new();
+        let (result, wall) = retry(&m, Duration::from_millis(200), &mut phases);
+        assert_eq!(err_of(result), RETRY_ENGINE_BUSY_ERROR);
+        assert!(wall < Duration::from_secs(1), "{wall:?}");
+        assert_eq!(phases, vec![RetryPhase::Queued]);
+        assert_eq!(m.engine_loads(), 1);
+        live_take.join().unwrap().unwrap();
+    }
+}
+
+/// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
+/// decides "this clip failed, try the next" vs "the engine is unhealthy, stop"
+/// by matching these exact sentences. A reword here without the TS mirror
+/// would silently queue every later clip behind a wedged engine again, so
+/// this test reads the TS source and pins both sides to the same text.
+#[cfg(test)]
+mod retry_ui_contract_tests {
+    use super::*;
+
+    const RETRY_TS: &str = include_str!("../../src/retryDictation.ts");
+
+    /// The string value of `export const NAME = "…";` in retryDictation.ts.
+    fn ts_const<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let marker = format!("export const {name} = \"");
+        let start = src.find(&marker)? + marker.len();
+        let len = src[start..].find('"')?;
+        Some(&src[start..start + len])
+    }
+
+    #[test]
+    fn retry_errors_match_the_ui_mirror() {
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_DEADLINE_ERROR"),
+            Some(RETRY_DEADLINE_ERROR),
+            "retryDictation.ts RETRY_DEADLINE_ERROR must mirror lib.rs verbatim"
+        );
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_ENGINE_BUSY_ERROR"),
+            Some(RETRY_ENGINE_BUSY_ERROR),
+            "retryDictation.ts RETRY_ENGINE_BUSY_ERROR must mirror lib.rs verbatim"
+        );
+    }
+
+    #[test]
+    fn engine_stuck_starts_with_the_ui_prefix() {
+        let prefix = ts_const(RETRY_TS, "ENGINE_STUCK_PREFIX")
+            .expect("ENGINE_STUCK_PREFIX in retryDictation.ts");
+        assert!(!prefix.is_empty());
+        assert!(
+            transcription::ENGINE_STUCK.starts_with(prefix),
+            "transcription::ENGINE_STUCK must start with the UI's ENGINE_STUCK_PREFIX {prefix:?}"
+        );
+    }
+}
+
+/// yap-1106-retry-failed-dictation — the headless replay of the two clips
+/// Wilson's 2026-11-06 session kept (82.3 s bb865dde… and 153.1 s 6c97f34c…)
+/// through the REAL retry engine stage. The clips are private data: the test
+/// reads them from a COPY whose directory `YAP_RETRY_REPLAY_DIR` names, and
+/// is `#[ignore]`d so CI (which has neither the clips nor the model) stays
+/// green. The model is read from the same directory (`<file>` of the default
+/// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
+///
+///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
+///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+#[cfg(test)]
+mod retry_replay {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
+            eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        // The engine's own log lines (loads, window timeouts, the
+        // `retry_dictation` line) on stderr under RUST_LOG=info.
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let model_id = default_native_model();
+        let model = models::catalog_model(&model_id).expect("default model is in the catalog");
+        let filename = model.default_file().expect("default file").filename.clone();
+        let model_path = std::env::var("YAP_RETRY_REPLAY_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dir.join(&filename));
+        assert!(
+            model_path.is_file(),
+            "model missing at {}",
+            model_path.display()
+        );
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        wavs.sort();
+        assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+
+        let manager = transcription::TranscriptionManager::new();
+        let prefs = AppSettings::default().language_prefs();
+        for wav in wavs {
+            let name = wav.file_name().unwrap().to_string_lossy().to_string();
+            let samples = record::read_wav_16k_mono(&wav).unwrap();
+            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+            let deadline = retry_deadline(clip_secs);
+            let (m, id, path, p) = (
+                manager.clone(),
+                model_id.clone(),
+                model_path.clone(),
+                prefs.clone(),
+            );
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &manager,
+                &name,
+                clip_secs,
+                deadline,
+                &mut |ph| phases.push(ph),
+                move || {
+                    transcribe_native(
+                        &m,
+                        &id,
+                        &path,
+                        samples,
+                        &p,
+                        None,
+                        &mut transcribe_progress::NoObserver,
+                    )
+                },
+            );
+            let wall = started.elapsed();
+            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+            let words = out.text.split_whitespace().count();
+            println!(
+                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
+                deadline.as_secs_f64(),
+                out.chunks,
+                out.chunks_failed,
+                wall.as_millis(),
+                manager.engine_loads()
+            );
+            assert!(words > 0, "{name}: empty transcript");
+            assert!(
+                wall < deadline,
+                "{name}: {wall:?} over the deadline {deadline:?}"
+            );
+        }
+        assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
     }
 }

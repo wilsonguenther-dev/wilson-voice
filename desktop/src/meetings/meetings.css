@@ -198,3 +198,38 @@
   font-size: 12px;
   opacity: 0.7;
 }
+/* yap-1106 — the export menu: a trigger and a small list beneath it. The list
+   row's actions are absolutely positioned, so the menu opens downward from
+   its trigger and stays above the next row. */
+.export-menu {
+  position: relative;
+  display: inline-block;
+}
+.export-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.export-menu-list [role="menuitem"] {
+  text-align: left;
+  justify-content: flex-start;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+/* Focus rings come from focus.css, once, globally (Y5-J). */
+.export-menu-list [role="menuitem"]:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}

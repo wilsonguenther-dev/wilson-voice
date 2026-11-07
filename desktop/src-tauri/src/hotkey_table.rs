@@ -729,6 +729,12 @@ pub fn note_cancel_registered(sc: Shortcut) {
     *REGISTERED_CANCEL.lock() = Some(sc);
 }
 
+/// fix-b2-1 — the cancel chord a take has registered right now, if any (the
+/// cancel key is a live primary only while a take holds it).
+pub fn armed_cancel() -> Option<Shortcut> {
+    *REGISTERED_CANCEL.lock()
+}
+
 pub fn cancel_to_release() -> Shortcut {
     cancel_for_release(&mut REGISTERED_CANCEL.lock(), active_cancel().0)
 }
@@ -745,6 +751,90 @@ pub fn set_meeting_status(s: CarbonStatus) {
 /// beyond Record meeting (hands-free toggle, copy last, open Scratchpad).
 type ActiveChord = (BindingAction, (Shortcut, String), CarbonStatus);
 static ACTIVE_EXTRA: Mutex<Vec<ActiveChord>> = Mutex::new(Vec::new());
+
+/// WF-18 — the EXTRA chords (beyond each action's primary) Yap holds right
+/// now: `shortcuts::editor` validates them, launch and `save_settings`
+/// register them, and `shortcut_defer::route` maps a press back to its action.
+static ACTIVE_ALIASES: Mutex<Vec<(BindingAction, Shortcut, String)>> = Mutex::new(Vec::new());
+
+/// The extra chords registered right now.
+pub fn active_aliases() -> Vec<(BindingAction, Shortcut, String)> {
+    ACTIVE_ALIASES.lock().clone()
+}
+
+/// Replace the registered extra chords (after the plugin calls succeeded).
+pub fn set_active_aliases(v: Vec<(BindingAction, Shortcut, String)>) {
+    *ACTIVE_ALIASES.lock() = v;
+}
+
+/// The action an extra chord belongs to, if `shortcut` is one.
+pub fn alias_action(shortcut: &Shortcut) -> Option<BindingAction> {
+    ACTIVE_ALIASES
+        .lock()
+        .iter()
+        .find(|(_, sc, _)| sc == shortcut)
+        .map(|(a, ..)| *a)
+}
+
+/// Which extras to register and which to drop when the set moves from `old`
+/// to `new`: `(to_register, to_unregister)`. PURE.
+pub fn alias_diff(
+    old: &[(BindingAction, Shortcut, String)],
+    new: &[(BindingAction, Shortcut, String)],
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
+    let reg = new
+        .iter()
+        .filter(|(_, sc, _)| !old.iter().any(|(_, o, _)| o == sc))
+        .map(|(_, sc, _)| *sc)
+        .collect();
+    let unreg = old
+        .iter()
+        .filter(|(_, sc, _)| !new.iter().any(|(_, n, _)| n == sc))
+        .map(|(_, sc, _)| *sc)
+        .collect();
+    (reg, unreg)
+}
+
+/// fix-b2-1 (WF-18) — the extra chords to UNREGISTER when the set moves from
+/// `old` to `new`: [`alias_diff`]'s drops minus every chord a live primary
+/// holds after the primaries were swapped. PURE.
+///
+/// Why: `swap_chord` skips `register(new)` when the plugin already reports the
+/// chord registered — which it is when the chord was another action's extra
+/// until this save. Dropping that "removed extra" afterwards would kill the
+/// primary that now owns it (reset-all with ⌃⌘J as Copy last's extra left
+/// Open Scratchpad dead while its row read Registered). The rollback uses the
+/// same plan with the RESTORED primaries, so it never drops one either.
+pub fn alias_unregister_plan(
+    old: &[(BindingAction, Shortcut, String)],
+    new: &[(BindingAction, Shortcut, String)],
+    live_primaries: &[Shortcut],
+) -> Vec<Shortcut> {
+    let (_, unreg) = alias_diff(old, new);
+    let mut out: Vec<Shortcut> = Vec::new();
+    for sc in unreg {
+        if !live_primaries.contains(&sc) && !out.contains(&sc) {
+            out.push(sc);
+        }
+    }
+    out
+}
+
+/// fix-b2-1 (WF-18) — the chords `new` adds as extras that a live primary
+/// already holds. The save gate (`check_distinct`) refuses this, so a
+/// non-empty result is a bug state: `save_settings` logs it and refuses the
+/// save instead of silently skipping the register. PURE.
+pub fn alias_register_conflicts(
+    old: &[(BindingAction, Shortcut, String)],
+    new: &[(BindingAction, Shortcut, String)],
+    live_primaries: &[Shortcut],
+) -> Vec<(BindingAction, Shortcut, String)> {
+    new.iter()
+        .filter(|(_, sc, _)| !old.iter().any(|(_, o, _)| o == sc))
+        .filter(|(_, sc, _)| live_primaries.contains(sc))
+        .cloned()
+        .collect()
+}
 
 /// The chord `action` holds right now (its default until launch resolves it).
 /// Record meeting and Cancel read their own slots.
@@ -1742,5 +1832,56 @@ mod tests {
         );
         assert_eq!(tcc_listen_event_row_at(&good, ""), TccRow::Unreadable);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── fix-b2-1: the alias unregister plan never drops a live primary ──────
+
+    fn ctrl_cmd(code: Code) -> Shortcut {
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), code)
+    }
+
+    /// The reset-all repro: Open Scratchpad was ⌃⌘K with ⌃⌘J as an extra of
+    /// Copy last; "Reset to default" empties the extras and gives ⌃⌘J back
+    /// to Open Scratchpad. The plan must NOT drop ⌃⌘J.
+    #[test]
+    fn reset_all_plan_keeps_a_chord_a_restored_primary_holds() {
+        let j = ctrl_cmd(Code::KeyJ);
+        let old = vec![(BindingAction::CopyLast, j, "⌃⌘J".to_string())];
+        let live = vec![
+            ctrl_cmd(Code::KeyM),
+            ctrl_cmd(Code::KeyH),
+            ctrl_cmd(Code::KeyC),
+            j,
+        ];
+        assert!(alias_unregister_plan(&old, &[], &live).is_empty());
+        // alias_diff alone would have dropped it — the hole this closes.
+        assert_eq!(alias_diff(&old, &[]).1, vec![j]);
+    }
+
+    /// A removed extra that no primary holds is still unregistered.
+    #[test]
+    fn plain_removal_plan_unregisters_the_extra() {
+        let k = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyK);
+        let old = vec![(BindingAction::OpenScratchpad, k, "⌃⌥K".to_string())];
+        let live = vec![ctrl_cmd(Code::KeyJ), ctrl_cmd(Code::KeyM)];
+        assert_eq!(alias_unregister_plan(&old, &[], &live), vec![k]);
+        // An extra kept by the save is never in the plan.
+        assert!(alias_unregister_plan(&old, &old, &live).is_empty());
+    }
+
+    /// A NEW extra that a live primary already holds is reported, so the save
+    /// path can log and refuse it instead of silently skipping the register.
+    #[test]
+    fn new_extra_on_a_live_primary_is_a_conflict() {
+        let m = ctrl_cmd(Code::KeyM);
+        let k = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyK);
+        let new = vec![
+            (BindingAction::CopyLast, m, "⌃⌘M".to_string()),
+            (BindingAction::CopyLast, k, "⌃⌥K".to_string()),
+        ];
+        let got = alias_register_conflicts(&[], &new, &[m]);
+        assert_eq!(got, vec![(BindingAction::CopyLast, m, "⌃⌘M".to_string())]);
+        // Already an extra before the save: not "new", not a conflict here.
+        assert!(alias_register_conflicts(&new, &new, &[m]).is_empty());
     }
 }
