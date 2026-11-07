@@ -947,8 +947,11 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
             (150, 2),
             (200, 1),
-            (300, 1),
-            (400, 3),
+            // yap-1106-sp-04-one-engine-preempt — 300:1->2 and 400:3->4: the
+            // preempt tests' `live_counting_manager` fake-engine decode durations
+            // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
+            (300, 2),
+            (400, 4),
         ]),
     );
     all.insert(

@@ -307,6 +307,12 @@ not a polling interval. The other new literals (`5:5 -> 6`, `20:1 -> 2`, `100:2 
 inside `#[cfg(test)] mod tests`: the stub join's 5 ms wait step, the wedged-decode test's 100 ms /
 20 ms budgets and its stub engine's 800 ms decode. No production wakeup was added to lib.rs.
 
+Row change (2026-11-07, loop3 batch 2, yap-1106-sp-04-one-engine-preempt): transcription.rs
+`300:1 -> 300:2` and `400:3 -> 400:4` are the fake-engine decode durations handed to
+`live_counting_manager` in the preempt tests (a dictation cancelling an in-flight meeting chunk),
+inside `#[cfg(test)] mod tests`. They are test fixtures, never slept on in production. No production
+wakeup was added.
+
 Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
 `ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
 disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
