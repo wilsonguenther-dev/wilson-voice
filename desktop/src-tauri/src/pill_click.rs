@@ -154,6 +154,91 @@ pub fn wait_until_front(target: &FrontApp) -> bool {
     }
 }
 
+// ── yap-1107-pill-click-always-registers: no click is lost while busy ───────
+
+/// How long a click that arrived while the previous take was still finishing
+/// (stop in flight, or the take decoding) waits to become the next start. A
+/// finish normally clears in well under this; past it the user has moved on,
+/// and a take opening the microphone by surprise is worse than a missed one,
+/// so the queued click expires with its own log line (never silently).
+pub const QUEUED_CLICK_TTL_MS: u64 = 10_000;
+/// How often the waiter looks at "is the previous take done yet?".
+pub const QUEUED_CLICK_POLL_MS: u64 = 20;
+
+/// What a click did to the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueAction {
+    /// The click is now the queued next start.
+    Queued,
+    /// A start was already queued: this click is its toggle partner, so the
+    /// pair cancels (click to start, click again to stop = nothing). Keeps
+    /// start/stop alternating exactly as the user clicked.
+    Cancelled,
+}
+
+/// What the waiter should do now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueDue {
+    /// Nothing queued (cancelled, or another path consumed it).
+    Nothing,
+    /// Still busy; look again later.
+    Wait,
+    /// The previous take is done: start now. `waited_ms` is for the log.
+    Start { waited_ms: u64 },
+    /// The queued click outlived [`QUEUED_CLICK_TTL_MS`]; it is dropped with a log.
+    Expired { waited_ms: u64 },
+}
+
+/// At most ONE queued click: the pill is a toggle, so two queued clicks are a
+/// start and its stop, which cancel.
+#[derive(Debug, Clone, Default)]
+pub struct ClickQueue {
+    at_ms: Option<u64>,
+}
+
+impl ClickQueue {
+    pub const fn new() -> Self {
+        Self { at_ms: None }
+    }
+
+    /// Is a click waiting to become the next start?
+    pub fn pending(&self) -> bool {
+        self.at_ms.is_some()
+    }
+
+    /// A click while busy: queue it, or cancel the one already queued.
+    pub fn click(&mut self, now_ms: u64) -> QueueAction {
+        if self.at_ms.take().is_some() {
+            QueueAction::Cancelled
+        } else {
+            self.at_ms = Some(now_ms);
+            QueueAction::Queued
+        }
+    }
+
+    /// The waiter's question. `busy` = the previous take is still stopping or
+    /// decoding. Consumes the queued click on Start and Expired.
+    pub fn due(&mut self, now_ms: u64, busy: bool) -> QueueDue {
+        let Some(at) = self.at_ms else {
+            return QueueDue::Nothing;
+        };
+        let waited_ms = now_ms.saturating_sub(at);
+        if waited_ms > QUEUED_CLICK_TTL_MS {
+            self.at_ms = None;
+            return QueueDue::Expired { waited_ms };
+        }
+        if busy {
+            return QueueDue::Wait;
+        }
+        self.at_ms = None;
+        QueueDue::Start { waited_ms }
+    }
+}
+
+/// THE queue: written by `pill_click_toggle` when the previous take is still
+/// finishing, drained by the one waiter thread it spawns.
+pub static QUEUE: parking_lot::Mutex<ClickQueue> = parking_lot::Mutex::new(ClickQueue::new());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +334,70 @@ mod tests {
         let mut latch = PreClickLatch::default();
         latch.press(Some(app(YAP_PID, YAP)), YAP, YAP_PID, 5);
         assert!(latch.pre_click(6).is_none());
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[test]
+    fn a_click_while_busy_becomes_the_next_start() {
+        let mut q = ClickQueue::new();
+        assert_eq!(q.click(1_000), QueueAction::Queued);
+        assert!(q.pending());
+        assert_eq!(q.due(1_020, true), QueueDue::Wait);
+        assert_eq!(q.due(1_900, false), QueueDue::Start { waited_ms: 900 });
+        assert!(!q.pending());
+        assert_eq!(q.due(1_920, false), QueueDue::Nothing);
+    }
+
+    #[test]
+    fn a_second_click_while_busy_cancels_the_first() {
+        let mut q = ClickQueue::new();
+        assert_eq!(q.click(0), QueueAction::Queued);
+        assert_eq!(q.click(150), QueueAction::Cancelled);
+        assert!(!q.pending());
+        assert_eq!(q.due(500, false), QueueDue::Nothing);
+        // and a third is a fresh start again
+        assert_eq!(q.click(300), QueueAction::Queued);
+        assert_eq!(q.due(400, false), QueueDue::Start { waited_ms: 100 });
+    }
+
+    #[test]
+    fn clicks_at_0_50_150_300_ms_into_a_finish_are_never_dropped() {
+        // acceptance 3: one click at each offset into a busy window; each is
+        // honoured as the next start once the finish clears.
+        for offset in [0u64, 50, 150, 300] {
+            let mut q = ClickQueue::new();
+            let busy_from = 10_000;
+            assert_eq!(
+                q.click(busy_from + offset),
+                QueueAction::Queued,
+                "offset {offset}"
+            );
+            assert_eq!(q.due(busy_from + offset + 10, true), QueueDue::Wait);
+            assert_eq!(
+                q.due(busy_from + 800, false),
+                QueueDue::Start {
+                    waited_ms: 800 - offset
+                },
+                "offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_queued_click_expires_loudly_after_the_ttl() {
+        let mut q = ClickQueue::new();
+        q.click(0);
+        assert_eq!(q.due(QUEUED_CLICK_TTL_MS, true), QueueDue::Wait);
+        assert_eq!(
+            q.due(QUEUED_CLICK_TTL_MS + 1, true),
+            QueueDue::Expired {
+                waited_ms: QUEUED_CLICK_TTL_MS + 1
+            }
+        );
+        assert!(!q.pending());
     }
 }
