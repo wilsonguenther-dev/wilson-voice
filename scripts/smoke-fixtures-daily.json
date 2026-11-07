@@ -915,6 +915,19 @@
       "starred": false
     }
   ],
+  "get_news_prefs": {
+    "enabled": true,
+    "cloudConnected": true,
+    "active": true,
+    "topics": ["developer", "stocks"],
+    "tickers": ["NVDA", "AAPL"],
+    "custom": ["Tauri releases"],
+    "offer": "accepted",
+    "onboardingStepDue": false,
+    "homeCardDue": false,
+    "cloudConnectedAtMs": 1794000000000,
+    "lastRefreshMs": 1794010000000
+  },
   "list_snippets": [
     {
       "id": "smoke-s-1",

@@ -388,3 +388,82 @@ describe("fix-b5-2: a retry whose backend never answers ends at the watchdog", (
     expect(result).toEqual({ recovered: 0, failed: 0, remaining: 3, stoppedForEngine: true });
   });
 });
+
+// ── yap-1106-retry-replay-regression — today's three kept clips ────────────
+
+describe("yap-1106-retry-replay-regression: Retry all over today's kept clips never stays loading past its deadline", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  // 45b1e41d is the 214 s take; the other two lengths are not pinned here and
+  // get the deadline floor, the strictest clock a retry runs under.
+  const CLIPS: Record<string, number> = { "45b1e41d": 214, b1d90963: 0, "882c587d": 0 };
+  const IDS = Object.keys(CLIPS);
+  const watchdogMs = (id: string) => retryDeadlineMs(CLIPS[id]) + RETRY_WATCHDOG_GRACE_MS;
+
+  /** fakeRetryOne with each clip's own watchdog, and the row's loading flag tracked. */
+  function retryOneTracked(answer: (id: string) => Promise<unknown>, expiredIds: string[], loading: Set<string>) {
+    return async (id: string): Promise<RetryOutcome> => {
+      loading.add(id);
+      try {
+        return await fakeRetryOne(answer, watchdogMs(id), expiredIds)(id);
+      } finally {
+        loading.delete(id);
+      }
+    };
+  }
+
+  it("the 214 s clip's deadline is the 180 s cap, not its length", () => {
+    expect(retryDeadlineMs(214)).toBe(180_000);
+    expect(watchdogMs("45b1e41d")).toBe(180_000 + RETRY_WATCHDOG_GRACE_MS);
+  });
+
+  it("every clip answers inside its deadline: all three recover, none expire, nothing is left loading", async () => {
+    const expiredIds: string[] = [];
+    const loading = new Set<string>();
+    const order: string[] = [];
+    let result: unknown = null;
+    void runRetryAll(
+      IDS,
+      retryOneTracked(
+        (id) => {
+          order.push(id);
+          // The backend answers one second before its own deadline.
+          return new Promise((resolve) => setTimeout(() => resolve("text"), retryDeadlineMs(CLIPS[id]) - 1000));
+        },
+        expiredIds,
+        loading,
+      ),
+    ).then((r) => {
+      result = r;
+    });
+    for (const id of IDS) {
+      expect(loading.has(id)).toBe(true);
+      await vi.advanceTimersByTimeAsync(retryDeadlineMs(CLIPS[id]) - 1000);
+      expect(loading.has(id)).toBe(false);
+    }
+    expect(order).toEqual(IDS);
+    expect(expiredIds).toEqual([]);
+    expect(loading.size).toBe(0);
+    expect(result).toEqual({ recovered: 3, failed: 0, remaining: 0, stoppedForEngine: false });
+  });
+
+  it("a hung 214 s retry stops loading at its watchdog and the run stops for the engine", async () => {
+    const expiredIds: string[] = [];
+    const loading = new Set<string>();
+    let result: unknown = null;
+    void runRetryAll(
+      IDS,
+      retryOneTracked(() => new Promise<never>(() => {}), expiredIds, loading),
+    ).then((r) => {
+      result = r;
+    });
+    await vi.advanceTimersByTimeAsync(watchdogMs("45b1e41d") - 1);
+    expect(loading.has("45b1e41d")).toBe(true);
+    expect(result).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(loading.size).toBe(0);
+    expect(expiredIds).toEqual(["45b1e41d"]);
+    expect(result).toEqual({ recovered: 0, failed: 0, remaining: 3, stoppedForEngine: true });
+  });
+});

@@ -278,6 +278,18 @@ pub fn record_duration(module: &str, name: &str, ms: u64) {
     log::info!("{module} duration {name}_ms={ms}");
 }
 
+/// SP-11 — [`record_duration`] for a hot path: the stat (last / count / max)
+/// is kept on every call so the health line sees each sample, but the INFO
+/// line is written only when `log_it` (the caller's "slow or changed" rule).
+/// Returns whether it logged.
+pub fn record_duration_quiet(module: &str, name: &str, ms: u64, log_it: bool) -> bool {
+    record_value(format!("{module}.{name}_ms"), ms);
+    if log_it {
+        log::info!("{module} duration {name}_ms={ms}");
+    }
+    log_it
+}
+
 /// A non-time quantity (bytes, items) kept as `<module>.<name>`.
 pub fn record_amount(module: &str, name: &str, value: u64) {
     record_value(format!("{module}.{name}"), value);
@@ -373,14 +385,22 @@ pub struct DiagSnapshot {
     pub events: Vec<DiagEvent>,
     pub counters: BTreeMap<String, Stat>,
     pub health: Health,
+    /// yap-1106 — the named states (`byom.route`, `byom.cap`, the meeting
+    /// stage, the last insert path): one row each in Diagnostics.
+    #[serde(default)]
+    pub states: BTreeMap<String, String>,
 }
 
 /// The live view: the newest [`SNAPSHOT_EVENTS`] events, every stat, the
 /// health the caller assembled. Transcript-shaped fields never leave here.
 pub fn snapshot(health: Health) -> DiagSnapshot {
-    let (mut events, counters) = {
+    let (mut events, counters, states) = {
         let g = global();
-        (g.ring.newest(SNAPSHOT_EVENTS), g.stats.clone())
+        (
+            g.ring.newest(SNAPSHOT_EVENTS),
+            g.stats.clone(),
+            g.states.clone(),
+        )
     };
     for e in &mut events {
         e.fields.retain(|k, _| !is_sensitive_key(k));
@@ -390,6 +410,7 @@ pub fn snapshot(health: Health) -> DiagSnapshot {
         events,
         counters,
         health,
+        states,
     }
 }
 
@@ -508,6 +529,11 @@ pub fn redact_snapshot(snap: &DiagSnapshot, username: &str) -> DiagSnapshot {
         events,
         counters: snap.counters.clone(),
         health,
+        states: snap
+            .states
+            .iter()
+            .map(|(k, v)| (k.clone(), scrub_username(v, username)))
+            .collect(),
     }
 }
 
@@ -527,6 +553,12 @@ pub fn render_text(snap: &DiagSnapshot) -> String {
     );
     for (k, v) in &snap.health.permissions {
         out.push_str(&format!("  {k}: {v}\n"));
+    }
+    if !snap.states.is_empty() {
+        out.push_str("\nSTATES\n");
+        for (k, v) in &snap.states {
+            out.push_str(&format!("  {k}: {v}\n"));
+        }
     }
     out.push_str("\nCOUNTERS\n");
     if snap.counters.is_empty() {
@@ -667,6 +699,7 @@ mod tests {
     fn snap_with(fields: &[(&str, &str)], msg: &str) -> DiagSnapshot {
         DiagSnapshot {
             generated_at_ms: 0,
+            states: BTreeMap::new(),
             events: vec![DiagEvent {
                 ts_ms: 0,
                 level: "WARN".into(),
@@ -806,5 +839,14 @@ mod tests {
         assert!(s.count >= 2);
         let h = Health::default();
         assert!(health_line(&h).contains("loaded=no"));
+    }
+
+    #[test]
+    fn quiet_duration_keeps_the_stat_but_logs_only_when_asked() {
+        assert!(!record_duration_quiet("diagquiet", "snap", 7, false));
+        assert!(record_duration_quiet("diagquiet", "snap", 150, true));
+        let s = global().stats.get("diagquiet.snap_ms").copied().unwrap();
+        assert_eq!((s.last, s.max), (150, 150));
+        assert!(s.count >= 2);
     }
 }

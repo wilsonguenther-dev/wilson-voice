@@ -21,11 +21,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emit: vi.fn(async () => undefined) }));
 
 import { AppContext, type AppCtx } from "../appShell";
-import Companion from "../views/settings/Companion";
+import Companion, { curseToggleShown } from "../views/settings/Companion";
+import { isLiveCall, type CallOfferView } from "./callOfferModel";
 import { advanceLive, createLiveState, DEFAULT_LIVE, LIVE_TIERS, reduceTakeStage, type LivePhase, type TakeStageName } from "./live";
 import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import {
-  CURSE_EVERY, EMPTY_MEMORY, PASTE_CLAIMS, RECENT_TAKES, TAKE_BANDS, VOICES, VOICE_OPTIONS,
+  CURSE_EVERY, EMPTY_MEMORY, PASTE_CLAIMS, curseAllowed, curseBlock, seededRandom, RECENT_TAKES, TAKE_BANDS, VOICES, VOICE_OPTIONS,
   claimsPaste, distinctLines, duringLines, fillLine, isStrongest, noteTakeSignal, parseMemory, pickTakeLine,
   rememberTakeLine, takeBand, takeDoneLine, typingSaved, voiceFor,
   type PickOpts, type TakeLineMemory, type TakePasteSignal, type VoiceId,
@@ -191,6 +192,97 @@ describe("curse mode (Badass only, off by default)", () => {
   });
 });
 
+describe("curse setting (yap-1106-curse-setting)", () => {
+  const curseSet = new Set(VOICES.badass.curse);
+  const companion = (settings: State) => render(<Companion />, { settings, saveSettings: () => undefined });
+
+  it("the toggle is shown only under Badass", () => {
+    for (const tone of [undefined, "friendly", "professional", "rose", "nonsense"]) {
+      expect(companion({ companionTone: tone })).not.toContain("data-curse-setting");
+      expect(curseToggleShown(tone)).toBe(false);
+    }
+    expect(companion({ companionTone: "rude" })).toContain("data-curse-setting");
+    expect(curseToggleShown("rude")).toBe(true);
+  });
+
+  it("the toggle is off by default and shows a saved choice", () => {
+    const toggle = (html: string) => html.match(/<input[^>]*data-curse-toggle[^>]*>/)?.[0] ?? "";
+    expect(toggle(companion({ companionTone: "rude" }))).not.toBe("");
+    expect(toggle(companion({ companionTone: "rude" }))).not.toContain("checked");
+    expect(toggle(companion({ companionTone: "rude", companionCurse: false }))).not.toContain("checked");
+    expect(toggle(companion({ companionTone: "rude", companionCurse: true }))).toContain("checked");
+  });
+
+  it("the gate: Badass + toggle on only, never Professional, never in a meeting or a screen share", () => {
+    const base = { enabled: true, voice: "badass" as VoiceId, meeting: false, screenShared: false };
+    expect(curseAllowed(base)).toBe(true);
+    expect(curseBlock(base)).toBeNull();
+    expect(curseBlock({ ...base, enabled: false })).toBe("off");
+    for (const v of ["bestfriend", "professional", "rose"] as VoiceId[]) {
+      expect(curseAllowed({ ...base, voice: v })).toBe(false);
+      expect(curseBlock({ ...base, voice: v })).toBe("voice");
+    }
+    expect(curseBlock({ ...base, meeting: true })).toBe("in_meeting");
+    expect(curseBlock({ ...base, screenShared: true })).toBe("screen_shared");
+    expect(curseAllowed({ ...base, meeting: true, screenShared: true })).toBe(false);
+  });
+
+  it("a live call (any phase but idle) counts as a screen-share state and shuts the gate", () => {
+    const view = (phase: CallOfferView["phase"]): CallOfferView => ({
+      phase, offerId: null, appName: "Zoom", bundleId: null, copy: null, siteLine: null, yourSideOnly: false, countdownMsLeft: 0,
+    });
+    expect(isLiveCall(null)).toBe(false);
+    expect(isLiveCall(view("idle"))).toBe(false);
+    for (const p of ["offering", "chip", "recording", "end_prompt"] as CallOfferView["phase"][]) {
+      expect(isLiveCall(view(p))).toBe(true);
+      expect(curseAllowed({ enabled: true, voice: "badass", meeting: false, screenShared: isLiveCall(view(p)) })).toBe(false);
+    }
+    expect(curseAllowed({ enabled: true, voice: "badass", meeting: false, screenShared: isLiveCall(view("idle")) })).toBe(true);
+  });
+
+  it("seededRandom is replayable and stays in [0, 1)", () => {
+    const a = seededRandom(7), b = seededRandom(7), c = seededRandom(8);
+    const xs = Array.from({ length: 50 }, () => a());
+    expect(Array.from({ length: 50 }, () => b())).toEqual(xs);
+    expect(Array.from({ length: 50 }, () => c())).not.toEqual(xs);
+    xs.forEach((x) => { expect(x).toBeGreaterThanOrEqual(0); expect(x).toBeLessThan(1); });
+  });
+
+  it.each([1, 42, 2026])("with seeded random %i, about 1 line in 4 is a curse line", (seed) => {
+    const n = 800;
+    const keys = runTakes("badass", n, { curse: true, today: "2026-11-06", rand: seededRandom(seed) }).keys;
+    const share = keys.filter((k) => curseSet.has(k)).length / n;
+    expect(share).toBeGreaterThan(0.17);
+    expect(share).toBeLessThan(0.33);
+    // Same seed, same takes.
+    expect(runTakes("badass", n, { curse: true, today: "2026-11-06", rand: seededRandom(seed) }).keys).toEqual(keys);
+  });
+
+  it("with seeded random, the strongest word is said at most once a day, and again the next day", () => {
+    let mem: TakeLineMemory = { recent: [], strongDay: null };
+    const rand = seededRandom(99);
+    const perDay: Record<string, number> = {};
+    for (const today of ["2026-11-06", "2026-11-07", "2026-11-08"]) {
+      for (let i = 0; i < 300; i++) {
+        const p = pickTakeLine(30, "badass", mem, { nonce: i, curse: true, today, rand });
+        if (isStrongest(p.key)) perDay[today] = (perDay[today] ?? 0) + 1;
+        mem = rememberTakeLine(mem, p, today);
+      }
+    }
+    for (const today of ["2026-11-06", "2026-11-07", "2026-11-08"]) expect(perDay[today]).toBe(1);
+  });
+
+  it("with seeded random, never curses in Professional (or any non-Badass voice), nor with the gate shut", () => {
+    for (const v of ["bestfriend", "professional", "rose"] as VoiceId[]) {
+      const keys = runTakes(v, 400, { curse: true, today: "2026-11-06", rand: seededRandom(3) }).keys;
+      expect(keys.filter((k) => curseSet.has(k))).toEqual([]);
+    }
+    const shut = curseAllowed({ enabled: true, voice: "badass", meeting: true, screenShared: false });
+    const keys = runTakes("badass", 400, { curse: shut, today: "2026-11-06", rand: seededRandom(3) }).keys;
+    expect(keys.filter((k) => curseSet.has(k))).toEqual([]);
+  });
+});
+
 describe("during-take lines (live.ts advanceLive with a voice)", () => {
   const speech = (loud = 0.05, quiet = 0.008) => (t: number): number => {
     if (t % 8 > 7.4) return quiet;
@@ -260,12 +352,15 @@ describe("fix-b6-1-done-line-no-false-paste — no paste claim the Copy card con
     for (const band of TAKE_BANDS) {
       const w = BAND_WORDS[band];
       expect(takeBand(w)).toBe(band);
-      for (const curse of [false, true]) {
+      // Curse off, curse on by nonce, and curse on with the pill's random draw (seeded here).
+      for (const mode of ["off", "nonce", "rand"] as const) {
+        const curse = mode !== "off";
+        const rand = mode === "rand" ? seededRandom(41) : undefined;
         let mem: TakeLineMemory = { recent: [], strongDay: null };
         const keys: string[] = [];
         const texts: string[] = [];
         for (let i = 0; i < 200; i++) {
-          const p = pickTakeLine(w, voice, mem, { nonce: i, pasted: false, curse, today: TODAY });
+          const p = pickTakeLine(w, voice, mem, { nonce: i, pasted: false, curse, rand, today: TODAY });
           expect(PASTE_CLAIMS.has(p.key)).toBe(false);
           expect(claimsPaste(p.text)).toBe(false);
           expect(keys.slice(Math.max(0, i - RECENT_TAKES), i)).not.toContain(p.key);
@@ -330,12 +425,13 @@ describe("fix-b6-1-done-line-no-false-paste — no paste claim the Copy card con
     const mem: TakeLineMemory = { recent: [], strongDay: null };
     for (const pasted of [true, false]) {
       const out = takeDoneLine(61, "professional", mem, { nonce: 4, today: TODAY, pasted });
-      expect(out.log).toMatch(/^pill voice_line voice=[a-z]+ band=[a-z]+ source=[a-z]+ recent=\d+ pasted=(true|false)$/);
+      expect(out.log).toMatch(/^pill voice_line voice=[a-z]+ band=[a-z]+ source=[a-z]+ curse=(true|false) recent=\d+ pasted=(true|false)$/);
       expect(out.log.endsWith(` pasted=${pasted}`)).toBe(true);
       expect(out.log).not.toContain(out.picked.text);
       expect(out.memory.recent).toEqual([out.picked.key]);
     }
     expect(takeDoneLine(3, "bestfriend", mem).log).toContain("pasted=true");   // default
+    expect(takeDoneLine(3, "badass", mem, { curse: true, pasted: false }).log).toContain(" curse=true recent=1 pasted=false");
   });
 
   it("YappyPill wires it: tracks the Copy card per take and passes pasted into the done line", () => {

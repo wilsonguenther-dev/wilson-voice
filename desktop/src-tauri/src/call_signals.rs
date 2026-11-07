@@ -709,9 +709,32 @@ pub mod sys {
     }
 }
 
+/// SP-11 — a snapshot slower than this always logs its duration line.
+pub const SNAPSHOT_SLOW_MS: u64 = 100;
+
+/// SP-11 — whether one snapshot's duration line is due. The watcher wakes on
+/// every per-process mic change plus a 30 s timer, so logging each one was
+/// over half of yap.log (8,108 of 15,233 lines). Now it logs only when the
+/// snapshot was slow or its result changed; the stat is kept either way.
+pub fn snapshot_duration_due(ms: u64, result_changed: bool) -> bool {
+    ms > SNAPSHOT_SLOW_MS || result_changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sp11_snapshot_duration_logs_only_when_slow_or_changed() {
+        assert!(!snapshot_duration_due(3, false));
+        assert!(!snapshot_duration_due(SNAPSHOT_SLOW_MS, false));
+        assert!(snapshot_duration_due(SNAPSHOT_SLOW_MS + 1, false));
+        assert!(snapshot_duration_due(2, true));
+        // A 1 h idle soak polls every 30 s: 120 steady, fast snapshots with an
+        // unchanged result write no duration line at all (budget: < 50 lines).
+        let lines = (0..120).filter(|_| snapshot_duration_due(4, false)).count();
+        assert_eq!(lines, 0);
+    }
 
     fn proc(
         pid: i32,

@@ -18,6 +18,13 @@ export type Step =
   | "welcome"
   | "permissions"
   | "calibration"
+  /**
+   * yap-1106-news-prefs-onboarding — "What do you want to hear about?". Only
+   * reachable when `StepOptions.newsStep` is true (the cloud option is
+   * connected and the news offer was never answered); otherwise the spine is
+   * calibration → try-it exactly as before.
+   */
+  | "news"
   | "try-it"
   /** Six dead ends, six screens, each with the one button that fixes it. */
   | "try-it-no-mic"
@@ -74,9 +81,20 @@ export function isFailureStep(step: Step): boolean {
   return (Object.values(FAILURE_STEP) as Step[]).includes(step);
 }
 
-/** Which progress dot a step lights: failure screens belong to "try-it". */
+/**
+ * Which progress dot a step lights: failure screens belong to "try-it"; the
+ * optional news step shares calibration's dot (it is not on every spine, so it
+ * never gets a dot of its own).
+ */
 export function progressStep(step: Step): Step {
+  if (step === "news") return "calibration";
   return isFailureStep(step) ? "try-it" : step;
+}
+
+/** Routing switches that depend on the machine, not the step. */
+export interface StepOptions {
+  /** yap-1106-news-prefs-onboarding — show the Yappy News step after calibration. */
+  newsStep?: boolean;
 }
 
 /**
@@ -84,7 +102,8 @@ export function progressStep(step: Step): Step {
  * no sense for the step (a "success" on the welcome screen, say) leaves the
  * step where it is rather than jumping somewhere surprising.
  */
-export function nextStep(step: Step, outcome: Outcome): Step {
+export function nextStep(step: Step, outcome: Outcome, opts: StepOptions = {}): Step {
+  const news = !!opts.newsStep;
   // Skip is honest everywhere: it ends onboarding, unproven.
   if (outcome.kind === "skip") return "done";
   switch (step) {
@@ -95,13 +114,19 @@ export function nextStep(step: Step, outcome: Outcome): Step {
       if (outcome.kind === "back") return "welcome";
       return step;
     case "calibration":
-      if (outcome.kind === "next") return "try-it";
+      if (outcome.kind === "next") return news ? "news" : "try-it";
       if (outcome.kind === "back") return "permissions";
+      return step;
+    case "news":
+      // "Keep me posted" and "Not now" both move on with `next`; Not now's
+      // skip is of the news step only, never of onboarding.
+      if (outcome.kind === "next") return "try-it";
+      if (outcome.kind === "back") return "calibration";
       return step;
     case "try-it":
       if (outcome.kind === "success") return "done";
       if (outcome.kind === "failure") return FAILURE_STEP[outcome.failure];
-      if (outcome.kind === "back") return "calibration";
+      if (outcome.kind === "back") return news ? "news" : "calibration";
       return step;
     case "try-it-no-mic":
     case "try-it-no-accessibility":
