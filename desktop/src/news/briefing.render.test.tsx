@@ -4,8 +4,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
-import { NewsBriefingView } from "./NewsBriefing";
-import { buildBriefing, type CachedStory } from "./briefing";
+import { invoke } from "@tauri-apps/api/core";
+import { NewsBriefingView, cachedBriefing, composeBriefing } from "./NewsBriefing";
+import { buildBriefing, quietNow, type CachedStory } from "./briefing";
 import { duoAt, duoTurns } from "./duo";
 
 const noop = () => undefined;
@@ -123,5 +124,64 @@ describe("yap-1106-news-duo-delivery card", () => {
     expect(html).toContain('data-news-says="cinder"');
     expect(html).not.toContain("data-news-duo-skip");
     expect(html).not.toContain("data-news-turn=");
+  });
+});
+
+describe("fix-l3b3-2 briefing makes no cloud call when quiet", () => {
+  const cachedRows = [story("a", 4), story("b", 3), story("c", 2), story("d", 1)];
+  const calm = { meetingRecording: false, screenSharing: false, doNotDisturb: false };
+  const quietCases = [
+    ["a meeting", { ...calm, meetingRecording: true }],
+    ["a screen share", { ...calm, screenSharing: true }],
+    ["Do Not Disturb", { ...calm, doNotDisturb: true }],
+  ] as const;
+
+  function mockBackend() {
+    const calls: string[] = [];
+    const impl = async (cmd: string): Promise<unknown> => {
+      calls.push(cmd);
+      if (cmd === "news_briefing_cached") return cachedRows;
+      if (cmd === "news_explain_top") {
+        return { lines: [{ urlKey: "a", url: "https://example.com/a", headline: "Headline a", line: "worth a look.", explained: true }], fallback: "none" };
+      }
+      return null;
+    };
+    vi.mocked(invoke).mockImplementation(impl as unknown as typeof invoke);
+    return calls;
+  }
+
+  for (const [name, signals] of quietCases) {
+    it(`news_briefing_cache_delivery_never_explains_during_${name.replace(/\W+/g, "_")}`, async () => {
+      const calls = mockBackend();
+      const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const b = await cachedBriefing(quietNow(signals), "professional", NOW);
+      expect(calls).toContain("news_briefing_cached");
+      expect(calls).not.toContain("news_explain_top");
+      expect(info).toHaveBeenCalledWith("news briefing explain_held reason=quiet");
+      info.mockRestore();
+      expect(b).not.toBeNull();
+      // The headlines stand alone: up to 3 stories, each with its source link.
+      expect(b!.stories).toHaveLength(3);
+      const html = render({ briefing: b, movers: [] });
+      expect(html).toContain('data-news-stories="3"');
+      expect((html.match(/data-news-source=/g) ?? []).length).toBe(3);
+      expect(html).toContain("Headline a");
+      expect(html).not.toContain("worth a look.");
+    });
+  }
+
+  it("news_briefing_refresh_delivery_never_explains_while_quiet", async () => {
+    const calls = mockBackend();
+    const b = await composeBriefing(cachedRows, quietNow({ ...calm, meetingRecording: true }), undefined, NOW);
+    expect(calls).not.toContain("news_explain_top");
+    expect(b.stories).toHaveLength(3);
+  });
+
+  it("news_briefing_explains_when_nothing_is_quiet", async () => {
+    const calls = mockBackend();
+    const b = await cachedBriefing(quietNow(calm), "professional", NOW);
+    expect(calls).toEqual(["news_briefing_cached", "news_explain_top"]);
+    expect(b!.stories).toHaveLength(3);
+    expect(render({ briefing: b, movers: [] })).toContain("worth a look.");
   });
 });

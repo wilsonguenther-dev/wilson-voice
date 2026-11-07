@@ -151,6 +151,18 @@ pub fn quote_check(
     }
 }
 
+/// May the explain step make its cloud call now? fix-l3b3-2: a meeting,
+/// screen share, Do Not Disturb or low battery holds it, exactly as it holds
+/// the story refresh and the quote check. `Err` is the quiet reason tag
+/// (`meeting`, `screen_share`, `dnd`, `low_battery`); the caller then shows
+/// the headlines alone and sends nothing.
+pub fn explain_allowed(quiet: Quiet) -> Result<(), &'static str> {
+    match quiet.reason() {
+        Some(r) => Err(r),
+        None => Ok(()),
+    }
+}
+
 /// The quotes worth a line: moved [`MOVE_PCT`] or more either way, biggest
 /// move first. Every one is marked delayed, whatever the feed said.
 pub fn movers(quotes: &[Quote]) -> Vec<Quote> {
@@ -416,6 +428,69 @@ mod tests {
                 Decision::Skip(schedule::Skip::Quiet(tag))
             );
         }
+    }
+
+    #[test]
+    fn explain_makes_no_cloud_call_during_meetings_share_dnd_or_low_battery() {
+        assert_eq!(explain_allowed(CALM), Ok(()));
+        let quiet = [
+            (
+                Quiet {
+                    in_meeting: true,
+                    ..CALM
+                },
+                "meeting",
+            ),
+            (
+                Quiet {
+                    screen_sharing: true,
+                    ..CALM
+                },
+                "screen_share",
+            ),
+            (
+                Quiet {
+                    do_not_disturb: true,
+                    ..CALM
+                },
+                "dnd",
+            ),
+            (
+                Quiet {
+                    low_battery: true,
+                    ..CALM
+                },
+                "low_battery",
+            ),
+        ];
+        for (qt, tag) in quiet {
+            assert_eq!(explain_allowed(qt), Err(tag));
+        }
+        // A quiet explain step is the headlines alone: the cloud call is the
+        // closure, and it never runs.
+        let mut called = false;
+        let mut call = |_: &str, _: &str| -> Result<String, &'static str> {
+            called = true;
+            Ok(String::new())
+        };
+        fn gated(
+            qt: Quiet,
+            call: &mut dyn FnMut(&str, &str) -> Result<String, &'static str>,
+        ) -> Result<String, &'static str> {
+            explain_allowed(qt)?;
+            call("system", "user")
+        }
+        assert_eq!(
+            gated(
+                Quiet {
+                    in_meeting: true,
+                    ..CALM
+                },
+                &mut call
+            ),
+            Err("meeting")
+        );
+        assert!(!called);
     }
 
     #[test]
