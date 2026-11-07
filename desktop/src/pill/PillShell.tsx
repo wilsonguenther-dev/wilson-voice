@@ -482,6 +482,7 @@ export default function ClassicPill(
             <button
               type="button"
               className={`pill-upgrade lic-${license.tone}`}
+              data-pill-control="trial-ended"
               title={license.title}
               aria-label={license.title}
               tabIndex={-1}
@@ -499,7 +500,7 @@ export default function ClassicPill(
         {/* Y10-A · the language picker slot. At rest only: mid-take the
             language is already decided, and a blocked/gated pill has one job. */}
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
-        <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
+        <button type="button" className="ctrl" data-slot="dictate" data-pill-control="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
           <SlotTip
             text={DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}
