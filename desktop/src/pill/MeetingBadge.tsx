@@ -32,9 +32,15 @@ import {
   MEETING_STOP_FAILED_DOM_EVENT,
   meetingPillHoldMs,
   meetingSavedUntil,
+  NOTES_EVENT_STATES,
+  NOTES_RECHECK_MS,
+  NOTES_RECHECK_SLOW_MS,
+  NOTES_STALL_MS,
+  notesWritingId,
   reduceMeetingPill,
   systemAudioBadge,
   type MeetingAfterView,
+  type NotesJobSnapshot,
   type MeetingPillInput,
   type MeetingPillPhase,
   type MeetingProgressEvent,
@@ -85,6 +91,9 @@ export function useMeetingPill(): {
   dismiss: (id: string) => void;
 } {
   const [state, dispatch] = useReducer(meetingPillReducer, { status: IDLE_MEETING, phase: MEETING_PILL_IDLE });
+  // yap-1107 — the store re-read, shared by the subscription effect and the
+  // "Writing notes" timers below (set while mounted).
+  const reconcileRef = useRef<((why: string) => void) | null>(null);
   useEffect(() => {
     // A synchronous cleanup can run before listen() resolves (StrictMode
     // double-mount); the `dead` flag unsubscribes a late listener so no native
@@ -95,12 +104,32 @@ export function useMeetingPill(): {
     invoke<MeetingStatus>("meeting_status")
       .then((s) => { if (!dead) dispatch({ type: "status", status: s, nowMs: Date.now() }); })
       .catch(() => {});
+    // yap-1107-pill-writing-notes-always-clears — the notes worker's store is
+    // the truth; events are hints. Re-read it on mount, on every notes event,
+    // and whenever the pill window comes back (focus / show).
+    const reconcile = (why: string) => {
+      invoke<NotesJobSnapshot[]>("list_notes_jobs")
+        .then((jobs) => {
+          if (dead) return;
+          dispatch({ type: "reconcile", jobs: Array.isArray(jobs) ? jobs : [], nowMs: Date.now() });
+        })
+        .catch((err) => console.warn(`pill notes_reconcile_failed why=${why} err=${String(err).slice(0, 80)}`));
+    };
+    reconcileRef.current = reconcile;
+    reconcile("mount");
+    const onFocus = () => reconcile("focus");
+    const onVisible = () => { if (document.visibilityState === "visible") reconcile("show"); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     // The dispatch time is read HERE, not in the reducer: a reducer must stay
     // pure (StrictMode runs it twice).
     listen<MeetingStatus>(MEETING_EVENT, (e) => dispatch({ type: "status", status: e.payload, nowMs: Date.now() })).then(push);
-    listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) =>
-      dispatch({ type: "progress", event: e.payload, nowMs: Date.now() }),
-    ).then(push);
+    listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) => {
+      dispatch({ type: "progress", event: e.payload, nowMs: Date.now() });
+      // yap-1107 — a notes event is a hint to re-read the store (transcribing
+      // percent events are not: they are frequent and say nothing about notes).
+      if (e.payload && NOTES_EVENT_STATES.has(e.payload.state)) reconcile("event");
+    }).then(push);
     // fix-b8-1 — the Stop button's rejection (window-local, see MeetingBadge).
     const onStopFailed = (e: Event) => {
       const detail = (e as CustomEvent<unknown>).detail;
@@ -111,6 +140,9 @@ export function useMeetingPill(): {
       dead = true;
       unsubs.forEach((u) => u());
       window.removeEventListener(MEETING_STOP_FAILED_DOM_EVENT, onStopFailed);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+      reconcileRef.current = null;
     };
   }, []);
   // The hold: notes-ready (and failed) let go after MEETING_RESULT_HOLD_MS.
@@ -138,6 +170,38 @@ export function useMeetingPill(): {
     const t = window.setTimeout(() => dispatch({ type: "saved_elapsed", until }), Math.max(0, until - Date.now()));
     return () => clearTimeout(t);
   }, [savedUntil, savedElapsedS]);
+  // yap-1107-pill-writing-notes-always-clears — while the pill says "Writing
+  // notes": ONE 5 s re-check of the store, then a slow 30 s re-check (never
+  // faster), and ONE 90 s stall timer that turns the label into "Still
+  // writing... tap to open notes". Keyed on the phase object: every notes
+  // event for that meeting is a new object (progress), so the stall clock
+  // restarts on progress; a reconcile that finds the job still active
+  // returns the SAME object and re-arms nothing.
+  const writingId = notesWritingId(phase);
+  const writingPhase = writingId === null ? null : phase.kind === "saved" ? phase.next : phase;
+  const stalled = writingPhase?.kind === "processing" && writingPhase.stalled === true;
+  useEffect(() => {
+    if (writingId === null) return;
+    const id = writingId;
+    const recheck = (why: string) => reconcileRef.current?.(why);
+    const timers: number[] = [];
+    let slow: number | undefined;
+    timers.push(window.setTimeout(() => {
+      recheck("recheck_5s");
+      slow = window.setInterval(() => recheck("recheck_30s"), NOTES_RECHECK_SLOW_MS);
+    }, NOTES_RECHECK_MS));
+    if (!stalled) {
+      timers.push(window.setTimeout(() => {
+        console.info(`pill notes_still_writing id=${id.slice(0, 8)} quiet_ms=${NOTES_STALL_MS}`);
+        dispatch({ type: "stall", id });
+        recheck("stall");
+      }, NOTES_STALL_MS));
+    }
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      if (slow !== undefined) clearInterval(slow);
+    };
+  }, [writingId, writingPhase, stalled]);
   const dismiss = useCallback((id: string) => dispatch({ type: "dismiss", id }), []);
   return { status: state.status, phase: state.phase, dismiss };
 }
