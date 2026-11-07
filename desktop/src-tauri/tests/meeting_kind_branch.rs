@@ -284,9 +284,16 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         // yap-1106-who-is-this: step 12 keeps each cluster's voice for the cards.
         wilson_voice_lib::speaker_profiles::MIGRATION_12_CLUSTER_VOICES,
     ];
+    // yap-1106-who-is-this: step 12's NEW table `meeting_cluster_voices` has its
+    // own `cluster_index` key column; only a step that ALTERs `meeting_segments`
+    // to add the column counts as adding it.
+    let adds_segment_column = format!(
+        "ALTER TABLE meeting_segments ADD COLUMN {}",
+        meetings::CLUSTER_INDEX_COLUMN
+    );
     let mentions = ladder
         .iter()
-        .filter(|sql| sql.contains(meetings::CLUSTER_INDEX_COLUMN))
+        .filter(|sql| sql.contains(&adds_segment_column))
         .count();
     assert_eq!(
         mentions, 1,
