@@ -60,3 +60,13 @@ Run rows 1 to 8 on /Applications/Yap Test.app with the real build, screencapture
 window at 2x into this folder (one PNG per row, named row-<n>.png), paste the app log lines for each
 minute, and replace each NOT WALKED with PASS or FAIL. Row 4 is expected to FAIL until
 yap-1107-walk-dictate-into-yap-window lands.
+
+## Second code-only try, 2026-11-07T14:54:31Z
+
+A second code-only seat (lane B6) resumed this branch, merged origin/loop3/integration-11 (already
+up to date) and re-checked the filed item against every loop3/add-*.json and
+docs/loop/ITEMS-2026-11-07-loop3.json: yap-1107-walk-dictate-into-yap-window is still the only item
+for row 4 and nothing on origin/main (d4ad0d71) has fixed it. This seat is bound by the same rules
+(no driving any copy of Yap, no captures, no keystrokes, no browser), so rows 1 to 3 and 5 to 8 are
+still NOT WALKED and there are still no screenshots. This item needs a seat that is allowed to drive
+/Applications/Yap Test.app; another code-only seat cannot finish it.
