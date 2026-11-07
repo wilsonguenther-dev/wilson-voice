@@ -1,6 +1,7 @@
 // Y5-G — App.tsx is the SHELL ONLY: nav, header, the license chip, the toast
 // host and the global modals. Every screen lives in ./views/<Name>.tsx and the
 // eight settings panels in ./views/settings/. Shell state lives in ./appShell.
+import { useLayoutEffect, useRef, useState } from "react";
 import { AppContext, useAppShell } from "./appShell";
 import { TEST_CHIP } from "./buildChannel";
 import { invoke } from "@tauri-apps/api/core";
@@ -132,9 +133,11 @@ export default function App() {
           <div className="mark">
             <span className={status.recording ? "dot pulse" : "dot"} />
           </div>
-          <div>
+          {/* yap-1107-sidebar-version-line-fits — min-width:0 lets this column
+              shrink to the 220 px rail instead of growing to its nowrap text. */}
+          <div className="brand-text">
             <div className="brand-name">Yap</div>
-            <div className="brand-tag">v{__APP_VERSION__} · local · private</div>
+            <BrandTag version={__APP_VERSION__} />
           </div>
         </div>
 
@@ -158,7 +161,7 @@ export default function App() {
               aria-current={nav === id ? "page" : undefined}
               onClick={() => setNav(id)}
             >
-              <span>{label}</span>
+              <span className="nav-label">{label}</span>
               {count != null && count > 0 && (
                 <span className={id === "permissions" ? "count warn" : "count"}>
                   {count}
@@ -488,5 +491,74 @@ export default function App() {
       )}
     </div>
     </AppContext.Provider>
+  );
+}
+
+/**
+ * yap-1107-sidebar-version-line-fits — a SHIPPED version is bare x.y.z; a test
+ * or dev build carries a suffix ("0.9.4-loop3.8", "0.9.4+sha"). Only the
+ * suffixed ones can be long, so only they leave the one-line look.
+ */
+function isReleaseVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+$/.test(version.trim());
+}
+
+/**
+ * The version line under "Yap" in the sidebar.
+ *
+ * Shipped ("0.9.4"): the one line it always was, same markup, same pixels.
+ * Test builds: TWO lines, "v0.9.4-loop3.8" then "local · private". Two lines
+ * rather than one ellipsized line because in a 137 px text column the
+ * " · local · private" tail alone is 18 of the ~21 Departure Mono cells, which
+ * would leave an ellipsized version of about three characters ("v0…") — the
+ * one thing Wilson reads this line for. On its own line the version keeps all
+ * 21 cells and only a pathological 40-character version is clipped, with an
+ * ellipsis and the full string in a title tooltip (set only when it IS
+ * clipped). Text-overflow is visual only, so screen readers always read the
+ * whole version.
+ */
+function BrandTag({ version }: { version: string }) {
+  const release = isReleaseVersion(version);
+  const verRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+
+  useLayoutEffect(() => {
+    if (release) return;
+    const el = verRef.current;
+    if (!el) return;
+    let live = true;
+    const measure = () => {
+      if (live) setClipped(el.scrollWidth > el.clientWidth);
+    };
+    measure();
+    // Departure Mono loads after first layout; re-measure once it has.
+    document.fonts?.ready.then(measure).catch(() => {});
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => {
+      live = false;
+      ro?.disconnect();
+    };
+  }, [release, version]);
+
+  if (release) {
+    return (
+      <div className="brand-tag" data-testid="brand-tag">
+        v{version} · local · private
+      </div>
+    );
+  }
+  return (
+    <div className="brand-tag brand-tag-build" data-testid="brand-tag">
+      <span
+        ref={verRef}
+        className="brand-ver"
+        data-testid="brand-ver"
+        title={clipped ? `v${version}` : undefined}
+      >
+        v{version}
+      </span>
+      <span className="brand-scope">local · private</span>
+    </div>
   );
 }
