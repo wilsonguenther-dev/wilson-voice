@@ -39,6 +39,7 @@ import {
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
   speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
   phaseRank, winningPhase,
+  COPY_ONLY_PILL_LINE, takeErrorLine,
   errorSentence, fitsSideDockStrip, isLegalTransition, phaseCopy, phaseHoldMs, reduceTakePhase,
   AMBIENT_FRAME_MS, ALL_LIVE_PHASES, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS,
   IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_COPY, PHASE_HOLD_MS,
@@ -1372,5 +1373,22 @@ describe("WF-17 pill message categories", () => {
     expect(withMuted(["tip", "news"], "tip", false)).toEqual(["news"]);
     expect(withMuted(undefined, "news", true)).toEqual(["news"]);
     expect(withMuted(["error"], "news", false)).toEqual([]);
+  });
+});
+
+describe("SP-02 copy-only pill line", () => {
+  it("any copy-only outcome shows \"Copied — press ⌘V\" in the pill", () => {
+    expect(COPY_ONLY_PILL_LINE).toBe("Copied — press ⌘V.");
+    const line = takeErrorLine(
+      "paste_not_confirmed",
+      "The paste may not have landed — the text is on your clipboard.",
+    );
+    expect(line).toBe("Copied — press ⌘V.");
+    expect(fitsSideDockStrip(line!)).toBe(true);
+  });
+
+  it("every other code keeps its catalogue line", () => {
+    expect(takeErrorLine("clipboard_failed", "Clipboard was empty")).toBe("Clipboard was empty");
+    expect(takeErrorLine(null, null)).toBe(null);
   });
 });

@@ -47,7 +47,7 @@ import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
 import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
-  errorSentence,
+  takeErrorLine,
   phaseCopy,
   blindFromStatus,
   blindLine,
@@ -781,7 +781,7 @@ function Float() {
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
   const line = railError
-    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+    ?? (phase === "error" ? takeErrorLine(lastErrorCode, errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
