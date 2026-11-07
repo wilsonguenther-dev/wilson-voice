@@ -1799,7 +1799,12 @@ fn update_activity(state: &AppState) -> tray_menu::Activity {
         .unwrap_or(false);
     tray_menu::Activity {
         dictating: *state.recording.lock(),
-        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        // fix-b7-1: the take's `TakeGuard` covers the stop edge, where
+        // `recording` is already false and `busy` not yet true.
+        take_in_flight: tray_menu::take_in_flight(
+            *state.busy.lock(),
+            state.transcription.is_busy(),
+        ),
         polishing: tray_menu::polish_in_flight(),
         notes,
         meeting: state.meeting().is_some_and(|c| c.is_recording()),
@@ -3794,6 +3799,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     if !*state.recording.lock() {
         return;
     }
+    // fix-b7-1 (WF-14): from here until the worker sets `busy` false this take
+    // counts as busy for the restart gate. `recording` goes false on the next
+    // line and `busy` only goes true after the context reads below (which can
+    // stall for seconds), so without this an `emit_status` landing in between
+    // fired a deferred restart mid-take. Moved into the worker; every early
+    // return before that drops it.
+    let stop_edge_guard = tray_menu::TakeGuard::enter();
     *state.recording.lock() = false;
     // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
     state.transcription.set_live_recording(false);
@@ -3864,6 +3876,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             app: app2.clone(),
             armed: true,
         };
+        // fix-b7-1: declared AFTER `busy_guard`, so on a panic unwind it drops
+        // first and the guard's force-reset `emit_status` already sees a quiet
+        // take (a deferred restart may then fire, as it would on the normal end).
+        let take_guard = stop_edge_guard;
         // YV52 dictation recovery — the take's clip guard, parked here as soon
         // as capture finishes so the `Err` arm below can PRESERVE the wav and
         // record a recoverable row instead of letting the guard unlink it. On
@@ -4809,6 +4825,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         }
         *state2.busy.lock() = false;
         *state2.hands_free.lock() = false;
+        // fix-b7-1: busy is false now, so the take no longer needs its guard —
+        // released BEFORE the `emit_status` below so an armed restart fires on
+        // this very transition instead of waiting for the next one.
+        drop(take_guard);
         // Y3-D: the take is over on EVERY path that reaches here — success,
         // soft, rejection, silent capture, error and cancel alike — so Escape
         // goes back to the rest of the Mac here, once, instead of in six arms

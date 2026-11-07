@@ -1859,6 +1859,47 @@ pub fn polish_in_flight() -> bool {
     POLISH_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0
 }
 
+/// How many dictation takes are between their stop edge and the end of their
+/// worker right now. Read by the quiet gate; counted by [`TakeGuard`].
+static TAKE_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// fix-b7-1 (WF-14) — held by one dictation take from its stop edge (BEFORE
+/// `lib.rs::stop_and_transcribe` sets `recording` false) until its worker has
+/// set `busy` false. Without it the stop edge is a window where `recording`
+/// and `busy` are both false while the take is very much running — the AX
+/// context reads in `record::end_at_stop_edge` can stall for seconds — and any
+/// `emit_status` landing there (an engine load, a hotkey watcher) found the
+/// gate open and fired a deferred restart mid-take, losing the paste.
+/// Drop (an early return, a panic unwind, or the explicit drop at the end of
+/// the worker) releases it, so the count can never stick high.
+#[must_use]
+pub struct TakeGuard(());
+
+impl TakeGuard {
+    pub fn enter() -> Self {
+        TAKE_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        TakeGuard(())
+    }
+}
+
+impl Drop for TakeGuard {
+    fn drop(&mut self) {
+        TAKE_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Is a dictation take between its stop edge and the end of its worker?
+pub fn take_guard_held() -> bool {
+    TAKE_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
+/// [`Activity::take_in_flight`] as `lib.rs::update_activity` fills it: the
+/// worker's `busy` flag, the transcription engine's lease, or a held
+/// [`TakeGuard`] (the stop edge, before `busy` is set).
+pub fn take_in_flight(busy: bool, engine_busy: bool) -> bool {
+    busy || engine_busy || take_guard_held()
+}
+
 #[cfg(test)]
 mod update_ready_tests {
     use super::*;
@@ -2017,6 +2058,47 @@ mod update_ready_tests {
         assert!(!u.swap_shown(false));
         u.set_armed(true);
         assert!(u.is_armed());
+    }
+
+    /// fix-b7-1 — the stop edge: `recording` is already false and `busy` not
+    /// yet true, but the take holds its [`TakeGuard`], so the gate stays shut,
+    /// an armed restart does not fire, and the line keeps its promise.
+    #[test]
+    fn take_guard_shuts_the_gate_across_the_stop_edge() {
+        let g = TakeGuard::enter();
+        assert!(take_guard_held());
+        // Exactly what update_activity builds in the window: not dictating,
+        // busy false, no engine lease.
+        let edge = Activity {
+            dictating: false,
+            take_in_flight: take_in_flight(false, false),
+            ..quiet()
+        };
+        assert!(edge.take_in_flight, "the held guard counts as a take");
+        assert!(!restart_gate(edge), "restart gate open on the stop edge");
+        assert_eq!(restart_blocker(edge), Some(Busy::Take));
+        assert!(
+            !restart_when_quiet(true, true, edge),
+            "a deferred restart fired mid-take"
+        );
+        assert_eq!(restart_click(true, false, edge), RestartAction::Arm);
+        assert_eq!(
+            update_ready_label(restart_blocker(edge), true),
+            "Will restart after this dictation \u{00b7} Cancel"
+        );
+        drop(g);
+        // The count went back down by exactly the one this test added.
+        let after = TAKE_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst);
+        let g2 = TakeGuard::enter();
+        assert!(TAKE_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > after);
+        drop(g2);
+    }
+
+    #[test]
+    fn take_in_flight_reads_busy_and_the_engine_lease() {
+        assert!(take_in_flight(true, false));
+        assert!(take_in_flight(false, true));
+        assert!(take_in_flight(true, true));
     }
 
     #[test]
