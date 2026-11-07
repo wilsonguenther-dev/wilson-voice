@@ -861,7 +861,10 @@ export default function YappyPill(
       // yap-1106-pill-vertical-dock-world — a side dock draws the tall room (open)
       // or the resting tab instead of the horizontal capsule.
       const sideLay = currentPillLayout(), sd = sideDock(document.documentElement.dataset.dock);
-      if (sd && sideLay && sideLay.dock === sd) { drawSide(sd, sideLay, scenePose, openV); return; }
+      // integrate(yap-1107-pill-matches-artifact-size): drawScene now runs after the
+      // camera, so a side dock never reached it; keep the cached sky current here so
+      // the tall room's sky.look and <html data-sky> stay set (as before the move).
+      if (sd && sideLay && sideLay.dock === sd) { sky.current(performance.now()); drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
       // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
