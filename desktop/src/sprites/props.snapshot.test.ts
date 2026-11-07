@@ -137,6 +137,19 @@ describe("pill props motion", () => {
     expect(growPadInk(0.25, PAD_INK_FILL_SEC / 2)).toBeCloseTo(0.75, 6);
   });
 
+  it("props_hidden_until_they_start_to_arrive_and_bad_clocks_are_safe", () => {
+    const empty = () => { const r = new Raster(PW, PH); approvedScene(new RgbaCtx(r), { world: 1, prop: "none", propIn: 0, hd: true, hideChick: true }, 0); return r; };
+    for (const propIn of [0, 0.05, Number.NaN]) {
+      expect(snapDiff(renderApp("pad", propIn, 0), empty(), 0).mismatched, `pad propIn=${propIn}`).toBe(0);
+      expect(snapDiff(renderApp("desk", propIn, 0), empty(), 0).mismatched, `desk propIn=${propIn}`).toBe(0);
+    }
+    expect(typewriterBeat(Number.NaN)).toEqual({ key: 0, lift: 1 });
+    expect(typewriterBeat(-3)).toEqual({ key: 0, lift: 1 });
+    expect(growPadInk(Number.NaN, 0.6)).toBeCloseTo(0.6 / PAD_INK_FILL_SEC, 6);
+    expect(padInkPixels(2)).toBe(PAD_INK_PX);
+    expect(padInkPixels(-1)).toBe(0);
+  });
+
   it("props_typewriter_keys_light_in_sequence_and_page_bounces", () => {
     const keys: number[] = [];
     for (let i = 0; i < TYPEWRITER_KEYS * 2; i++) keys.push(typewriterBeat(i / 9 + 0.01).key);
