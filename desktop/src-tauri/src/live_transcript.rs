@@ -41,9 +41,11 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::diarize_metrics::cosine_similarity;
 use crate::meetings::{speaker_label, DiarizationTarget};
 use crate::speaker_profiles::{
-    match_voice, suggestion_text, MatchBands, SpeakerProfile, VoiceMatch,
+    clean_display_name, fold_into_centroid, match_voice, merge_centroids, suggestion_text,
+    MatchBands, SpeakerProfile, VoiceMatch,
 };
 
 /// The Tauri event the Meetings view listens on.
@@ -78,6 +80,11 @@ const SPEECH_FRAME: usize = RATE / 10;
 pub struct LiveVoice {
     pub name: Option<String>,
     pub hint: Option<String>,
+    /// yap-1106-fb-22a — the live voice this line belongs to (a [`LiveRoster`]
+    /// index) when "Ask who's talking during meetings" is on. Lets a name
+    /// given live relabel every earlier line of that voice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster: Option<usize>,
 }
 
 /// One track's lines as the view draws them.
@@ -185,10 +192,12 @@ pub fn live_voice_label(m: &VoiceMatch, track: usize, tracks: usize) -> LiveVoic
         VoiceMatch::Auto { display_name, .. } => LiveVoice {
             name: Some(display_name.clone()),
             hint: suggestion_text(m),
+            ..LiveVoice::default()
         },
         VoiceMatch::Unknown { best: Some(_) } if !(tracks >= 2 && track == 0) => LiveVoice {
             name: Some(SOMEONE_NEW.to_string()),
             hint: None,
+            ..LiveVoice::default()
         },
         _ => LiveVoice::default(),
     }
@@ -214,17 +223,9 @@ impl LiveSpeakers<'_> {
         samples: &[f32],
         dictation_wants_engine: &dyn Fn() -> bool,
     ) -> LiveVoice {
-        if self.profiles.is_empty() || dictation_wants_engine() {
-            return LiveVoice::default();
-        }
-        let speech = speech_seconds(samples);
-        if speech < LIVE_SPEAKER_MIN_SPEECH_SECONDS {
-            log::debug!("live_speaker skip reason=short_speech track={track} speech_s={speech:.1}");
-            return LiveVoice::default();
-        }
         let t0 = Instant::now();
-        match self.embedder.embed(samples) {
-            Ok(Some(embedding)) => {
+        match self.embed_once(track, samples, dictation_wants_engine, false) {
+            Some((embedding, _)) => {
                 let m = match_voice(&embedding, self.digest, self.profiles, self.bands);
                 log::info!(
                     "live_speaker matched={} track={track} ms={}",
@@ -233,13 +234,472 @@ impl LiveSpeakers<'_> {
                 );
                 live_voice_label(&m, track, tracks)
             }
-            Ok(None) => LiveVoice::default(),
+            None => LiveVoice::default(),
+        }
+    }
+
+    /// The ONE embed of a window, with every skip rule of [`Self::label`]:
+    /// none without voiceprints (unless `without_profiles`, the live
+    /// question's own clustering), none under
+    /// [`LIVE_SPEAKER_MIN_SPEECH_SECONDS`], none while a dictation wants the
+    /// Mac. Returns the embedding and the window's speech seconds.
+    pub fn embed_once(
+        &self,
+        track: usize,
+        samples: &[f32],
+        dictation_wants_engine: &dyn Fn() -> bool,
+        without_profiles: bool,
+    ) -> Option<(Vec<f32>, f32)> {
+        if (self.profiles.is_empty() && !without_profiles) || dictation_wants_engine() {
+            return None;
+        }
+        let speech = speech_seconds(samples);
+        if speech < LIVE_SPEAKER_MIN_SPEECH_SECONDS {
+            log::debug!("live_speaker skip reason=short_speech track={track} speech_s={speech:.1}");
+            return None;
+        }
+        match self.embedder.embed(samples) {
+            Ok(Some(embedding)) => Some((embedding, speech)),
+            Ok(None) => None,
             Err(e) => {
                 log::warn!("live_speaker failure track={track} reason={e}");
-                LiveVoice::default()
+                None
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// yap-1106-fb-22a — "Who's talking right now?", live and OFF by default.
+//
+// With Settings → Meetings → "Ask who's talking during meetings" on, every
+// embedded window of the call side (never the mic of a call: that is the
+// person at this Mac) joins a live voice in a [`LiveRoster`]. A voice that no
+// voiceprint claims and that has spoken about [`LIVE_ASK_MIN_SPEECH_SECONDS`]
+// raises ONE [`LiveAsk`] for the pill; the answer comes back through
+// [`post_answer`]. Live labels stay provisional: the post-meeting pass is the
+// source of truth, and a name given live seeds a voiceprint so that pass
+// keeps it. No embed is added: the roster reuses the one embed per track per
+// window that [`LiveSpeakers`] already makes.
+// ---------------------------------------------------------------------------
+
+/// The Tauri event the pill listens on for a live question.
+pub const LIVE_ASK_EVENT: &str = "meeting:live-ask";
+/// A voice is asked about after about this much of its speech.
+pub const LIVE_ASK_MIN_SPEECH_SECONDS: f32 = 5.0;
+/// At or above this a window is the same live voice; between the ask band
+/// and this, a known or just-named person gets "Same person as John?".
+pub const LIVE_SAME_PERSON_BELOW: f32 = 0.70;
+/// The hint on a line whose name was given during the meeting.
+pub const LIVE_NAMED_HINT: &str = "You named them during the meeting";
+
+/// Who a "Same person as …?" question points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SameTarget {
+    /// An enrolled voiceprint.
+    Profile(i64),
+    /// A voice named earlier in this meeting.
+    Cluster(usize),
+}
+
+/// One live question for the pill. Every arm names the live voice
+/// (`cluster`) the answer goes back to.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LiveAsk {
+    /// "Who's talking right now?"
+    #[serde(rename_all = "camelCase")]
+    New {
+        cluster: usize,
+        label: String,
+        speech_seconds: f32,
+    },
+    /// "Same person as John? 62% sure"
+    #[serde(rename_all = "camelCase")]
+    SamePerson {
+        cluster: usize,
+        label: String,
+        speech_seconds: f32,
+        name: String,
+        similarity: f32,
+    },
+}
+
+/// One voice heard live in this meeting.
+#[derive(Debug, Clone)]
+pub struct LiveCluster {
+    pub centroid: Vec<f32>,
+    pub n: i64,
+    pub speech_seconds: f32,
+    /// A name given live, or the voiceprint's name when a profile claimed it.
+    pub name: Option<String>,
+    pub profile_id: Option<i64>,
+    /// Asked about already (or never to be asked): at most once per meeting.
+    pub asked: bool,
+    /// "Yes, John" folded this voice into another live voice.
+    pub merged_into: Option<usize>,
+    /// The best known/just-named person under [`LIVE_SAME_PERSON_BELOW`].
+    pub candidate: Option<(SameTarget, String, f32)>,
+}
+
+/// What a name given live hands the post-meeting side: a voiceprint seed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSeed {
+    pub cluster: usize,
+    pub name: String,
+    pub centroid: Vec<f32>,
+    pub speech_seconds: f32,
+}
+
+/// What a "Same person as John?" answer did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SameOutcome {
+    /// "Yes" on an enrolled voiceprint: this sound becomes a sample of it.
+    AddedToProfile {
+        profile_id: i64,
+        sample: Vec<f32>,
+        speech_seconds: f32,
+    },
+    /// "Yes" on a voice named this meeting: the two are one speaker now.
+    MergedInto { cluster: usize },
+    /// "No, someone new": a speaker of its own.
+    NewSpeaker,
+}
+
+/// An answer from the pill, queued for the live worker.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiveAnswer {
+    Name { cluster: usize, name: String },
+    Same { cluster: usize, yes: bool },
+    Skip { cluster: usize, reason: String },
+}
+
+/// What applying an answer leaves for the worker to store.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnswerEffect {
+    Seed(LiveSeed),
+    Same(SameOutcome),
+    Skipped,
+}
+
+/// The live voices of one meeting.
+#[derive(Debug, Clone)]
+pub struct LiveRoster {
+    pub clusters: Vec<LiveCluster>,
+    /// A copy of the enrolled voiceprints; "Yes" folds a sample in here too,
+    /// so the rest of this meeting matches John's phone voice.
+    pub profiles: Vec<SpeakerProfile>,
+    pub bands: MatchBands,
+    pub ask_enabled: bool,
+}
+
+impl LiveRoster {
+    pub fn new(profiles: Vec<SpeakerProfile>, bands: MatchBands, ask_enabled: bool) -> Self {
+        Self {
+            clusters: Vec::new(),
+            profiles,
+            bands,
+            ask_enabled,
+        }
+    }
+
+    /// The voice a cluster resolves to after any "Yes" merges.
+    pub fn root(&self, mut cluster: usize) -> usize {
+        let mut hops = 0;
+        while let Some(next) = self.clusters.get(cluster).and_then(|c| c.merged_into) {
+            cluster = next;
+            hops += 1;
+            if hops > self.clusters.len() {
+                break;
+            }
+        }
+        cluster
+    }
+
+    /// The name lines of `cluster` carry, if any.
+    pub fn display_name(&self, cluster: usize) -> Option<String> {
+        self.clusters
+            .get(self.root(cluster))
+            .and_then(|c| c.name.clone())
+    }
+
+    /// Distinct live speakers (merged voices count once).
+    pub fn speakers(&self) -> usize {
+        self.clusters
+            .iter()
+            .filter(|c| c.merged_into.is_none())
+            .count()
+    }
+
+    /// The pill's word for an unnamed voice.
+    pub fn label(cluster: usize) -> String {
+        format!("Speaker {}", cluster + 1)
+    }
+
+    /// Put one embedded window into a live voice and say whether to ask.
+    /// `m` is that window's match against the voiceprints.
+    pub fn observe(
+        &mut self,
+        embedding: &[f32],
+        speech: f32,
+        m: &VoiceMatch,
+    ) -> (usize, Option<LiveAsk>) {
+        if let VoiceMatch::Auto {
+            profile_id,
+            display_name,
+            ..
+        } = m
+        {
+            // A voiceprint claims it: one live voice per profile, never asked.
+            if let Some(i) = self
+                .clusters
+                .iter()
+                .position(|c| c.merged_into.is_none() && c.profile_id == Some(*profile_id))
+            {
+                self.join(i, embedding, speech);
+                return (i, None);
+            }
+            self.clusters.push(LiveCluster {
+                centroid: normalized_or_empty(embedding),
+                n: 1,
+                speech_seconds: speech,
+                name: Some(display_name.clone()),
+                profile_id: Some(*profile_id),
+                asked: true,
+                merged_into: None,
+                candidate: None,
+            });
+            return (self.clusters.len() - 1, None);
+        }
+        let best = self
+            .clusters
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.merged_into.is_none() && c.centroid.len() == embedding.len())
+            .map(|(i, c)| (i, cosine_similarity(embedding, &c.centroid).get()))
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
+        let idx = match best {
+            Some((i, s)) if s >= LIVE_SAME_PERSON_BELOW => {
+                self.join(i, embedding, speech);
+                i
+            }
+            _ => {
+                self.clusters.push(LiveCluster {
+                    centroid: normalized_or_empty(embedding),
+                    n: 1,
+                    speech_seconds: speech,
+                    name: None,
+                    profile_id: None,
+                    asked: false,
+                    merged_into: None,
+                    candidate: None,
+                });
+                self.clusters.len() - 1
+            }
+        };
+        self.note_candidate(idx, embedding, m);
+        let c = &mut self.clusters[idx];
+        if !self.ask_enabled
+            || c.asked
+            || c.name.is_some()
+            || c.speech_seconds < LIVE_ASK_MIN_SPEECH_SECONDS
+        {
+            return (idx, None);
+        }
+        c.asked = true;
+        let ask = match c.candidate.clone() {
+            Some((_, name, similarity)) => LiveAsk::SamePerson {
+                cluster: idx,
+                label: Self::label(idx),
+                speech_seconds: c.speech_seconds,
+                name,
+                similarity,
+            },
+            None => LiveAsk::New {
+                cluster: idx,
+                label: Self::label(idx),
+                speech_seconds: c.speech_seconds,
+            },
+        };
+        (idx, Some(ask))
+    }
+
+    fn join(&mut self, i: usize, embedding: &[f32], speech: f32) {
+        let c = &mut self.clusters[i];
+        if let Ok(next) = fold_into_centroid(&c.centroid, c.n, embedding) {
+            c.centroid = next;
+            c.n += 1;
+        }
+        c.speech_seconds += speech;
+    }
+
+    /// Remember the closest known or just-named person in the ask band
+    /// (at or above `bands.ask`, under [`LIVE_SAME_PERSON_BELOW`]).
+    fn note_candidate(&mut self, idx: usize, embedding: &[f32], m: &VoiceMatch) {
+        let floor = self.bands.ask.get();
+        let mut best: Option<(SameTarget, String, f32)> = match m {
+            VoiceMatch::Ask {
+                profile_id,
+                display_name,
+                similarity,
+            } if similarity.get() < LIVE_SAME_PERSON_BELOW => Some((
+                SameTarget::Profile(*profile_id),
+                display_name.clone(),
+                similarity.get(),
+            )),
+            _ => None,
+        };
+        for (j, other) in self.clusters.iter().enumerate() {
+            if j == idx || other.merged_into.is_some() || other.centroid.len() != embedding.len() {
+                continue;
+            }
+            let Some(name) = other.name.clone() else {
+                continue;
+            };
+            let s = cosine_similarity(embedding, &other.centroid).get();
+            if s >= floor && s < LIVE_SAME_PERSON_BELOW && best.as_ref().is_none_or(|b| s > b.2) {
+                best = Some((SameTarget::Cluster(j), name, s));
+            }
+        }
+        if let Some(b) = best {
+            let c = &mut self.clusters[idx];
+            if c.candidate.as_ref().is_none_or(|old| b.2 > old.2) {
+                c.candidate = Some(b);
+            }
+        }
+    }
+
+    /// A name typed live: the voice is that person for the rest of the meeting.
+    pub fn name(&mut self, cluster: usize, name: &str) -> Result<LiveSeed, String> {
+        let name = clean_display_name(name)?;
+        let root = self.root(cluster);
+        let c = self
+            .clusters
+            .get_mut(root)
+            .ok_or_else(|| "That voice is no longer in this meeting.".to_string())?;
+        c.name = Some(name.clone());
+        c.asked = true;
+        c.candidate = None;
+        Ok(LiveSeed {
+            cluster: root,
+            name,
+            centroid: c.centroid.clone(),
+            speech_seconds: c.speech_seconds,
+        })
+    }
+
+    /// "Yes, John" / "No, someone new" on a [`LiveAsk::SamePerson`].
+    pub fn confirm_same(&mut self, cluster: usize, yes: bool) -> Result<SameOutcome, String> {
+        let c = self
+            .clusters
+            .get_mut(cluster)
+            .ok_or_else(|| "That voice is no longer in this meeting.".to_string())?;
+        c.asked = true;
+        let candidate = c.candidate.take();
+        if !yes {
+            return Ok(SameOutcome::NewSpeaker);
+        }
+        let Some((target, name, _)) = candidate else {
+            return Err("There is no one to compare that voice with.".into());
+        };
+        let (sample, n, speech) = (c.centroid.clone(), c.n, c.speech_seconds);
+        match target {
+            SameTarget::Profile(profile_id) => {
+                let c = &mut self.clusters[cluster];
+                c.name = Some(name);
+                c.profile_id = Some(profile_id);
+                if let Some(p) = self.profiles.iter_mut().find(|p| p.id == profile_id) {
+                    if let Ok(next) = fold_into_centroid(&p.centroid, p.n_samples, &sample) {
+                        p.centroid = next;
+                        p.n_samples += 1;
+                    }
+                }
+                Ok(SameOutcome::AddedToProfile {
+                    profile_id,
+                    sample,
+                    speech_seconds: speech,
+                })
+            }
+            SameTarget::Cluster(j) => {
+                let into = self.root(j);
+                if into == cluster {
+                    return Err("That voice cannot be merged into itself.".into());
+                }
+                let t = &mut self.clusters[into];
+                if let Ok(next) = merge_centroids(&t.centroid, t.n, &sample, n) {
+                    t.centroid = next;
+                    t.n += n;
+                }
+                t.speech_seconds += speech;
+                self.clusters[cluster].merged_into = Some(into);
+                Ok(SameOutcome::MergedInto { cluster: into })
+            }
+        }
+    }
+
+    /// Skip, or 20 s with no answer: the voice stays "Speaker N" for the
+    /// after-meeting cards and is never asked about again in this call.
+    pub fn skip(&mut self, cluster: usize) -> Result<(), String> {
+        let c = self
+            .clusters
+            .get_mut(cluster)
+            .ok_or_else(|| "That voice is no longer in this meeting.".to_string())?;
+        c.asked = true;
+        c.candidate = None;
+        Ok(())
+    }
+}
+
+fn normalized_or_empty(v: &[f32]) -> Vec<f32> {
+    fold_into_centroid(&[], 0, v).unwrap_or_default()
+}
+
+/// Answers waiting for the live worker (it drains them every 250 ms).
+static ANSWERS: std::sync::Mutex<Vec<LiveAnswer>> = std::sync::Mutex::new(Vec::new());
+
+/// Queue an answer from the pill. Refused when no live worker runs.
+pub fn post_answer(a: LiveAnswer) -> Result<(), String> {
+    if !RUNNING.load(Ordering::SeqCst) {
+        return Err("No meeting is recording now.".into());
+    }
+    ANSWERS
+        .lock()
+        .map_err(|_| "The live meeting could not take that answer.".to_string())?
+        .push(a);
+    Ok(())
+}
+
+fn take_answers() -> Vec<LiveAnswer> {
+    ANSWERS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
+}
+
+/// The pill's "Save" on "Who's talking right now?".
+#[tauri::command]
+pub fn meeting_live_name(cluster: usize, name: String) -> Result<(), String> {
+    log::info!("live_ask answer kind=name cluster={cluster}");
+    post_answer(LiveAnswer::Name { cluster, name })
+}
+
+/// The pill's "Yes, John" / "No, someone new".
+#[tauri::command]
+pub fn meeting_live_same(cluster: usize, yes: bool) -> Result<(), String> {
+    log::info!("live_ask answer kind=same cluster={cluster} yes={yes}");
+    post_answer(LiveAnswer::Same { cluster, yes })
+}
+
+/// The pill's "Skip", or the card sliding away after 20 s.
+#[tauri::command]
+pub fn meeting_live_skip(cluster: usize, reason: String) -> Result<(), String> {
+    let reason: String = reason
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(24)
+        .collect();
+    log::info!("live_ask answer kind=skip cluster={cluster} reason={reason}");
+    post_answer(LiveAnswer::Skip { cluster, reason })
 }
 
 /// One live decode. `Ok(None)` means "not now" (the engine is busy, leased
@@ -267,6 +727,10 @@ struct Cursor {
 pub struct LiveState {
     spills: Vec<PathBuf>,
     cursors: Vec<Cursor>,
+    /// yap-1106-fb-22a — the live voices, when the worker attached a roster.
+    roster: Option<LiveRoster>,
+    /// Questions raised by the last tick, for the worker to emit.
+    asks: Vec<LiveAsk>,
 }
 
 impl LiveState {
@@ -279,7 +743,142 @@ impl LiveState {
                 voices: VecDeque::new(),
             })
             .collect();
-        Self { spills, cursors }
+        Self {
+            spills,
+            cursors,
+            roster: None,
+            asks: Vec::new(),
+        }
+    }
+
+    /// yap-1106-fb-22a — keep live voices (and ask about new ones when the
+    /// roster's `ask_enabled` is on).
+    pub fn with_roster(mut self, roster: LiveRoster) -> Self {
+        self.roster = Some(roster);
+        self
+    }
+
+    pub fn roster(&self) -> Option<&LiveRoster> {
+        self.roster.as_ref()
+    }
+
+    /// Follow the setting while the meeting runs. Off stops new questions;
+    /// it never forgets a name already given.
+    pub fn set_ask_enabled(&mut self, on: bool) {
+        if let Some(r) = self.roster.as_mut() {
+            r.ask_enabled = on;
+        }
+    }
+
+    /// The questions the last ticks raised, oldest first.
+    pub fn take_asks(&mut self) -> Vec<LiveAsk> {
+        std::mem::take(&mut self.asks)
+    }
+
+    /// Every line of a voice that now has a name carries it (a name given
+    /// live, or "Yes, John" merging it into John).
+    fn relabel(&mut self) {
+        let Some(roster) = self.roster.as_ref() else {
+            return;
+        };
+        for cursor in &mut self.cursors {
+            for voice in cursor.voices.iter_mut() {
+                let Some(name) = voice.cluster.and_then(|c| roster.display_name(c)) else {
+                    continue;
+                };
+                if voice.name.as_deref() != Some(name.as_str()) {
+                    voice.name = Some(name);
+                    voice.hint = Some(LIVE_NAMED_HINT.to_string());
+                }
+            }
+        }
+    }
+
+    /// Apply one answer from the pill. Lines relabel at once; the effect is
+    /// what the worker stores (a voiceprint seed or a sample).
+    pub fn apply_answer(&mut self, answer: LiveAnswer) -> Result<AnswerEffect, String> {
+        let roster = self
+            .roster
+            .as_mut()
+            .ok_or_else(|| "Live questions are off for this meeting.".to_string())?;
+        let effect = match answer {
+            LiveAnswer::Name { cluster, name } => AnswerEffect::Seed(roster.name(cluster, &name)?),
+            LiveAnswer::Same { cluster, yes } => {
+                AnswerEffect::Same(roster.confirm_same(cluster, yes)?)
+            }
+            LiveAnswer::Skip { cluster, reason } => {
+                roster.skip(cluster)?;
+                log::info!("live_ask deferred cluster={cluster} reason={reason}");
+                AnswerEffect::Skipped
+            }
+        };
+        self.relabel();
+        let speakers = self.roster.as_ref().map_or(0, LiveRoster::speakers);
+        match &effect {
+            AnswerEffect::Seed(seed) => {
+                log::info!(
+                    "live_ask named cluster={} speakers={speakers}",
+                    seed.cluster
+                )
+            }
+            AnswerEffect::Same(SameOutcome::MergedInto { cluster }) => {
+                log::info!("live_ask merged into={cluster} speakers={speakers}")
+            }
+            AnswerEffect::Same(SameOutcome::AddedToProfile { .. }) => {
+                log::info!("live_ask merged into=profile speakers={speakers}")
+            }
+            AnswerEffect::Same(SameOutcome::NewSpeaker) => {
+                log::info!("live_ask new_speaker speakers={speakers}")
+            }
+            AnswerEffect::Skipped => {}
+        }
+        Ok(effect)
+    }
+
+    /// Who said this window, with the roster: one embed (the same budget as
+    /// [`LiveSpeakers::label`]), the voiceprint match, then the live voice.
+    fn voice_for(
+        &mut self,
+        sp: &LiveSpeakers<'_>,
+        track: usize,
+        tracks: usize,
+        samples: &[f32],
+        dictation_wants_engine: &dyn Fn() -> bool,
+    ) -> LiveVoice {
+        let on = self.roster.as_ref().is_some_and(|r| r.ask_enabled);
+        // Setting off (the default), or the mic of a call (the person at this
+        // Mac): exactly the live-whos-talking path, never a question.
+        if !on || (tracks >= 2 && track == 0) {
+            return sp.label(track, tracks, samples, dictation_wants_engine);
+        }
+        let t0 = Instant::now();
+        let Some((embedding, speech)) = sp.embed_once(track, samples, dictation_wants_engine, true)
+        else {
+            return LiveVoice::default();
+        };
+        let Some(roster) = self.roster.as_mut() else {
+            return LiveVoice::default();
+        };
+        let m = match_voice(&embedding, sp.digest, &roster.profiles, sp.bands);
+        let mut voice = live_voice_label(&m, track, tracks);
+        let (cluster, ask) = roster.observe(&embedding, speech, &m);
+        voice.cluster = Some(cluster);
+        if let Some(name) = roster.display_name(cluster) {
+            if voice.name.as_deref() != Some(name.as_str()) {
+                voice.name = Some(name);
+                voice.hint = Some(LIVE_NAMED_HINT.to_string());
+            }
+        }
+        log::info!(
+            "live_speaker matched={} track={track} cluster={cluster} ask={} ms={}",
+            m.outcome(),
+            ask.is_some(),
+            t0.elapsed().as_millis()
+        );
+        if let Some(a) = ask {
+            self.asks.push(a);
+        }
+        voice
     }
 
     pub fn spills(&self) -> &[PathBuf] {
@@ -364,9 +963,12 @@ impl LiveState {
                         LiveVoice::default()
                     } else {
                         decoded += 1;
-                        speakers
-                            .map(|sp| sp.label(track, tracks, &samples, dictation_wants_engine))
-                            .unwrap_or_default()
+                        match speakers {
+                            Some(sp) => {
+                                self.voice_for(sp, track, tracks, &samples, dictation_wants_engine)
+                            }
+                            None => LiveVoice::default(),
+                        }
                     };
                     self.push_line(track, &text, voice);
                 }
@@ -521,6 +1123,72 @@ fn enrolled_profiles(app: &tauri::AppHandle) -> Vec<SpeakerProfile> {
     }
 }
 
+/// yap-1106-fb-22a — Settings → Meetings → "Ask who's talking during
+/// meetings" (`AppSettings::ask_whos_talking_live`, off by default).
+fn ask_live_enabled(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    app.try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|st| st.settings.lock().ask_whos_talking_live)
+        .unwrap_or(false)
+}
+
+/// Store what a live answer means for later meetings and the post-meeting
+/// pass: a name seeds (or feeds) that person's voiceprint, "Yes, John" adds
+/// the sound to John's. Voiceprints stay on this Mac and are deletable in
+/// Settings, exactly like the after-meeting cards' names.
+fn store_effect(app: &tauri::AppHandle, digest: Option<&str>, effect: &AnswerEffect) {
+    use tauri::Manager;
+    let (Some(digest), Some(st)) = (digest, app.try_state::<std::sync::Arc<crate::AppState>>())
+    else {
+        log::info!("live_ask store skipped reason=no_digest_or_state");
+        return;
+    };
+    let result = match effect {
+        AnswerEffect::Seed(seed) if !seed.centroid.is_empty() => {
+            let existing = st.db.list_speaker_profiles().ok().and_then(|ps| {
+                ps.into_iter()
+                    .find(|p| p.display_name.eq_ignore_ascii_case(&seed.name))
+            });
+            match existing {
+                Some(p) => st
+                    .db
+                    .add_speaker_sample(
+                        p.id,
+                        digest,
+                        &seed.centroid,
+                        seed.speech_seconds as f64,
+                        None,
+                    )
+                    .map(|_| "sample"),
+                None => st
+                    .db
+                    .create_speaker_profile(
+                        &seed.name,
+                        false,
+                        digest,
+                        &seed.centroid,
+                        seed.speech_seconds as f64,
+                        None,
+                    )
+                    .map(|_| "profile"),
+            }
+        }
+        AnswerEffect::Same(SameOutcome::AddedToProfile {
+            profile_id,
+            sample,
+            speech_seconds,
+        }) => st
+            .db
+            .add_speaker_sample(*profile_id, digest, sample, *speech_seconds as f64, None)
+            .map(|_| "sample"),
+        _ => Ok("none"),
+    };
+    match result {
+        Ok(kind) => log::info!("live_ask store finish kind={kind}"),
+        Err(e) => log::warn!("live_ask store failure reason={e}"),
+    }
+}
+
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static YIELDS: AtomicU64 = AtomicU64::new(0);
 
@@ -550,21 +1218,32 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
                 .map(Path::to_path_buf)
                 .unwrap_or_else(std::env::temp_dir);
             let embedder = SidecarLiveVoice::new(&voice_dir);
+            // yap-1106-fb-22a — with "Ask who's talking" on, a meeting with no
+            // voiceprints yet still embeds (one per track per window, the
+            // same budget) so a new voice can be asked about.
+            let ask_live = ask_live_enabled(&app);
+            let bands = MatchBands::from_env_or_provisional();
             let speakers = match digest.as_deref() {
-                Some(d) if !profiles.is_empty() => Some(LiveSpeakers {
+                Some(d) if !profiles.is_empty() || ask_live => Some(LiveSpeakers {
                     embedder: &embedder,
                     profiles: &profiles,
                     digest: d,
-                    bands: MatchBands::from_env_or_provisional(),
+                    bands,
                 }),
                 _ => None,
             };
+            drop(take_answers()); // nothing from an earlier meeting
+            log::info!("live_ask start enabled={ask_live}");
             log::info!(
                 "live_speaker start enrolled={} enabled={}",
                 profiles.len(),
                 speakers.is_some()
             );
-            let mut state = LiveState::new(spills);
+            let mut state = LiveState::new(spills).with_roster(LiveRoster::new(
+                profiles.clone(),
+                bands,
+                ask_live,
+            ));
             let decoder = WarmEngineLive {
                 manager: manager.clone(),
             };
@@ -584,7 +1263,22 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
                     if !still_ours(&state) {
                         break 'outer;
                     }
+                    // yap-1106-fb-22a — answers from the pill land within 250 ms.
+                    let answers = take_answers();
+                    if answers.is_empty() {
+                        continue;
+                    }
+                    for answer in answers {
+                        match state.apply_answer(answer) {
+                            Ok(effect) => store_effect(&app, digest.as_deref(), &effect),
+                            Err(e) => log::warn!("live_ask answer failure reason={e}"),
+                        }
+                    }
+                    if let Err(e) = app.emit(LIVE_EVENT, state.snapshot()) {
+                        log::warn!("live_transcript emit failure reason={e}");
+                    }
                 }
+                state.set_ask_enabled(ask_live_enabled(&app));
                 // yap-1106-resource-governor: at minimal the live view pauses;
                 // the recording and the spill keep going underneath it.
                 if crate::resource_governor::live_transcript_paused() {
@@ -616,6 +1310,11 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
                         );
                         if let Err(e) = app.emit(LIVE_EVENT, state.snapshot()) {
                             log::warn!("live_transcript emit failure reason={e}");
+                        }
+                        for ask in state.take_asks() {
+                            if let Err(e) = app.emit(LIVE_ASK_EVENT, &ask) {
+                                log::warn!("live_ask emit failure reason={e}");
+                            }
                         }
                     }
                     Err(e) => {
@@ -882,6 +1581,234 @@ mod tests {
         // The payload the webview reads carries the name per line.
         let json = serde_json::to_value(&snap).unwrap();
         assert_eq!(json["tracks"][1]["voices"][0]["name"], "Alex");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- yap-1106-fb-22a — "Who's talking right now?" ----
+
+    /// Append `seconds` more of speech to a spill (the meeting keeps going).
+    fn grow(path: &Path, seconds: usize, amp: i16) {
+        use std::io::Write;
+        let mut bytes = Vec::new();
+        for i in 0..seconds * RATE {
+            let v = if i % 2 == 0 { amp } else { -amp };
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        f.write_all(&bytes).unwrap();
+    }
+
+    /// 62% like `[1, 0, 0]` (John's voice on his laptop): John on his phone.
+    fn johns_phone() -> Vec<f32> {
+        vec![0.62, (1.0f32 - 0.62 * 0.62).sqrt(), 0.0]
+    }
+
+    #[test]
+    fn a_live_name_relabels_that_voices_live_lines_and_seeds_the_post_meeting_profile() {
+        let dir = std::env::temp_dir().join(format!("yap-live-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = spill(&dir, "w.t0.spill.pcm", 20, 3000);
+        let embedder = Fixture::new(vec![
+            Some(vec![1.0, 0.0, 0.0]),  // John
+            Some(vec![0.98, 0.2, 0.0]), // John again (above 70%: the same voice)
+            Some(vec![0.0, 0.0, 1.0]),  // someone else
+        ]);
+        let no_profiles: Vec<SpeakerProfile> = Vec::new();
+        let sp = LiveSpeakers {
+            embedder: &embedder,
+            profiles: &no_profiles,
+            digest: DIGEST,
+            bands: MatchBands::provisional(),
+        };
+        let mut st = LiveState::new(vec![a.clone()]).with_roster(LiveRoster::new(
+            Vec::new(),
+            MatchBands::provisional(),
+            true,
+        ));
+        let dec = Echo(Cell::new(0));
+        st.tick_with_speakers(&dec, Some(&sp), &|| false).unwrap();
+        grow(&a, 6, 3000);
+        st.tick_with_speakers(&dec, Some(&sp), &|| false).unwrap();
+        grow(&a, 6, 3000);
+        st.tick_with_speakers(&dec, Some(&sp), &|| false).unwrap();
+        assert_eq!(
+            embedder.calls.get(),
+            3,
+            "one embed per track per window, no more"
+        );
+
+        let asks = st.take_asks();
+        assert_eq!(asks.len(), 2, "each new voice is asked about once");
+        assert!(matches!(asks[0], LiveAsk::New { cluster: 0, .. }));
+        let voices = st.snapshot().tracks[0].voices.clone();
+        assert_eq!(
+            voices.iter().map(|v| v.cluster).collect::<Vec<_>>(),
+            vec![Some(0), Some(0), Some(1)]
+        );
+
+        let effect = st
+            .apply_answer(LiveAnswer::Name {
+                cluster: 0,
+                name: "John".into(),
+            })
+            .unwrap();
+        let AnswerEffect::Seed(seed) = effect else {
+            panic!("a live name seeds the post-meeting voiceprint");
+        };
+        assert_eq!(seed.name, "John");
+        assert_eq!(seed.cluster, 0);
+        assert_eq!(seed.centroid.len(), 3);
+        assert!(seed.speech_seconds >= LIVE_ASK_MIN_SPEECH_SECONDS);
+
+        let snap = st.snapshot();
+        let v = &snap.tracks[0].voices;
+        assert_eq!(
+            v[0].name.as_deref(),
+            Some("John"),
+            "his earlier lines relabel too"
+        );
+        assert_eq!(v[1].name.as_deref(), Some("John"));
+        assert_eq!(v[0].hint.as_deref(), Some(LIVE_NAMED_HINT));
+        assert_ne!(
+            v[2].name.as_deref(),
+            Some("John"),
+            "another voice keeps its own label"
+        );
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["tracks"][0]["voices"][0]["cluster"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn yes_john_on_a_62_percent_match_adds_a_sample_and_leaves_one_speaker() {
+        let mut r = LiveRoster::new(Vec::new(), MatchBands::provisional(), true);
+        let none = VoiceMatch::Unknown { best: None };
+        let (john, ask) = r.observe(&[1.0, 0.0, 0.0], 6.0, &none);
+        assert!(matches!(ask, Some(LiveAsk::New { .. })));
+        r.name(john, "John").unwrap();
+        let (phone, ask) = r.observe(&johns_phone(), 6.0, &none);
+        assert_ne!(phone, john);
+        let Some(LiveAsk::SamePerson {
+            name, similarity, ..
+        }) = ask
+        else {
+            panic!("under 70% like John asks once: {ask:?}");
+        };
+        assert_eq!(name, "John");
+        assert_eq!((similarity * 100.0).round() as i32, 62);
+        assert_eq!(r.speakers(), 2);
+
+        assert_eq!(
+            r.confirm_same(phone, true).unwrap(),
+            SameOutcome::MergedInto { cluster: john }
+        );
+        assert_eq!(
+            r.clusters[john].n, 2,
+            "the phone sound is a sample of John now"
+        );
+        assert_eq!(r.speakers(), 1);
+        assert_eq!(r.display_name(phone).as_deref(), Some("John"));
+        // Asked once: the same voice never raises another question.
+        assert_eq!(r.observe(&johns_phone(), 6.0, &none).1, None);
+    }
+
+    #[test]
+    fn no_someone_new_on_a_62_percent_match_yields_two_speakers() {
+        let mut r = LiveRoster::new(Vec::new(), MatchBands::provisional(), true);
+        let none = VoiceMatch::Unknown { best: None };
+        let (john, _) = r.observe(&[1.0, 0.0, 0.0], 6.0, &none);
+        r.name(john, "John").unwrap();
+        let (phone, _) = r.observe(&johns_phone(), 6.0, &none);
+        assert_eq!(
+            r.confirm_same(phone, false).unwrap(),
+            SameOutcome::NewSpeaker
+        );
+        assert_eq!(r.speakers(), 2);
+        assert_eq!(r.clusters[john].n, 1);
+        assert_eq!(r.display_name(phone), None);
+    }
+
+    #[test]
+    fn yes_on_an_enrolled_voiceprint_adds_a_sample_to_that_profile() {
+        let john = profile(7, "John", vec![1.0, 0.0, 0.0]);
+        let mut r = LiveRoster::new(vec![john], MatchBands::provisional(), true);
+        let m = match_voice(&johns_phone(), DIGEST, &r.profiles, r.bands);
+        assert_eq!(m.outcome(), "ask");
+        let (c, ask) = r.observe(&johns_phone(), 6.0, &m);
+        assert!(matches!(ask, Some(LiveAsk::SamePerson { .. })));
+        let out = r.confirm_same(c, true).unwrap();
+        assert!(matches!(
+            out,
+            SameOutcome::AddedToProfile { profile_id: 7, .. }
+        ));
+        assert_eq!(r.profiles[0].n_samples, 4);
+        assert_eq!(r.speakers(), 1);
+        assert_eq!(r.display_name(c).as_deref(), Some("John"));
+    }
+
+    #[test]
+    fn a_voice_is_asked_about_after_five_seconds_and_only_once() {
+        let mut r = LiveRoster::new(Vec::new(), MatchBands::provisional(), true);
+        let none = VoiceMatch::Unknown { best: None };
+        assert_eq!(r.observe(&[0.0, 1.0, 0.0], 3.0, &none).1, None);
+        assert!(r.observe(&[0.0, 1.0, 0.0], 3.0, &none).1.is_some());
+        r.skip(0).unwrap();
+        assert_eq!(r.observe(&[0.0, 1.0, 0.0], 9.0, &none).1, None);
+        // A voiceprint that claims the voice outright is never asked about.
+        let alex = VoiceMatch::Auto {
+            profile_id: 1,
+            display_name: "Alex".into(),
+            similarity: crate::diarize_metrics::cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]),
+        };
+        assert_eq!(r.observe(&[1.0, 0.0, 0.0], 12.0, &alex).1, None);
+    }
+
+    #[test]
+    fn with_the_setting_off_a_full_fixture_meeting_raises_no_live_question() {
+        let dir = std::env::temp_dir().join(format!("yap-live-off-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = spill(&dir, "w.t0.spill.pcm", 20, 3000);
+        let b = spill(&dir, "w.t1.spill.pcm", 20, 3000);
+        let profiles = alex_and_sam();
+        let embedder = Fixture::new(
+            (0..20)
+                .map(|i| {
+                    Some(if i % 3 == 0 {
+                        vec![0.0, 1.0, 0.0]
+                    } else {
+                        johns_phone()
+                    })
+                })
+                .collect(),
+        );
+        let sp = LiveSpeakers {
+            embedder: &embedder,
+            profiles: &profiles,
+            digest: DIGEST,
+            bands: MatchBands::provisional(),
+        };
+        // The default: the roster is attached but asking is off.
+        let mut st = LiveState::new(vec![a.clone(), b.clone()]).with_roster(LiveRoster::new(
+            profiles.clone(),
+            MatchBands::provisional(),
+            false,
+        ));
+        let dec = Echo(Cell::new(0));
+        let mut asks = 0;
+        for _ in 0..8 {
+            st.tick_with_speakers(&dec, Some(&sp), &|| false).unwrap();
+            asks += st.take_asks().len();
+            grow(&a, 10, 3000);
+            grow(&b, 10, 3000);
+        }
+        assert_eq!(asks, 0, "setting off: zero live cards");
+        assert!(st
+            .snapshot()
+            .tracks
+            .iter()
+            .flat_map(|t| t.voices.iter())
+            .all(|v| v.cluster.is_none()));
+        assert!(st.roster().unwrap().clusters.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

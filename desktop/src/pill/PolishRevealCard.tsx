@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import DiffView from "../DiffView";
+import type { DiffLayout } from "../diff";
 import type { AppStatus } from "../appTypes";
 import { holdPillHitbox } from "./drag";
 import { PILL_HOVER_OUT_EVENT } from "./hitbox";
@@ -96,6 +97,8 @@ export function PolishRevealView({
   route = LOCAL_ROUTE_LABEL,
   error,
   busy,
+  layout = null,
+  onLayoutChange,
   onReveal,
   onUseOriginal,
   onKeep,
@@ -106,6 +109,12 @@ export function PolishRevealView({
   route?: string;
   error?: string | null;
   busy?: boolean;
+  /**
+   * yap-1107-polish-diff-readable — the "Show as before/after" choice for this
+   * card session; null = the diff's own verdict (blocks when changes are dense).
+   */
+  layout?: DiffLayout | null;
+  onLayoutChange?: (layout: DiffLayout) => void;
   onReveal: () => void;
   onUseOriginal: () => void;
   onKeep: () => void;
@@ -138,7 +147,14 @@ export function PolishRevealView({
       data-polish-reveal={reveal.id}
     >
       <p className="polish-reveal-title">{lines.title}</p>
-      <DiffView raw={reveal.raw} formatted={reveal.text} stages={reveal.stages} route={route} />
+      <DiffView
+        raw={reveal.raw}
+        formatted={reveal.text}
+        stages={reveal.stages}
+        route={route}
+        layout={layout}
+        onLayoutChange={onLayoutChange}
+      />
       {error && (
         <p className="polish-reveal-error" role="alert">
           {error}
@@ -163,7 +179,7 @@ export default function PolishRevealCard({
   keepOpen = false,
 }: {
   /** A dev-only matrix scene (`forcedPolishReveal`); `null` in a release. */
-  forced?: { reveal: PolishReveal; view: PolishRevealFace; hover?: true } | null;
+  forced?: { reveal: PolishReveal; view: PolishRevealFace; layout?: DiffLayout; hover?: true } | null;
   /** WF-17 muted pill categories. This toast is a `tip`, so muting Tips hides it. */
   muted?: ReadonlySet<string>;
   /** Settings › Notifications "Keep the reveal open until I close it" (`keepPolishRevealOpen`). */
@@ -175,6 +191,9 @@ export default function PolishRevealCard({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pointerIn, setPointerIn] = useState<boolean>(forced?.hover === true);
+  // The toggle's choice lives for the card session: kept while this take's
+  // toast/card is up, cleared when the next take arrives.
+  const [layout, setLayout] = useState<DiffLayout | null>(forced?.layout ?? null);
   const ref = useRef<HTMLDivElement | null>(null);
 
   // The dwell rule + timer (`revealDwell.ts`). One per mount; every close path
@@ -200,6 +219,7 @@ export default function PolishRevealCard({
       if (!polishRevealShows(p, muted)) return;
       setReveal(p);
       setView("toast");
+      setLayout(null);
       setError(null);
       setBusy(false);
       setPointerIn(false);
@@ -307,7 +327,7 @@ export default function PolishRevealCard({
       window.removeEventListener("keydown", onKey);
       holdPillHitbox(null, "polish-reveal");
     };
-  }, [reveal, view, closeWith]);
+  }, [reveal, view, layout, closeWith]);
 
   if (!reveal) return null;
   return (
@@ -327,6 +347,8 @@ export default function PolishRevealCard({
         route={route}
         error={error}
         busy={busy}
+        layout={layout}
+        onLayoutChange={setLayout}
         onReveal={open}
         onUseOriginal={original}
         onKeep={keep}

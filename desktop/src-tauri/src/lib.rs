@@ -760,6 +760,12 @@ pub struct AppSettings {
     /// back in captures when it stops. `float_pill::sync_capture_hidden`.
     #[serde(default = "default_true")]
     pub hide_from_capture_in_meetings: bool,
+    /// yap-1106-fb-22a — "Ask who's talking during meetings" (Settings ›
+    /// Meetings). OFF by default: when on, a new voice that has spoken about
+    /// 5 s gets one quiet "Who's talking right now?" card under the pill
+    /// (`live_transcript::LiveRoster`); when off, no live card ever shows.
+    #[serde(default)]
+    pub ask_whos_talking_live: bool,
     /// yap-1106-chatter-setting — "Yappy talks" (Settings › Companion):
     /// `always` | `less` (default: quieter from the 50th take) | `milestones`.
     /// Only those three are stored ([`sanitize_yappy_talks`]); the policy it
@@ -919,6 +925,7 @@ impl Default for AppSettings {
             muted_pill_categories: Vec::new(),
             keep_polish_reveal_open: false,
             hide_from_capture_in_meetings: true,
+            ask_whos_talking_live: false,
             yappy_talks: default_yappy_talks(),
         }
     }
@@ -5234,6 +5241,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             } else {
                 want_paste
             };
+            // fix-l3b3-1 — the typing-pause hold inside insert_take_for can
+            // last up to 5 s AFTER the checkpoint above, so it re-reads the
+            // Y3-D cancel and the paste generation every poll step: a cancel
+            // mid-hold pastes and copies NOTHING, a newer take mid-hold makes
+            // this one copy-only.
+            let still_wanted = || {
+                if take_is_cancelled(&state2) {
+                    typing_pause::TakeWanted::Cancelled
+                } else if state2.paste_generation.load(Ordering::SeqCst) != generation {
+                    typing_pause::TakeWanted::Stale
+                } else {
+                    typing_pause::TakeWanted::Wanted
+                }
+            };
             let outcome = paste::insert_take_for(
                 &app2,
                 &text,
@@ -5241,7 +5262,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
                 Some(&take_stages),
                 target_captured_at,
+                &still_wanted,
             );
+            if outcome.was_cancelled_in_hold() {
+                log::info!("Y3-D cancel checkpoint=paste_hold — nothing pasted, nothing copied");
+                return Ok(TakeOutcome::Cancelled);
+            }
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
             let _ = app2.emit(
@@ -10375,7 +10401,9 @@ fn news_explain_cloud(
 /// the snippet does not support, is the headline alone. Reads the cache the
 /// refresh filled; fetches nothing and marks nothing seen. `Err` is the news
 /// gate's reason tag (`cloud_off`, `disabled`, `no_topics`) or a storage
-/// error.
+/// error. fix-l3b3-2: during a meeting, a screen share, Do Not Disturb or low
+/// battery it makes NO cloud call: the result is the headlines alone, with
+/// the quiet reason as its `fallback`.
 #[tauri::command]
 async fn news_explain_top(
     app: AppHandle,
@@ -10384,6 +10412,7 @@ async fn news_explain_top(
 ) -> Result<news::explain::Explained, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let quiet = news::briefing::explain_allowed(news_quiet_now(&state));
         let db: &Database = &state.db;
         let prefs = news::feeds::gate(db).map_err(|c| {
             log::info!("news explain skipped reason={}", c.tag());
@@ -10394,7 +10423,13 @@ async fn news_explain_top(
             .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
             .inspect_err(|e| log::warn!("news cache_failed op=explain error=\"{e}\""))?;
         let voice = news::explain::Voice::from_setting(&voice);
-        let mut call = |system: &str, user: &str| news_explain_cloud(&app, db, system, user);
+        if let Err(reason) = quiet {
+            log::info!("news explain skipped reason={reason}");
+        }
+        let mut call = |system: &str, user: &str| match quiet {
+            Err(reason) => Err(reason),
+            Ok(()) => news_explain_cloud(&app, db, system, user),
+        };
         Ok(news::explain::explain_with(&top, voice, &mut call))
     })
     .await
@@ -15087,6 +15122,10 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-1106-fb-22a — "Who's talking right now?" answers from the pill.
+            live_transcript::meeting_live_name,
+            live_transcript::meeting_live_same,
+            live_transcript::meeting_live_skip,
             // yap-byom-0 — Settings → Model providers.
             list_model_providers,
             delete_model_provider,

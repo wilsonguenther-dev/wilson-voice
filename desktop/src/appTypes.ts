@@ -201,6 +201,12 @@ export interface AppSettings {
    * out of screen shares and screenshots. Missing = on.
    */
   hideFromCaptureInMeetings?: boolean;
+  /**
+   * yap-1106-fb-22a (backend `ask_whos_talking_live`, default false): "Ask
+   * who's talking during meetings" — a quiet live card under the pill for a
+   * new voice. Missing = off.
+   */
+  askWhosTalkingLive?: boolean;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**

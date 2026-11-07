@@ -212,3 +212,163 @@ export function diffSummary(tokens: DiffToken[]): {
 export function isUnchanged(tokens: DiffToken[]): boolean {
   return tokens.every((t) => t.op === "equal");
 }
+
+// ── yap-1107-polish-diff-readable — phrase-level runs ───────────────────────
+//
+// Wilson, 2026-11-07 17:22Z: the word-level edit script above is TRUE but not
+// READABLE. Every one-word substitution became a removed word glued to an added
+// word ("myyour", "calendarcalendar."), and a sentence with five small edits
+// alternated strike / highlight / strike word by word until neither version
+// could be read. Myers stays the engine (the header's reasons stand); this is a
+// post-pass over its output that groups the script into HUNKS:
+//
+//  * two changes separated by fewer than MIN_EQUAL_WORDS unchanged words are one
+//    hunk, and the short unchanged words between them become part of BOTH the
+//    removed and the added run;
+//  * every hunk is emitted as ONE removed run followed by ONE added run, never
+//    alternating single words. Tokens keep their whitespace, so rebuilding
+//    either side still reproduces the input byte for byte.
+//
+// When the hunks cover more than BLOCKS_CHANGED_SHARE of the words the inline
+// view is mostly strikes, and two plain paragraphs (Before / After) are shorter
+// to read than the interleaving. Under that share, each hunk sits between at
+// least three unchanged words the reader can anchor on. The approved design
+// ("Show opens the before and after", pill.html, Fix-up notices) is the governing
+// idea: the blocks are the fallback AND the "Show as before/after" toggle.
+
+/** Unchanged words a reader needs between two edits to see them as separate. */
+export const MIN_EQUAL_WORDS = 3;
+
+/**
+ * Past this share of a side's words inside hunks, the card shows Before / After
+ * as two paragraphs. Half: beyond it the inline view has more struck text than
+ * kept text, so the reader is reconstructing both versions in their head.
+ */
+export const BLOCKS_CHANGED_SHARE = 0.5;
+
+/** How the card should lay a diff out by default. */
+export type DiffLayout = "inline" | "blocks";
+
+/** Everything a diff panel needs, computed once. */
+export interface ReadableDiff {
+  /** The exact word-level script (`diffWords`): what the summary counts. */
+  exact: DiffToken[];
+  /** The same edits grouped into hunks: what the inline view renders. */
+  runs: DiffToken[];
+  /** Number of hunks (one removed run and/or one added run each). */
+  hunks: number;
+  /** Larger of the two sides' share of words inside hunks, 0..1. */
+  changedShare: number;
+  /** The default layout: blocks when the hunks are too dense to read inline. */
+  layout: DiffLayout;
+}
+
+function wordCount(text: string): number {
+  return (text.match(/\S+/g) ?? []).length;
+}
+
+/**
+ * Group an edit script (coalesced or not) into hunks. Equal stretches with fewer
+ * than `minEqualWords` words BETWEEN two changes are folded into both sides of
+ * the hunk; leading and trailing equal text is never folded.
+ */
+export function groupHunks(script: DiffToken[], minEqualWords = MIN_EQUAL_WORDS): DiffToken[] {
+  const out: DiffToken[] = [];
+  const n = script.length;
+  let i = 0;
+  while (i < n) {
+    if (script[i].op === "equal") {
+      out.push({ op: "equal", text: script[i].text });
+      i++;
+      continue;
+    }
+    let removed = "";
+    let added = "";
+    let j = i;
+    while (j < n) {
+      const t = script[j];
+      if (t.op === "removed") {
+        removed += t.text;
+        j++;
+        continue;
+      }
+      if (t.op === "added") {
+        added += t.text;
+        j++;
+        continue;
+      }
+      // An equal stretch: fold it in only if another change follows it and it
+      // is too short to read as context.
+      let k = j;
+      let text = "";
+      while (k < n && script[k].op === "equal") {
+        text += script[k].text;
+        k++;
+      }
+      if (k < n && wordCount(text) < minEqualWords) {
+        removed += text;
+        added += text;
+        j = k;
+        continue;
+      }
+      break;
+    }
+    out.push({ op: "removed", text: removed }, { op: "added", text: added });
+    i = j;
+  }
+  return coalesce(out);
+}
+
+/** Phrase-level diff: `diffWords` grouped into hunks. Same inputs, same truth. */
+export function diffPhrases(
+  before: string,
+  after: string,
+  opts: { maxD?: number; minEqualWords?: number } = {},
+): DiffToken[] {
+  return groupHunks(diffWords(before, after, opts), opts.minEqualWords);
+}
+
+/** How many separate changes a run list shows (a removed+added pair counts once). */
+export function changeRuns(tokens: DiffToken[]): number {
+  let runs = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.op === "equal") continue;
+    // An added run right after a removed run is the same hunk.
+    if (t.op === "added" && i > 0 && tokens[i - 1].op === "removed") continue;
+    runs++;
+  }
+  return runs;
+}
+
+/** The diff a panel renders: exact counts, hunked runs, and the default layout. */
+export function readableDiff(
+  before: string,
+  after: string,
+  opts: { maxD?: number; minEqualWords?: number } = {},
+): ReadableDiff {
+  const exact = diffWords(before, after, opts);
+  const runs = groupHunks(exact, opts.minEqualWords);
+  const hunks = changeRuns(runs);
+  let inBefore = 0;
+  let inAfter = 0;
+  for (const t of runs) {
+    if (t.op === "removed") inBefore += wordCount(t.text);
+    else if (t.op === "added") inAfter += wordCount(t.text);
+  }
+  // A side with no words has no words in a hunk either (the runs are built
+  // from that side's tokens), so an empty side is 0 percent changed.
+  const share = (inHunks: number, total: number) => (total > 0 ? inHunks / total : 0);
+  const changedShare = Math.max(share(inBefore, wordCount(before)), share(inAfter, wordCount(after)));
+  const layout: DiffLayout = hunks > 0 && changedShare > BLOCKS_CHANGED_SHARE ? "blocks" : "inline";
+  return { exact, runs, hunks, changedShare, layout };
+}
+
+/**
+ * One structured telemetry line for the diff panel, `diff_view <event> k=v`.
+ * Counts and layout names only — never the take's text.
+ */
+export function diffLogLine(event: string, fields: Record<string, string | number | boolean> = {}): string {
+  const kv = Object.entries(fields).map(([k, v]) => `${k}=${String(v).replace(/\s+/g, "_")}`);
+  return ["diff_view", event, ...kv].join(" ");
+}

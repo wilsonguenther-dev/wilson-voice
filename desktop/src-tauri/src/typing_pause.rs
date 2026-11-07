@@ -93,6 +93,24 @@ pub enum PauseWait {
     Capped { waited_ms: u64, keys_during: u64 },
     /// Held, and the target app left the front: the existing copy branch runs.
     AppSwitched { waited_ms: u64, keys_during: u64 },
+    /// fix-l3b3-1 — held, and the take stopped being wanted mid-hold (the
+    /// user cancelled it, or a newer take made it stale). The caller decides
+    /// which from [`TakeWanted`]: a cancel pastes and copies NOTHING (Y3-D), a
+    /// stale take is copy-only.
+    Cancelled { waited_ms: u64, keys_during: u64 },
+}
+
+/// fix-l3b3-1 — is the take still wanted at this instant? Read by the hold
+/// every poll step, so a cancel pressed while the pill says
+/// [`PASTE_WAIT_LINE`] is honoured within one [`POLL_MS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeWanted {
+    /// Neither cancelled nor superseded: the hold carries on.
+    Wanted,
+    /// Y3-D — the user cancelled the take: nothing is pasted, nothing copied.
+    Cancelled,
+    /// The paste generation moved on (a newer take): copy-only, never pasted.
+    Stale,
 }
 
 impl PauseWait {
@@ -102,6 +120,7 @@ impl PauseWait {
             PauseWait::Paused { .. } => "paused",
             PauseWait::Capped { .. } => "capped",
             PauseWait::AppSwitched { .. } => "app_switched",
+            PauseWait::Cancelled { .. } => "cancelled",
         }
     }
 
@@ -115,7 +134,8 @@ impl PauseWait {
             PauseWait::NotTyping => 0,
             PauseWait::Paused { waited_ms, .. }
             | PauseWait::Capped { waited_ms, .. }
-            | PauseWait::AppSwitched { waited_ms, .. } => waited_ms,
+            | PauseWait::AppSwitched { waited_ms, .. }
+            | PauseWait::Cancelled { waited_ms, .. } => waited_ms,
         }
     }
 
@@ -124,7 +144,8 @@ impl PauseWait {
             PauseWait::NotTyping => 0,
             PauseWait::Paused { keys_during, .. }
             | PauseWait::Capped { keys_during, .. }
-            | PauseWait::AppSwitched { keys_during, .. } => keys_during,
+            | PauseWait::AppSwitched { keys_during, .. }
+            | PauseWait::Cancelled { keys_during, .. } => keys_during,
         }
     }
 
@@ -154,8 +175,12 @@ pub fn typed_recently(now_ms: u64, last_key_down_ms: Option<u64>) -> bool {
 ///   waits at least one full pause — or [`MAX_HOLD_MS`] at most.
 /// - `still_target` is checked before every wait step; `false` (the user
 ///   switched apps) ends the hold at once with [`PauseWait::AppSwitched`].
+/// - fix-l3b3-1: `still_wanted` is checked first, every step; `false` (the take
+///   was cancelled, or a newer take made it stale) ends the hold at once with
+///   [`PauseWait::Cancelled`] — so a cancel is honoured within one [`POLL_MS`].
 pub fn wait_for_pause(
     clock: &mut dyn KeyClock,
+    still_wanted: &mut dyn FnMut() -> bool,
     still_target: &mut dyn FnMut() -> bool,
     on_hold: &mut dyn FnMut(),
 ) -> PauseWait {
@@ -169,6 +194,12 @@ pub fn wait_for_pause(
         let now = clock.now_ms();
         let waited_ms = now.saturating_sub(start);
         let keys_during = clock.key_downs().saturating_sub(keys_at_start);
+        if !still_wanted() {
+            return PauseWait::Cancelled {
+                waited_ms,
+                keys_during,
+            };
+        }
         if !still_target() {
             return PauseWait::AppSwitched {
                 waited_ms,
@@ -242,12 +273,81 @@ mod tests {
 
     /// Run one hold; `switch_at` = when the target app leaves the front.
     fn run(clock: &mut FakeKeyClock, switch_at: Option<u64>) -> (PauseWait, u32) {
+        run_with_cancel(clock, switch_at, None)
+    }
+
+    /// One hold where the take stops being wanted (`cancel_at`) as well.
+    fn run_with_cancel(
+        clock: &mut FakeKeyClock,
+        switch_at: Option<u64>,
+        cancel_at: Option<u64>,
+    ) -> (PauseWait, u32) {
         let mut holds = 0u32;
         let now = Rc::clone(&clock.now);
         let mut still = move || switch_at.is_none_or(|s| now.get() < s);
+        let now_w = Rc::clone(&clock.now);
+        let mut wanted = move || cancel_at.is_none_or(|c| now_w.get() < c);
         let mut on_hold = || holds += 1;
-        let wait = wait_for_pause(clock, &mut still, &mut on_hold);
+        let wait = wait_for_pause(clock, &mut wanted, &mut still, &mut on_hold);
         (wait, holds)
+    }
+
+    /// fix-l3b3-1 — Escape pressed 300 ms into a hold while the user is still
+    /// typing: the hold ends within one poll step as Cancelled, the pill's
+    /// "Pastes when you pause" was shown once, and it never reaches the pause.
+    #[test]
+    fn a_cancel_mid_hold_ends_it_within_one_poll_step() {
+        let keys: Vec<u64> = (0..20).map(|i| 9_900 + i * 200).collect();
+        let mut c = FakeKeyClock::new(10_000, keys);
+        let (w, holds) = run_with_cancel(&mut c, None, Some(10_300));
+        assert_eq!(holds, 1, "on_hold ran once");
+        match w {
+            PauseWait::Cancelled { waited_ms, .. } => {
+                assert!(waited_ms >= 300, "not before the cancel: {waited_ms}");
+                assert!(
+                    waited_ms <= 300 + POLL_MS,
+                    "honoured within one POLL_MS: {waited_ms}"
+                );
+            }
+            other => panic!("expected a cancel, got {other:?}"),
+        }
+        assert_eq!(w.as_str(), "cancelled");
+        assert!(w.held());
+        assert!(c.slept <= 300 + POLL_MS);
+    }
+
+    /// A cancel wins over an app switch at the same step: nothing is copied.
+    #[test]
+    fn a_cancel_wins_over_an_app_switch() {
+        let keys: Vec<u64> = (0..20).map(|i| 9_900 + i * 200).collect();
+        let mut c = FakeKeyClock::new(10_000, keys);
+        let (w, _) = run_with_cancel(&mut c, Some(10_000), Some(10_000));
+        assert_eq!(w.as_str(), "cancelled");
+        assert_eq!(w.waited_ms(), 0);
+    }
+
+    /// No recent typing: the take was never held, so the cancel predicate is
+    /// irrelevant (the caller's own Y3-D checkpoint already ran).
+    #[test]
+    fn no_hold_never_reads_the_cancel() {
+        let mut c = FakeKeyClock::new(10_000, vec![1_000]);
+        let (w, holds) = run_with_cancel(&mut c, None, Some(0));
+        assert_eq!(w, PauseWait::NotTyping);
+        assert_eq!(holds, 0);
+    }
+
+    /// The cancelled log line carries counts only.
+    #[test]
+    fn the_cancelled_log_line_carries_counts_only() {
+        let line = PauseWait::Cancelled {
+            waited_ms: 340,
+            keys_during: 2,
+        }
+        .log_line();
+        assert_eq!(
+            line,
+            "paste typing_pause outcome=cancelled waited_ms=340 keys_during=2"
+        );
     }
 
     #[test]

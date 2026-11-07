@@ -10,6 +10,14 @@ import {
   isUnchanged,
   tokenize,
   DEFAULT_MAX_D,
+  diffPhrases,
+  readableDiff,
+  changeRuns,
+  groupHunks,
+  diffLogLine,
+  MIN_EQUAL_WORDS,
+  BLOCKS_CHANGED_SHARE,
+  type DiffToken,
 } from "./diff";
 
 /** Re-assembling the two sides of a diff must reproduce the two inputs. */
@@ -140,5 +148,162 @@ describe("diffSummary", () => {
     const s = diffSummary(t);
     expect(s.added).toBe(1);
     expect(s.removed).toBe(0);
+  });
+});
+
+// ── yap-1107-polish-diff-readable ──────────────────────────────────────────
+// Wilson's exact take from Yap Test's History, 2026-11-07T17:21:58Z (row
+// 4313a844…, stages dictionary,backtrack,rules,polish), copied verbatim from a
+// read-only copy of the test install's database.
+const FIXTURE_RAW =
+  "Go ahead and add the live onboarding No live training workshop to my calendar and then add the Wednesday onboarding book camp to my calendar.";
+const FIXTURE_TEXT =
+  "Add the live onboarding No live training workshop to your calendar. Add the Wednesday onboarding book camp to your calendar.";
+/** What the "What polish changed" card showed him, character for character. */
+const FIXTURE_SOUP =
+  "GoAdd ahead and add the live onboarding No live training workshop to myyour calendarcalendar. andAdd then add the Wednesday onboarding book camp to myyour calendar.";
+
+/** Every (before, after) pair this file diffs, plus Wilson's fixture. */
+const words = (n: number, seed: string) =>
+  Array.from({ length: n }, (_, i) => `${seed}${i}`).join(" ");
+const CORPUS: Array<[string, string]> = [
+  ["ship the recovery item", "ship the recovery item"],
+  ["", ""],
+  ["um the report is done", "the report is done"],
+  ["ship it", "ship it now"],
+  ["one two three four", "one two\n\nthree four"],
+  [
+    "um so i think we should uh ship the thing on tuesday wait no friday",
+    "So I think we should ship the thing on Friday.",
+  ],
+  ["hello world", "hello world."],
+  ["a b c", "a\n\nb c d"],
+  ["so basically the report is kind of done now", "The report is now complete."],
+  ["ship it to my team", "ship it to your team"],
+  [words(2000, "w"), words(2000, "w").replace("w1000 ", "")],
+  [words(300, "alpha"), words(300, "omega")],
+  [FIXTURE_RAW, FIXTURE_TEXT],
+];
+
+const wordsIn = (t: DiffToken) => (t.text.match(/\S+/g) ?? []).length;
+
+describe("phrase-level runs (Wilson's 17:22Z take)", () => {
+  it("the fixture reproduces his word soup under the old word-level renderer", () => {
+    // DiffView used to render diffWords() tokens as adjacent spans.
+    const old = diffWords(FIXTURE_RAW, FIXTURE_TEXT)
+      .map((t) => t.text)
+      .join("");
+    expect(old).toBe(FIXTURE_SOUP);
+  });
+
+  it("renders the fixture as at most 3 change runs", () => {
+    const runs = diffPhrases(FIXTURE_RAW, FIXTURE_TEXT);
+    expect(changeRuns(runs)).toBeLessThanOrEqual(3);
+    expect(runs).toEqual([
+      { op: "removed", text: "Go ahead and add " },
+      { op: "added", text: "Add " },
+      { op: "equal", text: "the live onboarding No live training workshop to " },
+      { op: "removed", text: "my calendar and then add " },
+      { op: "added", text: "your calendar. Add " },
+      { op: "equal", text: "the Wednesday onboarding book camp to " },
+      { op: "removed", text: "my" },
+      { op: "added", text: "your" },
+      { op: "equal", text: " calendar." },
+    ]);
+    expect(rebuild(runs)).toEqual({ before: FIXTURE_RAW, after: FIXTURE_TEXT });
+  });
+
+  it("keeps the fixture inline (the toggle offers Before / After)", () => {
+    const r = readableDiff(FIXTURE_RAW, FIXTURE_TEXT);
+    expect(r.hunks).toBe(3);
+    expect(r.changedShare).toBeLessThanOrEqual(BLOCKS_CHANGED_SHARE);
+    expect(r.layout).toBe("inline");
+    // The summary still counts the exact word-level edits.
+    expect(r.exact).toEqual(diffWords(FIXTURE_RAW, FIXTURE_TEXT));
+  });
+});
+
+describe("phrase-level runs — property over the corpus", () => {
+  it("never alternates: each hunk is one removed run then one added run", () => {
+    for (const [before, after] of CORPUS) {
+      const runs = diffPhrases(before, after);
+      for (let i = 1; i < runs.length; i++) {
+        const prev = runs[i - 1].op;
+        const cur = runs[i].op;
+        // No two runs with the same verdict side by side (coalesced) …
+        expect(cur === prev, `${JSON.stringify(before)}: ${prev} then ${cur}`).toBe(false);
+        // … and an added run is never followed straight by a removed run.
+        expect(prev === "added" && cur === "removed", JSON.stringify(before)).toBe(false);
+      }
+    }
+  });
+
+  it("puts at least MIN_EQUAL_WORDS unchanged words between two hunks", () => {
+    for (const [before, after] of CORPUS) {
+      const runs = diffPhrases(before, after);
+      runs.forEach((t, i) => {
+        const between = i > 0 && i < runs.length - 1 && t.op === "equal";
+        if (between) expect(wordsIn(t), JSON.stringify(before)).toBeGreaterThanOrEqual(MIN_EQUAL_WORDS);
+      });
+    }
+  });
+
+  it("still rebuilds raw and formatted exactly", () => {
+    for (const [before, after] of CORPUS) {
+      expect(rebuild(diffPhrases(before, after))).toEqual({ before, after });
+    }
+  });
+
+  it("keeps diffSummary and isUnchanged meaning the same", () => {
+    for (const [before, after] of CORPUS) {
+      const r = readableDiff(before, after);
+      expect(diffSummary(r.exact)).toEqual(diffSummary(diffWords(before, after)));
+      expect(isUnchanged(r.runs)).toBe(isUnchanged(r.exact));
+    }
+  });
+});
+
+describe("phrase-level runs — layout verdict", () => {
+  it("folds a short unchanged stretch into both sides of one hunk", () => {
+    const script: DiffToken[] = [
+      { op: "equal", text: "to " },
+      { op: "removed", text: "my" },
+      { op: "added", text: "your" },
+      { op: "equal", text: " " },
+      { op: "removed", text: "calendar" },
+      { op: "added", text: "calendar." },
+      { op: "equal", text: " today" },
+    ];
+    expect(groupHunks(script)).toEqual([
+      { op: "equal", text: "to " },
+      { op: "removed", text: "my calendar" },
+      { op: "added", text: "your calendar." },
+      { op: "equal", text: " today" },
+    ]);
+  });
+
+  it("shows a one-word change inline", () => {
+    const r = readableDiff("ship it to my team", "ship it to your team");
+    expect(r.layout).toBe("inline");
+    expect(r.hunks).toBe(1);
+  });
+
+  it("switches a dense rewrite to Before / After blocks", () => {
+    const r = readableDiff("so basically the report is kind of done now", "The report is now complete.");
+    expect(r.changedShare).toBeGreaterThan(BLOCKS_CHANGED_SHARE);
+    expect(r.layout).toBe("blocks");
+  });
+
+  it("never asks for blocks on an unchanged take", () => {
+    const r = readableDiff("ship the recovery item", "ship the recovery item");
+    expect(r.hunks).toBe(0);
+    expect(r.layout).toBe("inline");
+    expect(readableDiff("", "").layout).toBe("inline");
+  });
+
+  it("logs counts and layout, never text", () => {
+    expect(diffLogLine("layout_toggle", { to: "blocks", hunks: 3 })).toBe(
+      "diff_view layout_toggle to=blocks hunks=3",
+    );
   });
 });

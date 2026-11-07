@@ -92,6 +92,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   // yap-fx-06 — the meeting + dictation card's model (Esc toast, hands-free ask, stop failed).
   "pill/meetingDictation.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-fb-22a — "Who's talking right now?" live card state machine.
+  "pill/whoTalking.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/silentMic.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
@@ -128,6 +130,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
   "pill/voices.ts": { lines: 96, branches: 85, functions: 94, statements: 96 },
+  // yap-1106-reaction-words — the 48-row table, the matcher and the once-per-take reducer (reactionWords.test.ts
+  // drives every row in every voice); floor provisional, the integrator re-measures and may only raise it.
+  "pill/reactionWords.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },
   "polishOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

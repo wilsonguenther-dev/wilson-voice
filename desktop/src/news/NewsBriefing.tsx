@@ -244,6 +244,44 @@ export function NewsBriefingView({
   );
 }
 
+/**
+ * fix-l3b3-2-briefing-no-cloud-when-quiet — the explain step. While a meeting,
+ * a screen share or Do Not Disturb is on it is not even asked for (the
+ * backend also refuses during low battery): `null` = the headlines stand
+ * alone, exactly as on an explain failure, and every story keeps its link.
+ */
+export async function explainForBriefing(quiet: boolean, tone: string | undefined): Promise<ExplainedLine[] | null> {
+  if (quiet) {
+    console.info("news briefing explain_held reason=quiet");
+    return null;
+  }
+  try {
+    const ex = await invoke<{ lines: ExplainedLine[]; fallback: string }>("news_explain_top", { voice: tone ?? "" });
+    return Array.isArray(ex?.lines) ? ex.lines : null;
+  } catch {
+    // The headlines stand alone; every story still links to its source.
+    console.warn("news briefing explain_failed");
+    return null;
+  }
+}
+
+/** A briefing of `stories` (top three), explained unless quiet. */
+export async function composeBriefing(
+  stories: readonly CachedStory[],
+  quiet: boolean,
+  tone: string | undefined,
+  now: number,
+): Promise<Briefing> {
+  return buildBriefing(stories, await explainForBriefing(quiet, tone), now);
+}
+
+/** No briefing yet today and no refresh due: the cached top three (null = nothing cached). */
+export async function cachedBriefing(quiet: boolean, tone: string | undefined, now: number): Promise<Briefing | null> {
+  const cached = topStories(await invoke<unknown[]>("news_briefing_cached"));
+  if (cached.length === 0) return null;
+  return composeBriefing(cached, quiet, tone, now);
+}
+
 export interface NewsBriefingProps {
   meetingRecording: boolean;
   screenSharing: boolean;
@@ -287,16 +325,7 @@ export default function NewsBriefing({
   quietRef.current = quietNow({ meetingRecording, screenSharing, doNotDisturb });
 
   const deliver = useCallback(
-    async (stories: CachedStory[], from: string) => {
-      let lines: ExplainedLine[] | null = null;
-      try {
-        const ex = await invoke<{ lines: ExplainedLine[]; fallback: string }>("news_explain_top", { voice: tone ?? "" });
-        lines = Array.isArray(ex?.lines) ? ex.lines : null;
-      } catch {
-        // The headlines stand alone; every story still links to its source.
-        console.warn("news briefing explain_failed");
-      }
-      const next = buildBriefing(stories, lines, Date.now());
+    async (next: Briefing, from: string) => {
       const fresh = isNewBriefing(briefingRef.current, next);
       saveStoredBriefing(storage(), next);
       setBriefing(next);
@@ -306,7 +335,7 @@ export default function NewsBriefing({
       );
       if (fresh) onDelivered(next.deliveredMs, next.stories.length * 2);
     },
-    [tone, onDelivered],
+    [onDelivered],
   );
 
   const load = useCallback(async () => {
@@ -326,14 +355,14 @@ export default function NewsBriefing({
       const out = await invoke<NewsRefreshOutcome>("news_refresh", { trigger: "home_opened" });
       const fresh = topStories(out.stories);
       if (out.ran && ranksHigher(current, fresh)) {
-        await deliver(fresh, "refresh");
+        await deliver(await composeBriefing(fresh, quietRef.current, tone, Date.now()), "refresh");
       } else if (current) {
         if (out.ran) console.info("news briefing_kept reason=nothing_ranks_higher");
         setPhase("ready");
       } else {
         // No briefing yet today and no refresh due: the cached top three.
-        const cached = topStories(await invoke<unknown[]>("news_briefing_cached"));
-        if (cached.length > 0) await deliver(cached, "cache");
+        const cached = await cachedBriefing(quietRef.current, tone, Date.now());
+        if (cached) await deliver(cached, "cache");
         else setPhase("empty");
       }
       console.info(`news briefing_opened ran=${out.ran} skipped=${out.skipped ?? "none"} ms=${Date.now() - started}`);
@@ -341,7 +370,7 @@ export default function NewsBriefing({
       console.warn("news briefing refresh_failed");
       setPhase(current ? "ready" : "error");
     }
-  }, [deliver]);
+  }, [deliver, tone]);
 
   useEffect(() => {
     void load();

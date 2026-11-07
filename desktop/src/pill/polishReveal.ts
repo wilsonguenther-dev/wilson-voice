@@ -173,16 +173,54 @@ export const SAMPLE_POLISH_REVEAL: PolishReveal = {
 };
 
 /**
+ * yap-1107-polish-diff-readable — the capture sheet's takes. `fixture` is
+ * Wilson's 2026-11-07 17:22Z take verbatim (the word-soup report); `one` is a
+ * one-word change; `same` is a take polish left alone.
+ */
+export const POLISH_REVEAL_DIFF_SAMPLES: Record<"fixture" | "one" | "same", PolishReveal> = {
+  fixture: {
+    id: "sample-fixture",
+    raw: "Go ahead and add the live onboarding No live training workshop to my calendar and then add the Wednesday onboarding book camp to my calendar.",
+    text: "Add the live onboarding No live training workshop to your calendar. Add the Wednesday onboarding book camp to your calendar.",
+    stages: "dictionary,backtrack,rules,polish",
+    changedWords: 10,
+  },
+  one: {
+    id: "sample-one-word",
+    raw: "Send the deck to my team before the review.",
+    text: "Send the deck to your team before the review.",
+    stages: "rules,polish",
+    changedWords: 1,
+  },
+  same: {
+    id: "sample-unchanged",
+    raw: "Ship the recovery item today.",
+    text: "Ship the recovery item today.",
+    stages: "rules,polish",
+    changedWords: 0,
+  },
+};
+
+/**
  * The forced matrix scene, or `null`. float-main only calls this when its
  * DEV-ONLY `FORCED` handle is compiled in (scripts/pill-matrix.mjs).
+ * `&diff=fixture|one|same` swaps the sample take; `&layout=blocks|inline`
+ * forces the card's layout (the "Show as before/after" toggle's two faces).
  */
 export function forcedPolishReveal(
   search: string,
-): { reveal: PolishReveal; view: PolishRevealFace; hover?: true } | null {
-  const v = new URLSearchParams(search).get("polish");
-  if (v === "toast" || v === "card") return { reveal: SAMPLE_POLISH_REVEAL, view: v };
-  // yap-1107-reveal-stays-until-read — the pointer-inside (held open) state.
-  if (v === "toast-hover") return { reveal: SAMPLE_POLISH_REVEAL, view: "toast", hover: true };
-  if (v === "card-hover") return { reveal: SAMPLE_POLISH_REVEAL, view: "card", hover: true };
-  return null;
+): { reveal: PolishReveal; view: PolishRevealFace; layout?: "inline" | "blocks"; hover?: true } | null {
+  const q = new URLSearchParams(search);
+  const raw = q.get("polish");
+  // yap-1107-reveal-stays-until-read — `toast-hover` / `card-hover` force the
+  // pointer-inside (held open) state of either face.
+  const hover = raw === "toast-hover" || raw === "card-hover";
+  const v = raw === "toast-hover" ? "toast" : raw === "card-hover" ? "card" : raw;
+  if (v !== "toast" && v !== "card") return null;
+  const d = q.get("diff");
+  const reveal = d === "fixture" || d === "one" || d === "same" ? POLISH_REVEAL_DIFF_SAMPLES[d] : SAMPLE_POLISH_REVEAL;
+  const l = q.get("layout");
+  const base: { reveal: PolishReveal; view: PolishRevealFace; layout?: "inline" | "blocks"; hover?: true } =
+    l === "blocks" || l === "inline" ? { reveal, view: v, layout: l } : { reveal, view: v };
+  return hover ? { ...base, hover: true as const } : base;
 }
