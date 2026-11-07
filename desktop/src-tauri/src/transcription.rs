@@ -832,6 +832,18 @@ impl TranscriptionManager {
         self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
     }
 
+    /// yap-1106-quit-during-asr-crash — is ANY ggml device alive right now: in
+    /// the slot, leased to a decode, or being built by a load? The exit path
+    /// asks this after its teardown: `true` means `exit()`'s C++ static
+    /// destructors would free a Metal device something still owns (the
+    /// `ggml_metal_rsets_free → ggml_abort` crash), so it must `_exit` instead.
+    pub fn device_live(&self) -> bool {
+        let slot = self.inner.engine.lock();
+        slot.is_some()
+            || self.inner.leases.load(Ordering::Acquire) != 0
+            || self.inner.loading.load(Ordering::Acquire)
+    }
+
     /// True while a load is building an engine right now. Read straight off the
     /// atomic (no slot lock), because YV80 asks it on every status emit so the
     /// UI can say "Preparing your speech engine…" instead of nothing.

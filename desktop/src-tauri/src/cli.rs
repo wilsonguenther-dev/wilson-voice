@@ -21,7 +21,10 @@
 //! SP-03 adds `--bench <wav> [<wav>…] [--no-cleanup]`: the dictation pipeline
 //! a released take runs — release-side DSP + VAD, the warm decode, the cleanup
 //! pipeline (the LLM polish is always skipped headless) and no paste — timed
-//! stage by stage over each file, printed as ONE JSON object on stdout.
+//! stage by stage over each file, printed as ONE JSON object on stdout. It
+//! benches the model the app would select (the shipped default on a fresh data
+//! dir), found installed or under `YAP_MODEL_DIR`, and NEVER downloads one: no
+//! model is exit 2 with one sentence.
 //! `scripts/qa/speed-bench.sh` drives it and keeps the history in
 //! docs/BUDGETS.md (`speed_bench`).
 
@@ -400,6 +403,8 @@ fn selected_model() -> Option<&'static models::CatalogModel> {
 
 /// Resolve a usable model file: the selection when it's on disk, else the
 /// smallest catalog model — downloaded (once, verified) if it isn't there.
+/// `--bench` never comes through here: it uses [`bench_model`], which cannot
+/// download.
 fn ensure_model() -> Result<(String, PathBuf), String> {
     if let Some(model) = selected_model() {
         if models::is_downloaded(model) {
@@ -409,30 +414,139 @@ fn ensure_model() -> Result<(String, PathBuf), String> {
             return Ok((model.id.clone(), path));
         }
     }
-    let model = models::smallest_model();
-    let path = models::model_path(model)
-        .ok_or_else(|| format!("catalog model '{}' lists no files", model.id))?;
-    if !models::is_downloaded(model) {
-        let mb = model.default_file().map(|f| f.size_bytes).unwrap_or(0) as f64 / 1e6;
-        eprintln!("downloading {} ({mb:.0} MB) — one time…", model.name);
-        let mut last: u64 = 0;
-        tauri::async_runtime::block_on(models::download_model_with(
-            &model.id,
-            |downloaded, total| {
-                if downloaded >= total || downloaded.saturating_sub(last) >= PROGRESS_STEP {
-                    last = downloaded;
-                    let pct = if total > 0 {
-                        downloaded as f64 * 100.0 / total as f64
-                    } else {
-                        0.0
-                    };
-                    eprintln!("  {pct:.0}% ({downloaded}/{total} bytes)");
-                }
-            },
-        ))?;
+    let (id, path) = resolve_model(
+        ModelFetch::Allow,
+        models::smallest_model(),
+        None,
+        &models::models_dir(),
+        &crate::data_dir(),
+        download_catalog_model,
+    )?;
+    eprintln!("using model {id}");
+    Ok((id, path))
+}
+
+/// Fetch one catalog model (resumable, sha256-verified) into the active
+/// models dir, with progress on stderr. Reached only through
+/// [`resolve_model`] under [`ModelFetch::Allow`].
+fn download_catalog_model(model: &models::CatalogModel) -> Result<PathBuf, String> {
+    let mb = model.default_file().map(|f| f.size_bytes).unwrap_or(0) as f64 / 1e6;
+    eprintln!("downloading {} ({mb:.0} MB) — one time…", model.name);
+    let mut last: u64 = 0;
+    tauri::async_runtime::block_on(models::download_model_with(
+        &model.id,
+        |downloaded, total| {
+            if downloaded >= total || downloaded.saturating_sub(last) >= PROGRESS_STEP {
+                last = downloaded;
+                let pct = if total > 0 {
+                    downloaded as f64 * 100.0 / total as f64
+                } else {
+                    0.0
+                };
+                eprintln!("  {pct:.0}% ({downloaded}/{total} bytes)");
+            }
+        },
+    ))
+}
+
+/// Whether a model lookup may fetch a missing model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelFetch {
+    /// `--transcribe-file` and friends: a cold machine still completes.
+    Allow,
+    /// `--bench`: measure what is installed, never install anything.
+    Never,
+}
+
+/// SP-03 fix — the bench measures, it never installs: with no model on disk a
+/// bench run used to pull ~46 MB into whatever data dir was active (Wilson's
+/// real one when `YAP_DATA_DIR` is unset).
+const BENCH_MODEL_FETCH: ModelFetch = ModelFetch::Never;
+/// A folder that already holds catalog model files (the loop's shared cache),
+/// so a scratch `YAP_DATA_DIR` can bench the shipped model with no copy and no
+/// download. Same variable the meeting evals read.
+const MODEL_DIR_ENV: &str = "YAP_MODEL_DIR";
+/// Exit code when `--bench` finds no installed model (and fetched nothing).
+const EXIT_BENCH_NO_MODEL: i32 = 2;
+
+/// `model`'s default-quant file when it is installed in full — under
+/// `override_dir` first, then the app's `models_dir` — by the same full-size
+/// check [`models::is_downloaded`] makes.
+fn installed_model_file(
+    model: &models::CatalogModel,
+    override_dir: Option<&Path>,
+    models_dir: &Path,
+) -> Option<PathBuf> {
+    let file = model.default_file()?;
+    override_dir
+        .into_iter()
+        .chain(std::iter::once(models_dir))
+        .map(|dir| dir.join(&file.filename))
+        .find(|p| {
+            std::fs::metadata(p)
+                .map(|m| m.is_file() && m.len() == file.size_bytes)
+                .unwrap_or(false)
+        })
+}
+
+/// Find `model` on disk; when it is missing, `download` it only under
+/// [`ModelFetch::Allow`]. Under [`ModelFetch::Never`] the answer is ONE
+/// sentence naming the data dir by basename (never a full path), and
+/// `download` is never called.
+fn resolve_model<D>(
+    fetch: ModelFetch,
+    model: &models::CatalogModel,
+    override_dir: Option<&Path>,
+    models_dir: &Path,
+    data_dir: &Path,
+    download: D,
+) -> Result<(String, PathBuf), String>
+where
+    D: FnOnce(&models::CatalogModel) -> Result<PathBuf, String>,
+{
+    if let Some(path) = installed_model_file(model, override_dir, models_dir) {
+        return Ok((model.id.clone(), path));
     }
-    eprintln!("using model {}", model.id);
-    Ok((model.id.clone(), path))
+    match fetch {
+        ModelFetch::Allow => download(model).map(|path| (model.id.clone(), path)),
+        ModelFetch::Never => {
+            let filename = model
+                .default_file()
+                .map(|f| f.filename.as_str())
+                .unwrap_or("its model file");
+            Err(format!(
+                "bench refused: {} is not installed in data dir {} (set {MODEL_DIR_ENV} to a \
+                 folder holding {filename}) and --bench never downloads a model",
+                model.id,
+                basename(data_dir)
+            ))
+        }
+    }
+}
+
+/// PURE. The model `--bench` times: the one the app would select — the
+/// settings' `native_model`, else the shipped default (the catalog's
+/// recommendation, `AppSettings::default().native_model`), never the smallest.
+fn bench_candidate(
+    selected: Option<&'static models::CatalogModel>,
+) -> &'static models::CatalogModel {
+    selected.unwrap_or_else(models::recommended_model)
+}
+
+/// The installed model `--bench` runs on, honouring `YAP_MODEL_DIR`. Never a
+/// download ([`BENCH_MODEL_FETCH`]).
+fn bench_model() -> Result<(String, PathBuf), String> {
+    let override_dir = std::env::var_os(MODEL_DIR_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    resolve_model(
+        BENCH_MODEL_FETCH,
+        bench_candidate(selected_model()),
+        override_dir.as_deref(),
+        &models::models_dir(),
+        &crate::data_dir(),
+        download_catalog_model,
+    )
 }
 
 // ── SP-03 · `--bench` ──────────────────────────────────────────────────────────
@@ -601,22 +715,26 @@ fn bench_take(
 /// `wilson-voice --bench <wav…>` — load the model once (reported as
 /// `cold_load_ms`), then run every file through [`bench_take`] on the warm
 /// engine and print ONE JSON object. Exit 0 only when every file produced
-/// text; a failed file keeps its row with an `error` and no numbers.
+/// text; a failed file keeps its row with an `error` and no numbers. Exit 2
+/// (one stderr sentence, nothing fetched) when the model is not installed.
 fn run_bench(args: &BenchArgs) -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
     // The SHIPPED defaults (denoise, language set), never the user's settings —
     // the same "do not depend on app state" rule `--cleanup` follows. The model
-    // mirrors the app's selection, like `--transcribe-file`.
+    // is the one the app would select, installed (or under `YAP_MODEL_DIR`) —
+    // never downloaded.
     let settings = crate::AppSettings::default();
-    let (model_id, model_path) = match ensure_model() {
+    let (model_id, model_path) = match bench_model() {
         Ok(m) => m,
         Err(e) => {
-            log::warn!("bench model_unavailable");
-            eprintln!("bench failed: {e}");
-            return 1;
+            log::warn!("bench model_missing fetch=never");
+            eprintln!("{e}");
+            return EXIT_BENCH_NO_MODEL;
         }
     };
+    eprintln!("bench using installed model {model_id}");
+    log::info!("bench model_found model={model_id}");
     let manager = TranscriptionManager::new();
     let t_load = Instant::now();
     if let Err(e) = manager.load(&model_id, &model_path) {
@@ -1144,5 +1262,124 @@ mod tests {
             .len();
         assert!(bytes < 300 * 1024, "fixture too big: {bytes} bytes");
         assert!(record::read_wav_16k_mono(&fixture).is_ok());
+    }
+
+    /// A scratch dir for one test, removed by the caller.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yap-cli-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// SP-03 fix — `--bench` runs under `ModelFetch::Never`: with no model in
+    /// `YAP_MODEL_DIR` or the models dir it refuses with ONE sentence naming the
+    /// data dir by basename, and the downloader is never called. A wrong-size
+    /// (partial) file does not count as installed either.
+    #[test]
+    fn bench_model_lookup_never_calls_the_downloader() {
+        assert_eq!(BENCH_MODEL_FETCH, ModelFetch::Never);
+        let root = scratch("bench-nodl");
+        let data = root.join("yap-bench-state");
+        let models_dir = data.join("models");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let model = bench_candidate(None);
+        let file = model.default_file().expect("shipped default lists a file");
+        // A truncated file in the cache is not an installed model.
+        std::fs::write(cache.join(&file.filename), b"partial").unwrap();
+        let mut calls = 0u32;
+        let got = resolve_model(
+            BENCH_MODEL_FETCH,
+            model,
+            Some(&cache),
+            &models_dir,
+            &data,
+            |_| {
+                calls += 1;
+                Err("downloader called".into())
+            },
+        );
+        let err = got.expect_err("no installed model must refuse");
+        assert_eq!(calls, 0, "--bench called the downloader");
+        assert!(err.contains("yap-bench-state"), "names the data dir: {err}");
+        let root_str = root.to_string_lossy().into_owned();
+        assert!(!err.contains(root_str.as_str()), "no full path: {err}");
+        assert!(err.contains("never downloads"), "{err}");
+        assert_eq!(err.matches(". ").count(), 0, "one sentence: {err}");
+        assert!(
+            std::fs::read_dir(&models_dir).unwrap().next().is_none(),
+            "wrote nothing"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// SP-03 fix — an installed full-size file under `YAP_MODEL_DIR` is used
+    /// as-is (still no download), and the models dir is the fallback.
+    #[test]
+    fn bench_model_lookup_uses_the_installed_file_first_in_the_override_dir() {
+        let root = scratch("bench-found");
+        let data = root.join("state");
+        let models_dir = data.join("models");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let model = bench_candidate(None);
+        let file = model.default_file().unwrap();
+        // Sparse, full-size: the size check is what "installed" means.
+        let f = std::fs::File::create(cache.join(&file.filename)).unwrap();
+        f.set_len(file.size_bytes).unwrap();
+        drop(f);
+        let mut calls = 0u32;
+        let (id, path) = resolve_model(
+            BENCH_MODEL_FETCH,
+            model,
+            Some(&cache),
+            &models_dir,
+            &data,
+            |_| {
+                calls += 1;
+                Err("downloader called".into())
+            },
+        )
+        .expect("installed model is found");
+        assert_eq!(calls, 0);
+        assert_eq!(id, model.id);
+        assert_eq!(path, cache.join(&file.filename));
+        // Moved into the models dir (no override): still found there.
+        std::fs::rename(cache.join(&file.filename), models_dir.join(&file.filename)).unwrap();
+        let (_, path) = resolve_model(BENCH_MODEL_FETCH, model, None, &models_dir, &data, |_| {
+            Err("downloader called".into())
+        })
+        .expect("models dir fallback");
+        assert_eq!(path, models_dir.join(&file.filename));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// SP-03 fix — with no selection the bench times the SHIPPED default (the
+    /// model a fresh install selects), not the smallest catalog model.
+    #[test]
+    fn bench_candidate_is_the_shipped_default_model() {
+        assert_eq!(
+            bench_candidate(None).id,
+            crate::AppSettings::default().native_model
+        );
+    }
+
+    /// The download path stays reachable for `--transcribe-file` (`Allow`).
+    #[test]
+    fn allow_fetch_calls_the_downloader_once_when_missing() {
+        let root = scratch("allow-dl");
+        let models_dir = root.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let model = models::smallest_model();
+        let mut calls = 0u32;
+        let got = resolve_model(ModelFetch::Allow, model, None, &models_dir, &root, |_| {
+            calls += 1;
+            Ok(PathBuf::from("fetched"))
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(got.unwrap().1, PathBuf::from("fetched"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

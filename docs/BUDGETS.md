@@ -295,6 +295,13 @@ teardown-order test (a stub engine waiting in 2 ms steps inside `#[cfg(test)] mo
 gains `20:1`, a fake engine's 20 ms decode in yap-1106-retry-replay-regression's `#[cfg(test)]`
 replay tests. No production wakeup was added to either file.
 
+Row change (2026-11-07, loop3 batch 8, yap-1106-quit-during-asr-crash): lib.rs gains `90:1`,
+`EXIT_MEETING_JOIN_TIMEOUT`, the one-shot bound the quit's drain step waits to JOIN the meeting-pipeline
+worker (sized so drain + join fit `QuitStep::AsrDrain`'s 1 s deadline); it runs once, at quit, and is
+not a polling interval. The other new literals (`5:5 -> 6`, `20:1 -> 2`, `100:2 -> 3`, `800:1`) are
+inside `#[cfg(test)] mod tests`: the stub join's 5 ms wait step, the wedged-decode test's 100 ms /
+20 ms budgets and its stub engine's 800 ms decode. No production wakeup was added to lib.rs.
+
 Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
 `ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
 disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
@@ -560,7 +567,26 @@ is the median decode RTF over the three files; `WER` is 20 s / 127 s / 240 s.
 <!-- speed-bench:rows:start -->
 | date (UTC) | commit | machine | model | vad | 20 s r→t | 127 s r→t | 240 s r→t | 240 s decode | rtf_p50 | WER | status | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-07T10:58Z | 48ead4c0 | Apple M4 Pro 24GB | handy-computer/parakeet-unified-en-0.6b-gguf | energy | 218 | 1929 | 5188 | 5182 | 0.015 | 0.000/0.007/0.003 | baseline | SP-03 baseline |
 <!-- speed-bench:rows:end -->
 
-The baseline row is written by the batch integrator's first `scripts/qa/speed-bench.sh` run on the
-merged build (builders in this loop do not compile), and must land before SP-04..SP-10 start.
+**No downloads, no real state.** `--bench` benches the model the app would select — on a fresh
+data dir that is the SHIPPED default (`handy-computer/parakeet-unified-en-0.6b-gguf`, Q8_0), never
+whisper-tiny — found installed in the models dir or in `$YAP_MODEL_DIR`. It never fetches one: with
+no installed model it exits **2** with one sentence naming the data dir. `speed-bench.sh` runs it
+against a scratch `YAP_DATA_DIR` (deleted at exit) unless the caller sets one, and deletes the
+fixture WAVs it generated unless `--keep-fixtures`.
+
+**The baseline row** (SP-03; must land before SP-04..SP-10 start) comes from a RELEASE build on the
+merged batch — builders in this loop do not compile, so the integrator runs it, on a clean tree so
+the commit cell has no `-dirty`:
+
+```bash
+CARGO_INCREMENTAL=0 cargo build --release --manifest-path desktop/src-tauri/Cargo.toml   # loop target dir
+YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  scripts/qa/speed-bench.sh --bin <target>/release/wilson-voice --note "SP-03 baseline"   # status: baseline
+YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  scripts/qa/speed-bench.sh --bin <target>/release/wilson-voice --dry-run   # prints 'ok ±x% vs <commit>'
+```
+
+Commit the one dated row it appends between the markers below.
