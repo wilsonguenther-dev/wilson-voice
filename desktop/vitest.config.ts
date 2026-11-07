@@ -64,6 +64,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
   "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-wf-05 — the "Polished — Reveal" payload check, copy and route words.
+  "pill/polishReveal.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

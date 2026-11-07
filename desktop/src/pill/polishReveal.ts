@@ -8,13 +8,14 @@
 // Pure model — no hooks, no Tauri imports.
 import type { AppStatus } from "../appTypes";
 import { cloudChip } from "./cloudChip";
+import { REVEAL_EDIT_TTL_MS, type PolishResult } from "./polishResult";
 
 /** Mirrors `lib.rs` `POLISH_REVEAL_EVENT`. */
 export const POLISH_REVEAL_EVENT = "polish_reveal";
 /** "Use original" — `lib.rs` `use_original_take` (the Undo AI Edit paste). */
 export const USE_ORIGINAL_COMMAND = "use_original_take";
 /** Unanswered, the toast leaves on its own after this long. */
-export const POLISH_REVEAL_TTL_MS = 4_000;
+export const POLISH_REVEAL_TTL_MS = REVEAL_EDIT_TTL_MS;
 /** Where polish ran when the route chip has nothing to say (a default install). */
 export const LOCAL_ROUTE_LABEL = "On this Mac";
 
@@ -92,6 +93,15 @@ export function useOriginalArgs(r: PolishReveal): { id: string } {
  */
 export function revealRouteLabel(status: Pick<AppStatus, "cloudRoute"> | null | undefined): string {
   return cloudChip(status)?.label ?? LOCAL_ROUTE_LABEL;
+}
+
+/**
+ * Where THIS take's polish ran, from the byom `polish_result` payload that
+ * Rust emits just before `polish_reveal`. Same words as the route chip
+ * ("Cloud" / "On this Mac"); never a vendor or a model.
+ */
+export function resultRouteLabel(r: Pick<PolishResult, "route">): string {
+  return r.route === "cloud" ? "Cloud" : LOCAL_ROUTE_LABEL;
 }
 
 /** The toast the dev-only matrix scenes draw (`float.html?phase=idle&polish=toast|card`). */

@@ -22,6 +22,7 @@ import {
   forcedPolishReveal,
   isPolishReveal,
   polishRevealLines,
+  resultRouteLabel,
   revealRouteLabel,
   useOriginalArgs,
   useOriginalError,
@@ -62,6 +63,8 @@ describe("WF-05 polish reveal — model", () => {
 
   it("accepts only a complete payload that really changed the take", () => {
     expect(isPolishReveal(REVEAL)).toBe(true);
+    expect(polishRevealLines({ ...REVEAL, changedWords: 1 }).aria).toBe("Polished your dictation, 1 word changed");
+    expect(polishRevealLines(REVEAL).aria).toBe("Polished your dictation, 2 words changed");
     expect(isPolishReveal({ ...REVEAL, stages: null })).toBe(true);
     expect(isPolishReveal({ ...REVEAL, raw: "" })).toBe(false);
     expect(isPolishReveal({ ...REVEAL, text: REVEAL.raw })).toBe(false);
@@ -98,6 +101,10 @@ describe("WF-05 polish reveal — model", () => {
         cloudRoute: { route: "local", reason: "user", label: "On this Mac", tooltip: "", job: "polish" },
       }),
     ).toBe("On this Mac");
+    // The take's own polish_result route (byom) uses the same two words.
+    expect(resultRouteLabel({ route: "cloud" })).toBe("Cloud");
+    expect(resultRouteLabel({ route: "local" })).toBe(LOCAL_ROUTE_LABEL);
+    expect(POLISH_REVEAL_TTL_MS).toBe(4_000);
     const lines = Object.values(polishRevealLines(REVEAL)).join(" ");
     expect(lines).not.toMatch(/openai|gpt|gemini|claude|anthropic|qwen|llama|groq|mistral/i);
   });

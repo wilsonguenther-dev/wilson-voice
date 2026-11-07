@@ -19,12 +19,14 @@ import {
   USE_ORIGINAL_COMMAND,
   isPolishReveal,
   polishRevealLines,
+  resultRouteLabel,
   revealRouteLabel,
   useOriginalArgs,
   useOriginalError,
   type PolishReveal,
   type PolishRevealFace,
 } from "./polishReveal";
+import { POLISH_RESULT_EVENT, isPolishResult } from "./polishResult";
 
 /** Stable default so the listener effect does not re-subscribe every render. */
 const NOTHING_MUTED: ReadonlySet<string> = new Set();
@@ -141,6 +143,11 @@ export default function PolishRevealCard({
     const onStatus = (s: Pick<AppStatus, "cloudRoute"> | null | undefined) => setRoute(revealRouteLabel(s));
     invoke<Pick<AppStatus, "cloudRoute">>("get_status").then(onStatus).catch(() => {});
     listen<Pick<AppStatus, "cloudRoute">>("status", (e) => onStatus(e.payload)).then(push);
+    // yap-1106-byom — the take's own route (`polish_result`, emitted right
+    // before `polish_reveal`), so the card names where THIS polish ran.
+    listen<unknown>(POLISH_RESULT_EVENT, (e) => {
+      if (isPolishResult(e.payload)) setRoute(resultRouteLabel(e.payload));
+    }).then(push);
     // A new take starts: the toast is about the LAST take, so it goes.
     listen<boolean>("recording", (e) => {
       if (e.payload) setReveal(null);

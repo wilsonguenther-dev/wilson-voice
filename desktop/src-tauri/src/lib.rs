@@ -8490,13 +8490,6 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
     });
 }
 
-/// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to
-/// clear). Stored in SQLite and used for NOTHING today.
-///
-/// It costs one nullable column now and it is the only way a future rules
-/// change can be scored against real dissatisfaction rather than a guess. It is
-/// never transmitted: this command writes one row and returns, there is no
-/// network call on the path, and this app ships no analytics SDK.
 /// WF-05 "Use original" — swap the polished take back to the words as
 /// dictated, through the Undo AI Edit paste (the explicit re-paste into the
 /// frontmost field, which is still the take's field: the pill never takes
@@ -8564,6 +8557,13 @@ async fn use_original_take(
     .map_err(|e| format!("paste task join failed: {e}"))?
 }
 
+/// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to
+/// clear). Stored in SQLite and used for NOTHING today.
+///
+/// It costs one nullable column now and it is the only way a future rules
+/// change can be scored against real dissatisfaction rather than a guess. It is
+/// never transmitted: this command writes one row and returns, there is no
+/// network call on the path, and this app ships no analytics SDK.
 #[tauri::command]
 fn set_take_feedback(
     state: tauri::State<'_, AppState>,
