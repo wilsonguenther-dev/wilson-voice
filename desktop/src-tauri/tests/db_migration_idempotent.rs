@@ -27,7 +27,7 @@ use support::{open_db, temp_dir};
 /// 9 = yap24-NT11's `meeting_segments.suppressed_as_echo`, the kept-but-hidden
 /// speaker-echo flag. 10 = yap-call-1's `meetings.detected_app` /
 /// `detected_via`, which app's call a recording came from and how it was found.
-const EXPECTED_VERSION: i64 = 10;
+const EXPECTED_VERSION: i64 = 11;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -39,6 +39,12 @@ const EXPECTED_VERSION: i64 = 10;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 11 {
+        sql.push_str("DROP TABLE speaker_samples;\n");
+        sql.push_str("DROP TABLE speaker_profiles;\n");
+        sql.push_str("ALTER TABLE meeting_segments DROP COLUMN speaker_name;\n");
+        sql.push_str("ALTER TABLE meeting_segments DROP COLUMN speaker_profile_id;\n");
+    }
     if version < 10 {
         sql.push_str("ALTER TABLE meetings DROP COLUMN detected_via;\n");
         sql.push_str("ALTER TABLE meetings DROP COLUMN detected_app;\n");
@@ -831,4 +837,52 @@ fn migration_ten_adds_detected_call_columns_as_null_on_existing_rows() {
             Some("mic_in_use".to_string())
         ))
     );
+}
+
+/// yap-1106-voiceprints — migration 11 adds the voiceprint tables and the
+/// segment's profile link + plain-text name to a database on rung 10 with a
+/// meeting in it; the old rows keep reading, unlabelled.
+#[test]
+fn migration_eleven_adds_speaker_profiles_without_touching_existing_rows() {
+    let dir = temp_dir("speaker-profiles");
+    let path = dir.join("wilson_voice.db");
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Before voiceprints", &["one", "two"]);
+        drop(db);
+        rewind_to(&path, 10);
+        id
+    };
+    assert!(
+        !columns(&path, "meeting_segments").contains(&"speaker_name".to_string()),
+        "rewound below 11"
+    );
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    let segs = columns(&path, "meeting_segments");
+    for col in ["speaker_profile_id", "speaker_name"] {
+        assert!(segs.contains(&col.to_string()), "{col} missing: {segs:?}");
+    }
+    let profiles = columns(&path, "speaker_profiles");
+    for col in [
+        "id",
+        "display_name",
+        "is_me",
+        "created_at",
+        "updated_at",
+        "embedder_digest",
+        "centroid",
+        "n_samples",
+        "last_heard_at",
+    ] {
+        assert!(profiles.contains(&col.to_string()), "{col} missing: {profiles:?}");
+    }
+    let samples = columns(&path, "speaker_samples");
+    for col in ["profile_id", "meeting_id", "embedding", "seconds"] {
+        assert!(samples.contains(&col.to_string()), "{col} missing: {samples:?}");
+    }
+    let rows = db.list_meeting_segments(&id).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(db.segment_speaker(&rows[0].id).unwrap(), (None, None));
+    assert!(db.list_speaker_profiles().unwrap().is_empty());
 }
