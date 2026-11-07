@@ -35,8 +35,8 @@ import {
 // yap-1106-pill-trial-clickable — the gated pill is the Buy button: its route,
 // copy, hover hold and the resting nub's lock come from one pure module.
 import {
-  GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_LOCK_LABEL, YAPPY_HOP_EVENT, YAPPY_HOP_MS,
-  gateClickArgs, nubLockVisible, setGateHover, type GateSurface,
+  GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_LOCK_LABEL, GATE_PRESS_MS, YAPPY_HOP_EVENT, YAPPY_HOP_MS,
+  gateChipCopy, gateClickArgs, nubLockVisible, setGateHover, type GateSurface,
 } from "./gateClick";
 import { PILL_HOVER_OUT_EVENT } from "./hitbox";
 // Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
@@ -234,10 +234,30 @@ export default function YappyPill(
   // a URL: the backend logs `pill gate.click` and owns the destination. If the
   // backend cannot open the browser, the press still lands somewhere useful —
   // the in-app purchase / license surface above.
+  //
+  // pill.html §13 "Click": the pressed chip sinks for GATE_PRESS_MS and reads
+  // "Opening drivia.consulting…" until the refusal settles. The nub's lock has
+  // no chip to relabel, so it only opens.
+  const [gateOpening, setGateOpening] = useState(false);
+  const [gatePressed, setGatePressed] = useState(false);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+  }, []);
   const openGatePurchase = useCallback((surface: GateSurface) => {
     if (drag.dragged()) return;
+    if (surface !== "nub") {
+      setGateOpening(true);
+      setGatePressed(true);
+      if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+      pressTimer.current = setTimeout(() => {
+        pressTimer.current = null;
+        setGatePressed(false);
+      }, GATE_PRESS_MS);
+    }
     invoke(GATE_CLICK_COMMAND, gateClickArgs(license, surface)).catch((e) => {
       console.warn("pill gate.click failure=invoke", e);
+      setGateOpening(false);
       openPurchase();
     });
   }, [drag, license, openPurchase]);
@@ -249,7 +269,10 @@ export default function YappyPill(
     setGateHover(on);
   }, []);
   useEffect(() => {
-    if (!gated) hoverGate(false);
+    if (!gated) {
+      hoverGate(false);
+      setGateOpening(false);
+    }
   }, [gated, hoverGate]);
   useEffect(() => {
     // The panel goes click-through the moment the cursor leaves the hitbox, so
@@ -278,6 +301,11 @@ export default function YappyPill(
     return () => { dead = true; un?.(); if (t !== null) clearTimeout(t); };
   }, []);
   const showLock = nubLockVisible(license, gated, blocked);
+  // pill.html §13, frame by frame (refused / hover / pressed).
+  const gateChip = gateChipCopy(gateVisual.label, gateHover, gateOpening);
+  const gateChipClass = ["kami-blocked gated", gateHover ? "is-hover" : "", gatePressed ? "is-pressed" : ""]
+    .filter(Boolean)
+    .join(" ");
   // WF-01 — a click on the canvas capsule. A refused pill routes exactly where
   // its overlay button does (licence first when gated, then the mic fix);
   // otherwise the backend toggles a HANDS-FREE take, and on the stop click it
@@ -911,7 +939,7 @@ export default function YappyPill(
       {gated && (
         <button
           type="button"
-          className={gateHover ? "kami-blocked gated is-hover" : "kami-blocked gated"}
+          className={gateChipClass}
           // The headline, what a click does, where it goes, and the why.
           aria-label={`${gateVisual.label}. ${GATE_BUY_LABEL}. ${GATE_BUY_TOOLTIP}. ${GATED_TITLE}`}
           title={GATE_BUY_TOOLTIP}
@@ -921,8 +949,20 @@ export default function YappyPill(
         >
           {/* The SAME ⊘ the ended license chip wears — one mark for one state. */}
           <i className="kami-gated-glyph" aria-hidden>{GATED_GLYPH}</i>
-          {/* Hover (or focus) says what the click does. */}
-          <span>{gateHover ? GATE_BUY_LABEL : gateVisual.label}</span>
+          {/* pill.html §13: "Trial ended" + a "Get Yap" button; hover (or focus)
+              fills it as "Buy a license" and the tooltip says where it goes;
+              pressed, the pill reads "Opening drivia.consulting…". The words
+              are in the button's accessible name already, so these are hidden
+              from assistive tech to keep it one announcement. */}
+          <span>{gateChip.lead}</span>
+          {gateChip.cta !== null ? (
+            <span className={gateChip.ctaFilled ? "kami-gate-cta is-filled" : "kami-gate-cta"} aria-hidden>
+              {gateChip.cta}
+            </span>
+          ) : null}
+          {gateChip.tooltip !== null ? (
+            <span className="kami-gate-tip" role="tooltip" aria-hidden>{gateChip.tooltip}</span>
+          ) : null}
         </button>
       )}
       {blocked && (

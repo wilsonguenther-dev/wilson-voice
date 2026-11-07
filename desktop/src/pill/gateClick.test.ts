@@ -16,12 +16,15 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import YappyPill from "./YappyPill";
+import FLOAT_CSS from "../float.css?raw";
+import TOKENS_CSS from "../tokens.css?raw";
 import { pillLicense, type PillLicense } from "./license";
 import { sceneLicense } from "./forced";
 import { DURATION } from "./motion";
 import { GATED_SETTLE_MS, PHASE_HOLD_MS } from "./live";
 import {
   GATE_BUY_LABEL, GATE_BUY_TOOLTIP, GATE_CLICK_COMMAND, GATE_HOLD_IDLE, GATE_HOLD_MS, GATE_HOVER_GRACE_MS,
+  GATE_CTA_LABEL, GATE_OPENING_LABEL, GATE_PRESS_MS, gateChipCopy,
   GATE_LOCK_LABEL, YAPPY_HOP_EVENT, gateClickArgs, gateClickRoute, gateHovered, gateSettleDueIn, nubLockVisible,
   onGateHover, reduceGateHold, setGateHover,
 } from "./gateClick";
@@ -140,5 +143,50 @@ describe("yap-1106-pill-trial-clickable — YappyPill markup", () => {
 
   it("hop_event_name_matches_the_backend", () => {
     expect(YAPPY_HOP_EVENT).toBe("yappy-hop");
+  });
+});
+
+describe("yap-1106-pill-trial-clickable — pill.html §13 frames", () => {
+  it("gate_chip_copy_follows_the_approved_frames", () => {
+    // Press refused: the headline plus a "Get Yap" button, no tooltip.
+    expect(gateChipCopy("Trial ended", false, false)).toEqual({
+      lead: "Trial ended", cta: GATE_CTA_LABEL, ctaFilled: false, tooltip: null,
+    });
+    expect(GATE_CTA_LABEL).toBe("Get Yap");
+    // Hover: the button fills in as "Buy a license"; the tooltip says where.
+    expect(gateChipCopy("Trial ended", true, false)).toEqual({
+      lead: "Trial ended", cta: GATE_BUY_LABEL, ctaFilled: true, tooltip: GATE_BUY_TOOLTIP,
+    });
+    // Click: "Opening drivia.consulting…" alone, hovered or not.
+    for (const hovered of [false, true]) {
+      expect(gateChipCopy("Trial ended", hovered, true)).toEqual({
+        lead: GATE_OPENING_LABEL, cta: null, ctaFilled: false, tooltip: null,
+      });
+    }
+    expect(GATE_OPENING_LABEL).toBe("Opening drivia.consulting\u2026");
+  });
+
+  it("gate_press_is_120_ms_from_the_duration_table", () => {
+    expect(GATE_PRESS_MS).toBe(120);
+    expect(GATE_PRESS_MS).toBe(DURATION.gatePress);
+  });
+
+  it("gated_chip_renders_the_get_yap_button_and_no_tooltip_at_rest", () => {
+    const html = renderToStaticMarkup(createElement(YappyPill, { gate: "gated", license: ended() }));
+    expect(html).toMatch(/<span class="kami-gate-cta"[^>]*>Get Yap<\/span>/);
+    expect(html).not.toContain("kami-gate-tip");
+    expect(html).not.toContain("is-pressed");
+    expect(html).not.toContain(GATE_OPENING_LABEL);
+  });
+
+  it("gate_chip_colours_are_tokens_measured_from_the_artifact", () => {
+    expect(TOKENS_CSS).toContain("--pill-gate-cta-surface: #efece4;");
+    expect(TOKENS_CSS).toContain("--pill-gate-cta-surface-hover: #ffd23f;");
+    expect(TOKENS_CSS).toContain("--pill-gate-cta-text: #1d1c1a;");
+    expect(TOKENS_CSS).toContain("--pill-gate-tooltip-surface: #1d1c1a;");
+    for (const v of ["--pill-gate-cta-surface)", "--pill-gate-cta-surface-hover)", "--pill-gate-tooltip-surface)"]) {
+      expect(FLOAT_CSS).toContain(`var(${v}`);
+    }
+    expect(FLOAT_CSS).toMatch(/\.kami-blocked\.gated\.is-pressed\s*\{\s*transform:\s*scale\(0\.97\)/);
   });
 });

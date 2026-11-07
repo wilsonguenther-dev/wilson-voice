@@ -29,6 +29,46 @@ export const GATE_BUY_LABEL = "Buy a license";
 /** Where the click goes, as the hover tooltip says it. */
 export const GATE_BUY_TOOLTIP = "Opens drivia.consulting in your browser";
 
+/**
+ * The chip's button at rest (pill.html §13 "Press refused": "Trial ended" plus a
+ * "Get Yap" button). Hover turns it into [`GATE_BUY_LABEL`], filled.
+ */
+export const GATE_CTA_LABEL = "Get Yap";
+
+/**
+ * What the pill says once it is pressed (pill.html §13 "Click"). The artifact
+ * drew "Opening yapvoice.app…"; the scope note moved every purchase link to
+ * drivia.consulting, so the destination word follows the tooltip.
+ */
+export const GATE_OPENING_LABEL = "Opening drivia.consulting\u2026";
+
+/** How long the pressed chip stays sunk (pill.html §13: 120 ms). */
+export const GATE_PRESS_MS: number = DURATION.gatePress;
+
+/** The words on the gated chip for one frame of §13. */
+export interface GateChipCopy {
+  /** The left half: the headline, or "Opening drivia.consulting…" once pressed. */
+  lead: string;
+  /** The button half; null once pressed (the artifact drops it). */
+  cta: string | null;
+  /** Is the button filled (hover / keyboard focus)? */
+  ctaFilled: boolean;
+  /** The tooltip under the pill; shown on hover only, never once pressed. */
+  tooltip: string | null;
+}
+
+/**
+ * pill.html §13, frame by frame: refused = headline + "Get Yap"; hover = the
+ * button fills in as "Buy a license" and the tooltip says where it goes;
+ * pressed = "Opening drivia.consulting…" alone.
+ */
+export function gateChipCopy(headline: string, hovered: boolean, opening: boolean): GateChipCopy {
+  if (opening) return { lead: GATE_OPENING_LABEL, cta: null, ctaFilled: false, tooltip: null };
+  return hovered
+    ? { lead: headline, cta: GATE_BUY_LABEL, ctaFilled: true, tooltip: GATE_BUY_TOOLTIP }
+    : { lead: headline, cta: GATE_CTA_LABEL, ctaFilled: false, tooltip: null };
+}
+
 /** The nub lock's accessible name: the action, then the destination. */
 export const GATE_LOCK_LABEL = `${GATE_BUY_LABEL}. ${GATE_BUY_TOOLTIP}`;
 

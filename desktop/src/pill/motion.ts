@@ -127,6 +127,11 @@ export const DURATION = {
   gateHoverGrace: 1200,
   /** One Yappy hop when a license arrives by deep link from the site. */
   yappyHop: 720,
+  /**
+   * The Buy press itself (pill.html §13 "Click": "Pressed for 120 ms, then your
+   * browser opens the license page"): the chip sinks to 97 percent this long.
+   */
+  gatePress: 120,
   // ── yap-1106-yappy-states-and-motion: the approved transition sheet ───────
   // (design-2026-11-06/pill.html §03 "Transitions, written out"). The phase
   // transition TABLE that combines these lives in transitions.ts.
