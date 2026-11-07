@@ -1588,6 +1588,7 @@ pub const PILL_HOVER_OUT_EVENT: &str = "pill-hover-out";
 /// Recompute and publish the capsule's AppKit screen rect. Main thread only —
 /// `outer_position`/`primary_monitor` are window-server queries.
 fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
+    let mut primary_h = 0.0;
     let rect = (|| {
         let origin = w.outer_position().ok()?;
         let mon = w.primary_monitor().ok().flatten()?;
@@ -1596,6 +1597,7 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
             return None;
         }
         let primary_height_pts = mon.size().height as f64 / scale;
+        primary_h = primary_height_pts;
         capsule_screen_rect(
             (origin.x as f64, origin.y as f64),
             scale,
@@ -1608,7 +1610,39 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
             ),
         )
     })();
+    log_capsule_rect_change(rect, primary_h);
     set_capsule_screen_rect(rect);
+}
+
+/// yap-1107-pill-click-always-registers — one log line whenever the clickable
+/// capsule moves or resizes (never per tick): the rect in TOP-LEFT global
+/// screen points (the CGEvent space scripts/pill-click-50.swift clicks in) and
+/// the window-relative hitbox it came from. The measurement note reads these.
+fn log_capsule_rect_change(rect: Option<(f64, f64, f64, f64)>, primary_h: f64) {
+    let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let prev = (
+        load_f64(&CAPSULE_SCREEN_X),
+        load_f64(&CAPSULE_SCREEN_Y),
+        load_f64(&CAPSULE_SCREEN_W),
+        load_f64(&CAPSULE_SCREEN_H),
+    );
+    let moved = (x - prev.0).abs() > 0.25
+        || (y - prev.1).abs() > 0.25
+        || (w - prev.2).abs() > 0.25
+        || (h - prev.3).abs() > 0.25;
+    if moved && w > 0.0 && h > 0.0 {
+        log::info!(
+            "pill hitbox screen_rect={:.1},{:.1},{:.1},{:.1} space=top_left_pt hit={},{},{},{}",
+            x,
+            primary_h - (y + h),
+            w,
+            h,
+            HIT_X.load(Ordering::SeqCst),
+            HIT_Y.load(Ordering::SeqCst),
+            HIT_W.load(Ordering::SeqCst),
+            HIT_H.load(Ordering::SeqCst)
+        );
+    }
 }
 
 fn cursor_over_capsule(app: &AppHandle, w: &tauri::WebviewWindow) -> bool {
