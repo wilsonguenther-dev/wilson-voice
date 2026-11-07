@@ -297,9 +297,8 @@ pub fn save(
     now_ms: i64,
 ) -> Result<NewsView, NewsPrefsError> {
     let src = source_tag(source);
-    let clean = normalize(prefs).map_err(|e| {
+    let clean = normalize(prefs).inspect_err(|e| {
         log::warn!("news_prefs save refused source={src} reason={}", e.tag());
-        e
     })?;
     let json = serde_json::to_string(&clean).map_err(|e| NewsPrefsError::Storage(e.to_string()))?;
     kv.kv_set(PREFS_KEY, &json)
