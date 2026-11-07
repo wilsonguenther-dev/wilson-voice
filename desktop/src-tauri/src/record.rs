@@ -6390,7 +6390,11 @@ mod tests {
         let out = live.end().samples;
         // 16 kHz out: 200 ms of pre-roll + the whole 600 ms word ≈ 12 800.
         // Without the pre-roll the take would be the last 300 ms (≈ 4 800).
-        assert!(out.len() >= 12_000, "take holds the pre-roll and the word: {}", out.len());
+        assert!(
+            out.len() >= 12_000,
+            "take holds the pre-roll and the word: {}",
+            out.len()
+        );
         let onset = out
             .iter()
             .position(|s| s.abs() > 0.05)
@@ -6403,7 +6407,10 @@ mod tests {
             "the first 250 ms of the word survive: rms {}",
             rms(first_250ms)
         );
-        assert!(out.len() - onset >= 9_000, "the word is whole from its onset");
+        assert!(
+            out.len() - onset >= 9_000,
+            "the word is whole from its onset"
+        );
     }
 
     #[test]
@@ -6456,7 +6463,10 @@ mod tests {
     #[test]
     fn the_window_opens_at_the_press_less_the_pre_roll() {
         // Press 6 000 frames before the arm, 2 400 frames (50 ms @ 48 k) lead.
-        assert_eq!(take_window_start(10_000, Some(4_000), 2_400, u64::MAX), 1_600);
+        assert_eq!(
+            take_window_start(10_000, Some(4_000), 2_400, u64::MAX),
+            1_600
+        );
         // No press: the arm itself is the anchor.
         assert_eq!(take_window_start(10_000, None, 2_400, u64::MAX), 7_600);
         // Never before the previous take's close — no word is kept twice.
