@@ -725,3 +725,45 @@ pub struct NamedCluster {
 
 /// The display name "That's me" saves.
 pub const ME_DISPLAY_NAME: &str = "You";
+
+/// The longest clip [`wav_clip_bytes`] cuts, whatever the caller asks for.
+pub const MAX_CLIP_SECONDS: f64 = 10.0;
+
+/// Cut `[start, end)` (seconds, at most [`MAX_CLIP_SECONDS`]) out of a kept
+/// meeting WAV into a standalone WAV in memory: the "▶ 0:03" a card plays.
+/// Seeks rather than decoding the whole recording. Nothing leaves this Mac.
+pub fn wav_clip_bytes(path: &std::path::Path, start: f64, end: f64) -> Result<Vec<u8>, String> {
+    if !start.is_finite() || !end.is_finite() || end <= start {
+        return Err("That clip has no length.".into());
+    }
+    let end = end.min(start + MAX_CLIP_SECONDS);
+    let mut reader = hound::WavReader::open(path).map_err(|e| format!("open audio: {e}"))?;
+    let spec = reader.spec();
+    let rate = f64::from(spec.sample_rate);
+    let total = reader.duration();
+    let from = ((start.max(0.0) * rate) as u32).min(total);
+    let to = ((end.max(0.0) * rate) as u32).min(total).max(from);
+    reader.seek(from).map_err(|e| format!("seek audio: {e}"))?;
+    let n = (to - from) as usize * usize::from(spec.channels);
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut w =
+            hound::WavWriter::new(&mut out, spec).map_err(|e| format!("write clip: {e}"))?;
+        match spec.sample_format {
+            hound::SampleFormat::Float => {
+                for s in reader.samples::<f32>().take(n) {
+                    w.write_sample(s.map_err(|e| format!("read audio: {e}"))?)
+                        .map_err(|e| format!("write clip: {e}"))?;
+                }
+            }
+            hound::SampleFormat::Int => {
+                for s in reader.samples::<i32>().take(n) {
+                    w.write_sample(s.map_err(|e| format!("read audio: {e}"))?)
+                        .map_err(|e| format!("write clip: {e}"))?;
+                }
+            }
+        }
+        w.finalize().map_err(|e| format!("write clip: {e}"))?;
+    }
+    Ok(out.into_inner())
+}

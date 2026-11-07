@@ -9487,6 +9487,120 @@ fn unlearn_voice_meeting(
     state.db.unlearn_meeting_from_profile(id, &meeting_id)
 }
 
+// ── yap-1106-who-is-this · "Who was this?" ──────────────────────────────────
+//
+// Asked only AFTER a meeting (decisions: live asking is optional and off,
+// FB-22a). Every command takes ids; none returns a voiceprint.
+
+/// The cards for one finished meeting: unknown voices with ≥ 20 s of speech,
+/// five at most, most speaking time first. Never during a recording.
+#[tauri::command]
+fn meeting_voice_cards(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+) -> Result<Vec<speaker_profiles::VoiceCard>, String> {
+    let meeting = state
+        .db
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    if meeting.ended_at.is_none() {
+        // Live asking interrupts the meeting: nothing until it has finished.
+        return Ok(Vec::new());
+    }
+    state.db.meeting_voice_cards(
+        &meeting_id,
+        speaker_profiles::MatchBands::from_env_or_provisional(),
+    )
+}
+
+/// "Save" / "That's me" / "Yes, same person": relabel every line of the
+/// cluster in this meeting and feed the voiceprint when a voice was kept.
+#[tauri::command]
+fn name_cluster(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    cluster_index: i64,
+    target: speaker_profiles::NameTarget,
+) -> Result<speaker_profiles::NamedCluster, String> {
+    state
+        .db
+        .name_meeting_cluster(&meeting_id, track, cluster_index, &target)
+        .inspect_err(|e| {
+            log::warn!(
+                "speaker_profiles name_cluster_failed meeting={meeting_id} track={track} \
+                 cluster={cluster_index} error=\"{e}\""
+            )
+        })
+}
+
+/// "Ignore this voice" (`ignore = true`) or "Not sure": keeps nothing.
+#[tauri::command]
+fn ignore_cluster(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    cluster_index: i64,
+    ignore: bool,
+) -> Result<(), String> {
+    let answer = if ignore {
+        speaker_profiles::ClusterVoiceState::Ignored
+    } else {
+        speaker_profiles::ClusterVoiceState::NotSure
+    };
+    state
+        .db
+        .dismiss_meeting_cluster(&meeting_id, track, cluster_index, answer)
+}
+
+/// `(segment id, name)` for the lines already labelled with a saved voice.
+#[tauri::command]
+fn meeting_speaker_names(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+) -> Result<Vec<(String, String)>, String> {
+    state.db.meeting_speaker_names(&meeting_id)
+}
+
+/// The card's clip as a base64 WAV, cut from the KEPT audio of that track.
+/// Purged audio (the 7-day retention) is an error the card turns into
+/// "The audio was deleted, so there is no clip. You can still name them."
+#[tauri::command]
+fn meeting_cluster_clip(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    start: f64,
+    end: f64,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let meeting = state
+        .db
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    let path = if track == meetings::SYSTEM_TRACK {
+        meeting.sys_wav_path
+    } else {
+        meeting.mic_wav_path
+    };
+    let Some(path) = path.map(std::path::PathBuf::from).filter(|p| p.is_file()) else {
+        log::info!(
+            "speaker_profiles clip_unavailable meeting={meeting_id} track={track} reason=purged"
+        );
+        return Err("audio_purged".into());
+    };
+    let started = std::time::Instant::now();
+    let bytes = speaker_profiles::wav_clip_bytes(&path, start, end).inspect_err(|e| {
+        log::warn!("speaker_profiles clip_failed meeting={meeting_id} track={track} error=\"{e}\"")
+    })?;
+    log::info!(
+        "speaker_profiles clip meeting={meeting_id} track={track} bytes={} ms={}",
+        bytes.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// The one-time "save my voice from my dictation" answer; `None` = not asked.
 #[tauri::command]
 fn voices_enroll_me_choice(state: State<'_, Arc<AppState>>) -> Option<bool> {
@@ -14117,6 +14231,11 @@ pub fn run() {
             delete_voice,
             forget_all_voices,
             unlearn_voice_meeting,
+            meeting_voice_cards,
+            name_cluster,
+            ignore_cluster,
+            meeting_speaker_names,
+            meeting_cluster_clip,
             voices_enroll_me_choice,
             set_voices_enroll_me_choice,
             delete_meeting,
