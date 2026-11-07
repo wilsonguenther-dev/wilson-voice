@@ -55,7 +55,9 @@ describe("ExportMenu", () => {
     expect(head).toContain("<ExportMenu");
     expect(head).toContain("Delete meeting");
     // The list row has no hover action bar: no Export trigger and no Delete button in it.
-    const row = meetingsView.slice(meetingsView.indexOf('className={`meeting-row${'), meetingsView.indexOf("</li>"));
+    const rowAt = meetingsView.indexOf('className={`meeting-row${');
+    expect(rowAt).toBeGreaterThan(0);
+    const row = meetingsView.slice(rowAt, meetingsView.indexOf("</li>", rowAt));
     expect(row).not.toContain("<ExportMenu");
     expect(row).not.toContain("requestDelete(");
     expect(row).not.toContain('className="actions"');
