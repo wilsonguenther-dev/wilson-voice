@@ -123,7 +123,7 @@ export default function Companion() {
                           />
                           <span>Let Badass swear</span>
                         </label>
-                        <p className="settings-hint">About one line in four, the strongest word at most once a day. Never during a meeting.</p>
+                        <p className="settings-hint">About one line in four, the strongest word at most once a day. Never during a meeting or a call.</p>
                       </div>
                     )}
                   </div>

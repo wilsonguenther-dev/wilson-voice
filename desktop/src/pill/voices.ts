@@ -160,7 +160,7 @@ export interface PickOpts {
 }
 
 /** Why curse mode is not active right now (`null` = it is). Logged, never shown. */
-export type CurseBlock = "off" | "voice" | "meeting" | "screen_shared";
+export type CurseBlock = "off" | "voice" | "in_meeting" | "screen_shared";
 
 export interface CurseGate {
   /** Settings → Yappy's voice → the curse toggle (`companionCurse`, off by default). */
@@ -180,7 +180,7 @@ export interface CurseGate {
 export function curseBlock(g: CurseGate): CurseBlock | null {
   if (!g.enabled) return "off";
   if (g.voice !== "badass") return "voice";
-  if (g.meeting) return "meeting";
+  if (g.meeting) return "in_meeting";
   if (g.screenShared) return "screen_shared";
   return null;
 }

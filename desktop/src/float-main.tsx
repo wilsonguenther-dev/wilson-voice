@@ -64,6 +64,8 @@ import {
   type TranscribeProgress,
 } from "./pill/live";
 import { curseAllowed, curseBlock, voiceFor } from "./pill/voices";
+import { useCallRecordingView } from "./pill/CallOffer";
+import { isLiveCall } from "./pill/callOfferModel";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -603,13 +605,16 @@ function Float() {
   // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
   // Badass only, and never in a meeting state (recording, or its after-view on
   // screen). Yap has no screen-share detector (no Screen Recording permission,
-  // by rule), so a meeting state is the stand-in for "someone may be watching";
-  // `screenShared` is the hook a future signal plugs into.
+  // by rule), so a LIVE CALL the call detector sees (Zoom, Meet, Teams… in any
+  // phase but idle, recorded or not) is the stand-in for "the screen may be
+  // shared": a call is where screens get shared. `screenShared` is also the
+  // hook a real share signal plugs into later.
+  const liveCall = isLiveCall(useCallRecordingView());
   const curseGateIn = {
     enabled: curseSetting,
     voice: voiceFor(tone),
     meeting: meeting.status.recording || meetingAfter !== null,
-    screenShared: false,
+    screenShared: liveCall,
   };
   const curseOn = curseAllowed(curseGateIn);
   const curseWhy = curseBlock(curseGateIn);

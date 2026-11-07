@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefi
 
 import { AppContext, type AppCtx } from "../appShell";
 import Companion, { curseToggleShown } from "../views/settings/Companion";
+import { isLiveCall, type CallOfferView } from "./callOfferModel";
 import { advanceLive, createLiveState, DEFAULT_LIVE, LIVE_TIERS } from "./live";
 import {
   CURSE_EVERY, EMPTY_MEMORY, curseAllowed, curseBlock, seededRandom, RECENT_TAKES, TAKE_BANDS, VOICES, VOICE_OPTIONS,
@@ -214,9 +215,22 @@ describe("curse setting (yap-1106-curse-setting)", () => {
       expect(curseAllowed({ ...base, voice: v })).toBe(false);
       expect(curseBlock({ ...base, voice: v })).toBe("voice");
     }
-    expect(curseBlock({ ...base, meeting: true })).toBe("meeting");
+    expect(curseBlock({ ...base, meeting: true })).toBe("in_meeting");
     expect(curseBlock({ ...base, screenShared: true })).toBe("screen_shared");
     expect(curseAllowed({ ...base, meeting: true, screenShared: true })).toBe(false);
+  });
+
+  it("a live call (any phase but idle) counts as a screen-share state and shuts the gate", () => {
+    const view = (phase: CallOfferView["phase"]): CallOfferView => ({
+      phase, offerId: null, appName: "Zoom", bundleId: null, copy: null, siteLine: null, yourSideOnly: false, countdownMsLeft: 0,
+    });
+    expect(isLiveCall(null)).toBe(false);
+    expect(isLiveCall(view("idle"))).toBe(false);
+    for (const p of ["offering", "chip", "recording", "end_prompt"] as CallOfferView["phase"][]) {
+      expect(isLiveCall(view(p))).toBe(true);
+      expect(curseAllowed({ enabled: true, voice: "badass", meeting: false, screenShared: isLiveCall(view(p)) })).toBe(false);
+    }
+    expect(curseAllowed({ enabled: true, voice: "badass", meeting: false, screenShared: isLiveCall(view("idle")) })).toBe(true);
   });
 
   it("seededRandom is replayable and stays in [0, 1)", () => {
