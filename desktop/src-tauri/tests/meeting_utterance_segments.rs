@@ -39,8 +39,7 @@ use wilson_voice_lib::meeting_asr::{
 use wilson_voice_lib::meeting_pipeline::chunk_segments;
 use wilson_voice_lib::meetings::{MeetingKind, MeetingSegment, MIC_TRACK, SYSTEM_TRACK};
 use wilson_voice_lib::summarize::{
-    plan_chunks, transcript_lines_with, SummaryError, TokenCounter, TrackSpeakers,
-    MAP_CHUNK_TOKENS,
+    plan_chunks, transcript_lines_with, SummaryError, TokenCounter, TrackSpeakers, MAP_CHUNK_TOKENS,
 };
 
 const EPS: f64 = 1e-9;
@@ -68,7 +67,12 @@ fn run(start: f64, end: f64, last: &str) -> Vec<TimedSpan> {
     out
 }
 
-fn chunk(index: usize, content: (f64, f64), kind: TimedKind, spans: Vec<TimedSpan>) -> ChunkOutcome {
+fn chunk(
+    index: usize,
+    content: (f64, f64),
+    kind: TimedKind,
+    spans: Vec<TimedSpan>,
+) -> ChunkOutcome {
     ChunkOutcome {
         index,
         audio_start_seconds: (content.0 - 2.0).max(0.0),
@@ -89,7 +93,10 @@ fn chunk(index: usize, content: (f64, f64), kind: TimedKind, spans: Vec<TimedSpa
 }
 
 fn lengths(pieces: &[Utterance]) -> Vec<f64> {
-    pieces.iter().map(|p| (p.seconds() * 100.0).round() / 100.0).collect()
+    pieces
+        .iter()
+        .map(|p| (p.seconds() * 100.0).round() / 100.0)
+        .collect()
 }
 
 // ── the three thresholds, at their edges ────────────────────────────────────
@@ -110,7 +117,11 @@ fn a_silence_of_the_cut_threshold_cuts_and_a_hair_under_does_not() {
     rows.extend(run(3.1, 10.0, "w"));
     rows.extend(run(10.0 + UTTERANCE_CUT_GAP_SECONDS - 0.01, 20.59, "w"));
     let pieces = split_utterances(&rows);
-    assert_eq!(lengths(&pieces), vec![3.0, 17.49], "0.59 s is not a cut: {pieces:?}");
+    assert_eq!(
+        lengths(&pieces),
+        vec![3.0, 17.49],
+        "0.59 s is not a cut: {pieces:?}"
+    );
 }
 
 #[test]
@@ -253,15 +264,31 @@ fn a_cut_never_lands_inside_a_word_row_and_never_drops_a_word() {
     let starts: Vec<f64> = rows.iter().map(|r| r.start_seconds).collect();
     let ends: Vec<f64> = rows.iter().map(|r| r.end_seconds).collect();
     for p in &pieces {
-        assert!(starts.iter().any(|s| (s - p.start_seconds).abs() < EPS), "{p:?}");
-        assert!(ends.iter().any(|e| (e - p.end_seconds).abs() < EPS), "{p:?}");
+        assert!(
+            starts.iter().any(|s| (s - p.start_seconds).abs() < EPS),
+            "{p:?}"
+        );
+        assert!(
+            ends.iter().any(|e| (e - p.end_seconds).abs() < EPS),
+            "{p:?}"
+        );
         assert!(p.seconds() <= UTTERANCE_MAX_SECONDS + EPS, "{p:?}");
     }
-    let joined = pieces.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(" ");
-    let all = rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+    let joined = pieces
+        .iter()
+        .map(|p| p.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let all = rows
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert_eq!(joined, all, "every word, once, in order");
     assert!(pieces.len() >= 3, "{pieces:?}");
-    assert!(pieces.windows(2).all(|w| w[0].end_seconds <= w[1].start_seconds + EPS));
+    assert!(pieces
+        .windows(2)
+        .all(|w| w[0].end_seconds <= w[1].start_seconds + EPS));
     // Empty rows are ignored; an empty input is an empty answer.
     assert!(split_utterances(&[]).is_empty());
     assert!(split_utterances(&[span(0.0, 1.0, "  ")]).is_empty());
@@ -307,11 +334,20 @@ fn a_two_track_synthetic_meeting_yields_interleaved_turns_ordered_by_start() {
     let mut sys = run(9.0, 18.0, "them.");
     sys.extend(run(28.0, 30.0, "them."));
     let mut rows = chunk_segments(&chunk(0, (0.0, 30.0), TimedKind::Token, mic), MIC_TRACK);
-    rows.extend(chunk_segments(&chunk(0, (0.0, 30.0), TimedKind::Token, sys), SYSTEM_TRACK));
+    rows.extend(chunk_segments(
+        &chunk(0, (0.0, 30.0), TimedKind::Token, sys),
+        SYSTEM_TRACK,
+    ));
     rows.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
     let tracks: Vec<i64> = rows.iter().map(|r| r.track).collect();
-    assert_eq!(tracks, vec![MIC_TRACK, SYSTEM_TRACK, MIC_TRACK, SYSTEM_TRACK], "{rows:?}");
-    assert!(rows.windows(2).all(|w| w[0].start_seconds < w[1].start_seconds));
+    assert_eq!(
+        tracks,
+        vec![MIC_TRACK, SYSTEM_TRACK, MIC_TRACK, SYSTEM_TRACK],
+        "{rows:?}"
+    );
+    assert!(rows
+        .windows(2)
+        .all(|w| w[0].start_seconds < w[1].start_seconds));
     assert!(rows[0].text.ends_with("me."));
     assert!(rows[1].text.ends_with("them."));
 }
@@ -336,15 +372,31 @@ fn a_corpus_ledger_splits_into_readable_turns() {
     let mut rows = Vec::new();
     let mut windows = 0usize;
     for chunk in &ledger.chunks {
-        assert!(chunk.timestamp_kind.has_times(), "window {} carries times", chunk.index);
-        assert!(chunk.text.split_whitespace().all(|w| w == "x" || w == "x."), "timings only");
+        assert!(
+            chunk.timestamp_kind.has_times(),
+            "window {} carries times",
+            chunk.index
+        );
+        assert!(
+            chunk.text.split_whitespace().all(|w| w == "x" || w == "x."),
+            "timings only"
+        );
         let starts: Vec<f64> = chunk.spans.iter().map(|s| s.start_seconds).collect();
         let ends: Vec<f64> = chunk.spans.iter().map(|s| s.end_seconds).collect();
         let pieces = chunk_segments(chunk, SYSTEM_TRACK);
         for p in &pieces {
-            assert!(p.end_seconds - p.start_seconds <= UTTERANCE_MAX_SECONDS + EPS, "{p:?}");
-            assert!(starts.iter().any(|s| (s - p.start_seconds).abs() < EPS), "{p:?}");
-            assert!(ends.iter().any(|e| (e - p.end_seconds).abs() < EPS), "{p:?}");
+            assert!(
+                p.end_seconds - p.start_seconds <= UTTERANCE_MAX_SECONDS + EPS,
+                "{p:?}"
+            );
+            assert!(
+                starts.iter().any(|s| (s - p.start_seconds).abs() < EPS),
+                "{p:?}"
+            );
+            assert!(
+                ends.iter().any(|e| (e - p.end_seconds).abs() < EPS),
+                "{p:?}"
+            );
             assert!(p.start_seconds >= chunk.content_start_seconds - 1e-6);
             assert!(p.start_seconds < chunk.content_end_seconds);
         }
@@ -362,9 +414,18 @@ fn a_corpus_ledger_splits_into_readable_turns() {
         "ledger fixture: windows={windows} rows={} median_s={median:.2}",
         rows.len()
     );
-    assert!(rows.len() >= 2 * windows, "at least two turns per window, got {} for {windows}", rows.len());
-    assert!((3.0..=12.0).contains(&median), "median {median:.2} s is not readable");
-    assert!(rows.windows(2).all(|w| w[0].start_seconds <= w[1].start_seconds + EPS));
+    assert!(
+        rows.len() >= 2 * windows,
+        "at least two turns per window, got {} for {windows}",
+        rows.len()
+    );
+    assert!(
+        (3.0..=12.0).contains(&median),
+        "median {median:.2} s is not readable"
+    );
+    assert!(rows
+        .windows(2)
+        .all(|w| w[0].start_seconds <= w[1].start_seconds + EPS));
 }
 
 // ── the corpus (skipped without it, like meeting_eval.rs) ───────────────────
@@ -379,8 +440,14 @@ const RATE: usize = 16_000;
 fn corpus() -> Option<PathBuf> {
     let root = std::env::var(CORPUS_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().expect("home").join("yap-eval-corpus/meetings"));
-    let required = std::env::var(REQUIRE_ENV).map(|v| v.trim() == "1").unwrap_or(false);
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .expect("home")
+                .join("yap-eval-corpus/meetings")
+        });
+    let required = std::env::var(REQUIRE_ENV)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
     if root.is_dir() {
         provision_pinned_model();
         // Never decode without the pinned model in the scratch root: the
@@ -389,25 +456,43 @@ fn corpus() -> Option<PathBuf> {
         if wilson_voice_lib::models::is_downloaded(pinned) {
             return Some(root);
         }
-        assert!(!required, "{REQUIRE_ENV}=1 but {} is not installed — set {MODEL_DIR_ENV}", pinned.id);
-        eprintln!("meeting_utterance_segments: corpus present but {} is not installed — skipped", pinned.id);
+        assert!(
+            !required,
+            "{REQUIRE_ENV}=1 but {} is not installed — set {MODEL_DIR_ENV}",
+            pinned.id
+        );
+        eprintln!(
+            "meeting_utterance_segments: corpus present but {} is not installed — skipped",
+            pinned.id
+        );
         return None;
     }
-    assert!(!required, "{REQUIRE_ENV}=1 but no corpus at {}", root.display());
-    eprintln!("meeting_utterance_segments: no eval corpus at {} — skipped", root.display());
+    assert!(
+        !required,
+        "{REQUIRE_ENV}=1 but no corpus at {}",
+        root.display()
+    );
+    eprintln!(
+        "meeting_utterance_segments: no eval corpus at {} — skipped",
+        root.display()
+    );
     None
 }
 
 /// `YAP_MODEL_DIR` → link the pinned model into `<YAP_DATA_DIR>/models` and
 /// select it there (the same contract `meeting_eval.rs` uses).
 fn provision_pinned_model() {
-    let Ok(model_dir) = std::env::var(MODEL_DIR_ENV) else { return };
+    let Ok(model_dir) = std::env::var(MODEL_DIR_ENV) else {
+        return;
+    };
     let data_dir = std::env::var(DATA_DIR_ENV)
         .ok()
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| panic!("{MODEL_DIR_ENV} is set but {DATA_DIR_ENV} is not"));
     let pinned = wilson_voice_lib::models::recommended_model();
-    let file = pinned.default_file().expect("the pinned model lists a file");
+    let file = pinned
+        .default_file()
+        .expect("the pinned model lists a file");
     let src = PathBuf::from(&model_dir).join(&file.filename);
     assert!(src.is_file(), "{} is not a file", src.display());
     let models_dir = PathBuf::from(&data_dir).join("models");
@@ -418,8 +503,11 @@ fn provision_pinned_model() {
     }
     let settings = PathBuf::from(&data_dir).join("settings.json");
     if !settings.exists() {
-        fs::write(&settings, serde_json::json!({ "nativeModel": pinned.id }).to_string())
-            .expect("settings");
+        fs::write(
+            &settings,
+            serde_json::json!({ "nativeModel": pinned.id }).to_string(),
+        )
+        .expect("settings");
     }
 }
 
@@ -496,9 +584,12 @@ fn call_bleed_after_the_aec_prepass_stores_three_to_twelve_second_turns() {
     let mic = root.join(CALL_BLEED).join("track0.wav");
     let sys = root.join(CALL_BLEED).join("track1.wav");
     let cleaned = scratch.join("track0.aec.wav");
-    let report = wilson_voice_lib::meeting_aec::aec_prepass(&mic, &sys, &cleaned)
-        .expect("the AEC pre-pass");
-    eprintln!("{CALL_BLEED}: aec call_atten_p50_db={:.1}", report.call_atten_p50_db);
+    let report =
+        wilson_voice_lib::meeting_aec::aec_prepass(&mic, &sys, &cleaned).expect("the AEC pre-pass");
+    eprintln!(
+        "{CALL_BLEED}: aec call_atten_p50_db={:.1}",
+        report.call_atten_p50_db
+    );
     let samples = read_wav_16k(&cleaned);
     let chunks = decode_windows(&samples, &scratch, "call-bleed-aec");
     let _ = fs::remove_dir_all(&scratch);
@@ -507,7 +598,11 @@ fn call_bleed_after_the_aec_prepass_stores_three_to_twelve_second_turns() {
         let mut redacted = chunks.clone();
         for c in &mut redacted {
             for s in &mut c.spans {
-                s.text = if ends_sentence(&s.text) { "x.".into() } else { "x".into() };
+                s.text = if ends_sentence(&s.text) {
+                    "x.".into()
+                } else {
+                    "x".into()
+                };
             }
             c.text = String::new();
         }
@@ -524,7 +619,10 @@ fn call_bleed_after_the_aec_prepass_stores_three_to_twelve_second_turns() {
         .map(|c| TimedText::new(c.content_start_seconds, c.content_end_seconds, &c.text))
         .collect();
     let median = median_segment_seconds(&as_timed(&rows));
-    let timed_windows = chunks.iter().filter(|c| c.timestamp_kind.has_times()).count();
+    let timed_windows = chunks
+        .iter()
+        .filter(|c| c.timestamp_kind.has_times())
+        .count();
     eprintln!(
         "meeting_eval {CALL_BLEED} after_aec windows={} timed_windows={timed_windows} rows={} median_segment_seconds={median:.2} whole_window_median_s={:.2}",
         chunks.len(),
@@ -554,11 +652,23 @@ fn meeting_utterance_segments_write_corpus_fixture() {
     let _ = fs::remove_dir_all(&scratch);
     for c in &mut chunks {
         for s in &mut c.spans {
-            s.text = if ends_sentence(&s.text) { "x.".into() } else { "x".into() };
+            s.text = if ends_sentence(&s.text) {
+                "x.".into()
+            } else {
+                "x".into()
+            };
         }
-        c.text = c.spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+        c.text = c
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
     }
-    let through = chunks.iter().map(|c| c.content_end_seconds).fold(0.0, f64::max);
+    let through = chunks
+        .iter()
+        .map(|c| c.content_end_seconds)
+        .fold(0.0, f64::max);
     let ledger = MeetingProgress {
         meeting_id: "nt0-call-bleed-2voice-timings-only".into(),
         processed_through_seconds: through,
@@ -581,7 +691,11 @@ fn meeting_utterance_segments_write_corpus_fixture() {
         median_utterance_seconds(&pieces)
     );
     fs::create_dir_all(ledger_fixture().parent().unwrap()).expect("fixture dir");
-    fs::write(ledger_fixture(), serde_json::to_string_pretty(&ledger).unwrap()).expect("write");
+    fs::write(
+        ledger_fixture(),
+        serde_json::to_string_pretty(&ledger).unwrap(),
+    )
+    .expect("write");
 }
 
 // ── MAP chunk planning on a 31-minute two-track transcript ──────────────────
@@ -595,11 +709,53 @@ impl TokenCounter for Counter {
 }
 
 const WORDS: &[&str] = &[
-    "the", "pricing", "review", "for", "the", "consulting", "tier", "stays", "where", "we",
-    "agreed", "and", "Jeisil", "will", "send", "the", "updated", "document", "to", "everyone",
-    "before", "Friday", "while", "Wilson", "books", "the", "demo", "with", "the", "university",
-    "next", "week", "so", "the", "open", "question", "is", "whether", "annual", "billing",
-    "gets", "a", "discount", "at", "$49.99", "a", "seat",
+    "the",
+    "pricing",
+    "review",
+    "for",
+    "the",
+    "consulting",
+    "tier",
+    "stays",
+    "where",
+    "we",
+    "agreed",
+    "and",
+    "Jeisil",
+    "will",
+    "send",
+    "the",
+    "updated",
+    "document",
+    "to",
+    "everyone",
+    "before",
+    "Friday",
+    "while",
+    "Wilson",
+    "books",
+    "the",
+    "demo",
+    "with",
+    "the",
+    "university",
+    "next",
+    "week",
+    "so",
+    "the",
+    "open",
+    "question",
+    "is",
+    "whether",
+    "annual",
+    "billing",
+    "gets",
+    "a",
+    "discount",
+    "at",
+    "$49.99",
+    "a",
+    "seat",
 ];
 
 /// 31 minutes of two people taking turns: turn lengths cycle through 3–12 s,
@@ -619,7 +775,11 @@ fn thirty_one_minute_call() -> (Vec<MeetingSegment>, Vec<MeetingSegment>) {
             text.push(WORDS[word % WORDS.len()]);
             word += 1;
         }
-        let track = if turn.is_multiple_of(2) { MIC_TRACK } else { SYSTEM_TRACK };
+        let track = if turn.is_multiple_of(2) {
+            MIC_TRACK
+        } else {
+            SYSTEM_TRACK
+        };
         utterances.push((track, t, t + len, format!("{}.", text.join(" "))));
         t += len + 1.0;
         turn += 1;
@@ -663,7 +823,12 @@ fn map_chunks_with_seg_labels_fit_the_budget_at_no_more_than_1_25x_the_window_pa
         .collect();
     let median = median_segment_seconds(&turns);
     assert!((3.0..=12.0).contains(&median), "fixture median {median:.1}");
-    assert!(windows.len() < utterances.len(), "{} windows, {} turns", windows.len(), utterances.len());
+    assert!(
+        windows.len() < utterances.len(),
+        "{} windows, {} turns",
+        windows.len(),
+        utterances.len()
+    );
 
     let speakers = TrackSpeakers::for_meeting(MeetingKind::Virtual, &utterances);
     let lines = transcript_lines_with(&utterances, &speakers);
@@ -673,8 +838,17 @@ fn map_chunks_with_seg_labels_fit_the_budget_at_no_more_than_1_25x_the_window_pa
     eprintln!("map planning: first line {:?}", lines[0].render());
     let planned = plan_chunks(&lines, MAP_CHUNK_TOKENS, &Counter).expect("a plan");
     for (i, c) in planned.iter().enumerate() {
-        assert!(c.tokens <= MAP_CHUNK_TOKENS, "chunk {i} is {} tokens", c.tokens);
-        let rendered = c.lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+        assert!(
+            c.tokens <= MAP_CHUNK_TOKENS,
+            "chunk {i} is {} tokens",
+            c.tokens
+        );
+        let rendered = c
+            .lines
+            .iter()
+            .map(|l| l.render())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             meeting_token_count(&rendered) <= MAP_CHUNK_TOKENS,
             "chunk {i} renders to {} tokens with its labels",

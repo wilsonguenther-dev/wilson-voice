@@ -66,7 +66,12 @@ fn mid(w: &TimedSpan) -> f64 {
 }
 
 /// The invariants every build must hold, whatever the input.
-fn assert_no_bleed(track: i64, words: &[TimedSpan], segments: &[DiarizedSegment], built: &SpeakerTurns) {
+fn assert_no_bleed(
+    track: i64,
+    words: &[TimedSpan],
+    segments: &[DiarizedSegment],
+    built: &SpeakerTurns,
+) {
     // Every word in exactly one turn, in order, none dropped.
     let mut next = 0usize;
     for t in &built.turns {
@@ -89,11 +94,16 @@ fn assert_no_bleed(track: i64, words: &[TimedSpan], segments: &[DiarizedSegment]
                 let covers = s.start_seconds <= m && m < s.end_seconds;
                 if covers && s.cluster_index.is_some() {
                     assert_eq!(
-                        s.cluster_index, t.cluster_index,
+                        s.cluster_index,
+                        t.cluster_index,
                         "word at {:.2}-{:.2} (mid {m:.2}) lies in cluster {:?}'s segment \
                          {:.2}-{:.2} but sits in a cluster {:?} turn",
-                        w.start_seconds, w.end_seconds, s.cluster_index, s.start_seconds,
-                        s.end_seconds, t.cluster_index
+                        w.start_seconds,
+                        w.end_seconds,
+                        s.cluster_index,
+                        s.start_seconds,
+                        s.end_seconds,
+                        t.cluster_index
                     );
                 }
             }
@@ -104,7 +114,10 @@ fn assert_no_bleed(track: i64, words: &[TimedSpan], segments: &[DiarizedSegment]
             assert!((b - (t.end_seconds - TURN_EMBED_GUARD_SECONDS)).abs() < 1e-9);
             assert!(b > a);
         } else {
-            assert!(t.seconds() <= 2.0 * TURN_EMBED_GUARD_SECONDS + 1e-9, "{t:?}");
+            assert!(
+                t.seconds() <= 2.0 * TURN_EMBED_GUARD_SECONDS + 1e-9,
+                "{t:?}"
+            );
         }
     }
 }
@@ -155,7 +168,11 @@ fn a_switch_inside_a_word_gives_the_word_to_the_midpoint_side_never_splits_it() 
     let a = f.clusters["A"];
     let b = f.clusters["B"];
     let turn_of = |word: &str| {
-        let wi = f.words.iter().position(|w| w.text == word).expect("word in fixture");
+        let wi = f
+            .words
+            .iter()
+            .position(|w| w.text == word)
+            .expect("word in fixture");
         built
             .turns
             .iter()
@@ -166,7 +183,10 @@ fn a_switch_inside_a_word_gives_the_word_to_the_midpoint_side_never_splits_it() 
     // "absolutely" 6.05-6.65 straddles the B->A switch at 6.2: midpoint 6.35 is A's.
     let t = turn_of("absolutely");
     assert_eq!(t.cluster_index, Some(a));
-    assert_eq!(t.start_seconds, 6.05, "the turn starts on the word, not on the 6.2 switch");
+    assert_eq!(
+        t.start_seconds, 6.05,
+        "the turn starts on the word, not on the 6.2 switch"
+    );
     // "okay" 12.25-12.75 straddles the A->B switch at 12.4: midpoint 12.5 is B's.
     let t = turn_of("okay");
     assert_eq!(t.cluster_index, Some(b));
@@ -176,9 +196,16 @@ fn a_switch_inside_a_word_gives_the_word_to_the_midpoint_side_never_splits_it() 
     assert_eq!(before.end_seconds, 11.40);
     // The one-word interjection is its own turn, word-exact.
     let t = turn_of("yeah");
-    assert_eq!((t.cluster_index, t.start_seconds, t.end_seconds), (Some(b), 8.85, 9.20));
+    assert_eq!(
+        (t.cluster_index, t.start_seconds, t.end_seconds),
+        (Some(b), 8.85, 9.20)
+    );
     assert_eq!(t.words.len(), 1);
-    assert_eq!(t.embedding_window(), None, "0.35 s minus 0.2 s each side leaves nothing");
+    assert_eq!(
+        t.embedding_window(),
+        None,
+        "0.35 s minus 0.2 s each side leaves nothing"
+    );
     // A word past the last segment goes to the nearest one, and stays whole.
     let t = turn_of("bye");
     assert_eq!(t.cluster_index, Some(b));
@@ -190,7 +217,11 @@ fn segments_of_another_track_never_attribute_this_tracks_words() {
     let f = load_fixture(MIC_TRACK);
     // Words of SYSTEM_TRACK against segments that all belong to MIC_TRACK.
     let built = build_speaker_turns(SYSTEM_TRACK, &f.words, &f.segments);
-    assert_eq!(built.turns.len(), 1, "no segment on this track: one unattributed run");
+    assert_eq!(
+        built.turns.len(),
+        1,
+        "no segment on this track: one unattributed run"
+    );
     assert_eq!(built.turns[0].cluster_index, None);
     assert!(built.word_segment.iter().all(Option::is_none));
     assert_eq!(built.boundary_words_reassigned, 0);

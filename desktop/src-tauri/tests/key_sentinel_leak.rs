@@ -215,7 +215,9 @@ fn the_cloud_key_kind_never_leaks_the_key() {
     install_logger();
     let (port, seen) = mock(
         "401 Unauthorized",
-        format!(r#"{{"type":"error","error":{{"type":"authentication_error","message":"invalid x-api-key: {SENTINEL}"}}}}"#),
+        format!(
+            r#"{{"type":"error","error":{{"type":"authentication_error","message":"invalid x-api-key: {SENTINEL}"}}}}"#
+        ),
     );
     let dir = temp_dir("sentinel-cloud-401");
     let db = open_db(&dir);
@@ -240,14 +242,27 @@ fn the_cloud_key_kind_never_leaks_the_key() {
     let bundled = |d: Duration| -> Box<dyn ChatProvider> {
         Box::new(BundledProvider::<NoModel>::new(None, d))
     };
-    let result = run_test(&db, &keys, &ClientCache::new(), "cloud-key", &bundled, &mut emit)
-        .expect("ran");
+    let result = run_test(
+        &db,
+        &keys,
+        &ClientCache::new(),
+        "cloud-key",
+        &bundled,
+        &mut emit,
+    )
+    .expect("ran");
     assert!(!result.ok);
     let reqs = seen.lock().unwrap().clone();
     assert_eq!(reqs.len(), 1, "exactly one request reached the mock");
     let req = reqs[0].to_ascii_lowercase();
-    assert!(req.contains(&format!("x-api-key: {}", SENTINEL.to_ascii_lowercase())), "the key was not sent in x-api-key");
-    assert!(req.contains("anthropic-version: 2026-10-21"), "the API version header is pinned");
+    assert!(
+        req.contains(&format!("x-api-key: {}", SENTINEL.to_ascii_lowercase())),
+        "the key was not sent in x-api-key"
+    );
+    assert!(
+        req.contains("anthropic-version: 2026-10-21"),
+        "the API version header is pinned"
+    );
     assert!(req.contains("/v1/messages"), "the Messages endpoint");
     assert!(req.contains("\"stream\":true"), "responses stream");
     let ret = serde_json::to_value(&result).unwrap().to_string();
@@ -264,7 +279,11 @@ fn the_cloud_key_kind_never_leaks_the_key() {
         .collect();
     for (k, v) in &rows {
         assert!(!v.contains("YAPSENTINEL"), "settings_kv {k} leaks");
-        assert_ne!(k, KEY_ATTENTION_KEY.to_string().as_str() , "Test connection never flags the key — only a routed job does");
+        assert_ne!(
+            k,
+            KEY_ATTENTION_KEY.to_string().as_str(),
+            "Test connection never flags the key — only a routed job does"
+        );
     }
     assert!(!key_needs_attention(&db));
     let logs = LOGS.lock().unwrap().clone();

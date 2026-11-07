@@ -538,7 +538,10 @@ pub fn cloud_key_provider(
     let key = keys
         .get(&keychain::account_for(&cfg.id, &host))
         .unwrap_or_else(|e| {
-            log::warn!("model_providers cloud_key_read_failed id={} error={e}", cfg.id);
+            log::warn!(
+                "model_providers cloud_key_read_failed id={} error={e}",
+                cfg.id
+            );
             None
         })?;
     if key.trim().is_empty() {
@@ -684,9 +687,21 @@ pub fn upsert_provider(
     let cfg = if cfg.kind == ProviderKind::CloudKey {
         let d = ProviderConfig::cloud_key();
         ProviderConfig {
-            label: if cfg.label.trim().is_empty() { d.label } else { cfg.label },
-            base_url: if cfg.base_url.trim().is_empty() { d.base_url } else { cfg.base_url },
-            model: if cfg.model.trim().is_empty() { d.model } else { cfg.model },
+            label: if cfg.label.trim().is_empty() {
+                d.label
+            } else {
+                cfg.label
+            },
+            base_url: if cfg.base_url.trim().is_empty() {
+                d.base_url
+            } else {
+                cfg.base_url
+            },
+            model: if cfg.model.trim().is_empty() {
+                d.model
+            } else {
+                cfg.model
+            },
             ..cfg
         }
     } else {
@@ -957,7 +972,11 @@ pub fn run_test(
                 .client_for(&cfg.id, TEST_TIMEOUT)
                 .map_err(|e| ProviderError::from_http(e, &cfg.model))?;
             (
-                Box::new(CloudKeyProvider::new(cfg.clone(), key.unwrap_or_default(), client)),
+                Box::new(CloudKeyProvider::new(
+                    cfg.clone(),
+                    key.unwrap_or_default(),
+                    client,
+                )),
                 hint,
             )
         }
