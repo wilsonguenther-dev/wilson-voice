@@ -61,6 +61,48 @@ impl PasteOutcome {
     pub fn clipboard_withheld(&self) -> bool {
         !self.copied && !self.pasted && self.message == SECURE_FIELD_MESSAGE
     }
+
+    /// fix-l3b3-1 — the take was cancelled while its paste waited for a
+    /// typing pause. Y3-D: nothing pasted, nothing copied.
+    pub fn cancelled_in_hold() -> Self {
+        PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: HELD_CANCELLED_MESSAGE.into(),
+        }
+    }
+
+    /// fix-l3b3-1 — did [`PasteOutcome::cancelled_in_hold`] end this take? The
+    /// take path then reports a cancel (no History row, audio parked), exactly
+    /// like the Y3-D checkpoint before the paste.
+    pub fn was_cancelled_in_hold(&self) -> bool {
+        !self.copied && !self.pasted && self.message == HELD_CANCELLED_MESSAGE
+    }
+}
+
+/// fix-l3b3-1 — the message of a take cancelled during the typing-pause hold.
+pub const HELD_CANCELLED_MESSAGE: &str = "Cancelled — nothing pasted";
+
+/// fix-l3b3-1 — what a dictated take does once the typing-pause hold ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterHold {
+    /// Go on to the insertion with this `want_paste` (false = copy-only).
+    Insert { want_paste: bool },
+    /// Y3-D — the take was cancelled mid-hold: no paste, no copy.
+    Cancelled,
+}
+
+/// fix-l3b3-1 — decide the take's fate from what the hold last read: a
+/// cancel ends it with nothing pasted or copied; a stale generation turns it
+/// copy-only (like the stale branch before the hold); a wanted take is
+/// unchanged.
+pub fn after_hold(want_paste: bool, wanted: crate::typing_pause::TakeWanted) -> AfterHold {
+    use crate::typing_pause::TakeWanted;
+    match wanted {
+        TakeWanted::Cancelled => AfterHold::Cancelled,
+        TakeWanted::Stale => AfterHold::Insert { want_paste: false },
+        TakeWanted::Wanted => AfterHold::Insert { want_paste },
+    }
 }
 
 /// Y6-B — a clipboard write that cannot race a paste (YV39).
@@ -1218,7 +1260,7 @@ pub fn copy_and_maybe_paste(
         Some(s) => PasteTarget::Dictated(Some(s)),
         None => PasteTarget::Explicit,
     };
-    insert_take(app, text, want_paste, target, None, None)
+    insert_take(app, text, want_paste, target, None, None, None)
 }
 
 /// fix-l3b7-1 — what a refused in-place replace ("Use original", Undo AI Edit)
@@ -1388,11 +1430,16 @@ pub fn insert_dictated_take_at(
         PasteTarget::Dictated(target_bundle_id),
         None,
         Some(captured_at),
+        None,
     )
 }
 
 /// DB-D — a dictation take, routed by [`take_target`]: into the focused
 /// Scratchpad note, else through the unchanged app guard.
+///
+/// fix-l3b3-1 — `wanted` is re-read every step of the typing-pause hold: a
+/// take cancelled mid-hold is neither pasted nor copied, a take made stale
+/// mid-hold is copy-only.
 pub fn insert_take_for(
     app: &AppHandle,
     text: &str,
@@ -1400,8 +1447,17 @@ pub fn insert_take_for(
     target: PasteTarget<'_>,
     stages: Option<&crate::take_stage::TakeStages<'_>>,
     captured_at: crate::focus::CapturedAt,
+    wanted: &dyn Fn() -> crate::typing_pause::TakeWanted,
 ) -> PasteOutcome {
-    insert_take(app, text, want_paste, target, stages, Some(captured_at))
+    insert_take(
+        app,
+        text,
+        want_paste,
+        target,
+        stages,
+        Some(captured_at),
+        Some(wanted),
+    )
 }
 
 /// The one insertion boundary every take goes through. yap24-PILL2: with a
@@ -1416,6 +1472,7 @@ fn insert_take(
     target: PasteTarget<'_>,
     stages: Option<&crate::take_stage::TakeStages<'_>>,
     captured_at: Option<crate::focus::CapturedAt>,
+    wanted: Option<&dyn Fn() -> crate::typing_pause::TakeWanted>,
 ) -> PasteOutcome {
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
     // happens to be frontmost on the developer's machine.
@@ -1442,9 +1499,24 @@ fn insert_take(
     // pause. An app switch ends the hold and the YV21 guard below copies the
     // take and holds it on the pill, exactly as before. The text never leaves
     // this frame while held, and every branch after it puts it on the clipboard.
+    //
+    // fix-l3b3-1 — the hold re-reads `wanted` every step. A take cancelled
+    // mid-hold returns here with NOTHING pasted and NOTHING copied (Y3-D, the
+    // same contract as the checkpoint before the paste); a take a newer one
+    // made stale mid-hold goes on copy-only, like the stale branch before it.
+    let mut want_paste = want_paste;
     if want_paste {
         if let PasteTarget::Dictated(Some(bundle)) = target {
-            wait_for_typing_pause(bundle, stages);
+            let (_wait, last_wanted) = wait_for_typing_pause(bundle, stages, wanted);
+            match after_hold(want_paste, last_wanted) {
+                AfterHold::Cancelled => return PasteOutcome::cancelled_in_hold(),
+                AfterHold::Insert { want_paste: w } => {
+                    if w != want_paste {
+                        log::warn!("paste typing_pause stale — copy only, no paste");
+                    }
+                    want_paste = w;
+                }
+            }
         }
     }
     let mut live = LiveInsert { app, ax_granted };
@@ -1478,11 +1550,25 @@ fn insert_take(
 /// `target_bundle` (see [`crate::typing_pause`]). Reports `paste_waiting` to the
 /// pill when it holds, and writes one `paste typing_pause` line (counts and a
 /// duration only — never keys, never text).
+///
+/// fix-l3b3-1 — returns, with the wait, what `wanted` last read: a hold that
+/// ended [`crate::typing_pause::PauseWait::Cancelled`] names whether it was a
+/// cancel or a stale generation; any other wait reads `Wanted`.
 fn wait_for_typing_pause(
     target_bundle: &str,
     stages: Option<&crate::take_stage::TakeStages<'_>>,
-) -> crate::typing_pause::PauseWait {
+    wanted: Option<&dyn Fn() -> crate::typing_pause::TakeWanted>,
+) -> (
+    crate::typing_pause::PauseWait,
+    crate::typing_pause::TakeWanted,
+) {
+    use crate::typing_pause::TakeWanted;
     let mut clock = crate::typing_pause::LiveKeyClock;
+    let mut last_wanted = TakeWanted::Wanted;
+    let mut still_wanted = || {
+        last_wanted = wanted.map_or(TakeWanted::Wanted, |f| f());
+        last_wanted == TakeWanted::Wanted
+    };
     let mut still_target = || {
         let current = crate::focus::frontmost_identity().and_then(|i| i.bundle_id);
         is_same_paste_target(Some(target_bundle), current.as_deref())
@@ -1492,13 +1578,53 @@ fn wait_for_typing_pause(
             stages.emit(crate::take_stage::TakeStage::PasteWaiting, None);
         }
     };
-    let wait = crate::typing_pause::wait_for_pause(&mut clock, &mut still_target, &mut on_hold);
+    let wait = crate::typing_pause::wait_for_pause(
+        &mut clock,
+        &mut still_wanted,
+        &mut still_target,
+        &mut on_hold,
+    );
+    let last_wanted = if matches!(wait, crate::typing_pause::PauseWait::Cancelled { .. }) {
+        last_wanted
+    } else {
+        TakeWanted::Wanted
+    };
     if wait.held() {
-        log::info!("{}", wait.log_line());
+        log::info!("{}", hold_log_line(&wait, last_wanted));
         crate::diagnostics::record_duration("paste", "typing_pause", wait.waited_ms());
-        crate::diagnostics::bump("typing_pause", wait.as_str());
+        crate::diagnostics::bump("typing_pause", hold_outcome(&wait, last_wanted));
     }
-    wait
+    (wait, last_wanted)
+}
+
+/// fix-l3b3-1 — the hold's outcome name: a mid-hold end for a stale take is
+/// `stale`, for a cancel `cancelled`, else the wait's own name.
+fn hold_outcome(
+    wait: &crate::typing_pause::PauseWait,
+    wanted: crate::typing_pause::TakeWanted,
+) -> &'static str {
+    match (wait, wanted) {
+        (
+            crate::typing_pause::PauseWait::Cancelled { .. },
+            crate::typing_pause::TakeWanted::Stale,
+        ) => "stale",
+        _ => wait.as_str(),
+    }
+}
+
+/// fix-l3b3-1 — the one `paste typing_pause` line (counts only, never keys
+/// or text): `outcome=cancelled` for a cancel, `outcome=stale` for a take a
+/// newer one superseded mid-hold.
+fn hold_log_line(
+    wait: &crate::typing_pause::PauseWait,
+    wanted: crate::typing_pause::TakeWanted,
+) -> String {
+    format!(
+        "paste typing_pause outcome={} waited_ms={} keys_during={}",
+        hold_outcome(wait, wanted),
+        wait.waited_ms(),
+        wait.keys_during()
+    )
 }
 
 /// YV49 command mode: carry out "delete that" by pressing Delete on the
@@ -1771,6 +1897,87 @@ mod tests {
         assert!(!is_same_paste_target(None, None));
         assert!(!is_same_paste_target(Some(""), Some("")));
         assert!(!is_same_paste_target(Some("   "), Some("   ")));
+    }
+
+    /// fix-l3b3-1 — a take cancelled mid-hold is neither pasted nor copied;
+    /// a stale generation mid-hold is copy-only; a wanted take is unchanged.
+    #[test]
+    fn a_cancelled_hold_neither_pastes_nor_copies_and_stale_is_copy_only() {
+        use super::{after_hold, AfterHold, PasteOutcome};
+        use crate::typing_pause::TakeWanted;
+        assert_eq!(
+            after_hold(true, TakeWanted::Cancelled),
+            AfterHold::Cancelled
+        );
+        assert_eq!(
+            after_hold(true, TakeWanted::Stale),
+            AfterHold::Insert { want_paste: false }
+        );
+        assert_eq!(
+            after_hold(true, TakeWanted::Wanted),
+            AfterHold::Insert { want_paste: true }
+        );
+        let c = PasteOutcome::cancelled_in_hold();
+        assert!(!c.pasted && !c.copied);
+        assert!(c.was_cancelled_in_hold());
+        assert!(!c.clipboard_withheld());
+        let other = PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: "Clipboard failed: x".into(),
+        };
+        assert!(!other.was_cancelled_in_hold());
+    }
+
+    /// fix-l3b3-1 — in `insert_take` the cancelled hold returns BEFORE any
+    /// call to `insert_serialized` (the only path that pastes or copies), and
+    /// the stale branch feeds the copy-only `want_paste` into it.
+    #[test]
+    fn a_cancelled_hold_never_reaches_insert_serialized() {
+        let src = include_str!("paste.rs");
+        let start = src
+            .find("fn insert_take(\n")
+            .expect("insert_take is defined");
+        let body = &src[start..];
+        let cancel = body
+            .find("AfterHold::Cancelled => return PasteOutcome::cancelled_in_hold()")
+            .expect("the cancelled hold returns early");
+        let stale = body.find("want_paste = w;").expect("stale -> copy-only");
+        let serialized = body
+            .find("insert_serialized(&mut live, path, text, want_paste, target)")
+            .expect("insert_take inserts through insert_serialized");
+        assert!(cancel < serialized, "a cancel must return before insertion");
+        assert!(
+            stale < serialized,
+            "a stale take is copy-only before insertion"
+        );
+        let hold = body
+            .find("wait_for_typing_pause(bundle, stages, wanted)")
+            .expect("the hold reads the wanted predicate");
+        assert!(hold < cancel);
+    }
+
+    /// fix-l3b3-1 — the hold's log line names a stale end apart from a cancel.
+    #[test]
+    fn the_hold_log_line_names_stale_apart_from_cancel() {
+        use crate::typing_pause::{PauseWait, TakeWanted};
+        let w = PauseWait::Cancelled {
+            waited_ms: 300,
+            keys_during: 2,
+        };
+        assert_eq!(
+            super::hold_log_line(&w, TakeWanted::Cancelled),
+            "paste typing_pause outcome=cancelled waited_ms=300 keys_during=2"
+        );
+        assert_eq!(
+            super::hold_log_line(&w, TakeWanted::Stale),
+            "paste typing_pause outcome=stale waited_ms=300 keys_during=2"
+        );
+        let p = PauseWait::Paused {
+            waited_ms: 600,
+            keys_during: 0,
+        };
+        assert_eq!(super::hold_log_line(&p, TakeWanted::Wanted), p.log_line());
     }
 
     /// yap-1107 — only the deliberate password-field hold counts as a

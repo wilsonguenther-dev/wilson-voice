@@ -176,6 +176,28 @@ export default function Meetings() {
           </p>
         </div>
       )}
+      {settings && (
+        <div className="panel" data-row data-settings-row="ask-whos-talking">
+          <h3>Who&rsquo;s talking</h3>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              data-ask-whos-talking
+              checked={settings.askWhosTalkingLive === true}
+              onChange={(e) =>
+                void saveSettings({ ...settings, askWhosTalkingLive: e.target.checked })
+              }
+            />
+            <span>Ask who&rsquo;s talking during meetings</span>
+          </label>
+          <p className="settings-hint">
+            When a new voice has spoken for a few seconds, a small card under
+            the pill asks who it is. It never takes focus and never shows
+            during a screen share. Off means you name voices after the
+            meeting instead. Voices stay on this Mac.
+          </p>
+        </div>
+      )}
       <div className="panel" data-row data-settings-row="call-offer-never">
         <h3>Never offer for</h3>
         {never.length === 0 ? (

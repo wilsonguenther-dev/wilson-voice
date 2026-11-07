@@ -58,7 +58,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
 // yap-1106-chatter-setting: +1 (yappy_talks).
 // yap-1106-curse-setting: +1 (companion_curse).
-const APP_SETTINGS_FIELD_COUNT: usize = 51;
+// yap-1106-fb-22a: +1 (ask_whos_talking_live).
+const APP_SETTINGS_FIELD_COUNT: usize = 52;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -181,6 +182,8 @@ fn fully_populated() -> AppSettings {
         }],
         // WF-16 — non-default: the screen-share hide switched off.
         hide_from_capture_in_meetings: false,
+        // yap-1106-fb-22a — non-default: the live "Who's talking?" card on.
+        ask_whos_talking_live: true,
         // yap-1106-chatter-setting — non-default: only milestones.
         yappy_talks: "milestones".into(),
     }
@@ -292,6 +295,10 @@ fn every_app_settings_field_round_trips() {
     assert!(
         read_back.companion_curse,
         "the Badass curse toggle (companion_curse) must survive a relaunch"
+    );
+    assert!(
+        read_back.ask_whos_talking_live,
+        "the live \"Who's talking?\" setting (ask_whos_talking_live) must survive a relaunch"
     );
 }
 
