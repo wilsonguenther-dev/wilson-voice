@@ -439,20 +439,132 @@ export function roomTintAlpha(sky: Pick<StudioSky, "ambA"> | null | undefined): 
   return Math.max(0, Math.min(MAX_TINT, a * 0.7));
 }
 
+/* ── the wooden pixel frame (yap-1106-fb-24, home.html section 5) ───────────
+ * "The room now hangs in a wooden pixel frame: a dark edge, a lit top and left,
+ * shaded bottom and right, brass corner pegs and a small brass plate. It's drawn
+ * inside the picture at 3x, so it stays crisp and the room is still edge to edge."
+ * A byte-exact port of sideview.js `frame()`. It lives in the BUFFER (so it
+ * scales with the room at the same whole-number cell, no smoothing, no margin),
+ * it never moves with the parallax, and it is drawn ONCE into an offscreen
+ * canvas (`createFrameCache`) that every redraw blits, so the budget is unchanged.
+ * Pixel-art palette: named here beside the room art, not in tokens.css. */
+
+/** The frame's rail width in buffer px (artifact `F`). */
+export const FRAME_F = 5;
+/** The brass plate's width in buffer px, centred on the bottom rail. */
+export const PLATE_W = 28;
+/** The plate's left edge in buffer px (artifact `Math.floor(W / 2) - 14`). */
+export const PLATE_X = Math.floor(STUDIO_W / 2) - PLATE_W / 2;
+/** The four 2 x 2 brass corner pegs (top-left corners, buffer px). */
+export const FRAME_PEGS: readonly (readonly [number, number])[] = [
+  [2, 2],
+  [STUDIO_W - 4, 2],
+  [2, STUDIO_H - 4],
+  [STUDIO_W - 4, STUDIO_H - 4],
+];
+
+/** The frame's palette (artifact colours, verbatim). */
+export const FRAME_PAL = {
+  edgeLit: "#3a2418", // the dark outer edge, top + left (and the inner edge)
+  edgeShade: "#2a1a10", // the dark outer edge, bottom + right
+  faceTop: "#8a5a36",
+  faceLeft: "#7a4b2e",
+  faceShade: "#6b4428", // bottom + right rails
+  litTop: "#c48a52",
+  litLeft: "#b8763f",
+  shade: "#4a2c1e", // the shaded bottom + right bevel
+  grainLit: "#9a6a40", // grain dashes on the lit rails (every 11 / 13 px)
+  grainShade: "#5a3420", // grain dashes on the shaded rails, and the inner lower/right edge
+  innerShadow: "#000000", // drawn at INNER_SHADOW_TOP / INNER_SHADOW_LEFT alpha
+  peg: "#e8c86a",
+  pegShine: "#fff2b0",
+  plate: "#c9a03a",
+  plateLit: "#f0d27a",
+  plateShade: "#8a6a1f",
+  plateTick: "#6b4f15",
+} as const;
+/** The inner shadow under the top / left rails (artifact rgba(0,0,0,.18) / .12). */
+export const INNER_SHADOW_TOP = 0.18;
+export const INNER_SHADOW_LEFT = 0.12;
+
 /** The wooden pixel frame (artifact `frame`), in the buffer so it scales with the room. */
 export function drawFrame(o: PixelCtx): void {
-  const h = H(o), F = 5, W = STUDIO_W, Hh = STUDIO_H;
-  h.r(0, 0, W, F, "#8a5a36"); h.r(0, Hh - F, W, F, "#6b4428"); h.r(0, 0, F, Hh, "#7a4b2e"); h.r(W - F, 0, F, Hh, "#6b4428");
-  h.r(1, 1, W - 2, 1, "#c48a52"); h.r(1, 1, 1, Hh - 2, "#b8763f"); h.r(1, Hh - 2, W - 2, 1, "#4a2c1e"); h.r(W - 2, 1, 1, Hh - 2, "#4a2c1e");
-  for (let x = 8; x < W - 8; x += 11) { h.r(x, 2, 4, 1, "#9a6a40"); h.r(x + 5, Hh - 3, 3, 1, "#5a3420"); }
-  for (let y = 9; y < Hh - 9; y += 13) { h.r(2, y, 1, 4, "#9a6a40"); h.r(W - 3, y + 5, 1, 3, "#5a3420"); }
-  h.r(0, 0, W, 1, "#3a2418"); h.r(0, Hh - 1, W, 1, "#2a1a10"); h.r(0, 0, 1, Hh, "#3a2418"); h.r(W - 1, 0, 1, Hh, "#2a1a10");
-  h.r(F, F, W - F * 2, 1, "#3a2418"); h.r(F, F, 1, Hh - F * 2, "#3a2418"); h.r(F, Hh - F - 1, W - F * 2, 1, "#5a3420"); h.r(W - F - 1, F, 1, Hh - F * 2, "#5a3420");
-  h.r(F + 1, F + 1, W - F * 2 - 2, 1, "#000000", 0.18); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, "#000000", 0.12);
-  [[2, 2], [W - 4, 2], [2, Hh - 4], [W - 4, Hh - 4]].forEach((c) => { h.r(c[0], c[1], 2, 2, "#e8c86a"); h.r(c[0], c[1], 1, 1, "#fff2b0"); });
-  const px = Math.floor(W / 2) - 14;
-  h.r(px, Hh - F, 28, F, "#c9a03a"); h.r(px, Hh - F, 28, 1, "#f0d27a"); h.r(px, Hh - 1, 28, 1, "#8a6a1f"); h.r(px + 1, Hh - F + 1, 1, 1, "#8a6a1f"); h.r(px + 26, Hh - F + 1, 1, 1, "#8a6a1f");
-  for (let q = 0; q < 6; q++) h.r(px + 5 + q * 3, Hh - 3, 2, 1, "#6b4f15");
+  const h = H(o), F = FRAME_F, W = STUDIO_W, Hh = STUDIO_H, P = FRAME_PAL;
+  h.r(0, 0, W, F, P.faceTop); h.r(0, Hh - F, W, F, P.faceShade); h.r(0, 0, F, Hh, P.faceLeft); h.r(W - F, 0, F, Hh, P.faceShade);
+  h.r(1, 1, W - 2, 1, P.litTop); h.r(1, 1, 1, Hh - 2, P.litLeft); h.r(1, Hh - 2, W - 2, 1, P.shade); h.r(W - 2, 1, 1, Hh - 2, P.shade);
+  for (let x = 8; x < W - 8; x += 11) { h.r(x, 2, 4, 1, P.grainLit); h.r(x + 5, Hh - 3, 3, 1, P.grainShade); }
+  for (let y = 9; y < Hh - 9; y += 13) { h.r(2, y, 1, 4, P.grainLit); h.r(W - 3, y + 5, 1, 3, P.grainShade); }
+  h.r(0, 0, W, 1, P.edgeLit); h.r(0, Hh - 1, W, 1, P.edgeShade); h.r(0, 0, 1, Hh, P.edgeLit); h.r(W - 1, 0, 1, Hh, P.edgeShade);
+  h.r(F, F, W - F * 2, 1, P.edgeLit); h.r(F, F, 1, Hh - F * 2, P.edgeLit); h.r(F, Hh - F - 1, W - F * 2, 1, P.grainShade); h.r(W - F - 1, F, 1, Hh - F * 2, P.grainShade);
+  h.r(F + 1, F + 1, W - F * 2 - 2, 1, P.innerShadow, INNER_SHADOW_TOP); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, P.innerShadow, INNER_SHADOW_LEFT);
+  FRAME_PEGS.forEach((c) => { h.r(c[0], c[1], 2, 2, P.peg); h.r(c[0], c[1], 1, 1, P.pegShine); });
+  const px = PLATE_X;
+  h.r(px, Hh - F, PLATE_W, F, P.plate); h.r(px, Hh - F, PLATE_W, 1, P.plateLit); h.r(px, Hh - 1, PLATE_W, 1, P.plateShade); h.r(px + 1, Hh - F + 1, 1, 1, P.plateShade); h.r(px + PLATE_W - 2, Hh - F + 1, 1, 1, P.plateShade);
+  for (let q = 0; q < 6; q++) h.r(px + 5 + q * 3, Hh - 3, 2, 1, P.plateTick);
+}
+
+/** True for a buffer pixel the frame paints OPAQUE: the four rails plus the
+ *  1 px inner edge (the rgba inner shadow beyond it blends with the room). */
+export function isFramePixel(x: number, y: number): boolean {
+  const b = FRAME_F + 1;
+  return x < b || y < b || x >= STUDIO_W - b || y >= STUDIO_H - b;
+}
+
+/** The offscreen frame: drawn once on first use, blitted on every later redraw. */
+export interface FrameCache<C> {
+  /** The cached frame surface (STUDIO_W x STUDIO_H, transparent inside the rails). */
+  get(): C;
+  /** renders = times the frame was painted (1 after the first get); hits = later gets served from the cache. */
+  readonly stats: { renders: number; hits: number };
+}
+
+/** `make` returns a fresh STUDIO_W x STUDIO_H surface and its 2D context. */
+export function createFrameCache<C>(make: () => { surface: C; ctx: PixelCtx }): FrameCache<C> {
+  const stats = { renders: 0, hits: 0 };
+  let cached: C | null = null;
+  return {
+    stats,
+    get() {
+      if (cached !== null) {
+        stats.hits++;
+        return cached;
+      }
+      const { surface, ctx } = make();
+      drawFrame(ctx);
+      stats.renders++;
+      cached = surface;
+      return surface;
+    },
+  };
+}
+
+/** What the compositor needs (a 2D canvas context and the test Raster both satisfy it). */
+export interface StudioBlitter<S> extends StudioCtx {
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
+  drawImage(src: S, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
+}
+
+/**
+ * One studio picture into the STUDIO_W x STUDIO_H buffer `o`: the three
+ * painted layers (each PAD wider per side) at their parallax offsets, the sky
+ * tint, the lights, then the cached frame at (0, 0) — the frame never shifts.
+ */
+export function composeStudio<S>(
+  o: StudioBlitter<S>,
+  layers: readonly S[],
+  frame: S,
+  offs: readonly [number, number, number],
+  s: StudioState,
+  t: number,
+): void {
+  const W = STUDIO_W, Hh = STUDIO_H, LW = STUDIO_W + PAD * 2;
+  o.setTransform(1, 0, 0, 1, 0, 0);
+  o.clearRect(0, 0, W, Hh);
+  layers.forEach((c, i) => o.drawImage(c, 0, 0, LW, Hh, -PAD + offs[i], 0, LW, Hh));
+  drawTint(o, s);
+  drawLights(o, s, t, offs[0], offs[1]);
+  o.drawImage(frame, 0, 0, W, Hh, 0, 0, W, Hh);
 }
 
 /** The three layer painters, back to front (each is drawn into a PAD-wide layer). */
