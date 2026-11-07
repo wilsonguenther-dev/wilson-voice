@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * menubar-preview.mjs — before/after PNGs of the menu-bar menu
- * (yap-1106-menubar-redesign + WF-07 upcoming meetings).
+ * (yap-1106-menubar-redesign + WF-07 upcoming meetings + WF-11 Languages +
+ * WF-14 "Update ready").
  *
  * The real menu is a native NSMenu built by lib.rs FROM
  * `tray_menu::MENU_LAYOUT` + `TRAY_ITEMS`. A native menu cannot be rendered
@@ -78,7 +79,26 @@ export function parseTrayMenu(src) {
       layout.push(items.get(id));
     }
   }
-  return { consts, items, layout };
+  return { consts, items, layout, src };
+}
+
+/* ── WF-14: the "Update ready" line, mirroring tray_menu::update_ready_label ── */
+
+/**
+ * The label `update_ready_label(blocker, armed)` returns, read straight out of
+ * its match arms so the preview cannot drift from the Rust. `blocker` is null
+ * (quiet) or "Meeting" | "Polish" | "Take".
+ */
+function updateReadyLabel(parsed, blocker, armed) {
+  if (!blocker) {
+    const id = parsed.consts.get("ID_UPDATE_READY");
+    if (!id) throw new Error("tray_menu.rs: no Update ready line at this revision");
+    return parsed.items.get(id).label;
+  }
+  const re = new RegExp(`\\(Some\\(Busy::${blocker}\\), ${armed}\\) => "((?:[^"\\\\]|\\\\.)*)"`);
+  const m = parsed.src.match(re);
+  if (!m) throw new Error(`tray_menu.rs: no update_ready_label arm for ${blocker}/${armed}`);
+  return m[1].replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
 }
 
 function sourceAt(rev) {
@@ -129,6 +149,29 @@ function upcomingRows(parsed, { hideTitles, meetings }) {
   return rows;
 }
 
+const LANGUAGE_NAMES = { en: "English", es: "Spanish", fr: "French" };
+
+/**
+ * WF-11 — the Languages submenu as `tray_menu::language_menu` builds it:
+ * Auto-detect (only with a choice in the set and a model that can detect),
+ * each language in picker order, the check on what the chip shows, then a
+ * separator and "Language Settings…". Labels come from the source consts.
+ */
+function languageRow(parsed, { set, picked, canDetect = true }) {
+  const id = parsed.consts.get("ID_LANGUAGES");
+  const auto = parsed.consts.get("LANGUAGE_AUTO_LABEL");
+  const settings = parsed.consts.get("LANGUAGE_SETTINGS_LABEL");
+  if (!id || !auto || !settings || !parsed.items.has(id)) {
+    throw new Error("tray_menu.rs: no Languages submenu at this revision");
+  }
+  const order = Object.keys(LANGUAGE_NAMES);
+  const langs = [...set].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const picks = [...(set.length > 1 && canDetect ? ["auto"] : []), ...langs];
+  const submenu = picks.map((p) => ({ label: p === "auto" ? auto : LANGUAGE_NAMES[p], checked: p === picked }));
+  submenu.push({ sep: true }, { label: settings });
+  return { label: parsed.items.get(id).label, submenu };
+}
+
 /** The rows as the app shows them in one state. */
 function menuFor(parsed, state) {
   const out = [];
@@ -152,7 +195,16 @@ function menuFor(parsed, state) {
       disabled: slot.kind === "StateLabel" || (rec && slot.id === kindId),
       submenuArrow: slot.kind === "KindSubmenu",
     });
+    // WF-14 — inserted directly under the status header by sync_update_ready.
+    if (slot.id === parsed.consts.get("ID_LICENSE_HEADER") && state.update) {
+      out.push({ label: updateReadyLabel(parsed, state.update.blocker, state.update.armed) });
+    }
     if (slot.id === kindId && state.calendar) out.push(...upcomingRows(parsed, state.calendar));
+    // WF-11 — inserted under Hands-free (under Microphone once the device
+    // list lands; the Microphone submenu is not drawn by this preview).
+    if (slot.id === parsed.consts.get("ID_HANDS_FREE") && state.languages) {
+      out.push(languageRow(parsed, state.languages));
+    }
   }
   // A group emptied by the recording move leaves a doubled separator; NSMenu
   // shows both, so the preview does too.
@@ -177,7 +229,14 @@ function html(title, rows) {
     })
     .join("");
   const sub = openSub
-    ? `<div class="menu sub">${openSub.submenu.map((t) => `<div class="row"><span class="check"></span><span class="lbl">${esc(t)}</span></div>`).join("")}</div>`
+    ? `<div class="menu sub">${openSub.submenu
+        .map((t) => (typeof t === "string" ? { label: t } : t))
+        .map((t) =>
+          t.sep
+            ? `<div class="sep"></div>`
+            : `<div class="row"><span class="check">${t.checked ? "✓" : ""}</span><span class="lbl">${esc(t.label)}</span></div>`
+        )
+        .join("")}</div>`
     : "";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;background:#2e3138;font:13px -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
@@ -220,6 +279,54 @@ const STATES = [
     state: { calendar: { hideTitles: false, meetings: [] } },
     afterOnly: true,
   },
+  {
+    name: "languages-auto",
+    title: "Languages: English + Spanish, Auto-detect on",
+    state: { languages: { set: ["es", "en"], picked: "auto" } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-spanish",
+    title: "Languages: Spanish picked (from the tray or the pill's chip)",
+    state: { languages: { set: ["en", "es"], picked: "es" } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-no-detect",
+    title: "Languages: the speech model cannot detect, so no Auto-detect row",
+    state: { languages: { set: ["en", "es", "fr"], picked: "en", canDetect: false } },
+    afterOnly: true,
+  },
+  {
+    name: "languages-one",
+    title: "Languages: one language (default install)",
+    state: { languages: { set: ["en"], picked: "en" } },
+    afterOnly: true,
+  },
+  {
+    name: "update-ready",
+    title: "Update downloaded, Yap quiet: one click restarts",
+    state: { update: { blocker: null, armed: false } },
+    afterOnly: true,
+  },
+  {
+    name: "update-ready-in-meeting",
+    title: "Update downloaded during a meeting: the click will wait",
+    state: { recording: true, update: { blocker: "Meeting", armed: false } },
+    afterOnly: true,
+  },
+  {
+    name: "update-armed-in-meeting",
+    title: "Clicked during a meeting: restarts after it (click again to cancel)",
+    state: { recording: true, update: { blocker: "Meeting", armed: true } },
+    afterOnly: true,
+  },
+  {
+    name: "update-armed-dictating",
+    title: "Clicked mid-dictation: restarts after the take",
+    state: { update: { blocker: "Take", armed: true } },
+    afterOnly: true,
+  },
 ];
 
 async function shoot(cdp, file, doc) {
@@ -257,7 +364,7 @@ async function main() {
   if (args.selfTest) {
     for (const j of jobs) {
       console.log("\n# " + j.file);
-      for (const r of j.rows) console.log(r.sep ? "  ────" : "  " + (r.checked ? "✓ " : "") + r.label + (r.submenu ? "  ›  [" + r.submenu.join(" | ") + "]" : ""));
+      for (const r of j.rows) console.log(r.sep ? "  ────" : "  " + (r.checked ? "✓ " : "") + r.label + (r.submenu ? "  ›  [" + r.submenu.map((t) => (typeof t === "string" ? t : t.sep ? "──" : (t.checked ? "✓ " : "") + t.label)).join(" | ") + "]" : ""));
     }
     return;
   }

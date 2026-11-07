@@ -290,6 +290,13 @@ work waiting its turn, coarser than the 10 ms handback poll on purpose. lib.rs g
 literal is inside `#[cfg(test)] mod retry_engine_tests` (fake-engine decode durations, test
 deadlines, and 5/10 ms sleeps in test-only wait loops). No production wakeup was added to lib.rs.
 
+Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
+`ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
+disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
+mic. It runs only while audio is wanted (test `the_worker_ticks_fast_only_while_audio_is_wanted`);
+the idle stream keeps `IDLE_TICK`, and a failed device is retried no more often than `FAILED_RETRY`
+(1 s), so an unplugged mic with nothing to fall back to does not spin the HAL.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a

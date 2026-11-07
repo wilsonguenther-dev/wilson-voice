@@ -24,9 +24,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   closeTab,
   insertAtCaret,
+  landOn,
   needsFinalize,
+  openedCaret,
   openTab,
-  pruneTabs,
   UNTITLED,
   type DictationPayload,
   type Note,
@@ -88,6 +89,8 @@ export default function ScratchpadWindow() {
   const activeRef = useRef(active);
   activeRef.current = active;
   const textRef = useRef<HTMLTextAreaElement>(null);
+  /** fix-b5-1 — the note this open was FOR, until its caret is placed. */
+  const caretTo = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   /** WF-15 — text size, expand and rail state; persisted on every change. */
@@ -136,6 +139,12 @@ export default function ScratchpadWindow() {
 
   const refresh = useCallback(async () => {
     try {
+      // fix-b5-1 — the note this open was FOR (the pill's timestamped meeting
+      // note), taken once. The note in front is finalized before it is left.
+      const openId = await invoke<string | null>("scratchpad_take_open_note").catch(() => null);
+      if (openId && activeRef.current && activeRef.current !== openId) {
+        await finalize(activeRef.current);
+      }
       const list = await invoke<Note[]>("list_notes");
       setNotes(list);
       const next = { ...draftsRef.current };
@@ -157,15 +166,25 @@ export default function ScratchpadWindow() {
         await newNote();
         return;
       }
-      setTabs((t) => {
-        const kept = pruneTabs(t, list);
-        return kept.length ? kept : [list[0].id];
-      });
-      setActive((a) => (a && list.some((n) => n.id === a) ? a : list[0].id));
+      // Functional updates: the mount load and the first "shown" can both be
+      // in flight; only one of them carries `openId`, and neither undoes it.
+      setTabs((t) => landOn(t, null, list, openId).tabs);
+      setActive((a) => landOn([], a, list, openId).active);
+      if (openId && list.some((n) => n.id === openId)) caretTo.current = openId;
     } catch (e) {
       setError(String(e));
     }
-  }, [newNote]);
+  }, [finalize, newNote]);
+
+  // fix-b5-1 — the opened note's caret goes to the end of its "[12:34] " seed.
+  useEffect(() => {
+    const ta = textRef.current;
+    const at = openedCaret(caretTo.current, active, active ? drafts[active]?.content : undefined);
+    if (at == null || !ta || ta.value.length !== at) return;
+    caretTo.current = null;
+    ta.focus();
+    ta.setSelectionRange(at, at);
+  }, [active, drafts]);
 
   // Load, and re-read every time the panel is shown.
   useEffect(() => {

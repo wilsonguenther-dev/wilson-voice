@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefi
 import { AppContext, type AppCtx } from "../../appShell";
 import { SETTINGS_TABS } from "../../appTypes";
 import Permissions from "../Permissions";
-import Companion from "../settings/Companion";
+import Companion, { PILL_STYLE_CHOICES, activePillStyle } from "../settings/Companion";
 import Audio from "../settings/Audio";
 import appShellSrc from "../../appShell.ts?raw";
 
@@ -71,6 +71,18 @@ describe("control first, one-line hint after", () => {
     expect(firstPicker).toBeGreaterThan(-1);
     expect(firstHint).toBeGreaterThan(firstPicker);
     expect((html.match(/class="settings-hint"/g) ?? []).length).toBe(4);
+  });
+  it("Companion: the Classic pill is retired — never offered, and a stale \"classic\" reads as Yappy", () => {
+    expect(PILL_STYLE_CHOICES.map(([id]) => id)).toEqual(["yappy"]);
+    for (const saved of [{}, { pillStyle: "classic" }, { pillStyle: "yappy" }]) {
+      const html = render(<Companion />, { settings: saved, saveSettings: () => undefined });
+      expect(html).not.toMatch(/Classic|waveform capsule/);
+      expect(html).toContain("Yappy");
+      expect(html).toMatch(/class="profile active"[^>]*>\s*<strong>Yappy<\/strong>/);
+    }
+    expect(activePillStyle("classic")).toBe("yappy");
+    expect(activePillStyle(undefined)).toBe("yappy");
+    expect(activePillStyle("yappy")).toBe("yappy");
   });
   it("save / reset actions live in the pinned footer", () => {
     const privacy = paneSrc["../settings/Privacy.tsx"];

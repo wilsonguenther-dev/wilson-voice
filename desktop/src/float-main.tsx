@@ -1,6 +1,6 @@
 /**
  * Float entry — picks the pill style from settings and renders it.
- *   any registered character id (pill/characters/registry.ts); unknown → classic
+ *   any registered character id (pill/characters/registry.ts); unknown or retired → yappy
  * Live-switches when settings are saved (backend emits "settings").
  *
  * YV53: the same settings carry the dock edge (bottom | left | right). The
@@ -15,7 +15,7 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
-import { resolveCharacter } from "./pill/characters/registry";
+import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
@@ -27,6 +27,8 @@ import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
+import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
+import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
   errorSentence,
@@ -59,6 +61,7 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -75,14 +78,19 @@ import {
   type MeetingMode,
   type PillLayout,
 } from "./pill/state";
-import type { ListenEstimate, SlotCtx } from "./pill/slots";
+import {
+  NO_RAIL_KEYS, railKeysFrom, subscribeRailFailure,
+  type ListenEstimate, type RailBindingRow, type RailKeys, type SlotCtx,
+} from "./pill/slots";
 import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
   matrixStyleChipScene,
+  matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
+  matrixDragBlobScene,
   type ForcedPill,
 } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
@@ -106,6 +114,33 @@ interface Settings {
   /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
   mutedPillCategories?: string[];
 }
+
+/**
+ * WF-03 — the rail's keycaps, read from the backend's LIVE hotkey table
+ * (`hotkey_bindings`, the same rows Settings › Shortcut draws). Re-read on
+ * every `settings` broadcast — a rebind is saved through `save_settings`, which
+ * broadcasts — so a tooltip follows a rebind with no restart. A failed read
+ * keeps the last good keys and logs once; it never invents a default.
+ */
+function useRailKeys(): RailKeys {
+  const [keys, setKeys] = useState<RailKeys>(NO_RAIL_KEYS);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const read = () => {
+      invoke<{ rows?: RailBindingRow[] }>("hotkey_bindings")
+        .then((r) => { if (!dead) setKeys(railKeysFrom(r?.rows)); })
+        .catch(() => console.warn("pill_rail keys_failed source=hotkey_bindings"));
+    };
+    read();
+    listen("settings", read).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  return keys;
+}
+
+/** How long a failed rail action's sentence holds the phase strip. */
+const RAIL_ERROR_MS = 5000;
 
 /**
  * Y8-B — the WPM slot's numbers while LISTENING: an estimate off voiced
@@ -213,14 +248,22 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixBacktrackCaughtScene(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
+    // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
+    matrixRailScene(),
+    // WF-02 — the pill mid-drag: the blob plus its three drop zones.
+    matrixDragBlobScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+  if (forcedDragScene(window.location.search)) {
+    const root = document.documentElement;
+    applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
+  }
 }
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
-  const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
+  const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
   // the capsule inside keeps its identity, so it never remounts.
@@ -446,7 +489,7 @@ function Float() {
     // The dock edge rides on <html> (not React state) — it only drives CSS
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
-      setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
+      setStyle(FORCED?.style ?? (s?.pillStyle || FALLBACK_CHARACTER));
       const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
       document.documentElement.dataset.dock = d;
       setDock(d);
@@ -526,6 +569,18 @@ function Float() {
   // input: the phase, the dock, the meeting, Y3-C's real progress and the
   // listening estimate. The capsule lays the slots out; it decides none of it.
   const listenEst = useListenEstimate(isListening(phase));
+  const railKeys = useRailKeys();
+  // A failed rail action says so in the strip, once, then the strip returns.
+  const [railError, setRailError] = useState<string | null>(null);
+  useEffect(() => subscribeRailFailure(setRailError), []);
+  useEffect(() => {
+    if (!railError) return undefined;
+    const t = window.setTimeout(() => setRailError(null), RAIL_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [railError]);
+  useEffect(() => {
+    document.documentElement.dataset.railError = railError ? "true" : "false";
+  }, [railError]);
   const slots: SlotCtx = {
     phase,
     dock,
@@ -533,9 +588,17 @@ function Float() {
     progress,
     listen: listenEst,
     scratchpadOnBar,
+    // yap-1106-pill-notes-and-meeting — the rail's inputs (the capsule adds `railOpen`).
+    meetingRecording: meeting.status.recording,
+    meetingClock: meeting.status.elapsedLabel ?? null,
+    meetingTitle: meeting.status.title ?? null,
+    keys: railKeys,
+    stopKey: chordLabel,
+    // A matrix scene forces the rail out; a real pill opens it on hover/focus (PillShell).
+    railOpen: FORCED?.rail ? true : undefined,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
-  // unknown id falls back to classic. The shell never branches on an id: a
+  // unknown or retired id falls back to yappy. The shell never branches on an id: a
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
@@ -549,7 +612,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -576,7 +639,8 @@ function Float() {
   // built from the key the user bound (`chordLabel`), and it wears the shell's
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
-  const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+  const line = railError
+    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
@@ -610,7 +674,14 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {stripLine(line, stillRecording, fnHint, chordLabel)}
+        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+          // Item 18 — the hands-free hint, shorter: the key as a keycap and two
+          // words. The full sentence stays the accessible name and the
+          // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
+          <span className="hands-free-hint" title={line ?? undefined}>
+            <kbd className="keycap">{chordLabel.trim() || DEFAULT_STOP_KEY}</kbd> to stop
+          </span>
+        ) : stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
       {/* WF-20 — "Slack · casual": the app-aware mode for this app; a click
           changes it for this app for 15 minutes. Listening only, and never

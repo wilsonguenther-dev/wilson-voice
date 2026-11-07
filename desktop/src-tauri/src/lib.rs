@@ -93,6 +93,10 @@ pub mod license;
 // yap-lic-01 — offline verifier for drivia.consulting license tokens (compact
 // JWS, EdDSA, EMBEDDED keys only). Wired into `license` as the v2 path.
 pub mod license_v2;
+// yap-1106-lic-03 — the drivia.consulting activation client: activate /
+// refresh / deactivate over `license::LicenseTransport` (the only module that
+// reaches the licensing service). Tokens are verified offline by `license_v2`.
+pub mod license_client;
 // yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
 pub mod lifecycle;
 mod logging;
@@ -521,7 +525,9 @@ pub struct AppSettings {
     /// every save and again at launch. Empty = one shortcut per action.
     #[serde(default)]
     pub extra_chords: Vec<shortcuts::editor::ExtraBinding>,
-    /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
+    /// Floating pill style: "yappy" (pixel pet). "classic" (the obsidian
+    /// capsule) is retired: the v2 → v3 migration rewrites it to "yappy", and
+    /// the pill's character registry resolves any stale id to Yappy too.
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
     /// Where the pill docks on screen (YV53): "bottom" (centred island, the
@@ -718,7 +724,7 @@ pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
 /// arm in `apply_settings_migrations` that upgrades stores written at the
 /// previous version.
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 {
     CURRENT_SETTINGS_SCHEMA_VERSION
@@ -730,7 +736,7 @@ fn default_command_binding() -> String {
     "command".into()
 }
 fn default_pill_style() -> String {
-    "classic".into()
+    "yappy".into()
 }
 fn default_pill_position() -> String {
     "bottom".into()
@@ -796,7 +802,7 @@ impl Default for AppSettings {
             copy_last_chord: None,
             scratchpad_chord: None,
             extra_chords: Vec::new(),
-            pill_style: "classic".into(),
+            pill_style: default_pill_style(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
@@ -1568,6 +1574,12 @@ fn build_status(state: &AppState) -> AppStatus {
         ptt: &ptt,
         session_cap_warned: *state.session_cap_warned.lock(),
     });
+    // WF-10 — the mic vanished mid-take and capture carried on on the next
+    // one: the live take's line says so (the ceiling notice still outranks it).
+    let message = match record::mid_take_mic_note() {
+        Some(note) if recording && !*state.session_cap_warned.lock() => note,
+        _ => message,
+    };
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::still_recording_message(&chord_label)
@@ -1637,6 +1649,9 @@ fn emit_status(app: &AppHandle, state: &AppState) {
 /// `emit_status` is sometimes invoked from the ASR worker thread, so the actual
 /// updates are hopped onto the main thread with cheap Arc-backed handle clones.
 fn sync_tray(app: &AppHandle, state: &AppState) {
+    // WF-14 — the "Update ready" line, and a deferred restart that was waiting
+    // for this very transition to quiet.
+    sync_update_ready(app, state);
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
@@ -1770,6 +1785,100 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     });
 }
 
+/// WF-14 — the menu-bar "Update ready" line's handle. Built with the tray,
+/// inserted only while a downloaded release waits for a restart.
+static TRAY_UPDATE_READY: std::sync::Mutex<Option<MenuItem<Wry>>> = std::sync::Mutex::new(None);
+
+/// WF-14 — what Yap is doing right now, for the restart gate. A dictation, a
+/// take still decoding, a polish pass, meeting notes being written, or a
+/// meeting recording each keep the restart waiting.
+fn update_activity(state: &AppState) -> tray_menu::Activity {
+    let notes = SUMMARY_JOBS
+        .get()
+        .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
+        .unwrap_or(false);
+    tray_menu::Activity {
+        dictating: *state.recording.lock(),
+        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        polishing: tray_menu::polish_in_flight(),
+        notes,
+        meeting: state.meeting().is_some_and(|c| c.is_recording()),
+    }
+}
+
+/// WF-14 — reflect `tray_menu::UPDATE_READY` into the menu, and fire a
+/// deferred restart the moment Yap is quiet. Called from `sync_tray` (every
+/// state transition), from `install_update` and from the item's own click.
+/// The line sits directly under the status header (under the upgrade line when
+/// that shows) and is removed when no newer release is waiting — so a fresh
+/// process, already running the installed build, never shows it.
+fn sync_update_ready(app: &AppHandle, state: &AppState) {
+    let ready = tray_menu::UPDATE_READY.version();
+    let running = app.package_info().version.to_string();
+    let visible = tray_menu::update_item_visible(ready.as_deref(), &running);
+    let was_shown = tray_menu::UPDATE_READY.swap_shown(visible);
+    if !visible && !was_shown {
+        return;
+    }
+    let activity = update_activity(state);
+    let blocker = tray_menu::restart_blocker(activity);
+    let armed = tray_menu::UPDATE_READY.is_armed();
+    if tray_menu::restart_when_quiet(visible, armed, activity) {
+        tray_menu::UPDATE_READY.set_armed(false);
+        log::info!(
+            "update restart_deferred_fired version={}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+        // Through RunEvent::Exit and its bounded quit teardown, then relaunch.
+        app.request_restart();
+        return;
+    }
+    if visible && !was_shown {
+        log::info!(
+            "tray update_ready shown version={} running={running}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+    } else if !visible && was_shown {
+        log::info!("tray update_ready removed running={running}");
+    }
+    let label = tray_menu::update_ready_label(blocker, armed);
+    let item = TRAY_UPDATE_READY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let menu = state.tray_menu.lock().clone();
+    let (Some(item), Some(menu)) = (item, menu) else {
+        return; // tray not built yet; the next transition places it
+    };
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(label);
+        let items = menu.items().unwrap_or_default();
+        let present = items
+            .iter()
+            .any(|k| k.id().as_ref() == tray_menu::ID_UPDATE_READY);
+        if visible && !present {
+            let mut at = items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_LICENSE_HEADER)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if items
+                .get(at)
+                .is_some_and(|k| k.id().as_ref() == tray_menu::ID_UPGRADE)
+            {
+                at += 1;
+            }
+            if let Err(e) = menu.insert(&item, at) {
+                log::warn!("tray update_ready insert failed: {e}");
+            }
+        } else if !visible && present {
+            if let Err(e) = menu.remove(&item) {
+                log::warn!("tray update_ready remove failed: {e}");
+            }
+        }
+    });
+}
+
 /// Y6-B — what each menu-bar command DOES. Exhaustive over
 /// `tray_menu::TrayCommand` with no wildcard arm: a command added to the
 /// registry without a handler here does not compile. The tray's
@@ -1874,6 +1983,54 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         // `mic_select::choose` and redraws the submenu with the new check.
         TrayCommand::PickMicrophone(index) => {
             pick_microphone_from_tray(app, index);
+        }
+        // WF-11 — pick Auto-detect or a language from the submenu, resolved
+        // against the rows ON SCREEN and written through the ONE writer the
+        // bar's chip and Settings use, which redraws the submenu and tells
+        // every window.
+        TrayCommand::PickLanguage(index) => {
+            pick_language_from_tray(app, state, index);
+        }
+        // WF-14 — "Update ready — Restart to update". Never restarts out from
+        // under a take, a polish or a meeting: busy, the click arms a deferred
+        // restart (`sync_update_ready` fires it on the first quiet
+        // transition) and a second click cancels it.
+        TrayCommand::RestartToUpdate => {
+            let ready = tray_menu::UPDATE_READY.version();
+            let armed = tray_menu::UPDATE_READY.is_armed();
+            let activity = update_activity(state);
+            let blocker = tray_menu::restart_blocker(activity);
+            let action = tray_menu::restart_click(ready.is_some(), armed, activity);
+            log::info!(
+                "tray restart_to_update action={action:?} blocker={} version={}",
+                blocker.map(tray_menu::Busy::as_str).unwrap_or("none"),
+                ready.as_deref().unwrap_or("none")
+            );
+            match action {
+                tray_menu::RestartAction::Nothing => {}
+                tray_menu::RestartAction::RestartNow => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    app.request_restart();
+                }
+                tray_menu::RestartAction::Arm => {
+                    tray_menu::UPDATE_READY.set_armed(true);
+                    sync_update_ready(app, state);
+                }
+                tray_menu::RestartAction::Disarm => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    sync_update_ready(app, state);
+                }
+            }
+        }
+        // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
+        TrayCommand::OpenLanguageSettings => {
+            log::info!("tray open_language_settings");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("navigate", "settings");
+            let _ = app.emit("settings-tab", tray_menu::LANGUAGE_SETTINGS_TAB);
         }
         // WF-07 — "Hide Meeting Titles": persisted, then the watcher is woken
         // and re-publishes, which redraws the calendar rows.
@@ -1982,6 +2139,135 @@ fn pick_microphone_from_tray(app: &AppHandle, index: usize) {
     if let Err(e) = spawned {
         log::warn!("tray pick_microphone spawn_failed error={e}");
     }
+}
+
+/// WF-11 — the tray half of a language pick. The row carries the exact prefs
+/// the chip would write for the same choice (`tray_menu::prefs_for_pick`).
+fn pick_language_from_tray(app: &AppHandle, state: &AppState, index: usize) {
+    let Some(row) = tray_menu::language_row(index) else {
+        log::warn!("tray pick_language stale_row index={index}");
+        sync_language_menu(app);
+        return;
+    };
+    match write_dictation_languages(app, state, &row.prefs, "tray") {
+        Ok(_) => log::info!("tray pick_language index={index} pick={}", row.pick),
+        Err(e) => {
+            log::warn!("tray pick_language failed pick={} error={e}", row.pick);
+            // The check item flipped itself on the click; redraw from the
+            // unchanged settings so it reads true again — and say so.
+            sync_language_menu(app);
+            notify(app, "Yap", "Yap could not switch the language — try again");
+        }
+    }
+}
+
+/// WF-11 — redraw the Languages submenu from the live settings. Safe from any
+/// thread: the mutation hops to the main thread.
+fn sync_language_menu(app: &AppHandle) {
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+            apply_language_menu_on_main(&app_main, &state);
+        }
+    });
+    if let Err(e) = hop {
+        log::warn!("tray language_menu hop_failed error={e}");
+    }
+}
+
+/// WF-11 — the ONE place the Languages submenu is mutated. MAIN THREAD only.
+/// Built from the live prefs and the LAST probed model support (never loads
+/// the model to draw a check); what was drawn is recorded in
+/// `tray_menu::LANG_SHOWN` only on success.
+fn apply_language_menu_on_main(app: &AppHandle, state: &AppState) {
+    let Some(menu) = state.tray_menu.lock().clone() else {
+        log::debug!("tray language_menu skipped reason=tray_not_built");
+        return;
+    };
+    let prefs = state.settings.lock().language_prefs();
+    let support = tray_menu::LANG_SHOWN.support();
+    let opts = languages::language_options(&prefs, support.as_ref());
+    let plan = tray_menu::language_menu(&opts);
+    match place_language_submenu(app, &menu, &plan) {
+        Ok(()) => {
+            log::info!(
+                "tray language_menu synced rows={} checked={} probed={}",
+                plan.rows.len(),
+                plan.checked_pick().unwrap_or("none"),
+                support.is_some()
+            );
+            tray_menu::LANG_SHOWN.set(Some(plan));
+        }
+        Err(e) => {
+            log::warn!("tray language_menu apply_failed error={e}");
+            tray_menu::LANG_SHOWN.set(None);
+        }
+    }
+}
+
+fn place_language_submenu(
+    app: &AppHandle,
+    menu: &Menu<Wry>,
+    plan: &tray_menu::LanguageMenu,
+) -> Result<(), String> {
+    // Out with the old submenu.
+    loop {
+        let items = menu.items().map_err(|e| format!("items: {e}"))?;
+        let Some(at) = items
+            .iter()
+            .position(|k| k.id().as_ref() == tray_menu::ID_LANGUAGES)
+        else {
+            break;
+        };
+        menu.remove_at(at).map_err(|e| format!("remove_at: {e}"))?;
+    }
+    // In, in the Dictation group: under Microphone once the device list has
+    // landed (the Microphone submenu is always re-placed directly under
+    // Hands-free, so the order stays Hands-free, Microphone, Languages), else
+    // directly under Hands-free.
+    let items = menu.items().map_err(|e| format!("items: {e}"))?;
+    let at = items
+        .iter()
+        .position(|k| k.id().as_ref() == tray_menu::ID_MICROPHONE)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
+        })
+        .map(|i| i + 1)
+        .ok_or("tray: no hands-free item to anchor the languages submenu")?;
+    let children = plan
+        .rows
+        .iter()
+        .map(|r| CheckMenuItem::with_id(app, r.id.as_str(), &r.text, true, r.checked, None::<&str>))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row item: {e}"))?;
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| format!("separator: {e}"))?;
+    let settings_i = MenuItem::with_id(
+        app,
+        tray_menu::ID_LANGUAGE_SETTINGS,
+        tray_menu::LANGUAGE_SETTINGS_LABEL,
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("settings item: {e}"))?;
+    let mut entries: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = children
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    entries.push(&separator);
+    entries.push(&settings_i);
+    let submenu = Submenu::with_id_and_items(
+        app,
+        tray_menu::ID_LANGUAGES,
+        tray_menu::label(tray_menu::ID_LANGUAGES),
+        true,
+        &entries,
+    )
+    .map_err(|e| format!("submenu: {e}"))?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
 }
 
 /// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
@@ -2785,9 +3071,16 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             let state_lv = state.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
+                // WF-10 — redraw the pill when the take moves to another mic.
+                let mut mic_switch_seen = record::mic_switch_seq();
                 loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
+                    let mic_switch_now = record::mic_switch_seq();
+                    if mic_switch_now != mic_switch_seen {
+                        mic_switch_seen = mic_switch_now;
+                        emit_status(&app_lv, &state_lv);
+                    }
                     let warned = *state_lv.session_cap_warned.lock();
                     match record::session_cap_tick(started.elapsed(), warned) {
                         record::SessionCapAction::Continue => {}
@@ -4014,7 +4307,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // failure modes are otherwise invisible by construction.
                 // yap24-PILL2: wrapped so `polishing` is reported exactly when
                 // the cleanup pipeline actually calls the polish stage.
-                take_stages.polishing(|t| polish::polish_llm_result(t, dictation_mode, &polish_config)),
+                take_stages.polishing(|t| {
+                    // WF-14 — the restart gate reads this while it is held.
+                    let _polish = tray_menu::PolishGuard::enter();
+                    polish::polish_llm_result(t, dictation_mode, &polish_config)
+                }),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -4730,6 +5027,51 @@ fn adopt_recovered_takes(
     recovered
 }
 
+/// yap-fx-07 — the error an in-session orphaned capture spill carries in
+/// History: the take was cut off before it was transcribed (the 2026-11-06
+/// "arm while already capturing" case), and its audio is all there is.
+const ABORTED_TAKE_ERROR: &str = "recording cut off before it was transcribed";
+
+/// yap-fx-07 — how old (mtime) an aborted capture spill must be before the
+/// in-session scan adopts it. `SpillWriter::drop`'s copy fallback can still be
+/// writing a younger one; ten seconds is far past any copy of a take's audio.
+const ABORTED_SPILL_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// yap-fx-07 — "every kept clip is listed": adopt the capture spills a take
+/// aborted mid-session left in the recovery dir, so each gets a
+/// `failed_dictations` row (and a Retry) NOW rather than at the next launch —
+/// or is deleted, when it is silent (`record::is_silent_clip`). Runs before
+/// every History list and every hygiene pass. Never touches an in-flight
+/// `.decoding.wav` link (a live decode owns it) and never decodes or pastes.
+/// A row list that cannot be read skips the scan: it cannot tell an orphan
+/// from a kept clip without it. Returns how many rows were added.
+fn adopt_aborted_spills(db: &Database, dir: &Path) -> usize {
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>(),
+        Err(e) => {
+            log::warn!("recovery orphan_scan_skipped reason=rows_unreadable error={e}");
+            return 0;
+        }
+    };
+    let started = std::time::Instant::now();
+    let takes = record::recover_aborted_capture_spills(
+        dir,
+        &keep,
+        std::time::SystemTime::now(),
+        ABORTED_SPILL_MIN_AGE,
+    );
+    if takes.is_empty() {
+        return 0;
+    }
+    let adopted = adopt_recovered_takes(db, takes, ABORTED_TAKE_ERROR, "yap-fx-07 aborted spill");
+    log::info!(
+        "recovery orphan_spills_adopted count={adopted} ms={}",
+        started.elapsed().as_millis()
+    );
+    diagnostics::record_duration("recovery", "orphan_spills_adopted", adopted as u64);
+    adopted
+}
+
 /// DB-B — the launch sweep for a LONG take the app died in the middle of.
 ///
 /// While a take decodes, its finished clip is hard-linked into the recovery
@@ -4912,6 +5254,9 @@ fn run_leftovers_sweep(db: &Database) {
 
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
+    // yap-fx-07 — orphans become rows (or, silent, are deleted) BEFORE the
+    // keep-list below is read, so the sweep never sees one as row-less.
+    adopt_aborted_spills(db, &recovery_dir());
     // YV94 — same posture, one window later: expired meeting audio is dropped
     // before the orphan sweep runs, so the sweep never sees those WAVs as
     // "unreachable files I should think about".
@@ -5178,7 +5523,7 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
     // persists the whole `AppSettings` struct, so `cleanupLevel` is present in
     // every store the moment onboarding saves, and v1 records no provenance
     // anywhere. From v2 on, `cleanup_level_set_by_user` records it, and a v2
-    // store never re-enters this function at all (the early return above).
+    // store never re-enters this arm (it is guarded on `stored_version < 2`).
     //
     // Only "light" moves. "none" is verbatim mode — a real user need — and
     // "high" is already past the gate.
@@ -5191,8 +5536,34 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
         settings.formatting_notice_pending = true;
     }
 
+    // v2 → v3 (yap-1106-retire-classic-pill): the Classic pill is retired.
+    // A store that saved "classic", or never saved a style at all, moves to
+    // "yappy" — the one pill that docks the meeting timer. Read off the RAW
+    // store: serde has already defaulted a missing field, so the struct alone
+    // cannot tell "never saved" from "saved yappy".
+    if stored_version < 3 {
+        if let Some(from) = retired_pill_style(stored.get("pillStyle")) {
+            log::info!(
+                "settings pill_style_migrated from={from} to=yappy schema_from=v{stored_version}"
+            );
+            settings.pill_style = default_pill_style();
+        }
+    }
+
     settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     true
+}
+
+/// yap-1106-retire-classic-pill — the stored `pillStyle` the v2 → v3 arm must
+/// move, named for the log line: `"unset"` (missing, null, empty or not a
+/// string) or `"classic"` (any case). `None` = keep it: the user saved a style
+/// that still ships.
+pub fn retired_pill_style(stored: Option<&serde_json::Value>) -> Option<&'static str> {
+    match stored.and_then(|v| v.as_str()).map(str::trim) {
+        None | Some("") => Some("unset"),
+        Some(s) if s.eq_ignore_ascii_case("classic") => Some("classic"),
+        Some(_) => None,
+    }
 }
 
 /// yap-p0-insertion-bridge-fallback — the Copy card the pill should show (a
@@ -5244,6 +5615,7 @@ fn nudge_mark_shown(state: State<'_, Arc<AppState>>, condition: String) -> Resul
 /// honest `supportsDetect: null`, never a guess.
 #[tauri::command]
 async fn language_options(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<languages::LanguageOptions, String> {
     let state = state.inner().clone();
@@ -5264,16 +5636,21 @@ async fn language_options(
             }
             None => None,
         };
+        // WF-11 — the tray's Languages submenu draws from the last probe (it
+        // never loads the model itself); a probe that changed what the model
+        // can do redraws it so its check matches the chip's.
+        if tray_menu::LANG_SHOWN.support() != support {
+            tray_menu::LANG_SHOWN.remember_support(support.clone());
+            sync_language_menu(&app);
+        }
         Ok(languages::language_options(&prefs, support.as_ref()))
     })
     .await
     .map_err(|e| format!("language probe failed: {e}"))?
 }
 
-/// Y10-A — the ONE writer of the three language fields, for the Settings
-/// control and the bar's picker alike. Normalizes (known codes only, primary
-/// first, at most `languages::MAX_LANGUAGE_SET`), persists, and broadcasts the
-/// same `settings` event every other settings write does.
+/// Y10-A — the Settings control's and the bar's picker's door to the ONE
+/// writer of the three language fields ([`write_dictation_languages`]).
 #[tauri::command]
 fn set_dictation_languages(
     app: AppHandle,
@@ -5282,7 +5659,26 @@ fn set_dictation_languages(
     set: Vec<String>,
     auto: bool,
 ) -> Result<AppSettings, String> {
-    let prefs = languages::LanguagePrefs::from_settings(&primary, &set, auto);
+    let prefs = languages::LanguagePrefs { primary, set, auto };
+    write_dictation_languages(&app, state.inner().as_ref(), &prefs, "app")
+}
+
+/// Y10-A / WF-11 — THE writer of the three language fields, for the Settings
+/// control, the bar's chip, the offer card and the tray's Languages submenu
+/// alike. Normalizes (known codes only, primary first, at most
+/// `languages::MAX_LANGUAGE_SET`), persists, broadcasts the same `settings`
+/// event every other settings write does PLUS
+/// `languages::LANGUAGES_CHANGED_EVENT` with the new prefs (so every window's
+/// language store applies it at once), and redraws the tray submenu — one
+/// store, every surface follows it.
+fn write_dictation_languages(
+    app: &AppHandle,
+    state: &AppState,
+    requested: &languages::LanguagePrefs,
+    source: &str,
+) -> Result<AppSettings, String> {
+    let prefs =
+        languages::LanguagePrefs::from_settings(&requested.primary, &requested.set, requested.auto);
     let next = {
         let mut settings = state.settings.lock();
         settings.language = prefs.primary.clone();
@@ -5290,14 +5686,19 @@ fn set_dictation_languages(
         settings.language_auto = prefs.auto;
         settings.clone()
     };
-    persist_settings(&next)?;
+    if let Err(e) = persist_settings(&next) {
+        log::warn!("dictation languages: persist_failed source={source} error={e}");
+        return Err(e);
+    }
     let _ = app.emit("settings", &next);
+    let _ = app.emit(languages::LANGUAGES_CHANGED_EVENT, &prefs);
     log::info!(
-        "dictation languages: primary={} set={:?} auto={}",
+        "dictation languages: source={source} primary={} set={:?} auto={}",
         prefs.primary,
         prefs.set,
         prefs.auto
     );
+    sync_language_menu(app);
     Ok(next)
 }
 
@@ -5526,24 +5927,10 @@ fn save_settings(
     // can put them back alongside every primary.
     let aliases_before = hotkey_table::active_aliases();
     let rollback = |err: CommandError, dictate_applied: bool, applied: &Applied| -> CommandError {
-        let aliases_now = hotkey_table::active_aliases();
-        if aliases_now != aliases_before {
-            let (re_reg, drop_now) = hotkey_table::alias_diff(&aliases_now, &aliases_before);
-            if smoke::global_hotkeys_allowed() {
-                let gs = app.global_shortcut();
-                for sc in drop_now {
-                    let _ = gs.unregister(sc);
-                }
-                for sc in re_reg {
-                    if !gs.is_registered(sc) {
-                        if let Err(e) = gs.register(sc) {
-                            log::warn!("shortcuts extra_rollback_failed ({e})");
-                        }
-                    }
-                }
-            }
-            hotkey_table::set_active_aliases(aliases_before.clone());
-        }
+        // fix-b2-1: the PRIMARIES are restored first and the extras last, so
+        // (a) the extras' drop plan sees the restored primaries and never
+        // unregisters a chord one of them holds, and (b) a primary swap-back
+        // that drops a chord a restored extra holds is re-registered below.
         for (a, (old_chord, old_label)) in applied.iter().rev() {
             let new_chord = hotkey_table::active_chord(*a).0;
             if smoke::global_hotkeys_allowed() {
@@ -5565,6 +5952,40 @@ fn save_settings(
                 log::warn!("dictate chord rollback failed: {e}");
             }
         }
+        // Every extra held before this save is re-asserted, not only the
+        // diff: a primary swap-back above may have dropped one (a save that
+        // moved ⌃⌘J from an extra to a primary, refused in step 2b before the
+        // alias set changed, swaps the primary back and unregisters ⌃⌘J).
+        let aliases_now = hotkey_table::active_aliases();
+        let restored_primaries = live_primary_chords(dictate_toggle_chord(&prev).0);
+        let drop_now =
+            hotkey_table::alias_unregister_plan(&aliases_now, &aliases_before, &restored_primaries);
+        let mut restored = 0usize;
+        if smoke::global_hotkeys_allowed() {
+            let gs = app.global_shortcut();
+            for sc in &drop_now {
+                if gs.is_registered(*sc) {
+                    if let Err(e) = gs.unregister(*sc) {
+                        log::warn!("shortcuts extra_rollback_unregister_failed ({e})");
+                    }
+                }
+            }
+            for (_, sc, _) in &aliases_before {
+                if !gs.is_registered(*sc) {
+                    match gs.register(*sc) {
+                        Ok(()) => restored += 1,
+                        Err(e) => log::warn!("shortcuts extra_rollback_failed ({e})"),
+                    }
+                }
+            }
+        }
+        if aliases_now != aliases_before || restored > 0 {
+            log::info!(
+                "shortcuts extras_rolled_back restored={restored} dropped={}",
+                drop_now.len()
+            );
+        }
+        hotkey_table::set_active_aliases(aliases_before.clone());
         if let Err(e) = persist_settings(&prev) {
             log::warn!("settings rollback persist failed: {e}");
         }
@@ -5619,12 +6040,49 @@ fn save_settings(
             .map_err(CommandError::refused)?;
         let old_extras = hotkey_table::active_aliases();
         if new_extras != old_extras {
-            let (to_reg, to_unreg) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            let (to_reg, removed) = hotkey_table::alias_diff(&old_extras, &new_extras);
+            // fix-b2-1: the primaries as they stand after step 2. A removed
+            // extra that one of them now holds (reset-all handing ⌃⌘J back to
+            // Open Scratchpad) stays registered — step 2's swap skipped its
+            // register because the extra already held it.
+            let live_primaries = live_primary_chords(dictate_toggle_chord(&next).0);
+            let to_unreg =
+                hotkey_table::alias_unregister_plan(&old_extras, &new_extras, &live_primaries);
+            let kept_for_primary = removed.len().saturating_sub(to_unreg.len());
+            if kept_for_primary > 0 {
+                log::info!("shortcuts extra_now_primary kept={kept_for_primary}");
+            }
+            // A NEW extra a live primary already holds passed the gate only by
+            // a bug (check_distinct refuses it): log it and refuse the save.
+            let conflicts =
+                hotkey_table::alias_register_conflicts(&old_extras, &new_extras, &live_primaries);
+            if let Some((action, _, label)) = conflicts.first() {
+                log::error!(
+                    "shortcuts extra_on_live_primary action={} label={label} count={}",
+                    action.title(),
+                    conflicts.len()
+                );
+                return Err(rollback(
+                    CommandError::refused(format!(
+                        "{label} is already another action's shortcut — pick a different one"
+                    )),
+                    dictate_applied,
+                    &applied,
+                ));
+            }
             if smoke::global_hotkeys_allowed() {
                 let gs = app.global_shortcut();
                 let mut done: Vec<tauri_plugin_global_shortcut::Shortcut> = Vec::new();
                 for sc in &to_reg {
                     if gs.is_registered(*sc) {
+                        // Not a live primary (checked above), yet held: a
+                        // leftover registration. Keep it, but never silently.
+                        let who = new_extras
+                            .iter()
+                            .find(|(_, n, _)| n == sc)
+                            .map(|(a, ..)| a.title())
+                            .unwrap_or("unknown");
+                        log::warn!("shortcuts extra_already_registered action={who}");
                         continue;
                     }
                     if let Err(e) = gs.register(*sc) {
@@ -5697,6 +6155,9 @@ fn save_settings(
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
+    // WF-11 — a full-settings save may carry the language fields; the tray's
+    // Languages submenu follows the store.
+    sync_language_menu(&app);
     // YV53: the dock edge moves the NSPanel itself, so it must land before the
     // show below re-parks — and `reposition` covers the still-recording case
     // where the pill stays up without a show call.
@@ -6131,6 +6592,16 @@ async fn set_microphone(
     Ok(mic_select::list())
 }
 
+/// WF-10 — save the fallback ranking (stable ids, best first) from Settings.
+/// When the chosen mic disappears — before a take or in the middle of one —
+/// Yap continues on the first ranked mic still plugged in. Virtual inputs are
+/// never auto-picked, ranked or not.
+#[tauri::command]
+async fn set_microphone_order(ids: Vec<String>) -> Result<mic_select::MicList, String> {
+    mic_select::set_order(ids)
+        .map_err(|_| "Yap could not save the microphone order. Try again.".to_string())
+}
+
 #[tauri::command]
 fn get_insights(state: State<'_, Arc<AppState>>) -> Result<Insights, String> {
     state.db.insights()
@@ -6205,14 +6676,30 @@ fn correct_transcript(
 /// Expired ones are purged (audio included) before the list is built, so the
 /// UI can never offer a retry against a clip retention already removed.
 #[tauri::command]
-fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
-    purge_expired_failed_takes(&state.db);
-    Ok(state
-        .db
-        .list_failed_dictations()?
-        .into_iter()
-        .map(failed_row_for_display)
-        .collect())
+///
+/// yap-fx-07 — async, with the work on a blocking thread: adopting an aborted
+/// spill reads and rewrites its audio, which must never run on the main thread
+/// a sync command would hold.
+async fn list_failed_dictations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FailedDictation>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FailedDictation>, String> {
+        purge_expired_failed_takes(&state.db);
+        // yap-fx-07 — a spill a mid-session abort left behind is listed too.
+        adopt_aborted_spills(&state.db, &recovery_dir());
+        Ok(state
+            .db
+            .list_failed_dictations()?
+            .into_iter()
+            .map(failed_row_for_display)
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        log::error!("recovery list_failed worker failed: {e}");
+        "Couldn't load the kept clips — try again".to_string()
+    })?
 }
 
 /// yap-recovery-followups (f) — the row as History shows it. "Already
@@ -7433,9 +7920,21 @@ fn delete_scratch(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
 
 // --- DB-D Scratchpad window ---
 
+/// fix-b5-1 — `note_id`: the note to land on (the pill's meeting note);
+/// `None` keeps the plain open on whatever note was last active.
 #[tauri::command]
-fn open_scratchpad(app: AppHandle) -> Result<(), String> {
-    scratchpad::open(&app)
+fn open_scratchpad(app: AppHandle, note_id: Option<String>) -> Result<(), String> {
+    match note_id.filter(|id| !id.is_empty()) {
+        Some(id) => scratchpad::open_note(&app, id),
+        None => scratchpad::open(&app),
+    }
+}
+
+/// fix-b5-1 — the Scratchpad webview asks, on load and on every show, which
+/// note it was opened for (taken once; `None` = keep the active note).
+#[tauri::command]
+fn scratchpad_take_open_note() -> Option<String> {
+    scratchpad::take_open_note()
 }
 
 #[tauri::command]
@@ -9362,6 +9861,78 @@ fn meeting_kind_choices() -> Vec<meeting_control::KindChoice> {
     meeting_control::KIND_PICKER.to_vec()
 }
 
+/// WF-08 — what the pill's Meeting popover shows: today's next three meetings,
+/// "No upcoming meetings", or "Connect calendar". Decided by
+/// `calendar::meeting_popover` from the SAME snapshot the menu bar's "Today's
+/// Meetings" reads (`meeting_detect::upcoming_snapshot`), so the pill and the
+/// tray never disagree. Never reads EventKit, never asks for access.
+#[tauri::command]
+fn meeting_popover(state: State<'_, Arc<AppState>>) -> calendar::MeetingPopover {
+    let setup = state.db.notetaker_setup();
+    let snap = meeting_detect::upcoming_snapshot();
+    let pop = calendar::meeting_popover(
+        snap.as_ref(),
+        chrono::Local::now().timestamp(),
+        !setup.dismissed && !setup.calendar,
+    );
+    log::info!(
+        "pill meeting_popover opened state={} rows={} connect_nav={}",
+        pop.state,
+        pop.meetings.len(),
+        pop.connect.as_ref().map_or("none", |c| c.nav.as_str())
+    );
+    pop
+}
+
+/// WF-08 — a Record row of the pill's Meeting popover. Looks the row up by its
+/// occurrence key in the current snapshot, starts the recording named after
+/// the event (Virtual when it carries a link, as the tray's Record does), and
+/// snoozes the pill offer for that same occurrence. A row that left today's
+/// list since the popover opened is refused in words.
+#[tauri::command]
+fn meeting_popover_record(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let snap = meeting_detect::upcoming_snapshot();
+    let Some(row) = calendar::popover_meeting_for(snap.as_ref(), &key) else {
+        log::warn!("pill meeting_popover_record result=ignored:stale_row");
+        return Err(calendar::POPOVER_STALE_ERROR.to_string());
+    };
+    let kind = if row.has_link {
+        meetings::MeetingKind::Virtual
+    } else {
+        meetings::MeetingKind::Unknown
+    };
+    let st = state.inner().clone();
+    let started = std::time::Instant::now();
+    match begin_meeting(&app, &st, row.title.clone(), kind) {
+        Ok(status) => {
+            let result = if status.recording {
+                "started"
+            } else {
+                "not_started"
+            };
+            log::info!(
+                "pill meeting_popover_record result={result} has_title={} linked={} ms={}",
+                row.title.is_some(),
+                row.has_link,
+                started.elapsed().as_millis()
+            );
+            if meeting_detect::respond(&row.key).is_some() {
+                meeting_detect::emit_clear(&app);
+                release_offer_pill(&app);
+            }
+            Ok(status)
+        }
+        Err(e) => {
+            log::warn!("pill meeting_popover_record result=error:{e}");
+            Err(e)
+        }
+    }
+}
+
 /// Start a meeting. Errors (no capture engine, one already running) come back as
 /// a string the UI shows verbatim — this is the button a first-time user
 /// presses, and a silent failure here is the whole of finding #6 all over again.
@@ -10206,6 +10777,24 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
     )
 }
 
+/// fix-b2-1 (WF-18) — every chord a PRIMARY holds right now: the
+/// always-global rebindable chords (Record meeting included), the dictate
+/// toggle `dictate`, and the cancel key while a take has it armed. The extras'
+/// unregister plan never drops one of these.
+fn live_primary_chords(
+    dictate: tauri_plugin_global_shortcut::Shortcut,
+) -> Vec<tauri_plugin_global_shortcut::Shortcut> {
+    let mut v: Vec<_> = hotkey_table::BindingAction::ALWAYS_GLOBAL_REBINDABLE
+        .iter()
+        .map(|a| hotkey_table::active_chord(*a).0)
+        .collect();
+    v.push(dictate);
+    if let Some(c) = hotkey_table::armed_cancel() {
+        v.push(c);
+    }
+    v
+}
+
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
 fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
@@ -10600,14 +11189,41 @@ fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
 }
 
 /// Paste a license key. Verified BEFORE it is written, so a bad paste never
-/// lands on disk. Activation is entirely local (yap-lic-00): the key is checked
-/// against the compiled-in public key and no network call is made.
+/// lands on disk.
+///
+/// yap-1106-lic-03 — a `DCL-` key goes to drivia.consulting: ONE
+/// `POST /api/v1/licensing/activate` (`license_client`), on a blocking thread
+/// so the webview never waits on the main thread. The returned token is
+/// verified offline by `license_v2` before it is stored. Any other paste (a v1
+/// key, or a token) is checked locally with no network call, as before.
 #[tauri::command]
-fn activate_license(
+async fn activate_license(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    client: State<'_, Arc<license_client::LicenseClient>>,
     key: String,
 ) -> Result<license::LicenseStatus, CommandError> {
+    if license_client::is_dcl_key(&key) {
+        let client = client.inner().clone();
+        let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
+        return match joined {
+            Ok(Ok(status)) => {
+                let _ = app.emit("license", &status);
+                Ok(status)
+            }
+            Ok(Err(e)) => Err(CommandError {
+                code: e.code,
+                message: e.message,
+            }),
+            Err(_) => {
+                log::warn!("license_client activate failure=join");
+                Err(CommandError {
+                    code: "server".to_string(),
+                    message: license_client::message_for("server").to_string(),
+                })
+            }
+        };
+    }
     match state.license.activate(&key) {
         Ok(status) => {
             let _ = app.emit("license", &status);
@@ -10666,12 +11282,34 @@ fn open_purchase_page() -> Result<(), String> {
 
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
+///
+/// yap-1106-lic-03 — a drivia.consulting token frees its seat server-side
+/// FIRST (`license_client::LicenseClient::deactivate`); offline, the license
+/// stays and the error says why. A Mac with no token clears locally.
 #[tauri::command]
-fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
-    state.license.deactivate();
-    let status = state.license.status();
-    let _ = app.emit("license", &status);
-    status
+async fn deactivate_license(
+    app: AppHandle,
+    client: State<'_, Arc<license_client::LicenseClient>>,
+) -> Result<license::LicenseStatus, CommandError> {
+    let client = client.inner().clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || client.deactivate()).await;
+    match joined {
+        Ok(Ok(status)) => {
+            let _ = app.emit("license", &status);
+            Ok(status)
+        }
+        Ok(Err(e)) => Err(CommandError {
+            code: e.code,
+            message: e.message,
+        }),
+        Err(_) => {
+            log::warn!("license_client deactivate failure=join");
+            Err(CommandError {
+                code: "server".to_string(),
+                message: license_client::message_for("server").to_string(),
+            })
+        }
+    }
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -11255,6 +11893,12 @@ async fn install_update(app: AppHandle) -> Result<String, String> {
             e.to_string()
         })?;
     log::info!("Yap {version} installed — applies on relaunch");
+    // WF-14 — the menu bar now offers "Update ready — Restart to update"; the
+    // restart itself waits for a quiet Yap (`tray_menu::restart_gate`).
+    tray_menu::UPDATE_READY.mark_ready(&version);
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        sync_update_ready(&app, &state);
+    }
     Ok(version)
 }
 
@@ -11896,6 +12540,7 @@ pub fn run() {
             microphone_status,
             list_microphones,
             set_microphone,
+            set_microphone_order,
             get_insights,
             daily_series,
             monthly_series,
@@ -11927,6 +12572,7 @@ pub fn run() {
             delete_snippet,
             list_scratch,
             open_scratchpad,
+            scratchpad_take_open_note,
             hide_scratchpad,
             scratchpad_focus,
             copy_note_transient,
@@ -11980,6 +12626,9 @@ pub fn run() {
             meeting_status,
             toggle_meeting_recording,
             meeting_kind_choices,
+            // WF-08 — the pill's Meeting popover.
+            meeting_popover,
+            meeting_popover_record,
             start_meeting,
             stop_meeting,
             export_history,
@@ -12097,6 +12746,45 @@ pub fn run() {
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
 
+            // yap-1106-lic-03 — the activation client, on the licensing
+            // Keychain service of the RUNNING bundle id (a test channel keeps
+            // its own seat). Then the launch-time refresh check, on its own
+            // thread: it makes NO request while the token is fresh
+            // (`license_client::refresh_due`), and never blocks startup.
+            let lic_client = Arc::new(license_client::LicenseClient::new(
+                state.license.clone(),
+                Arc::new(license_client::HttpTransport),
+                Arc::new(keychain::MacKeychain::with_service(
+                    license_client::keychain_service_for(&app.config().identifier),
+                )),
+            ));
+            app.manage(lic_client.clone());
+            {
+                let handle = app.handle().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("license-refresh".into())
+                    .spawn(move || {
+                        let outcome = lic_client.refresh_if_due();
+                        if outcome.changes_status() {
+                            let status = lic_client.status();
+                            let _ = handle.emit("license", &status);
+                            if let license_client::RefreshOutcome::Deleted(code) = &outcome {
+                                // The activation screen states the reason.
+                                let _ = handle.emit(
+                                    "license_notice",
+                                    serde_json::json!({
+                                        "code": code,
+                                        "message": license_client::message_for(code),
+                                    }),
+                                );
+                            }
+                        }
+                    });
+                if spawned.is_err() {
+                    log::warn!("license_client refresh_thread failure=spawn");
+                }
+            }
+
             // DB-D — the Scratchpad's close/blur handling now rides with the
             // window itself: yap-1106-one-pill makes it on first use
             // (scratchpad::ensure_window), never here at launch.
@@ -12146,6 +12834,12 @@ pub fn run() {
             // The running binary's signature and the duplicate-bundle scan,
             // computed once, off the main thread, before the banner needs them.
             perm_truth::prime();
+            // yap-fx-08 — two copies of Yap on disk (the Desktop copy beside
+            // /Applications/Yap.app) split the TCC grants between them. Ask
+            // ONCE per set of copies, naming the running copy and which one
+            // holds the Microphone, whether to keep /Applications/Yap.app and
+            // move the rest to the Trash.
+            perm_truth::spawn_duplicate_copies_notice(app.handle().clone(), state.db.clone());
             // yap-p0-perm-repair: persist the last-run signature EVERY launch.
             perm_probe::prime();
 
@@ -12423,6 +13117,15 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            // WF-14 — built now, inserted only while an installed release
+            // waits for a restart (`sync_update_ready`).
+            let update_ready_i = MenuItem::with_id(
+                app,
+                tm::ID_UPDATE_READY,
+                tm::label(tm::ID_UPDATE_READY),
+                true,
+                None::<&str>,
+            )?;
             let show_i =
                 MenuItem::with_id(app, tm::ID_SHOW, tm::label(tm::ID_SHOW), true, None::<&str>)?;
             // Y6-B — the transcript history (the Home view).
@@ -12539,6 +13242,8 @@ pub fn run() {
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
+            *TRAY_UPDATE_READY.lock().unwrap_or_else(|p| p.into_inner()) = Some(update_ready_i);
+            tm::UPDATE_READY.reset_shown();
             *state.tray_menu.lock() = Some(menu.clone());
             // yap-1106 (a) — the meeting block is re-synced from
             // `controller.status()` whenever the tray is built, so a status that
@@ -12677,6 +13382,9 @@ pub fn run() {
                     log::warn!("tray microphone_menu hop_failed error={e}");
                 }
             });
+            // WF-11 — the Languages submenu is drawn at launch from the saved
+            // prefs, then redrawn by every language write.
+            sync_language_menu(app.handle());
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
@@ -12929,6 +13637,62 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
+    /// recovery dir is LISTED (a `failed_dictations` row with a Retry) without
+    /// waiting for a relaunch; a silent one is deleted instead; a second pass
+    /// adds nothing.
+    #[test]
+    fn aborted_spill_is_listed_or_deleted_only_if_silent() {
+        let dir = temp_dir("fx07-adopt");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        std::fs::create_dir_all(&recovery).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        for (name, amp) in [
+            ("voiced.capture.wav", 0.3f32),
+            ("hiss.capture.wav", 0.002f32),
+        ] {
+            let path = recovery.join(name);
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..(16_000 * 3) {
+                let t = i as f32 / 16_000.0;
+                w.write_sample(amp * (2.0 * std::f32::consts::PI * 220.0 * t).sin())
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 1);
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(rows.len(), 1, "the voiced spill is listed");
+        assert_eq!(rows[0].error, super::ABORTED_TAKE_ERROR);
+        assert!(rows[0].wav_path.ends_with("voiced.wav"));
+        assert!(std::path::Path::new(&rows[0].wav_path).exists());
+        assert!((rows[0].speech_seconds - 3.0).abs() < 0.01);
+        assert!(!recovery.join("voiced.capture.wav").exists());
+        assert!(
+            !recovery.join("hiss.capture.wav").exists(),
+            "silent spill deleted"
+        );
+        assert!(!recovery.join("hiss.wav").exists());
+
+        assert_eq!(super::adopt_aborted_spills(&db, &recovery), 0, "idempotent");
+        assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn take_stage_terminal_for_each_outcome() {
         use super::{terminal_stage, TakeOutcome};
@@ -16429,6 +17193,51 @@ mod retry_engine_tests {
         assert_eq!(phases, vec![RetryPhase::Queued]);
         assert_eq!(m.engine_loads(), 1);
         live_take.join().unwrap().unwrap();
+    }
+}
+
+/// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
+/// decides "this clip failed, try the next" vs "the engine is unhealthy, stop"
+/// by matching these exact sentences. A reword here without the TS mirror
+/// would silently queue every later clip behind a wedged engine again, so
+/// this test reads the TS source and pins both sides to the same text.
+#[cfg(test)]
+mod retry_ui_contract_tests {
+    use super::*;
+
+    const RETRY_TS: &str = include_str!("../../src/retryDictation.ts");
+
+    /// The string value of `export const NAME = "…";` in retryDictation.ts.
+    fn ts_const<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let marker = format!("export const {name} = \"");
+        let start = src.find(&marker)? + marker.len();
+        let len = src[start..].find('"')?;
+        Some(&src[start..start + len])
+    }
+
+    #[test]
+    fn retry_errors_match_the_ui_mirror() {
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_DEADLINE_ERROR"),
+            Some(RETRY_DEADLINE_ERROR),
+            "retryDictation.ts RETRY_DEADLINE_ERROR must mirror lib.rs verbatim"
+        );
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_ENGINE_BUSY_ERROR"),
+            Some(RETRY_ENGINE_BUSY_ERROR),
+            "retryDictation.ts RETRY_ENGINE_BUSY_ERROR must mirror lib.rs verbatim"
+        );
+    }
+
+    #[test]
+    fn engine_stuck_starts_with_the_ui_prefix() {
+        let prefix = ts_const(RETRY_TS, "ENGINE_STUCK_PREFIX")
+            .expect("ENGINE_STUCK_PREFIX in retryDictation.ts");
+        assert!(!prefix.is_empty());
+        assert!(
+            transcription::ENGINE_STUCK.starts_with(prefix),
+            "transcription::ENGINE_STUCK must start with the UI's ENGINE_STUCK_PREFIX {prefix:?}"
+        );
     }
 }
 

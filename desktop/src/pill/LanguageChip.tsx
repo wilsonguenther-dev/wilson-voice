@@ -4,33 +4,16 @@
  * the user's language set has a choice in it, so a default English install's
  * bar is unchanged. A click cycles Auto → each language; the tooltip carries
  * the backend's notice when the model cannot do what was picked, so the chip
- * never silently does nothing.
+ * never silently does nothing. A failed write rolls the label back.
  */
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import {
-  chipLabel, chipTitle, nextPick, showChip, type LanguageOptions,
-} from "../languagePicker";
+import { chipLabel, chipTitle, nextPick, showChip } from "../languagePicker";
+import { languageStore, useLanguageStore } from "../languageStore";
 
 export default function LanguageChip() {
-  const [opts, setOpts] = useState<LanguageOptions | null>(null);
-  const refresh = useCallback(() => {
-    invoke<LanguageOptions>("language_options").then(setOpts).catch(() => {});
-  }, []);
-  useEffect(() => {
-    refresh();
-    let dead = false;
-    let unlisten: (() => void) | null = null;
-    listen("settings", () => refresh()).then((u) => {
-      if (dead) u();
-      else unlisten = u;
-    });
-    return () => {
-      dead = true;
-      unlisten?.();
-    };
-  }, [refresh]);
+  // WF-11 — the window's one language store: a pick from the tray's
+  // Languages submenu (or Settings) changes this label at once, and a click
+  // here redraws the tray's check through the same backend writer.
+  const { opts } = useLanguageStore();
   if (!showChip(opts)) return null;
   const title = chipTitle(opts);
   return (
@@ -44,10 +27,7 @@ export default function LanguageChip() {
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
-        const next = nextPick(opts);
-        invoke<unknown>("set_dictation_languages", { ...next })
-          .then(refresh)
-          .catch(() => {});
+        void languageStore.write(nextPick(opts));
       }}
     >
       {chipLabel(opts)}

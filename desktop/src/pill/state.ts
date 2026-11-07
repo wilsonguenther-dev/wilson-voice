@@ -35,13 +35,15 @@
 import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
+import { REST_CAPSULE } from "./characterFit";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
 export type MeetingMode = "none" | "recording" | "after";
 /**
  * `yappy` lays out from this module. `legacy` is any character that still owns
- * a full-window stage of its own (the Classic pill, being retired by
- * yap-1106-retire-classic-pill): it keeps the historical fixed panel.
+ * a full-window stage of its own (the shell-body path; the Classic pill that
+ * used it was retired by yap-1106-retire-classic-pill): it keeps the
+ * historical fixed panel.
  */
 export type LayoutCharacter = "yappy" | "legacy";
 
@@ -101,8 +103,12 @@ export const PANEL_MARGIN = 10;
 export const SLOT_GAP = 6;
 /** Acceptance: the clock touches or sits within this many points of the character. */
 export const CLOCK_REACH_PT = 12;
-/** Yappy's resting capsule (YappyPill: lerp(72, …), lerp(22, …) at openV = 0). */
-export const CHARACTER_REST = { w: 72, h: 22 } as const;
+/**
+ * Yappy's resting capsule (YappyPill: lerp(REST_CAPSULE.w, …) at openV = 0).
+ * yap-1106-fb-10 — sized by characterFit to hold every pill character WHOLE
+ * (was 72 x 22, which only fitted a face close-up: "the heads cropped").
+ */
+export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /** The speech bubble's reserved row (12 px bold + 5 px padding + border). */
@@ -113,9 +119,15 @@ export const BUBBLE_LIFT = 10;
 /** `.phase-strip` max-width (SIDE_DOCK_TEXT_PX) and its 11px/1.25 line. */
 export const HINT_W = 192;
 export const HINT_LINE_H = 14;
-/** The clock row: dot + "00:03:37" + call-audio mark + stop; the after badge is wider. */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 184, after: 184 };
-export const CLOCK_H = 26;
+/**
+ * The clock row. yap-1106-pill-rec-headphones-hoot-tape: no red dot any more —
+ * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 112 x 40: sun, time,
+ * Hoot at the tape, Yappy in headphones) + call-audio mark + stop. 40 tall is
+ * the scene at a whole-number scale, and still clears the bubble row above
+ * (vertically centred on the 22 pt capsule: -9 vs the bubble's -10).
+ */
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
+export const CLOCK_H = 40;
 /** Y3-C's decode fill + numeral (`.kami-progress`): a row under Yappy while transcribing. */
 export const PROGRESS_W = 100;
 export const PROGRESS_H = 14;

@@ -5,7 +5,8 @@
  * The 2026-09-15 run's builders logged "NOT visually QA'd" on Y2-B, Y5-B, Y5-C
  * and Y5-D: a green gate cannot see a pill. This is the instrument that can.
  * It photographs float.html in EVERY phase x dock {bottom,left,right} x
- * character {classic,yappy}, and FAILS on three structural conditions:
+ * character {yappy} (Classic was retired by yap-1106-retire-classic-pill), and
+ * FAILS on three structural conditions:
  *
  *   empty-text    a text slot that is on screen but says nothing (the phase
  *                 line, a gate note, a progress numeral, a speech bubble)
@@ -14,7 +15,7 @@
  *   overflow      any visible box that leaves the float window
  *
  * yap-1106-one-pill adds the ONE-PILL checks, for every phase x {no meeting,
- * meeting recording} x dock (Yappy; the legacy Classic pill keeps 300x140):
+ * meeting recording} x dock (Yappy):
  *
  *   one-pill-overlap  the painted hint, bubble, clock or progress box overlaps
  *                     another, or the character box the layout published
@@ -68,6 +69,11 @@
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
  *           for a PR, never a commit — do not point this inside the repo.
  *   --only  a phase by variant (model-loading) or product id (model_loading).
+ *   --sky   yap-1106-pill-sky: the time of day the pill's sky is pinned to
+ *           (dawn|day|dusk|night, or "all" to walk every phase x dock under
+ *           each of the four). Default day, so a PNG never depends on the
+ *           hour the matrix ran. A sky the page did not apply (<html data-sky>)
+ *           is a phase-not-applied finding.
  *
  * ENV  YAP_SMOKE_CHROME (Chromium path, shared with the smoke), YAP_PILL_PORT
  *      (preview port; default: a free one), YAP_PILL_SETTLE_MS (default 900).
@@ -90,32 +96,37 @@ const W = 300; // float_pill.rs PILL_W
 const H = 140; // float_pill.rs PILL_H
 const SCALE = 2;
 const DOCKS = ["bottom", "left", "right"];
-const CHARACTERS = ["classic", "yappy"];
+/* yap-1106-retire-classic-pill — Classic is retired; Yappy is the only pill. */
+const CHARACTERS = ["yappy"];
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
 const MEETINGS = ["none", "recording"];
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
+/* yap-1106-pill-sky — the Home room's four times of day (desktop/src/pill/sky.ts SKY_TIMES). */
+const SKY_TIMES = ["dawn", "day", "dusk", "night"];
 const CHROME =
   process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 /* ── args ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const a = { out: null, only: null, selfTest: false };
+  const a = { out: null, only: null, sky: "day", selfTest: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
-    if (k === "--out" || k === "--only") {
+    if (k === "--out" || k === "--only" || k === "--sky") {
       const v = argv[++i];
       if (!v || v.startsWith("--")) usage(k + " needs a value");
       a[k.slice(2)] = v;
     } else if (k.startsWith("--out=")) a.out = k.slice(6);
     else if (k.startsWith("--only=")) a.only = k.slice(7);
+    else if (k.startsWith("--sky=")) a.sky = k.slice(6);
     else if (k === "--self-test-must-fail") a.selfTest = true;
     else usage("unknown argument " + k);
   }
+  if (a.sky !== "all" && !SKY_TIMES.includes(a.sky)) usage("--sky must be one of " + SKY_TIMES.join("|") + "|all");
   return a;
 }
 function usage(msg) {
-  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--self-test-must-fail]");
+  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--sky <dawn|day|dusk|night|all>] [--self-test-must-fail]");
   process.exit(2);
 }
 const ARGS = parseArgs(process.argv.slice(2));
@@ -124,7 +135,7 @@ const ARGS = parseArgs(process.argv.slice(2));
 /*
  * Runs before the bundle, after TAURI_SHIM's table is read — so it must set
  * __YAP_FIXTURES__ FIRST. The capsules keep a little state of their own off
- * `get_status` (ClassicPill's live/busy classes, Yappy's pose), so the status a
+ * `get_status` (the shell's live/busy classes, Yappy's pose), so the status a
  * phase answers is derived from its treatment TONE, which the page itself
  * published: no per-phase table lives here either.
  */
@@ -134,12 +145,14 @@ function fixtureScript(tones) {
   const q = new URLSearchParams(location.search);
   const tone = (${JSON.stringify(tones)})[q.get("phase")] || "calm";
   window.__YAP_FIXTURES__ = {
-    get_settings: { pillStyle: q.get("pill") || "classic", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
+    get_settings: { pillStyle: q.get("pill") || "yappy", pillPosition: q.get("dock") || "bottom", companionTone: "friendly" },
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
     // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
     // layout makes (answered, so it is never an unhandled rejection).
     meeting_status: q.get("meeting") === "recording"
-      ? { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: 217, elapsedLabel: "00:03:37", captureAvailable: true }
+      // yap-1106-pill-rec-headphones-hoot-tape — elapsed=<seconds> in the URL puts the
+      // sun clock at any minute (0, 600 = the glance, 3600 = dusk, 3660 = moon).
+      ? (() => { const e = Math.max(0, Math.floor(Number(q.get("elapsed") ?? 217)) || 0); const p = (n) => String(n).padStart(2, "0"); return { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: e, elapsedLabel: p(Math.floor(e / 3600)) + ":" + p(Math.floor((e % 3600) / 60)) + ":" + p(e % 60), captureAvailable: true }; })()
       : { recording: false, id: null, title: null, elapsedSeconds: 0, elapsedLabel: "00:00:00", captureAvailable: false },
     pill_set_panel_frame: null,
   };
@@ -189,9 +202,25 @@ function __pillDetect(want) {
     // WF-12 — an offer scene (lang-offer) must actually draw its card.
     if (want.offer && !document.querySelector('[data-language-offer="' + want.offer + '"]')) bad.push("no [data-language-offer=" + want.offer + "] card");
     if (want.chip && !document.querySelector('[data-style-chip="' + want.chip + '"]')) bad.push("no [data-style-chip=" + want.chip + "] chip");
+    // WF-02 — a drag scene must actually be in the blob, with its drop zones up.
+    if (want.drag && de.dataset.pillDrag !== want.drag) bad.push("html[data-pill-drag]=" + de.dataset.pillDrag + " (asked " + want.drag + ")");
+    if (want.drag && !de.dataset.pillDragTarget) bad.push("no html[data-pill-drag-target] (drop zones not lit)");
+    // yap-1106-pill-sky — the pinned time of day must be the sky on screen.
+    if (want.sky && de.dataset.sky !== want.sky) bad.push("html[data-sky]=" + de.dataset.sky + " (asked " + want.sky + ")");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
+    // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
+    // rail on the classic capsule (Yappy's legacy stage owns its whole window),
+    // rotated with the dock: a row at the bottom, a column at a side dock while
+    // no meeting banner holds the bar.
+    if (want.id === "rail" && want.pill === "classic") {
+      if (!document.querySelector('.slots[data-rail="open"]')) bad.push("rail scene drew no open rail");
+      const wantAxis = want.dock === "bottom" || want.meeting === "recording" ? "row" : "column";
+      if (capsule && want.meeting !== "recording" && capsule.getAttribute("data-bar-axis") !== wantAxis) {
+        bad.push("rail axis " + capsule.getAttribute("data-bar-axis") + " at " + want.dock + " (want " + wantAxis + ")");
+      }
+    }
     if (bad.length) out.push({ id: "phase-not-applied", detail: bad.join("; ") });
   }
 
@@ -316,7 +345,8 @@ function __pillDetect(want) {
     const off = painted.filter(([n, b, want]) => n !== "character" && (!want || !inside(b, want))).map(([n, b]) => n + " " + box({ left: b.x, top: b.y, width: b.w, height: b.h }));
     if (off.length) out.push({ id: "slot-off-layout", detail: off.join("; ") });
     const clock = painted.find((p) => p[0] === "clock");
-    if (want && want.meeting === "recording" && !clock) out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
+    // WF-02 — a dragged pill is the blob, Yappy's face and nothing else: the clock steps aside by design.
+    if (want && want.meeting === "recording" && !clock && want.drag !== "blob") out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
     if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
     const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
@@ -436,7 +466,10 @@ async function contactSheet(cdp, rows, outDir) {
   await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }, s);
   const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.flatMap((d) => MEETINGS.map((m) => c + " · " + d + (m === "none" ? "" : " · meeting"))))];
   const byPhase = new Map();
-  for (const r of rows) (byPhase.get(r.id) || byPhase.set(r.id, []).get(r.id)).push(r);
+  // yap-1106-pill-sky — under --sky all, one row per phase x time of day.
+  const skyRows = new Set(rows.map((r) => r.sky)).size > 1;
+  const rowKey = (r) => r.id + (skyRows && r.sky ? " · " + r.sky : "");
+  for (const r of rows) (byPhase.get(rowKey(r)) || byPhase.set(rowKey(r), []).get(rowKey(r))).push(r);
   let html = '<html><body style="margin:12px;background:#1d1f24;color:#e6e6e6;font:12px -apple-system,system-ui,sans-serif">' +
     '<table style="border-collapse:separate;border-spacing:6px"><tr>' + head.map((h) => "<th>" + h + "</th>").join("") + "</tr>";
   for (const [id, list] of byPhase) {
@@ -514,24 +547,25 @@ async function run() {
     const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
     s = await openPage(cdp, tones);
     console.log("pill-matrix: " + todo.length + " phase(s) x " + DOCKS.length + " docks x " + CHARACTERS.length + " characters x " + MEETINGS.length + " meeting states, legacy " + W + "x" + H + " / one-pill sized to its layout, @" + SCALE + "x -> " + outDir);
-    for (const p of todo) {
+    const skies = ARGS.sky === "all" ? SKY_TIMES : [ARGS.sky];
+    for (const sky of skies) for (const p of todo) {
       for (const character of CHARACTERS) {
         for (const dock of DOCKS) {
           for (const meeting of MEETINGS) {
-            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
+            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + "&sky=" + sky + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
             cdp.errors.set(s, []);
             await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
             await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, pill: character, dock, meeting }) + ")");
-            const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting, sky }) + ")");
+            const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + (skies.length > 1 ? "__" + sky : "") + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
-            captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, meeting, w: size.w, h: size.h, line: res.line, findings: res.findings, pageErrors, shot: file });
+            captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, meeting, sky, w: size.w, h: size.h, line: res.line, findings: res.findings, pageErrors, shot: file });
             const tag = res.findings.length ? "FAIL" : "ok  ";
-            console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + meeting.padEnd(10) + (size.w + "x" + size.h).padEnd(8) + JSON.stringify(res.line).padEnd(34) + file);
+            console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + meeting.padEnd(10) + sky.padEnd(6) + (size.w + "x" + size.h).padEnd(8) + JSON.stringify(res.line).padEnd(34) + file);
             for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
             for (const e of pageErrors) console.log("       page: " + e.split("\n")[0]);
           }
@@ -540,7 +574,7 @@ async function run() {
     }
     const sheet = await contactSheet(cdp, captures, outDir);
     const failed = captures.filter((c) => c.findings.length);
-    writeFileSync(join(outDir, "result.json"), JSON.stringify({ window: W + "x" + H + "@" + SCALE + "x", only: ARGS.only, phases: todo.map((p) => p.id), captures: captures.length, failing: failed.length, contactSheet: sheet, captures_: captures }, null, 2));
+    writeFileSync(join(outDir, "result.json"), JSON.stringify({ window: W + "x" + H + "@" + SCALE + "x", only: ARGS.only, skies, phases: todo.map((p) => p.id), captures: captures.length, failing: failed.length, contactSheet: sheet, captures_: captures }, null, 2));
     console.log("");
     console.log("pill-matrix: " + captures.length + " captures, " + failed.length + " carrying findings");
     console.log("pill-matrix: PNGs + result.json + contact-sheet.png in " + outDir + " (PR evidence — never commit them)");
@@ -567,10 +601,10 @@ async function selfTest(cdp, base, phases) {
   const expect = ["empty-text", "clipped-text", "overflow"];
   const p = phases[0];
   const s = await openPage(cdp, { [p.phase]: p.tone });
-  await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + p.phase + "&pill=classic&dock=bottom" }, s);
+  await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + p.phase + "&pill=yappy&dock=bottom" }, s);
   await settle(cdp, s, p.id);
   await evaluate(cdp, s, DETECTORS + ";true");
-  const before = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, pill: "classic", dock: "bottom" }) + ")");
+  const before = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, pill: "yappy", dock: "bottom" }) + ")");
   await evaluate(cdp, s, String.raw`(() => {
     const strip = document.querySelector(".phase-strip");
     strip.textContent = ""; strip.style.cssText = "opacity:1;transition:none;min-width:40px;min-height:10px;left:20px;top:10px;bottom:auto;transform:none";

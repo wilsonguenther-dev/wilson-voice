@@ -80,7 +80,8 @@ fn every_menu_item_maps_to_a_registered_command() {
             ItemKind::StateLabel
             | ItemKind::KindSubmenu
             | ItemKind::UpcomingSubmenu
-            | ItemKind::MicrophoneSubmenu => assert_eq!(
+            | ItemKind::MicrophoneSubmenu
+            | ItemKind::LanguageSubmenu => assert_eq!(
                 command_for(item.id),
                 None,
                 "{:?} is not an action and must not dispatch",
@@ -147,6 +148,9 @@ fn every_menu_item_maps_to_a_registered_command() {
                 "record_upcoming" => "RecordUpcoming".to_string(),
                 // WF-09 — the "Microphone" children.
                 "pick_microphone" => "PickMicrophone".to_string(),
+                // WF-11 — the "Languages" children.
+                "pick_language" => "PickLanguage".to_string(),
+                "open_language_settings" => "OpenLanguageSettings".to_string(),
                 _ => "RecordMeetingAs".to_string(),
             });
         assert!(
@@ -199,6 +203,9 @@ fn no_item_is_unreachable() {
             ItemKind::KindSubmenu => name == "record_meeting_as" && !KIND_PICKER.is_empty(),
             ItemKind::UpcomingSubmenu => name == "record_upcoming",
             ItemKind::MicrophoneSubmenu => name == "pick_microphone",
+            ItemKind::LanguageSubmenu => {
+                name == "pick_language" || name == "open_language_settings"
+            }
             ItemKind::StateLabel => false,
         });
         assert!(reachable, "command {name} has no menu item");
@@ -249,18 +256,55 @@ fn no_item_is_unreachable() {
     );
 }
 
-/// Y6-B "what not to do": no Languages / Formatting submenu (Y10).
+/// Y6-B "what not to do": no Formatting submenu. The one language row is
+/// WF-11's Languages submenu, which is never empty.
 #[test]
 fn no_language_or_formatting_submenu() {
     for item in TRAY_ITEMS.iter() {
         let l = item.label.to_lowercase();
         assert!(
-            !l.contains("language") && !l.contains("formatting"),
+            !l.contains("formatting"),
             "{:?} ({}) is out of scope for Y6-B",
             item.id,
             item.label
         );
+        if l.contains("language") {
+            assert_eq!(item.id, tray_menu::ID_LANGUAGES, "one language row only");
+            assert_eq!(item.kind, ItemKind::LanguageSubmenu);
+        }
     }
+}
+
+/// WF-11 — the Languages submenu: anchored under Microphone (or Hands-free),
+/// placed by ONE function that always ends on "Language Settings…", picks
+/// written through the ONE language writer (the same one the bar's chip and
+/// Settings call), and every write — from any surface — redraws the tray and
+/// tells every window at once.
+#[test]
+fn languages_submenu_shares_the_one_language_writer() {
+    let lib = code_only(LIB_SRC);
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_LANGUAGES));
+    let place = fn_body(&lib, "place_language_submenu");
+    assert!(place.contains("tray_menu::ID_LANGUAGES"));
+    assert!(place.contains("tray_menu::ID_MICROPHONE"));
+    assert!(place.contains("tray_menu::ID_HANDS_FREE"));
+    assert!(place.contains("tray_menu::ID_LANGUAGE_SETTINGS"));
+    let writer = fn_body(&lib, "write_dictation_languages");
+    assert!(writer.contains("languages::LANGUAGES_CHANGED_EVENT"));
+    assert!(writer.contains("sync_language_menu("));
+    let command = fn_body(&lib, "set_dictation_languages");
+    assert!(command.contains("write_dictation_languages("));
+    let tray_pick = fn_body(&lib, "pick_language_from_tray");
+    assert!(tray_pick.contains("tray_menu::language_row("));
+    assert!(tray_pick.contains("write_dictation_languages("));
+    assert_eq!(
+        command_for("lang_pick_2"),
+        Some(TrayCommand::PickLanguage(2))
+    );
+    assert_eq!(
+        command_for(tray_menu::ID_LANGUAGE_SETTINGS),
+        Some(TrayCommand::OpenLanguageSettings)
+    );
 }
 
 /// "Transcript History…" lands on a view the frontend actually has: the value
@@ -465,4 +509,77 @@ fn quit_runs_the_exit_drain() {
     assert!(teardown.contains("exit_step_asr_drain"));
     assert!(teardown.contains("exit_step_await_take"));
     assert!(fn_body(&lib, "exit_step_asr_drain").contains("drain_and_unload("));
+}
+
+// ─── WF-14: "Update ready" and the quiet gate ───────────────────────────────
+
+/// WF-14 — an installed release puts "Update ready" in the menu, and both
+/// update restarts in `lib.rs` sit behind the quiet gate: the click
+/// (`restart_click` → `RestartNow`) and the deferred one
+/// (`restart_when_quiet`, run on every `sync_tray`). The gate reads every busy
+/// state — a dictation, a take in flight, a polish pass, notes being written
+/// and a meeting recording.
+#[test]
+fn update_restart_goes_through_the_quiet_gate() {
+    let lib = code_only(LIB_SRC);
+    let install = fn_body(&lib, "install_update");
+    assert!(install.contains("tray_menu::UPDATE_READY.mark_ready(&version)"));
+    assert!(install.contains("sync_update_ready("));
+    assert!(fn_body(&lib, "sync_tray").contains("sync_update_ready(app, state)"));
+
+    let sync = fn_body(&lib, "sync_update_ready");
+    assert!(sync.contains("tray_menu::update_item_visible("));
+    assert!(sync.contains("tray_menu::restart_when_quiet("));
+    assert!(sync.contains("tray_menu::update_ready_label("));
+    assert!(sync.contains("tray_menu::ID_UPDATE_READY"));
+    assert!(sync.contains("app.request_restart()"));
+
+    let dispatch = fn_body(&lib, "run_tray_command");
+    let click = arm(dispatch, "TrayCommand::RestartToUpdate =>", "TrayCommand::");
+    assert!(click.contains("tray_menu::restart_click("));
+    assert!(click.contains("tray_menu::RestartAction::Arm"));
+    assert!(click.contains("tray_menu::RestartAction::Disarm"));
+    assert!(click.contains("app.request_restart()"));
+
+    assert_eq!(
+        lib.matches("request_restart()").count(),
+        2,
+        "an update restart outside the click and the deferred path bypasses the quiet gate"
+    );
+
+    let activity = fn_body(&lib, "update_activity");
+    for input in [
+        "state.recording",
+        "state.busy",
+        "tray_menu::polish_in_flight()",
+        "is_active()",
+        "is_recording()",
+    ] {
+        assert!(activity.contains(input), "the restart gate ignores {input}");
+    }
+    assert!(lib.contains("tray_menu::PolishGuard::enter()"));
+}
+
+/// WF-14 — the line is an inserted row (never laid out), resolves to its
+/// command, and a fresh process (the one a successful restart starts, already
+/// running the installed version) never shows it.
+#[test]
+fn update_ready_line_is_inserted_and_gone_after_restart() {
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_UPDATE_READY));
+    assert_eq!(
+        command_for(tray_menu::ID_UPDATE_READY),
+        Some(TrayCommand::RestartToUpdate)
+    );
+    assert!(!tray_menu::update_item_visible(None, "1.4.0"));
+    assert!(!tray_menu::update_item_visible(Some("1.4.0"), "1.4.0"));
+    assert!(tray_menu::update_item_visible(Some("1.4.0"), "1.3.9"));
+    let busy = tray_menu::Activity {
+        meeting: true,
+        ..tray_menu::Activity::default()
+    };
+    assert!(!tray_menu::restart_gate(busy));
+    assert_eq!(
+        tray_menu::update_ready_label(tray_menu::restart_blocker(busy), true),
+        "Will restart after this meeting \u{00b7} Cancel"
+    );
 }
