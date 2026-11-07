@@ -202,3 +202,92 @@ fn a_401_that_echoes_the_key_never_leaks_it() {
     assert_eq!(ret["ok"], false);
     assert_eq!(ret["error"], "the key was rejected (401)");
 }
+
+// ── yap-1106-byom-cloud-fast-path — the same sweep for the cloud-key kind ───
+
+/// The "Cloud model (your key)" provider sends the key in `x-api-key`. A 401
+/// whose body echoes the key must not leak it into the return value, the
+/// events, `settings_kv` or the log — and the key must really have reached
+/// the mock (the sweep is not vacuous).
+#[test]
+fn the_cloud_key_kind_never_leaks_the_key() {
+    use wilson_voice_lib::cloud_route::{key_needs_attention, KEY_ATTENTION_KEY};
+    install_logger();
+    let (port, seen) = mock(
+        "401 Unauthorized",
+        format!(
+            r#"{{"type":"error","error":{{"type":"authentication_error","message":"invalid x-api-key: {SENTINEL}"}}}}"#
+        ),
+    );
+    let dir = temp_dir("sentinel-cloud-401");
+    let db = open_db(&dir);
+    let keys = MemoryKeychain::new(PRODUCTION_SERVICE);
+    let cfg = ProviderConfig {
+        id: "cloud-key".into(),
+        kind: ProviderKind::CloudKey,
+        label: String::new(),
+        base_url: format!("http://127.0.0.1:{port}"),
+        model: String::new(),
+        context_tokens: 0,
+        timeout_s: 10,
+    };
+    let saved = upsert_provider(&db, &keys, cfg, Some(SENTINEL)).expect("save");
+    // Defaults filled, nothing vendor-named on the label.
+    assert_eq!(saved.label, "Cloud model (your key)");
+    assert!(!saved.model.is_empty());
+    let mut events: Vec<String> = Vec::new();
+    let mut emit = |name: &str, payload: serde_json::Value| {
+        events.push(format!("{name} {payload}"));
+    };
+    let bundled = |d: Duration| -> Box<dyn ChatProvider> {
+        Box::new(BundledProvider::<NoModel>::new(None, d))
+    };
+    let result = run_test(
+        &db,
+        &keys,
+        &ClientCache::new(),
+        "cloud-key",
+        &bundled,
+        &mut emit,
+    )
+    .expect("ran");
+    assert!(!result.ok);
+    let reqs = seen.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "exactly one request reached the mock");
+    let req = reqs[0].to_ascii_lowercase();
+    assert!(
+        req.contains(&format!("x-api-key: {}", SENTINEL.to_ascii_lowercase())),
+        "the key was not sent in x-api-key"
+    );
+    assert!(
+        req.contains("anthropic-version: 2026-10-21"),
+        "the API version header is pinned"
+    );
+    assert!(req.contains("/v1/messages"), "the Messages endpoint");
+    assert!(req.contains("\"stream\":true"), "responses stream");
+    let ret = serde_json::to_value(&result).unwrap().to_string();
+    assert!(!ret.contains("YAPSENTINEL"), "return value leaks: {ret}");
+    for e in &events {
+        assert!(!e.contains("YAPSENTINEL"), "event leaks: {e}");
+    }
+    let conn = rusqlite::Connection::open(dir.join("wilson_voice.db")).unwrap();
+    let mut st = conn.prepare("SELECT key, value FROM settings_kv").unwrap();
+    let rows: Vec<(String, String)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for (k, v) in &rows {
+        assert!(!v.contains("YAPSENTINEL"), "settings_kv {k} leaks");
+        assert_ne!(
+            k,
+            KEY_ATTENTION_KEY.to_string().as_str(),
+            "Test connection never flags the key — only a routed job does"
+        );
+    }
+    assert!(!key_needs_attention(&db));
+    let logs = LOGS.lock().unwrap().clone();
+    for l in &logs {
+        assert!(!l.contains("YAPSENTINEL"), "log leaks: {l}");
+    }
+}

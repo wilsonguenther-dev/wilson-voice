@@ -40,6 +40,7 @@ const STAGE_LABELS: Record<string, string> = {
 const SKIP_REASONS: Record<string, string> = {
   no_model: "no polish model is installed",
   no_sidecar: "the polish helper was not available",
+  saving_battery: "Yap kept the plain text to save battery or cool this Mac",
   deadline: "the model ran out of time for a take this long",
   client_error: "the model could not be reached",
   client_panic: "the model helper crashed",

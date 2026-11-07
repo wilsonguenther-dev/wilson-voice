@@ -203,3 +203,28 @@ describe("Y6-A onboarding step machine", () => {
     expect(tryItSucceeded({ ...ok, pasted: undefined }, true, "Hello there", "")).toBe(false);
   });
 });
+
+// yap-1106-news-prefs-onboarding — the Yappy News step exists only when the
+// cloud option is connected (`newsStep`), sits after calibration (the mic
+// test), and "Not now" moves on without ending onboarding.
+describe("yap-1106 news step", () => {
+  it("onboarding_news_step_hidden_without_cloud", () => {
+    expect(nextStep("calibration", NEXT)).toBe("try-it");
+    expect(nextStep("calibration", NEXT, { newsStep: false })).toBe("try-it");
+    expect(nextStep("try-it", BACK)).toBe("calibration");
+  });
+  it("onboarding_news_step_shown_after_calibration_with_cloud", () => {
+    expect(nextStep("calibration", NEXT, { newsStep: true })).toBe("news");
+    expect(nextStep("news", NEXT, { newsStep: true })).toBe("try-it");
+    expect(nextStep("news", BACK, { newsStep: true })).toBe("calibration");
+    expect(nextStep("try-it", BACK, { newsStep: true })).toBe("news");
+  });
+  it("onboarding_news_not_now_is_next_not_skip", () => {
+    // Not now = `next` (the step only); skip still ends onboarding unproven.
+    expect(nextStep("news", NEXT)).toBe("try-it");
+    expect(nextStep("news", SKIP)).toBe("done");
+    expect(nextStep("news", SUCCESS)).toBe("news");
+    expect(progressStep("news")).toBe("calibration");
+    expect(STEP_ORDER).not.toContain("news");
+  });
+});
