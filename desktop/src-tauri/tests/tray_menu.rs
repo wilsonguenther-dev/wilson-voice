@@ -535,11 +535,7 @@ fn update_restart_goes_through_the_quiet_gate() {
     assert!(sync.contains("app.request_restart()"));
 
     let dispatch = fn_body(&lib, "run_tray_command");
-    let click = arm(
-        &dispatch,
-        "TrayCommand::RestartToUpdate =>",
-        "TrayCommand::",
-    );
+    let click = arm(dispatch, "TrayCommand::RestartToUpdate =>", "TrayCommand::");
     assert!(click.contains("tray_menu::restart_click("));
     assert!(click.contains("tray_menu::RestartAction::Arm"));
     assert!(click.contains("tray_menu::RestartAction::Disarm"));
