@@ -4,7 +4,7 @@
  * used to be a type check, and a type check has no opinion about a clock that
  * renders "undefined" or a disabled button that never says why.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   disabledReason,
   elapsedLabel,
@@ -15,12 +15,16 @@ import {
   MEETING_PILL_IDLE,
   MEETING_PROGRESS_EVENT,
   MEETING_RESULT_HOLD_MS,
+  MEETING_STOP_FAILED_DOM_EVENT,
+  MEETING_STOP_FAILED_FALLBACK,
   meetingAfterView,
+  meetingSavedUntil,
   meetingNavPayload,
   meetingPillHoldMs,
   parseNavigate,
   recordLabel,
   reduceMeetingPill,
+  stopFailedSentence,
   systemAudioBadge,
   type MeetingPillInput,
   type MeetingPillPhase,
@@ -28,6 +32,9 @@ import {
   type MeetingStatus,
 } from "./meeting";
 import { MEETING_PROGRESS_EVENT as DECLARED_PROGRESS_EVENT } from "../meetings/progress";
+import { SAVED_HOLD_MS, SAVED_LABEL, SCENE_W } from "./meetingScene";
+import { MEETING_STOP_FAILED_EVENT } from "./meetingDictation";
+import { CLOCK_H, CLOCK_W, meetingMode, pillLayout } from "./state";
 
 const recording = (over: Partial<MeetingStatus> = {}): MeetingStatus => ({
   recording: true,
@@ -198,18 +205,24 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     expect(cancelled[1].kind).toBe("notes-ready");
   });
 
-  it("walks recording -> processing 0..100 -> notes-ready", () => {
+  it("walks recording -> saved -> processing 0..100 -> notes-ready", () => {
+    // fix-b8-1 — the stop is the "Saved" beat for SAVED_HOLD_MS; the road's
+    // events here land after it.
+    const T0 = 1_000_000;
+    const late = T0 + SAVED_HOLD_MS;
+    const at = (i: MeetingPillInput, nowMs: number): MeetingPillInput =>
+      i.type === "status" || i.type === "progress" ? { ...i, nowMs } : i;
     const seen = run([
       status(recording()),
-      status({ ...IDLE_MEETING, captureAvailable: true }), // stop
-      progress({ percent: 0 }), // enqueue
-      progress({ percent: 42 }),
-      progress({ percent: 100 }),
-      progress({ state: "complete", percent: 100 }),
+      at(status({ ...IDLE_MEETING, captureAvailable: true }), T0), // stop
+      at(progress({ percent: 0 }), late), // enqueue
+      at(progress({ percent: 42 }), late),
+      at(progress({ percent: 100 }), late),
+      at(progress({ state: "complete", percent: 100 }), late),
     ]);
     expect(seen.map((p) => p.kind)).toEqual([
       "recording",
-      "idle",
+      "saved",
       "processing",
       "processing",
       "processing",
@@ -219,7 +232,7 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     const views = seen.map((p) => meetingAfterView(p, "idle")?.label ?? null);
     expect(views).toEqual([
       null,
-      null,
+      SAVED_LABEL,
       "Transcribing 0%",
       "Transcribing 42%",
       // 100% of the windows is not notes yet: the label holds at 99 until the
@@ -355,5 +368,135 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     expect(parseNavigate("meetings:abc-123")).toEqual({ nav: "meetings", meetingId: "abc-123" });
     expect(parseNavigate("settings")).toEqual({ nav: "settings", meetingId: null });
     expect(parseNavigate("meetings")).toEqual({ nav: "meetings", meetingId: null });
+  });
+});
+
+describe("the Saved stop beat has a real slot (fix-b8-1-meeting-saved-beat-gets-a-slot)", () => {
+  const T0 = 5_000_000;
+  const DOCKS = ["bottom", "left", "right"] as const;
+  const stopped: MeetingStatus = { ...IDLE_MEETING, captureAvailable: true };
+  const progress = (over: Partial<MeetingProgressEvent> = {}, nowMs?: number): MeetingPillInput => ({
+    type: "progress",
+    event: { id: "m1", state: "transcribing", percent: 0, processedThroughSeconds: 0, durationSeconds: 3725, error: null, ...over },
+    ...(nowMs === undefined ? {} : { nowMs }),
+  });
+  const rec: MeetingPillPhase = reduceMeetingPill(MEETING_PILL_IDLE, { type: "status", status: recording() });
+  const stop = (from: MeetingPillPhase = rec, nowMs: number = T0): MeetingPillPhase =>
+    reduceMeetingPill(from, { type: "status", status: stopped, nowMs, lastElapsedS: 3725 });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("(a) recording -> stopped with no progress yet: meetingMode 'after' and a clock box >= 112 x CLOCK_H at every dock", () => {
+    const saved = stop();
+    expect(saved.kind).toBe("saved");
+    expect(meetingSavedUntil(saved)).toBe(T0 + SAVED_HOLD_MS);
+    const view = meetingAfterView(saved, "idle");
+    expect(view?.kind).toBe("saved");
+    expect(view?.label).toBe(SAVED_LABEL);
+    expect(view?.opens).toBe(false);
+    // The scene keeps the meeting's last elapsed time, not the stopped 0.
+    expect(view?.elapsedS).toBe(3725);
+    const mode = meetingMode(stopped, view);
+    expect(mode).toBe("after");
+    for (const dock of DOCKS) {
+      const l = pillLayout({ phase: "idle", meeting: mode, dock });
+      expect(l.clock).not.toBeNull();
+      expect(l.clock!.w).toBeGreaterThanOrEqual(SCENE_W);
+      expect(l.clock!.h).toBe(CLOCK_H);
+    }
+    // The 112 pt scene plus the word "Saved" fit the after slot.
+    expect(CLOCK_W.after).toBeGreaterThanOrEqual(SCENE_W + 48);
+  });
+
+  it("(b) stopping while a dictation is live still reserves the clock box for the beat", () => {
+    const saved = stop();
+    for (const take of ["listening", "thinking", "done"] as const) {
+      const view = meetingAfterView(saved, take);
+      expect(view?.kind).toBe("saved");
+      const mode = meetingMode(stopped, view);
+      expect(mode).toBe("after");
+      for (const dock of DOCKS) {
+        const l = pillLayout({ phase: take, meeting: mode, dock });
+        expect(l.clock).not.toBeNull();
+        expect(l.clock!.w).toBeGreaterThanOrEqual(SCENE_W);
+        expect(l.clock!.h).toBe(CLOCK_H);
+      }
+    }
+    // Only the beat keeps its box mid-take: the processing badge still yields.
+    const proc = reduceMeetingPill(MEETING_PILL_IDLE, progress({ percent: 5 }));
+    expect(meetingAfterView(proc, "listening")).toBeNull();
+  });
+
+  it("(c) a 'failed' result inside the hold replaces Saved at once, and a failed stop never says Saved", () => {
+    const saved = stop();
+    const failed = reduceMeetingPill(saved, progress({ state: "failed", error: "The recording could not be read." }, T0 + 100));
+    expect(failed).toEqual({ kind: "failed", id: "m1", sentence: "The recording could not be read." });
+    expect(meetingAfterView(failed, "idle")?.label).toBe("The recording could not be read.");
+    // Folded first, failed second: the failure still wins inside the hold.
+    const folded = reduceMeetingPill(saved, progress({ percent: 3 }, T0 + 50));
+    expect(folded.kind).toBe("saved");
+    expect(reduceMeetingPill(folded, progress({ state: "failed", error: null }, T0 + 60))).toEqual({
+      kind: "failed",
+      id: "m1",
+      sentence: MEETING_FAILED_FALLBACK,
+    });
+    // stop_meeting rejected, then the status dropped anyway: the error, not Saved.
+    const refused = reduceMeetingPill(rec, { type: "stop_failed", sentence: "The recorder did not answer.", nowMs: T0 - 10 });
+    expect(refused.kind).toBe("recording");
+    expect(stop(refused, T0)).toEqual({ kind: "failed", id: "m1", sentence: "The recorder did not answer." });
+    // The status dropped first, then the stop reported an error: Saved goes.
+    expect(reduceMeetingPill(saved, { type: "stop_failed", sentence: "", nowMs: T0 + 5 })).toEqual({
+      kind: "failed",
+      id: "m1",
+      sentence: MEETING_STOP_FAILED_FALLBACK,
+    });
+    // A failure long before a later Stop that worked does not taint it.
+    const old = reduceMeetingPill(rec, { type: "stop_failed", sentence: "x", nowMs: T0 - SAVED_HOLD_MS - 1 });
+    expect(stop(old, T0).kind).toBe("saved");
+    expect(stopFailedSentence(new Error("  boom  "))).toBe("boom");
+    expect(stopFailedSentence(undefined)).toBe(MEETING_STOP_FAILED_FALLBACK);
+    // The pill's Stop (stopMeetingFromPill, yap-fx-06) raises the stop-failed
+    // card's window event with no detail; the shell's phase listens on the
+    // SAME name, so a failed badge Stop reaches reduceMeetingPill.
+    expect(MEETING_STOP_FAILED_EVENT).toBe(MEETING_STOP_FAILED_DOM_EVENT);
+  });
+
+  it("(d) after SAVED_HOLD_MS (fake timers) a transcribing event shows the processing badge", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const saved = reduceMeetingPill(rec, { type: "status", status: stopped, lastElapsedS: 60 });
+    expect(saved.kind).toBe("saved");
+    const until = meetingSavedUntil(saved);
+    expect(until).toBe(T0 + SAVED_HOLD_MS);
+    // Inside the hold: the beat stays, the road folds underneath it, and the
+    // deadline (the hook's ONE timer key) does not move.
+    vi.advanceTimersByTime(1000);
+    const held = reduceMeetingPill(saved, progress({ percent: 7 }));
+    expect(held.kind).toBe("saved");
+    expect(meetingSavedUntil(held)).toBe(until);
+    expect(meetingAfterView(held, "idle")?.label).toBe(SAVED_LABEL);
+    // The 1 Hz idle broadcast does not end it early.
+    expect(reduceMeetingPill(held, { type: "status", status: stopped })).toBe(held);
+    vi.advanceTimersByTime(SAVED_HOLD_MS);
+    const proc = reduceMeetingPill(held, progress({ percent: 12 }));
+    expect(proc.kind).toBe("processing");
+    expect(meetingAfterView(proc, "idle")?.label).toBe("Transcribing 12%");
+    // The timer path: saved_elapsed hands over the road folded so far…
+    const handed = reduceMeetingPill(held, { type: "saved_elapsed", until: until! });
+    expect(handed).toEqual({ kind: "processing", id: "m1", percent: 7, step: "transcribing" });
+    expect(meetingAfterView(handed, "idle")?.label).toBe("Transcribing 7%");
+    // …and a stale timer from an earlier stop is a no-op.
+    expect(reduceMeetingPill(held, { type: "saved_elapsed", until: until! - 1 })).toBe(held);
+    // With no road yet, the beat lets go to idle.
+    expect(reduceMeetingPill(saved, { type: "saved_elapsed", until: until! })).toBe(MEETING_PILL_IDLE);
+  });
+
+  it("a new recording replaces the beat, and the beat is not a 10 s result hold", () => {
+    const saved = stop();
+    expect(reduceMeetingPill(saved, { type: "status", status: recording({ id: "m2" }) })).toEqual({ kind: "recording", id: "m2" });
+    expect(meetingPillHoldMs(saved)).toBeNull();
+    expect(reduceMeetingPill(saved, { type: "dismiss", id: "m1" })).toBe(saved);
   });
 });

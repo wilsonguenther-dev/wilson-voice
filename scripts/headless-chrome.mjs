@@ -245,7 +245,9 @@ export function pillFixtureScript(tones) {
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
     // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
     // layout makes (answered, so it is never an unhandled rejection).
-    meeting_status: q.get("meeting") === "recording"
+    // fix-b8-1 — meeting=saved starts recording too; pill-matrix --phase
+    // meeting-saved then delivers the stop after settle (meetingStopShim).
+    meeting_status: q.get("meeting") === "recording" || q.get("meeting") === "saved"
       // yap-1106-pill-rec-headphones-hoot-tape — elapsed=<seconds> in the URL puts the
       // sun clock at any minute (0, 600 = the glance, 3600 = dusk, 3660 = moon).
       ? (() => { const e = Math.max(0, Math.floor(Number(q.get("elapsed") ?? 217)) || 0); const p = (n) => String(n).padStart(2, "0"); return { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: e, elapsedLabel: p(Math.floor(e / 3600)) + ":" + p(Math.floor((e % 3600) / 60)) + ":" + p(e % 60), captureAvailable: true }; })()

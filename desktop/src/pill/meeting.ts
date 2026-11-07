@@ -24,6 +24,7 @@
  */
 
 import type { LivePhase } from "./live";
+import { SAVED_HOLD_MS, SAVED_LABEL } from "./meetingScene";
 import {
   MEETING_PROGRESS_EVENT,
   meetingStateLabel,
@@ -195,7 +196,25 @@ export const MEETING_WAITING_FALLBACK =
  */
 export type MeetingPillPhase =
   | { kind: "idle" }
-  | { kind: "recording"; id: string | null }
+  /**
+   * `stopFailed` — fix-b8-1: `stop_meeting` returned an error while this
+   * meeting was still recording. If the status then drops anyway within
+   * SAVED_HOLD_MS of it, the pill shows that sentence instead of "Saved":
+   * Saved over a failure is a lie. Older than that, a later Stop that worked
+   * caused the drop, and it is saved.
+   */
+  | { kind: "recording"; id: string | null; stopFailed?: { sentence: string; atMs: number } }
+  /**
+   * fix-b8-1-meeting-saved-beat-gets-a-slot — the stop beat ("Hoot hands over
+   * the tape", SAVED_LABEL) as a REAL phase, so the one-pill layout reserves the
+   * clock box for it (`meetingAfterView` → `meetingMode` "after"). It used to be
+   * MeetingBadge-local state the layout never heard of, and was clipped to a
+   * 0x0 box. `until` is the wall-clock end of the hold (also the scope of its
+   * one timer); `next` is the post-stop road (processing / notes-ready /
+   * waiting) folded underneath while the beat holds, so no progress event that
+   * lands during the 2.4 s is lost. A `failed` result replaces it at once.
+   */
+  | { kind: "saved"; id: string | null; until: number; elapsedS: number; next: MeetingPillPhase }
   | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing" }
   | { kind: "notes-ready"; id: string }
   | { kind: "failed"; id: string; sentence: string }
@@ -210,12 +229,42 @@ export type MeetingPillPhase =
 export const MEETING_PILL_IDLE: MeetingPillPhase = { kind: "idle" };
 
 export type MeetingPillInput =
-  /** The YV95 `meeting` status broadcast. */
-  | { type: "status"; status: MeetingStatus }
-  /** One `meeting:progress` event from the pipeline. */
-  | { type: "progress"; event: MeetingProgressEvent }
+  /**
+   * The YV95 `meeting` status broadcast. `nowMs` is the dispatch time (the
+   * saved beat's clock; defaults to `Date.now()`), `lastElapsedS` the meeting's
+   * last recorded elapsed seconds (the stop beat's scene time; the status that
+   * says "stopped" no longer carries it).
+   */
+  | { type: "status"; status: MeetingStatus; nowMs?: number; lastElapsedS?: number }
+  /** One `meeting:progress` event from the pipeline. `nowMs` as above. */
+  | { type: "progress"; event: MeetingProgressEvent; nowMs?: number }
   /** The user clicked the result, or its hold elapsed. Scoped to one meeting. */
-  | { type: "dismiss"; id: string };
+  | { type: "dismiss"; id: string }
+  /** fix-b8-1 — the saved beat's one timer fired. Scoped to that stop's `until`. */
+  | { type: "saved_elapsed"; until: number }
+  /** fix-b8-1 — `stop_meeting` returned an error; `sentence` is what to show. */
+  | { type: "stop_failed"; sentence: string; nowMs?: number };
+
+/**
+ * fix-b8-1 — the window-local DOM event the pill's Stop button raises when
+ * `stop_meeting` rejects (the button lives in MeetingBadge, the phase in the
+ * shell's `useMeetingPill`). Not a Tauri event: nothing crosses the IPC.
+ */
+export const MEETING_STOP_FAILED_DOM_EVENT = "yap:meeting-stop-failed";
+
+/** The sentence the pill shows when stopping a meeting failed without saying why. */
+export const MEETING_STOP_FAILED_FALLBACK = "Yap could not stop this meeting. Press Stop again.";
+
+/** `stop_meeting`'s rejection → the one sentence the pill shows. */
+export function stopFailedSentence(err: unknown): string {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  return raw.trim().length > 0 ? raw.trim() : MEETING_STOP_FAILED_FALLBACK;
+}
+
+/** The saved beat's deadline, or `null` when the phase is not the saved beat. */
+export function meetingSavedUntil(phase: MeetingPillPhase): number | null {
+  return phase.kind === "saved" ? phase.until : null;
+}
 
 const clampPercent = (n: number) =>
   Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0;
@@ -228,6 +277,9 @@ const clampPercent = (n: number) =>
  *   (a reconcile re-queue of an older meeting) never hides the live clock.
  * - `status { recording: false }` only ends `recording`; the 1 Hz idle
  *   broadcast must not wipe a processing or notes-ready phase.
+ * - fix-b8-1: recording → stopped is the `saved` beat for SAVED_HOLD_MS (one
+ *   `saved_elapsed` ends it), never over a failure: a `failed` / `notes_failed`
+ *   event or a `stop_failed` replaces it at once.
  * - Percent never runs backwards for the same meeting while it transcribes.
  * - `complete` and `partial` are notes-ready (both have a transcript; partial's
  *   own sentence is on the meeting's page). `failed` carries the pipeline's
@@ -241,12 +293,29 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
         const id = s.id ?? null;
         return prev.kind === "recording" && prev.id === id ? prev : { kind: "recording", id };
       }
-      return prev.kind === "recording" ? MEETING_PILL_IDLE : prev;
+      if (prev.kind !== "recording") return prev;
+      // fix-b8-1 — recording → stopped. A stop that already reported an error
+      // never says "Saved"; otherwise the beat holds the clock slot.
+      const now = input.nowMs ?? Date.now();
+      if (prev.stopFailed && now - prev.stopFailed.atMs <= SAVED_HOLD_MS) {
+        return prev.id ? { kind: "failed", id: prev.id, sentence: prev.stopFailed.sentence } : MEETING_PILL_IDLE;
+      }
+      const e = input.lastElapsedS;
+      const elapsedS = typeof e === "number" && Number.isFinite(e) && e > 0 ? Math.floor(e) : 0;
+      return { kind: "saved", id: prev.id, until: now + SAVED_HOLD_MS, elapsedS, next: MEETING_PILL_IDLE };
     }
     case "progress": {
       const e = input.event;
       if (!e || typeof e.id !== "string" || e.id.length === 0) return prev;
       if (prev.kind === "recording") return prev;
+      if (prev.kind === "saved") {
+        // fix-b8-1 — fold the road underneath the beat. A failure is never
+        // covered by "Saved"; anything else waits for the hold to end.
+        const next = reduceMeetingPill(prev.next, input);
+        if (next.kind === "failed") return next;
+        if ((input.nowMs ?? Date.now()) >= prev.until) return next;
+        return next === prev.next ? prev : { ...prev, next };
+      }
       switch (e.state) {
         case "transcribing": {
           const pct = clampPercent(e.percent);
@@ -284,6 +353,14 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
           return prev;
       }
     }
+    case "saved_elapsed":
+      return prev.kind === "saved" && prev.until === input.until ? prev.next : prev;
+    case "stop_failed": {
+      const sentence = input.sentence.trim().length > 0 ? input.sentence.trim() : MEETING_STOP_FAILED_FALLBACK;
+      if (prev.kind === "recording") return { ...prev, stopFailed: { sentence, atMs: input.nowMs ?? Date.now() } };
+      if (prev.kind === "saved") return prev.id ? { kind: "failed", id: prev.id, sentence } : prev.next;
+      return prev;
+    }
     case "dismiss":
       if ((prev.kind === "notes-ready" || prev.kind === "failed" || prev.kind === "waiting") && prev.id === input.id) {
         return MEETING_PILL_IDLE;
@@ -292,7 +369,10 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
   }
 }
 
-/** Does this phase hold on a deadline? (The shell arms the timer.) */
+/**
+ * Does this phase hold on a deadline? (The shell arms the timer.) The saved
+ * beat is not a result: its own deadline is `meetingSavedUntil`.
+ */
 export function meetingPillHoldMs(phase: MeetingPillPhase): number | null {
   return phase.kind === "notes-ready" || phase.kind === "failed" || phase.kind === "waiting"
     ? MEETING_RESULT_HOLD_MS
@@ -308,7 +388,7 @@ const DICTATION_QUIET: ReadonlySet<LivePhase> = new Set<LivePhase>(["idle", "sle
 
 /** What the badge renders for a post-stop meeting phase. */
 export interface MeetingAfterView {
-  kind: "processing" | "notes-ready" | "failed" | "waiting";
+  kind: "saved" | "processing" | "notes-ready" | "failed" | "waiting";
   /** The meeting this is about — the click opens it. */
   id: string;
   /** The words in the pill. */
@@ -319,6 +399,8 @@ export interface MeetingAfterView {
   percent: number | null;
   /** Clicking opens the meeting in the Meetings view. */
   opens: boolean;
+  /** fix-b8-1 — the saved beat's scene time (the meeting's last elapsed seconds). */
+  elapsedS?: number;
 }
 
 /**
@@ -328,6 +410,13 @@ export interface MeetingAfterView {
  * rendered from the status itself and keeps its YV95 behaviour.
  */
 export function meetingAfterView(phase: MeetingPillPhase, dictation: LivePhase): MeetingAfterView | null {
+  // fix-b8-1 — the saved beat outranks nothing, but it has its box even while
+  // a dictation is live (the user stopped the meeting mid-take): the clock
+  // slot stays reserved for the 2.4 s hold, the same slot the recording badge
+  // held beside that take a moment ago.
+  if (phase.kind === "saved") {
+    return { kind: "saved", id: phase.id ?? "", label: SAVED_LABEL, title: "Meeting saved", percent: null, opens: false, elapsedS: phase.elapsedS };
+  }
   if (!DICTATION_QUIET.has(dictation)) return null;
   switch (phase.kind) {
     case "processing": {

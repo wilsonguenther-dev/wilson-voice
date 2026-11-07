@@ -662,7 +662,10 @@ function Float() {
   // stop it is a property of the meeting pipeline, not of whichever capsule is
   // drawn (Y5-K owner decision: the shell owns phases, a character only owns
   // art). Ranked ONCE against the take: a dictation on screen outranks the
-  // post-stop badge, so `meetingAfter` is null while one is.
+  // post-stop badge, so `meetingAfter` is null while one is — except the 2.4 s
+  // "Saved" stop beat (fix-b8-1), which keeps its clock box mid-take: it is
+  // `meetingAfter` kind "saved", so `meetingMode` is "after" and the layout
+  // reserves the slot instead of clipping the beat to 0x0.
   const meeting = useMeetingPill();
   const meetingAfter = meetingAfterView(meeting.phase, phase);
   const dismissMeeting = meeting.dismiss;
@@ -804,7 +807,9 @@ function Float() {
           most 4 s, once a day each, never during a meeting, a screen share or
           Do Not Disturb, and less often after 50 takes (pill/friendVisits.ts). */}
       <FriendVisit
-        meetingRecording={meeting.status.recording}
+        /* fix-b8-1 — the 2.4 s "Saved" stop beat is still the meeting's
+           moment: no visitor walks over Hoot's tape hand-over. */
+        meetingRecording={meeting.status.recording || meeting.phase.kind === "saved"}
         meetingNotesReady={meeting.phase.kind === "notes-ready"}
         occupant={character.id}
         forced={FORCED ? forcedFriendVisit(window.location.search) : null}
