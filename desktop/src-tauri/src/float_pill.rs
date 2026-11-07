@@ -2002,7 +2002,7 @@ mod tests {
     fn click_telemetry_control_names_are_sanitized() {
         assert_eq!(sanitize_control("meeting-stop"), "meeting-stop");
         assert_eq!(sanitize_control("Trial-Ended"), "trial-ended");
-        assert_eq!(sanitize_control("a b/c\n<script>"), "abcnscript");
+        assert_eq!(sanitize_control("a b/c\n<script>"), "abcscript");
         assert_eq!(sanitize_control(""), "unknown");
         assert_eq!(sanitize_control(&"x".repeat(80)).len(), 32);
     }
