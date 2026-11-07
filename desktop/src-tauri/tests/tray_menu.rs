@@ -522,7 +522,12 @@ fn quit_runs_the_exit_drain() {
     assert!(teardown.contains("lifecycle::quit_plan()"));
     assert!(teardown.contains("exit_step_asr_drain"));
     assert!(teardown.contains("exit_step_await_take"));
-    assert!(fn_body(&lib, "exit_step_asr_drain").contains("drain_and_unload("));
+    // yap-1106-quit-during-asr-crash: the step delegates to its test seam,
+    // which drains the engine and then joins the meeting worker.
+    assert!(fn_body(&lib, "exit_step_asr_drain").contains("exit_step_asr_drain_with("));
+    let drain = fn_body(&lib, "exit_step_asr_drain_with");
+    assert!(drain.contains("drain_and_unload("));
+    assert!(drain.contains("join(EXIT_MEETING_JOIN_TIMEOUT)"));
 }
 
 // ─── WF-14: "Update ready" and the quiet gate ───────────────────────────────
