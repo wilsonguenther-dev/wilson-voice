@@ -118,6 +118,7 @@ import {
   matrixPhases,
   matrixDragBlobScene,
   matrixFriendVisitScene,
+  matrixStuckEngineScenes,
   type ForcedPill,
 } from "./pill/forced";
 import { FriendVisit } from "./pill/FriendVisit";
@@ -297,6 +298,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixDragBlobScene(),
     // yap-1106-friend-visits — Tidy visiting a resting pill.
     matrixFriendVisitScene(),
+    // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
+    ...matrixStuckEngineScenes(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -349,7 +352,13 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
-  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>(FORCED?.engine ?? "idle");
+  useEffect(() => {
+    // yap-1106-stuck-pill-keeps-its-scene — the health rides on <html> like the
+    // phase (CSS + the matrix's handle); a stuck engine is logged once per change.
+    document.documentElement.dataset.engineHealth = engineHealth;
+    console.info(`pill engine_scene health=${engineHealth} scene=full`);
+  }, [engineHealth]);
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -762,7 +771,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
