@@ -1063,7 +1063,7 @@ fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
     }
     for m in wilson_voice_lib::models::diarize_models() {
         assert!(
-            model_sha_seen.iter().any(|id| *id == m.id),
+            model_sha_seen.contains(&m.id),
             "catalog model {} has no sha256 line in ANALYZER-RESEARCH.md",
             m.id
         );
