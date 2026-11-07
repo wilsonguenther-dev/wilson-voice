@@ -14,6 +14,9 @@ import {
   ROOM_SCALES,
   ROOM_W,
   attentionTitle,
+  attentionKept,
+  showRetryAll,
+  ATTENTION_KEPT_DAYS,
   meetingClock,
   meetingRoomLabel,
   pageRangeLabel,
@@ -95,9 +98,9 @@ describe("showNeedsAttention — hidden when empty", () => {
   it("titles a cancelled take apart from a failed one", () => {
     expect(attentionTitle("Cancelled by you")).toBe("Cancelled take");
     expect(attentionTitle("take was CANCELED")).toBe("Cancelled take");
-    expect(attentionTitle("engine timed out")).toBe("Could not transcribe");
-    expect(attentionTitle(null)).toBe("Could not transcribe");
-    expect(attentionTitle(undefined)).toBe("Could not transcribe");
+    expect(attentionTitle("engine timed out")).toBe("Engine could not transcribe");
+    expect(attentionTitle(null)).toBe("Engine could not transcribe");
+    expect(attentionTitle(undefined)).toBe("Engine could not transcribe");
   });
 });
 
@@ -218,5 +221,22 @@ describe("statsParts — yap-1107-parity-home: the approved stats line, number t
   it("agrees with statsLine figure for figure", () => {
     const o = { wordsToday: 0, streakDays: 3, totalTakes: 12 };
     expect(statsParts(o).map((p) => `${p.value} ${p.label}`)).toEqual(statsLine(o));
+  });
+});
+
+describe("yap-1107-parity-home — the Needs attention rows, as approved", () => {
+  it("a cancelled take says how long its audio is kept", () => {
+    expect(attentionKept({ error: "Cancelled by you", speechSeconds: 3.4 })).toBe("Audio kept for 7 days.");
+    expect(ATTENTION_KEPT_DAYS).toBe(7);
+  });
+  it("an engine failure says how much audio is kept, one decimal", () => {
+    expect(attentionKept({ error: "engine timed out", speechSeconds: 6.7 })).toBe("6.7 s of audio kept.");
+    expect(attentionKept({ error: "engine timed out", speechSeconds: 0 })).toBe("Audio kept for 7 days.");
+    expect(attentionKept({ error: null, speechSeconds: Number.NaN })).toBe("Audio kept for 7 days.");
+  });
+  it("Retry all shows only past the two takes the approved panel shows", () => {
+    expect(showRetryAll([{}, {}])).toBe(false);
+    expect(showRetryAll([{}, {}, {}])).toBe(true);
+    expect(showRetryAll(null)).toBe(false);
   });
 });

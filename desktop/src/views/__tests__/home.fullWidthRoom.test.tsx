@@ -152,7 +152,11 @@ describe("Needs attention: failed and cancelled takes, hidden when empty", () =>
     const html = attention([failedRow("c", "Cancelled"), failedRow("f", "Engine could not transcribe")]);
     expect(html).toContain("Needs attention");
     expect(html).toContain("Cancelled take");
-    expect(html).toContain("Could not transcribe");
+    expect(html).toContain("Engine could not transcribe");
+    expect(html).toContain("Audio kept for 7 days.");
+    expect(html).toContain("6.7 s of audio kept.");
+    expect(html).not.toContain("data-testid=\"retry-all\"");
+    expect(html).not.toContain("retained-clips");
     expect(html.match(/>Retry</g)?.length).toBe(2);
     expect(html.match(/>Discard</g)?.length).toBe(2);
     const page = home(base({ history: [take(0)], failed: [failedRow("c", "Cancelled")] }));

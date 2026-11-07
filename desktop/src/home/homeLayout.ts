@@ -14,6 +14,7 @@
  *   - failed and cancelled takes sit in "Needs attention", hidden when empty;
  *   - during a meeting the room label reads "Recording meeting · mm:ss".
  */
+import { RETAINED_CLIP_DAYS } from "../appTypes";
 
 /** The Home room's art grid (YappyHouse draws the studio at exactly this size;
  * equal to studio/studio.ts STUDIO_W x STUDIO_H, pinned by the test). */
@@ -63,7 +64,32 @@ export function showNeedsAttention(failed: readonly unknown[] | null | undefined
 
 /** A cancelled take is parked with this kind of reason; anything else failed. */
 export function attentionTitle(error: string | null | undefined): string {
-  return /cancel/i.test(error ?? "") ? "Cancelled take" : "Could not transcribe";
+  // yap-1107-parity-home — the approved page's words for the two kinds.
+  return /cancel/i.test(error ?? "") ? "Cancelled take" : "Engine could not transcribe";
+}
+
+/** Days a parked take's audio is kept — the one number, from appTypes. */
+export const ATTENTION_KEPT_DAYS = RETAINED_CLIP_DAYS;
+
+/**
+ * yap-1107-parity-home — the one line under a parked take's title, as the
+ * approved Needs attention panel words it: a cancelled take says how long its
+ * audio is kept ("Audio kept for 7 days."), an engine failure says how much
+ * audio is kept ("6.7 s of audio kept."). PRIV-B: retained audio stays visible.
+ */
+export function attentionKept(f: { error?: string | null; speechSeconds?: number | null }): string {
+  const secs = typeof f.speechSeconds === "number" && Number.isFinite(f.speechSeconds) ? f.speechSeconds : 0;
+  if (/cancel/i.test(f.error ?? "") || secs <= 0) return `Audio kept for ${ATTENTION_KEPT_DAYS} days.`;
+  return `${secs.toFixed(1)} s of audio kept.`;
+}
+
+/**
+ * yap-1107-parity-home — "Retry all" joins the panel head only past two takes:
+ * the approved panel shows two parked takes, each with its own Retry, and no
+ * Retry all.
+ */
+export function showRetryAll(failed: readonly unknown[] | null | undefined): boolean {
+  return Array.isArray(failed) && failed.length > 2;
 }
 
 const fmt = (n: number) => Math.max(0, Math.round(n)).toLocaleString("en-US");

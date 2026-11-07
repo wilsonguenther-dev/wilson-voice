@@ -8,14 +8,14 @@ import { useGovernor } from "../pill/GovernorChip";
 import NewsHomeCard from "../news/NewsHomeCard";
 import NewsBriefing from "../news/NewsBriefing";
 import { quietNow } from "../news/briefing";
-import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
+import { type FailedDictation, type TranscriptEntry, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
 import { viewState } from "../viewState";
 import { type RetryPhase, retryAllLabel, retryButtonLabel } from "../retryDictation";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 import {
-  HOME_RECENT, attentionTitle, recentTakes, requestHistoryFocus, seeAllLabel, showNeedsAttention, statsParts, takePreview,
+  HOME_RECENT, attentionKept, attentionTitle, recentTakes, requestHistoryFocus, seeAllLabel, showNeedsAttention, showRetryAll, statsParts, takePreview,
 } from "../home/homeLayout";
 
 /**
@@ -38,39 +38,40 @@ export function NeedsAttention({
   if (!showNeedsAttention(failed)) return null;
   return (
     <section className="needs-attention home-panel" data-home="needs-attention" aria-labelledby="needs-attention-h">
-      <div className="failed-head">
-        {/* yap-1107-parity-home — the approved panel head: title, count as meta. */}
-        <h3 id="needs-attention-h" className="home-panel-h">
-          Needs attention <span className="count home-meta">{failed.length}</span>
-        </h3>
-        {/* PRIV-B — retained audio is VISIBLE: the count, the window, the way out. */}
-        <span className="tiny" data-testid="retained-clips">
-          {retainedClipsLabel(failed.length)} — retry or discard. Nothing here is pasted for you.
+      {/* yap-1107-parity-home — the approved panel head: "Needs attention", the
+          count as meta. Each row carries its own retention line (PRIV-B: the
+          audio kept stays visible), so the head holds nothing else; Retry all
+          joins it only past the two takes the approved panel shows. */}
+      <h3 id="needs-attention-h" className="home-panel-h">
+        Needs attention{" "}
+        <span className="count home-meta">
+          {failed.length}
+          {showRetryAll(failed) ? (
+            <button
+              className="home-btn failed-retry-all"
+              data-testid="retry-all"
+              disabled={retryAll !== null || retrying !== null}
+              aria-busy={retryAll !== null}
+              onClick={onRetryAll}
+            >
+              {retryAllLabel({ running: retryAll !== null, done: retryAll?.done ?? 0, total: retryAll?.total ?? failed.length })}
+            </button>
+          ) : null}
         </span>
-        {failed.length > 1 ? (
-          <button
-            className="home-btn failed-retry-all"
-            data-testid="retry-all"
-            disabled={retryAll !== null || retrying !== null}
-            aria-busy={retryAll !== null}
-            onClick={onRetryAll}
-          >
-            {retryAllLabel({ running: retryAll !== null, done: retryAll?.done ?? 0, total: retryAll?.total ?? failed.length })}
-          </button>
-        ) : null}
-      </div>
+      </h3>
       <ul className="attention-list">
         {failed.map((f) => (
           <li key={f.id} className="attention-row">
+            {/* yap-1107-parity-home — the approved .att .it: title + time on one
+                row, one line of what is kept, then Retry and Discard. The
+                engine's own words stay one hover away on that line. */}
             <div className="card-meta">
               <strong>{attentionTitle(f.error)}</strong>
-              <span>
-                {formatTime(f.createdAt)}
-                {f.sourceApp ? ` · ${f.sourceApp}` : ""}
-                {f.speechSeconds > 0 ? ` · ${f.speechSeconds.toFixed(1)}s of audio kept` : " · audio kept"}
-              </span>
+              <span>{formatTime(f.createdAt)}</span>
             </div>
-            <p className="failed-why">{f.error}</p>
+            <p className="failed-why" title={f.sourceApp ? `${f.sourceApp} · ${f.error}` : f.error}>
+              {attentionKept(f)}
+            </p>
             {f.partialText ? (
               <p className="failed-partial" title={f.partialText}>
                 Already transcribed: “{f.partialText}”
