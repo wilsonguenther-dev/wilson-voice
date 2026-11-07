@@ -873,13 +873,6 @@ fn right_or_ctrl_click_opens_the_pill_menu_and_never_starts_a_take() {
     );
 }
 
-/// fix-b7-1 (WF-14) — the dictation stop edge counts as busy. `lib.rs` sets
-/// `recording` false, runs the context reads (seconds, worst case), and only
-/// then sets `busy` true; the take's `TakeGuard` must cover that window, so it
-/// is entered BEFORE the `recording = false` line, moved into the worker, and
-/// released only after the worker sets `busy` false (and before the final
-/// `emit_status`, so an armed restart fires on that transition). The order of
-/// `recording` / `busy` themselves is unchanged.
 /// `src` with `//` comment lines removed but every other line kept verbatim.
 /// Unlike [`code_only`] this keeps lines that start with `*` — the deref
 /// assignments `*state.recording.lock() = false;` the stop-edge test orders —
@@ -892,6 +885,13 @@ fn code_keep_derefs(src: &str) -> String {
         .join("\n")
 }
 
+/// fix-b7-1 (WF-14) — the dictation stop edge counts as busy. `lib.rs` sets
+/// `recording` false, runs the context reads (seconds, worst case), and only
+/// then sets `busy` true; the take's `TakeGuard` must cover that window, so it
+/// is entered BEFORE the `recording = false` line, moved into the worker, and
+/// released only after the worker sets `busy` false (and before the final
+/// `emit_status`, so an armed restart fires on that transition). The order of
+/// `recording` / `busy` themselves is unchanged.
 #[test]
 fn take_guard_spans_the_stop_edge_in_stop_and_transcribe() {
     // Not `code_only`: it drops `*`-leading lines, i.e. the very
