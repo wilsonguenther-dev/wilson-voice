@@ -29,7 +29,9 @@ import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
+import GovernorChip from "./GovernorChip";
 import LanguageChip from "./LanguageChip";
+import RouteChip from "./RouteChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
@@ -280,7 +282,8 @@ export default function ClassicPill(
       const v = typeof e.payload === "number" ? e.payload : 0;
       levelRef.current = Math.max(0, Math.min(1, v));
       if (levelRef.current > 0.002) wakeRef.current(); // re-arm the smoothing loop
-    }).then((u) => (dead ? u() : unsubs.push(u)));
+      // SP-11: float-targeted only, so the main window's copy never doubles it.
+    }, { target: "float" }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
@@ -456,6 +459,7 @@ export default function ClassicPill(
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
         <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
+        <GovernorChip />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
             has no dead click region to hunt for. It lives INSIDE the capsule,
@@ -499,6 +503,8 @@ export default function ClassicPill(
         {/* Y10-A · the language picker slot. At rest only: mid-take the
             language is already decided, and a blocked/gated pill has one job. */}
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
+        {/* yap-1106 · the route chip (Cloud / On this Mac), at rest only. */}
+        {!blocked && !gated && !live && !progress && !busy ? <RouteChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
           <SlotTip

@@ -93,6 +93,16 @@ export default function Diagnostics() {
                       The export is redacted (no transcripts, no user name, file names only) and stays on your Mac until you attach it.
                     </p>
                   </div>
+                  {snap && snap.states && Object.keys(snap.states).length > 0 ? (
+                    <div className="panel" data-row data-panel="states">
+                      <h3>Routes and stages</h3>
+                      <ul className="settings-list">
+                        {Object.entries(snap.states).map(([k, v]) => (
+                          <li key={k}><code>{k}</code> {v}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                   <div className="panel" data-row>
                     <h3>Counters</h3>
                     {stats.length === 0 ? (

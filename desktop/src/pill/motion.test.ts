@@ -403,3 +403,19 @@ describe("the duration table", () => {
     expect(rawTimer.test("window.setTimeout(fn, DURATION.doneFlash)")).toBe(false);
   });
 });
+
+describe("applyMotionVars", () => {
+  it("publishes every motion token the stylesheets read, from the one DURATION table", async () => {
+    const { applyMotionVars, DURATION, EASE_STATE_CHANGE, EASE_OUT } = await import("./motion");
+    const set = new Map<string, string>();
+    const root = { style: { setProperty: (k: string, v: string) => void set.set(k, v) } } as unknown as HTMLElement;
+    applyMotionVars(root);
+    expect(set.get("--dur-morph")).toBe(`${DURATION.phaseMorph}ms`);
+    expect(set.get("--dur-expand")).toBe(`${DURATION.expand}ms`);
+    expect(set.get("--dur-collapse")).toBe(`${DURATION.collapse}ms`);
+    expect(set.get("--ease-state")).toBe(EASE_STATE_CHANGE);
+    expect(set.get("--dur-bubble-in")).toBe(`${DURATION.bubbleIn}ms`);
+    expect(set.get("--dur-bubble-out")).toBe(`${DURATION.bubbleOut}ms`);
+    expect(set.get("--ease-out")).toBe(EASE_OUT);
+  });
+});

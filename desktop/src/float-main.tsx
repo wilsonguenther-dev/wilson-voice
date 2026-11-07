@@ -15,6 +15,13 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
+import { EngineHealthChip } from "./pill/EngineHealthChip";
+import {
+  ENGINE_HEALTH_EVENT,
+  engineHealthTakesStrip,
+  parseEngineHealth,
+  type EngineHealth,
+} from "./pill/engineHealth";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
@@ -22,9 +29,15 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import MeetingDictationCard from "./pill/MeetingDictationCard";
+import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import PolishRevealCard from "./pill/PolishRevealCard";
+import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
+import SilentMicRow from "./pill/SilentMicRow";
+import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -86,7 +99,10 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixMeetingDictationScenes,
+  matrixPolishRevealScenes,
   matrixStyleChipScene,
+  matrixSilentMicScene,
   matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
@@ -173,7 +189,9 @@ function useListenEstimate(listening: boolean): ListenEstimate {
         shownSec = Math.floor(sec);
         setEst({ estWords: f.estWords, sec });
       }
-    }).then((u) => (dead ? u() : (unsub = u)));
+      // SP-11: the level stream is aimed at the float window; the main window
+      // gets its own copy only while it is visible, never a second one here.
+    }, { target: "float" }).then((u) => (dead ? u() : (unsub = u)));
     return () => {
       dead = true;
       unsub?.();
@@ -223,6 +241,8 @@ interface BackendStatus extends BlindStatusSlice {
   handsFree?: boolean;
   /** yap24-PILL4 — lib.rs `AppStatus.chord_label`: the key that ends the latch. */
   chordLabel?: string;
+  /** WF-13 — lib.rs `AppStatus.silent_mic_warning`: "I can't hear <mic>". */
+  silentMicWarning?: string | null;
 }
 
 /** The `transcript` event, for its word count only (lib.rs:2509). */
@@ -246,8 +266,14 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // yap-fx-06 — Esc during a meeting, the hands-free question, stop failed.
+    ...matrixMeetingDictationScenes(),
+    // WF-05 — "Polished — Reveal": the toast, then the opened diff card.
+    ...matrixPolishRevealScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
+    // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
+    matrixSilentMicScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
     matrixRailScene(),
     // WF-02 — the pill mid-drag: the blob plus its three drop zones.
@@ -259,6 +285,30 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
   }
 }
+
+/**
+ * WF-04 — right-click (or Ctrl-click, which WebKit reports as the same
+ * `contextmenu` event) on the pill pops Yap's native pill menu: Hide for 1
+ * hour, the three docks, Microphone, Languages, Open Scratchpad, Open Yap.
+ * The rows are decided in Rust from the menu bar's own item table
+ * (`tray_menu::pill_context_menu`), so nothing about them lives here. A text
+ * field inside a card keeps the system's Cut / Copy / Paste menu.
+ */
+function wantsPillMenu(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (!el) return true;
+  return !el.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+}
+
+window.addEventListener("contextmenu", (e) => {
+  if (!wantsPillMenu(e.target)) return;
+  e.preventDefault();
+  invoke("pill_context_menu").catch((err: unknown) => {
+    // Rust already logged the cause; the pill has no toast surface, and the
+    // menu bar icon carries every row of this menu.
+    console.warn("pill context_menu failed", err);
+  });
+});
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
@@ -280,6 +330,7 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -291,6 +342,8 @@ function Float() {
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
+  // WF-13 — the live take's mic records nothing (record.rs SilentMicCheck).
+  const [silentMic, setSilentMic] = useState<string | null>(null);
   // yap24-PILL4 — the key that ends a hands-free take, off the status payload.
   const [chordLabel, setChordLabel] = useState<string>(DEFAULT_STOP_KEY);
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
@@ -380,6 +433,17 @@ function Float() {
     listen<unknown>("transcript_error", () => setProgress(null)).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
+  // yap-1106-engine-owner — the speech engine's one health state, pushed by
+  // `engine_owner` on every transition (never polled). "Catching up…" while a
+  // stuck engine is being waited out, "Restarting…" while it is replaced.
+  useEffect(() => {
+    let dead = false;
+    let unsub: (() => void) | null = null;
+    listen<unknown>(ENGINE_HEALTH_EVENT, (e) => setEngineHealth(parseEngineHealth(e.payload))).then(
+      (u) => (dead ? u() : (unsub = u)),
+    );
+    return () => { dead = true; unsub?.(); };
+  }, []);
   useEffect(() => {
     let dead = false;
     const unsubs: Array<() => void> = [];
@@ -432,6 +496,7 @@ function Float() {
       if (!st) return;
       setLastErrorCode(st.lastError ? st.lastErrorCode ?? "take_failed" : null);
       setStillRecording(!!st.recording && !!st.stillRecording);
+      setSilentMic(st.recording ? parseSilentMicWarning(st.silentMicWarning) : null);
       const nextBlind = blindFromStatus(st);
       // Keep the same object while nothing changed: every status emit (HUD
       // cadence while recording) would otherwise re-render the shell.
@@ -609,7 +674,11 @@ function Float() {
   const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
   const cardH = useCardOnScreen();
-  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
+  // WF-13 — while "I can't hear <mic>" is up, the hint slot holds its two-row
+  // chip (SILENT_MIC_ROW_H), so the layout reserves SILENT_MIC_HINT_LINES.
+  const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
+  const silentMicUp = silentMicShows(silentMicWarning, phase);
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
@@ -655,9 +724,17 @@ function Float() {
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* yap-fx-06 — "Dictation cancelled — meeting still recording. Stop meeting?",
+          the once-per-meeting hands-free question, and a Stop that failed. */}
+      <MeetingDictationCard forced={FORCED ? forcedMeetingNotice(window.location.search) : null} />
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
+      {/* WF-05 — "Polished — Reveal" (Reveal → diff with Use original / Keep). Muted with Tips. */}
+      <PolishRevealCard
+        forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
@@ -674,7 +751,11 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+        {/* yap-1106-engine-owner — while the engine is loading, stuck or
+            restarting, THAT is the one line worth saying during a decode. */}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
           // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
@@ -688,6 +769,13 @@ function Float() {
           when app-aware modes are off. A later sibling of .bar, so the side
           dock rules in float.css can place it like the phase line. */}
       <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
+      {/* WF-13 — "I can't hear <mic>" + Switch mic, while the take keeps
+          recording. Takes the hint row; the style chip yields it (float.css). */}
+      <SilentMicRow
+        warning={silentMicWarning}
+        phase={phase}
+        forced={!!FORCED}
+      />
     </>
   );
 }
@@ -703,8 +791,9 @@ function usePanelLayout(
   dock: BarDock,
   character: LayoutCharacter,
   cardH: number | null,
+  hintLines?: number,
 ): PillLayout {
-  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null, hintLines });
   return useMemo(() => next, [next.key]);
 }
 
