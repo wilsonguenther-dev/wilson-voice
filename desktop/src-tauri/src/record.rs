@@ -1916,6 +1916,228 @@ fn is_mid_take_switch(from: &str, to: &str, armed: bool) -> bool {
     armed && !to.is_empty() && from != to
 }
 
+// ── WF-13: "I can't hear <mic>" ─────────────────────────────────────────────
+// A take whose first 1.5 s carries no sound at all — a muted interface, a
+// headset with its hardware mute on, a virtual input with nothing routed into
+// it — used to run to the end and come back as an empty dictation. The capture
+// consumer now listens to that opening window, and if it is below the silence
+// floor the pill says "I can't hear <mic>" with a Switch mic button while the
+// take KEEPS recording (the warning never stops capture). It fires at most once
+// per take, and it goes away the moment real sound arrives.
+
+/// How much of the take's opening is judged.
+pub const SILENT_MIC_WINDOW: Duration = Duration::from_millis(1500);
+
+/// The silence floor, as an AMPLITUDE (half the peak-to-peak swing, full scale
+/// = 1.0) — about -66 dBFS. A dead or muted input delivers digital zero or a
+/// few LSBs of converter noise (~1e-5); a live mic in a quiet room idles at
+/// -60 dBFS and up, and the quietest speech the `ORPHAN_SILENCE_RMS` forensics
+/// measured sits near 0.002 RMS with peaks well above this. Peak-to-peak (not
+/// raw peak) so an interface that idles at a DC offset still reads silent.
+pub const SILENT_MIC_FLOOR: f32 = 0.0005;
+
+/// What one block of the take's audio changed about the silent-mic verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SilentMicEvent {
+    /// Nothing to report (still inside the window, or already decided).
+    None,
+    /// The opening window closed below the floor: warn — once.
+    Silent,
+    /// After a `Silent`, sound finally arrived: clear the warning — once.
+    Recovered,
+}
+
+/// WF-13 — the level check over a take's opening window. Pure (no clock, no
+/// device): it counts frames, so the unit tests feed it recorded fixtures.
+#[derive(Debug, Clone)]
+pub struct SilentMicCheck {
+    channels: usize,
+    window_frames: u64,
+    seen_frames: u64,
+    lo: f32,
+    hi: f32,
+    /// `Some(true)` = warned and still silent, `Some(false)` = decided (heard
+    /// sound, or recovered). `None` = still inside the window.
+    state: Option<bool>,
+}
+
+impl SilentMicCheck {
+    pub fn new(sample_rate: u32, channels: usize) -> Self {
+        let rate = u64::from(sample_rate.max(1));
+        Self {
+            channels: channels.max(1),
+            window_frames: rate * SILENT_MIC_WINDOW.as_millis() as u64 / 1000,
+            seen_frames: 0,
+            lo: f32::INFINITY,
+            hi: f32::NEG_INFINITY,
+            state: None,
+        }
+    }
+
+    /// Has the opening window been judged yet?
+    #[cfg(test)]
+    pub fn decided(&self) -> bool {
+        self.state.is_some()
+    }
+
+    /// Feed the take's next INTERLEAVED block (native rate, `channels` wide).
+    pub fn feed(&mut self, interleaved: &[f32]) -> SilentMicEvent {
+        match self.state {
+            Some(false) => SilentMicEvent::None,
+            Some(true) => {
+                if block_amplitude(interleaved) > SILENT_MIC_FLOOR {
+                    self.state = Some(false);
+                    SilentMicEvent::Recovered
+                } else {
+                    SilentMicEvent::None
+                }
+            }
+            None => {
+                let frames = (interleaved.len() / self.channels) as u64;
+                let room = self.window_frames.saturating_sub(self.seen_frames);
+                let take = frames.min(room) as usize * self.channels;
+                for &s in &interleaved[..take.min(interleaved.len())] {
+                    if s.is_finite() {
+                        self.lo = self.lo.min(s);
+                        self.hi = self.hi.max(s);
+                    }
+                }
+                self.seen_frames += frames.min(room);
+                if self.amplitude() > SILENT_MIC_FLOOR {
+                    // Sound inside the window: decided early, never warns.
+                    self.state = Some(false);
+                    return SilentMicEvent::None;
+                }
+                if self.seen_frames >= self.window_frames {
+                    self.state = Some(true);
+                    return SilentMicEvent::Silent;
+                }
+                SilentMicEvent::None
+            }
+        }
+    }
+
+    fn amplitude(&self) -> f32 {
+        if self.hi < self.lo {
+            0.0
+        } else {
+            (self.hi - self.lo) * 0.5
+        }
+    }
+}
+
+/// Half the peak-to-peak swing of a block (0.0 for an empty one).
+fn block_amplitude(block: &[f32]) -> f32 {
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for &s in block.iter().filter(|s| s.is_finite()) {
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    if hi < lo {
+        0.0
+    } else {
+        (hi - lo) * 0.5
+    }
+}
+
+/// The pill line. The name is the one Settings shows; never empty, never a path.
+pub fn silent_mic_note(mic: &str) -> String {
+    let mic = mic.trim();
+    if mic.is_empty() {
+        "I can't hear your microphone".to_string()
+    } else {
+        format!("I can't hear {mic}")
+    }
+}
+
+fn silent_mic_slot() -> &'static Mutex<Option<String>> {
+    static NOTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    NOTE.get_or_init(|| Mutex::new(None))
+}
+
+fn armed_mic_slot() -> &'static Mutex<String> {
+    static NAME: OnceLock<Mutex<String>> = OnceLock::new();
+    NAME.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Bumped at every Arm: the take the silent-mic warning belongs to.
+static SILENT_MIC_TAKE: AtomicU64 = AtomicU64::new(0);
+/// The take the warning last fired for — the once-per-take gate. A mid-take
+/// reopen (WF-10) starts a new consumer with a fresh check, and this is what
+/// keeps the second device from warning a second time in the same take.
+static SILENT_MIC_FIRED_FOR: AtomicU64 = AtomicU64::new(0);
+
+/// The pure once-per-take gate: true only for the FIRST claim of `take`.
+fn claim_once(fired_for: &AtomicU64, take: u64) -> bool {
+    take != 0 && fired_for.swap(take, Ordering::SeqCst) != take
+}
+
+/// The warning for the take in flight, if its mic is silent.
+pub fn silent_mic_warning() -> Option<String> {
+    silent_mic_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// A new take: forget the last take's warning and remember which mic it opened on.
+fn begin_silent_mic_take(device_name: &str) {
+    SILENT_MIC_TAKE.fetch_add(1, Ordering::SeqCst);
+    *armed_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = device_name.to_string();
+    *silent_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// A mid-take reopen moved the take to `device_name`: the old mic's warning no
+/// longer describes it (the WF-10 note replaces it).
+fn retarget_silent_mic(device_name: &str) {
+    *armed_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = device_name.to_string();
+    let had = silent_mic_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .is_some();
+    if had {
+        MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Apply one check event to the shared slot (the HUD loop redraws on the seq).
+fn apply_silent_mic_event(event: SilentMicEvent) {
+    match event {
+        SilentMicEvent::None => {}
+        SilentMicEvent::Silent => {
+            let take = SILENT_MIC_TAKE.load(Ordering::SeqCst);
+            if !claim_once(&SILENT_MIC_FIRED_FOR, take) {
+                return;
+            }
+            let mic = armed_mic_slot()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            *silent_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(silent_mic_note(&mic));
+            MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+            log::warn!(
+                "record silent_mic_warned window_ms={} floor={} named={}",
+                SILENT_MIC_WINDOW.as_millis(),
+                SILENT_MIC_FLOOR,
+                !mic.trim().is_empty()
+            );
+        }
+        SilentMicEvent::Recovered => {
+            let had = silent_mic_slot()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+                .is_some();
+            if had {
+                MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+                log::info!("record silent_mic_recovered");
+            }
+        }
+    }
+}
+
 pub(crate) const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 pub(crate) const NO_SAMPLES_ERR: &str =
     "No samples captured. Enable Microphone for Yap in System Settings.";
@@ -2559,6 +2781,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     }
                     // WF-10 — a fresh take starts with no "continuing on" note.
                     clear_mid_take_note();
+                    // WF-13 — a fresh take is judged on its own opening 1.5 s.
+                    begin_silent_mic_take(&stream.device_name);
                     stream.begin_with(journal, spill.map(|s| *s), analysis);
                     let _ = reply.send(Ok(()));
                 }
@@ -2889,6 +3113,7 @@ fn reopen_with(
                 live.window.open(0);
             }
             if switched {
+                retarget_silent_mic(&live.device_name);
                 note_mid_take_switch(&live.device_name, device_lost);
                 log::warn!(
                     "mic_select switched_mid_take device_lost={device_lost} kept_samples={}",
@@ -3187,6 +3412,9 @@ fn capture_consumer_loop(
     level: LevelHandle,
 ) {
     let channels = rt.channels().max(1) as usize;
+    // WF-13 — the silent-mic check for the take this consumer is serving,
+    // keyed on the arm window's start so every new take gets a fresh one.
+    let mut silent_check: Option<(u64, SilentMicCheck)> = None;
     let mut block: Vec<f32> = Vec::with_capacity(crate::meeting::RING_FRAMES);
     let mut anchors: Vec<crate::rtring::CaptureAnchor> =
         Vec::with_capacity(crate::meeting::ANCHOR_RING_LEN);
@@ -3225,6 +3453,12 @@ fn capture_consumer_loop(
         drop(guard);
 
         if let Some(range) = armed_slice {
+            if silent_check.as_ref().map(|(at, _)| *at) != Some(from) {
+                silent_check = Some((from, SilentMicCheck::new(rt.sample_rate(), channels)));
+            }
+            if let Some((_, check)) = silent_check.as_mut() {
+                apply_silent_mic_event(check.feed(&block[range.clone()]));
+            }
             push_level(&level, &block[range]);
         } else if crate::meeting::meeting_capture_active() {
             push_level(&level, &block);
@@ -6696,5 +6930,141 @@ mod tests {
             dsp.push(c);
         }
         assert!(dsp.take().analysis.is_none());
+    }
+}
+
+#[cfg(test)]
+mod silent_mic_tests {
+    //! WF-13 — the silent-mic level check, on recorded fixtures.
+    use super::*;
+
+    const RATE: u32 = 16_000;
+
+    fn fox() -> Vec<f32> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/quick-brown-fox-16k.wav"
+        );
+        read_wav_16k_mono(Path::new(path)).expect("fox fixture reads")
+    }
+
+    /// The fox recording turned into QUIET speech: started at the first word
+    /// and attenuated 30 dB (x0.0316) — a soft talker far from the mic.
+    fn quiet_speech() -> Vec<f32> {
+        let loud = fox();
+        let onset = loud.iter().position(|s| s.abs() > 0.05).unwrap_or(0);
+        let start = onset.saturating_sub(RATE as usize / 10);
+        loud[start..].iter().map(|s| s * 0.0316).collect()
+    }
+
+    /// A muted interface as it really records: a DC offset plus a couple of
+    /// LSBs of 16-bit converter noise (deterministic, so the test is stable).
+    fn recorded_silence(seconds: f32) -> Vec<f32> {
+        let n = (RATE as f32 * seconds) as usize;
+        let lsb = 1.0 / 32_768.0;
+        (0..n)
+            .map(|i| 0.01 + lsb * [0.0, 1.0, -1.0, 2.0, -2.0, 1.0, 0.0][i % 7])
+            .collect()
+    }
+
+    /// Feed `samples` in 10 ms callbacks, as the consumer does; collect events.
+    fn run(check: &mut SilentMicCheck, samples: &[f32], channels: usize) -> Vec<SilentMicEvent> {
+        samples
+            .chunks(160 * channels)
+            .map(|c| check.feed(c))
+            .filter(|e| *e != SilentMicEvent::None)
+            .collect()
+    }
+
+    #[test]
+    fn silent_mic_recorded_silence_warns_after_the_window() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let silence = recorded_silence(1.4);
+        assert!(run(&mut check, &silence, 1).is_empty(), "not before 1.5 s");
+        assert!(!check.decided());
+        let more = recorded_silence(0.2);
+        assert_eq!(run(&mut check, &more, 1), vec![SilentMicEvent::Silent]);
+    }
+
+    #[test]
+    fn silent_mic_digital_zero_warns() {
+        let mut check = SilentMicCheck::new(48_000, 2);
+        let zeros = vec![0.0f32; 48_000 * 2 * 2];
+        assert_eq!(run(&mut check, &zeros, 2), vec![SilentMicEvent::Silent]);
+    }
+
+    #[test]
+    fn silent_mic_quiet_speech_never_warns() {
+        let quiet = quiet_speech();
+        assert!(
+            quiet.len() >= RATE as usize * 3 / 2,
+            "fixture covers the window"
+        );
+        let mut check = SilentMicCheck::new(RATE, 1);
+        assert!(
+            run(&mut check, &quiet, 1).is_empty(),
+            "quiet speech is not a silent mic"
+        );
+        assert!(check.decided());
+    }
+
+    #[test]
+    fn silent_mic_full_level_speech_never_warns() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        assert!(run(&mut check, &fox(), 1).is_empty());
+    }
+
+    #[test]
+    fn silent_mic_fires_once_per_take_even_on_long_silence() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let events = run(&mut check, &recorded_silence(20.0), 1);
+        assert_eq!(
+            events,
+            vec![SilentMicEvent::Silent],
+            "one warning, not one per block"
+        );
+    }
+
+    #[test]
+    fn silent_mic_recovers_once_when_speech_arrives() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let mut take = recorded_silence(2.0);
+        take.extend(quiet_speech());
+        take.extend(recorded_silence(3.0));
+        let events = run(&mut check, &take, 1);
+        assert_eq!(
+            events,
+            vec![SilentMicEvent::Silent, SilentMicEvent::Recovered]
+        );
+    }
+
+    #[test]
+    fn silent_mic_once_gate_holds_across_a_mid_take_reopen() {
+        let fired = AtomicU64::new(0);
+        assert!(claim_once(&fired, 7), "first device of take 7 warns");
+        assert!(
+            !claim_once(&fired, 7),
+            "the reopened device of take 7 does not"
+        );
+        assert!(claim_once(&fired, 8), "the next take may warn again");
+        assert!(!claim_once(&fired, 0), "no take armed yet: never");
+    }
+
+    #[test]
+    fn silent_mic_note_names_the_mic() {
+        assert_eq!(silent_mic_note("Shure MV7"), "I can't hear Shure MV7");
+        assert_eq!(silent_mic_note("  "), "I can't hear your microphone");
+    }
+
+    #[test]
+    fn silent_mic_check_is_wired_into_the_consumer_and_arm() {
+        // Only the code ABOVE this test module counts (the asserts below
+        // would otherwise find their own string literals).
+        let full = include_str!("record.rs");
+        let code = full.split("mod silent_mic_tests").next().unwrap_or(full);
+        assert!(code.len() < full.len(), "the test module marker is found");
+        assert!(code.contains("apply_silent_mic_event(check.feed("));
+        assert!(code.contains("begin_silent_mic_take(&stream.device_name);"));
+        assert!(code.contains("retarget_silent_mic(&live.device_name);"));
     }
 }

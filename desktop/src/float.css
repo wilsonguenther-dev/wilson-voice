@@ -1241,6 +1241,67 @@ html[data-dock="right"] .style-chip { left: auto; right: var(--flow-bar-inset); 
   top: 50%;
   transform: translateY(-50%);
 }
+
+/* WF-13 — "I can't hear <mic>" + Switch mic. Takes the same hint row as the
+   style chip (which yields it while the warning is up), placed the same way at
+   every dock. The take keeps recording, so this is amber advice, not the red
+   error voice. Clickable: SilentMicRow.tsx widens the hitbox to cover it. */
+.silent-mic-row {
+  position: fixed;
+  z-index: 6;
+  left: 50%;
+  bottom: calc(50% + 16px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 192px; /* HINT_W in pill/state.ts */
+  height: 18px;
+  padding: 0 3px 0 8px;
+  border-radius: 9px;
+  background: var(--pill-chip-surface);
+  color: var(--pill-silent-mic-text);
+  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.silent-mic-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.silent-mic-switch {
+  flex: none;
+  height: 14px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--pill-chip-surface-hover);
+  color: var(--pill-chip-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.silent-mic-switch:hover { background: var(--pill-silent-mic-button-hover); }
+.silent-mic-switch[aria-busy="true"] { cursor: progress; }
+html[data-silent-mic="true"] .style-chip { visibility: hidden; }
+html[data-dock="left"] .silent-mic-row { left: var(--flow-bar-inset); right: auto; transform: none; }
+html[data-dock="right"] .silent-mic-row { left: auto; right: var(--flow-bar-inset); transform: none; }
+.bar[data-bar-position="left"][data-bar-orientation="strip"] ~ .silent-mic-row {
+  left: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.bar[data-bar-position="right"][data-bar-orientation="strip"] ~ .silent-mic-row {
+  right: calc(var(--flow-bar-inset) + var(--flow-bar-strip) + 8px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .silent-mic-switch { transition: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .style-chip { transition: none; }
 }

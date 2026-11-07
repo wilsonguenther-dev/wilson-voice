@@ -297,6 +297,24 @@ export function matrixStyleChipScene(): MatrixChipRow {
 }
 
 /**
+ * WF-13 — the silent-mic row's matrix row: a listening pill whose take's mic
+ * records nothing (`float.html?phase=listening&silentMic=1`, see
+ * `forcedSilentMic`): "I can't hear <mic>" + Switch mic in the hint row.
+ */
+export function matrixSilentMicScene(): MatrixOfferRow {
+  const v = phaseVisual("listening");
+  return {
+    phase: "listening",
+    id: "silent-mic",
+    phaseId: PHASE_ID.listening,
+    query: "silentMic=1",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
+/**
  * yap-1106-pill-notes-and-meeting / WF-03 — the hover rail's matrix row: an
  * idle pill with the rail forced out (`float.html?phase=idle&rail=open`). The
  * matrix crosses it with {no meeting, meeting recording} x 3 docks, which is
