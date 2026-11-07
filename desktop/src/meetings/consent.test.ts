@@ -95,7 +95,13 @@ describe("the Settings line", () => {
 });
 
 // yap-byom-0 — the notice's upload claim follows the model-provider choices.
-import { consentNotice, leaveLines, recordedLine } from "./consent";
+import {
+  type ActiveLeave,
+  CLOUD_ROUTE_CHANGED_EVENT,
+  consentNotice,
+  leaveLines,
+  recordedLine,
+} from "./consent";
 
 describe("consentNotice(activeLeaves) — yap-byom-0", () => {
   it("keeps 'Nothing is uploaded' while every choice stays on this Mac", () => {
@@ -152,5 +158,32 @@ describe("consentNotice(activeLeaves, scope) — yap-call-1", () => {
 
   it("the static CONSENT_NOTICE carries no upload claim of its own", () => {
     expect(CONSENT_NOTICE.paragraphs[0]).not.toContain("Nothing is uploaded");
+  });
+});
+
+// fix-l3b3-1 — the cloud route (key + a cloud mode) is not a provider pick, but
+// `list_model_providers.activeLeaves` now counts it for notes AND polish.
+describe("consentNotice fed the cloud route's activeLeaves — fix-l3b3-1", () => {
+  const routeLeaves: ActiveLeave[] = [
+    { task: "notes", host: "api.anthropic.com" },
+    { task: "polish", host: "api.anthropic.com" },
+  ];
+
+  it("drops 'Nothing is uploaded' and names both tasks", () => {
+    const n = consentNotice(leaveLines(routeLeaves));
+    const all = n.paragraphs.join(" ");
+    expect(all).not.toContain("Nothing is uploaded");
+    expect(all).not.toContain("Nothing leaves it");
+    expect(n.paragraphs[0]).toContain("some of it leaves this Mac");
+    expect(n.paragraphs[0]).toContain("Notes go to api.anthropic.com");
+    expect(n.paragraphs[0]).toContain("Polish goes to api.anthropic.com");
+  });
+
+  it("keeps 'Nothing is uploaded' when the route is off (empty activeLeaves)", () => {
+    expect(consentNotice(leaveLines([])).paragraphs[0]).toContain("Nothing is uploaded");
+  });
+
+  it("exports one event name every Leaves-this-Mac surface re-reads on", () => {
+    expect(CLOUD_ROUTE_CHANGED_EVENT).toBe("yap:cloud-route-changed");
   });
 });
