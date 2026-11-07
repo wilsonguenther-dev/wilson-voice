@@ -124,7 +124,6 @@ export interface Visit {
 export type VisitSkip =
   | "unknown-event"
   | "not-own-event"
-  | "room-only"
   | "occupant"
   | "cloud-off"
   | "meeting"
@@ -198,7 +197,7 @@ export function decideVisit(
   if (!isFriendEvent(event)) return { show: false, reason: "unknown-event" };
   const friend = EVENT_OWNER[event];
   if (requested !== undefined && requested !== friend) return { show: false, reason: "not-own-event" };
-  if (ROOM_ONLY.includes(friend)) return { show: false, reason: "room-only" };
+  // Room-only friends own no event (EVENT_OWNER), so they can never get here.
   if (ctx.occupant === friend) return { show: false, reason: "occupant" };
   if (friend === "cinder" && !ctx.cloudConnected) return { show: false, reason: "cloud-off" };
   const quiet = quietReason(ctx);

@@ -227,6 +227,18 @@ describe("friend visits — the approved quiet rules", () => {
       .toEqual({ day: "", count: 0, lastDay: { gulp: "2026-11-06" }, lastAtMs: null });
   });
 
+  it("a clock that runs backwards or is not a number never throws", () => {
+    expect(dayKey(Number.NaN)).toBe(dayKey(0));
+    const ctx = { ...calm, takesSoFar: QUIETER_AFTER_TAKES };
+    const l = at("backtrack-caught", ctx, EMPTY_LEDGER).ledger;
+    // The Mac's clock was set back an hour: the gap rule does not lock friends out.
+    vi.setSystemTime(MORNING - H);
+    expect(reason(at("word-added", ctx, l).d)).toBe("shown");
+    expect(parseLedger("")).toEqual(EMPTY_LEDGER);
+    expect(parseLedger(JSON.stringify({ day: "2026-11-06", count: 1 }))).toEqual({ day: "2026-11-06", count: 1, lastDay: {}, lastAtMs: null });
+    expect(dailyVisitCap(Number.NaN)).toBe(Infinity);
+  });
+
   it("the quiet payload reads unknown fields as off", () => {
     expect(parseQuietState({ screenSharing: true })).toEqual({ screenSharing: true, doNotDisturb: false });
     expect(parseQuietState({ doNotDisturb: true, screenSharing: "yes" })).toEqual({ screenSharing: false, doNotDisturb: true });
