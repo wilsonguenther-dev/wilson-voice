@@ -1,0 +1,47 @@
+yap-1107-parity-kit evidence, 2026-11-07T12:41:49Z, Wilson's Mac, headless Chrome only
+
+$ node scripts/parity-sheet.mjs --self-test-must-fail ; echo $?
+caught  control-clean passes
+caught  shrunk -> dim
+caught  recoloured -> color
+caught  recoloured sprite -> sprite-color
+caught  recoloured capture -> sprite-pixels
+caught  sprite out of container -> sprite-cropped
+caught  1x capture -> capture-not-2x
+caught  no capture -> missing-capture
+caught  sheet is self-contained (every image inlined, decodes back)
+caught  --check over this run would exit 1
+        shrunk-recoloured: dim — width 120 px on the artifact, 104 px in the app (13.3% off, limit 3%)
+        shrunk-recoloured: dim — expect w (app) 120 px on the artifact, 104 px in the app (13.3% off, limit 3%)
+        shrunk-recoloured: dim — font px #2 13 px on the artifact, 12 px in the app (7.7% off, limit 3%)
+        shrunk-recoloured: dim — app font sizes [11, 12] are not the expected [11, 13]
+        shrunk-recoloured: color — colours are not an exact hex match — missing in app: #1f6e43; not in artifact: #ff0000
+        shrunk-recoloured: sprite-cropped — app sprite <canvas .yappy> leaves its container
+        shrunk-recoloured: sprite-color — sprite 1 lost its sampled colours #f4c542
+        shrunk-recoloured: sprite-pixels — sprite 1 colours #f4c542 are not in the capture's pixels
+        shrunk-recoloured: dim — crop px width 240 px on the artifact, 208 px in the app (13.3% off, limit 3%)
+        one-x-capture: capture-not-2x — the capture is 1x, the artifact crop is 2x (run smoke-windowed with YAP_SMOKE_SCALE=2)
+        one-x-capture: dim — crop px width 240 px on the artifact, 120 px in the app (50% off, limit 3%)
+        one-x-capture: dim — crop px height 80 px on the artifact, 40 px in the app (50% off, limit 3%)
+        no-capture: missing-capture — no capture "absent.png" in the captures dir
+parity-sheet event=self-test checks=10 blind=0
+parity-sheet: DETECTORS NOT BLIND — every planted defect was caught and the clean control passed (exit 1 by design)
+1  (exit 1 = DETECTORS NOT BLIND, the documented code; 9 = a detector is blind)
+
+$ node scripts/parity-crops.mjs --page pill.html --selector "#states" --selector "#rows .pill"   (summary of the JSON it printed)
+scale=2 frozen clock={"now":1200,"frames":75} pageErrors=0
+#rows .pill: found=false (exit 1)
+#states: box={"x":52,"y":1976.06,"w":1176,"h":8575.05} dpr=2 fontPx=[11, 12, 13, 14, 15, 18, 26] padding={"t":0,"r":0,"b":0,"l":0} gap={"row":0,"col":0} colours=29 (first: #000000 #1414140d #1a1a1a0a #1b1b1b1c #1d1c1a #1e2025) sprites=57 png bytes=2494527
+  sprite 1: canvas box={"x":356,"y":2182.45,"w":300,"h":70} scale=0.5 inside=true clippedBy=null sampled=[{"hex":"#ffd24a","share":0.252},{"hex":"#ffe9a0","share":0.219},{"hex":"#3a2f36","share":0.151}]
+stderr: parity-crops event=done page=pill.html selectors=2 missing=1 ms=1995
+exit=1 (one selector matched nothing, as documented)
+Chrome processes left after the run: 0 (closeChrome; before the fix SIGKILL alone orphaned 3 renderer helpers)
+(gap re-measured after the NaN fix: {"row":0,"col":0}, exit 0, 0 Chrome processes left)
+
+$ node scripts/parity-sheet.mjs --manifest m.json --captures caps --out sheet.html --check   (artifact side only, no app bundle: a coder may not build)
+FAIL states-section              max delta 0%
+       not-found — app side not measured: no app DOM to measure (pass --app-url or --build)
+       missing-capture — no capture "none.png" in the captures dir
+parity-sheet: 1 state(s), 1 failing -> /private/tmp/claude-501/-Users-wilsonguenther/351ec6c2-5bf7-4449-9b06-4907acb2e88d/scratchpad/sheet.html
+parity-sheet event=done states=1 failing=1 check=true ms=1376
+exit=1; sheet.html: 1 line(s) with inlined base64 PNG, 0 external references; 0 Chrome processes left

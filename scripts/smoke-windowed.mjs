@@ -29,7 +29,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { TAURI_SHIM, evaluate, openChrome as openHeadlessChrome, sleep } from "./headless-chrome.mjs";
+import { TAURI_SHIM, closeChrome, evaluate, openChrome as openHeadlessChrome, sleep } from "./headless-chrome.mjs";
 
 /* ── the contract ───────────────────────────────────────────────────────── */
 
@@ -396,8 +396,7 @@ async function selfTest() {
     console.log("SELF_TEST=satisfied");
     return 1;
   } finally {
-    try { ws.close(); } catch {}
-    proc.kill("SIGKILL");
+    await closeChrome({ proc, cdp, ws });
   }
 }
 
@@ -596,8 +595,7 @@ async function capture() {
       await cdp.send("Page.close", {}, s).catch(() => {});
     }
   } finally {
-    try { ws.close(); } catch {}
-    proc.kill("SIGKILL");
+    await closeChrome({ proc, cdp, ws });
   }
 
   const failed = views.filter((v) => v.findings.length);

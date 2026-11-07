@@ -89,6 +89,7 @@ import { fileURLToPath } from "node:url";
 import {
   TAURI_SHIM,
   buildMatrixBundle,
+  closeChrome,
   evaluate,
   fitPillPanel,
   openChrome,
@@ -514,8 +515,7 @@ async function run() {
     console.log("pill-matrix: PNGs + result.json + contact-sheet.png in " + outDir + " (PR evidence — never commit them)");
     return failed.length ? 1 : 0;
   } finally {
-    try { ws.close(); } catch {}
-    proc.kill("SIGKILL");
+    await closeChrome({ proc, cdp, ws });
     preview.kill("SIGKILL");
     await sleep(200);
     rmSync(profile, { recursive: true, force: true });

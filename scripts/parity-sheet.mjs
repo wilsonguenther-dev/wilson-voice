@@ -75,6 +75,7 @@ import { deflateSync, inflateSync } from "node:zlib";
 import {
   TAURI_SHIM,
   buildMatrixBundle,
+  closeChrome,
   evaluate,
   fitPillPanel,
   openChrome,
@@ -472,10 +473,7 @@ async function run(A) {
     console.error("parity-sheet event=done states=" + rows.length + " failing=" + failing + " check=" + A.check + " ms=" + (Date.now() - t0));
     return A.check && failing ? 1 : 0;
   } finally {
-    if (chrome) {
-      try { chrome.ws.close(); } catch {}
-      chrome.proc.kill("SIGKILL");
-    }
+    if (chrome) await closeChrome(chrome);
     if (preview) preview.kill("SIGKILL");
     await sleep(200);
     if (chrome) rmSync(chrome.profile, { recursive: true, force: true });

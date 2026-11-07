@@ -48,7 +48,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { evaluate, openChrome, sleep } from "./headless-chrome.mjs";
+import { closeChrome, evaluate, openChrome, sleep } from "./headless-chrome.mjs";
 
 export const DESIGN_DIR = join(homedir(), "Obsidian", "Wilson-Brain", "Projects", "Yap", "design-2026-11-06");
 export const CROP_SCALE = 2;
@@ -89,7 +89,9 @@ function __parityMeasure(sel, opts) {
   const minShare = opts.minShare || 0.02;
   const el = document.querySelector(sel);
   if (!el) return { selector: sel, found: false };
-  const px = (v) => Math.round(parseFloat(v || "0") * 100) / 100;
+  // "normal" (row-gap/column-gap outside flex/grid) and "auto" are 0 px, never
+  // NaN: NaN would serialize as null and judge as a false 3-percent FAIL.
+  const px = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
   const dot = document.createElement("canvas"); dot.width = 1; dot.height = 1;
   const dctx = dot.getContext("2d", { willReadFrequently: true });
   const hex = (css) => {
@@ -302,8 +304,7 @@ async function main() {
     console.error("parity-crops event=done page=" + A.page + " selectors=" + crops.length + " missing=" + missing.length + " ms=" + (Date.now() - t0));
     return missing.length ? 1 : 0;
   } finally {
-    try { ws.close(); } catch {}
-    proc.kill("SIGKILL");
+    await closeChrome({ proc, cdp, ws });
     await sleep(200);
     rmSync(profile, { recursive: true, force: true });
   }

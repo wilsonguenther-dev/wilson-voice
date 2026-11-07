@@ -103,6 +103,26 @@ export async function openChrome(CHROME, profilePrefix = "yap-smoke") {
   return { proc, cdp: new Cdp(ws), ws, profile };
 }
 
+/*
+ * yap-1107-parity-kit — close the browser so NOTHING outlives the run.
+ * SIGKILL of the browser process alone orphans its renderer helpers (observed:
+ * three "Google Chrome Helper (Renderer)" processes re-parented to launchd
+ * after a parity-crops run). So: ask CDP Browser.close (which ends every child),
+ * wait up to `graceMs` for the browser to exit, and only then SIGKILL the one
+ * PID we spawned. The caller still owns deleting `profile`.
+ */
+export async function closeChrome({ proc, cdp, ws }, graceMs = 3000) {
+  if (proc.exitCode === null && proc.signalCode === null) {
+    const exited = new Promise((res) => proc.once("exit", () => res(true)));
+    try {
+      await Promise.race([cdp.send("Browser.close"), sleep(1000)]);
+    } catch {}
+    await Promise.race([exited, sleep(graceMs)]);
+  }
+  try { ws.close(); } catch {}
+  if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+}
+
 export async function evaluate(cdp, sessionId, expression) {
   const r = await cdp.send(
     "Runtime.evaluate",
