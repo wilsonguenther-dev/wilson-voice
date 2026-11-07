@@ -191,8 +191,7 @@ pub fn wait_for_pause(
         }
         let step = (PAUSE_MS - quiet_ms)
             .min(MAX_HOLD_MS - waited_ms)
-            .min(POLL_MS)
-            .max(1);
+            .clamp(1, POLL_MS);
         clock.sleep_ms(step);
     }
 }
@@ -245,7 +244,7 @@ mod tests {
     fn run(clock: &mut FakeKeyClock, switch_at: Option<u64>) -> (PauseWait, u32) {
         let mut holds = 0u32;
         let now = Rc::clone(&clock.now);
-        let mut still = move || switch_at.map_or(true, |s| now.get() < s);
+        let mut still = move || switch_at.is_none_or(|s| now.get() < s);
         let mut on_hold = || holds += 1;
         let wait = wait_for_pause(clock, &mut still, &mut on_hold);
         (wait, holds)
