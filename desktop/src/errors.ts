@@ -158,3 +158,23 @@ export function pasteFailedToast(payload: { id: string; code?: string | null }):
     action: { kind: "copy-again", label: "Copy again", arg: payload.id },
   };
 }
+
+/**
+ * yap-1107-clipboard-write-never-fails-silently — ONE `paste_failed` toast per
+ * take. Wilson saw "The paste may not have landed…" with a ×2 counter on one
+ * take; a repeated event for a row id that already toasted is dropped. The
+ * gate remembers the newest 200 ids (one session's worth of takes).
+ */
+export function createPasteFailedGate(limit = 200): (id: string | null | undefined) => boolean {
+  const seen = new Set<string>();
+  return (id) => {
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (seen.size > limit) {
+      const oldest = seen.values().next().value;
+      if (oldest !== undefined) seen.delete(oldest);
+    }
+    return true;
+  };
+}
