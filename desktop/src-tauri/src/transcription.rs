@@ -376,6 +376,15 @@ pub trait Transcriber: Send + 'static {
         None
     }
 
+    /// yap-1106-pill-warmup-engine — step 3 of the load signal, "first test
+    /// pass": a check that the freshly loaded engine answers before it is
+    /// stored and reported ready. Defaulted to a pass so every stub (and an
+    /// engine with no cheap self-check) stays a legal `Transcriber`; a failure
+    /// is logged and never fails the load (the loader is the authority).
+    fn first_pass(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Clear a cancellation left over from a PREVIOUS decode (YV93).
     ///
     /// The real engine's cancel flag is sticky (see
@@ -501,12 +510,32 @@ type EngineLoader = Arc<dyn Fn(&Path) -> Result<Box<dyn Transcriber>, String> + 
 pub struct EngineLoadProgress {
     /// 0..=100. 100 is sent ONLY with `stage == "ready"`.
     pub pct: u8,
-    /// "starting" | "reading" | "waiting" | "ready" | "failed".
+    /// "starting" | "reading" | "waiting" | "testing" | "ready" | "failed".
     pub stage: &'static str,
+    /// yap-1106-pill-warmup-engine — the three-step load signal the compact
+    /// warm-up pill fills a third of its bar per step from: 1 reading the
+    /// file, 2 warming up (the native load), 3 first test pass. 0 = not
+    /// started yet ("starting"); 4 = ready. A failure keeps the step it
+    /// failed in. See [`load_step`].
+    pub step: u8,
     /// Model id (catalog id, never a path).
     pub model_id: String,
     /// Milliseconds since this load started.
     pub elapsed_ms: u64,
+}
+
+/// yap-1106-pill-warmup-engine — the warm-up pill's step for a stage (see
+/// [`EngineLoadProgress::step`]). `failed` is resolved by the caller (it keeps
+/// the step the load was in), so here it reads as the step before ready.
+pub fn load_step(stage: &str) -> u8 {
+    match stage {
+        "starting" => 0,
+        "reading" => 1,
+        "waiting" => 2,
+        "testing" | "failed" => 3,
+        "ready" => 4,
+        _ => 0,
+    }
 }
 
 /// Where the walk waits for the native load: the office door.
@@ -988,9 +1017,22 @@ impl TranscriptionManager {
         } else {
             pct.min(LOAD_HOLD_PCT)
         };
+        let step = if stage == "failed" {
+            // A failure keeps the step it happened in (the pill shows smoke there).
+            self.inner
+                .last_progress
+                .lock()
+                .as_ref()
+                .filter(|p| p.model_id == model_id)
+                .map(|p| p.step.min(3))
+                .unwrap_or(1)
+        } else {
+            load_step(stage)
+        };
         let next = EngineLoadProgress {
             pct,
             stage,
+            step,
             model_id: model_id.to_string(),
             elapsed_ms: started.elapsed().as_millis() as u64,
         };
@@ -1006,9 +1048,12 @@ impl TranscriptionManager {
             }
             *last = Some(next.clone());
         }
-        if matches!(stage, "starting" | "waiting" | "ready" | "failed") {
+        if matches!(
+            stage,
+            "starting" | "waiting" | "testing" | "ready" | "failed"
+        ) {
             log::info!(
-                "engine load_progress stage={stage} pct={pct} model={model_id} elapsed_ms={}",
+                "engine load_progress stage={stage} step={step} pct={pct} model={model_id} elapsed_ms={}",
                 next.elapsed_ms
             );
         }
@@ -1109,7 +1154,7 @@ impl TranscriptionManager {
         // leave a half-built engine in the slot.
         let loaded = catch_unwind(AssertUnwindSafe(|| (self.inner.loader)(model_path)))
             .unwrap_or_else(|p| Err(format!("ASR model load panicked: {}", panic_message(&p))));
-        let engine = match loaded {
+        let mut engine = match loaded {
             Ok(engine) => engine,
             Err(e) => {
                 self.inner.loading.store(false, Ordering::Release);
@@ -1117,6 +1162,22 @@ impl TranscriptionManager {
                 return Err(e);
             }
         };
+        // yap-1106-pill-warmup-engine — step 3, the first test pass. Still at
+        // the hold: only the engine being stored below may report ready.
+        self.report_progress(model_id, load_started, LOAD_HOLD_PCT, "testing");
+        let pass_started = Instant::now();
+        match catch_unwind(AssertUnwindSafe(|| engine.first_pass())) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn!(
+                "engine first_pass_failed model={model_id} err_len={} elapsed_ms={}",
+                e.len(),
+                pass_started.elapsed().as_millis()
+            ),
+            Err(_) => log::warn!(
+                "engine first_pass_panicked model={model_id} elapsed_ms={}",
+                pass_started.elapsed().as_millis()
+            ),
+        }
         // YV70: the loader above runs for SECONDS — the exit drain can start
         // inside that window, and it ends by making a fresh Metal device. Check
         // `exiting` again before storing, under the slot lock, and drop the
@@ -3465,6 +3526,76 @@ mod tests {
             .all(|(p, _)| p.pct < 100 && p.stage != "ready"));
         assert_eq!(events.last().map(|(p, _)| p.stage), Some("failed"));
         assert_eq!(m.last_load_progress().map(|p| p.stage), Some("failed"));
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    // ---- yap-1106-pill-warmup-engine: the three-step load signal ----
+
+    /// A slowed fake loader: the steps arrive in order 0 → 1 → 2 → 3 → 4, never
+    /// skip back, and step 4 (ready, the bell) is only ever sent after the
+    /// loader returned and its first pass ran.
+    #[test]
+    fn warmup_three_step_signal_is_ordered_and_ready_comes_last() {
+        let returned = Arc::new(AtomicBool::new(false));
+        let flag = returned.clone();
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            std::thread::sleep(Duration::from_millis(120));
+            flag.store(true, Ordering::SeqCst);
+            Ok(Box::new(StubEngine {
+                text: "steps".to_string(),
+                delay: Duration::ZERO,
+                panics: false,
+                seen_language: Arc::new(Mutex::new(None)),
+                seen_prompt: Arc::new(Mutex::new(None)),
+            }) as Box<dyn Transcriber>)
+        });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let log: ProgressLog = Arc::new(Mutex::new(Vec::new()));
+        m.set_load_progress_sink(recording_sink(log.clone(), returned.clone()));
+        let model = stub_model_file("steps.gguf");
+        m.load("steps/model", &model).expect("load ok");
+        let events = log.lock().clone();
+        let steps: Vec<u8> = events.iter().map(|(p, _)| p.step).collect();
+        let mut last = 0u8;
+        for s in &steps {
+            assert!(*s >= last, "steps never go backwards: {steps:?}");
+            last = *s;
+        }
+        for want in 0..=4u8 {
+            assert!(steps.contains(&want), "step {want} reported: {steps:?}");
+        }
+        for (p, loader_done) in &events {
+            assert_eq!(p.step, load_step(p.stage), "step matches stage: {p:?}");
+            if p.step == 4 {
+                assert!(
+                    *loader_done,
+                    "ready (the bell) before the engine was stored"
+                );
+                assert_eq!((p.pct, p.stage), (100, "ready"));
+            } else {
+                assert!(p.pct <= LOAD_HOLD_PCT);
+            }
+            if p.stage == "testing" {
+                assert!(*loader_done, "the first test pass runs on a loaded engine");
+            }
+        }
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    #[test]
+    fn warmup_failed_load_keeps_the_step_it_failed_in() {
+        let loader: EngineLoader =
+            Arc::new(|_path: &Path| -> Result<Box<dyn Transcriber>, String> {
+                Err("bad model".into())
+            });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let model = stub_model_file("broken-steps.gguf");
+        assert!(m.load("broken/steps", &model).is_err());
+        let last = m.last_load_progress().expect("progress recorded");
+        assert_eq!(last.stage, "failed");
+        // The native load (step 2, warming up) is where this one failed.
+        assert_eq!(last.step, 2);
+        assert!(last.pct < 100);
         let _ = std::fs::remove_dir_all(model.parent().unwrap());
     }
 
