@@ -110,6 +110,34 @@ fn reconcile_fails_a_row_whose_audio_is_gone_and_requeues_one_whose_audio_is_the
     );
 }
 
+// yap-1106-engine-owner (absorbs yap-1106-quit-during-asr-crash): a quit while
+// a meeting was decoding leaves its row `transcribing` with no live job. The
+// next launch's reconcile must hand it back to the pipeline (which takes it to
+// `complete` or `failed` with a reason), never leave it sitting there.
+#[test]
+fn a_meeting_left_transcribing_by_a_quit_is_requeued_at_launch() {
+    let dir = temp_dir("eo-requeue");
+    let db = open_db(&dir);
+    let interrupted = meeting(&db, &dir, "interrupted", MeetingState::Transcribing, 0);
+
+    let queued = Mutex::new(Vec::<String>::new());
+    let out =
+        reconcile_stranded_meetings(&db, &dir, &|id| queued.lock().unwrap().push(id.to_string()));
+
+    assert_eq!(
+        *queued.lock().unwrap(),
+        vec![interrupted.clone()],
+        "the interrupted meeting is queued exactly once"
+    );
+    assert!(
+        out.iter()
+            .any(|(id, from, _)| id == &interrupted && from == "transcribing"),
+        "reconcile reports the row it re-queued: {out:?}"
+    );
+    let row = db.get_meeting(&interrupted).unwrap().unwrap();
+    assert_ne!(row.state, "failed", "audio is there, so it is not failed");
+}
+
 // ── yap24-NT1 (R1) — launch recovers a crashed meeting INTO ITS ROW ─────────
 
 use wilson_voice_lib::meeting::{

@@ -1,0 +1,31 @@
+[package]
+name = "yap-asr"
+version = "0.1.0"
+description = "Yap speech helper: the one process that holds the speech model, over JSONL/stdio"
+authors = ["Wilson Guenther"]
+edition = "2021"
+
+# yap-1106-engine-owner. Bundled as a Tauri sidecar exactly like yap-polish and
+# yap-diarize: `bundle.externalBin` resolves `binaries/yap-asr` to
+# `binaries/yap-asr-<target-triple>`, staged by `npm run sidecar` and ci.yml.
+#
+# Why a fourth link unit: the speech model's GPU memory must die with a
+# process the app can kill by PID. A hung decode inside the app could only be
+# abandoned (it kept its Metal buffers), and the app's `exit()` then ran
+# ggml-metal's static destructors over a live device and aborted.
+[[bin]]
+name = "yap-asr"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `_exit` after the model is freed: the helper never runs C++ static
+# destructors either.
+libc = "0.2"
+# The SAME crate and version the app pins (src-tauri/Cargo.toml), CPU base here
+# and the Metal backend on macOS, mirroring the app's per-platform posture.
+transcribe-cpp = { version = "0.1.3", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+transcribe-cpp = { version = "0.1.3", default-features = false, features = ["metal"] }
