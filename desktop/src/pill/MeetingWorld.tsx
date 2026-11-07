@@ -1,5 +1,5 @@
 /**
- * MeetingScene — yap-1106-pill-rec-headphones-hoot-tape (+ FB-05), the paint.
+ * MeetingWorld — yap-1106-pill-rec-headphones-hoot-tape (+ FB-05), the paint.
  *
  * The meeting's little world inside the one pill: sky + sun (moon in hour
  * two), the elapsed time under it, Hoot at the reel-to-reel on Yappy's left,
@@ -134,7 +134,7 @@ export function paintMeetingScene(o: CanvasRenderingContext2D, m: MeetingSceneMo
   rct(c.x, c.y, c.w, c.h, m.recLight.on ? "#9a2a24" : "#5a2420");
 }
 
-export default function MeetingScene({
+export default function MeetingWorld({
   elapsedS,
   dictating = false,
   handover = false,

@@ -66,6 +66,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  // yap-1106-pill-rec-headphones-hoot-tape — the meeting scene: sun clock, glance, redraw key.
+  "pill/meetingScene.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   // yap-call-1 — the call offer's copy, surface and countdown rules.
   "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },

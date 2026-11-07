@@ -21,7 +21,7 @@ import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeti
 import { bucketFor } from "./tone";
 import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 import {
-  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
+  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
   type TranscribeProgress,
@@ -744,7 +744,7 @@ export default function YappyPill(
           <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
         </button>
       )}
-      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
     </div>
   );
 }
