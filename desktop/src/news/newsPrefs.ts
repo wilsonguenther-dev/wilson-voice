@@ -6,6 +6,7 @@
 // Settings → Yappy News. Everything here is pure so it is testable without a
 // webview; the three surfaces share `NewsInterests` for the picker itself.
 import { invoke } from "@tauri-apps/api/core";
+import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 /** Where a save or dismiss came from (the backend logs it, nothing else). */
 export type NewsSource = "onboarding" | "home" | "settings";
@@ -166,6 +167,73 @@ export function saveNews(prefs: NewsPrefs, source: NewsSource): Promise<NewsView
 
 export function dismissNews(source: NewsSource): Promise<NewsView> {
   return invoke<NewsView>("dismiss_news_offer", { source });
+}
+
+// ── yap-1107-news-honours-cloud-key — the connect transition ──
+// Saving a cloud key (or moving the mode to the cloud) in Settings → Advanced
+// fires `yap:cloud-route-changed` on window (CloudRoute.tsx). A mounted News
+// view re-reads on it, so it flips on without a restart or a remount; each
+// read also lets the backend start the one connect refresh when it is owed.
+
+/**
+ * Re-read the News view every time the cloud route changes. Returns the
+ * unsubscribe. `target` and `load` are injectable for tests. A failed re-read
+ * keeps the last view (logged once per failure; the next event tries again).
+ */
+export function watchCloudRoute(
+  onView: (v: NewsView) => void,
+  target: EventTarget = window,
+  load: () => Promise<NewsView> = loadNews,
+): () => void {
+  let live = true;
+  const reread = () => {
+    load()
+      .then((v) => {
+        if (live) onView(v);
+      })
+      .catch((e) => console.warn("news reread_failed trigger=cloud_route", e));
+  };
+  target.addEventListener(CLOUD_ROUTE_CHANGED_EVENT, reread);
+  return () => {
+    live = false;
+    target.removeEventListener(CLOUD_ROUTE_CHANGED_EVENT, reread);
+  };
+}
+
+/** The Advanced block that holds "Cloud model (your key)" (CloudRoute.tsx). */
+export const CLOUD_ROUTE_SELECTOR = '[data-block="cloud-route"]';
+
+/**
+ * "Connect it in Advanced": after the tab switch, bring the cloud-key block
+ * into view and focus its heading. That block renders after an async read, so
+ * this waits up to `frames` animation frames for it. Resolves whether it was
+ * found (false = the tab is open, the block never came; nothing else breaks).
+ */
+export function revealCloudRoute(doc: Document = document, frames = 60): Promise<boolean> {
+  return new Promise((resolve) => {
+    let left = frames;
+    const tick = () => {
+      const block = doc.querySelector<HTMLElement>(CLOUD_ROUTE_SELECTOR);
+      if (block) {
+        const reduce = doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        block.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+        const heading = block.querySelector<HTMLElement>("h3");
+        if (heading) {
+          heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
+        resolve(true);
+        return;
+      }
+      if (--left <= 0) {
+        console.warn("news connect_reveal_failed reason=not_rendered");
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
 }
 
 // ── yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced ──

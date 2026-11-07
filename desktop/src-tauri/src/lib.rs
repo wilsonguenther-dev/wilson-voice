@@ -9818,12 +9818,39 @@ fn pill_quiet_state() -> pill_quiet::QuietState {
 }
 
 #[tauri::command]
-fn get_news_prefs(state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
-    news_prefs::view(&*state.db, news_prefs::now_ms())
+fn get_news_prefs(app: AppHandle, state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
+    let view = news_prefs::view(&*state.db, news_prefs::now_ms());
+    spawn_news_connect_refresh(&app, &state);
+    view
+}
+
+/// yap-1107-news-honours-cloud-key — the connect transition. Settings re-reads
+/// the News view on `yap:cloud-route-changed` (a key saved or removed, a mode
+/// change) and after every news save; each read lands here. When the gate has
+/// just opened (cloud on, switch on, one topic) and Yap never refreshed, run
+/// the one connect refresh on a blocking thread. `feeds::refresh_on_connect`
+/// stamps its marker under the shared limiter, so two reads in a row fetch
+/// once. Cheap when nothing is owed: one settings read, no thread.
+fn spawn_news_connect_refresh(app: &AppHandle, state: &State<'_, Arc<AppState>>) {
+    if !news::feeds::first_refresh_due(&*state.db) {
+        return;
+    }
+    let db = state.db.clone();
+    let quote = news::quote_key::feed(&*db, &news_quote_keychain(app));
+    tauri::async_runtime::spawn_blocking(move || {
+        match news::refresh_on_connect_ranked(&db, &quote, news::cache::DEFAULT_LIMIT) {
+            Some(Ok((_, ingest))) => {
+                log::info!("news connect_refresh ok stories={}", ingest.stories.len())
+            }
+            Some(Err(reason)) => log::warn!("news connect_refresh failed reason={reason}"),
+            None => log::debug!("news connect_refresh not_owed"),
+        }
+    });
 }
 
 #[tauri::command]
 fn set_news_prefs(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     prefs: news_prefs::NewsPrefs,
     source: String,
@@ -9839,6 +9866,9 @@ fn set_news_prefs(
     {
         log::warn!("news cache_clear_failed reason=feature_off error=\"{e}\"");
     }
+    // yap-1107-news-honours-cloud-key — the first topic saved after the cloud
+    // is connected opens the gate: that is the connect refresh too.
+    spawn_news_connect_refresh(&app, &state);
     Ok(view)
 }
 

@@ -7,7 +7,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 import { NewsStepView } from "./NewsOnboardingStep";
 import { NewsHomeCardView } from "./NewsHomeCard";
 import { NewsSettingsView } from "../views/settings/News";
-import { EMPTY_PREFS, NEWS_PRIVACY_LINE, TOPIC_CHIPS, type NewsView } from "./newsPrefs";
+import { EMPTY_PREFS, NEWS_PRIVACY_LINE, TOPIC_CHIPS, watchCloudRoute, type NewsView } from "./newsPrefs";
+import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 const noop = () => undefined;
 const view = (over: Partial<NewsView> = {}): NewsView => ({
@@ -78,5 +79,59 @@ describe("yap-1106 Settings → Yappy News", () => {
     expect(html).toContain("Connect it in Advanced");
     expect(html).toContain("Not refreshed yet.");
     expect(html).toContain("No topics yet.");
+  });
+});
+
+describe("yap-1107 News honours a saved cloud key", () => {
+  const settings = (v: NewsView) =>
+    renderToStaticMarkup(
+      <NewsSettingsView view={v} draft={v} saving={false} onChange={noop} onSave={noop} onRevert={noop} onConnect={noop} />,
+    );
+
+  it("news_settings_cloud_connected_enables_toggle_and_chips", () => {
+    // The cloud-key route connected, no topic yet: off only for want of a topic.
+    const html = settings(view({ cloudConnected: true, active: false }));
+    expect(html).not.toContain("Connect it in Advanced");
+    expect(html).not.toContain("needs the cloud option");
+    expect(html).toContain("Off until you pick at least one topic.");
+    expect(html).not.toMatch(/type="checkbox"[^>]*disabled=""/);
+    expect(html).not.toMatch(/<fieldset class="news-group" disabled=""/);
+    for (const c of TOPIC_CHIPS) expect(html).toContain(`data-news-chip="${c.id}"`);
+  });
+
+  it("news_settings_cloud_off_disables_toggle_and_chips", () => {
+    const html = settings(view({ cloudConnected: false }));
+    expect(html).toContain("Connect it in Advanced");
+    expect(html).toContain("needs the cloud option");
+    expect(html).toMatch(/type="checkbox"[^>]*disabled=""/);
+    expect(html).toMatch(/<fieldset class="news-group" disabled=""/);
+  });
+
+  it("news_settings_key_saved_event_flips_the_view_without_remount", async () => {
+    // One mounted view: its state setter is the watcher's callback. The key is
+    // saved in Advanced (CloudRoute fires the event); the backend now says on.
+    const target = new EventTarget();
+    let current = view({ cloudConnected: false, cloudConnectedAtMs: null });
+    expect(settings(current)).toContain("Connect it in Advanced");
+    const answers = [view({ cloudConnected: true, cloudConnectedAtMs: 42 })];
+    const load = vi.fn(async () => answers.shift() ?? current);
+    const stop = watchCloudRoute((v) => (current = v), target, load);
+    expect(load).not.toHaveBeenCalled();
+    target.dispatchEvent(new Event(CLOUD_ROUTE_CHANGED_EVENT));
+    await vi.waitFor(() => expect(current.cloudConnected).toBe(true));
+    expect(load).toHaveBeenCalledTimes(1);
+    const html = settings(current);
+    expect(html).not.toContain("Connect it in Advanced");
+    expect(html).not.toContain("needs the cloud option");
+    expect(html).not.toMatch(/type="checkbox"[^>]*disabled=""/);
+    // The key removed: the same view goes back to off.
+    answers.push(view({ cloudConnected: false }));
+    target.dispatchEvent(new Event(CLOUD_ROUTE_CHANGED_EVENT));
+    await vi.waitFor(() => expect(current.cloudConnected).toBe(false));
+    expect(settings(current)).toContain("Connect it in Advanced");
+    // Unmounted: no more re-reads.
+    stop();
+    target.dispatchEvent(new Event(CLOUD_ROUTE_CHANGED_EVENT));
+    expect(load).toHaveBeenCalledTimes(2);
   });
 });
