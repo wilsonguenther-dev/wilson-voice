@@ -10352,7 +10352,9 @@ fn news_explain_cloud(
 /// the snippet does not support, is the headline alone. Reads the cache the
 /// refresh filled; fetches nothing and marks nothing seen. `Err` is the news
 /// gate's reason tag (`cloud_off`, `disabled`, `no_topics`) or a storage
-/// error.
+/// error. fix-l3b3-2: during a meeting, a screen share, Do Not Disturb or low
+/// battery it makes NO cloud call: the result is the headlines alone, with
+/// the quiet reason as its `fallback`.
 #[tauri::command]
 async fn news_explain_top(
     app: AppHandle,
@@ -10361,6 +10363,7 @@ async fn news_explain_top(
 ) -> Result<news::explain::Explained, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let quiet = news::briefing::explain_allowed(news_quiet_now(&state));
         let db: &Database = &state.db;
         let prefs = news::feeds::gate(db).map_err(|c| {
             log::info!("news explain skipped reason={}", c.tag());
@@ -10371,7 +10374,13 @@ async fn news_explain_top(
             .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
             .inspect_err(|e| log::warn!("news cache_failed op=explain error=\"{e}\""))?;
         let voice = news::explain::Voice::from_setting(&voice);
-        let mut call = |system: &str, user: &str| news_explain_cloud(&app, db, system, user);
+        if let Err(reason) = quiet {
+            log::info!("news explain skipped reason={reason}");
+        }
+        let mut call = |system: &str, user: &str| match quiet {
+            Err(reason) => Err(reason),
+            Ok(()) => news_explain_cloud(&app, db, system, user),
+        };
         Ok(news::explain::explain_with(&top, voice, &mut call))
     })
     .await
