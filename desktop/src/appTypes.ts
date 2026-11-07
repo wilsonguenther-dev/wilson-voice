@@ -34,6 +34,8 @@ export type SettingsTab =
   | "notifications"
   // yap-1106-news-prefs-onboarding — Settings → Yappy News.
   | "news"
+  // yap-1106-fb-22b-who-was-this-cards — Settings → Voices (saved voiceprints).
+  | "voices"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -52,6 +54,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "advanced", label: "Advanced" },
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },
+  // yap-1106-fb-22b-who-was-this-cards — every saved voiceprint, Delete, "Forget all voices".
+  { id: "voices", label: "Voices" },
   { id: "privacy", label: "Privacy" },
   // yap-telemetry-diagnostics — the health line, recent events, and the
   // redacted "Export diagnostics" bundle.

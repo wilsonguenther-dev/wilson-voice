@@ -9,6 +9,7 @@ import Shortcut from "./settings/Shortcut";
 import Advanced from "./settings/Advanced";
 import Privacy from "./settings/Privacy";
 import Meetings from "./settings/Meetings";
+import Voices from "./settings/Voices";
 import License from "./settings/License";
 import Diagnostics from "./settings/Diagnostics";
 import ModelProviders from "../settings/ModelProviders";
@@ -105,6 +106,9 @@ export default function Settings() {
 
               {/* ── Meetings — offer to record a detected meeting (never auto-records) ── */}
               {settingsTab === "meetings" && <Meetings />}
+
+              {/* ── Voices (yap-1106-fb-22b) — saved voiceprints, Delete, Forget all ── */}
+              {settingsTab === "voices" && <Voices />}
 
               {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
               {settingsTab === "privacy" && <Privacy />}
