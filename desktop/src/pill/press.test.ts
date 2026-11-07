@@ -4,7 +4,22 @@
  * a drag.
  */
 import { describe, expect, it } from "vitest";
-import { beginPress, CLICK_MAX_MS, CLICK_SLOP, classifyPress, endPress, trackPress } from "./press";
+import {
+  beginPress,
+  CLICK_MAX_MS,
+  CLICK_SLOP,
+  classifyPress,
+  endPress,
+  isPressed,
+  markPressed,
+  PRESS_VISUAL_BUDGET_MS,
+  PRESSED_ATTR,
+  PRESSED_DATASET_KEY,
+  PRESSED_SCALE,
+  pressLogLine,
+  pressVisualLatency,
+  trackPress,
+} from "./press";
 
 describe("WF-01 gesture classifier", () => {
   it("pins the thresholds the acceptance names", () => {
@@ -50,17 +65,6 @@ describe("WF-01 gesture classifier", () => {
 // yap-1107-pill-click-always-registers — acceptance 2: the pressed state is
 // instant (pill.html: the shell scales to 96 percent while pressed) and its
 // latency from pointer-down is measured against a 50 ms budget.
-import {
-  isPressed,
-  markPressed,
-  PRESS_VISUAL_BUDGET_MS,
-  PRESSED_ATTR,
-  PRESSED_DATASET_KEY,
-  PRESSED_SCALE,
-  pressLogLine,
-  pressVisualLatency,
-} from "./press";
-
 describe("pressed state is instant and measured", () => {
   const fakeRoot = () => ({ dataset: {} as Record<string, string | undefined> }) as unknown as HTMLElement;
 

@@ -125,6 +125,9 @@ static CAPSULE_SCREEN_H: AtomicU64 = AtomicU64::new(0);
 /// the EDGE (cursor arrived) rather than re-waking on every slice while the
 /// cursor simply sits on the pill.
 static CURSOR_NEAR: AtomicBool = AtomicBool::new(false);
+/// yap-1107-pill-click-always-registers — is the cursor within APPROACH_PT of
+/// the capsule? Picks the hover watch's nap length (`next_nap_ms`).
+static CURSOR_APPROACH: AtomicBool = AtomicBool::new(false);
 
 /// Where the pill docks on screen (YV53). Wispr-style side docks in addition to
 /// the historical bottom-centre island.
@@ -444,10 +447,36 @@ pub fn snap_position(release: (f64, f64), screen_frame: (f64, f64, f64, f64)) ->
 /// The pill webview reports the capsule's rect inside the float window, in
 /// logical points (YV65). See [`start_hover_watch`] for why this exists.
 pub fn set_hitbox(x: f64, y: f64, w: f64, h: f64) {
-    HIT_X.store(x.round() as i32, Ordering::SeqCst);
-    HIT_Y.store(y.round() as i32, Ordering::SeqCst);
-    HIT_W.store(w.round() as i32, Ordering::SeqCst);
-    HIT_H.store(h.round() as i32, Ordering::SeqCst);
+    let (hx, hy, hw, hh) = hitbox_cells(x, y, w, h);
+    HIT_X.store(hx, Ordering::SeqCst);
+    HIT_Y.store(hy, Ordering::SeqCst);
+    HIT_W.store(hw, Ordering::SeqCst);
+    HIT_H.store(hh, Ordering::SeqCst);
+}
+
+/// yap-1107-pill-click-always-registers — the clickable rect for a drawn
+/// capsule rect, in whole window points, rounded OUTWARD: the left/top edge
+/// floors and the right/bottom edge ceils, so the clickable rect always covers
+/// every painted point and never exceeds it by a whole point on any side.
+///
+/// The old store rounded x, y, w and h independently, so the right/bottom edge
+/// (x.round() + w.round()) could land up to a full point INSIDE the painted
+/// edge (x 10.4 -> 10, w 100.4 -> 100: drawn to 110.8, clickable to 110). A
+/// click on the pill's last sliver fell through to the app underneath.
+pub fn hitbox_cells(x: f64, y: f64, w: f64, h: f64) -> (i32, i32, i32, i32) {
+    if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return (0, 0, 0, 0);
+    }
+    let left = x.floor();
+    let top = y.floor();
+    let right = (x + w).ceil();
+    let bottom = (y + h).ceil();
+    (
+        left as i32,
+        top as i32,
+        (right - left) as i32,
+        (bottom - top) as i32,
+    )
 }
 
 /// Pure hit test for the reported capsule rect. `point` is window-relative in
@@ -602,6 +631,14 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false)
+            // yap-1107-pill-click-always-registers — the pill is a
+            // non-activating panel that is almost never key (every stop hands
+            // focus back to the app the user was typing in). Without first-mouse
+            // the WKWebView spends the first click on an inactive pill making
+            // the window key and the page never sees it: "the pill doesn't
+            // always want to click", every other take. With it, the very first
+            // click reaches the capsule's pointer handlers.
+            .accept_first_mouse(true)
             .visible(false)
             .visible_on_all_workspaces(true);
 
@@ -937,6 +974,38 @@ pub fn hover_tick_ms(shown: bool, hovered: bool, meeting_recording: bool, dictat
 /// `+[NSEvent mouseLocation]` on a background thread — no main-thread hop, no
 /// window query, no AppKit object.
 pub const PROXIMITY_SLICE_MS: u64 = 30;
+/// yap-1107-pill-click-always-registers — how close (screen points) the cursor
+/// has to be to the capsule for the hover watch to sample fast.
+pub const APPROACH_PT: f64 = 32.0;
+/// The proximity nap while the cursor is inside the approach ring. The panel
+/// is click-through until the watch notices the cursor is on the capsule, so a
+/// 30 ms nap let a quick flick-and-click land on the app underneath; 8 ms keeps
+/// the arrive-to-clickable gap under one frame plus the main-thread hop. Far
+/// from the pill the 30 ms nap (and the slow meeting tick) is unchanged.
+pub const APPROACH_SLICE_MS: u64 = 8;
+
+/// The next proximity nap: never past the tick's remaining time, short while
+/// the cursor is approaching the capsule, the ordinary slice otherwise.
+pub fn next_nap_ms(remaining_ms: u64, approaching: bool) -> u64 {
+    let slice = if approaching {
+        APPROACH_SLICE_MS
+    } else {
+        PROXIMITY_SLICE_MS
+    };
+    remaining_ms.min(slice).max(1)
+}
+
+/// Is `point` within `margin` points of `rect` (AppKit screen points)? A
+/// zero-sized rect (nothing reported yet) is never approached.
+pub fn point_near_screen_rect(point: (f64, f64), rect: (f64, f64, f64, f64), margin: f64) -> bool {
+    let (x, y, w, h) = rect;
+    w > 0.0
+        && h > 0.0
+        && point_in_screen_rect(
+            point,
+            (x - margin, y - margin, w + 2.0 * margin, h + 2.0 * margin),
+        )
+}
 
 /// The slice plan for one `tick_ms` wait: `(sleeps, last_ms)`. The first
 /// `sleeps - 1` naps are `slice_ms` long and the last is `last_ms`, so the total
@@ -1039,6 +1108,7 @@ fn set_capsule_screen_rect(rect: Option<(f64, f64, f64, f64)>) {
 /// falls back to the ordinary [`hover_tick_ms`] cadence. Neither is a behaviour
 /// change; the cadence is the floor, not the ceiling.
 #[cfg(target_os = "macos")]
+#[allow(dead_code)] // superseded by `cursor_zone_cheap` in the hover watch; kept as the one-answer form
 fn cursor_on_capsule_cheap() -> bool {
     let rect = (
         load_f64(&CAPSULE_SCREEN_X),
@@ -1056,6 +1126,34 @@ fn cursor_on_capsule_cheap() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn cursor_on_capsule_cheap() -> bool {
     false
+}
+
+/// yap-1107-pill-click-always-registers — the cheap check, both answers from
+/// one cursor read: `(on the capsule, within APPROACH_PT of it)`. Advisory in
+/// exactly the way [`cursor_on_capsule_cheap`] is: it only ever makes the
+/// watch look SOONER; `update_interactive` stays the only authority.
+#[cfg(target_os = "macos")]
+fn cursor_zone_cheap() -> (bool, bool) {
+    let rect = (
+        load_f64(&CAPSULE_SCREEN_X),
+        load_f64(&CAPSULE_SCREEN_Y),
+        load_f64(&CAPSULE_SCREEN_W),
+        load_f64(&CAPSULE_SCREEN_H),
+    );
+    if rect.2 <= 0.0 || rect.3 <= 0.0 {
+        return (false, false);
+    }
+    let p = objc2_app_kit::NSEvent::mouseLocation();
+    let on = point_in_screen_rect((p.x, p.y), rect);
+    (
+        on,
+        on || point_near_screen_rect((p.x, p.y), rect, APPROACH_PT),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_zone_cheap() -> (bool, bool) {
+    (cursor_on_capsule_cheap(), false)
 }
 
 /// How many of this module's recurring polls are doing real work right now
@@ -1417,21 +1515,31 @@ pub fn start_hover_watch(app: AppHandle) {
             // safe: a slow poll that also gates the panel's clicks does not
             // delay the first click on the pill, it feeds it to the app
             // underneath.
+            //
+            // yap-1107-pill-click-always-registers — the nap shortens to
+            // APPROACH_SLICE_MS while the cursor is within APPROACH_PT of the
+            // capsule, so the panel stops being click-through before a fast
+            // click lands. The total wait per tick is unchanged (`left`).
             let tick = hover_tick_ms(is_shown(), is_hovered(), meeting_recording(), dictating());
-            let (sleeps, last_ms) = sleep_slices(tick, PROXIMITY_SLICE_MS);
-            for i in 0..sleeps {
-                thread::sleep(Duration::from_millis(if i + 1 == sleeps {
-                    last_ms
-                } else {
-                    PROXIMITY_SLICE_MS
-                }));
+            let mut left = tick;
+            while left > 0 {
+                let nap = next_nap_ms(left, CURSOR_APPROACH.load(Ordering::Relaxed));
+                thread::sleep(Duration::from_millis(nap));
+                left = left.saturating_sub(nap);
                 // WF-02 — Esc mid-drag puts the pill back. Checked every slice
                 // (30 ms) and only while a drag is live, so it costs nothing at
                 // rest and never waits on a slow meeting tick.
                 if poll_drag_escape(&app) {
                     break;
                 }
-                let near = cursor_on_capsule_cheap();
+                let (near, approaching) = cursor_zone_cheap();
+                // Fast naps only buy something while the panel is still
+                // click-through: a hidden pill or one already taking clicks
+                // stays on the ordinary slice.
+                CURSOR_APPROACH.store(
+                    approaching && is_shown() && !INTERACTIVE.load(Ordering::SeqCst),
+                    Ordering::Relaxed,
+                );
                 let was = CURSOR_NEAR.swap(near, Ordering::Relaxed);
                 if should_wake_early(was, near) {
                     break;
@@ -1841,6 +1949,74 @@ mod tests {
 
     /// The capsule hit-box gates whether the panel takes the cursor at all: an
     /// unreported (zero) box must stay fully click-through.
+    #[test]
+    fn hitbox_covers_the_drawn_capsule_within_one_point() {
+        // yap-1107-pill-click-always-registers acceptance 1: the clickable
+        // rect contains every painted point and overshoots by < 1 pt per side.
+        let drawn = [
+            (10.4, 20.6, 100.4, 31.3),
+            (0.0, 0.0, 88.0, 32.0),
+            (12.5, 7.5, 64.25, 24.75),
+            (199.99, 3.01, 0.02, 0.98),
+        ];
+        for (x, y, w, h) in drawn {
+            let (hx, hy, hw, hh) = hitbox_cells(x, y, w, h);
+            let (hx, hy, hw, hh) = (hx as f64, hy as f64, hw as f64, hh as f64);
+            assert!(hx <= x && x - hx < 1.0, "left {x} -> {hx}");
+            assert!(hy <= y && y - hy < 1.0, "top {y} -> {hy}");
+            assert!(hx + hw >= x + w && hx + hw - (x + w) < 1.0, "right");
+            assert!(hy + hh >= y + h && hy + hh - (y + h) < 1.0, "bottom");
+            // every corner of the drawn pill is a hit
+            let hit = (hx as i32, hy as i32, hw as i32, hh as i32);
+            for p in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+                assert!(point_in_hitbox(p, hit), "corner {p:?} of {x},{y},{w},{h}");
+            }
+        }
+        // the old independent rounding lost the right edge's last 0.8 pt
+        let old_right = 10.4f64.round() + 100.4f64.round();
+        assert!(old_right < 10.4 + 100.4);
+        let (hx, _, hw, _) = hitbox_cells(10.4, 0.0, 100.4, 10.0);
+        assert!((hx + hw) as f64 >= 10.4 + 100.4);
+    }
+
+    #[test]
+    fn an_unreported_or_broken_rect_is_never_clickable() {
+        assert_eq!(hitbox_cells(0.0, 0.0, 0.0, 10.0), (0, 0, 0, 0));
+        assert_eq!(hitbox_cells(0.0, 0.0, 10.0, -1.0), (0, 0, 0, 0));
+        assert_eq!(hitbox_cells(f64::NAN, 0.0, 10.0, 10.0), (0, 0, 0, 0));
+        assert!(!point_in_hitbox(
+            (0.0, 0.0),
+            hitbox_cells(0.0, 0.0, 0.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn the_watch_samples_fast_only_while_the_cursor_approaches() {
+        assert_eq!(next_nap_ms(75, false), PROXIMITY_SLICE_MS);
+        assert_eq!(next_nap_ms(75, true), APPROACH_SLICE_MS);
+        assert_eq!(next_nap_ms(5, false), 5);
+        assert_eq!(next_nap_ms(0, true), 1);
+        // the naps of one tick always add up to the tick (main-thread rate unchanged)
+        for approaching in [false, true] {
+            let (mut left, mut total) = (1000u64, 0u64);
+            while left > 0 {
+                let nap = next_nap_ms(left, approaching);
+                total += nap;
+                left -= nap;
+            }
+            assert_eq!(total, 1000);
+        }
+        let capsule = (100.0, 100.0, 80.0, 30.0);
+        assert!(point_near_screen_rect((90.0, 110.0), capsule, APPROACH_PT));
+        assert!(point_near_screen_rect((140.0, 115.0), capsule, APPROACH_PT));
+        assert!(!point_near_screen_rect((10.0, 10.0), capsule, APPROACH_PT));
+        assert!(!point_near_screen_rect(
+            (100.0, 100.0),
+            (0.0, 0.0, 0.0, 0.0),
+            APPROACH_PT
+        ));
+    }
+
     #[test]
     fn hitbox_only_captures_the_reported_capsule() {
         let hit = (120, 62, 60, 16);
