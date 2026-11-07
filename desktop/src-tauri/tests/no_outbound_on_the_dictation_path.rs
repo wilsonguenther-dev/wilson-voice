@@ -896,7 +896,7 @@ fn the_webview_cannot_connect_out() {
 /// llama.cpp / sherpa-onnx (both built without their optional download code).
 #[test]
 fn the_sidecars_have_no_network_surface() {
-    for sidecar in ["yap-polish", "yap-diarize"] {
+    for sidecar in ["yap-polish", "yap-diarize", "yap-asr"] {
         let root = manifest().join("..").join(sidecar);
         for path in rs_files(&root.join("src")) {
             let scan = scan_file(&path);

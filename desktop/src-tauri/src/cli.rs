@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::{asr_engine, dictation, models, record, transcription::TranscriptionManager};
+use crate::{dictation, models, record, transcription::TranscriptionManager};
 
 /// Flag that switches the binary into headless transcribe mode.
 const TRANSCRIBE_FILE_FLAG: &str = "--transcribe-file";
@@ -156,10 +156,9 @@ pub fn handle_args() -> Option<i32> {
 fn print_capabilities() -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
-    match ensure_model().and_then(|(id, path)| {
-        let engine = asr_engine::load(&path)?;
-        Ok((id, asr_engine::capabilities(&engine)))
-    }) {
+    match ensure_model()
+        .and_then(|(id, path)| Ok((id, crate::engine_owner::probe_capabilities(&path)?)))
+    {
         Ok((id, caps)) => {
             println!("model: {id}");
             println!("{}", caps.report());
@@ -901,6 +900,7 @@ fn headless_deps(
         sink: Arc::new(|e: &meeting_pipeline::MeetingProgressEvent| {
             log::debug!("cli meeting_progress state={} percent={}", e.state, e.percent);
         }),
+        diarize: crate::meeting_diarize::DiarizeBackend::Shipped,
         after_transcript: None,
         config: meeting_asr::MeetingAsrConfig::default(),
         start_delay: Duration::ZERO,

@@ -123,6 +123,7 @@ fn deps(
             None => false,
         }),
         sink: Arc::new(move |e: &MeetingProgressEvent| events.lock().unwrap().push(e.clone())),
+        diarize: wilson_voice_lib::meeting_diarize::DiarizeBackend::Off,
         after_transcript: None,
         config: small_windows(),
         start_delay: Duration::ZERO,
