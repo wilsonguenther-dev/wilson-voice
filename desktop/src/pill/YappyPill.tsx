@@ -20,13 +20,15 @@ import GovernorChip from "./GovernorChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { bucketFor } from "./tone";
-import { curseAllowed, pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
+import { curseAllowed, noteTakeSignal, parseMemory, takeDoneLine, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
+// fix-b6-1-done-line-no-false-paste — the Copy card event, so the done line never claims a paste the card contradicts.
+import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
-  progressLabel, progressNumeral, resetLive, transcribeLine,
+  progressLabel, progressNumeral, resetLive, TAKE_STAGE_EVENT, transcribeLine,
   afterTakeLineAllowed, armGlance, GLANCE_LOOK_SEC, isNewUser, liveLinesLog, parseTakesSeen,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
-  type TranscribeProgress,
+  type TakeStageNotice, type TranscribeProgress,
 } from "./live";
 import {
   GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, pillLicenseRoute, splitValue,
@@ -484,18 +486,26 @@ export default function YappyPill(
     voiceSink.current = (v) => { liveVoice = v; };
     let takeMemory: TakeLineMemory = loadTakeMemory();
     let takeCount = takeMemory.recent.length;
+    // fix-b6-1-done-line-no-false-paste — did THIS take show the Copy card (or
+    // report a paste it could not confirm)? A not-confirmed paste still ends in
+    // `done`, so the done line must not claim a paste the card contradicts.
+    // Cleared on `listening` (a new take), set by `insert-copy-card` and the
+    // `paste_not_confirmed` take stage, both emitted before `transcript`.
+    let copyCardShown = false;
     const doneLine = (w: number): string => {
       const today = localDay();
       // Belt and braces: the shell already gated `curse`; the line re-checks
       // this capsule's live voice and meeting flag so a stale prop can never
       // swear in Professional or during a meeting.
       const curseNow = curseAllowed({ enabled: curseRef.current, voice: liveVoice, meeting: meetingRef.current, screenShared: false });
-      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today, curse: curseNow, rand: Math.random });
+      // fix-b6-1-done-line-no-false-paste — a take that showed the Copy card
+      // never gets a "pasted"/"inserted" line; the log carries pasted=<bool>.
+      const out = takeDoneLine(w, liveVoice, takeMemory, { nonce: takeCount, today, curse: curseNow, rand: Math.random, pasted: !copyCardShown });
       takeCount++;
-      takeMemory = rememberTakeLine(takeMemory, picked, today);
+      takeMemory = out.memory;
       saveTakeMemory(takeMemory);
-      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} curse=${curseNow} recent=${takeMemory.recent.length}`);
-      return picked.text;
+      console.info(out.log);
+      return out.picked.text;
     };
     // yap-1106-yappy-states-and-motion — ONE bubble at a time: a new line waits
     // for the old one to leave (bubble.ts), timings from DURATION.
@@ -553,6 +563,7 @@ export default function YappyPill(
         if (isNewUser(takesSeen)) armGlance(live);
         takesSeen++; saveTakesSeen(takesSeen);
         afterLines = 0; takeOpen = true;
+        copyCardShown = noteTakeSignal(copyCardShown, "listening");
       }
       else if (p === "thinking") { moodT = 0; say(afterLine()); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
@@ -585,6 +596,12 @@ export default function YappyPill(
     };
     listen<boolean>("pill_visible", (e) => { shown = e.payload !== false; onVisibility(); }).then((u) => (dead ? u() : unsubs.push(u)));
     document.addEventListener("visibilitychange", onVisibility);
+    // fix-b6-1-done-line-no-false-paste — the take's paste outcome, for the done line.
+    listen<unknown>(INSERT_COPY_CARD_EVENT, () => { copyCardShown = noteTakeSignal(copyCardShown, "insert-copy-card"); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<TakeStageNotice>(TAKE_STAGE_EVENT, (e) => {
+      const st = e.payload?.stage;
+      if (st === "paste_not_confirmed" || st === "paste_confirmed") copyCardShown = noteTakeSignal(copyCardShown, st);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<Transcript>("transcript", (e) => {
       words = e.payload?.wordCount ?? 0;
       const vad = e.payload?.speechSeconds;
