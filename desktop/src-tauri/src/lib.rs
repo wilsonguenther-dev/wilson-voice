@@ -14898,7 +14898,7 @@ mod tests {
             super::audio_level_targets(true).to_vec(),
             vec!["float", "main"]
         );
-        assert!(super::LEVEL_MAIN_RECHECK_FRAMES > 1);
+        const { assert!(super::LEVEL_MAIN_RECHECK_FRAMES > 1) };
     }
 
     /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
