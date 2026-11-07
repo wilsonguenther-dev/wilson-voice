@@ -97,7 +97,6 @@ export default function SilentMicRow({
       data-silent-mic-row={after ? "switched" : "warning"}
       role="status"
       aria-label={after ?? silentMicAccessibleName(warning)}
-      onPointerDown={(e) => e.stopPropagation()}
     >
       {/* The drawn line is fitted to the row (silentMic.ts silentMicLine);
           the tooltip and the accessible name keep the full warning. */}
@@ -107,6 +106,7 @@ export default function SilentMicRow({
           type="button"
           className="silent-mic-switch"
           aria-busy={busy}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={switchMic}
         >
           {SWITCH_MIC_LABEL}

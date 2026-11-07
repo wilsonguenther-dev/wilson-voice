@@ -1850,6 +1850,7 @@ impl SilentMicCheck {
     }
 
     /// Has the opening window been judged yet?
+    #[cfg(test)]
     pub fn decided(&self) -> bool {
         self.state.is_some()
     }
