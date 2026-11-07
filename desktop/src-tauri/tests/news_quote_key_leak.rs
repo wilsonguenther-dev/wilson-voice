@@ -50,9 +50,12 @@ impl SettingsKv for MemKv {
     }
 }
 
+/// One recorded request: which source, the URL, and the headers sent.
+type Recorded = (Source, String, Vec<(String, String)>);
+
 /// Records every request; a refused key (401) for quotes, empty feeds else.
 #[derive(Default)]
-struct Recorder(RefCell<Vec<(Source, String, Vec<(String, String)>)>>);
+struct Recorder(RefCell<Vec<Recorded>>);
 impl FeedHttp for Recorder {
     fn get(
         &self,
