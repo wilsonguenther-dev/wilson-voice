@@ -455,7 +455,7 @@ export default function ClassicPill(
         }}
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
-        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
             has no dead click region to hunt for. It lives INSIDE the capsule,
