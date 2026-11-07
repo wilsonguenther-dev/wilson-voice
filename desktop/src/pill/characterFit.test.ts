@@ -325,7 +325,7 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
     expect(pillFit(stadium, 1)).toEqual({ cell: 1, lift: MAX_LIFT });
   });
 
-  it("shell_matches_the_artifact_within_3_percent: open 228 x 53 vs the artifact's 228 x 52, resting 56 tall", () => {
+  it("shell_matches_the_artifact_within_3_percent: open 228 x 53 vs the artifact's 228 x 52, resting 72 x 28 exactly", () => {
     expect(OPEN_CAPSULE.w).toBe(ARTIFACT_OPEN_SHELL.w);
     // yap-1107-parity-pill: the parity rule is 3 percent (batch 5 bounced 54 and 60)
     expect(Math.abs(OPEN_CAPSULE.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h).toBeLessThanOrEqual(0.03);
