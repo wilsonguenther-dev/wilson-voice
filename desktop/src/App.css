@@ -3995,3 +3995,38 @@ button.primary.big {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* yap-1106-news-refresh-setting — Settings → Yappy News → "How often": four
+   plain radio rows, the floor/quiet sentence, then the last refresh time with
+   "Refresh now" beside it. Native radios: arrow keys move, no motion. */
+.news-cadence {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.news-cadence legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+.news-cadence legend h3 {
+  margin: 0;
+}
+.news-cadence-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.news-cadence-option input:disabled + span {
+  opacity: 0.6;
+}
+.news-cadence-last {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.news-cadence-last p {
+  margin: 0;
+}
