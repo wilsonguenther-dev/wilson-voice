@@ -3234,9 +3234,28 @@ fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u6
     let Some(take) = stream_take else {
         return;
     };
-    let Some(client) = polish::installed_client(&cfg) else {
-        return;
-    };
+    // yap-1106-sp-08 + sp-07: on the hosted route the committed chunks go out
+    // to the cloud DURING the take (one at a time, as they commit); the release
+    // reuses them byte-exactly. Otherwise the bundled model, as before.
+    let (client, ready): (Box<dyn polish::PolishClient + Send>, polish::ReadyProbe) =
+        if cloud_polish_wanted(app, &state.db) {
+            log::info!("polish pipeline route=cloud take={take}");
+            (
+                Box::new(CloudChunkClient {
+                    app: app.clone(),
+                    db: Arc::clone(&state.db),
+                }) as Box<dyn polish::PolishClient + Send>,
+                Arc::new(|| true) as polish::ReadyProbe,
+            )
+        } else {
+            let Some(client) = polish::installed_client(&cfg) else {
+                return;
+            };
+            (
+                Box::new(client) as Box<dyn polish::PolishClient + Send>,
+                Arc::new(polish::sidecar_ready_for_pipeline) as polish::ReadyProbe,
+            )
+        };
     let structure =
         dictation::structure_format_for_take(structure_on, &overrides, &bundle_id, mode);
     let style = cfg.style;
@@ -3263,14 +3282,7 @@ fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u6
         );
         seen.into_inner()
     });
-    if let Some(pipeline) = polish::PolishPipeline::start(
-        take,
-        mode,
-        cfg,
-        Box::new(client),
-        prepare,
-        Arc::new(polish::sidecar_ready_for_pipeline),
-    ) {
+    if let Some(pipeline) = polish::PolishPipeline::start(take, mode, cfg, client, prepare, ready) {
         polish::pipeline_arm(pipeline);
     }
 }
@@ -10074,14 +10086,78 @@ fn cloud_run<R>(
     routed
 }
 
+/// yap-1106-sp-08 — is the hosted cleanup route on AND keyed? (The rest of
+/// `decide` — path, breaker, cap — is asked per request by `cloud_run`.)
+fn cloud_polish_wanted(app: &AppHandle, db: &Database) -> bool {
+    cloud_route::CloudMode::load(db).wants_cloud()
+        && model_providers::cloud_key_provider(db, &byom_keychain(app)).is_some()
+}
+
+/// yap-1106-sp-08 — one cleanup chunk on the cloud route: the validated answer,
+/// or `None` (offline, breaker, cap, timeout, rejected …) so the caller hands
+/// the whole take to the bundled model. Spend, retry and breaker are
+/// `run_routed`'s, per chunk.
+fn cloud_polish_chunk(app: &AppHandle, db: &Database, body: &str) -> Option<String> {
+    let words = body.split_whitespace().count() as u32;
+    let max_tokens = (words.saturating_mul(3) + 64).clamp(64, 4096);
+    let mut sink = |_: &str| {};
+    cloud_run(
+        app,
+        db,
+        cloud_route::Job::Polish,
+        cloud_client::CLEANUP_SYSTEM,
+        body,
+        max_tokens,
+        &summary_jobs::CancelToken::new(),
+        &mut sink,
+        &|out| polish::validate_polish(body, out).map(Some),
+        &mut || None::<String>,
+    )
+    .value
+}
+
+/// yap-1106-sp-08 + sp-07 — the pipeline's client on the hosted route: each
+/// committed chunk goes to the cloud while the take is still recording. Any
+/// failure is an `Err`, so the chunk is simply asked for again at release.
+struct CloudChunkClient {
+    app: AppHandle,
+    db: Arc<Database>,
+}
+
+impl polish::PolishClient for CloudChunkClient {
+    fn rewrite(&self, req: &polish_protocol::PolishRequest) -> Result<String, polish::PolishError> {
+        cloud_polish_chunk(&self.app, &self.db, &req.text).ok_or(polish::PolishError::Unavailable)
+    }
+}
+
 /// Dictation cleanup on the cloud route: pastes only a COMPLETE, validated
 /// answer; anything else is the bundled model's result.
+///
+/// yap-1106-sp-08: a take longer than one 160-word chunk goes out as chunks,
+/// at most `cloud_route::MAX_IN_FLIGHT` in flight, reassembled in order and
+/// re-checked as a whole; chunks the pipeline already sent during the take are
+/// not sent again. One chunk without an accepted answer → the whole take runs
+/// on the bundled model, exactly the §22 fallback.
 fn cloud_polish(
     app: &AppHandle,
     db: &Database,
     text: &str,
     local: &dyn Fn(&str) -> Result<String, &'static str>,
 ) -> Result<String, &'static str> {
+    if text.split_whitespace().count() > polish::POLISH_CHUNK_WORDS && cloud_polish_wanted(app, db)
+    {
+        let pre = polish::take_prepolished_for_cloud();
+        let run = |chunk: &polish::PolishChunk| cloud_polish_chunk(app, db, &chunk.body);
+        return match polish::polish_chunks_parallel_seeded(
+            text,
+            &pre,
+            cloud_route::MAX_IN_FLIGHT,
+            &run,
+        ) {
+            Some(out) => Ok(out),
+            None => local(text),
+        };
+    }
     let words = text.split_whitespace().count() as u32;
     let max_tokens = (words.saturating_mul(3) + 64).clamp(64, 4096);
     let mut sink = |_: &str| {};
@@ -10110,14 +10186,44 @@ fn cloud_notes(
     cancel: &summary_jobs::CancelToken,
 ) -> Option<String> {
     let app = MEETING_APP.get()?.clone();
-    let lines = meetings::render_transcript(segments, kind);
-    let transcript: String = lines
+    // yap-1106-sp-08: rendered lines, so a long meeting can be read as map
+    // passes in parallel; a short one is still the one request it always was.
+    let lines: Vec<String> = meetings::render_transcript(segments, kind)
         .iter()
-        .map(|l| format!("[{}] {}: {}\n", l.offset, l.label(), l.text))
+        .map(|l| format!("[{}] {}: {}", l.offset, l.label(), l.text))
         .collect();
-    if transcript.trim().is_empty() {
+    let passes = summarize::plan_cloud_map_chunks(&lines, summarize::CLOUD_MAP_WORDS).len();
+    if passes == 0 {
         return None;
     }
+    let notes_accept = |out: &str| {
+        let t = out.trim();
+        (!t.is_empty()).then(|| Some(t.to_string()))
+    };
+    let finished = std::sync::atomic::AtomicUsize::new(0);
+    let map = |_i: usize, chunk: &str| -> Option<String> {
+        let mut sink = |_: &str| {};
+        let routed = cloud_run(
+            &app,
+            &state.db,
+            cloud_route::Job::Notes,
+            summarize::CLOUD_MAP_SYSTEM,
+            chunk,
+            1024,
+            cancel,
+            &mut sink,
+            &notes_accept,
+            &mut || None::<String>,
+        );
+        let done = finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if let Err(e) = app.emit(
+            NOTES_DELTA_EVENT,
+            serde_json::json!({"id": id, "progress": {"done": done, "of": passes}}),
+        ) {
+            log::warn!("byom notes_progress_emit_failed error={e}");
+        }
+        routed.value
+    };
     let emitter = app.clone();
     let meeting_id = id.to_string();
     let mut on_delta = move |delta: &str| {
@@ -10128,28 +10234,40 @@ fn cloud_notes(
             log::warn!("byom notes_delta_emit_failed error={e}");
         }
     };
-    let routed = cloud_run(
-        &app,
-        &state.db,
-        cloud_route::Job::Notes,
-        cloud_client::NOTES_SYSTEM,
-        &transcript,
-        4096,
-        cancel,
-        &mut on_delta,
-        &|out| {
-            let t = out.trim();
-            (!t.is_empty()).then(|| Some(t.to_string()))
-        },
-        &mut || None::<String>,
+    let mut route = cloud_route::Route::Local;
+    let mut reduce = |turn: &str| -> Option<String> {
+        let routed = cloud_run(
+            &app,
+            &state.db,
+            cloud_route::Job::Notes,
+            cloud_client::NOTES_SYSTEM,
+            turn,
+            4096,
+            cancel,
+            &mut on_delta,
+            &notes_accept,
+            &mut || None::<String>,
+        );
+        route = routed.route;
+        routed.value
+    };
+    let value = summarize::cloud_notes_parallel(
+        &lines,
+        summarize::CLOUD_MAP_WORDS,
+        cloud_route::MAX_IN_FLIGHT,
+        &map,
+        &mut reduce,
     );
+    if value.is_none() {
+        route = cloud_route::Route::Local;
+    }
     if let Err(e) = app.emit(
         NOTES_DELTA_EVENT,
-        serde_json::json!({"id": id, "done": true, "route": routed.route}),
+        serde_json::json!({"id": id, "done": true, "route": route}),
     ) {
         log::warn!("byom notes_done_emit_failed error={e}");
     }
-    routed.value
+    value
 }
 
 /// Settings › Models & privacy — everything the cloud section renders.
