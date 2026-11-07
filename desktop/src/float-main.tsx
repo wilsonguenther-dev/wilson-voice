@@ -8,7 +8,7 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
@@ -956,6 +956,7 @@ function useCardOnScreen(): number | null {
  */
 function PanelFrameSync({ layout }: { layout: PillLayout }) {
   const [shown, setShown] = useState<PillLayout>(layout);
+  const lastSurfaceRef = useRef<string>("");
   useEffect(() => {
     if (shown.key === layout.key) return;
     const delay = shrinkDelay(shown, layout);
@@ -970,6 +971,15 @@ function PanelFrameSync({ layout }: { layout: PillLayout }) {
     const de = document.documentElement;
     de.dataset.onePill = shown.legacy ? "false" : "true";
     de.dataset.pillMeeting = shown.meeting;
+    // yap-1107-one-pill-during-meeting — the ONE meeting shell (float.css draws
+    // it behind Yappy and the clock), and whether the scene is the character.
+    de.dataset.meetingShell = !shown.legacy && shown.shell ? "true" : "false";
+    de.dataset.sceneCharacter = !shown.legacy && shown.sceneCharacter ? "true" : "false";
+    const surface = shown.legacy ? "legacy" : shown.sceneCharacter ? "scene" : shown.shell ? "shell" : "none";
+    if (surface !== lastSurfaceRef.current) {
+      console.info(`pill meeting_surface mode=${surface} meeting=${shown.meeting} dock=${shown.dock}`);
+      lastSurfaceRef.current = surface;
+    }
     const vars = layoutVars(shown);
     for (const [k, v] of Object.entries(vars)) {
       if (shown.legacy) de.style.removeProperty(k);

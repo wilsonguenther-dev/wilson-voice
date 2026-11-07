@@ -91,6 +91,19 @@ export interface PillLayout {
   hint: Box;
   /** The meeting clock / post-stop badge, in Yappy's trailing slot. */
   clock: Box | null;
+  /**
+   * yap-1107-one-pill-during-meeting — the ONE meeting shell: the union of the
+   * character and the clock, drawn as one dark device shell behind both, so a
+   * meeting is never a second capsule beside Yappy. Null without a meeting.
+   */
+  shell: Box | null;
+  /**
+   * yap-1107-one-pill-during-meeting — a meeting is recording and no take is
+   * live: the meeting scene (MeetingWorld: sun clock, Hoot at the tape, Yappy in
+   * headphones) IS the pill. `char` and `clock` are the same box and Yappy's
+   * own sky capsule is not drawn, so there is one Yappy and one surface.
+   */
+  sceneCharacter: boolean;
   /** The decode progress row under Yappy (transcribing only). */
   progress: Box | null;
   /** A card's row above everything else, when one is on screen. */
@@ -134,6 +147,18 @@ export const HINT_LINE_H = 14;
  */
 export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
 export const CLOCK_H = 40;
+/**
+ * yap-1107-one-pill-during-meeting — dictating mid-meeting, the clock leaves
+ * the scene and "shrinks into a small stack next to stop" (Pill artifact,
+ * "Meeting + dictating"): the elapsed time over the call chip, plus stop.
+ */
+export const CLOCK_STACK_W = 96;
+
+/** The clock slot's width for a meeting mode, at rest (the scene) or mid-take (the stack). */
+export function clockWidth(meeting: Exclude<MeetingMode, "none">, resting: boolean): number {
+  if (meeting === "recording" && !resting) return CLOCK_STACK_W;
+  return CLOCK_W[meeting];
+}
 /** Y3-C's decode fill + numeral (`.kami-progress`): a row under Yappy while transcribing. */
 export const PROGRESS_W = 100;
 export const PROGRESS_H = 14;
@@ -214,7 +239,7 @@ export function pillLayout(input: PillInput): PillLayout {
     const char = { x: 0, y: 0, w, h };
     return {
       key, phase, meeting, dock, character, legacy: true, panel: { w, h }, char,
-      bubble: char, hint: char, clock: null, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
+      bubble: char, hint: char, clock: null, shell: null, sceneCharacter: false, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
   // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 188
@@ -223,7 +248,12 @@ export function pillLayout(input: PillInput): PillLayout {
   // it, so nothing ever reaches across the screen edge side.
   const side = dock === "left" || dock === "right";
   const resting = RESTING_PHASES.has(phase);
-  const env = side ? (resting ? VDOCK_TAB : VDOCK_OPEN) : resting ? CHARACTER_REST : CHARACTER_OPEN;
+  // yap-1107-one-pill-during-meeting — recording with no take live: the scene is
+  // the character's box (one Yappy, the one in headphones), not a slot beside it.
+  // A side dock keeps its <= 64 px tab/room as the character; its clock is a
+  // flush segment of the one shell instead (sideLayout).
+  const sceneCharacter = !side && meeting === "recording" && resting;
+  const env = side ? (resting ? VDOCK_TAB : VDOCK_OPEN) : sceneCharacter ? { w: CLOCK_W.recording, h: CLOCK_H } : resting ? CHARACTER_REST : CHARACTER_OPEN;
   if (side) return sideLayout(key, input, character, env);
   const lines = Math.max(1, Math.round(input.hintLines ?? (phase === "blind" ? 3 : 1)));
   const hintH = lines * HINT_LINE_H;
@@ -233,19 +263,17 @@ export function pillLayout(input: PillInput): PillLayout {
   // (side docks returned above through sideLayout, so only the bottom dock reaches here.)
   const alignX = (w: number) => (env.w - w) / 2;
   // The next free row under the character.
-  let below = env.h + SLOT_GAP;
+  const below = env.h + SLOT_GAP;
   let clock0: Box | null = null;
-  if (meeting !== "none") {
-    const cw = CLOCK_W[meeting];
-    if (dock === "bottom") {
-      // The pill's own trailing slot: beside Yappy, vertically centred on him.
-      clock0 = { x: env.w + SLOT_GAP, y: (env.h - CLOCK_H) / 2, w: cw, h: CLOCK_H };
-    } else {
-      // A side dock is a column at the screen edge: the slot sits under him,
-      // flush to the same edge, so the clock is never stranded mid-screen.
-      clock0 = { x: alignX(cw), y: below, w: cw, h: CLOCK_H };
-      below += CLOCK_H + SLOT_GAP;
-    }
+  if (sceneCharacter) {
+    clock0 = { ...char0 };
+  } else if (meeting !== "none") {
+    const cw = clockWidth(meeting, resting);
+    // yap-1107-one-pill-during-meeting — flush to Yappy (no gap): the clock is a
+    // segment of the one shell, never a second capsule floating beside him.
+    // The pill's own trailing segment: beside Yappy, vertically centred on him.
+    // (Side docks returned above through sideLayout.)
+    clock0 = { x: env.w, y: (env.h - CLOCK_H) / 2, w: cw, h: CLOCK_H };
   }
   const progress0: Box | null =
     phase === PROGRESS_PHASE ? { x: alignX(PROGRESS_W), y: below, w: PROGRESS_W, h: PROGRESS_H } : null;
@@ -261,13 +289,16 @@ export function pillLayout(input: PillInput): PillLayout {
   const maxY = Math.max(...all.map(bottom));
   const dx = PANEL_MARGIN - minX, dy = PANEL_MARGIN - minY;
   const char = shift(char0, dx, dy);
+  const clock = clock0 ? shift(clock0, dx, dy) : null;
   return {
     key, phase, meeting, dock, character, legacy: false,
     panel: { w: Math.ceil(maxX - minX + 2 * PANEL_MARGIN), h: Math.ceil(maxY - minY + 2 * PANEL_MARGIN) },
     char,
     bubble: shift(bubble0, dx, dy),
     hint: shift(hint0, dx, dy),
-    clock: clock0 ? shift(clock0, dx, dy) : null,
+    clock,
+    shell: clock ? meetingShellBox(char, clock, false) : null,
+    sceneCharacter,
     progress: progress0 ? shift(progress0, dx, dy) : null,
     card: card0 ? shift(card0, dx, dy) : null,
     anchor: { x: char.x + char.w / 2, y: char.y + char.h / 2 },
@@ -289,7 +320,9 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
   const char0: Box = { x: 0, y: 0, w: env.w, h: env.h };
   const inX = (w: number) => (left ? env.w + SLOT_GAP : -SLOT_GAP - w);
   const rows: Array<{ name: "clock" | "progress" | "bubble" | "hint" | "card"; w: number; h: number }> = [];
-  if (meeting !== "none") rows.push({ name: "clock", w: CLOCK_W[meeting], h: CLOCK_H });
+  // yap-1107-one-pill-during-meeting — the clock is a segment of the one shell:
+  // flush to the tab/room (no SLOT_GAP), the stack mid-take, the scene at rest.
+  if (meeting !== "none") rows.push({ name: "clock", w: clockWidth(meeting, RESTING_PHASES.has(phase)), h: CLOCK_H });
   if (phase === PROGRESS_PHASE) rows.push({ name: "progress", w: PROGRESS_W, h: PROGRESS_H });
   const cardH = input.card ? Math.max(1, Math.ceil(input.card.h)) : 0;
   if (cardH) rows.push({ name: "card", w: CARD_W, h: cardH });
@@ -299,7 +332,8 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
   let y = colH < env.h ? (env.h - colH) / 2 : 0;
   const placed: Partial<Record<(typeof rows)[number]["name"], Box>> = {};
   for (const r of rows) {
-    placed[r.name] = { x: inX(r.w), y, w: r.w, h: r.h };
+    const x = r.name === "clock" ? (left ? env.w : -r.w) : inX(r.w);
+    placed[r.name] = { x, y, w: r.w, h: r.h };
     y += r.h + SLOT_GAP;
   }
   const all = [char0, ...Object.values(placed) as Box[]];
@@ -318,6 +352,8 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
     bubble: at(placed.bubble)!,
     hint: at(placed.hint)!,
     clock: at(placed.clock),
+    shell: placed.clock ? meetingShellBox(char, at(placed.clock)!, true) : null,
+    sceneCharacter: false,
     progress: at(placed.progress),
     card: at(placed.card),
     anchor: { x: char.x + char.w / 2, y: char.y + char.h / 2 },
@@ -363,10 +399,13 @@ export function layoutProblems(l: PillLayout): string[] {
   if (l.card) named.push(["card", l.card]);
   for (let i = 0; i < named.length; i++) {
     for (let j = i + 1; j < named.length; j++) {
+      // The scene IS the character in a resting meeting: one box, by design.
+      if (l.sceneCharacter && named[i][0] === "character" && named[j][0] === "clock") continue;
       if (boxesOverlap(named[i][1], named[j][1])) out.push(`overlap ${named[i][0]}/${named[j][0]}`);
     }
   }
   if (l.clock && boxGap(l.clock, l.char) > CLOCK_REACH_PT) out.push(`clock ${boxGap(l.clock, l.char).toFixed(1)}pt from the character`);
+  out.push(...meetingSurfaceProblems(l));
   const u = unionBox(named.map((n) => n[1]));
   // a side dock is flush to the screen edge: PANEL_MARGIN on the inner side only
   const marginsX = l.dock === "left" || l.dock === "right" ? 1 : 2;
@@ -379,6 +418,52 @@ export function layoutProblems(l: PillLayout): string[] {
 }
 
 /**
+ * yap-1107-one-pill-during-meeting — the ONE meeting shell around the character
+ * and the clock. At the bottom dock it is their union. On a side dock the
+ * character is the tall room (or the 30 x 40 tab), so the shell is the clock
+ * segment joined to the strip of the room level with it: the room is drawn over
+ * that strip, so what shows is one surface flush to the edge, never a dark box
+ * behind the bubble and hint column.
+ */
+export function meetingShellBox(char: Box, clock: Box, side: boolean): Box {
+  if (!side) return unionBox([char, clock]);
+  const y0 = Math.max(char.y, clock.y), y1 = Math.min(char.y + char.h, clock.y + clock.h);
+  const strip: Box = y1 > y0 ? { x: char.x, y: y0, w: char.w, h: y1 - y0 } : char;
+  return unionBox([strip, clock]);
+}
+
+/**
+ * yap-1107-one-pill-during-meeting — Wilson 2026-11-07: "why is the recording
+ * and the actual pill next to each other?" A meeting is ONE surface: the clock
+ * touches the character (a segment of the shell, never a capsule a gap away),
+ * the shell is exactly their union, and a resting meeting draws the scene as
+ * the character. Shared by the tests and the pill matrix.
+ */
+export function meetingSurfaceProblems(l: PillLayout): string[] {
+  if (l.legacy) return [];
+  const out: string[] = [];
+  if (l.meeting === "none") {
+    if (l.clock || l.shell) out.push("a meeting surface with no meeting");
+    if (l.sceneCharacter) out.push("the scene drawn as the character with no meeting");
+    return out;
+  }
+  if (!l.clock || !l.shell) {
+    out.push("a meeting without its one shell");
+    return out;
+  }
+  const gap = boxGap(l.clock, l.char);
+  if (gap > 0.5) out.push(`second surface: the clock is ${gap.toFixed(1)}pt off the character`);
+  const u = meetingShellBox(l.char, l.clock, l.dock === "left" || l.dock === "right");
+  if (Math.abs(u.x - l.shell.x) > 0.5 || Math.abs(u.y - l.shell.y) > 0.5 || Math.abs(u.w - l.shell.w) > 0.5 || Math.abs(u.h - l.shell.h) > 0.5) {
+    out.push("the shell is not the one box around the character and the clock");
+  }
+  const side = l.dock === "left" || l.dock === "right";
+  const restingRecording = !side && l.meeting === "recording" && RESTING_PHASES.has(l.phase);
+  if (restingRecording !== l.sceneCharacter) out.push(`sceneCharacter=${l.sceneCharacter} for ${l.meeting}/${l.phase}`);
+  return out;
+}
+
+/**
  * The CSS custom properties float.css places the DOM slots with. Written on
  * `<html>` by float-main; nothing else in float.css positions a slot in
  * one-pill mode.
@@ -387,6 +472,7 @@ export function layoutVars(l: PillLayout): Record<string, string> {
   const px = (n: number) => `${Math.round(n * 100) / 100}px`;
   const none = { x: 0, y: 0, w: 0, h: 0 };
   const c = l.clock ?? none;
+  const sh = l.shell ?? none;
   const p = l.progress ?? none;
   const k = l.card ?? none;
   return {
@@ -395,6 +481,7 @@ export function layoutVars(l: PillLayout): Record<string, string> {
     "--bubble-x": px(l.bubble.x), "--bubble-y": px(l.bubble.y), "--bubble-w": px(l.bubble.w), "--bubble-h": px(l.bubble.h),
     "--hint-x": px(l.hint.x), "--hint-y": px(l.hint.y), "--hint-w": px(l.hint.w), "--hint-h": px(l.hint.h),
     "--clock-x": px(c.x), "--clock-y": px(c.y), "--clock-w": px(c.w), "--clock-h": px(c.h),
+    "--shell-x": px(sh.x), "--shell-y": px(sh.y), "--shell-w": px(sh.w), "--shell-h": px(sh.h),
     "--progress-x": px(p.x), "--progress-y": px(p.y), "--progress-w": px(p.w), "--progress-h": px(p.h),
     // With no card yet, a card that mounts is laid out at its real width (so
     // the height it is measured at is the height it will have), then moved
