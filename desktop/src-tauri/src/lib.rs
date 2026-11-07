@@ -5226,6 +5226,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             } else {
                 want_paste
             };
+            // fix-l3b3-1 — the typing-pause hold inside insert_take_for can
+            // last up to 5 s AFTER the checkpoint above, so it re-reads the
+            // Y3-D cancel and the paste generation every poll step: a cancel
+            // mid-hold pastes and copies NOTHING, a newer take mid-hold makes
+            // this one copy-only.
+            let still_wanted = || {
+                if take_is_cancelled(&state2) {
+                    typing_pause::TakeWanted::Cancelled
+                } else if state2.paste_generation.load(Ordering::SeqCst) != generation {
+                    typing_pause::TakeWanted::Stale
+                } else {
+                    typing_pause::TakeWanted::Wanted
+                }
+            };
             let outcome = paste::insert_take_for(
                 &app2,
                 &text,
@@ -5233,7 +5247,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
                 Some(&take_stages),
                 target_captured_at,
+                &still_wanted,
             );
+            if outcome.was_cancelled_in_hold() {
+                log::info!("Y3-D cancel checkpoint=paste_hold — nothing pasted, nothing copied");
+                return Ok(TakeOutcome::Cancelled);
+            }
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
             let _ = app2.emit(
