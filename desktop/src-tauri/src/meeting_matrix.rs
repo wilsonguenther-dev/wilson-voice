@@ -627,10 +627,14 @@ pub const ROWS: &[MatrixRow] = &[
         // ever diarized. The decision below says what a meeting BECOMES when
         // the pool gives up; the day something calls it, this row is a `Test`
         // row and `matrix_coverage`'s tripwire says so out loud.
-        coverage: Coverage::PolicyOnly {
+        // yap-1106-diarize-wire PROMOTED this row: `meeting_diarize::diarize_meeting`
+        // runs the pool on every finished meeting (from `run_meeting_job`) and
+        // applies `diarize_sidecar_degrade` on any failure; the row's test
+        // drives a crashing stub sidecar through that shipping call.
+        coverage: Coverage::Test {
             test: "matrix_row7_diarize_sidecar_wedge.rs",
-            wiring_pr: None,
-            absent_call_site: "diarize_sidecar_degrade",
+            subject: "diarize_meeting",
+            subject_module: "meeting_diarize.rs",
         },
     },
     MatrixRow {

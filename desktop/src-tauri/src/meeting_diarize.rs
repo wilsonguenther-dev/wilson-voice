@@ -255,7 +255,14 @@ fn write_clusters(
             many => {
                 let pieces: Vec<SegmentPiece> = many
                     .iter()
-                    .map(|t| (t.start_seconds, t.end_seconds, t.text.clone(), t.cluster_index))
+                    .map(|t| {
+                        (
+                            t.start_seconds,
+                            t.end_seconds,
+                            t.text.clone(),
+                            t.cluster_index,
+                        )
+                    })
                     .collect();
                 db.split_segment_by_speaker(meeting_id, &row.id, &pieces)?;
                 outcome.rows_split += 1;
@@ -274,7 +281,9 @@ fn write_clusters(
 }
 
 fn shipped_pool() -> Result<&'static DiarizePool, DiarizeResult> {
-    use crate::models::{diarize_model_for_role, diarize_model_path, is_diarize_ready, DiarizeModelRole};
+    use crate::models::{
+        diarize_model_for_role, diarize_model_path, is_diarize_ready, DiarizeModelRole,
+    };
     if !is_diarize_ready() {
         return Err(DiarizeResult::Skipped("models_missing"));
     }
@@ -355,10 +364,7 @@ fn run(
         Ok(None) => return DiarizeOutcome::new(DiarizeResult::Skipped("deleted")),
         Err(_) => return DiarizeOutcome::new(DiarizeResult::Failed("db".into())),
     };
-    let existing = |p: Option<&String>| {
-        p.map(std::path::PathBuf::from)
-            .filter(|p| p.is_file())
-    };
+    let existing = |p: Option<&String>| p.map(std::path::PathBuf::from).filter(|p| p.is_file());
     let Some(mic) = existing(meeting.mic_wav_path.as_ref()) else {
         return DiarizeOutcome::new(DiarizeResult::Skipped("no_audio"));
     };

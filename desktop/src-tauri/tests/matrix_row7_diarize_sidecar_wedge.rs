@@ -15,9 +15,10 @@
 //!     script that announces itself and dies — so a wedge and a crash are real
 //!     process events rather than a mocked error value. Zero model bytes, zero
 //!     onnxruntime, no staged binary;
-//!   * the give-up half is `meeting_matrix::diarize_sidecar_degrade`, and it is
-//!     the reason the row is published `Policy only, NOT WIRED`: nothing in the
-//!     app calls it, because nothing in the app diarizes a meeting.
+//!   * the give-up half is `meeting_matrix::diarize_sidecar_degrade`. Until
+//!     yap-1106-diarize-wire nothing in the app called it; now
+//!     `meeting_diarize::diarize_meeting` does, on every finished meeting, and
+//!     the row is `Test` (see `a_crashed_sidecar_leaves_the_meeting_complete_with_plain_labels`).
 //!
 //! **What this file must never become.** `tests/diarize_sidecar_pool.rs` already
 //! proves the pool's four policies in detail, and a row-7 test that re-asserted
@@ -37,10 +38,6 @@ use wilson_voice_lib::meeting_matrix::{
     diarize_sidecar_degrade, DegradeReason, SpeakerLabels, DIARIZATION_FAILED,
 };
 use wilson_voice_lib::meetings::MeetingState;
-
-#[path = "support/callsite.rs"]
-mod callsite;
-use callsite::{call_sites, promote_the_row};
 
 /// A stub sidecar: `/bin/sh` running `script`, counting how many times it was
 /// launched — which is how "one restart per session" is observed rather than
@@ -235,28 +232,81 @@ fn the_give_up_logs_as_a_sidecar_failure_and_says_the_transcript_survived() {
     );
 }
 
-/// The row's own tripwire: row 7 is published as `Policy only, NOT WIRED`, and
-/// the day something calls the degrade the row is a `Test` row.
-///
-/// `matrix_coverage.rs` runs this same sweep over every unowned policy row; it
-/// is repeated here so the failure lands on the row's own test file with the
-/// row's own instructions, which is the difference between "a matrix test went
-/// red" and "row 7 needs promoting and here is how".
+/// yap-1106-diarize-wire promoted row 7 to `Test`: the shipping surface is
+/// `meeting_diarize::diarize_meeting`, which `run_meeting_job` calls on every
+/// finished meeting. A sidecar that CRASHES on its first request (and again on
+/// its one restart) leaves the meeting `complete`, the transcript with its
+/// plain labels (no `cluster_index` written), the degrade marker, and the
+/// `diarize result=failed` log line.
 #[test]
-fn nothing_in_the_app_diarizes_a_meeting_yet() {
-    let found = call_sites("diarize_sidecar_degrade", &["meeting_matrix.rs"]);
+fn a_crashed_sidecar_leaves_the_meeting_complete_with_plain_labels() {
+    use wilson_voice_lib::meeting_diarize::{diarize_meeting, DiarizeBackend, DiarizeResult};
+    use wilson_voice_lib::meetings::{render_transcript, MeetingKind, NewMeetingSegment};
+
+    let dir = std::env::temp_dir().join(format!(
+        "yap-row7-crash-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = wilson_voice_lib::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+    let meeting = db
+        .create_meeting_with_kind("Crash", "manual", MeetingKind::InPerson)
+        .unwrap();
+    db.append_meeting_segments(
+        &meeting.id,
+        &[
+            NewMeetingSegment::new(0.0, 4.0, "first voice"),
+            NewMeetingSegment::new(4.0, 8.0, "second voice"),
+        ],
+    )
+    .unwrap();
+    let wav = dir.join("mic.wav");
+    std::fs::write(&wav, b"RIFF....WAVEfake").unwrap();
+    db.finish_meeting(&meeting.id, 8.0, Some(&wav)).unwrap();
+    db.set_meeting_state(&meeting.id, MeetingState::Complete, None)
+        .unwrap();
+
+    let launches = Arc::new(AtomicUsize::new(0));
+    let crash: DiarizeLauncher = {
+        let launches = launches.clone();
+        Box::new(move || {
+            launches.fetch_add(1, Ordering::Relaxed);
+            let mut command = std::process::Command::new("/bin/sh");
+            command.arg("-c").arg(concat!(
+                r#"printf '{"type":"ready","version":"stub"}\n'"#,
+                "\nread -r line\nexit 3\n"
+            ));
+            Ok(command)
+        })
+    };
+    let pool = Arc::new(DiarizePool::new(crash, Duration::from_secs(10)));
+    let outcome = diarize_meeting(&db, &meeting.id, &dir, &DiarizeBackend::Pool(pool.clone()));
+    pool.shutdown();
+
     assert!(
-        found.is_empty(),
-        "{}",
-        promote_the_row("7", "diarize_sidecar_degrade", &found)
+        matches!(outcome.result, DiarizeResult::Failed(_)),
+        "{:?}",
+        outcome.result
     );
-    // The stronger statement, and the one that makes the row honest rather than
-    // merely unwired: the POOL has no caller either, so there is no diarization
-    // pass whose give-up path could be reached by any route.
-    let pool_callers = call_sites("diarize::pool", &["diarize.rs"]);
-    assert!(
-        pool_callers.is_empty(),
-        "something now runs a diarization pass ({pool_callers:?}) — row 7 is about what happens \
-         when that pass gives up, so it is no longer a policy with no caller"
-    );
+    assert!(outcome.labels.is_plain());
+    assert_eq!(outcome.labels.marker(), Some(DIARIZATION_FAILED));
+    assert!(outcome
+        .log_line(&meeting.id)
+        .starts_with("diarize result=failed clusters=0 speech_s=0.0 wall_ms="));
+    assert!(launches.load(Ordering::Relaxed) >= 1);
+
+    let after = db.get_meeting(&meeting.id).unwrap().unwrap();
+    assert_eq!(after.state, MeetingState::Complete.as_str());
+    let rows = db.list_meeting_segments(&meeting.id).unwrap();
+    assert!(rows.iter().all(|r| r.cluster_index.is_none()));
+    let labels: Vec<String> = render_transcript(&rows, MeetingKind::InPerson)
+        .iter()
+        .map(|l| l.label())
+        .collect();
+    assert_eq!(labels, vec!["Speaker".to_string(), "Speaker".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
 }
