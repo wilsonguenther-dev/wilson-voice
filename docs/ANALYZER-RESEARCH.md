@@ -49,9 +49,9 @@ the NT0 synthetic corpus, system track; 10 windows, 416 word rows):
 
 Every time is a multiple of 0.08 s: the encoder's 80 ms frame is the
 resolution of these word times, and a turn bound inherits that resolution.
-The one overlap is one frame. The 6.64 s row is a word stretched over a pause,
-which is why `split_utterances` has a cap fallback rather than trusting row
-lengths.
+The one overlap is one frame. The 6.64 s row is a word row stretched over a pause (one reason
+`split_utterances` carries a cap fallback instead of trusting row
+lengths).
 
 **Accuracy against a reference: PENDING.** The NT0 corpus carries no
 word-level reference times, so the error of these rows against ground truth has
