@@ -1839,8 +1839,44 @@ fn push_level(level: &LevelHandle, chunk: &[f32]) {
 const ARM_TIMEOUT: Duration = Duration::from_secs(3);
 /// Bounded wait for the worker to hand the captured buffer back on release.
 const DISARM_TIMEOUT: Duration = Duration::from_secs(5);
-/// Close the persistent stream after this long without a take (mic indicator off).
+/// Close the persistent stream after this long without a take (mic indicator
+/// off) — ON BATTERY, and the floor everywhere. See [`idle_close_after`].
 const IDLE_CLOSE: Duration = Duration::from_secs(60);
+/// SP-09 — on wall power the warm stream stays open this long without a take.
+///
+/// THE MIC INDICATOR RULE (SP-09, yap24-OS1). macOS lights the orange
+/// microphone indicator for as long as ANY input stream is open, whether or not
+/// a single sample is kept. Yap keeps its stream open only (1) while a take is
+/// armed, (2) while a meeting holds it, (3) from an fn key-down (the press
+/// opens it, so a cold mic starts filling the pre-roll at the press instead of
+/// after `HOLD_ARM_MS`), and (4) for the idle window after the last take or
+/// press: [`IDLE_CLOSE_AC`] (5 min) on wall power, [`IDLE_CLOSE`] (60 s) on
+/// battery. While open and idle, audio lives ONLY in the consumer's in-memory
+/// pre-roll ring (the newest [`PRE_ROLL_MS`] + [`PRESS_GRACE_MS`]); nothing is
+/// written, sent or kept unless a take arms, and a tap that was not a hold
+/// empties the ring. When the indicator is lit and no take is running, it is
+/// one of those four windows and nothing else.
+const IDLE_CLOSE_AC: Duration = Duration::from_secs(5 * 60);
+/// SP-09 — audio kept from BEFORE a take's anchor (the fn key-down, or the arm
+/// itself for a start with no press), so a word spoken AT the press is whole.
+pub const PRE_ROLL_MS: u64 = 500;
+/// SP-09 — how long after the key-down a hold may still become a take and
+/// claim the audio from the press on. Covers `HOLD_ARM_MS` (280 ms) plus the
+/// Start→Arm handshake with room to spare; a press older than this is stale.
+pub const PRESS_GRACE_MS: u64 = 1_000;
+/// SP-09 — the press→first-sample budget on a warm stream (logged every take).
+pub const PRESS_TO_FIRST_SAMPLE_BUDGET_MS: u64 = 20;
+/// SP-09 — taps whose pre-armed audio was discarded (telemetry counter).
+static PRE_ARM_DISCARDS: AtomicU64 = AtomicU64::new(0);
+
+/// SP-09 — the idle window for the power source the Mac is on right now.
+fn idle_close_after(on_battery: bool) -> Duration {
+    if on_battery {
+        IDLE_CLOSE
+    } else {
+        IDLE_CLOSE_AC
+    }
+}
 /// How often the idle worker wakes to test the idle window — 5s puts the mic
 /// indicator out within a tick of [`IDLE_CLOSE`] without splitting hairs over
 /// it. YV81: this tick runs ONLY while a stream is actually open; with nothing
@@ -2235,6 +2271,135 @@ enum CaptureCmd {
     /// starts now, so the mic indicator goes out a minute after the MEETING,
     /// not a minute after the last dictation).
     Release,
+    /// SP-09 — the push-to-talk key went down. Open the stream if it is closed
+    /// (a cold open now starts at the press, not `HOLD_ARM_MS` later) and stamp
+    /// the press frame, so the take that may follow opens its window there.
+    /// Fire-and-forget: the event tap thread never waits on the worker.
+    PreArm { pressed_at: Instant },
+    /// SP-09 — the press was a tap (or was cut short), not a hold: forget the
+    /// press and empty the pre-roll ring so its audio never reaches a take.
+    DiscardPreArm,
+}
+
+/// SP-09 — fn (or a held mouse button) went down: capture starts now. Never
+/// blocks; a failure is logged and the Arm that follows surfaces it.
+pub fn pre_arm(pressed_at: Instant) {
+    if let Err(e) = dispatch(CaptureCmd::PreArm { pressed_at }) {
+        log::warn!("record pre_arm_failed error={e}");
+    }
+}
+
+/// SP-09 — the press turned out to be a tap: discard what it buffered.
+pub fn discard_pre_arm() {
+    if let Err(e) = dispatch(CaptureCmd::DiscardPreArm) {
+        log::warn!("record pre_arm_discard_failed error={e}");
+    }
+}
+
+/// SP-09 — a key-down the next take may anchor on, in the CURRENT ring's frame
+/// space (a reopen forgets it).
+#[derive(Debug, Clone, Copy)]
+struct PendingPress {
+    frame: u64,
+    at: Instant,
+    /// Was the stream already open at the press (the "warm" budget applies)?
+    warm: bool,
+}
+
+/// SP-09 — the consumer's pre-roll: the ring of recent native frames plus the
+/// bookkeeping that replays it into a take once and times the press.
+///
+/// Belongs to the DEVICE (like the rings and the window): a reopen adopts a
+/// fresh one, because frame indices restart with the new ring.
+struct PreRollState {
+    ring: crate::rtring::PreRoll,
+    /// Frames of pre-roll a take keeps before its anchor ([`PRE_ROLL_MS`]).
+    lead_frames: u64,
+    /// The window start the ring was last replayed for (`u64::MAX` = none).
+    replayed_for: u64,
+    scratch: Vec<f32>,
+    /// The press being timed: (frame, key-down instant).
+    press_watch: Option<(u64, Instant)>,
+    /// Key-down → the device delivered a frame at/after it, for the last press.
+    press_to_first_sample_ms: Option<u64>,
+}
+
+impl PreRollState {
+    fn new(sample_rate_hz: u32, channels: u16) -> Self {
+        let rate = sample_rate_hz as u64;
+        let capacity = rate * (PRE_ROLL_MS + PRESS_GRACE_MS) / 1000;
+        Self::with_frames(capacity as usize, rate * PRE_ROLL_MS / 1000, channels)
+    }
+
+    fn with_frames(capacity_frames: usize, lead_frames: u64, channels: u16) -> Self {
+        Self {
+            ring: crate::rtring::PreRoll::with_frames(capacity_frames, channels.max(1) as usize),
+            lead_frames: lead_frames.min(capacity_frames as u64),
+            replayed_for: u64::MAX,
+            scratch: Vec::with_capacity(capacity_frames * channels.max(1) as usize),
+            press_watch: None,
+            press_to_first_sample_ms: None,
+        }
+    }
+}
+
+/// SP-09 — where a take's arm window opens: `lead` frames before its anchor
+/// (the key-down frame when there is a live press, else the arm frame), never
+/// before the previous take's close (no word is kept twice).
+///
+/// Pure: this is the arithmetic that decides whether the first syllable of a
+/// dictation survives, and the only other way to exercise it is a microphone.
+fn take_window_start(now_frame: u64, press_frame: Option<u64>, lead: u64, prev_to: u64) -> u64 {
+    let anchor = press_frame.filter(|&p| p <= now_frame).unwrap_or(now_frame);
+    let from = anchor.saturating_sub(lead);
+    if prev_to != u64::MAX && prev_to <= now_frame {
+        from.max(prev_to)
+    } else {
+        from
+    }
+}
+
+/// SP-09 — before a drained block goes out: a take whose window opened BEHIND
+/// what this consumer already drained gets those frames from the pre-roll ring
+/// first, once per window. Returns the frames replayed.
+fn replay_pre_roll(
+    pre: &Mutex<PreRollState>,
+    dsp: &Mutex<StreamDsp>,
+    pos: u64,
+    from: u64,
+    to: u64,
+) -> usize {
+    let Ok(mut guard) = pre.lock() else {
+        return 0;
+    };
+    let st = &mut *guard;
+    if from == u64::MAX || from >= pos || st.replayed_for == from {
+        return 0;
+    }
+    st.replayed_for = from;
+    st.scratch.clear();
+    let (_, n) = st.ring.copy_range(from, to.min(pos), &mut st.scratch);
+    if n > 0 {
+        if let Ok(mut d) = dsp.lock() {
+            d.push(&st.scratch);
+        }
+    }
+    n
+}
+
+/// SP-09 — after a drained block: keep it in the pre-roll ring and finish
+/// timing a press the device has now delivered audio past.
+fn remember_block(pre: &Mutex<PreRollState>, pos: u64, block: &[f32]) {
+    if let Ok(mut st) = pre.lock() {
+        st.ring.push(pos, block);
+        let end = st.ring.end_frame();
+        if let Some((frame, at)) = st.press_watch {
+            if end > frame {
+                st.press_to_first_sample_ms = Some(at.elapsed().as_millis() as u64);
+                st.press_watch = None;
+            }
+        }
+    }
 }
 
 /// The HUD level meter, shared by every take: only one capture is ever in
@@ -2409,6 +2574,10 @@ struct LiveStream {
     /// the DSP does (see [`reopen_after_change`]) and restarts its numbering at
     /// each new take (see [`LiveStream::begin`]).
     watch: InputFormatWatch,
+    /// SP-09 — the consumer's pre-roll ring (shared with the consumer thread).
+    pre_roll: Arc<Mutex<PreRollState>>,
+    /// SP-09 — the key-down the next take anchors on, if one is live.
+    pending_press: Option<PendingPress>,
 }
 
 /// The consumer thread's stop flag and join handle, as ONE owned value.
@@ -2470,8 +2639,69 @@ impl LiveStream {
         // Intent first, window second: a watchdog tick that lands between the
         // two must never see an open window with nothing armed behind it.
         self.armed.store(true, Ordering::SeqCst);
-        // Everything the device delivers from this frame on belongs to the take.
-        self.window.open(self.rt.frames_accepted());
+        // SP-09 — the take owns everything from its window start on: the
+        // key-down frame (capture starts at the press, not at the arm) less
+        // `PRE_ROLL_MS`, replayed by the consumer from its pre-roll ring.
+        let now_frame = self.rt.frames_accepted();
+        let (_, prev_to) = self.window.bounds();
+        let press = self.pending_press.take().filter(|p| {
+            p.frame <= now_frame && p.at.elapsed() <= Duration::from_millis(PRESS_GRACE_MS)
+        });
+        let (lead, first_sample_ms) = self
+            .pre_roll
+            .lock()
+            .map(|st| (st.lead_frames, st.press_to_first_sample_ms))
+            .unwrap_or((0, None));
+        let from = take_window_start(now_frame, press.map(|p| p.frame), lead, prev_to);
+        let rate = (self.format.sample_rate_hz as u64).max(1);
+        let kept_before_arm_ms = now_frame.saturating_sub(from) * 1000 / rate;
+        match press {
+            Some(p) => {
+                let ms = first_sample_ms.unwrap_or_else(|| p.at.elapsed().as_millis() as u64);
+                log::info!(
+                    "record take_armed anchor=press kept_before_arm_ms={kept_before_arm_ms} \
+                     press_to_first_sample_ms={ms} warm={} measured={}",
+                    p.warm,
+                    first_sample_ms.is_some()
+                );
+                if p.warm && ms > PRESS_TO_FIRST_SAMPLE_BUDGET_MS {
+                    log::warn!(
+                        "record press_to_first_sample_over_budget ms={ms} budget_ms={}",
+                        PRESS_TO_FIRST_SAMPLE_BUDGET_MS
+                    );
+                }
+            }
+            None => log::info!(
+                "record take_armed anchor=arm kept_before_arm_ms={kept_before_arm_ms} \
+                 press_to_first_sample_ms=na"
+            ),
+        }
+        self.window.open(from);
+    }
+
+    /// SP-09 — the push-to-talk key went down on this stream: stamp the frame
+    /// the device is at, and start timing press→first-sample.
+    fn note_press(&mut self, at: Instant, warm: bool) {
+        let frame = self.rt.frames_accepted();
+        self.pending_press = Some(PendingPress { frame, at, warm });
+        if let Ok(mut st) = self.pre_roll.lock() {
+            st.press_watch = Some((frame, at));
+            st.press_to_first_sample_ms = None;
+        }
+    }
+
+    /// SP-09 — the press was a tap: forget it and empty the pre-roll ring (a
+    /// take already in flight keeps its audio). Returns whether a press was
+    /// pending.
+    fn discard_press(&mut self) -> bool {
+        let had = self.pending_press.take().is_some();
+        if !self.is_armed() {
+            if let Ok(mut st) = self.pre_roll.lock() {
+                st.ring.clear();
+                st.press_watch = None;
+            }
+        }
+        had
     }
 
     /// End a take: close the gate, close the take's spill and take the 16 kHz
@@ -2647,6 +2877,9 @@ struct IdleInputs {
     /// leaving the mic indicator lit for an extra minute is not.
     meeting_active: bool,
     idle_for: Duration,
+    /// SP-09 — draining the battery: close at [`IDLE_CLOSE`] (60 s) instead of
+    /// [`IDLE_CLOSE_AC`] (5 min).
+    on_battery: bool,
 }
 
 /// Should the worker drop the persistent stream on this tick?
@@ -2659,7 +2892,7 @@ fn should_close_idle_stream(inputs: &IdleInputs) -> bool {
         && !inputs.capturing
         && !inputs.held_for_meeting
         && !inputs.meeting_active
-        && inputs.idle_for >= IDLE_CLOSE
+        && inputs.idle_for >= idle_close_after(inputs.on_battery)
 }
 
 /// WF-09 — should Arm/Hold drop the warm stream because the user picked a
@@ -2838,6 +3071,49 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 held_for_meeting = false;
                 idle_since = Instant::now();
             }
+            Ok(CaptureCmd::PreArm { pressed_at }) => {
+                if live.as_ref().is_some_and(LiveStream::has_failed) {
+                    live = None;
+                    cache.invalidate();
+                }
+                drop_stream_if_mic_picked(
+                    &mut live,
+                    &mut cache,
+                    held_for_meeting,
+                    opened_generation,
+                );
+                let warm = live.is_some();
+                if live.is_none() {
+                    let generation = crate::mic_select::generation();
+                    match open_stream(&mut cache) {
+                        Ok(stream) => {
+                            live = Some(stream);
+                            opened_generation = generation;
+                        }
+                        Err(e) => {
+                            // The Arm that follows a real hold surfaces it.
+                            log::warn!("record pre_arm_open_failed error={e}");
+                            continue;
+                        }
+                    }
+                }
+                if let Some(stream) = live.as_mut() {
+                    if !stream.is_armed() {
+                        stream.note_press(pressed_at, warm);
+                        log::debug!("record pre_armed warm={warm}");
+                    }
+                }
+                // The press is activity: a cold-opened stream gets a full window.
+                idle_since = Instant::now();
+            }
+            Ok(CaptureCmd::DiscardPreArm) => {
+                if let Some(stream) = live.as_mut() {
+                    if stream.discard_press() {
+                        let n = PRE_ARM_DISCARDS.fetch_add(1, Ordering::Relaxed) + 1;
+                        log::info!("record pre_arm_discarded reason=tap count={n}");
+                    }
+                }
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // YV92 — the health watchdog. A dictation always has an Arm
                 // coming to re-check the device; a long capture does not, so
@@ -2866,18 +3142,31 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     None if event.is_some() => cache.invalidate(),
                     None => {}
                 }
+                let idle_for = idle_since.elapsed();
+                // SP-09 — the power source decides the window; read (IOKit)
+                // only once the 60 s battery floor has passed.
+                let capturing = live.as_ref().is_some_and(LiveStream::is_capturing);
+                let on_battery = live.is_some()
+                    && !capturing
+                    && !held_for_meeting
+                    && idle_for >= IDLE_CLOSE
+                    && {
+                        let b = crate::meeting_energy::battery();
+                        b.has_battery && !b.on_ac
+                    };
                 if should_close_idle_stream(&IdleInputs {
                     stream_open: live.is_some(),
-                    capturing: live.as_ref().is_some_and(LiveStream::is_capturing),
+                    capturing,
                     held_for_meeting,
                     meeting_active: crate::meeting::meeting_capture_active(),
-                    idle_for: idle_since.elapsed(),
+                    idle_for,
+                    on_battery,
                 }) {
                     live = None;
                     close_idle_capture(&mut cache);
                     log::info!(
-                        "capture stream closed after {}s idle (mic indicator off)",
-                        IDLE_CLOSE.as_secs()
+                        "capture stream closed after {}s idle on_battery={on_battery} (mic indicator off)",
+                        idle_close_after(on_battery).as_secs()
                     );
                 }
             }
@@ -3103,6 +3392,10 @@ fn reopen_with(
             live.rt = reopened.rt;
             live.window = reopened.window;
             live.consumer = reopened.consumer;
+            // SP-09 — the pre-roll is indexed in the old ring's frames: adopt
+            // the new device's empty one, and forget a press stamped there.
+            live.pre_roll = reopened.pre_roll;
+            live.pending_press = None;
             // `reopened.watch` is discarded on purpose — the take's segment
             // numbering lives on `live`, and the reopen only tells it what
             // actually opened.
@@ -3298,18 +3591,23 @@ fn open_stream_into(
     }
 
     let window = Arc::new(ArmWindow::idle());
+    let pre_roll = Arc::new(Mutex::new(PreRollState::new(
+        format.sample_rate_hz,
+        format.channels,
+    )));
     let consumer_stop = Arc::new(AtomicBool::new(false));
     let consumer = {
-        let (rt, dsp, window, stop, level) = (
+        let (rt, dsp, window, pre_roll, stop, level) = (
             rt.clone(),
             dsp.clone(),
             window.clone(),
+            pre_roll.clone(),
             consumer_stop.clone(),
             capture_level().clone(),
         );
         thread::Builder::new()
             .name("wv-capture-consumer".into())
-            .spawn(move || capture_consumer_loop(rt, dsp, window, stop, level))
+            .spawn(move || capture_consumer_loop(rt, dsp, window, pre_roll, stop, level))
             .ok()
     };
 
@@ -3330,6 +3628,8 @@ fn open_stream_into(
         watch: InputFormatWatch::new(dev_name.clone(), format, TARGET_RATE),
         device_name: dev_name,
         format,
+        pre_roll,
+        pending_press: None,
     })
 }
 
@@ -3408,6 +3708,7 @@ fn capture_consumer_loop(
     rt: Arc<crate::meeting::RtCapture>,
     dsp: Arc<Mutex<StreamDsp>>,
     window: Arc<ArmWindow>,
+    pre_roll: Arc<Mutex<PreRollState>>,
     stop: Arc<AtomicBool>,
     level: LevelHandle,
 ) {
@@ -3435,6 +3736,9 @@ fn capture_consumer_loop(
         let frames = (taken / channels) as u64;
         // The dictation take's slice of this block, if any.
         let (from, to) = window.bounds();
+        // SP-09 — a window opened behind `pos` (at the key-down, less the
+        // pre-roll) first gets the frames this consumer already drained.
+        replay_pre_roll(&pre_roll, &dsp, pos, from, to);
         let armed_slice = armed_range(pos, frames, channels, from, to);
 
         let mut guard = armed_slice
@@ -3463,6 +3767,7 @@ fn capture_consumer_loop(
         } else if crate::meeting::meeting_capture_active() {
             push_level(&level, &block);
         }
+        remember_block(&pre_roll, pos, &block);
         pos += frames;
     }
 }
@@ -4875,7 +5180,24 @@ mod tests {
             held_for_meeting: false,
             meeting_active: false,
             idle_for,
+            // The pre-SP-09 tests are the battery case: 60 s.
+            on_battery: true,
         }
+    }
+
+    #[test]
+    fn on_wall_power_the_warm_stream_stays_open_five_minutes_but_not_on_battery() {
+        let ac = |idle_for: Duration| IdleInputs {
+            on_battery: false,
+            ..idle(idle_for)
+        };
+        assert!(!should_close_idle_stream(&ac(IDLE_CLOSE)));
+        assert!(!should_close_idle_stream(&ac(Duration::from_secs(299))));
+        assert!(should_close_idle_stream(&ac(Duration::from_secs(300))));
+        // Battery keeps the 60 s close.
+        assert!(should_close_idle_stream(&idle(IDLE_CLOSE)));
+        assert_eq!(idle_close_after(false), Duration::from_secs(300));
+        assert_eq!(idle_close_after(true), Duration::from_secs(60));
     }
 
     #[test]
@@ -5951,6 +6273,10 @@ mod tests {
             watch: InputFormatWatch::new(device, format, TARGET_RATE),
             device_name: device.to_string(),
             format,
+            // Pre-roll OFF by default, so every pre-SP-09 test keeps its exact
+            // sample counts; the SP-09 tests install a real one.
+            pre_roll: Arc::new(Mutex::new(PreRollState::with_frames(0, 0, format.channels))),
+            pending_press: None,
         }
     }
 
@@ -6006,6 +6332,7 @@ mod tests {
         }
         let frames = (taken / ch) as u64;
         let (from, to) = live.window.bounds();
+        replay_pre_roll(&live.pre_roll, &live.dsp, pos, from, to);
         let armed_slice = armed_range(pos, frames, ch, from, to);
         let mut guard = armed_slice
             .as_ref()
@@ -6020,6 +6347,139 @@ mod tests {
             }),
             armed_slice,
         );
+        drop(guard);
+        remember_block(&live.pre_roll, pos, &block);
+    }
+
+    // ── SP-09: pre-roll and arm on key-down ─────────────────────────────────
+
+    const SP09_SR: u32 = 48_000;
+    /// One 10 ms callback at 48 kHz mono.
+    const SP09_CB: usize = 480;
+
+    fn sp09_stream() -> LiveStream {
+        let mut live = hardware_free_stream("Built-in Microphone", fmt(SP09_SR));
+        live.pre_roll = Arc::new(Mutex::new(PreRollState::new(SP09_SR, 1)));
+        live
+    }
+
+    /// The acceptance test: a scripted press whose word starts AT the key-down
+    /// (t = 0). The take does not arm until the hold gesture is confirmed
+    /// (`HOLD_ARM_MS`) and the Start→Arm handshake has run — ~300 ms during
+    /// which the arm window is SHUT — yet the WAV still starts with the word.
+    #[test]
+    fn a_scripted_press_that_speaks_at_t0_keeps_the_first_250ms_of_the_word() {
+        let mut live = sp09_stream();
+        // 200 ms of room silence before the press.
+        for _ in 0..20 {
+            feed_one_callback(&live, &vec![0.0; SP09_CB]);
+        }
+        // t = 0: fn goes down and the word starts in the same instant.
+        live.note_press(Instant::now(), true);
+        let word = tone_at(SP09_SR, 0.6, 440.0, 0.3);
+        let mut chunks = word.chunks(SP09_CB);
+        for c in chunks.by_ref().take(30) {
+            feed_one_callback(&live, c);
+        }
+        assert!(!live.is_capturing(), "the hold has not armed yet");
+        live.begin(None, None);
+        assert!(live.pending_press.is_none(), "the take consumed the press");
+        for c in chunks {
+            feed_one_callback(&live, c);
+        }
+        let out = live.end().samples;
+        // 16 kHz out: 200 ms of pre-roll + the whole 600 ms word ≈ 12 800.
+        // Without the pre-roll the take would be the last 300 ms (≈ 4 800).
+        assert!(
+            out.len() >= 12_000,
+            "take holds the pre-roll and the word: {}",
+            out.len()
+        );
+        let onset = out
+            .iter()
+            .position(|s| s.abs() > 0.05)
+            .expect("the word is in the take");
+        // The word starts at the press, 200 ms (3 200 samples) into the take.
+        assert!(onset <= 3_200 + 320, "word onset at {onset}, want ≈3200");
+        let first_250ms = &out[onset..onset + 4_000];
+        assert!(
+            rms(first_250ms) > 0.05,
+            "the first 250 ms of the word survive: rms {}",
+            rms(first_250ms)
+        );
+        assert!(
+            out.len() - onset >= 9_000,
+            "the word is whole from its onset"
+        );
+    }
+
+    #[test]
+    fn a_tap_that_is_not_a_hold_discards_the_buffer() {
+        let mut live = sp09_stream();
+        live.note_press(Instant::now(), true);
+        // The tap's audio (a click, a cough) — 100 ms of it.
+        for _ in 0..10 {
+            feed_one_callback(&live, &tone_at(SP09_SR, 0.01, 440.0, 0.3));
+        }
+        assert!(live.discard_press(), "a press was pending");
+        assert!(live.pending_press.is_none());
+        assert_eq!(live.pre_roll.lock().unwrap().ring.len_frames(), 0);
+        // A later start (hands-free, no press) keeps none of the tap.
+        for _ in 0..5 {
+            feed_one_callback(&live, &vec![0.0; SP09_CB]);
+        }
+        live.begin(None, None);
+        for _ in 0..5 {
+            feed_one_callback(&live, &vec![0.0; SP09_CB]);
+        }
+        let out = live.end().samples;
+        assert!(!out.is_empty());
+        assert!(
+            out.iter().all(|s| s.abs() < 0.01),
+            "the tap's audio never reaches a take"
+        );
+    }
+
+    #[test]
+    fn a_start_with_no_press_still_keeps_500ms_of_pre_roll() {
+        let mut live = sp09_stream();
+        // 1 s of audio before an arm with no key-down (hands-free / button).
+        for _ in 0..100 {
+            feed_one_callback(&live, &tone_at(SP09_SR, 0.01, 440.0, 0.3));
+        }
+        live.begin(None, None);
+        // The consumer replays the pre-roll on the first block after the arm.
+        feed_one_callback(&live, &tone_at(SP09_SR, 0.01, 440.0, 0.3));
+        let out = live.end().samples;
+        // 500 ms of pre-roll + one 10 ms block at 16 kHz (≈ 8 160), give or
+        // take the resampler's edge.
+        assert!(
+            (7_700..=8_600).contains(&out.len()),
+            "pre-roll is 500 ms: {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn the_window_opens_at_the_press_less_the_pre_roll() {
+        // Press 6 000 frames before the arm, 2 400 frames (50 ms @ 48 k) lead.
+        assert_eq!(
+            take_window_start(10_000, Some(4_000), 2_400, u64::MAX),
+            1_600
+        );
+        // No press: the arm itself is the anchor.
+        assert_eq!(take_window_start(10_000, None, 2_400, u64::MAX), 7_600);
+        // Never before the previous take's close — no word is kept twice.
+        assert_eq!(take_window_start(10_000, Some(4_000), 2_400, 3_000), 3_000);
+        // Clamped at the ring's origin.
+        assert_eq!(take_window_start(1_000, Some(500), 2_400, u64::MAX), 0);
+        // A press stamped in another frame space (ahead of now) is ignored.
+        assert_eq!(take_window_start(1_000, Some(5_000), 0, u64::MAX), 1_000);
+        // The ring holds the pre-roll plus the press grace, and the lead is
+        // exactly PRE_ROLL_MS.
+        let st = PreRollState::new(SP09_SR, 2);
+        assert_eq!(st.lead_frames, 24_000);
+        assert_eq!(st.ring.capacity_frames(), 72_000);
     }
 
     /// The whole point of the segment counter: it has to ORDER the markers of

@@ -1377,6 +1377,16 @@ fn insert_take(
     } else {
         (InsertPath::PasteBridge, false)
     };
+    // yap-1106-fb-04 — a dictated take never lands mid-word: if the user is
+    // typing in the target app, hold here (outside INSERT_LOCK) until they
+    // pause. An app switch ends the hold and the YV21 guard below copies the
+    // take and holds it on the pill, exactly as before. The text never leaves
+    // this frame while held, and every branch after it puts it on the clipboard.
+    if want_paste {
+        if let PasteTarget::Dictated(Some(bundle)) = target {
+            wait_for_typing_pause(bundle, stages);
+        }
+    }
     let mut live = LiveInsert { app, ax_granted };
     let log_target = target;
     let mut run = || insert_serialized(&mut live, path, text, want_paste, target);
@@ -1402,6 +1412,33 @@ fn insert_take(
         log::info!("{line}");
     }
     outcome
+}
+
+/// yap-1106-fb-04 — hold a dictated take's paste while the user is typing in
+/// `target_bundle` (see [`crate::typing_pause`]). Reports `paste_waiting` to the
+/// pill when it holds, and writes one `paste typing_pause` line (counts and a
+/// duration only — never keys, never text).
+fn wait_for_typing_pause(
+    target_bundle: &str,
+    stages: Option<&crate::take_stage::TakeStages<'_>>,
+) -> crate::typing_pause::PauseWait {
+    let mut clock = crate::typing_pause::LiveKeyClock;
+    let mut still_target = || {
+        let current = crate::focus::frontmost_identity().and_then(|i| i.bundle_id);
+        is_same_paste_target(Some(target_bundle), current.as_deref())
+    };
+    let mut on_hold = || {
+        if let Some(stages) = stages {
+            stages.emit(crate::take_stage::TakeStage::PasteWaiting, None);
+        }
+    };
+    let wait = crate::typing_pause::wait_for_pause(&mut clock, &mut still_target, &mut on_hold);
+    if wait.held() {
+        log::info!("{}", wait.log_line());
+        crate::diagnostics::record_duration("paste", "typing_pause", wait.waited_ms());
+        crate::diagnostics::bump("typing_pause", wait.as_str());
+    }
+    wait
 }
 
 /// YV49 command mode: carry out "delete that" by pressing Delete on the

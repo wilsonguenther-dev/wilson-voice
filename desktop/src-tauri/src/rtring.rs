@@ -215,9 +215,181 @@ impl<T: Copy + Default> SpscRing<T> {
     }
 }
 
+/// SP-09 (yap24-OS1) — the capture CONSUMER's rolling memory of the last few
+/// hundred milliseconds of native, interleaved audio, indexed by the same
+/// cumulative per-channel frame count the arm window uses.
+///
+/// The persistent stream delivers frames whether or not a take is armed; the
+/// consumer used to throw away every frame outside the window. With this ring
+/// it keeps the newest `capacity_frames` of them, so a take that is armed AFTER
+/// the key went down (the hold gesture needs `HOLD_ARM_MS` to tell a hold from
+/// a tap) can open its window BEHIND the arm and still get the audio from the
+/// key-down onward, plus the pre-roll before it.
+///
+/// Single-owner (the consumer thread, or a test), so no atomics. Preallocated
+/// at construction and never grows, the same rule as [`SpscRing`]; it is not
+/// touched on the audio thread at all.
+pub struct PreRoll {
+    buf: Vec<f32>,
+    channels: usize,
+    capacity_frames: usize,
+    /// Frames currently held (≤ `capacity_frames`).
+    len_frames: usize,
+    /// Slot (in frames) the next frame is written to.
+    head: usize,
+    /// Cumulative frame index one past the newest frame held.
+    end_frame: u64,
+}
+
+impl PreRoll {
+    /// A ring holding up to `capacity_frames` frames of `channels` channels.
+    /// A zero capacity is a valid, inert ring (pre-roll switched off).
+    pub fn with_frames(capacity_frames: usize, channels: usize) -> Self {
+        let channels = channels.max(1);
+        Self {
+            buf: vec![0.0; capacity_frames * channels],
+            channels,
+            capacity_frames,
+            len_frames: 0,
+            head: 0,
+            end_frame: 0,
+        }
+    }
+
+    pub fn capacity_frames(&self) -> usize {
+        self.capacity_frames
+    }
+
+    pub fn len_frames(&self) -> usize {
+        self.len_frames
+    }
+
+    /// Cumulative frame index one past the newest frame held.
+    pub fn end_frame(&self) -> u64 {
+        self.end_frame
+    }
+
+    /// Oldest cumulative frame index still held.
+    pub fn oldest_frame(&self) -> u64 {
+        self.end_frame - self.len_frames as u64
+    }
+
+    /// Append one drained block (interleaved, whole frames) whose first frame
+    /// is cumulative frame `first_frame`. A gap or a rewind (a reopen restarts
+    /// the frame space) empties the ring first, so it never splices two
+    /// unrelated stretches of audio together.
+    pub fn push(&mut self, first_frame: u64, interleaved: &[f32]) {
+        let frames = interleaved.len() / self.channels;
+        if first_frame != self.end_frame {
+            self.len_frames = 0;
+            self.head = 0;
+        }
+        self.end_frame = first_frame + frames as u64;
+        if self.capacity_frames == 0 || frames == 0 {
+            return;
+        }
+        // Only the newest `capacity_frames` of this block can survive.
+        let keep = frames.min(self.capacity_frames);
+        let skip = frames - keep;
+        for f in 0..keep {
+            let src = (skip + f) * self.channels;
+            let dst = self.head * self.channels;
+            self.buf[dst..dst + self.channels]
+                .copy_from_slice(&interleaved[src..src + self.channels]);
+            self.head += 1;
+            if self.head == self.capacity_frames {
+                self.head = 0;
+            }
+        }
+        self.len_frames = (self.len_frames + keep).min(self.capacity_frames);
+    }
+
+    /// Forget everything held (a tap that was not a hold: its audio must never
+    /// reach a later take). The frame clock keeps running.
+    pub fn clear(&mut self) {
+        self.len_frames = 0;
+        self.head = 0;
+    }
+
+    /// Copy the held frames in `[from, to)` (clamped to what is held) onto
+    /// `out`, oldest first. Returns the cumulative index of the first frame
+    /// copied and how many frames were copied.
+    pub fn copy_range(&self, from: u64, to: u64, out: &mut Vec<f32>) -> (u64, usize) {
+        let lo = from.max(self.oldest_frame());
+        let hi = to.min(self.end_frame);
+        if lo >= hi {
+            return (lo, 0);
+        }
+        let n = (hi - lo) as usize;
+        // Slot of the oldest frame held.
+        let oldest_slot =
+            (self.head + self.capacity_frames - self.len_frames) % self.capacity_frames.max(1);
+        let offset = (lo - self.oldest_frame()) as usize;
+        out.reserve(n * self.channels);
+        for f in 0..n {
+            let slot = (oldest_slot + offset + f) % self.capacity_frames;
+            let at = slot * self.channels;
+            out.extend_from_slice(&self.buf[at..at + self.channels]);
+        }
+        (lo, n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SP-09 — the consumer's pre-roll ring.
+    #[test]
+    fn pre_roll_keeps_only_the_newest_frames_in_order() {
+        let mut r = PreRoll::with_frames(4, 2);
+        // Frames 0..3, two channels: (f, -f).
+        let block: Vec<f32> = (0..3).flat_map(|f| [f as f32, -(f as f32)]).collect();
+        r.push(0, &block);
+        let block: Vec<f32> = (3..6).flat_map(|f| [f as f32, -(f as f32)]).collect();
+        r.push(3, &block);
+        assert_eq!(r.len_frames(), 4);
+        assert_eq!(r.oldest_frame(), 2);
+        assert_eq!(r.end_frame(), 6);
+        let mut out = Vec::new();
+        assert_eq!(r.copy_range(0, u64::MAX, &mut out), (2, 4));
+        assert_eq!(out, vec![2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0]);
+        out.clear();
+        assert_eq!(r.copy_range(3, 5, &mut out), (3, 2));
+        assert_eq!(out, vec![3.0, -3.0, 4.0, -4.0]);
+    }
+
+    #[test]
+    fn pre_roll_block_bigger_than_the_ring_keeps_its_tail() {
+        let mut r = PreRoll::with_frames(3, 1);
+        let block: Vec<f32> = (0..10).map(|f| f as f32).collect();
+        r.push(100, &block);
+        let mut out = Vec::new();
+        assert_eq!(r.copy_range(0, u64::MAX, &mut out), (107, 3));
+        assert_eq!(out, vec![7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn pre_roll_clear_and_gap_forget_the_audio_but_keep_the_clock() {
+        let mut r = PreRoll::with_frames(8, 1);
+        r.push(0, &[1.0, 2.0, 3.0]);
+        r.clear();
+        let mut out = Vec::new();
+        assert_eq!(r.copy_range(0, u64::MAX, &mut out).1, 0);
+        assert_eq!(r.end_frame(), 3);
+        r.push(3, &[4.0]);
+        // A rewind (a reopen restarted the frame space) never splices.
+        r.push(0, &[9.0, 9.0]);
+        out.clear();
+        assert_eq!(r.copy_range(0, u64::MAX, &mut out), (0, 2));
+        assert_eq!(out, vec![9.0, 9.0]);
+        // A zero-capacity ring is inert.
+        let mut z = PreRoll::with_frames(0, 1);
+        z.push(0, &[1.0]);
+        out.clear();
+        assert_eq!(z.copy_range(0, u64::MAX, &mut out).1, 0);
+        assert_eq!(z.end_frame(), 1);
+    }
 
     #[test]
     fn round_trips_in_order_across_the_wrap() {

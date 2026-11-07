@@ -98,6 +98,10 @@ export interface StudioState {
   streakDays: number | null;
   /** A morning briefing is waiting: Cinder stands at the back door with it. */
   newsReady: boolean;
+  /** yap-1106-news-home-briefing: when the current briefing was delivered (Cinder flies in from then). */
+  newsArrivedAtMs?: number | null;
+  /** Cinder's flight, 0 (just set off) .. 1 (landed); the room computes it. Missing = landed. */
+  cinderFlight?: number;
   /** yap-1106-sal-and-mochi: the speech engine is loading (AppStatus.engineLoading). */
   engineLoading: boolean;
   /** The speech model is on this Mac (AppStatus.modelReady); null = not known yet. */
@@ -280,6 +284,34 @@ export function parallaxTarget(clientX: number, left: number, width: number): nu
   return (f - 0.5) * -2 * PARALLAX_MAX || 0;
 }
 
+/* ── Cinder's delivery (yap-1106-news-home-briefing) ─────────────────────── */
+
+/** How long Cinder's flight in with a new briefing takes. */
+export const CINDER_FLIGHT_MS = 2400;
+/** Where the flight starts (in through the window, top left) and lands (the back door). */
+export const CINDER_FROM = { x: 20, y: 6 } as const;
+export const CINDER_LAND = { x: 240, y: FLOOR - 40 } as const;
+
+/**
+ * Cinder's flight progress, 0..1. Reduce motion skips the flight (1 at once);
+ * no delivery time, a clock that runs backwards, or a finished flight = 1.
+ */
+export function cinderFlight(arrivedAtMs: number | null | undefined, nowMs: number, reduceMotion: boolean): number {
+  if (reduceMotion || arrivedAtMs == null || !Number.isFinite(arrivedAtMs) || !Number.isFinite(nowMs)) return 1;
+  const p = (nowMs - arrivedAtMs) / CINDER_FLIGHT_MS;
+  if (p < 0) return 1;
+  return Math.min(1, p);
+}
+
+/** Cinder's top-left at flight progress `p`: an eased arc, whole pixels. */
+export function cinderSpot(p: number): { x: number; y: number } {
+  const t = Math.max(0, Math.min(1, Number.isFinite(p) ? p : 1));
+  const e = 1 - Math.pow(1 - t, 3);
+  const x = CINDER_FROM.x + (CINDER_LAND.x - CINDER_FROM.x) * e;
+  const y = CINDER_FROM.y + (CINDER_LAND.y - CINDER_FROM.y) * e - Math.sin(Math.PI * t) * 18;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 export type RedrawMode = "still" | "live" | "tick" | "idle";
 
 export interface RedrawInputs {
@@ -290,6 +322,8 @@ export interface RedrawInputs {
   meetingRecording: boolean;
   /** yap-1106-sal-and-mochi: Sal is lighting the furnace (the engine is loading) — the flame moves. */
   furnaceLighting?: boolean;
+  /** yap-1106-news-home-briefing: Cinder is flying in with a new briefing. */
+  cinderFlying?: boolean;
 }
 
 /**
@@ -299,7 +333,7 @@ export interface RedrawInputs {
  */
 export function redrawPlan(i: RedrawInputs): { mode: RedrawMode; delayMs: number | null } {
   if (i.reduceMotion) return { mode: "still", delayMs: null };
-  if (i.appState !== "idle" || i.reacting || i.parallaxSettling || i.furnaceLighting === true) return { mode: "live", delayMs: LIVE_FRAME_MS };
+  if (i.appState !== "idle" || i.reacting || i.parallaxSettling || i.furnaceLighting === true || i.cinderFlying === true) return { mode: "live", delayMs: LIVE_FRAME_MS };
   if (i.meetingRecording) return { mode: "tick", delayMs: MEETING_REDRAW_MS };
   return { mode: "idle", delayMs: IDLE_REDRAW_MS };
 }
@@ -438,9 +472,18 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   const mochi = mochiSpot(s);
   stamp(o, "mochi", mochi.x, mochi.y, 1);
   // Cinder's news delivery at the back door, when a briefing is waiting.
+  // yap-1106-news-home-briefing: a NEW briefing flies in with the paper and a
+  // heart (reduce motion skips the flight: cinderFlight is 1 at once).
   if (s.newsReady) {
-    stamp(o, "cinder", 240, FLOOR - 40, Math.floor(t * 3) % 2, { talk: Math.floor(t * 3) % 2 === 1, t });
-    h.r(256, FLOOR - 20, 8, 6, "#fffdf5"); h.r(257, FLOOR - 18, 6, 1, "#4a4f5c"); h.r(257, FLOOR - 16, 4, 1, "#4a4f5c");
+    const p = s.cinderFlight ?? 1;
+    const at = cinderSpot(p);
+    const dx = at.x - CINDER_LAND.x, dy = at.y - CINDER_LAND.y;
+    stamp(o, "cinder", at.x, at.y, Math.floor(t * 3) % 2, { talk: Math.floor(t * 3) % 2 === 1, t });
+    h.r(256 + dx, FLOOR - 20 + dy, 8, 6, "#fffdf5"); h.r(257 + dx, FLOOR - 18 + dy, 6, 1, "#4a4f5c"); h.r(257 + dx, FLOOR - 16 + dy, 4, 1, "#4a4f5c");
+    if (p < 1) {
+      const hx = at.x + 34, hy = at.y - 6;
+      h.r(hx, hy, 2, 1, "#ff5a7a"); h.r(hx + 3, hy, 2, 1, "#ff5a7a"); h.r(hx, hy + 1, 5, 1, "#ff5a7a"); h.r(hx + 1, hy + 2, 3, 1, "#ff5a7a"); h.r(hx + 2, hy + 3, 1, 1, "#ff5a7a");
+    }
   }
   // Ember works the window.
   stamp(o, "ember", 26 + Math.round(Math.sin(t * 1.5) * 3), 34 + Math.round(Math.sin(t * 2) * 2), fr);

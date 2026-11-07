@@ -1,11 +1,12 @@
 import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import YappyHouse from "../home/YappyHouse";
 import { fixesToday, type StudioInputs } from "../home/studio/studio";
 import { useStudioQuiet } from "../home/studio/useStudioQuiet";
 import { useGovernor } from "../pill/GovernorChip";
 import NewsHomeCard from "../news/NewsHomeCard";
+import NewsBriefing from "../news/NewsBriefing";
 import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { nameProduct } from "../permission";
@@ -129,6 +130,18 @@ export default function Home() {
   const governor = useGovernor();
   // yap-1106-sal-and-mochi — Mochi's door reads the pill's quiet state (Focus / DND / screen share).
   const quiet = useStudioQuiet();
+  // yap-1106-news-home-briefing — a briefing on the card puts Cinder at the
+  // back door; a NEW one flies her in (reduce motion skips the flight).
+  const [newsReady, setNewsReady] = useState(false);
+  const [newsArrivedAt, setNewsArrivedAt] = useState<number | null>(null);
+  const onNewsDelivered = useCallback((ms: number) => {
+    setNewsArrivedAt(ms);
+    console.info("home cinder_delivery");
+  }, []);
+  const openNewsSettings = useCallback(() => {
+    console.info("home news_edit_topics");
+    setNav("settings");
+  }, [setNav]);
   const fixesRef = useRef<number | null>(null);
   if (!query && !booting) fixesRef.current = fixesToday(history, new Date());
   const studio: StudioInputs = {
@@ -136,9 +149,10 @@ export default function Home() {
     dictionarySize: booting || !Array.isArray(dictionary) ? null : dictionary.length,
     battery: governor ? { percent: governor.batteryPercent, charging: governor.onAc } : null,
     streakDays: insights ? insights.streakDays : null,
-    // No backend event says a briefing was delivered on this base yet: Cinder
-    // waits off-stage until one does (see studio.ts drawMid).
-    newsReady: false,
+    // yap-1106-news-home-briefing — the briefing card under the studio says
+    // when a briefing is on it, and when a new one landed.
+    newsReady,
+    newsArrivedAtMs: newsArrivedAt,
     // yap-1106-sal-and-mochi — Sal lights the furnace while the speech engine
     // loads; the furnace is cold while no model is on this Mac.
     engineLoading: status.engineLoading === true,
@@ -203,6 +217,18 @@ export default function Home() {
           Hoot's ON AIR light is lit and the label carries the meeting clock —
           Home shows no other timer. */}
       <YappyHouse companionTone={settings?.companionTone} meeting={meetingStatus} studio={studio} />
+
+      {/* yap-1106-news-home-briefing — the briefing: one contained card under
+          the studio. News lives on Home only, never on the pill. */}
+      <NewsBriefing
+        meetingRecording={!!meetingStatus?.recording}
+        screenSharing={quiet.screenSharing}
+        doNotDisturb={quiet.doNotDisturb}
+        tone={settings?.companionTone}
+        onDelivered={onNewsDelivered}
+        onReady={setNewsReady}
+        onEditTopics={openNewsSettings}
+      />
 
       {/* The three stat tiles, now one quiet line under the room. */}
       <p className="home-stats" data-home="stats">

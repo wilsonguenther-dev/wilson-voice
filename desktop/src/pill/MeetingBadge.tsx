@@ -144,17 +144,21 @@ export default function MeetingBadge({
   status,
   after = null,
   onOpen,
-  dictating = false,
+  stacked = false,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
   after?: MeetingAfterView | null;
   onOpen?: (id: string) => void;
   /**
-   * yap-1106-pill-rec-headphones-hoot-tape — a dictation take is live during
-   * the meeting: Yappy takes the notepad, the tape keeps running.
+   * fix-l3b1-1-meeting-stack-matches-layout — the layout reserved the small
+   * stack box (CLOCK_STACK_W) for the clock: the shells pass
+   * `meetingClockStacked(gate)` (state.ts), the same test `clockWidth` uses,
+   * so the badge never draws the 112 px scene into the 96 px box. True for
+   * every phase Yappy's own capsule is open in (a take, transcribing, done,
+   * error, ...), not only while listening.
    */
-  dictating?: boolean;
+  stacked?: boolean;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
@@ -188,7 +192,9 @@ export default function MeetingBadge({
   // clock "shrinks into a small stack next to stop" (Pill artifact, "Meeting +
   // dictating"), inside the same shell. The call-audio truth rides the stack's
   // tooltip and label, so it is never lost. Stop still ends the meeting.
-  if (dictating) {
+  // fix-l3b1-1 — whenever the capsule is open (meetingClockStacked), not only
+  // while listening: the layout's box and this branch share one source.
+  if (stacked) {
     const audioLine = callAudio ? `${callAudio.label}. ${callAudio.detail}` : systemAudio ?? "";
     const time = stackClockLabel(elapsedLabel(status));
     return (
@@ -206,8 +212,9 @@ export default function MeetingBadge({
           aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
           onClick={(e) => {
             e.stopPropagation();
-            console.info("pill meeting_stop source=pill_stack");
-            invoke("stop_meeting").catch((err) => console.warn(`pill meeting_stop_failed source=pill_stack err=${String(err).slice(0, 48)}`));
+            // yap-fx-06 — the same one-click Stop as the scene's: a failure is
+            // never swallowed (the stop-failed card, and no "Saved" after it).
+            void stopMeetingFromPill("pill_stack");
           }}
         >
           <svg viewBox="0 0 24 24" aria-hidden>
@@ -222,7 +229,7 @@ export default function MeetingBadge({
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
           right ear cup of Yappy's headphones is the recording light, and the
           elapsed time sits under the sun inside the scene. */}
-      <MeetingWorld elapsedS={status.elapsedSeconds} dictating={dictating} />
+      <MeetingWorld elapsedS={status.elapsedSeconds} />
       {callApp && (
         <span className="rec-app" data-call-app title={`Recording ${callApp} call`}>
           {callApp}

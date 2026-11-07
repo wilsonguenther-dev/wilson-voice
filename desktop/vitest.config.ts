@@ -78,6 +78,10 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/polishReveal.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
   // yap-1106-engine-owner — the speech engine's health state, in plain words.
   "pill/engineHealth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-stuck-pill-keeps-its-scene — the stuck-take scene reducer (scene never degrades).
+  "pill/stuckScene.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
+  // yap-1106-news-home-briefing — the Home briefing's pick, rank, quote line and quiet gate.
+  "news/briefing.ts": { lines: 90, branches: 80, functions: 100, statements: 88 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

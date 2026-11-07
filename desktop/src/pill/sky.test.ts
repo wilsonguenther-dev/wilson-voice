@@ -246,3 +246,16 @@ describe("yap-1106-pill-sky — the nub stays legible", () => {
     }
   });
 });
+
+describe("yap-1106-stuck-pill-keeps-its-scene SkyBackdrop.invalidate (integrator, loop3 batch 3)", () => {
+  it("invalidate makes the next current repaint the cached surface from scratch", () => {
+    const ctx: SkyPaintCtx = { fillStyle: "#000000", globalAlpha: 1, fillRect: () => {}, clearRect: () => {} };
+    const bg = new SkyBackdrop<object>({ image: {}, ctx }, SKY_SCENE.w, SKY_SCENE.h, SKY_SCENE.gy, () => new Date(2026, 10, 6, 12, 0));
+    bg.current(0);
+    bg.current(1);
+    expect(bg.builds).toBe(1);
+    bg.invalidate();
+    bg.current(2);
+    expect(bg.builds).toBe(2);
+  });
+});
