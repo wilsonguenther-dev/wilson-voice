@@ -172,7 +172,7 @@ describe("during a meeting: no floating timer on Home, Hoot in the room", () => 
     expect(meetingRoomLabel({ recording: false, elapsedSeconds: 336 })).toBeNull();
     const html = home(base({ history: [take(0)], meetingStatus: { recording: true, elapsedSeconds: 336, captureAvailable: true } }));
     expect(html).toContain("Recording meeting · 05:36");
-    expect(html).toContain('data-room-label="meeting"');
+    expect(html).toContain('data-room-label="recording"');
     expect(html).toContain("Hoot the owl sits on the desk lamp");
     // The only clock on Home is the room label: no meeting badge or timer markup.
     expect(html.match(/05:36/g)?.length).toBe(1);

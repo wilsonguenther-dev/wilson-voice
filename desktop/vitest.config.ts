@@ -39,6 +39,9 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "errors.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "retryDictation.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "home/habitat/habitat.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-home-full-width-room — floor set by the builder WITHOUT a run (no-compile
+  // rule; homeLayout.test.ts drives every function and branch); the integrator re-measures and may only raise it.
+  "home/homeLayout.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
   "hotkeyRecorder.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "languagePicker.ts": { lines: 96, branches: 80, functions: 93, statements: 97 },

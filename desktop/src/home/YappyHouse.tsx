@@ -855,7 +855,7 @@ export default function YappyHouse({
           }
         />
       </div>
-      <p className="yh-label" data-room-label={meetingLabel ? "meeting" : "mood"}>
+      <p className="yh-label" data-room-label={meetingLabel ? "recording" : "mood"}>
         {meetingLabel ? (
           <span className="yh-meeting" aria-live="off">
             {meetingLabel}
