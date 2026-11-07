@@ -1208,3 +1208,29 @@ fn analyzer_research_pins_match_the_manifests_and_the_catalog() {
         );
     }
 }
+
+/// yap-1106-voiceprints: the digest a voiceprint stores (`embedder_digest`) is
+/// the research doc's pinned embedding-model sha256, read from the catalog. A
+/// model swap therefore changes the stored digest, and the matcher refuses to
+/// compare old voiceprints against the new model (re-enroll).
+#[test]
+fn the_voiceprint_embedder_digest_is_the_pinned_embedding_model() {
+    let emb = wilson_voice_lib::models::diarize_model_for_role(
+        wilson_voice_lib::models::DiarizeModelRole::Embedding,
+    )
+    .expect("the embedding model is in the catalog");
+    let stored = wilson_voice_lib::speaker_profiles::pinned_embedder_digest()
+        .expect("a voiceprint digest exists while an embedding model is pinned");
+    let doc_pin = analyzer_research_pins()
+        .into_iter()
+        .find(|p| p.len() == 4 && p[0] == "model" && p[1] == emb.id && p[2] == "sha256")
+        .unwrap_or_else(|| panic!("ANALYZER-RESEARCH.md pins no sha256 for {}", emb.id));
+    assert_eq!(
+        stored, doc_pin[3],
+        "speaker_profiles.embedder_digest and ANALYZER-RESEARCH.md disagree"
+    );
+    assert!(
+        ANALYZER_RESEARCH.contains("yap-1106-voiceprints"),
+        "the research doc records the voiceprint store and its digest rule"
+    );
+}

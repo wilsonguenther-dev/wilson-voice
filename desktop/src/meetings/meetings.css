@@ -552,3 +552,61 @@
   .sun { transition: none; }
   .recording-hero .rec-dot { animation: none; }
 }
+
+/* yap-1106-who-is-this — "Who was this?" cards (base; fb-22b reshapes to the approved design). */
+.who-cards {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-data-soft);
+}
+.who-cards-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.who-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.who-card {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+}
+.who-card.is-done {
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+}
+.who-card-clip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.who-card-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.who-card-form,
+.who-card-ask {
+  display: grid;
+  gap: var(--space-1);
+}
+.who-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.who-card-error {
+  color: var(--danger-ink);
+  margin: 0;
+}

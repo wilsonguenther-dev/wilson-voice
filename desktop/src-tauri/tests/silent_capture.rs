@@ -108,8 +108,10 @@ fn silent_capture_never_reaches_the_paste_path() {
     let no_speech = line_of("has_enough_speech(rec.voiced_seconds)");
     // The LIVE take's decode. (This needle used to be `let asr =
     // transcribe_native(`, which only ever matched the RETRY path's call; DB-B
-    // reshaped that call around its resume, so it now names the line it means.)
-    let asr = line_of("let asr = match transcribe_native(");
+    // reshaped that call around its resume, so it now names the line it means.
+    // yap-1106-sp-05: the live decode is now the streamed tail first, with
+    // `transcribe_native` as its fallback arm, so the needle is that match.)
+    let asr = line_of("let decoded = match streamed_asr_output(");
     // yap-recovery-followups: the live save is `insert_transcript_for_take`
     // (it carries a degraded take's recovery key); same row, same position.
     let insert = line_of("db.insert_transcript_for_take(");

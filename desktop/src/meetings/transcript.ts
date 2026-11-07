@@ -84,6 +84,11 @@ export interface TranscriptSegment {
   clusterIndex?: number | null;
   /** End time; only used to weigh a cluster's talk time for its rank. */
   endSeconds?: number | null;
+  /**
+   * yap-1106-who-is-this — the name a saved voice gave this line
+   * (`meeting_segments.speaker_name`, from "Who was this?"); wins over "Speaker N".
+   */
+  speakerName?: string | null;
 }
 
 /** One rendered line. Mirrors `meetings::TranscriptLine`. */
@@ -259,13 +264,15 @@ export function orderedTranscript<S extends TranscriptSegment>(
     lines.push({
       segment,
       track,
-      speaker: clusteredSpeakerLabel(
-        track,
-        target,
-        segment.clusterIndex === null || segment.clusterIndex === undefined
-          ? undefined
-          : ranks.get(`${track}:${segment.clusterIndex}`),
-      ),
+      speaker:
+        segment.speakerName?.trim() ||
+        clusteredSpeakerLabel(
+          track,
+          target,
+          segment.clusterIndex === null || segment.clusterIndex === undefined
+            ? undefined
+            : ranks.get(`${track}:${segment.clusterIndex}`),
+        ),
       offset: formatOffset(segment.startSeconds),
       startSeconds: segment.startSeconds,
       text,
@@ -287,4 +294,28 @@ export function orderedTranscript<S extends TranscriptSegment>(
     startSeconds,
     text,
   }));
+}
+
+/**
+ * yap-1106-who-is-this — merge the names saved voices gave (`meeting_speaker_names`,
+ * `[segment id, name]` pairs) into the segments, so a relabel shows at once.
+ */
+export function withSpeakerNames<S extends TranscriptSegment>(
+  segments: readonly S[],
+  names: readonly (readonly [string, string])[],
+): S[] {
+  if (names.length === 0) return segments.slice();
+  const byId = new Map(names.map(([id, name]) => [id, name] as const));
+  return segments.map((s) => (byId.has(s.id) ? { ...s, speakerName: byId.get(s.id) } : s));
+}
+
+/** The "Speaker N" a cluster reads as in this meeting (the card's fallback label). */
+export function clusterLabel(
+  segments: readonly TranscriptSegment[],
+  kind: string | null | undefined,
+  track: number,
+  clusterIndex: number,
+): string {
+  const target = diarizationTarget(kind, isTwoTrack(segments));
+  return clusteredSpeakerLabel(track, target, clusterRanks(segments, target).get(`${track}:${clusterIndex}`));
 }

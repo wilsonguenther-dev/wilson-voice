@@ -418,6 +418,23 @@ pub fn pill_label_for(v: &Verdict) -> Option<String> {
     })
 }
 
+/// YAP-FX-04 — the main window's sentence while the slow-machine state holds
+/// background ASR (the "Run anyway" action is the same per-job override).
+pub const SLOW_MACHINE_SENTENCE: &str =
+    "This Mac is transcribing slowly right now — your meeting will transcribe when it speeds back up";
+
+/// YAP-FX-04 — at full, a tripped slow-machine detector still holds heavy
+/// work; say so in the view instead of showing a Mac with nothing held.
+/// A constrained verdict keeps its own (more specific) reason and sentence.
+pub fn overlay_slow_machine(v: &mut GovernorView, slow: bool) {
+    if !slow || v.heavy_work_deferred {
+        return;
+    }
+    v.heavy_work_deferred = true;
+    v.reason = Some(crate::latency::SLOW_MACHINE_REASON.to_string());
+    v.main_sentence = Some(SLOW_MACHINE_SENTENCE.to_string());
+}
+
 /// The main window's one plain sentence (FX-03) while a meeting's
 /// transcription is being held. `None` when nothing heavy is held.
 pub fn main_sentence_for(v: &Verdict) -> Option<String> {
@@ -554,13 +571,18 @@ impl Governor {
     /// including when the user pressed "Run anyway" for this job.
     pub fn heavy_work_deferred(&self, job: &str) -> Option<String> {
         let verdict = self.verdict(Duration::from_secs(5));
-        let held = heavy_work_deferred_by(&verdict).filter(|_| {
-            !self
-                .inner
-                .lock()
-                .map(|g| g.overrides.contains(job))
-                .unwrap_or(false)
-        });
+        // YAP-FX-04: two decodes in a row slower than RTF 0.3 hold background
+        // ASR through this same gate (reason `slow_machine`), so the meeting
+        // queue, notes, diarization and "Run anyway" behave exactly as here.
+        let held = heavy_work_deferred_by(&verdict)
+            .or_else(crate::latency::slow_machine_deferred)
+            .filter(|_| {
+                !self
+                    .inner
+                    .lock()
+                    .map(|g| g.overrides.contains(job))
+                    .unwrap_or(false)
+            });
         // Track who is waiting so the UI can offer "Run anyway" per job.
         if let Ok(mut g) = self.inner.lock() {
             let idx = g.waiting.iter().position(|w| w == job);
@@ -632,6 +654,7 @@ impl Governor {
     fn view_of(g: &Inner) -> GovernorView {
         let mut v = Self::view_of_parts(&g.verdict, &g.readings, g.pause_below);
         v.waiting_jobs = g.waiting.clone();
+        overlay_slow_machine(&mut v, crate::latency::slow_machine_now());
         v
     }
 
@@ -1403,5 +1426,32 @@ mod tests {
         note_power_state_change();
         assert!(take_power_state_event(), "the posted change is seen");
         assert!(!take_power_state_event(), "and consumed, not re-seen");
+    }
+
+    /// YAP-FX-04 — the slow-machine state holds heavy work at FULL and says so
+    /// in one plain sentence; a constrained verdict keeps its own reason.
+    #[test]
+    fn a_slow_machine_overlays_the_full_view_but_not_a_constrained_one() {
+        let mut full = Governor::view_of_parts(
+            &Verdict::full(),
+            &Readings::default(),
+            DEFAULT_PAUSE_BELOW_PERCENT,
+        );
+        overlay_slow_machine(&mut full, false);
+        assert!(!full.heavy_work_deferred);
+        overlay_slow_machine(&mut full, true);
+        assert!(full.heavy_work_deferred);
+        assert_eq!(
+            full.reason.as_deref(),
+            Some(crate::latency::SLOW_MACHINE_REASON)
+        );
+        assert_eq!(full.main_sentence.as_deref(), Some(SLOW_MACHINE_SENTENCE));
+
+        let thermal = Verdict::of(Level::Light, "thermal", "serious", false);
+        let mut hot =
+            Governor::view_of_parts(&thermal, &Readings::default(), DEFAULT_PAUSE_BELOW_PERCENT);
+        let before = hot.clone();
+        overlay_slow_machine(&mut hot, true);
+        assert_eq!(hot, before, "the governor's own reason wins");
     }
 }

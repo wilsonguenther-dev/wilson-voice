@@ -63,3 +63,54 @@ describe("engine health in the pill strip", () => {
     for (const id of ENGINE_HEALTH_PHASES) expect(ids).toContain(id);
   });
 });
+
+/**
+ * yap-1106-engine-watchdog-restart — the event stream a stuck decode produces
+ * (busy → stuck → restarting → ready), rendered the way float-main.tsx
+ * renders the strip, next to a stand-in for the rest of the pill. The chip is
+ * a plain status line: it never disables, covers or takes focus from anything.
+ */
+describe("engine health through a watchdog restart", () => {
+  const MAIN_VIEW = '<button type="button" class="main-view">Dictate</button>';
+
+  function pillFrame(payload: unknown) {
+    const health = parseEngineHealth(payload);
+    return renderToStaticMarkup(
+      <div className="pill">
+        <button type="button" className="main-view">
+          Dictate
+        </button>
+        <div className="phase-strip">
+          {engineHealthTakesStrip(health, "transcribing") ? (
+            <EngineHealthChip state={health} />
+          ) : (
+            <span className="phase-line">Transcribing…</span>
+          )}
+        </div>
+      </div>,
+    );
+  }
+
+  it("moves stuck -> restarting -> ready while the main view stays interactive", () => {
+    const frames = ["busy", "stuck", "restarting", "ready"].map(pillFrame);
+    expect(frames[0]).toContain("phase-line");
+    expect(frames[1]).toContain('data-state="stuck"');
+    expect(frames[1]).toContain("Catching up…");
+    expect(frames[2]).toContain('data-state="restarting"');
+    expect(frames[2]).toContain("Restarting…");
+    // Ready again: the chip leaves and the phase line is back.
+    expect(frames[3]).not.toContain("engine-health");
+    expect(frames[3]).toContain("phase-line");
+    for (const html of frames) {
+      // Every frame still renders the main view, enabled and reachable.
+      expect(html).toContain(MAIN_VIEW);
+      expect(html).not.toMatch(/\b(inert|disabled|aria-modal|aria-hidden|tabindex)\b/);
+    }
+  });
+
+  it("keeps rendering when an unknown payload arrives mid-restart", () => {
+    const html = pillFrame({ not: "a state" });
+    expect(html).toContain(MAIN_VIEW);
+    expect(html).toContain("phase-line");
+  });
+});
