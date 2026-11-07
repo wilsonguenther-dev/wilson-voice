@@ -7,7 +7,7 @@ import { nameProduct } from "../../permission";
 
 export default function Privacy() {
   const {
-    consent, crashes, engine, replayOnboarding, runSystemAudioSetup,
+    clearAll, clearing, consent, crashes, deleteAllRecordings, engine, replayOnboarding, runSystemAudioSetup,
     saveSettings, setConsentOpen, setCrashes, setNav, openSupportSheet,
     settings, sysAudio, sysAudioBusy, sysAudioGate, toast, toastError, perms,
   } = useAppCtx();
@@ -56,6 +56,35 @@ export default function Privacy() {
                       </div>
                     <p className="settings-hint">
                       Everything stays on your Mac; export or open it from here.
+                    </p>
+                  </div>
+                  {/* yap-1106-home-full-width-room — the two erase buttons left
+                      Home (Wilson's approved round two) and live here, next to
+                      the data they erase. Both still confirm before anything
+                      is deleted (appShell clearAll / deleteAllRecordings). */}
+                  <div className="panel" data-row data-privacy="erase">
+                    <h3>Erase</h3>
+                    <div className="actions wrap">
+                      {/* PRIV-B — the separate, explicit erase for audio only. */}
+                      <button
+                        className="ghost danger"
+                        data-testid="delete-all-recordings"
+                        onClick={deleteAllRecordings}
+                        disabled={clearing}
+                      >
+                        Delete all recordings
+                      </button>
+                      <button
+                        className="ghost danger"
+                        onClick={clearAll}
+                        disabled={clearing}
+                      >
+                        {clearing ? "Clearing…" : "Clear history"}
+                      </button>
+                    </div>
+                    <p className="settings-hint">
+                      Delete all recordings removes the kept audio and keeps your
+                      text. Clear history removes every take. Neither can be undone.
                     </p>
                   </div>
 
