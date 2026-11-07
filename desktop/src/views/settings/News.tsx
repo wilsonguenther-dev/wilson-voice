@@ -1,6 +1,7 @@
 // yap-1106-news-prefs-onboarding — Settings → Yappy News. The SAME record the
 // onboarding step and the one-time Home card write (`news_prefs.rs`). Shows
-// on or off, the topics, and the last refresh time, plus the one privacy
+// on or off, "How often" (yap-1106-news-refresh-setting) with the last refresh
+// time next to it, the topics, plus the one privacy
 // sentence. With the cloud option off the feature does not exist: the switch
 // and picker are disabled and the one action is the way to connect it.
 //
@@ -15,9 +16,14 @@ import { errorText } from "../../errors";
 import NewsInterests from "../../news/NewsInterests";
 import NewsQuoteKey from "../../news/NewsQuoteKey";
 import {
+  CADENCE_OPTIONS,
   NEWS_PRIVACY_LINE,
+  cadenceOf,
   lastRefreshLine,
   loadNews,
+  nextTapAllowedAt,
+  refreshNews,
+  saveCadence,
   prefsOf,
   revealCloudRoute,
   samePrefs,
@@ -25,6 +31,7 @@ import {
   statusLine,
   topicLabels,
   watchCloudRoute,
+  type NewsCadence,
   type NewsPrefs,
   type NewsView,
 } from "../../news/newsPrefs";
@@ -39,6 +46,10 @@ export function NewsSettingsView({
   onRevert,
   onConnect,
   advanced,
+  onCadence,
+  cadenceSaving = false,
+  onRefresh,
+  refreshing = false,
 }: {
   view: NewsView;
   draft: NewsPrefs;
@@ -50,9 +61,17 @@ export function NewsSettingsView({
   onConnect: () => void;
   /** yap-1106-fb-14-news-quote-key — the Advanced section (optional quote key). */
   advanced?: ReactNode;
+  /** yap-1106-news-refresh-setting — "How often" saves on pick. */
+  onCadence?: (c: NewsCadence) => void;
+  cadenceSaving?: boolean;
+  /** "Refresh now" (a tap; the 30-minute floor still holds). */
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const dirty = !samePrefs(draft, prefsOf(view));
   const saved = topicLabels(view);
+  const cadence = cadenceOf(view);
+  const waitUntil = nextTapAllowedAt(view.lastRefreshMs, now);
   return (
     <section className="settings-panel" data-settings-pane="news">
       <div className="panel" data-row>
@@ -79,10 +98,47 @@ export function NewsSettingsView({
             </button>
           </p>
         )}
-        <p className="muted tiny" data-news-last-refresh>
-          {lastRefreshLine(view.lastRefreshMs, now)}
-        </p>
       </div>
+
+      <fieldset className="panel news-cadence" data-row data-news-cadence={cadence}>
+        <legend>
+          <h3>How often</h3>
+        </legend>
+        {CADENCE_OPTIONS.map((o) => (
+          <label key={o.id} className="news-cadence-option">
+            <input
+              type="radio"
+              name="news-cadence"
+              value={o.id}
+              checked={cadence === o.id}
+              disabled={!view.cloudConnected || cadenceSaving || !onCadence}
+              onChange={() => onCadence?.(o.id)}
+            />
+            <span>
+              <strong>{o.label}</strong>
+              <span className="muted tiny"> — {o.hint}</span>
+            </span>
+          </label>
+        ))}
+        <p className="settings-hint">Never more often than every 30 minutes, and never during a meeting, a screen share, Do Not Disturb or low battery.</p>
+        <div className="news-cadence-last">
+          <p className="muted tiny" data-news-last-refresh aria-live="polite">
+            {lastRefreshLine(view.lastRefreshMs, now)}
+          </p>
+          {onRefresh && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={onRefresh}
+              disabled={!view.active || refreshing || waitUntil != null}
+              title={waitUntil != null ? "News was refreshed less than 30 minutes ago." : undefined}
+              data-news-refresh
+            >
+              {refreshing ? "Refreshing…" : "Refresh now"}
+            </button>
+          )}
+        </div>
+      </fieldset>
 
       <div className="panel" data-row>
         <h3>Your topics</h3>
@@ -113,6 +169,8 @@ export default function News() {
   const [draft, setDraft] = useState<NewsPrefs | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [cadenceSaving, setCadenceSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   function read() {
     setLoadError(null);
@@ -155,6 +213,35 @@ export default function News() {
     }
   }
 
+  // yap-1106-news-refresh-setting — "How often" is its own record, saved on
+  // pick, so an unsaved topic draft is untouched.
+  async function pickCadence(c: NewsCadence) {
+    if (!view || c === cadenceOf(view)) return;
+    setCadenceSaving(true);
+    try {
+      const v = await saveCadence(c);
+      setView(v);
+      toast("News refresh setting saved.");
+    } catch (e) {
+      toastError(e, "Yap couldn't save how often news refreshes. Try again in a moment.");
+    } finally {
+      setCadenceSaving(false);
+    }
+  }
+
+  async function refreshNow() {
+    setRefreshing(true);
+    try {
+      const out = await refreshNews("tap");
+      setView(out.view);
+      toast(out.ran ? "News refreshed." : (out.message ?? "News isn't due yet."));
+    } catch (e) {
+      toastError(e, "Yap couldn't refresh the news. Try again in a moment.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   if (loadError)
     return (
       <section className="settings-panel" data-settings-pane="news">
@@ -191,6 +278,10 @@ export default function News() {
         void revealCloudRoute();
       }}
       advanced={<NewsQuoteKey />}
+      onCadence={(c) => void pickCadence(c)}
+      cadenceSaving={cadenceSaving}
+      onRefresh={() => void refreshNow()}
+      refreshing={refreshing}
     />
   );
 }

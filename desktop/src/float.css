@@ -2102,6 +2102,61 @@ html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-or
 html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
   text-align: right;
 }
+/* yap-1107-one-pill-during-meeting — ONE surface during a meeting. The layout's
+ * shell (pill/state.ts: the union of Yappy and the clock, flush, no gap) is one
+ * dark device shell drawn BEHIND the canvas and the clock, so Yappy's sky is a
+ * little screen inside it and the clock is its right-hand segment — never a
+ * second capsule with its own shadow beside him. A resting meeting draws the
+ * scene as the pill (data-scene-character), so the shell is the scene's box. */
+.kami-stage .meeting-shell {
+  display: none;
+}
+html[data-one-pill="true"][data-meeting-shell="true"] .kami-stage .meeting-shell {
+  display: block;
+  position: absolute;
+  left: var(--shell-x);
+  top: var(--shell-y);
+  width: var(--shell-w);
+  height: var(--shell-h);
+  box-sizing: border-box;
+  border-radius: 14px;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
+  box-shadow:
+    inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
+    0 8px 20px rgba(0, 0, 0, 0.42);
+}
+/* Inside the one shell the clock is a segment: no capsule, no shadow of its own. */
+html[data-one-pill="true"][data-meeting-shell="true"] .kami-stage .meeting-badge {
+  background: none;
+  box-shadow: none;
+  border-radius: 0 14px 14px 0;
+}
+/* A side dock: the clock is the inner-side segment level with the tab/room. */
+html[data-one-pill="true"][data-meeting-shell="true"][data-dock="right"] .kami-stage .meeting-badge {
+  border-radius: 14px 0 0 14px;
+}
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-badge {
+  border-radius: 14px;
+}
+/* Dictating mid-meeting: the clock is a small stack next to stop. */
+.meeting-badge.meeting-stacked {
+  gap: 6px;
+}
+.meeting-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.meeting-stack-time {
+  font:
+    600 11px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--meeting-scene-ink);
+}
 /* WF-13 — the silent-mic row sits IN the hint slot, its bottom on the slot's
  * bottom (just above the bubble), aligned to the dock edge like the phase
  * line. float-main reserves SILENT_MIC_HINT_LINES for the slot while it is up,
@@ -2302,7 +2357,7 @@ html[data-pill-drag="blob"] .pill > * {
 }
 
 /* Everything that rides on the pill steps aside while it is a blob. */
-html[data-pill-drag="blob"] :is(.kami-bubble, .kami-license, .kami-progress, .meeting-badge,
+html[data-pill-drag="blob"] :is(.kami-bubble, .kami-license, .kami-progress, .meeting-badge, .meeting-shell,
   .phase-strip, .style-chip, .nudge-row, .pill-upgrade) {
   opacity: 0;
   visibility: hidden;

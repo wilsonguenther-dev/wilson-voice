@@ -245,7 +245,9 @@ export function pillFixtureScript(tones) {
     get_status: { recording: tone === "live", busy: tone === "busy", message: tone === "live" ? "Recording" : tone === "busy" ? "Transcribing" : "Ready" },
     // yap-1106-one-pill — a meeting on screen, and the panel-frame request the
     // layout makes (answered, so it is never an unhandled rejection).
-    meeting_status: q.get("meeting") === "recording"
+    // fix-b8-1 — meeting=saved starts recording too; pill-matrix --phase
+    // meeting-saved then delivers the stop after settle (meetingStopShim).
+    meeting_status: q.get("meeting") === "recording" || q.get("meeting") === "saved"
       // yap-1106-pill-rec-headphones-hoot-tape — elapsed=<seconds> in the URL puts the
       // sun clock at any minute (0, 600 = the glance, 3600 = dusk, 3660 = moon).
       ? (() => { const e = Math.max(0, Math.floor(Number(q.get("elapsed") ?? 217)) || 0); const p = (n) => String(n).padStart(2, "0"); return { recording: true, id: "matrix-meeting", title: "Matrix meeting", elapsedSeconds: e, elapsedLabel: p(Math.floor(e / 3600)) + ":" + p(Math.floor((e % 3600) / 60)) + ":" + p(e % 60), captureAvailable: true }; })()
@@ -272,9 +274,18 @@ export async function settlePhase(cdp, s, wantId, settleMs) {
 /* yap-1106-one-pill — size the window to the layout's panel, the way
  * float_pill.rs set_panel_frame sizes the NSPanel, then let it re-lay out. */
 export async function fitPillPanel(cdp, s, fallback, scale, settleMs) {
-  const panel = await evaluate(cdp, s, "(window.__YAP_PILL_LAYOUT__ && window.__YAP_PILL_LAYOUT__.panel) || null").catch(() => null);
+  const read = () => evaluate(cdp, s, "(window.__YAP_PILL_LAYOUT__ && window.__YAP_PILL_LAYOUT__.panel) || null").catch(() => null);
+  let panel = await read();
   if (!panel) return { w: fallback.w, h: fallback.h };
-  await cdp.send("Emulation.setDeviceMetricsOverride", { width: panel.w, height: panel.h, deviceScaleFactor: scale, mobile: false }, s);
-  await sleep(Math.min(settleMs, 400));
+  // float-main re-sends pill_set_panel_frame on every panel change, so the
+  // NSPanel follows a layout that settles after the resize (a meeting stop
+  // landing mid-fit). Follow it the same way, a few passes at most.
+  for (let pass = 0; pass < 4; pass++) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: panel.w, height: panel.h, deviceScaleFactor: scale, mobile: false }, s);
+    await sleep(Math.min(settleMs, 400));
+    const next = await read();
+    if (!next || (next.w === panel.w && next.h === panel.h)) break;
+    panel = next;
+  }
   return { w: panel.w, h: panel.h };
 }

@@ -24,6 +24,10 @@ pub const PREFS_KEY: &str = "news_prefs";
 pub const OFFER_KEY: &str = "news_offer";
 pub const CONNECTED_AT_KEY: &str = "news_cloud_connected_at_ms";
 pub const LAST_REFRESH_KEY: &str = "news_last_refresh_ms";
+/// yap-1106-news-refresh-setting — Settings → Yappy News → "How often". Its
+/// own row, so a save from onboarding or the Home card (which only carry
+/// topics) can never reset the user's choice.
+pub const CADENCE_KEY: &str = "news_refresh_cadence";
 
 /// The topic chips. Ids are stable; the UI owns the labels.
 pub const TOPIC_CHIPS: [&str; 8] = [
@@ -67,6 +71,47 @@ impl Default for NewsPrefs {
 impl NewsPrefs {
     pub fn has_any_topic(&self) -> bool {
         !(self.topics.is_empty() && self.tickers.is_empty() && self.custom.is_empty())
+    }
+}
+
+/// yap-1106-news-refresh-setting — how often Yappy News refreshes. Whatever is
+/// picked, [`crate::news::schedule`] never fetches more often than every 30
+/// minutes and never during a meeting, screen share, Do Not Disturb or low
+/// battery. Market quote checks follow the same choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cadence {
+    /// The approved default: the first chance after 6 AM and after 4 PM.
+    #[default]
+    TwiceADay,
+    /// Every three hours.
+    EveryFewHours,
+    /// Only when Home is opened.
+    OnHomeOpen,
+    /// Only when the user taps refresh.
+    OnTap,
+}
+
+impl Cadence {
+    pub const ALL: [Cadence; 4] = [
+        Cadence::TwiceADay,
+        Cadence::EveryFewHours,
+        Cadence::OnHomeOpen,
+        Cadence::OnTap,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cadence::TwiceADay => "twice_a_day",
+            Cadence::EveryFewHours => "every_few_hours",
+            Cadence::OnHomeOpen => "on_home_open",
+            Cadence::OnTap => "on_tap",
+        }
+    }
+
+    /// Unknown text reads as `None`; [`load_cadence`] turns that into the default.
+    pub fn parse(s: &str) -> Option<Self> {
+        Cadence::ALL.into_iter().find(|c| c.as_str() == s.trim())
     }
 }
 
@@ -119,6 +164,8 @@ pub struct NewsView {
     pub home_card_due: bool,
     pub cloud_connected_at_ms: Option<i64>,
     pub last_refresh_ms: Option<i64>,
+    /// yap-1106-news-refresh-setting — Settings → Yappy News → "How often".
+    pub refresh_cadence: Cadence,
 }
 
 /// A refused save, as one plain sentence.
@@ -315,6 +362,7 @@ pub fn view(kv: &dyn SettingsKv, now_ms: i64) -> NewsView {
         home_card_due: due,
         cloud_connected_at_ms: connected_at,
         last_refresh_ms: read_ms(kv, LAST_REFRESH_KEY),
+        refresh_cadence: load_cadence(kv),
     }
 }
 
@@ -372,6 +420,41 @@ pub fn dismiss_offer(
             })?;
     }
     log::info!("news_prefs offer_dismissed source={src}");
+    Ok(view(kv, now_ms))
+}
+
+/// yap-1106-news-refresh-setting — the saved "How often". A missing or
+/// unknown row reads as the approved default, twice a day.
+pub fn load_cadence(kv: &dyn SettingsKv) -> Cadence {
+    match kv.kv_get(CADENCE_KEY) {
+        Some(raw) => Cadence::parse(&raw).unwrap_or_else(|| {
+            log::warn!("news_prefs cadence_malformed key={CADENCE_KEY}");
+            Cadence::default()
+        }),
+        None => Cadence::default(),
+    }
+}
+
+/// Save "How often" from Settings → Yappy News. Never touches the topics or
+/// the offer.
+pub fn save_cadence(
+    kv: &dyn SettingsKv,
+    cadence: Cadence,
+    now_ms: i64,
+) -> Result<NewsView, NewsPrefsError> {
+    let before = load_cadence(kv);
+    kv.kv_set(CADENCE_KEY, cadence.as_str()).map_err(|e| {
+        log::error!(
+            "news_prefs cadence_save_failed cadence={} reason=storage error=\"{e}\"",
+            cadence.as_str()
+        );
+        NewsPrefsError::Storage(e)
+    })?;
+    log::info!(
+        "news_prefs cadence_saved from={} to={}",
+        before.as_str(),
+        cadence.as_str()
+    );
     Ok(view(kv, now_ms))
 }
 
@@ -684,6 +767,40 @@ mod tests {
         assert_eq!(view(&kv, 1).last_refresh_ms, None);
         record_refresh(&kv, 42).unwrap();
         assert_eq!(view(&kv, 2).last_refresh_ms, Some(42));
+    }
+
+    #[test]
+    fn news_refresh_cadence_defaults_to_twice_a_day() {
+        let kv = MemKv::default();
+        assert_eq!(load_cadence(&kv), Cadence::TwiceADay);
+        assert_eq!(view(&kv, 1).refresh_cadence, Cadence::TwiceADay);
+        kv.kv_set(CADENCE_KEY, "hourly-ish").unwrap();
+        assert_eq!(load_cadence(&kv), Cadence::TwiceADay);
+    }
+
+    #[test]
+    fn news_refresh_cadence_saves_every_option_without_touching_topics() {
+        let kv = MemKv::default();
+        save(&kv, &prefs(&["tech"], &["NVDA"], &[]), "settings", 1).unwrap();
+        for c in Cadence::ALL {
+            let v = save_cadence(&kv, c, 2).unwrap();
+            assert_eq!(v.refresh_cadence, c);
+            assert_eq!(Cadence::parse(c.as_str()), Some(c));
+            assert_eq!(v.topics, vec!["tech".to_string()]);
+            assert_eq!(v.tickers, vec!["NVDA".to_string()]);
+        }
+        // A later topics save (onboarding/Home carry no cadence) keeps it.
+        save(&kv, &prefs(&["science"], &[], &[]), "onboarding", 3).unwrap();
+        assert_eq!(load_cadence(&kv), Cadence::OnTap);
+        let json = serde_json::to_string(&Cadence::EveryFewHours).unwrap();
+        assert_eq!(json, "\"every_few_hours\"");
+    }
+
+    #[test]
+    fn news_refresh_cadence_storage_failure_is_one_sentence() {
+        let e = save_cadence(&BrokenKv, Cadence::OnHomeOpen, 1).unwrap_err();
+        assert_eq!(e.tag(), "storage");
+        assert!(e.plain().ends_with('.'));
     }
 
     #[test]

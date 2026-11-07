@@ -805,10 +805,7 @@ pub fn insert_traced(
     if let PasteTarget::Note(note_id) = target {
         trace.app = Some(crate::scratchpad::TRACE_APP.into());
         if !want_paste {
-            return (
-                copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
-                trace,
-            );
+            return (copy_only_with(b, text, COPY_CARD_MESSAGE_NO_REPAIR), trace);
         }
         return match b.deliver_to_note(note_id, text) {
             Ok(()) => (
@@ -852,10 +849,7 @@ pub fn insert_traced(
         }
     }
     if !want_paste {
-        return (
-            copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
-            trace,
-        );
+        return (copy_only_with(b, text, COPY_CARD_MESSAGE_NO_REPAIR), trace);
     }
     // The app the take is FOR: the identity captured at record start, else
     // whatever is frontmost (an explicit re-paste).

@@ -3799,6 +3799,32 @@ pub fn keep_cancelled_take(
     }
 }
 
+/// SP-02 — what a `PttEvent::Interrupted` (fn + an ordinary key) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PttInterruptAction {
+    /// The take is still recording: discard it ([`cancel_recording`]).
+    CancelRecording,
+    /// The take is decoding, polishing or pasting (or there is none): log and
+    /// ignore. `paste_generation` is NOT bumped, so the take still pastes.
+    Ignore,
+}
+
+/// SP-02 — an fn interrupt cancels only a take that is still recording.
+///
+/// Before this, the interrupt went straight to [`cancel_recording`], whose
+/// YV39 bump runs BEFORE its recording check — so a Globe-key key-down that
+/// arrived while a 155-word take was decoding turned it into a copy-only stale
+/// take (Wilson 2026-11-06 16:41Z). The explicit cancel (Esc / the pill's X)
+/// still invalidates an in-flight take through `cancel_take`; only the fn
+/// interrupt is narrowed here.
+fn ptt_interrupt_action(recording: bool) -> PttInterruptAction {
+    if recording {
+        PttInterruptAction::CancelRecording
+    } else {
+        PttInterruptAction::Ignore
+    }
+}
+
 /// Discard in-flight take (FN interrupt / cancel) — no ASR.
 fn cancel_recording(app: &AppHandle, state: &AppState) {
     // YV39: bump BEFORE the recording check. A cancel that arrives while a
@@ -9986,6 +10012,80 @@ fn dismiss_news_offer(
     news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
 }
 
+/// yap-1106-news-refresh-setting — Settings → Yappy News → "How often".
+#[tauri::command]
+fn set_news_cadence(
+    state: State<'_, Arc<AppState>>,
+    cadence: news_prefs::Cadence,
+) -> Result<news_prefs::NewsView, String> {
+    news_prefs::save_cadence(&*state.db, cadence, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
+/// yap-1106-news-refresh-setting — the quiet rules news obeys: a recording
+/// meeting, a screen share, Do Not Disturb, or low battery (the governor held
+/// back for a power reason).
+fn news_quiet_now(state: &AppState) -> news::schedule::Quiet {
+    let pill = pill_quiet::current();
+    let low_battery = resource_governor::installed().is_some_and(|g| {
+        let v = g.verdict(std::time::Duration::from_secs(30));
+        v.power_limited && v.level != resource_governor::Level::Full
+    });
+    news::schedule::Quiet {
+        in_meeting: meeting_still_recording(state),
+        screen_sharing: pill.screen_sharing,
+        do_not_disturb: pill.do_not_disturb,
+        low_battery,
+    }
+}
+
+/// yap-1106-news-refresh-setting — one refresh, only if the user's "How
+/// often", the 30-minute floor and the quiet rules allow it. `trigger` is
+/// `timer`, `home_opened`, `home_tick` or `tap` (Settings' "Refresh now").
+#[tauri::command]
+async fn news_refresh(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    trigger: String,
+) -> Result<news::RefreshOutcome, String> {
+    let Some(trigger) = news::schedule::Trigger::parse(&trigger) else {
+        log::warn!("news refresh_refused reason=unknown_trigger");
+        return Err("Yap didn't recognise that refresh request. Try again.".to_string());
+    };
+    let quiet = news_quiet_now(&state);
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<news::RefreshOutcome, String> {
+        let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
+        news::refresh_if_due(
+            &state.db,
+            &quote,
+            trigger,
+            quiet,
+            news_prefs::now_ms(),
+            news::schedule::local_utc_offset_ms(),
+            news::cache::DEFAULT_LIMIT,
+        )
+        .map_err(|tag| {
+            log::warn!(
+                "news refresh_failed trigger={} reason={tag}",
+                trigger.as_str()
+            );
+            match tag.as_str() {
+                "cloud_off" => {
+                    "Yappy News needs the cloud option. Connect it in Advanced.".to_string()
+                }
+                "disabled" => "Yappy News is off. Turn it on above to refresh.".to_string(),
+                "no_topics" => "Pick at least one topic, then refresh.".to_string(),
+                _ => "Yap couldn't refresh the news. Try again in a moment.".to_string(),
+            }
+        })
+    })
+    .await
+    .map_err(|e| {
+        log::error!("news refresh_worker_failed error=\"{e}\"");
+        "Yap couldn't refresh the news. Try again in a moment.".to_string()
+    })?
+}
+
 /// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
 /// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
 fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
@@ -10020,6 +10120,105 @@ fn clear_news_quote_key(
     state: State<'_, Arc<AppState>>,
 ) -> Result<news::quote_key::QuoteKeyView, String> {
     news::quote_key::clear(&*state.db, &news_quote_keychain(&app))
+}
+
+/// yap-1106-news-explain — the one cloud call of the explain step: the BYOM
+/// cloud route (mode, key, network path, cap, breaker, ledger) with the
+/// explain budget. `Ok` is the complete answer; `Err` is why there is none
+/// (`user`, `no_key`, `offline`, `cap`, `breaker`, `timeout`, `error`, ...),
+/// and the caller then shows the headlines alone. It never moves the
+/// dictation pill's route chip.
+fn news_explain_cloud(
+    app: &AppHandle,
+    db: &Database,
+    system: &str,
+    user: &str,
+) -> Result<String, &'static str> {
+    let job = cloud_route::Job::Format;
+    let mode = cloud_route::CloudMode::load(db);
+    let provider = if mode.wants_cloud() {
+        model_providers::cloud_key_provider(db, &byom_keychain(app))
+    } else {
+        None
+    };
+    let model = cloud_client::model_for(job, false);
+    let ctx = cloud_route::RouteContext {
+        mode,
+        has_key: provider.is_some(),
+        probe: &cloud_route::NwPathProbe,
+        breaker: cloud_breaker(),
+        kv: db,
+        today: cloud_today(),
+        job,
+        model,
+        budget: news::explain::BUDGET,
+        constrained_notes_allowed: false,
+    };
+    let cancel = summary_jobs::CancelToken::new();
+    let mut cloud = |budget: cloud_route::Budget, _attempt: u32| {
+        let (cfg, key) = provider
+            .as_ref()
+            .ok_or(cloud_route::CloudError::Cancelled)?;
+        let client = byom_clients()
+            .client_for(&cfg.id, cloud_client::CLIENT_TIMEOUT)
+            .map_err(|_| cloud_route::CloudError::Protocol)?;
+        let model = if cfg.model.trim().is_empty() {
+            model
+        } else {
+            cfg.model.trim()
+        };
+        let mut sink = |_: &str| {};
+        cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
+            model,
+            job,
+            system,
+            user,
+            news::explain::MAX_TOKENS,
+            budget,
+            &cancel,
+            &mut sink,
+        )
+    };
+    let accept = |text: &str| Some(Some(text.to_string()));
+    let mut local = || None::<String>;
+    let routed = cloud_route::run_routed(&ctx, &mut cloud, &accept, &mut local);
+    match routed.value {
+        Some(text) => Ok(text),
+        None if routed.fallback != cloud_route::Fallback::None => Err(routed.fallback.as_str()),
+        None => Err(routed.reason.as_str()),
+    }
+}
+
+/// yap-1106-news-explain — one line each for the top 3 cached stories in
+/// Yappy's chosen voice (`voice` is the stored `companionTone`). Only those
+/// three headlines and snippets go to the cloud; a failed call, or a line
+/// the snippet does not support, is the headline alone. Reads the cache the
+/// refresh filled; fetches nothing and marks nothing seen. `Err` is the news
+/// gate's reason tag (`cloud_off`, `disabled`, `no_topics`) or a storage
+/// error.
+#[tauri::command]
+async fn news_explain_top(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    voice: String,
+) -> Result<news::explain::Explained, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db: &Database = &state.db;
+        let prefs = news::feeds::gate(db).map_err(|c| {
+            log::info!("news explain skipped reason={}", c.tag());
+            c.tag().to_string()
+        })?;
+        let now = news_prefs::now_ms();
+        let (top, _) = db
+            .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
+            .inspect_err(|e| log::warn!("news cache_failed op=explain error=\"{e}\""))?;
+        let voice = news::explain::Voice::from_setting(&voice);
+        let mut call = |system: &str, user: &str| news_explain_cloud(&app, db, system, user);
+        Ok(news::explain::explain_with(&top, voice, &mut call))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -12938,8 +13137,26 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                         );
                     }
                     ptt_macos::PttEvent::Interrupted => {
-                        *st.hands_free.lock() = false;
-                        cancel_recording(&h, &st);
+                        // SP-02 — an fn interrupt cancels only a take that is
+                        // still RECORDING. Once it is decoding, polishing or
+                        // pasting, the take is the user's finished words: the
+                        // interrupt is logged and ignored, so `paste_generation`
+                        // is not bumped and the take still pastes.
+                        let recording = *st.recording.lock();
+                        let busy = *st.busy.lock();
+                        match ptt_interrupt_action(recording) {
+                            PttInterruptAction::CancelRecording => {
+                                log::info!("ptt interrupt action=cancel stage=recording");
+                                *st.hands_free.lock() = false;
+                                cancel_recording(&h, &st);
+                            }
+                            PttInterruptAction::Ignore => {
+                                log::info!(
+                                    "ptt interrupt action=ignored stage={} reason=take_past_recording",
+                                    if busy { "in_flight" } else { "idle" }
+                                );
+                            }
+                        }
                     }
                     ptt_macos::PttEvent::HandsFreeOn => {
                         *st.hands_free.lock() = true;
@@ -14588,6 +14805,9 @@ pub fn run() {
             // yap-1106-news-prefs-onboarding — Yappy News interests.
             get_news_prefs,
             set_news_prefs,
+            // yap-1106-news-refresh-setting — "How often" + a gated refresh.
+            set_news_cadence,
+            news_refresh,
             // yap-1106-friend-visits — quiet state for friend visits.
             pill_quiet_state,
             dismiss_news_offer,
@@ -14595,6 +14815,7 @@ pub fn run() {
             get_news_quote_key,
             set_news_quote_key,
             clear_news_quote_key,
+            news_explain_top,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
@@ -15862,6 +16083,53 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod sp02_interrupt_tests {
+    use super::{ptt_interrupt_action, PttInterruptAction};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The dispatch arm's effect on the paste generation, without a window:
+    /// only `CancelRecording` reaches `cancel_recording`, whose first act is
+    /// the YV39 bump.
+    fn interrupt(recording: bool, paste_generation: &AtomicU64) -> PttInterruptAction {
+        let action = ptt_interrupt_action(recording);
+        if action == PttInterruptAction::CancelRecording {
+            paste_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        action
+    }
+
+    /// (b) Interrupted during decoding leaves the take's generation current,
+    /// and it pastes.
+    #[test]
+    fn interrupted_during_decoding_keeps_generation_and_pastes() {
+        let paste_generation = AtomicU64::new(7);
+        // The take stopped: the worker captured its generation.
+        let generation = paste_generation.load(Ordering::SeqCst);
+        // fn + a key arrives while the take is decoding (recording == false).
+        assert_eq!(
+            interrupt(false, &paste_generation),
+            PttInterruptAction::Ignore
+        );
+        let current = paste_generation.load(Ordering::SeqCst);
+        assert_eq!(current, generation, "an ignored interrupt never bumps");
+        assert!(crate::paste::should_paste(true, generation, current, true));
+    }
+
+    /// A take still recording is cancelled, as today, and its paste is void.
+    #[test]
+    fn interrupted_while_recording_still_cancels() {
+        let paste_generation = AtomicU64::new(7);
+        let generation = paste_generation.load(Ordering::SeqCst);
+        assert_eq!(
+            interrupt(true, &paste_generation),
+            PttInterruptAction::CancelRecording
+        );
+        let current = paste_generation.load(Ordering::SeqCst);
+        assert!(!crate::paste::should_paste(true, generation, current, true));
+    }
 }
 
 #[cfg(test)]
