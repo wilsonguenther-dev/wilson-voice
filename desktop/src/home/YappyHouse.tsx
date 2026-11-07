@@ -116,7 +116,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
   const frameRef = useRef<HTMLDivElement | null>(null);
   // Set by the mount effect: redraw now (a state change), whatever the mode.
   const wakeRef = useRef<(() => void) | null>(null);
-  // The room's whole-number scale for the column it sits in (4x / 3x / 2x).
+  // The room's whole-number scale for the column it sits in (3x / 2x; 3x is the approved ceiling).
   const [scale, setScale] = useState<RoomScale>(3);
   useEffect(() => {
     const el = frameRef.current;
@@ -427,18 +427,21 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
         />
       </div>
       <p className="yh-label" data-room-label={meetingLabel ? "recording" : "mood"}>
+        {/* yap-1107-parity-home — the approved label's green dot (7 px, #6fd08c). */}
+        <span className="yh-dot" aria-hidden="true" />
         {meetingLabel ? (
           <span className="yh-meeting" aria-live="off">
             {meetingLabel}
           </span>
         ) : (
-          <>
+          // One text run beside the dot, as on the approved label ("Yappy · at his desk").
+          <span className="yh-mood">
             Yappy ·{" "}
             {/* live mood is announced to assistive tech as Yappy's state changes */}
             <span ref={moodRef} aria-live="polite">
               content
             </span>
-          </>
+          </span>
         )}
       </p>
     </div>
