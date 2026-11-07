@@ -238,6 +238,7 @@ export default function TranscriptList<S extends TranscriptSegment>({
   segments,
   hidden,
   kind,
+  onCorrect,
 }: {
   segments: readonly S[];
   /**
