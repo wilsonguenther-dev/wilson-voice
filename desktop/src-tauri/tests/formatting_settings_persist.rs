@@ -56,7 +56,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
 // yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
-const APP_SETTINGS_FIELD_COUNT: usize = 49;
+const APP_SETTINGS_FIELD_COUNT: usize = 50;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -123,7 +123,7 @@ fn fully_populated() -> AppSettings {
         pill_style: "yappy".into(),
         pill_position: "right".into(),
         companion_tone: "rude".into(),
-        companion_curse: false,
+        companion_curse: true,
         dictation_mode: "email".into(),
         cleanup_level: "high".into(),
         // Y4-A — both non-default (the shipped values are `false`), so the
