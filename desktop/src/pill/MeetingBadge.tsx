@@ -109,6 +109,14 @@ export function openMeetingNotes(id: string): Promise<void> {
   return invoke<void>("open_meeting_notes", { id });
 }
 
+/**
+ * yap-1107-one-pill-during-meeting — the stacked clock's text: "00:03:37" reads
+ * "03:37" under an hour (the artifact's "03:37"), the full label after it.
+ */
+export function stackClockLabel(label: string): string {
+  return /^00:\d\d:\d\d$/.test(label) ? label.slice(3) : label;
+}
+
 export default function MeetingBadge({
   status,
   after = null,
@@ -174,6 +182,40 @@ export default function MeetingBadge({
   // pixels there), the sentence on the tooltip and the accessible label. A
   // backend without the field falls back to YV110's two-word "mic only".
   const callAudio = callAudioChip(status);
+  // yap-1107-one-pill-during-meeting — dictating mid-meeting: Yappy's own capsule
+  // opens for the take, so the scene (and its second Yappy) steps out and the
+  // clock "shrinks into a small stack next to stop" (Pill artifact, "Meeting +
+  // dictating"), inside the same shell. The call-audio truth rides the stack's
+  // tooltip and label, so it is never lost. Stop still ends the meeting.
+  if (dictating) {
+    const audioLine = callAudio ? `${callAudio.label}. ${callAudio.detail}` : systemAudio ?? "";
+    const time = stackClockLabel(elapsedLabel(status));
+    return (
+      <div className="meeting-badge meeting-stacked" data-pill-slot="clock" data-meeting-phase="stacked" role="status" aria-live="off">
+        <span
+          className="meeting-stack"
+          data-meeting-stack
+          title={[callApp ? `Recording ${callApp} call` : "Recording a meeting", audioLine].filter(Boolean).join(" · ")}
+        >
+          <span className="meeting-stack-time" data-scene-time>{time}</span>
+        </span>
+        <button
+          type="button"
+          className="rec-stop"
+          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            console.info("pill meeting_stop source=pill_stack");
+            invoke("stop_meeting").catch((err) => console.warn(`pill meeting_stop_failed source=pill_stack err=${String(err).slice(0, 48)}`));
+          }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden>
+            <rect x="7" y="7" width="10" height="10" rx="1.5" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="meeting-badge" data-pill-slot="clock" role="status" aria-live="off">
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
