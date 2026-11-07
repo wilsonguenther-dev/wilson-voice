@@ -542,6 +542,13 @@ pub struct AppSettings {
     /// sweet. The pill/house read this live off the emitted settings.
     #[serde(default = "default_companion_tone")]
     pub companion_tone: String,
+    /// yap-1106-curse-setting — the Badass voice may swear (about one
+    /// finished-take line in four, the strongest word once a day). Off by
+    /// default; the webview offers it only under Badass and never applies it
+    /// in another voice or in any meeting / screen-share state
+    /// (`pill/voices.ts` `curseAllowed`).
+    #[serde(default)]
+    pub companion_curse: bool,
     /// Smart-dictation mode: auto | plain | list | email | code | notes.
     /// "auto" infers the mode from the frontmost app; any other value forces it.
     #[serde(default = "default_dictation_mode")]
@@ -805,6 +812,7 @@ impl Default for AppSettings {
             pill_style: default_pill_style(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
+            companion_curse: false,
             dictation_mode: "auto".into(),
             cleanup_level: "medium".into(),
             cleanup_level_set_by_user: false,
@@ -14490,6 +14498,21 @@ mod tests {
         assert!(tjson.contains("\"companionTone\":\"rude\""));
         let tback: AppSettings = serde_json::from_str(&tjson).expect("tone round-trip");
         assert_eq!(tback.companion_tone, "rude");
+
+        // yap-1106-curse-setting: curse mode is OFF for fresh installs and for
+        // legacy JSON written before the field existed, and round-trips on its
+        // camelCase wire key.
+        assert!(!AppSettings::default().companion_curse);
+        assert!(!parsed.companion_curse);
+        let cursed = AppSettings {
+            companion_tone: "rude".into(),
+            companion_curse: true,
+            ..AppSettings::default()
+        };
+        let cjson = serde_json::to_string(&cursed).expect("serialize curse");
+        assert!(cjson.contains("\"companionCurse\":true"));
+        let cback: AppSettings = serde_json::from_str(&cjson).expect("curse round-trip");
+        assert!(cback.companion_curse);
 
         // YV31: nativeModel defaults to the catalog's recommended model for
         // fresh installs AND for legacy JSON written before the field existed,
