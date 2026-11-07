@@ -276,10 +276,24 @@ fn the_app_cannot_reach_a_named_speaker_yet() {
         lib.contains("summarize::TrackSpeakers::for_meeting("),
         "the app wires the track source…"
     );
-    assert!(
-        !lib.contains("speaker_profiles"),
-        "…and there is no enrolled-profile source to wire yet (YV128/YV129)"
+    // yap-1106-voiceprints landed the enrolled-profile STORE (speaker_profiles.rs,
+    // the Speakers commands in lib.rs) but no summary speaker source: the only
+    // `SpeakerSource` impls are summarize.rs's NoSpeakers and TrackSpeakers. The
+    // day a profile-backed source is written, this fails and the claim above
+    // must be rewritten.
+    let profiles = include_str!("../src/speaker_profiles.rs");
+    let summarize = include_str!("../src/summarize.rs");
+    let impls = summarize.matches("impl SpeakerSource for ").count();
+    assert_eq!(
+        impls, 2,
+        "…and summarize.rs still has exactly two speaker sources (NoSpeakers, TrackSpeakers)"
     );
+    for (name, src) in [("lib.rs", lib), ("speaker_profiles.rs", profiles)] {
+        assert!(
+            !src.contains("SpeakerSource for"),
+            "…and there is no enrolled-profile speaker source wired yet ({name} implements one)"
+        );
+    }
     println!(
         "the app's only speaker source is TrackSpeakers (Me/Them on a live \
          two-track call, nothing on the clustering branch); enrolled names \

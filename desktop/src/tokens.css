@@ -274,6 +274,9 @@
   --duration-base: 0.25s;
   --duration-slow: 0.3s;
   --duration-slower: 0.34s;
+  /* yap-1106-friend-visits — a visiting friend's box and entrance. */
+  --friend-visit-box: 28px;
+  --friend-visit-in: 0.2s;
 
   /* The two springs. --spring-pill is the pill's grow/settle curve and
      --spring-pop is its overshoot; both are declared here so the chrome can

@@ -279,6 +279,8 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
         // yap-call-1: step 10 records the detected call app and how it was found.
         meetings::MIGRATION_10_DETECTED_CALL,
+        // yap-1106-voiceprints: step 11 is the speaker-profile tables.
+        wilson_voice_lib::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
     ];
     let mentions = ladder
         .iter()

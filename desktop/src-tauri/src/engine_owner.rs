@@ -34,9 +34,16 @@
 //!    after the DB checkpoint so no C++ static destructor runs.
 //!    Log: `exit: engines freed=N waited_ms=… skipped_destructors=bool`.
 //!
-//! The next item (yap-1106-engine-watchdog-restart) adds the hung-decode
-//! watchdog and the pill's display; the seams it needs are
-//! [`EngineOwner::restart`] and the `stuck` transition.
+//! 6. **The watchdog** (yap-1106-engine-watchdog-restart): a decode with no
+//!    answer past its deadline moves the engine to `stuck` and is cancelled;
+//!    if the cancel is ignored past its grace, the helper is killed BY ITS PID
+//!    (only the PID this process spawned), its GPU memory goes with it, the
+//!    state moves to `restarting`, exactly ONE fresh helper is loaded, the
+//!    state moves to `ready`, and the job fails with the plain sentence
+//!    [`ENGINE_RESTARTED`] (its audio is kept by the caller). The old helper
+//!    is reaped before the new one is spawned, so at no instant do two exist.
+//!    A decode the CALLER abandoned (its cancel handle fired: lease timeout,
+//!    quit) is killed but never restarted: whoever abandoned it decides.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -148,10 +155,29 @@ pub fn transition_line(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every health this thread published, in order. The app-wide health is
+    /// one global that parallel tests share; a test reads its OWN thread's
+    /// transitions here instead.
+    static HEALTH_SEEN: std::cell::RefCell<Vec<EngineHealth>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take (and clear) the health states this thread published.
+#[cfg(test)]
+fn take_health_seen() -> Vec<EngineHealth> {
+    HEALTH_SEEN.with(|seen| std::mem::take(&mut *seen.borrow_mut()))
+}
+
 /// Move the APP-WIDE health to `to`, log it, and tell the listener.
 fn publish(to: EngineHealth, reason: &str, job: &str) {
+    #[cfg(test)]
+    HEALTH_SEEN.with(|seen| seen.borrow_mut().push(to));
     let from = EngineHealth::from_u8(APP_HEALTH.swap(to.to_u8(), Ordering::AcqRel));
     log::info!("{}", transition_line(from, to, reason, LIVE.live(), job));
+    // Diagnostics shows the same plain word under "Routes and stages".
+    crate::diagnostics::set_state("engine.health", to.as_str());
     if from != to {
         if let Some(listener) = HEALTH_LISTENER.get() {
             listener(to);
@@ -281,6 +307,13 @@ pub fn job_deadline(samples: usize, sample_rate: u32) -> Duration {
 /// What a job past its deadline returns.
 pub const JOB_DEADLINE_EXCEEDED: &str =
     "The speech engine took too long on this clip, so Yap stopped it. Your audio is saved.";
+/// What a job returns when its decode got stuck and the watchdog restarted
+/// the engine under it (one fresh copy, ready for the next take).
+pub const ENGINE_RESTARTED: &str =
+    "The speech engine got stuck on this clip, so Yap restarted it. Your audio is saved; try again.";
+/// What a job returns when the watchdog's one restart did not come up.
+pub const ENGINE_RESTART_FAILED: &str =
+    "The speech engine got stuck and did not restart. Your audio is saved; Yap tries again on your next take.";
 /// What a job queued during quit returns.
 pub const OWNER_QUITTING: &str = "Yap is quitting, so this clip was not transcribed.";
 /// What a take sees when the queue is full.
@@ -381,18 +414,32 @@ fn probe_in_process(_model_path: &Path) -> Result<asr_engine::ModelCapabilities,
 /// `externalBin`, and where a workspace build puts it in dev), or one level up
 /// for a test binary in `target/<profile>/deps/` (the workspace build puts
 /// `yap-asr` in `target/<profile>/`).
+///
+/// SP-10: the helper's name comes from `asr_engine::EngineKind::selected()`.
+/// The default is `yap-asr` (unchanged); `YAP_ASR_ENGINE=ane` (the bench)
+/// picks `yap-engine-ane`, which speaks the same protocol. A selected ANE
+/// helper that is not staged is NOT swapped for the default silently: it is
+/// reported, so a bench can never time the wrong engine.
 fn helper_binary() -> Option<PathBuf> {
+    let kind = asr_engine::EngineKind::selected();
+    let name = kind.helper_bin();
+    debug_assert!(kind != asr_engine::EngineKind::DEFAULT || name == ASR_HELPER_BIN);
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let here = dir.join(ASR_HELPER_BIN);
+    let here = dir.join(name);
     if here.is_file() {
+        log::info!("engine helper engine={}", kind.as_str());
         return Some(here);
     }
     if dir.file_name().map(|n| n == "deps").unwrap_or(false) {
-        let up = dir.parent()?.join(ASR_HELPER_BIN);
+        let up = dir.parent()?.join(name);
         if up.is_file() {
+            log::info!("engine helper engine={}", kind.as_str());
             return Some(up);
         }
+    }
+    if kind != asr_engine::EngineKind::DEFAULT {
+        log::warn!("engine helper_missing engine={}", kind.as_str());
     }
     None
 }
@@ -527,6 +574,16 @@ struct HelperEngine {
     /// hook reads it to escalate a cancel the helper ignores into a kill by
     /// PID — and only for the job it was asked to stop.
     running: Arc<AtomicU64>,
+    /// Set when a caller fired the cancel handle (lease timeout, quit): a
+    /// decode it abandoned is killed but never restarted by the watchdog.
+    cancel_requested: Arc<AtomicBool>,
+    /// The watchdog's clock: `None` = [`job_deadline`] from the clip length.
+    /// Tests shorten it; nothing in the app sets it.
+    deadline_override: Option<Duration>,
+    /// How long a cancelled decode has to answer before its helper is killed.
+    cancel_grace: Duration,
+    /// Watchdog restarts this engine has done (each one loaded ONE helper).
+    restarts: u64,
 }
 
 /// Escalation of an ignored cancel: past [`HELPER_CANCEL_GRACE`], if job `job`
@@ -589,6 +646,19 @@ fn send_line(stdin: &Mutex<ChildStdin>, req: &AsrRequest) -> Result<(), String> 
         .map_err(|_| "the speech helper stopped listening".to_string())
 }
 
+/// What a failed decode does to its helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFailure {
+    /// The helper honoured the cancel and stays warm.
+    Keep,
+    /// The helper vanished or ignored a cancel: kill it by PID; the next job
+    /// brings up one fresh helper.
+    Kill,
+    /// The watchdog's case — no answer past the deadline, cancel ignored:
+    /// kill it by PID, then restart exactly once.
+    Restart,
+}
+
 impl HelperEngine {
     fn spawn(bin: &Path, model_path: &Path) -> Result<HelperEngine, String> {
         let mut engine = HelperEngine {
@@ -599,6 +669,10 @@ impl HelperEngine {
             caps: None,
             last_language: None,
             running: Arc::new(AtomicU64::new(0)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            deadline_override: None,
+            cancel_grace: HELPER_CANCEL_GRACE,
+            restarts: 0,
         };
         engine.start()?;
         Ok(engine)
@@ -745,7 +819,11 @@ impl HelperEngine {
             restarted?;
         }
         let id = self.take_id();
-        let deadline = job_deadline(samples.len(), 16_000);
+        let deadline = self
+            .deadline_override
+            .unwrap_or_else(|| job_deadline(samples.len(), 16_000));
+        let grace = self.cancel_grace;
+        self.cancel_requested.store(false, Ordering::Release);
         let running = self.running.clone();
         let Some(process) = self.proc_.as_mut() else {
             return Err(crate::transcription::NO_ENGINE_LOADED.to_string());
@@ -759,25 +837,36 @@ impl HelperEngine {
             &process.stdin,
             &AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed),
         );
-        // Err((message, kill_helper)).
-        let outcome: Result<AsrResponse, (String, bool)> = match sent {
-            Err(e) => Err((e, true)),
+        // Err((message, what happens to the helper)).
+        let outcome: Result<AsrResponse, (String, AfterFailure)> = match sent {
+            Err(e) => Err((e, AfterFailure::Kill)),
             Ok(()) => match wait_for(&process.responses, id, deadline) {
                 Ok(resp) => Ok(resp),
-                Err(_) => {
+                Err(waited) => {
+                    // The watchdog: no answer inside the deadline (as opposed
+                    // to a helper that vanished under the decode).
+                    let hung = waited == JOB_DEADLINE_EXCEEDED;
+                    if hung {
+                        publish(EngineHealth::Stuck, "deadline_passed", "decode");
+                    }
                     log::warn!(
-                        "engine job deadline_passed ms={} deadline_ms={} samples={}",
+                        "engine job deadline_passed ms={} deadline_ms={} samples={} hung={hung}",
                         started.elapsed().as_millis(),
                         deadline.as_millis(),
                         samples.len()
                     );
                     let _ = send_line(&process.stdin, &AsrRequest::cancel(0));
-                    match wait_for(&process.responses, id, HELPER_CANCEL_GRACE) {
+                    match wait_for(&process.responses, id, grace) {
                         // The helper honoured the cancel: it stays warm.
-                        Ok(_) => Err((JOB_DEADLINE_EXCEEDED.to_string(), false)),
+                        Ok(_) => Err((JOB_DEADLINE_EXCEEDED.to_string(), AfterFailure::Keep)),
                         Err(_) => {
                             publish(EngineHealth::Stuck, "cancel_ignored", "decode");
-                            Err((JOB_DEADLINE_EXCEEDED.to_string(), true))
+                            let after = if hung {
+                                AfterFailure::Restart
+                            } else {
+                                AfterFailure::Kill
+                            };
+                            Err((JOB_DEADLINE_EXCEEDED.to_string(), after))
                         }
                     }
                 }
@@ -803,18 +892,63 @@ impl HelperEngine {
                     .error
                     .unwrap_or_else(|| "transcription failed".to_string()))
             }
-            Err((e, false)) => {
+            Err((e, AfterFailure::Keep)) => {
                 publish(EngineHealth::Ready, "job_cancelled", "decode");
                 Err(e)
             }
-            Err((e, true)) => {
+            Err((e, after)) => {
                 // A stuck or vanished helper: kill it by PID so macOS frees
-                // its GPU memory. Never abandoned while it still runs.
+                // its GPU memory. Never abandoned while it still runs. The
+                // kill reaps it (and drops its live token) BEFORE any restart
+                // spawns the next one, so two never exist at once.
                 if let Some(mut process) = self.proc_.take() {
                     kill_process(&mut process, "stuck");
                 }
+                let abandoned = self.cancel_requested.load(Ordering::Acquire);
+                if after == AfterFailure::Restart && !abandoned {
+                    return Err(self.watchdog_restart());
+                }
                 publish(EngineHealth::Idle, "helper_killed", "decode");
                 Err(e)
+            }
+        }
+    }
+
+    /// The watchdog's restart, after the stuck helper was killed and reaped:
+    /// `restarting`, load exactly ONE fresh helper, `ready`. Returns the plain
+    /// sentence the stuck job fails with.
+    fn watchdog_restart(&mut self) -> String {
+        publish(EngineHealth::Restarting, "watchdog", "decode");
+        let started = Instant::now();
+        match self.start() {
+            Ok(()) => {
+                self.restarts += 1;
+                crate::diagnostics::bump("engine", "watchdog_restarts");
+                log::info!(
+                    "engine watchdog restarted ms={} engines_live={} restarts={}",
+                    started.elapsed().as_millis(),
+                    LIVE.live(),
+                    self.restarts
+                );
+                if self.cancel_requested.load(Ordering::Acquire) {
+                    // Abandoned while it restarted: free the fresh copy now
+                    // rather than leave it for whoever drops this engine.
+                    let _ = self.shutdown();
+                    publish(EngineHealth::Idle, "abandoned_after_restart", "decode");
+                } else {
+                    publish(EngineHealth::Ready, "restarted", "decode");
+                }
+                ENGINE_RESTARTED.to_string()
+            }
+            Err(_) => {
+                crate::diagnostics::bump("engine", "watchdog_restart_failures");
+                log::warn!(
+                    "engine watchdog restart_failed ms={} engines_live={}",
+                    started.elapsed().as_millis(),
+                    LIVE.live()
+                );
+                publish(EngineHealth::Idle, "restart_failed", "decode");
+                ENGINE_RESTART_FAILED.to_string()
             }
         }
     }
@@ -949,8 +1083,10 @@ impl Transcriber for HelperEngine {
         let stdin = process.stdin.clone();
         let pid = process.pid;
         let running = self.running.clone();
+        let cancel_requested = self.cancel_requested.clone();
         Some(Arc::new(move || {
             let job = running.load(Ordering::Acquire);
+            cancel_requested.store(true, Ordering::Release);
             log::info!("engine cancel requested pid={pid} job={job}");
             let _ = send_line(&stdin, &AsrRequest::cancel(0));
             if job != 0 {
@@ -1110,8 +1246,15 @@ struct OwnerState {
     restart_requested: bool,
     running: Option<(u64, JobKind, Option<CancelHandle>)>,
     health: EngineHealth,
+    /// The newest transitions, oldest first (capped at [`HEALTH_HISTORY`]).
+    history: VecDeque<EngineHealth>,
+    /// When the engine last moved to `stuck`.
+    stuck_at: Option<Instant>,
     finished: bool,
 }
+
+/// How many transitions [`EngineOwner::health_history`] keeps.
+const HEALTH_HISTORY: usize = 64;
 
 struct OwnerShared {
     state: Mutex<OwnerState>,
@@ -1127,6 +1270,13 @@ impl OwnerShared {
     fn set_health(&self, st: &mut OwnerState, to: EngineHealth, reason: &str, job: &str) {
         let from = st.health;
         st.health = to;
+        if st.history.len() >= HEALTH_HISTORY {
+            st.history.pop_front();
+        }
+        st.history.push_back(to);
+        if to == EngineHealth::Stuck && from != EngineHealth::Stuck {
+            st.stuck_at = Some(Instant::now());
+        }
         log::info!(
             "{}",
             transition_line(
@@ -1172,6 +1322,8 @@ impl EngineOwner {
                 restart_requested: false,
                 running: None,
                 health: EngineHealth::Idle,
+                history: VecDeque::new(),
+                stuck_at: None,
                 finished: false,
             }),
             cv: Condvar::new(),
@@ -1201,6 +1353,16 @@ impl EngineOwner {
 
     pub fn health(&self) -> EngineHealth {
         self.shared.state.lock().health
+    }
+
+    /// The newest health transitions, oldest first (Diagnostics and tests).
+    pub fn health_history(&self) -> Vec<EngineHealth> {
+        self.shared.state.lock().history.iter().copied().collect()
+    }
+
+    /// When the watchdog last moved the engine to `stuck`.
+    pub fn last_stuck_at(&self) -> Option<Instant> {
+        self.shared.state.lock().stuck_at
     }
 
     /// Jobs waiting (not counting the running one).
@@ -1347,6 +1509,47 @@ fn pop_best(queue: &mut VecDeque<QueuedJob>) -> Option<QueuedJob> {
     queue.remove(best)
 }
 
+/// The owner's watchdog restart after a stuck job came back: free the stuck
+/// engine FIRST (so at most one exists at any instant), load exactly one
+/// fresh copy, move to `ready`. Returns the sentence the stuck job fails with.
+fn watchdog_restart(
+    shared: &OwnerShared,
+    engine: &mut Option<Box<dyn Transcriber>>,
+    kind: JobKind,
+) -> String {
+    let started = Instant::now();
+    if let Some(stuck_engine) = engine.take() {
+        drop(stuck_engine);
+        shared.freed.fetch_add(1, Ordering::AcqRel);
+    }
+    match (shared.loader)() {
+        Ok(fresh) => {
+            shared.loads.fetch_add(1, Ordering::AcqRel);
+            *engine = Some(fresh);
+            log::info!(
+                "engine watchdog restarted kind={} ms={} loads={} freed={}",
+                kind.as_str(),
+                started.elapsed().as_millis(),
+                shared.loads.load(Ordering::Acquire),
+                shared.freed.load(Ordering::Acquire)
+            );
+            let mut st = shared.state.lock();
+            shared.set_health(&mut st, EngineHealth::Ready, "restarted", kind.as_str());
+            ENGINE_RESTARTED.to_string()
+        }
+        Err(_) => {
+            log::warn!(
+                "engine watchdog restart_failed kind={} ms={}",
+                kind.as_str(),
+                started.elapsed().as_millis()
+            );
+            let mut st = shared.state.lock();
+            shared.set_health(&mut st, EngineHealth::Idle, "restart_failed", kind.as_str());
+            ENGINE_RESTART_FAILED.to_string()
+        }
+    }
+}
+
 fn owner_loop(shared: Arc<OwnerShared>) {
     let mut engine: Option<Box<dyn Transcriber>> = None;
     loop {
@@ -1408,9 +1611,13 @@ fn owner_loop(shared: Arc<OwnerShared>) {
         }
         let started = Instant::now();
         let timed_out = Arc::new(AtomicBool::new(false));
+        // Set when the cancel was ignored past the grace: the watchdog then
+        // restarts the engine once the decode comes back.
+        let stuck = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = mpsc::channel::<()>();
         {
             let timed_out = timed_out.clone();
+            let stuck = stuck.clone();
             let deadline = job.req.deadline;
             let grace = shared.config.stuck_grace;
             let watcher = shared.clone();
@@ -1428,6 +1635,7 @@ fn owner_loop(shared: Arc<OwnerShared>) {
                             cancel();
                         }
                         if let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(grace) {
+                            stuck.store(true, Ordering::Release);
                             let mut st = watcher.state.lock();
                             watcher.set_health(
                                 &mut st,
@@ -1457,11 +1665,24 @@ fn owner_loop(shared: Arc<OwnerShared>) {
             started.elapsed().as_millis(),
             result.is_ok()
         );
-        {
+        let restart = {
             let mut st = shared.state.lock();
             st.running = None;
-            shared.set_health(&mut st, EngineHealth::Ready, "job_done", kind.as_str());
-        }
+            // The watchdog: a decode that ignored its cancel gets its engine
+            // restarted (not while quitting: quit frees it below instead).
+            let restart = stuck.load(Ordering::Acquire) && !st.stop;
+            if restart {
+                shared.set_health(&mut st, EngineHealth::Restarting, "watchdog", kind.as_str());
+            } else {
+                shared.set_health(&mut st, EngineHealth::Ready, "job_done", kind.as_str());
+            }
+            restart
+        };
+        let result = if restart {
+            Err(watchdog_restart(&shared, &mut engine, kind))
+        } else {
+            result
+        };
         let _ = job.reply.send(result);
     }
     // Quit: the engine is dropped HERE, on its owning thread, before the
@@ -1741,7 +1962,15 @@ mod engine_owner_tests {
         Gated,
         /// Ignores cancel; returns only when the gate opens.
         HangsUntilGate,
+        /// Never answers and ignores the cancel itself, like a hung `yap-asr`;
+        /// its cancel handle escalates to a "kill" [`FAKE_KILL_AFTER`] later
+        /// (as `kill_if_still_running` does by PID), and only then does the
+        /// decode come back, with the error a killed helper gives.
+        HangsUntilKilled,
     }
+
+    /// The fake's stand-in for `HELPER_CANCEL_GRACE` before the kill.
+    const FAKE_KILL_AFTER: Duration = Duration::from_millis(250);
 
     struct Gate {
         open: Mutex<bool>,
@@ -1775,6 +2004,7 @@ mod engine_owner_tests {
         behaviour: Behaviour,
         gate: Arc<Gate>,
         cancelled: Arc<AtomicBool>,
+        killed: Arc<AtomicBool>,
         live: Arc<AtomicUsize>,
     }
 
@@ -1807,6 +2037,12 @@ mod engine_owner_tests {
                             break;
                         }
                     }
+                    Behaviour::HangsUntilKilled => {
+                        if self.killed.load(Ordering::Acquire) {
+                            self.events.lock().push(format!("killed:{tag}"));
+                            return Err("the speech helper exited unexpectedly".into());
+                        }
+                    }
                 }
                 self.gate.wait_a_bit();
             }
@@ -1819,9 +2055,20 @@ mod engine_owner_tests {
 
         fn cancel_handle(&self) -> Option<CancelHandle> {
             let flag = self.cancelled.clone();
+            let killed = self.killed.clone();
+            let behaviour = self.behaviour;
             let events = self.events.clone();
             Some(Arc::new(move || {
                 events.lock().push("cancel".into());
+                if behaviour == Behaviour::HangsUntilKilled {
+                    // Ignore the cancel; the escalation kills it later.
+                    let killed = killed.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(FAKE_KILL_AFTER);
+                        killed.store(true, Ordering::Release);
+                    });
+                    return;
+                }
                 flag.store(true, Ordering::Release);
             }))
         }
@@ -1877,6 +2124,7 @@ mod engine_owner_tests {
                     behaviour,
                     gate: gate.clone(),
                     cancelled: Arc::new(AtomicBool::new(false)),
+                    killed: Arc::new(AtomicBool::new(false)),
                     live: live.clone(),
                 }) as Box<dyn Transcriber>)
             })
@@ -2075,6 +2323,72 @@ mod engine_owner_tests {
         let report = r.owner.quit(Duration::from_secs(3));
         assert!(report.finished);
         assert_eq!(report.freed, 1);
+        assert_eq!(r.live.load(Ordering::Acquire), 0);
+    }
+
+    // yap-1106-engine-watchdog-restart: a decode that never answers and
+    // ignores its cancel. The watchdog fires inside deadline + grace, the
+    // state goes stuck -> restarting -> ready, the stuck engine is freed
+    // BEFORE the one fresh load (never two live at any instant), and the job
+    // fails with the plain restart sentence.
+    #[test]
+    fn a_stuck_decode_is_restarted_once_with_never_two_engines_live() {
+        let deadline = Duration::from_millis(150);
+        let grace = Duration::from_millis(100);
+        let config = OwnerConfig {
+            queue_wait_cap: Duration::from_secs(5),
+            max_queue: 32,
+            stuck_grace: grace,
+        };
+        let r = rig(Behaviour::HangsUntilKilled, config);
+        let submitted = Instant::now();
+        let out = r.owner.submit(job(JobKind::Dictation, 1.0, deadline));
+        assert_eq!(out, Err(ENGINE_RESTARTED.to_string()));
+
+        let stuck_after = r
+            .owner
+            .last_stuck_at()
+            .expect("the watchdog marked the engine stuck")
+            .duration_since(submitted);
+        assert!(
+            stuck_after >= deadline,
+            "stuck before its deadline: {stuck_after:?}"
+        );
+        assert!(
+            stuck_after <= deadline + grace + Duration::from_millis(500),
+            "the watchdog fired late: {stuck_after:?}"
+        );
+
+        let history = r.owner.health_history();
+        let at = |h: EngineHealth| {
+            history
+                .iter()
+                .rposition(|x| *x == h)
+                .unwrap_or_else(|| panic!("no {h:?} in {history:?}"))
+        };
+        assert!(at(EngineHealth::Stuck) < at(EngineHealth::Restarting));
+        assert!(at(EngineHealth::Restarting) < at(EngineHealth::Ready));
+        assert_eq!(r.owner.health(), EngineHealth::Ready);
+
+        // Exactly one reload, and never two engines at once.
+        assert_eq!(r.loads.load(Ordering::Acquire), 2);
+        assert_eq!(r.owner.loads(), 2);
+        assert_eq!(r.owner.freed(), 1);
+        assert_eq!(r.peak_live.load(Ordering::Acquire), 1);
+        assert_eq!(r.live.load(Ordering::Acquire), 1);
+        let events = r.events.lock().clone();
+        let dropped = position(&events, "engine_dropped_on:yap-engine-owner");
+        let second_load = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.as_str() == "load")
+            .map(|(i, _)| i)
+            .nth(1)
+            .expect("a second load");
+        assert!(dropped < second_load, "freed before reloading: {events:?}");
+
+        let report = r.owner.quit(Duration::from_secs(2));
+        assert!(report.finished);
         assert_eq!(r.live.load(Ordering::Acquire), 0);
     }
 
@@ -2316,6 +2630,212 @@ mod engine_owner_tests {
         // SAFETY: signal 0 only probes; the PID was ours and is now reaped.
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         assert!(!alive, "helper pid {pid} must be gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Like [`fake_hanging_helper`], but the load reply echoes the load
+    /// request's id, so a RESTARTED helper (later ids) loads too.
+    fn fake_hanging_helper_echoing_ids(tag: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("yap-fake-asr-{tag}-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let ready = serde_json::to_string(&AsrReady::now(0)).expect("ready line");
+        let loaded = serde_json::to_string(&AsrResponse::ok(424_242)).expect("load reply");
+        let (head, tail) = loaded
+            .split_once("424242")
+            .expect("the reply carries its id");
+        let mut sh = String::from("#!/bin/sh\n");
+        sh.push_str(&format!("echo '{ready}'\n"));
+        sh.push_str("read load\n");
+        sh.push_str("id=$(printf '%s\\n' \"$load\" | sed -n 's/^{\"id\":\\([0-9]*\\),.*/\\1/p')\n");
+        sh.push_str(&format!("echo '{head}'\"$id\"'{tail}'\n"));
+        sh.push_str("read _job\nexec sleep 600\n");
+        let script = dir.join(ASR_HELPER_BIN);
+        std::fs::write(&script, sh).expect("write fake helper");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake helper");
+        (dir, script)
+    }
+
+    fn pid_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only probes.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    // yap-1106-engine-watchdog-restart on the real helper protocol: a decode
+    // the helper never answers (and whose cancel it ignores) is killed BY THE
+    // PID THIS ENGINE SPAWNED inside deadline + grace, the old helper is
+    // reaped before exactly ONE fresh helper is spawned (sampled throughout:
+    // never two), the job fails with the plain restart sentence, the health
+    // ends `ready`, and an unrelated child of this process is never touched.
+    #[test]
+    fn a_hung_helper_decode_is_killed_by_pid_and_restarted_exactly_once() {
+        let _serial = helper_serial();
+        let (dir, script) = fake_hanging_helper_echoing_ids("watchdog");
+        let mut bystander = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("bystander child");
+        let before = spawned_helper_pids();
+        let live_before = engines_live();
+        let mut engine =
+            HelperEngine::spawn(&script, &dir.join("never-read.gguf")).expect("fake helper up");
+        let deadline = Duration::from_millis(300);
+        let grace = Duration::from_millis(200);
+        engine.deadline_override = Some(deadline);
+        engine.cancel_grace = grace;
+        let first = engine.proc_.as_ref().expect("helper process").pid;
+        let mine = move |before: &[u32]| -> Vec<u32> {
+            spawned_helper_pids()
+                .into_iter()
+                .filter(|p| !before.contains(p))
+                .collect()
+        };
+        assert_eq!(mine(&before), vec![first]);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let started = Instant::now();
+        let sampler = {
+            let stop = stop.clone();
+            let before = before.clone();
+            std::thread::spawn(move || {
+                let (mut max_helpers, mut max_live, mut samples) = (0usize, 0u64, 0u64);
+                let mut first_gone_at: Option<Instant> = None;
+                while !stop.load(Ordering::Acquire) {
+                    let now_mine = mine(&before);
+                    max_helpers = max_helpers.max(now_mine.len());
+                    max_live = max_live.max(engines_live().saturating_sub(live_before));
+                    if first_gone_at.is_none() && !now_mine.contains(&first) {
+                        first_gone_at = Some(Instant::now());
+                    }
+                    samples += 1;
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                // One last look after the decode returned: on a loaded CI
+                // runner the 2 ms sleep can overshoot the whole window between
+                // the kill and `stop`, so the loop may never have seen the
+                // stuck helper gone. Observed here is still observed AFTER the
+                // kill, so the deadline bounds below stay honest.
+                if first_gone_at.is_none() && !mine(&before).contains(&first) {
+                    first_gone_at = Some(Instant::now());
+                }
+                (max_helpers, max_live, samples, first_gone_at)
+            })
+        };
+        let worker = std::thread::spawn(move || {
+            let _ = take_health_seen();
+            let result = engine.transcribe(&[0.0f32; 16_000], None, None);
+            (result, engine, take_health_seen())
+        });
+        let (result, engine, seen) = worker.join().expect("worker thread");
+        let took = started.elapsed();
+        stop.store(true, Ordering::Release);
+        let (max_helpers, max_live, samples, first_gone_at) = sampler.join().expect("sampler");
+
+        assert_eq!(result, Err(ENGINE_RESTARTED.to_string()));
+        let gone = first_gone_at
+            .expect("the stuck helper was killed")
+            .duration_since(started);
+        assert!(gone >= deadline, "killed before its deadline: {gone:?}");
+        assert!(
+            gone <= deadline + grace + Duration::from_secs(1),
+            "the watchdog fired late: {gone:?}"
+        );
+        assert!(
+            took < deadline + grace + Duration::from_secs(10),
+            "{took:?}"
+        );
+        assert!(samples > 10, "the sampler barely ran: {samples}");
+        assert!(max_helpers <= 1, "two helpers at once: {max_helpers}");
+        assert!(max_live <= 1, "two live engines at once: {max_live}");
+        assert_eq!(engine.restarts, 1, "exactly one reload");
+        let second = engine.proc_.as_ref().expect("a fresh helper").pid;
+        assert_ne!(second, first);
+        assert_eq!(mine(&before), vec![second]);
+        assert!(!pid_alive(first), "the stuck helper {first} must be gone");
+        // The pill's sequence, read from THIS decode's own transitions (the
+        // global health is shared with tests running in parallel):
+        // busy -> stuck -> restarting -> ready, ending ready.
+        let at = |h: EngineHealth| {
+            seen.iter()
+                .position(|s| *s == h)
+                .unwrap_or_else(|| panic!("{h:?} never published: {seen:?}"))
+        };
+        assert!(at(EngineHealth::Busy) < at(EngineHealth::Stuck), "{seen:?}");
+        assert!(
+            at(EngineHealth::Stuck) < at(EngineHealth::Restarting),
+            "{seen:?}"
+        );
+        assert!(
+            at(EngineHealth::Restarting) < seen.len() - 1,
+            "restarting is not the last word: {seen:?}"
+        );
+        assert_eq!(seen.last(), Some(&EngineHealth::Ready), "{seen:?}");
+        assert_eq!(
+            seen.iter()
+                .filter(|s| **s == EngineHealth::Restarting)
+                .count(),
+            1,
+            "restarted exactly once: {seen:?}"
+        );
+        assert!(
+            matches!(bystander.try_wait(), Ok(None)),
+            "a child the engine did not spawn was signalled"
+        );
+
+        drop(engine);
+        assert!(
+            mine(&before).is_empty(),
+            "the fresh helper is freed on drop"
+        );
+        assert!(!pid_alive(second));
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A decode the CALLER cancelled (lease timeout, quit) is killed by PID
+    // when it hangs, but the watchdog never restarts it: no stray reload.
+    #[test]
+    fn a_hung_decode_the_caller_cancelled_is_killed_but_never_restarted() {
+        let _serial = helper_serial();
+        let (dir, script) = fake_hanging_helper_echoing_ids("abandoned");
+        let before = spawned_helper_pids();
+        let mut engine =
+            HelperEngine::spawn(&script, &dir.join("never-read.gguf")).expect("fake helper up");
+        engine.deadline_override = Some(Duration::from_millis(300));
+        engine.cancel_grace = Duration::from_millis(200);
+        let first = engine.proc_.as_ref().expect("helper process").pid;
+        let running = engine.running.clone();
+        let cancel = engine
+            .cancel_handle()
+            .expect("helper engines are cancellable");
+        let worker = std::thread::spawn(move || {
+            let result = engine.transcribe(&[0.0f32; 16_000], None, None);
+            (result, engine)
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while running.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < until, "the decode never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cancel();
+        let (result, engine) = worker.join().expect("worker thread");
+        assert_eq!(result, Err(JOB_DEADLINE_EXCEEDED.to_string()));
+        assert_eq!(engine.restarts, 0, "an abandoned decode is not restarted");
+        assert!(engine.proc_.is_none());
+        let left: Vec<u32> = spawned_helper_pids()
+            .into_iter()
+            .filter(|p| !before.contains(p))
+            .collect();
+        assert!(left.is_empty(), "no helper left behind: {left:?}");
+        assert!(!pid_alive(first));
+        drop(engine);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
