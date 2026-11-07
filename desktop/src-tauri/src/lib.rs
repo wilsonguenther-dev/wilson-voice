@@ -7920,9 +7920,21 @@ fn delete_scratch(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
 
 // --- DB-D Scratchpad window ---
 
+/// fix-b5-1 — `note_id`: the note to land on (the pill's meeting note);
+/// `None` keeps the plain open on whatever note was last active.
 #[tauri::command]
-fn open_scratchpad(app: AppHandle) -> Result<(), String> {
-    scratchpad::open(&app)
+fn open_scratchpad(app: AppHandle, note_id: Option<String>) -> Result<(), String> {
+    match note_id.filter(|id| !id.is_empty()) {
+        Some(id) => scratchpad::open_note(&app, id),
+        None => scratchpad::open(&app),
+    }
+}
+
+/// fix-b5-1 — the Scratchpad webview asks, on load and on every show, which
+/// note it was opened for (taken once; `None` = keep the active note).
+#[tauri::command]
+fn scratchpad_take_open_note() -> Option<String> {
+    scratchpad::take_open_note()
 }
 
 #[tauri::command]
@@ -12560,6 +12572,7 @@ pub fn run() {
             delete_snippet,
             list_scratch,
             open_scratchpad,
+            scratchpad_take_open_note,
             hide_scratchpad,
             scratchpad_focus,
             copy_note_transient,
@@ -17180,6 +17193,51 @@ mod retry_engine_tests {
         assert_eq!(phases, vec![RetryPhase::Queued]);
         assert_eq!(m.engine_loads(), 1);
         live_take.join().unwrap().unwrap();
+    }
+}
+
+/// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
+/// decides "this clip failed, try the next" vs "the engine is unhealthy, stop"
+/// by matching these exact sentences. A reword here without the TS mirror
+/// would silently queue every later clip behind a wedged engine again, so
+/// this test reads the TS source and pins both sides to the same text.
+#[cfg(test)]
+mod retry_ui_contract_tests {
+    use super::*;
+
+    const RETRY_TS: &str = include_str!("../../src/retryDictation.ts");
+
+    /// The string value of `export const NAME = "…";` in retryDictation.ts.
+    fn ts_const<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let marker = format!("export const {name} = \"");
+        let start = src.find(&marker)? + marker.len();
+        let len = src[start..].find('"')?;
+        Some(&src[start..start + len])
+    }
+
+    #[test]
+    fn retry_errors_match_the_ui_mirror() {
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_DEADLINE_ERROR"),
+            Some(RETRY_DEADLINE_ERROR),
+            "retryDictation.ts RETRY_DEADLINE_ERROR must mirror lib.rs verbatim"
+        );
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_ENGINE_BUSY_ERROR"),
+            Some(RETRY_ENGINE_BUSY_ERROR),
+            "retryDictation.ts RETRY_ENGINE_BUSY_ERROR must mirror lib.rs verbatim"
+        );
+    }
+
+    #[test]
+    fn engine_stuck_starts_with_the_ui_prefix() {
+        let prefix = ts_const(RETRY_TS, "ENGINE_STUCK_PREFIX")
+            .expect("ENGINE_STUCK_PREFIX in retryDictation.ts");
+        assert!(!prefix.is_empty());
+        assert!(
+            transcription::ENGINE_STUCK.starts_with(prefix),
+            "transcription::ENGINE_STUCK must start with the UI's ENGINE_STUCK_PREFIX {prefix:?}"
+        );
     }
 }
 

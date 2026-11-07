@@ -439,6 +439,37 @@ fn launch_opens_two_windows_and_the_scratchpad_lazily() {
     assert!(!lib.contains("get_webview_window(scratchpad::WINDOW_LABEL)"));
 }
 
+// fix-b5-1 — the pill's Note opens the Scratchpad ON the note it made.
+#[test]
+fn the_opened_note_is_handed_to_the_window_once() {
+    scratchpad::request_open_note(Some("note-b".into()));
+    assert_eq!(scratchpad::take_open_note().as_deref(), Some("note-b"));
+    assert_eq!(scratchpad::take_open_note(), None, "taken once");
+    scratchpad::request_open_note(Some(String::new()));
+    assert_eq!(
+        scratchpad::take_open_note(),
+        None,
+        "an empty id is no request"
+    );
+    scratchpad::request_open_note(Some("note-c".into()));
+    scratchpad::request_open_note(None);
+    assert_eq!(scratchpad::take_open_note(), None, "None clears a request");
+
+    // The command carries the id to that open; no id keeps the plain open.
+    let lib = include_str!("../src/lib.rs");
+    let cmd = &lib[lib.find("fn open_scratchpad(").expect("open_scratchpad")..];
+    let cmd = &cmd[..cmd.find("\n}\n").unwrap()];
+    assert!(cmd.contains("note_id: Option<String>"), "{cmd}");
+    assert!(cmd.contains("scratchpad::open_note(&app, id)"), "{cmd}");
+    assert!(cmd.contains("scratchpad::open(&app)"), "{cmd}");
+    assert!(lib.contains("scratchpad_take_open_note,"), "registered");
+    // ...and logs no note id or text.
+    let sp = include_str!("../src/scratchpad.rs");
+    let open_note = &sp[sp.find("pub fn open_note(").expect("open_note")..];
+    let open_note = &open_note[..open_note.find("\n}\n").unwrap()];
+    assert!(!open_note.contains("note_id}") && !open_note.contains("{note_id"));
+}
+
 // --- WF-15 window controls: the expand/collapse frame math ---
 
 #[test]
