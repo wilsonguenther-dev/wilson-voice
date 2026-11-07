@@ -113,9 +113,12 @@ impl ChunkConfig {
     /// Sanity, checked at plan time rather than trusted.
     ///
     /// The `TRANSCRIBE_TIMEOUT` clause is finding #3's constraint made
-    /// mechanical: past 120 s the manager abandons the ENGINE, not just the
-    /// call, so the widest window this geometry can produce has to decode well
-    /// inside that budget. At a pessimistic real-time factor of 1.0 (Parakeet
+    /// mechanical: past its timeout the manager abandons the ENGINE, not just
+    /// the call, so the widest window this geometry can produce has to decode
+    /// well inside the 120 s planning budget. (YAP-FX-04: the live timeout is
+    /// adaptive — `latency::adaptive_decode_timeout`, audio × measured RTF,
+    /// 30 s floor, 180 s cap — and a full-width window at the worst-case RTF
+    /// still fits it; see the geometry tests.) At a pessimistic real-time factor of 1.0 (Parakeet
     /// 0.6B on Metal runs far under it) a 37 s buffer is 37 s of decode against
     /// a 120 s ceiling.
     pub fn validate(&self) -> Result<(), String> {
@@ -143,6 +146,20 @@ impl ChunkConfig {
                 ceiling,
                 TRANSCRIBE_TIMEOUT.as_secs(),
                 WORST_CASE_RTF_BUDGET
+            ));
+        }
+        // yap-1106-sp-01 — every dictation take over 35 s now decodes in THESE
+        // windows, each under its own `latency::window_decode_timeout`
+        // (10–60 s). The widest window at the worst-case RTF has to finish
+        // inside its own bound, or a healthy-but-slow window would be cut and
+        // the take marked degraded for nothing.
+        let widest = self.max_decode_seconds();
+        let expected = widest * WORST_CASE_RTF_BUDGET;
+        let window_bound =
+            crate::latency::window_decode_timeout(widest, WORST_CASE_RTF_BUDGET).as_secs_f64();
+        if expected >= window_bound {
+            return Err(format!(
+                "widest window {widest}s decodes in {expected}s at RTF {WORST_CASE_RTF_BUDGET}, past its own {window_bound}s window timeout"
             ));
         }
         Ok(())
@@ -2868,6 +2885,47 @@ mod tests {
             ..cfg
         };
         assert!(swallowed.validate().is_err());
+    }
+
+    /// yap-1106-sp-01 — a full-width window at the worst-case RTF finishes
+    /// inside its OWN per-window timeout (10–60 s), and the dictation window
+    /// threshold is exactly one default window's width.
+    #[test]
+    fn default_geometry_fits_its_own_window_timeout_at_the_worst_case_rtf() {
+        use crate::latency::{window_decode_timeout, WINDOW_TIMEOUT_CAP};
+        let cfg = ChunkConfig::default();
+        cfg.validate().expect("the shipped geometry validates");
+        let widest = cfg.max_decode_seconds();
+        let bound = window_decode_timeout(widest, WORST_CASE_RTF_BUDGET);
+        assert!(widest * WORST_CASE_RTF_BUDGET < bound.as_secs_f64());
+        assert!(bound <= WINDOW_TIMEOUT_CAP);
+        // The dictation threshold IS one default window's width (SP-01).
+        assert_eq!(
+            crate::transcription::DICTATION_CHUNK_THRESHOLD_SECONDS,
+            cfg.max_seconds
+        );
+    }
+
+    /// YAP-FX-04 — the decode timeout is no longer a fixed 120 s: it is
+    /// audio × measured RTF, floored at 30 s and capped at 180 s. A full-width
+    /// meeting window decoding at the geometry's own worst-case RTF still
+    /// finishes inside it, so the adaptive bound never abandons a healthy chunk
+    /// the geometry sanctioned.
+    #[test]
+    fn default_geometry_fits_the_adaptive_decode_timeout_at_the_worst_case_rtf() {
+        use crate::latency::{adaptive_decode_timeout, DECODE_TIMEOUT_CAP, DECODE_TIMEOUT_FLOOR};
+        let cfg = ChunkConfig::default();
+        let widest = cfg.max_decode_seconds();
+        let timeout = adaptive_decode_timeout(widest, WORST_CASE_RTF_BUDGET);
+        assert!(
+            widest * WORST_CASE_RTF_BUDGET < timeout.as_secs_f64(),
+            "a {widest}s window at RTF {WORST_CASE_RTF_BUDGET} must decode inside {timeout:?}"
+        );
+        assert!(timeout >= DECODE_TIMEOUT_FLOOR && timeout <= DECODE_TIMEOUT_CAP);
+        // Unmeasured (first chunk of a launch) is never tighter than that.
+        assert!(adaptive_decode_timeout(widest, 0.0) >= timeout);
+        // The manager's ceiling never undercuts the budget the geometry plans for.
+        assert!(DECODE_TIMEOUT_CAP >= TRANSCRIBE_TIMEOUT);
     }
 
     /// The point of the whole VAD-cut design, and the property the eval

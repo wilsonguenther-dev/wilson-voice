@@ -10,7 +10,7 @@ import { BAR_DOCKS } from "./dock";
 import { stackClockLabel } from "./meeting";
 import {
   CLOCK_H, CLOCK_STACK_W, CLOCK_W, RESTING_PHASES,
-  boxGap, clockWidth, layoutProblems, layoutVars, meetingSurfaceProblems, pillLayout, unionBox,
+  boxGap, clockWidth, layoutProblems, layoutVars, meetingShellBox, meetingSurfaceProblems, pillLayout, unionBox,
   type MeetingMode,
 } from "./state";
 
@@ -32,17 +32,41 @@ describe("one pill during a meeting", () => {
       const l = pillLayout({ phase, meeting, dock });
       expect(l.clock).not.toBeNull();
       expect(boxGap(l.clock!, l.char)).toBe(0);
-      expect(l.shell).toEqual(unionBox([l.char, l.clock!]));
+      const side = dock === "left" || dock === "right";
+      expect(l.shell).toEqual(meetingShellBox(l.char, l.clock!, side));
+      if (!side) expect(l.shell).toEqual(unionBox([l.char, l.clock!]));
     }
   });
 
   it("a_resting_recording_meeting_draws_the_scene_as_the_pill", () => {
-    for (const phase of Array.from(RESTING_PHASES)) for (const dock of BAR_DOCKS) {
-      const l = pillLayout({ phase, meeting: "recording", dock });
+    for (const phase of Array.from(RESTING_PHASES)) {
+      const l = pillLayout({ phase, meeting: "recording", dock: "bottom" });
       expect(l.sceneCharacter).toBe(true);
       expect(l.clock).toEqual(l.char);
       expect(l.shell).toEqual(l.char);
       expect([l.char.w, l.char.h]).toEqual([CLOCK_W.recording, CLOCK_H]);
+    }
+  });
+
+  it("a_side_dock_meeting_keeps_the_narrow_tab_and_joins_the_clock_flush_to_it", () => {
+    // yap-1106-pill-vertical-dock-world keeps the side shell <= 64 px wide; the
+    // meeting clock is the inner-side segment of the same one shell, level with him.
+    for (const phase of ["idle", "sleepy", "listening"] as const) for (const dock of ["left", "right"] as const) {
+      const l = pillLayout({ phase, meeting: "recording", dock });
+      expect(l.sceneCharacter).toBe(false);
+      expect(l.char.w).toBeLessThanOrEqual(64);
+      expect(boxGap(l.clock!, l.char)).toBe(0);
+      if (dock === "left") expect(l.clock!.x).toBe(l.char.x + l.char.w);
+      else expect(l.clock!.x + l.clock!.w).toBe(l.char.x);
+      // level with him: the clock's rows lie inside his, so the shell is one band
+      expect(l.clock!.y).toBeGreaterThanOrEqual(l.char.y);
+      expect(l.clock!.y + l.clock!.h).toBeLessThanOrEqual(l.char.y + l.char.h);
+      expect(l.shell!.h).toBeCloseTo(CLOCK_H, 6);
+      expect(l.shell!.w).toBeCloseTo(l.char.w + l.clock!.w, 6);
+      // the shell never sits behind the bubble or the hint
+      expect(boxGap(l.shell!, l.bubble)).toBeGreaterThan(0);
+      expect(boxGap(l.shell!, l.hint)).toBeGreaterThan(0);
+      expect(meetingSurfaceProblems(l)).toEqual([]);
     }
   });
 

@@ -479,12 +479,19 @@ use wilson_voice_lib::transcribe_progress::{ChunkProgress, ProgressSink, Transcr
 /// for here, not a diff that slips past because the suite only knew about one.
 ///
 /// `(file, event ident or literal, what bounds its cadence)`
-const ACCOUNTED_PROGRESS_EMITTERS: [(&str, &str, &str); 2] = [
+const ACCOUNTED_PROGRESS_EMITTERS: [(&str, &str, &str); 3] = [
     (
         "src/lib.rs",
         "meeting_pipeline::MEETING_PROGRESS_EVENT",
         "yap-meetings-fix: one event per COMPLETED meeting window (>= ChunkConfig::min_seconds \
          = 25 s of audio) plus one at the end of a job — off the take path, never a timer",
+    ),
+    (
+        "src/lib.rs",
+        "transcription::ENGINE_LOAD_PROGRESS_EVENT",
+        "yap-1106-launch-walk: engine LOAD progress, not decode — emitted only when the whole \
+         percentage or the stage changes (report_progress dedupes), so at most ~100 events per \
+         engine load plus waiting/ready/failed; never during a take's decode, never a timer",
     ),
     (
         "src/transcribe_progress.rs",
@@ -918,17 +925,27 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // yap-1106-engine-owner — 2:2->4: the teardown-order test's stub
             // engine (`#[cfg(test)] mod tests`) spins in 2 ms test-only waits.
             (2, 4),
-            (5, 2),
+            // yap-1106-launch-walk — 5:2->3: the 5 ms poll of the slowed fake
+            // loader test in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
+            (5, 3),
             (10, 2),
             (20, 2),
             // yap-1106-retry-failed-dictation — ENGINE_IDLE_POLL (50 ms): a queued
             // retry re-checks `is_busy` on the single engine until the live take
             // hands it back, bounded by the clip-scaled retry deadline. Background
             // work waiting on a live take, not a take waiting on a chunk (docs/BUDGETS.md).
-            (50, 4),
+            // yap-fx-04-adaptive-decode-timeout — 50:4->5: a 50 ms manager
+            // ceiling passed to `effective_decode_timeout` in `#[cfg(test)] mod
+            // tests` (a value under test, never slept on).
+            // yap-1106-sp-01-window-long-takes — 50:5->6: a 50 ms window ceiling
+            // passed to `effective_window_timeout` in `#[cfg(test)] mod tests`
+            // (a value under test, never slept on).
+            (50, 6),
             (80, 1),
             (120, 1),
-            (150, 1),
+            // yap-1106-launch-walk — 150:1->2: the slowed fake loader's 150 ms load
+            // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
+            (150, 2),
             (200, 1),
             (300, 1),
             (400, 3),
@@ -942,14 +959,22 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // `#[cfg(test)] mod retry_engine_tests`: fake-engine decode durations,
             // test deadlines and 5/10 ms sleeps inside test-only wait loops. No
             // production wakeup was added to lib.rs (docs/BUDGETS.md).
-            (5, 5),
+            // yap-1106-quit-during-asr-crash — 5:5->6 is the 5 ms step of the
+            // test-only `stub_join` wait loop in `#[cfg(test)] mod tests`.
+            (5, 6),
             (10, 2),
             // yap-1106-retry-replay-regression — the 20 ms fake decode in
             // `#[cfg(test)] mod retry_engine_tests` (Retry-all over today's three
             // kept clips on one engine). Test-only; no production wakeup.
-            (20, 1),
+            // yap-1106-quit-during-asr-crash — 20:1->2 and 100:2->3 are the take /
+            // drain budgets its wedged-decode exit test passes in `#[cfg(test)]`.
+            (20, 2),
             (50, 1),
-            (100, 2),
+            // yap-1106-quit-during-asr-crash — EXIT_MEETING_JOIN_TIMEOUT (90 ms):
+            // the one-shot bound on joining the meeting worker at quit, sized so
+            // drain + join fit QuitStep::AsrDrain's 1 s deadline. Not a polling timer.
+            (90, 1),
+            (100, 3),
             (150, 2),
             (200, 1),
             (300, 2),
@@ -960,6 +985,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // (600 ms): one-shot quit deadlines, cut from 3 s each so the whole
             // quit fits lifecycle::QUIT_BUDGET. Not polling timers (docs/BUDGETS.md).
             (600, 1),
+            // yap-1106-quit-during-asr-crash — the 800 ms decode of the stub
+            // engine that ignores the cancel, in `#[cfg(test)] mod tests`.
+            (800, 1),
             (900, 1),
         ]),
     );

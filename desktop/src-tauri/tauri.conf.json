@@ -43,7 +43,8 @@
     "externalBin": [
       "binaries/yap-polish",
       "binaries/yap-diarize",
-      "binaries/yap-asr"
+      "binaries/yap-asr",
+      "binaries/yap-engine-ane"
     ],
     "resources": {
       "assets/sounds/dictation-start.wav": "sounds/dictation-start.wav",

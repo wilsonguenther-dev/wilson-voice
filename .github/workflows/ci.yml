@@ -85,6 +85,9 @@ jobs:
           cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
           cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
           cp target/release/yap-asr "src-tauri/binaries/yap-asr-${TRIPLE}"
+          # SP-10: the Neural Engine helper (Swift + FluidAudio, pinned). Same
+          # externalBin precondition as the three Rust sidecars.
+          bash ../scripts/build-ane-engine.sh
       # Reuses the artifacts just built, so this costs seconds. It runs each
       # protocol's tests a SECOND time — from inside the sidecar, where the
       # shared `*_protocol.rs` is compiled by the other end of the wire.

@@ -58,7 +58,10 @@ function placeCapsule(phase: LivePhase, meeting: MeetingMode, dock: FitDock, siz
     const cap = { x: PANEL_MARGIN, y: PANEL_MARGIN, w: s.w, h: s.h };
     return { cap, panel: { w: s.w + 2 * PANEL_MARGIN, h: s.h + 2 * PANEL_MARGIN } };
   }
-  const layout = pillLayout({ phase, meeting, dock: dock === "top" ? "bottom" : dock });
+  // yap-1106-pill-vertical-dock-world — on a left / right dock Yappy's layout
+  // box is the tall shell (vdock.ts, proven by vdock.test.ts); the horizontal
+  // capsule is checked here inside the horizontal layout's panel.
+  const layout = pillLayout({ phase, meeting, dock: "bottom" });
   const c = capsuleCentre(layout, size.w);
   const y = c.y - size.h / 2;
   const cap = { x: c.x - size.w / 2, y: dock === "top" ? layout.panel.h - (y + size.h) : y, w: size.w, h: size.h };

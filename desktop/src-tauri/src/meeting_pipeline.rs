@@ -38,6 +38,15 @@
 //!   silently on every launch. The worker also waits
 //!   [`PipelineDeps::start_delay`] (30 s in the app) before its first job, so a
 //!   launch-time requeue never races the dictation engine's first warm-up.
+//! - yap-fx-05 recovery waits its turn: a meeting the last run left behind
+//!   (recovered from a crash journal, or stranded mid-pipeline) is queued with
+//!   [`enqueue_recovered`]. Its decode starts no sooner than
+//!   [`RECOVERY_START_AFTER_LAUNCH`] after launch, only once dictation has been
+//!   quiet for [`RECOVERY_DICTATION_QUIET`], and only while the resource
+//!   governor allows heavy work — so a take dictated right after a relaunch has
+//!   the warm engine to itself. A user quit mid-job is not counted as the job
+//!   killing Yap; a meeting that did crash Yap twice stays `failed` with its
+//!   audio and a Retry, never dropped.
 //! - R3 `waiting_for_model`: when the pinned model's file is not on disk the row
 //!   becomes [`MeetingState::WaitingForModel`], KEEPS its audio, and
 //!   [`requeue_waiting_for_model`] puts it back on the queue when a model
@@ -72,6 +81,16 @@ pub const MAX_UNPROGRESSED_ATTEMPTS: u32 = 2;
 /// yap24-NT2 R2 — how long after launch the worker takes its first job: after
 /// the dictation engine's first warm-up, never racing it.
 pub const QUEUE_START_DELAY: Duration = Duration::from_secs(30);
+
+/// yap-fx-05 — a recovered or stranded meeting starts transcribing no sooner
+/// than this after launch (the forensics relaunch raced a take at 30 s).
+pub const RECOVERY_START_AFTER_LAUNCH: Duration = Duration::from_secs(60);
+
+/// yap-fx-05 — and only once dictation has been quiet this long.
+pub const RECOVERY_DICTATION_QUIET: Duration = Duration::from_secs(30);
+
+/// yap-fx-05 — how often a held recovery re-reads the dictation demand.
+const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
 /// yap24-NT2 R2 — the one honest sentence for a crash loop.
 pub const CRASH_LOOP_MESSAGE: &str =
@@ -137,6 +156,28 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 /// what is done, and the next launch's reconcile re-queues the rest.
 pub fn request_quit() {
     QUIT.store(true, Ordering::SeqCst);
+    // yap-fx-05: a quit is the user's choice, not the job killing Yap. If the
+    // exit then dies in teardown (the forensics SIGABRT), the next launch must
+    // not read this attempt as "died mid-job".
+    if forget_attempt_in_flight(&ATTEMPT_IN_FLIGHT) {
+        log::info!("meeting pipeline: quit mid-job attempt_counted=0");
+    }
+}
+
+/// yap-fx-05 — the attempt marker of the job running right now, if any.
+static ATTEMPT_IN_FLIGHT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Remove the marker `slot` names (and empty the slot). `true` when one was
+/// in flight.
+fn forget_attempt_in_flight(slot: &Mutex<Option<PathBuf>>) -> bool {
+    let taken = slot.lock().ok().and_then(|mut g| g.take());
+    match taken {
+        Some(path) => {
+            let _ = std::fs::remove_file(&path);
+            true
+        }
+        None => false,
+    }
 }
 
 fn quitting() -> bool {
@@ -262,6 +303,8 @@ pub struct PipelineDeps {
 struct Pending {
     queued: HashSet<String>,
     in_flight: usize,
+    /// yap-fx-05 — queued ids the last run left behind: they wait their turn.
+    recovered: HashSet<String>,
 }
 
 /// A handle on the worker. Cheap to clone.
@@ -274,7 +317,33 @@ pub struct MeetingPipeline {
     /// the recording clock straight to "Transcribing 0%" instead of going
     /// quiet while the ASR model loads for the first window.
     sink: ProgressSink,
+    /// yap-1106-quit-during-asr-crash — set by [`MeetingPipeline::stop_and_join`]:
+    /// the job in flight stands down at its next window and the worker thread
+    /// leaves its loop instead of starting the next queued meeting.
+    stop: Arc<AtomicBool>,
+    /// The worker thread, so the exit teardown can JOIN it — the engine a job
+    /// holds is dropped on that thread, and the join is how the quit knows it
+    /// was dropped BEFORE `exit()` runs ggml's C++ static destructors.
+    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Where the quit markers go (beside the resume ledgers).
+    progress_dir: PathBuf,
 }
+
+/// What [`MeetingPipeline::stop_and_join`] got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerJoin {
+    /// No worker thread to join (never spawned, or already joined).
+    NotRunning,
+    /// The worker left its loop and was joined inside the budget: every engine
+    /// its job held has been dropped on that thread.
+    Joined,
+    /// The worker is still inside a job when the budget ran out. The caller
+    /// must not let `exit()` run static destructors under it (`_exit` instead).
+    TimedOut,
+}
+
+/// Poll step for the bounded join.
+const JOIN_POLL: Duration = Duration::from_millis(5);
 
 impl MeetingPipeline {
     /// Queue a meeting. A meeting already queued is not queued twice.
@@ -297,6 +366,82 @@ impl MeetingPipeline {
             log::info!("meeting pipeline: queued {id}");
             (self.sink)(&queued_event(id));
         }
+    }
+
+    /// yap-fx-05 — queue a meeting the LAST run left behind (crash-recovered
+    /// or stranded). It waits its turn: [`RECOVERY_START_AFTER_LAUNCH`] after
+    /// launch, [`RECOVERY_DICTATION_QUIET`] of no dictation, and the governor.
+    pub fn enqueue_recovered(&self, id: &str) {
+        let (lock, _) = &*self.pending;
+        if let Ok(mut p) = lock.lock() {
+            p.recovered.insert(id.to_string());
+        }
+        log::info!("meeting pipeline: {id} recovered=1 waits_turn=1");
+        self.enqueue(id);
+    }
+
+    /// yap-1106-quit-during-asr-crash — the exit teardown's half of the worker:
+    /// tell the job in flight to stand down, mark every meeting still queued or
+    /// mid-job as interrupted by the quit (the next launch's reconcile re-queues
+    /// it and does not count the quit as a crash), wake an idle worker, and JOIN
+    /// the thread within `budget`.
+    ///
+    /// `TimedOut` leaves the handle in place, so [`worker_alive`] keeps saying
+    /// the thread is still running — the exit path then skips static
+    /// destructors with `_exit` rather than let ggml tear down a Metal device
+    /// a live decode is still using.
+    ///
+    /// [`worker_alive`]: Self::worker_alive
+    pub fn stop_and_join(&self, budget: Duration) -> WorkerJoin {
+        let started = Instant::now();
+        self.stop.store(true, Ordering::SeqCst);
+        let interrupted: Vec<String> = {
+            let (lock, _) = &*self.pending;
+            lock.lock()
+                .map(|p| p.queued.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        for id in &interrupted {
+            write_quit_marker(&self.progress_dir, id);
+        }
+        // An idle worker is blocked on the channel: an empty id wakes it, and
+        // the stop flag makes it leave instead of running anything.
+        if let Ok(tx) = self.tx.lock() {
+            let _ = tx.send(String::new());
+        }
+        let handle = self.worker.lock().ok().and_then(|mut h| h.take());
+        let Some(handle) = handle else {
+            return WorkerJoin::NotRunning;
+        };
+        while !handle.is_finished() {
+            if started.elapsed() >= budget {
+                if let Ok(mut slot) = self.worker.lock() {
+                    *slot = Some(handle);
+                }
+                log::warn!(
+                    "meeting_pipeline stop outcome=timed_out waited_ms={} interrupted={}",
+                    started.elapsed().as_millis(),
+                    interrupted.len()
+                );
+                return WorkerJoin::TimedOut;
+            }
+            std::thread::sleep(JOIN_POLL);
+        }
+        let _ = handle.join();
+        log::info!(
+            "meeting_pipeline stop outcome=joined waited_ms={} interrupted={}",
+            started.elapsed().as_millis(),
+            interrupted.len()
+        );
+        WorkerJoin::Joined
+    }
+
+    /// Is the worker thread still running? `false` once it has been joined.
+    pub fn worker_alive(&self) -> bool {
+        self.worker
+            .lock()
+            .map(|h| h.as_ref().is_some_and(|h| !h.is_finished()))
+            .unwrap_or(false)
     }
 
     /// Is a meeting queued or being transcribed? (yap24-NT4 R4)
@@ -368,13 +513,196 @@ pub fn enqueue(id: &str) -> bool {
     }
 }
 
+/// yap-fx-05 — [`MeetingPipeline::enqueue_recovered`] on the installed
+/// pipeline; what launch reconcile hands every stranded meeting to.
+pub fn enqueue_recovered(id: &str) -> bool {
+    match INSTALLED.get() {
+        Some(p) => {
+            p.enqueue_recovered(id);
+            true
+        }
+        None => {
+            diag_warn!(
+                "meeting_pipeline",
+                "meeting pipeline: not installed, {id} waits for the next launch",
+                id = id
+            );
+            false
+        }
+    }
+}
+
+// ── yap-fx-05: recovery waits its turn ──────────────────────────────────────
+
+/// Why a recovered meeting is still waiting. `as_str` is the log value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryHold {
+    /// Less than [`RECOVERY_START_AFTER_LAUNCH`] since launch.
+    LaunchGrace,
+    /// A dictation is recording or decoding right now.
+    Dictating,
+    /// The last dictation ended less than [`RECOVERY_DICTATION_QUIET`] ago.
+    DictationQuiet,
+}
+
+impl RecoveryHold {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecoveryHold::LaunchGrace => "launch_grace",
+            RecoveryHold::Dictating => "dictating",
+            RecoveryHold::DictationQuiet => "dictation_quiet",
+        }
+    }
+}
+
+/// The recovery-turn decision, pure. `since_last_dictation` is how long ago a
+/// dictation was last seen (`None`: none this launch).
+pub fn recovery_hold(
+    since_launch: Duration,
+    dictation_pending: bool,
+    since_last_dictation: Option<Duration>,
+) -> Option<RecoveryHold> {
+    if since_launch < RECOVERY_START_AFTER_LAUNCH {
+        return Some(RecoveryHold::LaunchGrace);
+    }
+    if dictation_pending {
+        return Some(RecoveryHold::Dictating);
+    }
+    match since_last_dictation {
+        Some(d) if d < RECOVERY_DICTATION_QUIET => Some(RecoveryHold::DictationQuiet),
+        _ => None,
+    }
+}
+
+/// When the worker last saw a dictation want the engine.
+static LAST_DICTATION_SEEN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// yap-fx-05 — note that a dictation is live now. The worker calls it every
+/// time it reads the demand; any dictation path may call it too.
+pub fn note_dictation_activity() {
+    if let Ok(mut g) = LAST_DICTATION_SEEN.lock() {
+        *g = Some(Instant::now());
+    }
+}
+
+fn since_last_dictation() -> Option<Duration> {
+    LAST_DICTATION_SEEN
+        .lock()
+        .ok()
+        .and_then(|g| g.map(|t| t.elapsed()))
+}
+
+/// Read the demand once, record it, and say whether a dictation is pending.
+fn dictation_pending_now(demand: &(dyn EngineDemand + Send + Sync)) -> bool {
+    let pending = demand.dictation_pending();
+    if pending {
+        note_dictation_activity();
+    }
+    pending
+}
+
+/// Hold a recovered meeting until [`recovery_hold`] clears. One INFO line per
+/// reason change, one at the end with how long it waited. `true` when `quit`
+/// fired first (the row stays `transcribing` for the next launch).
+pub fn wait_for_recovery_turn(
+    id: &str,
+    launched_at: Instant,
+    demand: &(dyn EngineDemand + Send + Sync),
+    quit: &dyn Fn() -> bool,
+) -> bool {
+    let started = Instant::now();
+    let mut last: Option<RecoveryHold> = None;
+    loop {
+        let pending = dictation_pending_now(demand);
+        let Some(hold) = recovery_hold(launched_at.elapsed(), pending, since_last_dictation())
+        else {
+            break;
+        };
+        if last != Some(hold) {
+            log::info!(
+                "meeting pipeline: {id} recovery_hold reason={} since_launch_ms={}",
+                hold.as_str(),
+                launched_at.elapsed().as_millis()
+            );
+            crate::diagnostics::set_state("meeting.state", "waiting_turn");
+            last = Some(hold);
+        }
+        if quit() {
+            return true;
+        }
+        std::thread::sleep(RECOVERY_POLL);
+    }
+    let waited = started.elapsed().as_millis() as u64;
+    log::info!("meeting pipeline: {id} recovery_hold_end waited_ms={waited}");
+    crate::diagnostics::record_duration("meeting", "recovery_hold", waited);
+    false
+}
+
+/// Everything a job waits for before it may load the engine: for a recovered
+/// meeting its turn AND the governor, re-checked together so a dictation that
+/// starts while the governor deferred still holds it. `true` = quit first.
+fn wait_for_turn(
+    deps: &PipelineDeps,
+    id: &str,
+    recovered: bool,
+    launched_at: Instant,
+    quit: &dyn Fn() -> bool,
+) -> bool {
+    loop {
+        if recovered && wait_for_recovery_turn(id, launched_at, &*deps.demand, quit) {
+            return true;
+        }
+        if wait_for_governor(id, quit) {
+            return true;
+        }
+        if !recovered
+            || recovery_hold(
+                launched_at.elapsed(),
+                dictation_pending_now(&*deps.demand),
+                since_last_dictation(),
+            )
+            .is_none()
+        {
+            return false;
+        }
+    }
+}
+
+/// yap-1106-quit-during-asr-crash — the installed pipeline's worker is still
+/// running (the exit path's "may static destructors run?" question). `false`
+/// with no pipeline installed.
+pub fn installed_worker_alive() -> bool {
+    INSTALLED.get().is_some_and(MeetingPipeline::worker_alive)
+}
+
+/// yap-1106-quit-during-asr-crash — stop and join the installed pipeline's
+/// worker; `NotRunning` when none is installed.
+pub fn stop_and_join_installed(budget: Duration) -> WorkerJoin {
+    INSTALLED
+        .get()
+        .map(|p| p.stop_and_join(budget))
+        .unwrap_or(WorkerJoin::NotRunning)
+}
+
 /// Spawn the ONE worker thread.
 pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
+    // yap-fx-05: the pipeline is spawned at launch; recovery counts from here.
+    let launched_at = Instant::now();
+    let stop = Arc::new(AtomicBool::new(false));
+    // The job's own quit check also hears this pipeline's stop, so a job in
+    // flight stands down at its next window when the exit teardown asks.
+    let mut deps = deps;
+    let outer_quit = Arc::clone(&deps.quit);
+    let job_stop = Arc::clone(&stop);
+    deps.quit = Arc::new(move || job_stop.load(Ordering::SeqCst) || outer_quit());
+    let worker_stop = Arc::clone(&stop);
+    let progress_dir = deps.progress_dir.clone();
     let (tx, rx) = mpsc::channel::<String>();
     let pending = Arc::new((
         Mutex::new(Pending {
             queued: HashSet::new(),
             in_flight: 0,
+            recovered: HashSet::new(),
         }),
         Condvar::new(),
     ));
@@ -387,16 +715,40 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
             // during the delay is not held up by it.
             let mut waited = Duration::ZERO;
             while waited < deps.start_delay && !quitting() && !(deps.quit)() {
+                // yap-fx-05: a take dictated during the delay counts toward
+                // the quiet window a recovered meeting waits for.
+                let _ = dictation_pending_now(&*deps.demand);
                 let step = Duration::from_millis(250).min(deps.start_delay - waited);
                 std::thread::sleep(step);
                 waited += step;
             }
             for id in rx {
+                // yap-1106-quit-during-asr-crash — a quit leaves the loop here,
+                // so the next queued meeting never starts on an engine the exit
+                // teardown is taking away; it stays `transcribing` for the next
+                // launch's reconcile.
+                if worker_stop.load(Ordering::SeqCst) || quitting() {
+                    break;
+                }
+                if id.is_empty() {
+                    continue;
+                }
+                // yap-fx-05: a meeting the last run left behind waits its turn
+                // (60 s after launch, 30 s of no dictation) before it may load
+                // the engine.
+                let recovered = {
+                    let (lock, _) = &*worker_pending;
+                    lock.lock()
+                        .map(|mut p| p.recovered.remove(&id))
+                        .unwrap_or(false)
+                };
                 // yap-1106-resource-governor: on a starved Mac the decode
                 // waits — in the queue, row still `transcribing`, the pill's
                 // chip saying why — until wall power / full, a "Run anyway",
                 // or quit. The recording is already safe on disk.
-                if wait_for_governor(&id, &|| quitting() || (deps.quit)()) {
+                if wait_for_turn(&deps, &id, recovered, launched_at, &|| {
+                    quitting() || (deps.quit)()
+                }) {
                     log::info!(
                         "meeting pipeline: {id} stays queued for next launch (quit while deferred)"
                     );
@@ -424,6 +776,11 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 // Any in-process end of the job (including a caught panic)
                 // clears the crash marker: only a dead PROCESS leaves it.
                 clear_attempt_marker(&deps.progress_dir, &id);
+                // A job that reached an end state is no longer interrupted —
+                // only a stand-down (`transcribing`) keeps its quit marker.
+                if !matches!(&result, Ok(Ok(MeetingState::Transcribing))) {
+                    clear_quit_marker(&deps.progress_dir, &id);
+                }
                 match result {
                     Ok(Ok(state)) => {
                         log::info!("meeting pipeline: {id} → {}", state.as_str());
@@ -455,13 +812,24 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
                 cv.notify_all();
             }
         });
-    if let Err(e) = spawned {
-        diag_error!("meeting_pipeline", "meeting pipeline: worker thread failed to spawn: {err}", err = e);
-    }
+    let worker = match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            diag_error!(
+                "meeting_pipeline",
+                "meeting pipeline: worker thread failed to spawn: {err}",
+                err = e
+            );
+            None
+        }
+    };
     MeetingPipeline {
         tx: Arc::new(Mutex::new(tx)),
         pending,
         sink,
+        stop,
+        worker: Arc::new(Mutex::new(worker)),
+        progress_dir,
     }
 }
 
@@ -703,6 +1071,47 @@ fn clear_attempt_marker(dir: &Path, meeting_id: &str) {
     let _ = std::fs::remove_file(attempt_marker_path(dir, meeting_id));
 }
 
+// ── yap-1106-quit-during-asr-crash: a quit is not a crash ───────────────────
+
+/// `<progress_dir>/<id>.quit-interrupted` — written by the exit teardown for
+/// every meeting still queued or mid-job when the app quit. Its presence tells
+/// the next launch's reconcile WHY the row is `transcribing`.
+pub fn quit_marker_path(dir: &Path, meeting_id: &str) -> PathBuf {
+    dir.join(format!("{meeting_id}.quit-interrupted"))
+}
+
+/// Record that the quit interrupted this meeting's job.
+pub fn write_quit_marker(dir: &Path, meeting_id: &str) {
+    let path = quit_marker_path(dir, meeting_id);
+    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = std::fs::write(&path, b"quit\n") {
+        diag_warn!(
+            "meeting_pipeline",
+            "meeting pipeline: cannot write {file}: {err}",
+            file = crate::diagnostics::basename(&path),
+            err = e
+        );
+    }
+}
+
+fn clear_quit_marker(dir: &Path, meeting_id: &str) {
+    let _ = std::fs::remove_file(quit_marker_path(dir, meeting_id));
+}
+
+/// Launch side: was this meeting's job interrupted by a quit? Consumes the
+/// marker. When it was, the attempt marker that job left (a forced `_exit`
+/// never reaches the worker's clear) is removed too — quitting is not the
+/// meeting taking Yap down, so it must never count toward the crash-loop guard.
+pub fn take_quit_marker(dir: &Path, meeting_id: &str) -> bool {
+    let path = quit_marker_path(dir, meeting_id);
+    if !path.exists() {
+        return false;
+    }
+    clear_quit_marker(dir, meeting_id);
+    clear_attempt_marker(dir, meeting_id);
+    true
+}
+
 /// Ledger progress summed over both tracks — what "progress" means for R2.
 fn ledger_progress(dir: &Path, meeting_id: &str) -> f64 {
     let store = JsonProgressStore::new(dir);
@@ -759,7 +1168,17 @@ pub fn guarded_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, String
             progress_at_start: progress_now,
         },
     );
+    // yap-fx-05: a quit from here on forgets the marker (see `request_quit`).
+    if let Ok(mut slot) = ATTEMPT_IN_FLIGHT.lock() {
+        *slot = Some(attempt_marker_path(dir, id));
+    }
+    if quitting() {
+        forget_attempt_in_flight(&ATTEMPT_IN_FLIGHT);
+    }
     let out = run_meeting_job(deps, id);
+    if let Ok(mut slot) = ATTEMPT_IN_FLIGHT.lock() {
+        *slot = None;
+    }
     clear_attempt_marker(dir, id);
     out
 }
@@ -812,6 +1231,7 @@ pub fn meeting_sidecar_paths(dir: &Path, meeting_id: &str) -> Vec<PathBuf> {
                     rest.ends_with(".asr-progress.json")
                         || rest == "asr-progress.json"
                         || rest == "index.jsonl"
+                        || rest == "quit-interrupted"
                         || (rest.starts_with('t') && rest.ends_with(".index.jsonl"))
                 })
                 .map(|e| e.path())
@@ -1048,6 +1468,29 @@ fn median_of(v: &[f64]) -> f64 {
     }
 }
 
+/// yap-1106-vocab-bias — apply the user's Dictionary to one MEETING segment
+/// before it is stored, exactly as dictation applies it (same rules, same
+/// applier: [`Database::apply_dictionary_counted`]). Before this, the Dictionary
+/// only reached dictation, so a meeting kept "Trivia" for Drivia. A Dictionary
+/// read failure keeps the recogniser's text: it never fails a meeting window.
+/// Returns the segment and how many replacements fired.
+pub fn vocab_segment(db: &Database, mut segment: NewMeetingSegment) -> (NewMeetingSegment, usize) {
+    match db.apply_dictionary_counted(&segment.text) {
+        Ok((text, n)) => {
+            if n > 0 && !text.trim().is_empty() {
+                segment.text = text;
+                (segment, n)
+            } else {
+                (segment, 0)
+            }
+        }
+        Err(e) => {
+            log::warn!("vocab failed track={} error={e}", segment.track);
+            (segment, 0)
+        }
+    }
+}
+
 /// The ledger the driver writes through: DB segment first, ledger second.
 struct SegmentWritingStore<'a> {
     inner: JsonProgressStore,
@@ -1061,6 +1504,9 @@ struct SegmentWritingStore<'a> {
     deps: &'a PipelineDeps,
     /// Decoder milliseconds summed over this run's windows on this track.
     decode_ms: u64,
+    /// yap-1106-vocab-bias: Dictionary replacements made on this track's
+    /// segments (logged once per track as `vocab applied track=… replacements=…`).
+    vocab_replacements: usize,
     /// yap-audit-utterance-segments — rows written on this track this run,
     /// and the windows they came from, for the per-track `utterances` line.
     rows_written: usize,
@@ -1095,7 +1541,15 @@ impl ProgressStore for SegmentWritingStore<'_> {
     }
 
     fn record_chunk(&mut self, key: &str, chunk: &ChunkOutcome) -> Result<(), String> {
-        let segments = chunk_segments(chunk, self.track);
+        // yap-1106-vocab-bias: every utterance row passes through the
+        // Dictionary before it is stored, as dictation does.
+        let raw = chunk_segments(chunk, self.track);
+        let mut segments: Vec<NewMeetingSegment> = Vec::with_capacity(raw.len());
+        for segment in raw {
+            let (segment, replaced) = vocab_segment(self.db, segment);
+            self.vocab_replacements += replaced;
+            segments.push(segment);
+        }
         if !segments.is_empty() {
             self.db
                 .append_meeting_segments(self.meeting_id, &segments)?;
@@ -1357,6 +1811,7 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
             duration: meeting.duration_seconds,
             deps,
             decode_ms: 0,
+            vocab_replacements: 0,
             rows_written: 0,
             windows_written: 0,
         };
@@ -1405,6 +1860,11 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
                     interrupted: transcript.interrupted,
                 },
             )
+        );
+        log::info!(
+            "vocab applied track={} replacements={} meeting={id}",
+            track,
+            store.vocab_replacements
         );
         if transcript.interrupted {
             log::info!(
@@ -1505,6 +1965,57 @@ mod nt6_retry_tests {
         dir
     }
 
+    /// yap-1106-vocab-bias: the Dictionary reaches MEETING segments. The 8
+    /// misheard pairs on a meeting-segment fixture come out spelled right, are
+    /// stored that way, and the track keeps its attribution.
+    #[test]
+    fn vocab_fixes_the_eight_pairs_on_a_meeting_segment() {
+        let db = Database::open_in_memory().expect("db");
+        assert_eq!(db.add_suggested_dictionary_terms().expect("suggest"), 9);
+        let m = db
+            .create_meeting("Pipeline review", "mic")
+            .expect("meeting");
+        let raw = NewMeetingSegment::new(
+            12.0,
+            41.5,
+            "so Trivia and Gunther pitched Plus Lane to ClassLank, ClassPlank and St. Marcos \
+             over Whisper Fill, Henshake and TechServe.",
+        )
+        .on_track(1);
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 9);
+        assert_eq!(seg.track, 1);
+        assert_eq!(
+            seg.text,
+            "so Drivia and Guenther pitched Postline to ClassLink, ClassLink and San Marcos \
+             over Wispr Flow, Handshake and TechServ."
+        );
+        db.append_meeting_segments(&m.id, std::slice::from_ref(&seg))
+            .expect("append");
+        let stored = db.list_meeting_segments(&m.id).expect("segments");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].text, seg.text);
+    }
+
+    /// No false positive in a meeting: "trivia night" stays when Drivia is not
+    /// in the speaker's context, and nothing is counted.
+    #[test]
+    fn vocab_leaves_trivia_night_alone_in_a_meeting() {
+        let db = Database::open_in_memory().expect("db");
+        db.add_suggested_dictionary_terms().expect("suggest");
+        let raw = NewMeetingSegment::new(
+            0.0,
+            8.0,
+            "Trivia night is Thursday, bring a team for trivia.",
+        );
+        let (seg, n) = vocab_segment(&db, raw);
+        assert_eq!(n, 0);
+        assert_eq!(
+            seg.text,
+            "Trivia night is Thursday, bring a team for trivia."
+        );
+    }
+
     #[test]
     fn retry_needs_audio_kept_and_a_wav_on_disk() {
         let yes = |_: &Path| true;
@@ -1567,6 +2078,185 @@ mod nt6_retry_tests {
         let after = db.get_meeting(&m.id).expect("read").expect("row");
         assert_eq!(after.state, "transcribing");
         assert_eq!(after.segment_count, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod fx05_recovery_tests {
+    use super::*;
+    use crate::meeting_asr::NoDemand;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yap-fx05-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn s(secs: u64) -> Duration {
+        Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn recovery_holds_until_sixty_seconds_after_launch() {
+        assert_eq!(RECOVERY_START_AFTER_LAUNCH, s(60));
+        assert_eq!(
+            recovery_hold(s(0), false, None),
+            Some(RecoveryHold::LaunchGrace)
+        );
+        assert_eq!(
+            recovery_hold(s(30), false, None),
+            Some(RecoveryHold::LaunchGrace)
+        );
+        assert_eq!(
+            recovery_hold(Duration::from_millis(59_999), false, None),
+            Some(RecoveryHold::LaunchGrace)
+        );
+        assert_eq!(recovery_hold(s(60), false, None), None);
+    }
+
+    #[test]
+    fn recovery_waits_for_thirty_quiet_seconds_after_dictation() {
+        assert_eq!(RECOVERY_DICTATION_QUIET, s(30));
+        // Launch grace is over, but a take ended 5 s ago.
+        assert_eq!(
+            recovery_hold(s(90), false, Some(s(5))),
+            Some(RecoveryHold::DictationQuiet)
+        );
+        assert_eq!(
+            recovery_hold(s(90), false, Some(Duration::from_millis(29_999))),
+            Some(RecoveryHold::DictationQuiet)
+        );
+        assert_eq!(recovery_hold(s(90), false, Some(s(30))), None);
+    }
+
+    #[test]
+    fn a_live_dictation_holds_recovery() {
+        assert_eq!(
+            recovery_hold(s(600), true, None),
+            Some(RecoveryHold::Dictating)
+        );
+        assert_eq!(
+            recovery_hold(s(600), true, Some(s(0))),
+            Some(RecoveryHold::Dictating)
+        );
+    }
+
+    #[test]
+    fn a_take_ten_seconds_after_relaunch_keeps_the_engine_to_itself() {
+        // The forensics shape: relaunch, a take at 10 s that runs 83 s. The
+        // recovered meeting may not load the engine at any point of it, nor in
+        // the 30 s after it ends.
+        let take_start = 10;
+        let take_end = take_start + 83;
+        for t in 0..=take_end {
+            let dictating = t >= take_start;
+            assert!(
+                recovery_hold(s(t), dictating, if dictating { Some(s(0)) } else { None }).is_some(),
+                "recovery must wait at t={t}s"
+            );
+        }
+        for after in 0..30 {
+            assert!(recovery_hold(s(take_end + after), false, Some(s(after))).is_some());
+        }
+        assert_eq!(recovery_hold(s(take_end + 30), false, Some(s(30))), None);
+    }
+
+    #[test]
+    fn the_hold_reasons_read_as_log_values() {
+        assert_eq!(RecoveryHold::LaunchGrace.as_str(), "launch_grace");
+        assert_eq!(RecoveryHold::Dictating.as_str(), "dictating");
+        assert_eq!(RecoveryHold::DictationQuiet.as_str(), "dictation_quiet");
+    }
+
+    #[test]
+    fn a_held_recovery_returns_on_quit() {
+        // Inside the launch grace: held, and a quit ends the wait at once.
+        let quit = || true;
+        assert!(wait_for_recovery_turn(
+            "m-quit",
+            Instant::now(),
+            &NoDemand,
+            &quit
+        ));
+    }
+
+    #[test]
+    fn a_quit_mid_job_forgets_the_attempt_marker() {
+        let dir = scratch("quit");
+        write_attempt_marker(
+            &dir,
+            "m1",
+            AttemptMarker {
+                unprogressed_crashes: 1,
+                progress_at_start: 0.0,
+            },
+        );
+        assert!(read_attempt_marker(&dir, "m1").is_some());
+        let slot = Mutex::new(Some(attempt_marker_path(&dir, "m1")));
+        assert!(forget_attempt_in_flight(&slot));
+        assert!(
+            read_attempt_marker(&dir, "m1").is_none(),
+            "a quit is not a crash"
+        );
+        assert!(slot.lock().expect("slot").is_none());
+        assert!(!forget_attempt_in_flight(&slot), "nothing in flight twice");
+        // The next launch therefore counts no crash for it.
+        assert_eq!(
+            unprogressed_crashes(read_attempt_marker(&dir, "m1"), 0.0),
+            0
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crash_looped_meeting_stays_retryable() {
+        // Two launches died mid-job with no progress: the guard stops retrying
+        // on its own…
+        let marker = AttemptMarker {
+            unprogressed_crashes: 1,
+            progress_at_start: 12.0,
+        };
+        assert!(unprogressed_crashes(Some(marker), 12.0) >= MAX_UNPROGRESSED_ATTEMPTS);
+        assert!(CRASH_LOOP_MESSAGE.contains("Retry"));
+        assert!(CRASH_LOOP_MESSAGE.contains("audio is kept"));
+
+        // …but the row it leaves keeps its audio, is not requeued or deleted by
+        // the next launch's reconcile, and a Retry runs it again.
+        let db = Database::open_in_memory().expect("db");
+        let dir = scratch("loop");
+        let wav = dir.join("mic.wav");
+        std::fs::write(&wav, b"RIFF").expect("wav");
+        let m = db.create_meeting("Standup", "mic").expect("meeting");
+        db.finish_meeting(&m.id, 90.0, Some(&wav)).expect("finish");
+        db.set_meeting_state(&m.id, MeetingState::Failed, Some(CRASH_LOOP_MESSAGE))
+            .expect("failed");
+
+        let queued = std::cell::RefCell::new(Vec::<String>::new());
+        let reconciled = crate::meeting_control::reconcile_stranded_meetings(&db, &dir, &|id| {
+            queued.borrow_mut().push(id.to_string())
+        });
+        assert!(reconciled.is_empty(), "a failed row is not stranded");
+        assert!(queued.borrow().is_empty(), "never retried silently");
+        let row = db.get_meeting(&m.id).expect("read").expect("row kept");
+        assert_eq!(row.state, "failed");
+        assert!(row.audio_kept, "audio kept for the Retry");
+        assert_eq!(
+            retry_audio_refusal(row.audio_kept, row.mic_wav_path.as_deref(), |p| p.is_file()),
+            None,
+            "Retry is offered"
+        );
+        reset_for_retry(&db, &dir, &m.id).expect("Retry runs");
+        let after = db.get_meeting(&m.id).expect("read").expect("row");
+        assert_eq!(after.state, "transcribing");
+        assert!(wav.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
