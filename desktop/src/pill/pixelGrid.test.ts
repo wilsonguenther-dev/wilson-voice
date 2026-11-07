@@ -288,3 +288,19 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
     expect(classic).not.toMatch(/getContext\(|<canvas/);
   });
 });
+
+describe("yap-1106-fb-10 sceneBlit cell override", () => {
+  const base = { rect: { x: 1, y: 1, w: 70, h: 54 }, view: { w: 26, h: 7 }, centre: { x: 137, y: 35.5 }, buffer: { w: 280, h: 72 }, dpr: 1 };
+  it("uses the caller's fitted cell when it still covers the window", () => {
+    expect(sceneBlit({ ...base, cell: 1 }).cell).toBe(1);
+    expect(sceneBlit({ ...base, cell: 2.7 }).cell).toBe(2);
+  });
+  it("never goes below the cell at which the buffer covers the window", () => {
+    expect(sceneBlit({ ...base, buffer: { w: 40, h: 40 }, cell: 1 }).cell).toBe(coverCell(70, 54, 40, 40));
+  });
+  it("ignores a cell that is not a whole number >= 1 and fits the view instead", () => {
+    const fitted = sceneBlit(base).cell;
+    expect(sceneBlit({ ...base, cell: Number.NaN }).cell).toBe(fitted);
+    expect(sceneBlit({ ...base, cell: 0 }).cell).toBe(fitted);
+  });
+});
