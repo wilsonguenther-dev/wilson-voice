@@ -3090,11 +3090,19 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     // YV63: the take's crash journal spills into the SAME recovery dir a failed
     // take is parked in, so a recovered clip lands inside the retry + 7-day
     // purge lifecycle that already exists.
+    // SP-06 — the warm Silero the take analyses itself with WHILE it is
+    // captured (same gate as the release-side pass: the `denoise` setting).
+    let stream_vad = if denoise {
+        state.vad.lock().clone()
+    } else {
+        None
+    };
     match record::start_recording(
         data_dir().join("recordings"),
         &recovery_dir(),
         denoise,
         pressed_at,
+        stream_vad,
     ) {
         Ok(active) => {
             let level = active.level.clone();
