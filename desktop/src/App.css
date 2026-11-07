@@ -4030,3 +4030,108 @@ button.primary.big {
 .news-cadence-last p {
   margin: 0;
 }
+
+/* yap-1106-news-home-briefing — the Home briefing: one contained card under
+   the studio, the pair in its header, three stories in a row, the footer. */
+.news-briefing {
+  margin: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.news-briefing-head {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+.news-briefing-pair {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  flex: none;
+}
+.news-briefing-sprite {
+  image-rendering: pixelated;
+}
+.news-briefing-says {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.news-briefing-says h3,
+.news-briefing-says p {
+  margin: 0;
+}
+.news-briefing-stories {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+}
+.news-briefing-story {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+.news-briefing-story h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.news-briefing-tag {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent-action-ink);
+  background: var(--accent-action-soft);
+  border-radius: var(--radius-xs);
+  padding: 0 var(--space-1);
+}
+.news-briefing-line {
+  margin: 0;
+  color: var(--text-primary);
+}
+.news-briefing-source {
+  margin-top: auto;
+  align-self: flex-start;
+  text-align: left;
+  color: var(--accent-data-ink);
+}
+.news-briefing-quotes {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.news-briefing-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.news-briefing-foot p {
+  margin: 0;
+}
+.news-briefing-topics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.news-briefing-chip {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font-size: 0.8rem;
+}
