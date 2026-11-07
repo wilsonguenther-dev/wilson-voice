@@ -25,3 +25,5 @@ pub fn refresh_ranked(
         .inspect_err(|e| log::warn!("news cache_failed op=ingest error=\"{e}\""))?;
     Ok((report, ingest))
 }
+/// yap-1106-fb-14-news-quote-key — the optional own quote-feed key (Keychain).
+pub mod quote_key;
