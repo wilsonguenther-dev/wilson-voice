@@ -104,6 +104,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/friendVisits.ts": { lines: 95, branches: 85, functions: 95, statements: 95 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
+  // yap-1106-pill-vertical-dock-world — floors set below the authored test's reach (no run allowed); the integrator raises them to the measured value.
+  "pill/vdock.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
