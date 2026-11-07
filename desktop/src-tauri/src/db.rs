@@ -222,11 +222,7 @@ pub struct NoteVersion {
 
 /// DB-D — the rail's one-line preview: the first non-blank line, ≤ 140 chars.
 pub fn note_preview(content: &str) -> String {
-    let line = content
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
+    let line = content.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
     line.chars().take(140).collect()
 }
 
@@ -250,12 +246,7 @@ fn map_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
 
 impl From<Note> for ScratchNote {
     fn from(n: Note) -> Self {
-        ScratchNote {
-            id: n.id,
-            title: n.title,
-            body: n.content,
-            updated_at: n.modified,
-        }
+        ScratchNote { id: n.id, title: n.title, body: n.content, updated_at: n.modified }
     }
 }
 
@@ -2353,10 +2344,7 @@ impl Database {
     }
 
     pub fn set_system_audio_denial_streak(&self, streak: u32) -> Result<(), String> {
-        self.setting_set(
-            meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY,
-            &streak.to_string(),
-        )
+        self.setting_set(meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY, &streak.to_string())
     }
 
     /// Close out capture: end time, duration, and the WAV the retention sweep
@@ -2793,18 +2781,11 @@ impl Database {
     /// order as [`Self::list_meeting_segments`]. Only the Transcript's "N lines
     /// hidden as speaker echo - Show" reads these; render, export, search and
     /// notes input never do.
-    pub fn list_echo_suppressed_segments(
-        &self,
-        meeting_id: &str,
-    ) -> Result<Vec<MeetingSegment>, String> {
+    pub fn list_echo_suppressed_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
         self.segments_with_echo_flag(meeting_id, true)
     }
 
-    fn segments_with_echo_flag(
-        &self,
-        meeting_id: &str,
-        suppressed: bool,
-    ) -> Result<Vec<MeetingSegment>, String> {
+    fn segments_with_echo_flag(&self, meeting_id: &str, suppressed: bool) -> Result<Vec<MeetingSegment>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -2896,11 +2877,7 @@ impl Database {
     /// yap24-NT11 — flag one mic segment as speaker echo: it stays in the table
     /// (reviewable, re-derivable) and leaves the render, export and notes
     /// input, which all read [`Db::list_meeting_segments`].
-    pub fn mark_segment_suppressed_as_echo(
-        &self,
-        meeting_id: &str,
-        segment_id: &str,
-    ) -> Result<bool, String> {
+    pub fn mark_segment_suppressed_as_echo(&self, meeting_id: &str, segment_id: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let n = conn
             .execute(
@@ -4176,13 +4153,7 @@ impl Database {
         conn.execute(
             "INSERT INTO voice_preferences (id, spoken, filter, rule, created_at, active)
              VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-            params![
-                row.id,
-                row.spoken,
-                row.filter,
-                row.rule,
-                row.created_at.to_rfc3339()
-            ],
+            params![row.id, row.spoken, row.filter, row.rule, row.created_at.to_rfc3339()],
         )
         .map_err(|e| PreferenceError::Storage(e.to_string()))?;
         Ok(row)
@@ -4240,9 +4211,7 @@ impl Database {
 
     /// The whole append-only history, newest first — pending, active and
     /// retracted alike.
-    pub fn list_voice_preferences(
-        &self,
-    ) -> Result<Vec<crate::voice_prefs::VoicePreference>, String> {
+    pub fn list_voice_preferences(&self) -> Result<Vec<crate::voice_prefs::VoicePreference>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -4274,10 +4243,7 @@ impl Database {
     /// The bounded rule texts for one take — what [`crate::polish::PolishConfig::with_preferences`]
     /// receives. A read failure degrades to no rules: a preference must never
     /// cost the user their dictation.
-    pub fn matching_voice_preferences(
-        &self,
-        take: &crate::voice_prefs::TakeContext<'_>,
-    ) -> Vec<String> {
+    pub fn matching_voice_preferences(&self, take: &crate::voice_prefs::TakeContext<'_>) -> Vec<String> {
         match self.list_voice_preferences() {
             Ok(rows) => crate::voice_prefs::matching_rules(&rows, take),
             Err(e) => {
@@ -4600,11 +4566,7 @@ impl Database {
     /// The main window's Scratchpad view (and DB-C's Clear History test)
     /// read notes through this legacy shape; it is the same `notes` table.
     pub fn list_scratch(&self) -> Result<Vec<ScratchNote>, String> {
-        Ok(self
-            .list_notes()?
-            .into_iter()
-            .map(ScratchNote::from)
-            .collect())
+        Ok(self.list_notes()?.into_iter().map(ScratchNote::from).collect())
     }
 
     /// A Save from the main window's view is a finalize: one version row.
@@ -4630,8 +4592,7 @@ impl Database {
             ))
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], map_note).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
     }
 
     pub fn get_note(&self, id: &str) -> Result<Option<Note>, String> {
@@ -4662,11 +4623,7 @@ impl Database {
         let sql = format!(
             "SELECT {} FROM notes_fts f JOIN notes n ON n.rowid = f.rowid
              WHERE notes_fts MATCH ?1 ORDER BY n.pinned DESC, n.modified DESC",
-            NOTE_COLS
-                .split(", ")
-                .map(|c| format!("n.{c}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            NOTE_COLS.split(", ").map(|c| format!("n.{c}")).collect::<Vec<_>>().join(", ")
         );
         if let Ok(mut stmt) = conn.prepare(&sql) {
             if let Ok(rows) = stmt.query_map(params![fts], map_note) {
@@ -4684,17 +4641,11 @@ impl Database {
         let rows = stmt
             .query_map(params![format!("%{q}%")], map_note)
             .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
     }
 
     /// Upsert the note row (keeps `created` and `pinned`). Caller holds the lock.
-    fn upsert_note(
-        conn: &Connection,
-        id: &str,
-        title: &str,
-        content: &str,
-    ) -> rusqlite::Result<()> {
+    fn upsert_note(conn: &Connection, id: &str, title: &str, content: &str) -> rusqlite::Result<()> {
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO notes (id, title, content, preview, pinned, created, modified, searchable_content)
@@ -4779,8 +4730,7 @@ impl Database {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
     }
 
     /// DB-D — a note and its whole history go together. The explicit DELETE

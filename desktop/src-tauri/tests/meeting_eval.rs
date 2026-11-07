@@ -414,10 +414,7 @@ fn corpus() -> Option<PathBuf> {
     // yap24-NT2 R5: on a machine EXPECTED to have the corpus, absence is a
     // failure, never a green skip.
     if eval_required() {
-        panic!(
-            "{REQUIRE_ENV}=1 but {CORPUS_ABSENT} (looked in {})",
-            root.display()
-        );
+        panic!("{REQUIRE_ENV}=1 but {CORPUS_ABSENT} (looked in {})", root.display());
     }
     eprintln!("{CORPUS_ABSENT}");
     None
@@ -438,9 +435,7 @@ const MODEL_DIR_ENV: &str = "YAP_MODEL_DIR";
 const DATA_DIR_ENV: &str = "YAP_DATA_DIR";
 
 fn eval_required() -> bool {
-    std::env::var(REQUIRE_ENV)
-        .map(|v| v.trim() == "1")
-        .unwrap_or(false)
+    std::env::var(REQUIRE_ENV).map(|v| v.trim() == "1").unwrap_or(false)
 }
 
 static MODEL_PROVISIONED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
@@ -8178,8 +8173,8 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
     use std::sync::Arc;
     use std::time::Instant;
     use wilson_voice_lib::db::Database;
-    use wilson_voice_lib::meeting_asr::{MeetingAsrConfig, NoDemand, WarmEngineChunkAsr};
     use wilson_voice_lib::meeting_pipeline::{run_meeting_job, MeetingEngine, PipelineDeps};
+    use wilson_voice_lib::meeting_asr::{MeetingAsrConfig, NoDemand, WarmEngineChunkAsr};
     use wilson_voice_lib::meetings::MeetingState as RowState;
     use wilson_voice_lib::transcription::TranscriptionManager;
 
@@ -8188,10 +8183,7 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
     let pinned = wilson_voice_lib::models::recommended_model();
     if !wilson_voice_lib::models::is_downloaded(pinned) {
         // Unreachable under YAP_EVAL_REQUIRE=1: provisioning panicked already.
-        eprintln!(
-            "pinned model {} is not installed, skipping the pipeline arm",
-            pinned.id
-        );
+        eprintln!("pinned model {} is not installed, skipping the pipeline arm", pinned.id);
         return;
     }
     let model_path = wilson_voice_lib::models::model_path(pinned).expect("pinned model path");
@@ -8203,9 +8195,7 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
     let _ = fs::remove_dir_all(&scratch);
     fs::create_dir_all(&scratch).expect("scratch");
     let db = Arc::new(Database::open(scratch.join("eval.db")).expect("scratch db"));
-    let row = db
-        .create_meeting("lecture-15min eval", "manual")
-        .expect("row");
+    let row = db.create_meeting("lecture-15min eval", "manual").expect("row");
     let wav = root.join(LECTURE).join("audio.wav");
     db.finish_meeting(&row.id, meta.duration_seconds, Some(&wav))
         .expect("finish");
@@ -8222,8 +8212,7 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
         // pipeline now hands MeetingAsr the warm Silero session, so this arm
         // loads the same model; without it the job plans on the fixed clock.
         vad: Arc::new(|| {
-            let model =
-                silero_model().ok_or_else(|| "silero VAD model not downloaded".to_string())?;
+            let model = silero_model().ok_or_else(|| "silero VAD model not downloaded".to_string())?;
             WarmVad::load(&model)
                 .map(|v| Arc::new(v) as Arc<dyn VoiceActivity + Send + Sync>)
                 .map_err(|e| e.to_string())

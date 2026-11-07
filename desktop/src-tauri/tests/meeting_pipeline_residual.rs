@@ -745,9 +745,7 @@ fn a_partial_capture_that_waited_for_a_model_still_ends_partial() {
         {
             let seen = Mutex::new(&mut queued);
             if via_reconcile {
-                reconcile_stranded_meetings(&db, &dir, &|m| {
-                    seen.lock().unwrap().push(m.to_string())
-                });
+                reconcile_stranded_meetings(&db, &dir, &|m| seen.lock().unwrap().push(m.to_string()));
             } else {
                 requeue_waiting_for_model(&db, &|m| seen.lock().unwrap().push(m.to_string()));
             }

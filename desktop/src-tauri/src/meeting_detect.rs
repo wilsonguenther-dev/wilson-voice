@@ -762,13 +762,16 @@ pub fn start_watch(
                 {
                     rx.recv_timeout(POLL_INTERVAL)
                 } else {
-                    rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                    rx.recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
                 };
                 match woke {
                     // Coalesce a burst of notifications into one evaluation.
                     Ok(()) => while rx.try_recv().is_ok() {},
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(POLL_INTERVAL),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(POLL_INTERVAL)
+                    }
                 }
             }
         });

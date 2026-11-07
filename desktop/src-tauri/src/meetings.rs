@@ -1359,10 +1359,7 @@ mod tests {
         let out = checkbox_action_items(body);
         assert!(out.contains("- Keep $49 (00:01)"), "{out}");
         assert!(out.contains("- [ ] Send the doc (Call, 00:02)"), "{out}");
-        assert!(
-            out.contains("- [ ] Already a task") && !out.contains("[ ] [ ]"),
-            "{out}"
-        );
+        assert!(out.contains("- [ ] Already a task") && !out.contains("[ ] [ ]"), "{out}");
         assert!(out.contains("- Annual discount? (00:03)"), "{out}");
     }
 
@@ -1519,18 +1516,12 @@ mod tests {
     fn export_file_name_is_date_then_title() {
         let started = Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap();
         let name = export_file_name("Weekly sync / Q3 (planning)", started);
-        let local_date = started
-            .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d")
-            .to_string();
+        let local_date = started.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
         assert_eq!(name, format!("{local_date} weekly-sync-q3-planning.md"));
         assert!(!name.contains('/'));
         assert!(export_file_name("///", started).ends_with(" meeting.md"));
         // Same meeting, same name — a re-export replaces, never duplicates.
-        assert_eq!(
-            export_file_name("x", started),
-            export_file_name("x", started)
-        );
+        assert_eq!(export_file_name("x", started), export_file_name("x", started));
     }
 
     /// YV104 published the column name; migration 3 is where it lands. Nothing

@@ -157,7 +157,7 @@ impl ActiveCapture for FakeCapture {
     }
     fn stop(self: Box<Self>) -> Result<CaptureOutcome, String> {
         Ok(CaptureOutcome {
-            tracks: wilson_voice_lib::meeting_control::TrackEvidence::default(),
+                tracks: wilson_voice_lib::meeting_control::TrackEvidence::default(),
             wav_path: Some(self.wavs.0.clone()),
             sys_wav_path: Some(self.wavs.1.clone()),
             tap_rebuilds: None,
