@@ -64,6 +64,18 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   cloud_key: "Cloud model (your key)",
 };
 
+/**
+ * The muted line under a provider's name: its kind, then the model it calls.
+ * fix-l3b3-2: the cloud kind's model is the hosted model's own id (a vendor
+ * name), so that row shows its kind only. A custom endpoint keeps the user's
+ * own model string — they typed it.
+ */
+export function kindLine(p: ProviderView): string {
+  const kind = KIND_LABEL[p.kind];
+  if (p.kind === "cloud_key" || !p.model) return kind;
+  return `${kind} · ${p.model}`;
+}
+
 /** Only the providers whose kind this build has wired. */
 export function visibleProviders(view: ProvidersView): ProviderView[] {
   return view.providers.filter((p) => view.wiredKinds.includes(p.kind));
@@ -135,10 +147,7 @@ export function ModelProvidersView({
             <li key={p.id} data-provider={p.id}>
               <div>
                 <strong>{p.label}</strong>{" "}
-                <span className="muted">
-                  {KIND_LABEL[p.kind]}
-                  {p.model ? ` · ${p.model}` : ""}
-                </span>
+                <span className="muted">{kindLine(p)}</span>
               </div>
               <div className={p.leaves ? "leaves-yes" : "leaves-no"}>
                 Leaves this Mac: {p.leavesLabel}
