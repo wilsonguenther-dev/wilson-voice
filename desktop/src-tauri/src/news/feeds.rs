@@ -231,46 +231,61 @@ impl FeedHttp for NetHttp {
         headers: &[(&str, &str)],
         timeout: Duration,
     ) -> Result<String, FeedError> {
-        let client = crate::net::http_client(source.purpose()).map_err(FeedError::Client)?;
-        let secs = timeout.as_secs();
-        tauri::async_runtime::block_on(async {
-            let mut req = client
-                .get(url)
-                .timeout(timeout)
-                .header(reqwest::header::USER_AGENT, USER_AGENT);
-            for (k, v) in headers {
-                req = req.header(*k, *v);
-            }
-            let resp = req.send().await.map_err(|e| {
-                if e.is_timeout() {
-                    FeedError::Timeout { secs }
-                } else {
-                    FeedError::Unreachable
-                }
-            })?;
-            let code = resp.status().as_u16();
-            if code == 429 {
-                return Err(FeedError::RateLimited);
-            }
-            if !resp.status().is_success() {
-                return Err(FeedError::Status { code });
-            }
-            if resp.content_length().is_some_and(|n| n > MAX_BODY as u64) {
-                return Err(FeedError::TooLarge);
-            }
-            let bytes = resp.bytes().await.map_err(|e| {
-                if e.is_timeout() {
-                    FeedError::Timeout { secs }
-                } else {
-                    FeedError::BadBody
-                }
-            })?;
-            if bytes.len() > MAX_BODY {
-                return Err(FeedError::TooLarge);
-            }
-            String::from_utf8(bytes.to_vec()).map_err(|_| FeedError::BadBody)
-        })
+        news_feed_get(source, url, headers, timeout)
     }
+}
+
+/// The ONE network call site of Yappy News — allowlisted by name in
+/// `tests/no_outbound_on_the_dictation_path.rs` (`NETWORK_CALL_SITES`, purpose
+/// "Yappy News") and listed in PRIVACY.md. It is a free function with a unique
+/// name, not the trait's `get`, so the take-path sweep (which forbids every
+/// allowlisted network fn name on the dictation path) does not have to forbid
+/// the word `get`. Only [`refresh`] reaches it, and only after [`gate`] opened.
+fn news_feed_get(
+    source: Source,
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<String, FeedError> {
+    let client = crate::net::http_client(source.purpose()).map_err(FeedError::Client)?;
+    let secs = timeout.as_secs();
+    tauri::async_runtime::block_on(async {
+        let mut req = client
+            .get(url)
+            .timeout(timeout)
+            .header(reqwest::header::USER_AGENT, USER_AGENT);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                FeedError::Timeout { secs }
+            } else {
+                FeedError::Unreachable
+            }
+        })?;
+        let code = resp.status().as_u16();
+        if code == 429 {
+            return Err(FeedError::RateLimited);
+        }
+        if !resp.status().is_success() {
+            return Err(FeedError::Status { code });
+        }
+        if resp.content_length().is_some_and(|n| n > MAX_BODY as u64) {
+            return Err(FeedError::TooLarge);
+        }
+        let bytes = resp.bytes().await.map_err(|e| {
+            if e.is_timeout() {
+                FeedError::Timeout { secs }
+            } else {
+                FeedError::BadBody
+            }
+        })?;
+        if bytes.len() > MAX_BODY {
+            return Err(FeedError::TooLarge);
+        }
+        String::from_utf8(bytes.to_vec()).map_err(|_| FeedError::BadBody)
+    })
 }
 
 /// Why a request was held back by our own limits.
