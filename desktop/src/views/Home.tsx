@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useRef } from "react";
 import YappyHouse from "../home/YappyHouse";
 import { fixesToday, type StudioInputs } from "../home/studio/studio";
+import { useStudioQuiet } from "../home/studio/useStudioQuiet";
 import { useGovernor } from "../pill/GovernorChip";
 import NewsHomeCard from "../news/NewsHomeCard";
 import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
@@ -126,6 +127,8 @@ export default function Home() {
   // counter (today's fixes, kept while a search filters the list), Gulp's jar
   // (Dictionary size), Shelly (the governor's battery view), Ember (streak).
   const governor = useGovernor();
+  // yap-1106-sal-and-mochi — Mochi's door reads the pill's quiet state (Focus / DND / screen share).
+  const quiet = useStudioQuiet();
   const fixesRef = useRef<number | null>(null);
   if (!query && !booting) fixesRef.current = fixesToday(history, new Date());
   const studio: StudioInputs = {
@@ -136,6 +139,12 @@ export default function Home() {
     // No backend event says a briefing was delivered on this base yet: Cinder
     // waits off-stage until one does (see studio.ts drawMid).
     newsReady: false,
+    // yap-1106-sal-and-mochi — Sal lights the furnace while the speech engine
+    // loads; the furnace is cold while no model is on this Mac.
+    engineLoading: status.engineLoading === true,
+    modelReady: booting || typeof status.modelReady !== "boolean" ? null : status.modelReady,
+    screenSharing: quiet.screenSharing,
+    doNotDisturb: quiet.doNotDisturb,
   };
   // Y5-B fix round (#192) — bootError only replaces THIS view when this view's
   // own data never landed; each of history and stats names its own error.

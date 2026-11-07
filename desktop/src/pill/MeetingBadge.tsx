@@ -18,21 +18,24 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useReducer, type CSSProperties } from "react";
 import MeetingWorld from "./MeetingWorld";
-import { SAVED_LABEL, stopBeatUntil } from "./meetingScene";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   elapsedLabel,
+  stackClockLabel,
   IDLE_MEETING,
   MEETING_EVENT,
   MEETING_PILL_IDLE,
   MEETING_PROGRESS_EVENT,
+  MEETING_STOP_FAILED_DOM_EVENT,
   meetingPillHoldMs,
+  meetingSavedUntil,
   reduceMeetingPill,
   systemAudioBadge,
   type MeetingAfterView,
+  type MeetingPillInput,
   type MeetingPillPhase,
   type MeetingProgressEvent,
   type MeetingStatus,
@@ -45,14 +48,15 @@ interface MeetingPillState {
   phase: MeetingPillPhase;
 }
 
-type MeetingPillAction =
-  | { type: "status"; status: MeetingStatus }
-  | { type: "progress"; event: MeetingProgressEvent }
-  | { type: "dismiss"; id: string };
+type MeetingPillAction = MeetingPillInput;
 
 function meetingPillReducer(s: MeetingPillState, a: MeetingPillAction): MeetingPillState {
   const status = a.type === "status" ? a.status : s.status;
-  const phase = reduceMeetingPill(s.phase, a);
+  // fix-b8-1 — the stop beat's scene time is the meeting's LAST recorded
+  // elapsed seconds: the status that says "stopped" carries 0.
+  const input: MeetingPillInput =
+    a.type === "status" && s.status.recording ? { ...a, lastElapsedS: s.status.elapsedSeconds } : a;
+  const phase = reduceMeetingPill(s.phase, input);
   return status === s.status && phase === s.phase ? s : { status, phase };
 }
 
@@ -78,13 +82,25 @@ export function useMeetingPill(): {
     const unsubs: Array<() => void> = [];
     const push = (u: () => void) => (dead ? u() : unsubs.push(u));
     invoke<MeetingStatus>("meeting_status")
-      .then((s) => { if (!dead) dispatch({ type: "status", status: s }); })
+      .then((s) => { if (!dead) dispatch({ type: "status", status: s, nowMs: Date.now() }); })
       .catch(() => {});
-    listen<MeetingStatus>(MEETING_EVENT, (e) => dispatch({ type: "status", status: e.payload })).then(push);
+    // The dispatch time is read HERE, not in the reducer: a reducer must stay
+    // pure (StrictMode runs it twice).
+    listen<MeetingStatus>(MEETING_EVENT, (e) => dispatch({ type: "status", status: e.payload, nowMs: Date.now() })).then(push);
     listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) =>
-      dispatch({ type: "progress", event: e.payload }),
+      dispatch({ type: "progress", event: e.payload, nowMs: Date.now() }),
     ).then(push);
-    return () => { dead = true; unsubs.forEach((u) => u()); };
+    // fix-b8-1 — the Stop button's rejection (window-local, see MeetingBadge).
+    const onStopFailed = (e: Event) => {
+      const detail = (e as CustomEvent<unknown>).detail;
+      dispatch({ type: "stop_failed", sentence: typeof detail === "string" ? detail : "", nowMs: Date.now() });
+    };
+    window.addEventListener(MEETING_STOP_FAILED_DOM_EVENT, onStopFailed);
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+      window.removeEventListener(MEETING_STOP_FAILED_DOM_EVENT, onStopFailed);
+    };
   }, []);
   // The hold: notes-ready (and failed) let go after MEETING_RESULT_HOLD_MS.
   // `dismiss` is scoped to the meeting id, so a timer that outlives its phase
@@ -97,6 +113,20 @@ export function useMeetingPill(): {
     const t = window.setTimeout(() => dispatch({ type: "dismiss", id }), hold);
     return () => clearTimeout(t);
   }, [phase]);
+  // fix-b8-1 — the stop beat (yap-1106-pill-rec-headphones-hoot-tape): ONE
+  // setTimeout per stop, keyed on that stop's `until`, so a progress event
+  // folding the road underneath the beat (a new phase object, same `until`)
+  // never re-arms it. The timer's input is scoped to `until`: a stale one is a
+  // no-op on a newer stop.
+  const savedUntil = meetingSavedUntil(phase);
+  const savedElapsedS = phase.kind === "saved" ? phase.elapsedS : 0;
+  useEffect(() => {
+    if (savedUntil === null) return;
+    console.info(`pill meeting_saved elapsed_s=${savedElapsedS}`);
+    const until = savedUntil;
+    const t = window.setTimeout(() => dispatch({ type: "saved_elapsed", until }), Math.max(0, until - Date.now()));
+    return () => clearTimeout(t);
+  }, [savedUntil, savedElapsedS]);
   const dismiss = useCallback((id: string) => dispatch({ type: "dismiss", id }), []);
   return { status: state.status, phase: state.phase, dismiss };
 }
@@ -129,38 +159,16 @@ export default function MeetingBadge({
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
   const callApp = badgeCallLabel(useCallRecordingView());
-  // yap-1106-pill-rec-headphones-hoot-tape — the stop beat. Recording → not
-  // recording: Hoot hands over the tape and the pill reads "Saved" for
-  // SAVED_HOLD_MS, then the NT7 road (Transcribing → Notes ready) takes over.
-  // One setTimeout per stop, never an interval.
-  const wasRecording = useRef(status.recording);
-  const lastElapsed = useRef(status.elapsedSeconds);
-  const [savedUntil, setSavedUntil] = useState<number | null>(null);
-  useEffect(() => {
-    const until = stopBeatUntil(wasRecording.current, status.recording, Date.now());
-    wasRecording.current = status.recording;
-    if (status.recording) {
-      setSavedUntil(null);
-      return;
-    }
-    if (until === null) return;
-    console.info(`pill meeting_saved elapsed_s=${Math.floor(lastElapsed.current)}`);
-    setSavedUntil(until);
-  }, [status.recording]);
-  useEffect(() => {
-    if (status.recording && Number.isFinite(status.elapsedSeconds)) lastElapsed.current = status.elapsedSeconds;
-  }, [status.recording, status.elapsedSeconds]);
-  useEffect(() => {
-    if (savedUntil === null) return;
-    const t = window.setTimeout(() => setSavedUntil(null), Math.max(0, savedUntil - Date.now()));
-    return () => clearTimeout(t);
-  }, [savedUntil]);
   if (!status.recording) {
-    if (savedUntil !== null) {
+    // yap-1106-pill-rec-headphones-hoot-tape / fix-b8-1 — the stop beat:
+    // Hoot hands over the tape and the pill reads "Saved". It is the shell's
+    // `saved` meeting phase now (pill/meeting.ts), so the layout reserved its
+    // clock box (meetingMode "after") and its one timer lives in useMeetingPill.
+    if (after?.kind === "saved") {
       return (
-        <div className="meeting-badge meeting-saved" data-pill-slot="clock" data-meeting-phase="saved" role="status" aria-label="Meeting saved">
-          <MeetingWorld elapsedS={lastElapsed.current} handover />
-          <span className="meeting-saved-label">{SAVED_LABEL}</span>
+        <div className="meeting-badge meeting-saved" data-pill-slot="clock" data-meeting-phase="saved" role="status" aria-label={after.title}>
+          <MeetingWorld elapsedS={after.elapsedS ?? 0} handover />
+          <span className="meeting-saved-label">{after.label}</span>
         </div>
       );
     }
@@ -175,6 +183,40 @@ export default function MeetingBadge({
   // pixels there), the sentence on the tooltip and the accessible label. A
   // backend without the field falls back to YV110's two-word "mic only".
   const callAudio = callAudioChip(status);
+  // yap-1107-one-pill-during-meeting — dictating mid-meeting: Yappy's own capsule
+  // opens for the take, so the scene (and its second Yappy) steps out and the
+  // clock "shrinks into a small stack next to stop" (Pill artifact, "Meeting +
+  // dictating"), inside the same shell. The call-audio truth rides the stack's
+  // tooltip and label, so it is never lost. Stop still ends the meeting.
+  if (dictating) {
+    const audioLine = callAudio ? `${callAudio.label}. ${callAudio.detail}` : systemAudio ?? "";
+    const time = stackClockLabel(elapsedLabel(status));
+    return (
+      <div className="meeting-badge meeting-stacked" data-pill-slot="clock" data-meeting-phase="stacked" role="status" aria-live="off">
+        <span
+          className="meeting-stack"
+          data-meeting-stack
+          title={[callApp ? `Recording ${callApp} call` : "Recording a meeting", audioLine].filter(Boolean).join(" · ")}
+        >
+          <span className="meeting-stack-time" data-scene-time>{time}</span>
+        </span>
+        <button
+          type="button"
+          className="rec-stop"
+          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            console.info("pill meeting_stop source=pill_stack");
+            invoke("stop_meeting").catch((err) => console.warn(`pill meeting_stop_failed source=pill_stack err=${String(err).slice(0, 48)}`));
+          }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden>
+            <rect x="7" y="7" width="10" height="10" rx="1.5" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="meeting-badge" data-pill-slot="clock" role="status" aria-live="off">
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
@@ -210,7 +252,10 @@ export default function MeetingBadge({
           e.stopPropagation();
           // yap-fx-06 — the one-click Stop, always in the pill while a meeting
           // records (dictating or not). A failure is never swallowed: it
-          // opens the stop-failed card (Try again / Quit Yap).
+          // opens the stop-failed card (Try again / Quit Yap). fix-b8-1 — the
+          // same window event (MEETING_STOP_FAILED_EVENT === the shell's
+          // MEETING_STOP_FAILED_DOM_EVENT) reaches useMeetingPill, so a failed
+          // stop is never followed by "Saved".
           void stopMeetingFromPill("badge");
         }}
       >
