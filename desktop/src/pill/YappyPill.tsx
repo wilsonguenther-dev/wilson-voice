@@ -21,6 +21,10 @@ import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeti
 import { bucketFor } from "./tone";
 import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 import {
+  allowAfterLine, allowDoneLine, allowDuringLine, chatterLog, chatterPolicy, DEFAULT_CHATTER_MODE, shortenBubble,
+  TAKES_SEEN_KEY, type ChatterMode, type ChatterPolicy,
+} from "./chatter";
+import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
   afterTakeLineAllowed, armGlance, GLANCE_LOOK_SEC, isNewUser, liveLinesLog, parseTakesSeen,
@@ -74,8 +78,8 @@ function saveTakeMemory(m: TakeLineMemory): void {
 }
 // yap-1106-live-reactions-during-take — how many takes this pill has seen, so a
 // NEW user (isNewUser) gets the one listening glance. Storage failing costs
-// only the glance, never the take.
-const TAKES_SEEN_KEY = "yap.live.takesSeen";
+// only the glance, never the take. yap-1106-chatter-setting: the key now lives
+// in chatter.ts (`TAKES_SEEN_KEY`) because Settings reads the same count.
 function loadTakesSeen(): number {
   try { return parseTakesSeen(globalThis.localStorage?.getItem(TAKES_SEEN_KEY)); }
   catch (e) { console.warn("pill live takes_seen load_failed", e); return 0; }
@@ -111,7 +115,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -121,6 +125,11 @@ export default function YappyPill(
      * rude → Badass, rose → Rose).
      */
     voice?: VoiceId;
+    /**
+     * yap-1106-chatter-setting — "Yappy talks" (Settings › Companion), decided
+     * by the shell from `yappyTalks`. Omitted, it is "less over time".
+     */
+    chatter?: ChatterMode;
     /**
      * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
      * decided by the SHELL. Only the accessible name and the announcement read
@@ -158,6 +167,11 @@ export default function YappyPill(
   const voiceRef = useRef<VoiceId>(voiceNow);
   voiceRef.current = voiceNow;
   useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
+  // yap-1106-chatter-setting — the chatter mode reaches the mount-once loop the same way.
+  const chatterRef = useRef<ChatterMode>(chatter);
+  chatterRef.current = chatter;
+  const chatterSink = useRef<(m: ChatterMode) => void>(() => {});
+  useEffect(() => { chatterSink.current(chatter); }, [chatter]);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
@@ -334,7 +348,7 @@ export default function YappyPill(
     let phase: Phase = "idle";
     const R = { sway: new SOD(2.2, .35, 1.4), open: new SOD(3.4, .7, 1.4), prop: new SOD(3, .7, 1.2) };
     const J = { phase: "ground", t: 0, y: 0, vy: 0, power: 0, crouch: 0 };
-    const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p; } };
+    const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p * policy.hopScale; } };
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
@@ -348,13 +362,25 @@ export default function YappyPill(
     // the remaining eyes-forward time of a new user's listening glance.
     let afterLines = 0, takeOpen = false, glanceT = 0;
     let takesSeen = loadTakesSeen();
+    // yap-1106-chatter-setting — how much Yappy may talk on THIS take, decided
+    // once per take from the setting and the take number (chatter.ts). `repeatN`
+    // counts this take's repeating during-take lines so "less" keeps 1 in 2.
+    let chatterMode: ChatterMode = chatterRef.current;
+    let policy: ChatterPolicy = chatterPolicy(chatterMode, takesSeen + 1);
+    let repeatN = 0;
+    chatterSink.current = (m) => {
+      if (m === chatterMode) return;
+      chatterMode = m;
+      policy = chatterPolicy(m, Math.max(1, takesSeen));
+      console.info(chatterLog(m, Math.max(1, takesSeen), policy));
+    };
     const logLiveLines = (vadSec: number | null) => {
       if (!takeOpen) return;
       takeOpen = false;
       console.info(liveLinesLog({ during: live.lines, after: afterLines, voicedSec: live.voicedT, vadSec }));
     };
     const afterLine = (): string => {
-      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines)) return "";
+      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines) || !allowAfterLine(policy, afterLines)) return "";
       const line = workLine(chatTone, words, afterLines);
       afterLines++;
       return line;
@@ -381,7 +407,9 @@ export default function YappyPill(
       console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} recent=${takeMemory.recent.length}`);
       return picked.text;
     };
-    const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
+    // yap-1106-chatter-setting — Yappy's own lines are capped once quiet; a
+    // status line (decode progress) passes `cap = false` and is never cut.
+    const say = (raw: string, cap = true) => { const t = cap ? shortenBubble(raw, policy.maxChars) : raw; bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
     // `LivePhase` without an accent here is a compile error, never a blank pill.
@@ -421,13 +449,16 @@ export default function YappyPill(
       phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
       if (p === "listening") {
+        policy = chatterPolicy(chatterMode, takesSeen + 1);
+        repeatN = 0;
+        console.info(chatterLog(chatterMode, takesSeen + 1, policy));
         moodT = 0; hop(1); say(""); resetLive(live);
-        if (isNewUser(takesSeen)) armGlance(live);
+        if (isNewUser(takesSeen) && policy.firstTimeTips) armGlance(live);
         takesSeen++; saveTakesSeen(takesSeen);
         afterLines = 0; takeOpen = true;
       }
       else if (p === "thinking") { moodT = 0; say(afterLine()); }
-      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
+      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(allowDoneLine(policy, takesSeen) ? doneLine(words) : ""); }
       else { moodT = 0; say(""); }
     }
     const sparkle: Array<{ x: number; y: number; vx: number; vy: number; life: number; heart: boolean }> = [];
@@ -517,9 +548,17 @@ export default function YappyPill(
       // prop and WHEN Yappy says something (it keeps reacting for the whole take,
       // measuring speech against this take's own room tone); the canvas renders it.
       if (phase === "listening") {
+        const saidBefore = live.said;
         const f = advanceLive(live, wallDt, level, chatTone, undefined, liveVoice);
         liveProp = f.prop;
-        if (f.say) say(f.say);
+        // yap-1106-chatter-setting — a tier crossing vs a repeating line; the
+        // policy keeps all, 1 in 2, or none of them (the glance is a first-time tip).
+        if (f.say) {
+          const crossed = live.said > saidBefore;
+          const ok = f.glance && !crossed ? policy.firstTimeTips : allowDuringLine(policy, crossed, crossed ? 0 : repeatN);
+          if (!crossed && !f.glance) repeatN++;
+          if (ok) say(f.say);
+        }
         // a new user's one listening glance: eyes up at you, a small hop
         if (f.glance) { glanceT = GLANCE_LOOK_SEC; hop(.8); }
       }
@@ -545,7 +584,7 @@ export default function YappyPill(
       else if (beakHold <= 0) { let w = beakFrame; if (beakFrame === 0 && beak > .28) w = 1; else if (beakFrame === 1 && beak > .6) w = 2; else if (beakFrame >= 2 && beak < .42) w = 1; else if (beakFrame === 1 && beak < .12) w = 0; if (w !== beakFrame) { beakFrame = w; beakHold = .05; } }
       // after release the chatter is CAPPED (AFTER_TAKE_MAX_LINES): the bubble keeps
       // its last line instead of rotating every second while the take decodes.
-      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
+      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines) && allowAfterLine(policy, afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
       for (const p of sparkle) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 120 * dt; p.life -= dt * 1.2; }
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 
@@ -657,7 +696,7 @@ export default function YappyPill(
       }
       setPhase("transcribing");
       words = p.wordsSoFar;
-      say(transcribeLine(chatTone, p));
+      say(transcribeLine(chatTone, p), false);
       wake();
     };
     raf = requestAnimationFrame(loop);
