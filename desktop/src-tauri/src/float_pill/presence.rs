@@ -593,6 +593,27 @@ mod tests {
         assert_eq!(l.step(None, 7_000), None);
     }
 
+    /// The regression FB-03 found, pinned at the source: after the NSPanel
+    /// conversion nothing may hand the level back to Tauri's always_on_top
+    /// (`NSFloatingWindowLevel`, 3), and the keeper must re-order an ordered-out
+    /// pill instead of giving up on it.
+    #[test]
+    fn the_panel_level_is_never_handed_back_to_always_on_top() {
+        let src = include_str!("../float_pill.rs");
+        assert!(!src.contains("PanelLevel::Status"));
+        assert_eq!(src.matches("set_always_on_top(true)").count(), 1);
+        assert!(
+            src.contains("if use_window_level {\n            let _ = w.set_always_on_top(true);")
+        );
+        assert!(src.contains("let use_window_level = app.get_webview_panel(\"float\").is_err();"));
+        assert!(src.contains("if !state.visible {\n                panel.show();"));
+        assert_eq!(
+            src.matches("panel.set_level(presence::wanted_level());")
+                .count(),
+            2
+        );
+    }
+
     #[test]
     fn an_intentional_hide_closes_the_gap_without_a_back_line() {
         let mut l = GapLatch::new();
