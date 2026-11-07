@@ -9152,13 +9152,21 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
         return;
     };
     let raw = raw.to_string();
+    let polished = entry.text.clone();
     let app = app.clone();
+    let started = std::time::Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        // Explicit re-paste: the current frontmost app is the intended target,
-        // so pass `None` (the YV21 source-app guard does not apply here).
-        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
-        if !o.copied {
-            log::warn!("undo ai edit failed: {}", o.message);
+        // fix-l3b7-1: select the polished take right before the caret and type
+        // the raw take OVER it (never after it). A field where the polished
+        // words cannot be found is copy-only — the raw take on the clipboard,
+        // nothing typed. Explicit re-paste: the frontmost app is the target.
+        let r = paste::replace_take(&app, &polished, &raw);
+        log::info!(
+            "{}",
+            paste::replace_log_line("dictation undo_ai_edit", &r, started.elapsed().as_millis())
+        );
+        if !r.outcome.copied {
+            log::warn!("undo ai edit failed: {}", r.outcome.message);
         }
     });
 }
@@ -9205,29 +9213,45 @@ async fn use_original_take(
             });
         }
     };
+    let polished = newest.text.clone();
     let started = std::time::Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        // Explicit re-paste, exactly like Undo AI Edit: the frontmost app is
-        // the intended target, so the YV21 source-app guard does not apply.
-        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
+        // fix-l3b7-1: REPLACE the polished take in its field, exactly like Undo
+        // AI Edit (the same helper): select it right before the caret, then
+        // type the raw take over it. When it cannot be found the raw take is
+        // copied only and the pill shows the clipboard sentence.
+        let r = paste::replace_take(&app, &polished, &raw);
         log::info!(
-            "dictation polish_reveal_use_original pasted={} copied={} ms={}",
-            o.pasted,
-            o.copied,
-            started.elapsed().as_millis()
+            "{}",
+            paste::replace_log_line(
+                "dictation polish_reveal_use_original",
+                &r,
+                started.elapsed().as_millis()
+            )
         );
-        if o.copied {
-            Ok(o.message)
-        } else {
-            log::warn!(
-                "dictation polish_reveal_use_original failed=paste: {}",
-                o.message
-            );
-            Err("Couldn’t paste the original. Try Use original again.".to_string())
-        }
+        use_original_reply(&r)
     })
     .await
     .map_err(|e| format!("paste task join failed: {e}"))?
+}
+
+/// fix-l3b7-1 — what `use_original_take` answers the pill. A replace that
+/// landed (or was carded) is `Ok(message)`; a refused replace whose copy worked
+/// is `Err(REPLACE_NOT_FOUND_MESSAGE)` so the card shows the clipboard
+/// sentence; anything that could not even copy is the generic retry line.
+pub fn use_original_reply(r: &paste::ReplaceResult) -> Result<String, String> {
+    const FAILED: &str = "Couldn’t paste the original. Try Use original again.";
+    match (&r.replaced, r.outcome.copied) {
+        (Ok(()), true) => Ok(r.outcome.message.clone()),
+        (Err(_), true) => Err(r.outcome.message.clone()),
+        (_, false) => {
+            log::warn!(
+                "dictation polish_reveal_use_original failed=paste: {}",
+                r.outcome.message
+            );
+            Err(FAILED.to_string())
+        }
+    }
 }
 
 /// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to

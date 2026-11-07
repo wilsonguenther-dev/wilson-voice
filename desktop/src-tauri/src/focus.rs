@@ -52,6 +52,8 @@ pub(crate) mod ax {
         ) -> i32;
         /// Unwraps an AXValue (here: kAXValueTypeCFRange) into a plain C struct.
         fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
+        /// Wraps a plain C struct (here: a CFRange) into an AXValue (+1 retained).
+        fn AXValueCreate(the_type: u32, value_ptr: *const c_void) -> CFTypeRef;
         fn AXUIElementSetAttributeValue(
             element: AXUIElementRef,
             attribute: CFStringRef,
@@ -322,6 +324,63 @@ pub(crate) mod ax {
                 return None;
             }
             Some((range.location as i64, range.length as i64))
+        }
+    }
+
+    /// fix-l3b7-1 — select (location, length) (UTF-16 units) in the focused
+    /// element by setting `AXSelectedTextRange`, then re-read it (5 reads over
+    /// ~120 ms, for async trees) until it reads back exactly. `Err` = the set
+    /// was refused or never took; the caller must not type over a selection it
+    /// could not confirm.
+    pub fn set_selected_range(location: usize, length: usize) -> Result<(), String> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return Err("AXUIElementCreateSystemWide failed".into());
+            }
+            let key = CFString::new("AXFocusedUIElement");
+            let mut focused: CFTypeRef = std::ptr::null_mut();
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || focused.is_null() {
+                return Err(format!("no focused element (AX error {err})"));
+            }
+            let el = focused as AXUIElementRef;
+            let _ = AXUIElementSetMessagingTimeout(el, 1.0);
+            let range = CFRange {
+                location: location as _,
+                length: length as _,
+            };
+            let value = AXValueCreate(AX_VALUE_CF_RANGE, &range as *const CFRange as *const c_void);
+            if value.is_null() {
+                CFRelease(focused);
+                return Err("AXValueCreate failed".into());
+            }
+            let attr = CFString::new("AXSelectedTextRange");
+            let e = AXUIElementSetAttributeValue(el, attr.as_concrete_TypeRef(), value);
+            CFRelease(value);
+            if e != AX_OK {
+                CFRelease(focused);
+                return Err(format!("setting AXSelectedTextRange failed (AX error {e})"));
+            }
+            let want = (location as i64, length as i64);
+            let mut confirmed = false;
+            for i in 0..5 {
+                if i > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                if selected_range(el) == Some(want) {
+                    confirmed = true;
+                    break;
+                }
+            }
+            CFRelease(focused);
+            if confirmed {
+                Ok(())
+            } else {
+                Err("AXSelectedTextRange never read back as set".into())
+            }
         }
     }
 
@@ -1034,6 +1093,39 @@ pub fn insert_selected_text(text: &str) -> Result<AxSet, String> {
     {
         let _ = text;
         Err("AX insertion is macOS-only".into())
+    }
+}
+
+/// fix-l3b7-1 — the focused field's `AXValue` and `AXSelectedTextRange`
+/// (UTF-16 units) for an in-place replace. `(None, None)` on a secure field,
+/// with Accessibility denied, or off macOS. The value lives for one call and is
+/// never logged.
+pub fn focused_value_and_range() -> (Option<String>, Option<(usize, usize)>) {
+    #[cfg(target_os = "macos")]
+    {
+        let raw = ax::read_raw(false);
+        if raw.secure {
+            return (None, None);
+        }
+        (raw.value, raw.range)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (None, None)
+    }
+}
+
+/// fix-l3b7-1 — select (location, length) in the focused field and confirm it
+/// read back (see [`ax::set_selected_range`]).
+pub fn set_selected_range(location: usize, length: usize) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ax::set_selected_range(location, length)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (location, length);
+        Err("AX selection is macOS-only".into())
     }
 }
 
