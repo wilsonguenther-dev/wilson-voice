@@ -591,9 +591,24 @@ fn update_ready_line_is_inserted_and_gone_after_restart() {
 /// released only after the worker sets `busy` false (and before the final
 /// `emit_status`, so an armed restart fires on that transition). The order of
 /// `recording` / `busy` themselves is unchanged.
+/// `src` with `//` comment lines removed but every other line kept verbatim.
+/// Unlike [`code_only`] this keeps lines that start with `*` — the deref
+/// assignments `*state.recording.lock() = false;` the stop-edge test orders —
+/// and it does not re-indent, so [`fn_body`] still ends at the next top-level
+/// `fn`.
+fn code_keep_derefs(src: &str) -> String {
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn take_guard_spans_the_stop_edge_in_stop_and_transcribe() {
-    let lib = code_only(LIB_SRC);
+    // Not `code_only`: it drops `*`-leading lines, i.e. the very
+    // `*state.recording.lock() = false;` / `*state.busy.lock() = true;` lines
+    // this test has to find.
+    let lib = code_keep_derefs(LIB_SRC);
     let stop = fn_body(&lib, "stop_and_transcribe");
     let at = |needle: &str| {
         stop.find(needle)
