@@ -7,7 +7,6 @@
  * clicks on real elements) is scripts/pill-matrix.mjs --clicks; the AppKit half
  * is float_pill.rs `every_control_centre_and_inner_corner_is_a_hit`.
  */
-// @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Rect4 } from "./drag";
