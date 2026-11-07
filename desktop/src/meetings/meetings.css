@@ -634,10 +634,6 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.seg-who-chip:focus-visible {
-  outline: 2px solid var(--accent-action);
-  outline-offset: 2px;
-}
 .speaker-menu {
   position: absolute;
   z-index: 20;
