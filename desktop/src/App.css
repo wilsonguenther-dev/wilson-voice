@@ -4116,6 +4116,24 @@ button.primary.big {
 .news-briefing-sprite {
   image-rendering: pixelated;
 }
+/* yap-1106-news-duo-delivery — whoever has the turn hops (whole pixels, stepped);
+   reduce motion keeps the pair still side by side and only the words change. */
+.news-briefing-sprite--talking {
+  animation: news-duo-hop 0.5s steps(2, jump-none) infinite alternate;
+}
+@keyframes news-duo-hop {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .news-briefing-sprite--talking {
+    animation: none;
+  }
+}
 .news-briefing-says {
   display: flex;
   flex-direction: column;
@@ -4143,6 +4161,10 @@ button.primary.big {
   border-radius: var(--radius-md);
   background: var(--surface-raised);
   min-width: 0;
+}
+/* The story the pair is talking about right now. */
+.news-briefing-story--current {
+  border-color: var(--accent);
 }
 .news-briefing-story h4 {
   margin: 0;
