@@ -3256,6 +3256,32 @@ impl Database {
 
     /// Rebuild a profile's centroid from the samples it still holds (after an
     /// undo removed one): the normalised mean of the normalised samples.
+    /// yap-1106-fb-22b — drop the samples `profile_id` learned in
+    /// `meeting_id` from exactly this voice (byte-equal embedding), then
+    /// rebuild its centroid from what remains. Returns the rows dropped.
+    fn unlearn_voice_on(
+        conn: &Connection,
+        profile_id: i64,
+        meeting_id: &str,
+        voice: &[f32],
+    ) -> Result<i64, String> {
+        let dropped = conn
+            .execute(
+                "DELETE FROM speaker_samples
+                  WHERE profile_id = ?1 AND meeting_id = ?2 AND embedding = ?3",
+                params![
+                    profile_id,
+                    meeting_id,
+                    speaker_profiles::encode_embedding(voice)
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if dropped > 0 {
+            Self::recompute_centroid_on(conn, profile_id)?;
+        }
+        Ok(dropped as i64)
+    }
+
     fn recompute_centroid_on(conn: &Connection, profile_id: i64) -> Result<(), String> {
         let mut stmt = conn
             .prepare("SELECT embedding FROM speaker_samples WHERE profile_id = ?1")
@@ -3359,6 +3385,7 @@ impl Database {
         };
         let mut positive_sample_ids = Vec::new();
         let mut negative_sample_ids = Vec::new();
+        let mut unlearned: Vec<speaker_profiles::UnlearnedVoice> = Vec::new();
         if let Some((track, cluster, new_profile)) = whole {
             if let Some(voice) = Self::cluster_voice_on(&tx, meeting_id, track, cluster)? {
                 let mut old: Vec<i64> = prior.iter().filter_map(|r| r.profile_id).collect();
@@ -3367,6 +3394,18 @@ impl Database {
                 for p in old.into_iter().filter(|p| Some(*p) != new_profile) {
                     negative_sample_ids
                         .push(Self::add_negative_sample_on(&tx, p, meeting_id, &voice)?);
+                    // yap-1106-fb-22b — "This wasn't John" also drops what
+                    // John's voiceprint learned from this voice in this
+                    // meeting, so the wrong sound stops pulling his centroid.
+                    let dropped = Self::unlearn_voice_on(&tx, p, meeting_id, &voice.1)?;
+                    if dropped > 0 {
+                        unlearned.push(speaker_profiles::UnlearnedVoice {
+                            profile_id: p,
+                            track,
+                            cluster_index: cluster,
+                            samples: dropped,
+                        });
+                    }
                 }
                 if let Some(p) = new_profile {
                     if !prior.iter().all(|r| r.profile_id == Some(p)) {
@@ -3381,11 +3420,12 @@ impl Database {
         Self::write_label_rows_on(&tx, meeting_id, &written)?;
         tx.commit().map_err(|e| e.to_string())?;
         log::info!(
-            "speaker_profiles correction kind={} meeting={meeting_id} lines={} positive={} negative={}",
+            "speaker_profiles correction kind={} meeting={meeting_id} lines={} positive={} negative={} unlearned={}",
             correction.kind(),
             written.len(),
             positive_sample_ids.len(),
-            negative_sample_ids.len()
+            negative_sample_ids.len(),
+            unlearned.iter().map(|u| u.samples).sum::<i64>()
         );
         Ok(speaker_profiles::CorrectionApplied {
             rows: written,
@@ -3394,6 +3434,7 @@ impl Database {
                 prior,
                 positive_sample_ids,
                 negative_sample_ids,
+                unlearned,
                 expires_at_ms: now_ms + speaker_profiles::UNDO_WINDOW_SECONDS * 1000,
             },
         })
@@ -3455,9 +3496,27 @@ impl Database {
         for p in &touched {
             Self::recompute_centroid_on(&tx, *p)?;
         }
+        // yap-1106-fb-22b — put back what "This wasn't John" took out of
+        // John's voiceprint (the same cluster voice, once per dropped sample).
+        let mut relearned = 0usize;
+        if !keep_samples {
+            for u in &undo.unlearned {
+                if let Some(voice) =
+                    Self::cluster_voice_on(&tx, meeting_id, u.track, u.cluster_index)?
+                {
+                    for _ in 0..u.samples.max(0) {
+                        if Self::add_positive_sample_on(&tx, u.profile_id, meeting_id, &voice)?
+                            .is_some()
+                        {
+                            relearned += 1;
+                        }
+                    }
+                }
+            }
+        }
         tx.commit().map_err(|e| e.to_string())?;
         log::info!(
-            "speaker_profiles undo_correction meeting={meeting_id} restored={} skipped_changed={} samples_removed={}",
+            "speaker_profiles undo_correction meeting={meeting_id} restored={} skipped_changed={} samples_removed={} relearned={relearned}",
             restore.len(),
             skipped_changed.len(),
             positive_ids.len() + negative_ids.len()

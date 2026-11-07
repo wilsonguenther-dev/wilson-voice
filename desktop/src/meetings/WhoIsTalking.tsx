@@ -10,7 +10,13 @@
  *
  * The card state machine is pure ([`cardReducer`]) so vitest pins it:
  * unknown → named / me / ignored / not-sure, with saving and error between.
- * yap-1106-fb-22b-who-was-this-cards reshapes the look; this is the base.
+ * yap-1106-fb-22b-who-was-this-cards (the approved after-meeting flow, which
+ * SUPERSEDES the parts of yap-1106-who-is-this that differ): the card is
+ * ▶ clip · “line” · "Who was this?" · name field · "Not sure" · "Save" —
+ * never "That's me" (you are never asked about yourself). A voice under 70%
+ * to a saved one reads "Same person as John? 62% sure" with "No, someone new"
+ * / "Yes, John". States: unknown → named / not-sure / merged / new. A saved
+ * card turns green: "John ✓ · 14 lines relabeled".
  */
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useReducer, useState } from "react";
@@ -33,7 +39,18 @@ export type NameTarget =
   | { kind: "newName"; name: string }
   | { kind: "me" };
 
-export type CardPhase = "unknown" | "saving" | "named" | "me" | "notSure" | "ignored" | "error";
+export type CardPhase =
+  | "unknown"
+  | "saving"
+  | "named"
+  /** "Yes, John": the voice joined an existing voiceprint. */
+  | "merged"
+  /** "No, someone new": asks for a name, as a new speaker. */
+  | "new"
+  | "me"
+  | "notSure"
+  | "ignored"
+  | "error";
 
 export interface CardState {
   phase: CardPhase;
@@ -41,6 +58,8 @@ export interface CardState {
   name: string;
   /** "No" on "Same person as Alex?" — show the plain name card instead. */
   declinedSuggestion: boolean;
+  /** The save in flight is a "Yes, John" merge. */
+  merging?: boolean;
   /** Set once named: the name saved and how many lines moved. */
   savedName?: string;
   relabelled?: number;
@@ -62,12 +81,18 @@ export const INITIAL_CARD: CardState = { phase: "unknown", name: "", declinedSug
 
 /** Phases the person can still act on. */
 export function isOpen(state: CardState): boolean {
-  return state.phase === "unknown" || state.phase === "error";
+  return state.phase === "unknown" || state.phase === "new" || state.phase === "error";
 }
 
 /** Phases that end the card. */
 export function isDone(state: CardState): boolean {
-  return state.phase === "named" || state.phase === "me" || state.phase === "notSure" || state.phase === "ignored";
+  return (
+    state.phase === "named" ||
+    state.phase === "merged" ||
+    state.phase === "me" ||
+    state.phase === "notSure" ||
+    state.phase === "ignored"
+  );
 }
 
 /**
@@ -81,25 +106,28 @@ export function cardReducer(state: CardState, event: CardEvent): CardState {
     if (event.type === "saved") {
       return {
         ...state,
-        phase: event.me ? "me" : "named",
+        phase: event.me ? "me" : state.merging ? "merged" : "named",
+        merging: false,
         savedName: event.name,
         relabelled: event.relabelled,
         error: undefined,
       };
     }
-    if (event.type === "failed") return { ...state, phase: "error", error: event.error };
+    if (event.type === "failed") return { ...state, phase: "error", merging: false, error: event.error };
     return state;
   }
   switch (event.type) {
     case "type":
       return { ...state, name: event.name };
     case "save":
-      return state.name.trim() === "" ? state : { ...state, phase: "saving", error: undefined };
+      return state.name.trim() === "" ? state : { ...state, phase: "saving", merging: false, error: undefined };
     case "me":
+      return { ...state, phase: "saving", merging: false, error: undefined };
     case "yes":
-      return { ...state, phase: "saving", error: undefined };
+      return { ...state, phase: "saving", merging: true, error: undefined };
     case "no":
-      return { ...state, declinedSuggestion: true };
+      // "No, someone new": a new speaker, asked for a name like any card.
+      return { ...state, phase: "new", declinedSuggestion: true, error: undefined };
     case "notSure":
       return { ...state, phase: "notSure", error: undefined };
     case "ignore":
@@ -139,6 +167,85 @@ export function suggestionReason(s: { displayName: string; similarity: number })
   return `Probably ${s.displayName} — voice match ${s.similarity.toFixed(2)}`;
 }
 
+/** "Same person as John? 62% sure" — the reason is the match, rounded. */
+export function sameAsText(s: { displayName: string; similarity: number }): string {
+  const pct = Math.max(0, Math.min(99, Math.round(s.similarity * 100)));
+  return `Same person as ${s.displayName}? ${pct}% sure`;
+}
+
+/** "John ✓ · 14 lines relabeled" — what a saved card reads. */
+export function doneText(state: Pick<CardState, "savedName" | "relabelled">): string {
+  const n = state.relabelled ?? 0;
+  return `${state.savedName ?? ""} ✓ · ${n} ${n === 1 ? "line" : "lines"} relabeled`;
+}
+
+/**
+ * What an answer writes, decided in one pure place so vitest pins it:
+ * Save / Yes write a name (and the voice) through `name_cluster`; "Not sure"
+ * keeps NOTHING — no name, no voiceprint; it only tells the backend to drop
+ * the stored voice and stop asking (`ignore_cluster`, ignore = false).
+ */
+export type Answer =
+  | { command: "name_cluster"; target: NameTarget }
+  | { command: "ignore_cluster"; ignore: boolean }
+  | null;
+
+export function answerFor(event: CardEvent, state: CardState, card: Pick<VoiceCard, "suggestion">): Answer {
+  switch (event.type) {
+    case "save": {
+      const name = state.name.trim();
+      return name ? { command: "name_cluster", target: { kind: "newName", name } } : null;
+    }
+    case "yes":
+      return card.suggestion
+        ? { command: "name_cluster", target: { kind: "profile", profileId: card.suggestion.profileId } }
+        : null;
+    case "notSure":
+      return { command: "ignore_cluster", ignore: false };
+    case "ignore":
+      return { command: "ignore_cluster", ignore: true };
+    default:
+      return null;
+  }
+}
+
+const RECENT_KEY = "yap.whoIsThis.recentNames";
+const RECENT_MAX = 8;
+
+/**
+ * The name field's suggestions: calendar attendees (when the calendar is on),
+ * then saved voices, then names typed recently. Case-insensitive dedupe;
+ * "You" is never offered (you are never asked about yourself).
+ */
+export function nameSuggestions(attendees: string[], voices: string[], recent: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...attendees, ...voices, ...recent]) {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (!name || key === "you" || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/** The recent-names list after saving `name` (newest first, capped). */
+export function pushRecent(recent: string[], name: string): string[] {
+  const clean = name.trim();
+  if (!clean) return recent;
+  return [clean, ...recent.filter((r) => r.toLowerCase() !== clean.toLowerCase())].slice(0, RECENT_MAX);
+}
+
+function readRecent(): string[] {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(RECENT_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function cardKey(c: Pick<VoiceCard, "track" | "clusterIndex">): string {
   return `${c.track}:${c.clusterIndex}`;
 }
@@ -162,6 +269,8 @@ interface Props {
   /** Saved names to merge into the transcript (`[segment id, name]`). */
   onNames: (names: [string, string][]) => void;
   toast: (message: string) => void;
+  /** Calendar attendees of this meeting, when the calendar is on. */
+  attendees?: string[];
 }
 
 /** Each card's own state lives in the parent so the headline can count. */
@@ -181,12 +290,14 @@ export default function WhoIsTalking({
   recording,
   onNames,
   toast,
+  attendees = [],
 }: Props) {
   const [cards, setCards] = useState<VoiceCard[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [states, dispatch] = useReducer(cardsReducer, {});
   const [voices, setVoices] = useState<string[]>([]);
   const [purged, setPurged] = useState(!audioOnDisk);
+  const [recent, setRecent] = useState<string[]>(() => readRecent());
 
   useEffect(() => {
     let live = true;
@@ -254,6 +365,15 @@ export default function WhoIsTalking({
         target,
       });
       dispatch({ key, event: { type: "saved", name: r.displayName, relabelled: r.relabelled, me: target.kind === "me" } });
+      if (target.kind === "newName") {
+        const next = pushRecent(recent, r.displayName);
+        setRecent(next);
+        try {
+          window.localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+        } catch {
+          /* suggestions only; nothing depends on it */
+        }
+      }
       logWho("named", { target: target.kind, relabelled: r.relabelled, sample: r.sampleAdded });
       const names = await invoke<[string, string][]>("meeting_speaker_names", { meetingId });
       onNames(names);
@@ -307,7 +427,7 @@ export default function WhoIsTalking({
         )}
       </header>
       <datalist id={listId}>
-        {voices.map((v) => (
+        {nameSuggestions(attendees, voices, recent).map((v) => (
           <option key={v} value={v} />
         ))}
       </datalist>
@@ -316,13 +436,10 @@ export default function WhoIsTalking({
           const key = cardKey(card);
           const st = states[key] ?? INITIAL_CARD;
           const speaker = labelFor(card.track, card.clusterIndex);
-          if (st.phase === "named" || st.phase === "me") {
+          if (st.phase === "named" || st.phase === "merged" || st.phase === "me") {
             return (
-              <li key={key} className="who-card is-done" data-phase={st.phase}>
-                <strong>{st.savedName} ✓</strong>
-                <span className="tiny muted">
-                  {st.relabelled} {st.relabelled === 1 ? "line" : "lines"} relabeled
-                </span>
+              <li key={key} className="who-card is-done is-saved" data-phase={st.phase} role="status">
+                <strong>{doneText(st)}</strong>
               </li>
             );
           }
@@ -355,18 +472,25 @@ export default function WhoIsTalking({
               </div>
               {ask ? (
                 <div className="who-card-ask">
-                  <strong>Same person as {ask.displayName}?</strong>
-                  <span className="tiny muted">{suggestionReason(ask)}</span>
+                  <strong>{sameAsText(ask)}</strong>
                   <div className="who-card-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={saving}
+                      onClick={() => {
+                        dispatch({ key, event: { type: "no" } });
+                        logWho("someone_new");
+                      }}
+                    >
+                      No, someone new
+                    </button>
                     <button
                       type="button"
                       disabled={saving}
                       onClick={() => void name(card, { kind: "profile", profileId: ask.profileId }, { type: "yes" })}
                     >
-                      Yes
-                    </button>
-                    <button type="button" className="ghost" disabled={saving} onClick={() => dispatch({ key, event: { type: "no" } })}>
-                      No
+                      Yes, {ask.displayName}
                     </button>
                   </div>
                 </div>
@@ -391,22 +515,11 @@ export default function WhoIsTalking({
                     onChange={(e) => dispatch({ key, event: { type: "type", name: e.target.value } })}
                   />
                   <div className="who-card-actions">
-                    <button type="submit" disabled={saving || st.name.trim() === ""}>
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={saving}
-                      onClick={() => void name(card, { kind: "me" }, { type: "me" })}
-                    >
-                      That's me
-                    </button>
                     <button type="button" className="ghost" disabled={saving} onClick={() => void dismiss(card, false)}>
                       Not sure
                     </button>
-                    <button type="button" className="ghost" disabled={saving} onClick={() => void dismiss(card, true)}>
-                      Ignore this voice
+                    <button type="submit" disabled={saving || st.name.trim() === ""}>
+                      Save
                     </button>
                   </div>
                 </form>

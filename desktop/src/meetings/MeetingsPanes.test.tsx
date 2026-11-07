@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import meetingsView from "../views/Meetings.tsx?raw";
 import meetingsCss from "./meetings.css?raw";
+import meetingsPanesSrc from "./MeetingsPanes.tsx?raw";
 import {
   DetailTabs,
   ListSkeleton,
@@ -17,8 +18,11 @@ import {
   moreChipLabel,
   PickAMeeting,
   RecordingHero,
+  ROW_TITLE_SELECTOR,
   UndoDeleteBar,
   WhoIsTalkingStrip,
+  syncTitleTooltip,
+  truncatedTitle,
 } from "./MeetingsPanes";
 import { NO_FILTER, PERSON_REASON, type PersonRow } from "./meetingsLayout";
 
@@ -320,5 +324,105 @@ describe("the Meetings view source", () => {
     expect(meetingsView).toContain("schedulePendingDelete(");
     expect(meetingsView).toContain("<UndoDeleteBar");
     expect(meetingsView).not.toContain("Delete for good?");
+  });
+});
+
+describe("yap-1107-meetings-row-no-stale-tooltip: a title tooltip only when the title is cut", () => {
+  /** A measured title span without a DOM: just the bits syncTitleTooltip reads and writes. */
+  function fakeSpan(text: string, scrollWidth: number, clientWidth: number, title: string | null = null) {
+    const attrs = new Map<string, string>();
+    if (title !== null) attrs.set("title", title);
+    const el = {
+      textContent: text,
+      scrollWidth,
+      clientWidth,
+      getAttribute: (k: string) => attrs.get(k) ?? null,
+      setAttribute: (k: string, v: string) => void attrs.set(k, v),
+      hasAttribute: (k: string) => attrs.has(k),
+      removeAttribute: (k: string) => void attrs.delete(k),
+    };
+    return { el: el as unknown as HTMLElement, attrs };
+  }
+
+  it("truncatedTitle: the full title only when the box is narrower than the text", () => {
+    const long = "Quarterly planning with the whole launch team, pricing, onboarding and the App Store review notes";
+    expect(truncatedTitle(long, 640, 212)).toBe(long);
+    expect(truncatedTitle("Retro", 38, 38)).toBeNull(); // fits exactly: no tooltip
+    expect(truncatedTitle("Retro", 38, 120)).toBeNull();
+    expect(truncatedTitle("  Board prep  ", 90, 40)).toBe("Board prep");
+    expect(truncatedTitle("", 90, 40)).toBeNull();
+    expect(truncatedTitle(null, 90, 40)).toBeNull();
+    // An unlaid-out box (display:none, jsdom, SSR) measures 0: never a tooltip.
+    expect(truncatedTitle("Retro", 0, 0)).toBeNull();
+    expect(truncatedTitle("Retro", Number.NaN, 10)).toBeNull();
+  });
+
+  it("syncTitleTooltip sets the title on a cut span and clears it once the span fits again", () => {
+    const cut = fakeSpan("Customer call that stopped early", 260, 140);
+    expect(syncTitleTooltip(cut.el)).toBe(true);
+    expect(cut.attrs.get("title")).toBe("Customer call that stopped early");
+
+    // The window grew: the same span now fits, so the stale tooltip goes.
+    const grown = fakeSpan("Customer call that stopped early", 260, 260, "Customer call that stopped early");
+    expect(syncTitleTooltip(grown.el)).toBe(false);
+    expect(grown.attrs.has("title")).toBe(false);
+
+    // A short title never gets one.
+    const short = fakeSpan("Retro", 38, 38);
+    expect(syncTitleTooltip(short.el)).toBe(false);
+    expect(short.attrs.size).toBe(0);
+
+    // A renamed, still-cut title replaces the old text.
+    const renamed = fakeSpan("Pricing review, round two", 300, 120, "Old name");
+    syncTitleTooltip(renamed.el);
+    expect(renamed.attrs.get("title")).toBe("Pricing review, round two");
+  });
+
+  it("the row button carries no title attribute, and the title span gets none from JSX", () => {
+    const rowAt = meetingsView.indexOf('className="meeting-row-main"');
+    const rowButton = meetingsView.slice(meetingsView.lastIndexOf("<button", rowAt), meetingsView.indexOf("</button>", rowAt));
+    expect(rowButton.length).toBeGreaterThan(0);
+    expect(meetingsView).not.toContain("title={m.title}");
+    // Only one title in the whole row button: the failed state chip's reason.
+    expect(rowButton.match(/\btitle=\{/g)?.length ?? 0).toBe(1);
+    expect(rowButton).toContain("title={m.error || undefined}");
+    expect(rowButton).toContain('<span className="meeting-row-title">{m.title}</span>');
+    expect(rowButton).not.toContain("title={transcribedLabel(tp)}");
+    expect(ROW_TITLE_SELECTOR).toBe(".meeting-row-title");
+  });
+
+  it("the list wires ONE ResizeObserver for every title, keyed on the rows' ids and titles", () => {
+    expect(meetingsView).toContain('<div className="meetings-groups" data-meetings-list ref={titlesRef}>');
+    expect(meetingsView).toContain("const titlesRef = useTruncatedTitles(titlesKey,");
+    expect(meetingsView).toMatch(/logUi\("row_titles_cut", \{ truncated, rows \}\)/);
+    const hook = meetingsPanesSrc.slice(meetingsPanesSrc.indexOf("export function useTruncatedTitles"));
+    const body = hook.slice(0, hook.indexOf("\n}\n"));
+    expect(body.match(/new ResizeObserver/g)?.length).toBe(1);
+    expect(body).toContain("ro.disconnect()");
+    expect(body).not.toMatch(/setInterval|setTimeout|requestAnimationFrame/);
+  });
+
+  it("the +N chip names the folded people through aria-label only (no tooltip)", () => {
+    const html = renderToStaticMarkup(<PeopleChipLine people={["You", "Call", "Speaker 2", "Dana"]} shown={2} />);
+    expect(html).toContain('aria-label="2 more: Speaker 2, Dana"');
+    expect(html).not.toContain("title=");
+  });
+
+  it("audit: every title= left in the Meetings view explains a disabled control, a failure, or an icon button", () => {
+    const kept = (meetingsView.match(/\btitle=\{[^}]*\}|\btitle="[^"]*"/g) ?? []).sort();
+    expect(kept).toEqual(
+      [
+        // RecordingHero / WhoIsTalking props named "title" (the meeting's name, rendered as text, not an attribute).
+        'title={meetingStatus.title || ""}',
+        "title={openMeeting.meeting.title}",
+        // The two Record buttons: set only while disabled, saying why.
+        "title={disabledReason(meetingStatus) || undefined}",
+        "title={disabledReason(meetingStatus) || undefined}",
+        // A failed row's reason on its small state chip.
+        "title={m.error || undefined}",
+        // The icon-only Close button in the detail header.
+        'title="Close (Escape)"',
+      ].sort(),
+    );
   });
 });

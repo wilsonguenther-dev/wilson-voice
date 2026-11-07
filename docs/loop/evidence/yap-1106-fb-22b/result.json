@@ -1,0 +1,67 @@
+{
+  "when": "2026-11-07T18:21:10.027Z",
+  "viewport": "1190x773@2x",
+  "waiting": {
+    "head": "4 voices to name",
+    "cards": [
+      [
+        "unknown",
+        "▶ 0:03 “We should move the launch to the fourteenth.” Who was this? Not sure Save"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “Checkout has to be ready before anything else ships.” Who was this? Not sure Save"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “I can take the App Store notes this week.” Same person as John? 62% sure No, someo"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “Pricing stays where it is for now.” Who was this? Not sure Save"
+      ]
+    ]
+  },
+  "oneNamed": {
+    "head": "3 voices to name",
+    "cards": [
+      [
+        "named",
+        "Dana ✓ · 14 lines relabeled"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “Checkout has to be ready before anything else ships.” Who was this? Not sure Save"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “I can take the App Store notes this week.” Same person as John? 62% sure No, someo"
+      ],
+      [
+        "unknown",
+        "▶ 0:03 “Pricing stays where it is for now.” Who was this? Not sure Save"
+      ]
+    ]
+  },
+  "allSet": {
+    "head": "All set",
+    "cards": [
+      [
+        "named",
+        "Dana ✓ · 14 lines relabeled"
+      ],
+      [
+        "named",
+        "Eli ✓ · 9 lines relabeled"
+      ],
+      [
+        "merged",
+        "John ✓ · 6 lines relabeled"
+      ],
+      [
+        "named",
+        "Fay ✓ · 3 lines relabeled"
+      ]
+    ]
+  }
+}

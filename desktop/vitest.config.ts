@@ -97,6 +97,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
   "pill/governor.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-partial-transcript-stream — the live words: take lifecycle, governor gate, tail, throttle.
+  "pill/partialTranscript.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   // yap-1106-yappy-states-and-motion — the phase transition table and the speech-bubble rules.
   "pill/transitions.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/bubble.ts": { lines: 100, branches: 82, functions: 100, statements: 97 },

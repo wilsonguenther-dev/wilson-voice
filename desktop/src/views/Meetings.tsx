@@ -14,6 +14,8 @@ import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meeti
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
 import WhoIsTalking from "../meetings/WhoIsTalking";
+import { NOTES_ACTIVE } from "../meetings/progress";
+import YappySprite from "../license/YappySprite";
 import {
   applyLabelRows,
   clusterLabel,
@@ -31,7 +33,7 @@ import {
 } from "../meetings/meetingsLayout";
 import {
   DetailTabs, ListSkeleton, MeetingFilters, PeopleChips, PeopleTab, PickAMeeting, RecordingHero, UndoDeleteBar,
-  WhoIsTalkingStrip, reserveStatusWidth,
+  WhoIsTalkingStrip, reserveStatusWidth, useTruncatedTitles,
 } from "../meetings/MeetingsPanes";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
@@ -189,6 +191,14 @@ export default function Meetings() {
   const groups = useMemo(() => groupMeetings(visible, new Date()), [visible]);
   const people = useMemo(() => peopleOptions(meetings), [meetings]);
   const ids = useMemo(() => groups.flatMap((g) => g.meetings.map((m) => m.id)), [groups]);
+  // yap-1107-meetings-row-no-stale-tooltip — the row has no title attribute;
+  // a row's title span gets one only while its ellipsis cuts it, measured by
+  // ONE ResizeObserver over the list (re-armed when rows or titles change).
+  const titlesKey = useMemo(
+    () => groups.flatMap((g) => g.meetings.map((m) => `${m.id}\u0001${m.title}`)).join("\u0000"),
+    [groups],
+  );
+  const titlesRef = useTruncatedTitles(titlesKey, (truncated, rows) => logUi("row_titles_cut", { truncated, rows }));
   // yap-1107-meetings-row-whole-click-target: the list is ONE Tab stop (roving
   // tabindex): the selected row, else the open one, else the first. ↑/↓ move it.
   const tabStopId = rowTabStop(ids, selected, openId);
@@ -608,7 +618,7 @@ export default function Meetings() {
               </div>
             </div>
           ) : (
-            <div className="meetings-groups" data-meetings-list>
+            <div className="meetings-groups" data-meetings-list ref={titlesRef}>
               {groups.map((g) => (
                 <section key={g.id} className="meetings-group" aria-label={g.label}>
                   <h4 className="meetings-group-label">{g.label}</h4>
@@ -642,13 +652,13 @@ export default function Meetings() {
                               line (overflow folds into "+N", never wraps) then the state
                               chip, the same box as a chip so the line shares one baseline.
                               The notes' first line and the failure text moved off the row
-                              (the detail beside it shows both; the failure is the chip's
-                              tooltip): a third line on some rows made the list ragged. A
+                              (the detail beside it shows the notes; the failure reason is the
+                              failed chip's tooltip — the only row tooltip besides a cut title,
+                              see yap-1107-meetings-row-no-stale-tooltip): a third line on some rows made the list ragged. A
                               transcribing row's real progress fills its own state chip. */}
                           <button
                             type="button"
                             className="meeting-row-main"
-                            title={m.title}
                             aria-current={isOpen ? "true" : undefined}
                             tabIndex={m.id === tabStopId ? 0 : -1}
                             onFocus={() => setSelected(m.id)}
@@ -672,13 +682,16 @@ export default function Meetings() {
                                   aria-valuemin={0}
                                   aria-valuemax={100}
                                   aria-valuetext={transcribedLabel(tp)}
-                                  title={transcribedLabel(tp)}
                                   style={{ "--meeting-progress": `${tpPct}%` } as CSSProperties}
                                 >
                                   {stateLabel}
                                 </span>
                               ) : (
-                                <span className={`meeting-state ${m.state}`} title={m.error ?? stateLabel}>
+                                // yap-1107-meetings-row-no-stale-tooltip — the one title a row keeps
+                                // besides a cut title: a FAILED row's reason, on its small state chip
+                                // (the detail pane does not show m.error). "Complete" / "Notes ready"
+                                // repeat the chip's own text, so those rows get none.
+                                <span className={`meeting-state ${m.state}`} title={m.error || undefined}>
                                   {stateLabel}
                                 </span>
                               )}
@@ -733,6 +746,14 @@ export default function Meetings() {
             <article className="meeting-detail" aria-label={openMeeting.meeting.title}>
               {/* §9 — the "Who's talking?" strip sits at the top of the detail. */}
               <WhoIsTalkingStrip unnamed={unnamedVoices(detailPeopleRows)} onOpenPeople={() => setTab("people")} />
+              {/* yap-1106-fb-22b — Stop opens the meeting here while the summary is
+                  still being written; the cards can be answered meanwhile. */}
+              {(NOTES_ACTIVE as readonly string[]).includes(progress[openMeeting.meeting.id]?.state ?? "") && (
+                <p className="who-summary-writing tiny muted" role="status" aria-live="polite">
+                  <YappySprite size={24} className="who-summary-yappy" />
+                  Writing the summary…
+                </p>
+              )}
               {/* yap-1106-who-is-this — "Who was this?" cards, only after the meeting. */}
               <WhoIsTalking
                 meetingId={openMeeting.meeting.id}

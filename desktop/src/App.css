@@ -3474,6 +3474,42 @@ button.primary.big {
   text-decoration: line-through;
   opacity: 0.75;
 }
+/* yap-1107-polish-diff-readable — phrase runs never glue ("myyour"), and the
+   "Show as before/after" toggle swaps the runs for two plain paragraphs. */
+.diff-view .diff-pair-gap {
+  margin-inline-start: 0.3em;
+}
+.diff-view .diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.diff-view .diff-head .diff-summary {
+  margin: 0;
+}
+.diff-view .diff-layout-toggle {
+  flex: none;
+}
+.diff-view .diff-layout-toggle[aria-pressed="true"] {
+  background: rgba(127, 127, 127, 0.22);
+}
+.diff-view .diff-blocks {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.diff-view .diff-block-label {
+  margin: 0 0 2px;
+  opacity: 0.7;
+}
+.diff-view .diff-block-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  word-break: break-word;
+}
 .diff-view .diff-stages {
   margin: 0;
   opacity: 0.65;

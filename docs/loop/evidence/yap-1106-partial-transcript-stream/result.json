@@ -1,0 +1,59 @@
+{
+  "when": "2026-11-07T18:20:12.027Z",
+  "results": [
+    {
+      "name": "before-listening-no-partial",
+      "dock": "bottom",
+      "size": {
+        "w": 294,
+        "h": 162
+      },
+      "partialText": ""
+    },
+    {
+      "name": "before-listening-no-partial",
+      "dock": "left",
+      "size": {
+        "w": 280,
+        "h": 208
+      },
+      "partialText": ""
+    },
+    {
+      "name": "before-listening-no-partial",
+      "dock": "right",
+      "size": {
+        "w": 280,
+        "h": 208
+      },
+      "partialText": ""
+    },
+    {
+      "name": "after-listening-partial",
+      "dock": "bottom",
+      "size": {
+        "w": 294,
+        "h": 162
+      },
+      "partialText": "…and then we look at pricing"
+    },
+    {
+      "name": "after-listening-partial",
+      "dock": "left",
+      "size": {
+        "w": 280,
+        "h": 208
+      },
+      "partialText": "…and then we look at pricing"
+    },
+    {
+      "name": "after-listening-partial",
+      "dock": "right",
+      "size": {
+        "w": 280,
+        "h": 208
+      },
+      "partialText": "…and then we look at pricing"
+    }
+  ]
+}

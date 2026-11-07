@@ -3135,6 +3135,16 @@ impl stream_decode::WindowDecoder for EngineWindowDecoder {
     fn constrained(&self) -> bool {
         resource_governor::live_transcript_paused()
     }
+
+    /// yap-1106-partial-transcript-stream — the display-only guess at the
+    /// uncommitted words runs only at a full governor; the pill hides live
+    /// words at any other level, so a guess then would be wasted work.
+    fn tentative_allowed(&self) -> bool {
+        matches!(
+            resource_governor::level_now(),
+            resource_governor::Level::Full
+        )
+    }
 }
 
 /// yap-1106-sp-05 — arm the streaming decode for the take about to record.
@@ -3172,7 +3182,12 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) -> Option<u64> {
         Arc::new(move |partial: &stream_decode::TranscriptPartial| {
             // yap-1106-sp-07 — the same committed text feeds the polish
             // pipeline, which polishes its finished chunks right away.
-            polish::pipeline_feed(partial.take, &partial.committed);
+            // yap-1106-partial-transcript-stream — a tentative emit repeats
+            // the committed text beside a display-only guess; the guess never
+            // reaches polish (or history), so only committed emits feed it.
+            if partial.tentative.is_empty() {
+                polish::pipeline_feed(partial.take, &partial.committed);
+            }
             if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
                 log::warn!(
                     "stream_decode partial_emit_failed take={} error={e}",
@@ -9254,7 +9269,9 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
 #[tauri::command]
 async fn use_original_take(
     app: AppHandle,
-    state: tauri::State<'_, AppState>,
+    // yap-1107: the app manages `Arc<AppState>` (one owner); asking for a bare
+    // `AppState` made Tauri reject every call ("state not managed").
+    state: tauri::State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<String, String> {
     let newest = match state.db.list_transcripts(1, None) {
@@ -9306,15 +9323,24 @@ async fn use_original_take(
         use_original_reply(&r)
     })
     .await
-    .map_err(|e| format!("paste task join failed: {e}"))?
+    .map_err(|e| {
+        // Never Tauri/tokio text on the card: log it, answer the retry line.
+        log::warn!("dictation polish_reveal_use_original failed=join: {e}");
+        USE_ORIGINAL_FAILED_MESSAGE.to_string()
+    })?
 }
+
+/// yap-1107 — the generic Use original retry line. Mirrors `polishReveal.ts`
+/// `USE_ORIGINAL_FAILED`, which is on the pill's allowlist of our sentences.
+pub const USE_ORIGINAL_FAILED_MESSAGE: &str =
+    "Couldn’t paste the original. Try Use original again.";
 
 /// fix-l3b7-1 — what `use_original_take` answers the pill. A replace that
 /// landed (or was carded) is `Ok(message)`; a refused replace whose copy worked
 /// is `Err(REPLACE_NOT_FOUND_MESSAGE)` so the card shows the clipboard
 /// sentence; anything that could not even copy is the generic retry line.
 pub fn use_original_reply(r: &paste::ReplaceResult) -> Result<String, String> {
-    const FAILED: &str = "Couldn’t paste the original. Try Use original again.";
+    const FAILED: &str = USE_ORIGINAL_FAILED_MESSAGE;
     match (&r.replaced, r.outcome.copied) {
         (Ok(()), true) => Ok(r.outcome.message.clone()),
         (Err(_), true) => Err(r.outcome.message.clone()),
@@ -9337,7 +9363,7 @@ pub fn use_original_reply(r: &paste::ReplaceResult) -> Result<String, String> {
 /// network call on the path, and this app ships no analytics SDK.
 #[tauri::command]
 fn set_take_feedback(
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, Arc<AppState>>,
     id: String,
     feedback: Option<i64>,
 ) -> Result<(), String> {

@@ -48,6 +48,7 @@ const ADAPTERS: Record<string, string> = {
   "permissionRepair.ts": "runs the per-service permission probe and repair commands",
   "pill/characters/registry.ts": "registers Yappy, whose transitional canvas stage (pill/YappyPill.tsx, lazily imported) listens to the backend",
   "pill/drag.ts": "moves the float window through invoke(); its hit-box math is tested on its own",
+  "pill/usePartialTranscript.ts": "listens for transcript_partial over listen(); its rules are pure in pill/partialTranscript.ts",
   "updater.ts": "the check_for_update / install_update commands",
 };
 

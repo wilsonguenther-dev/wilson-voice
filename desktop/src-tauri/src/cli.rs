@@ -798,6 +798,9 @@ fn bench_stream(
                 "release_text_ms": release_text_ms,
                 "capture_decode_ms": s.capture_decode_ms,
                 "capture_ms": capture_ms,
+                "tentatives": s.tentatives,
+                "tentative_ms": s.tentative_ms,
+                "tentative_lag_max_ms": s.tentative_lag_max_ms,
                 "words": normalized_words(&s.text).len(),
                 "wer": wer,
             })
