@@ -1649,6 +1649,9 @@ fn emit_status(app: &AppHandle, state: &AppState) {
 /// `emit_status` is sometimes invoked from the ASR worker thread, so the actual
 /// updates are hopped onto the main thread with cheap Arc-backed handle clones.
 fn sync_tray(app: &AppHandle, state: &AppState) {
+    // WF-14 — the "Update ready" line, and a deferred restart that was waiting
+    // for this very transition to quiet.
+    sync_update_ready(app, state);
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
@@ -1782,6 +1785,100 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     });
 }
 
+/// WF-14 — the menu-bar "Update ready" line's handle. Built with the tray,
+/// inserted only while a downloaded release waits for a restart.
+static TRAY_UPDATE_READY: std::sync::Mutex<Option<MenuItem<Wry>>> = std::sync::Mutex::new(None);
+
+/// WF-14 — what Yap is doing right now, for the restart gate. A dictation, a
+/// take still decoding, a polish pass, meeting notes being written, or a
+/// meeting recording each keep the restart waiting.
+fn update_activity(state: &AppState) -> tray_menu::Activity {
+    let notes = SUMMARY_JOBS
+        .get()
+        .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
+        .unwrap_or(false);
+    tray_menu::Activity {
+        dictating: *state.recording.lock(),
+        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        polishing: tray_menu::polish_in_flight(),
+        notes,
+        meeting: state.meeting().is_some_and(|c| c.is_recording()),
+    }
+}
+
+/// WF-14 — reflect `tray_menu::UPDATE_READY` into the menu, and fire a
+/// deferred restart the moment Yap is quiet. Called from `sync_tray` (every
+/// state transition), from `install_update` and from the item's own click.
+/// The line sits directly under the status header (under the upgrade line when
+/// that shows) and is removed when no newer release is waiting — so a fresh
+/// process, already running the installed build, never shows it.
+fn sync_update_ready(app: &AppHandle, state: &AppState) {
+    let ready = tray_menu::UPDATE_READY.version();
+    let running = app.package_info().version.to_string();
+    let visible = tray_menu::update_item_visible(ready.as_deref(), &running);
+    let was_shown = tray_menu::UPDATE_READY.swap_shown(visible);
+    if !visible && !was_shown {
+        return;
+    }
+    let activity = update_activity(state);
+    let blocker = tray_menu::restart_blocker(activity);
+    let armed = tray_menu::UPDATE_READY.is_armed();
+    if tray_menu::restart_when_quiet(visible, armed, activity) {
+        tray_menu::UPDATE_READY.set_armed(false);
+        log::info!(
+            "update restart_deferred_fired version={}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+        // Through RunEvent::Exit and its bounded quit teardown, then relaunch.
+        app.request_restart();
+        return;
+    }
+    if visible && !was_shown {
+        log::info!(
+            "tray update_ready shown version={} running={running}",
+            ready.as_deref().unwrap_or("unknown")
+        );
+    } else if !visible && was_shown {
+        log::info!("tray update_ready removed running={running}");
+    }
+    let label = tray_menu::update_ready_label(blocker, armed);
+    let item = TRAY_UPDATE_READY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let menu = state.tray_menu.lock().clone();
+    let (Some(item), Some(menu)) = (item, menu) else {
+        return; // tray not built yet; the next transition places it
+    };
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(label);
+        let items = menu.items().unwrap_or_default();
+        let present = items
+            .iter()
+            .any(|k| k.id().as_ref() == tray_menu::ID_UPDATE_READY);
+        if visible && !present {
+            let mut at = items
+                .iter()
+                .position(|k| k.id().as_ref() == tray_menu::ID_LICENSE_HEADER)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if items
+                .get(at)
+                .is_some_and(|k| k.id().as_ref() == tray_menu::ID_UPGRADE)
+            {
+                at += 1;
+            }
+            if let Err(e) = menu.insert(&item, at) {
+                log::warn!("tray update_ready insert failed: {e}");
+            }
+        } else if !visible && present {
+            if let Err(e) = menu.remove(&item) {
+                log::warn!("tray update_ready remove failed: {e}");
+            }
+        }
+    });
+}
+
 /// Y6-B — what each menu-bar command DOES. Exhaustive over
 /// `tray_menu::TrayCommand` with no wildcard arm: a command added to the
 /// registry without a handler here does not compile. The tray's
@@ -1893,6 +1990,37 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         // every window.
         TrayCommand::PickLanguage(index) => {
             pick_language_from_tray(app, state, index);
+        }
+        // WF-14 — "Update ready — Restart to update". Never restarts out from
+        // under a take, a polish or a meeting: busy, the click arms a deferred
+        // restart (`sync_update_ready` fires it on the first quiet
+        // transition) and a second click cancels it.
+        TrayCommand::RestartToUpdate => {
+            let ready = tray_menu::UPDATE_READY.version();
+            let armed = tray_menu::UPDATE_READY.is_armed();
+            let activity = update_activity(state);
+            let blocker = tray_menu::restart_blocker(activity);
+            let action = tray_menu::restart_click(ready.is_some(), armed, activity);
+            log::info!(
+                "tray restart_to_update action={action:?} blocker={} version={}",
+                blocker.map(tray_menu::Busy::as_str).unwrap_or("none"),
+                ready.as_deref().unwrap_or("none")
+            );
+            match action {
+                tray_menu::RestartAction::Nothing => {}
+                tray_menu::RestartAction::RestartNow => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    app.request_restart();
+                }
+                tray_menu::RestartAction::Arm => {
+                    tray_menu::UPDATE_READY.set_armed(true);
+                    sync_update_ready(app, state);
+                }
+                tray_menu::RestartAction::Disarm => {
+                    tray_menu::UPDATE_READY.set_armed(false);
+                    sync_update_ready(app, state);
+                }
+            }
         }
         // WF-11 — "Language Settings…": Settings, on the Dictation sub-tab.
         TrayCommand::OpenLanguageSettings => {
@@ -4179,7 +4307,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // failure modes are otherwise invisible by construction.
                 // yap24-PILL2: wrapped so `polishing` is reported exactly when
                 // the cleanup pipeline actually calls the polish stage.
-                take_stages.polishing(|t| polish::polish_llm_result(t, dictation_mode, &polish_config)),
+                take_stages.polishing(|t| {
+                    // WF-14 — the restart gate reads this while it is held.
+                    let _polish = tray_menu::PolishGuard::enter();
+                    polish::polish_llm_result(t, dictation_mode, &polish_config)
+                }),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -11677,6 +11809,12 @@ async fn install_update(app: AppHandle) -> Result<String, String> {
             e.to_string()
         })?;
     log::info!("Yap {version} installed — applies on relaunch");
+    // WF-14 — the menu bar now offers "Update ready — Restart to update"; the
+    // restart itself waits for a quiet Yap (`tray_menu::restart_gate`).
+    tray_menu::UPDATE_READY.mark_ready(&version);
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        sync_update_ready(&app, &state);
+    }
     Ok(version)
 }
 
@@ -12891,6 +13029,15 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            // WF-14 — built now, inserted only while an installed release
+            // waits for a restart (`sync_update_ready`).
+            let update_ready_i = MenuItem::with_id(
+                app,
+                tm::ID_UPDATE_READY,
+                tm::label(tm::ID_UPDATE_READY),
+                true,
+                None::<&str>,
+            )?;
             let show_i =
                 MenuItem::with_id(app, tm::ID_SHOW, tm::label(tm::ID_SHOW), true, None::<&str>)?;
             // Y6-B — the transcript history (the Home view).
@@ -13007,6 +13154,8 @@ pub fn run() {
             *state.tray_notes_ready.lock() = Some(notes_ready_i);
             *state.tray_license.lock() = Some(license_i);
             *state.tray_upgrade.lock() = Some(upgrade_i);
+            *TRAY_UPDATE_READY.lock().unwrap_or_else(|p| p.into_inner()) = Some(update_ready_i);
+            tm::UPDATE_READY.reset_shown();
             *state.tray_menu.lock() = Some(menu.clone());
             // yap-1106 (a) — the meeting block is re-synced from
             // `controller.status()` whenever the tray is built, so a status that

@@ -510,3 +510,80 @@ fn quit_runs_the_exit_drain() {
     assert!(teardown.contains("exit_step_await_take"));
     assert!(fn_body(&lib, "exit_step_asr_drain").contains("drain_and_unload("));
 }
+
+// ─── WF-14: "Update ready" and the quiet gate ───────────────────────────────
+
+/// WF-14 — an installed release puts "Update ready" in the menu, and both
+/// update restarts in `lib.rs` sit behind the quiet gate: the click
+/// (`restart_click` → `RestartNow`) and the deferred one
+/// (`restart_when_quiet`, run on every `sync_tray`). The gate reads every busy
+/// state — a dictation, a take in flight, a polish pass, notes being written
+/// and a meeting recording.
+#[test]
+fn update_restart_goes_through_the_quiet_gate() {
+    let lib = code_only(LIB_SRC);
+    let install = fn_body(&lib, "install_update");
+    assert!(install.contains("tray_menu::UPDATE_READY.mark_ready(&version)"));
+    assert!(install.contains("sync_update_ready("));
+    assert!(fn_body(&lib, "sync_tray").contains("sync_update_ready(app, state)"));
+
+    let sync = fn_body(&lib, "sync_update_ready");
+    assert!(sync.contains("tray_menu::update_item_visible("));
+    assert!(sync.contains("tray_menu::restart_when_quiet("));
+    assert!(sync.contains("tray_menu::update_ready_label("));
+    assert!(sync.contains("tray_menu::ID_UPDATE_READY"));
+    assert!(sync.contains("app.request_restart()"));
+
+    let dispatch = fn_body(&lib, "run_tray_command");
+    let click = arm(
+        &dispatch,
+        "TrayCommand::RestartToUpdate =>",
+        "TrayCommand::",
+    );
+    assert!(click.contains("tray_menu::restart_click("));
+    assert!(click.contains("tray_menu::RestartAction::Arm"));
+    assert!(click.contains("tray_menu::RestartAction::Disarm"));
+    assert!(click.contains("app.request_restart()"));
+
+    assert_eq!(
+        lib.matches("request_restart()").count(),
+        2,
+        "an update restart outside the click and the deferred path bypasses the quiet gate"
+    );
+
+    let activity = fn_body(&lib, "update_activity");
+    for input in [
+        "state.recording",
+        "state.busy",
+        "tray_menu::polish_in_flight()",
+        "is_active()",
+        "is_recording()",
+    ] {
+        assert!(activity.contains(input), "the restart gate ignores {input}");
+    }
+    assert!(lib.contains("tray_menu::PolishGuard::enter()"));
+}
+
+/// WF-14 — the line is an inserted row (never laid out), resolves to its
+/// command, and a fresh process (the one a successful restart starts, already
+/// running the installed version) never shows it.
+#[test]
+fn update_ready_line_is_inserted_and_gone_after_restart() {
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_UPDATE_READY));
+    assert_eq!(
+        command_for(tray_menu::ID_UPDATE_READY),
+        Some(TrayCommand::RestartToUpdate)
+    );
+    assert!(!tray_menu::update_item_visible(None, "1.4.0"));
+    assert!(!tray_menu::update_item_visible(Some("1.4.0"), "1.4.0"));
+    assert!(tray_menu::update_item_visible(Some("1.4.0"), "1.3.9"));
+    let busy = tray_menu::Activity {
+        meeting: true,
+        ..tray_menu::Activity::default()
+    };
+    assert!(!tray_menu::restart_gate(busy));
+    assert_eq!(
+        tray_menu::update_ready_label(tray_menu::restart_blocker(busy), true),
+        "Will restart after this meeting \u{00b7} Cancel"
+    );
+}
