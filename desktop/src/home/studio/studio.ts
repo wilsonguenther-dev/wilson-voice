@@ -66,10 +66,20 @@ export interface StudioBattery {
   charging: boolean;
 }
 
+/** The room's real-clock light: YappyHouse's SKY keyframes at this minute
+ * (the same table the pill sky reads, decisions.pill_sky = C). */
+export interface StudioSky {
+  top: string;
+  bot: string;
+  amb: string;
+  ambA: number;
+}
+
 /** Everything the studio draws from. Every field is REAL app state. */
 export interface StudioState {
   /** skyPhase(new Date()): 0 dawn · .25 day · .5 dusk · .75 night. */
   phase: number;
+  sky: StudioSky;
   meetingRecording: boolean;
   /** Fixes Yap made to today's takes; null = not loaded (counter blank). */
   fixesToday: number | null;
@@ -85,7 +95,7 @@ export interface StudioState {
 }
 
 /** The inputs Home passes in (the clock and Yappy's pose come from the room). */
-export type StudioInputs = Omit<StudioState, "phase" | "yappy" | "meetingRecording">;
+export type StudioInputs = Omit<StudioState, "phase" | "sky" | "yappy" | "meetingRecording">;
 
 export const EMPTY_STUDIO_INPUTS: StudioInputs = {
   fixesToday: null,
@@ -178,6 +188,9 @@ export function yappyPose(d: { appState: HabitatAppState; activity: string; reac
   return "rest";
 }
 
+/** Reduce motion's one still frame is drawn at this t (no friend mid-blink). */
+export const STILL_T = 1;
+
 /** Whole-pixel layer shifts for an eased pointer value (artifact rounding). */
 export function parallaxOffsets(px: number): [number, number, number] {
   const p = finite(px) ? Math.max(-PARALLAX_MAX, Math.min(PARALLAX_MAX, px)) : 0;
@@ -190,7 +203,7 @@ export function parallaxOffsets(px: number): [number, number, number] {
 export function parallaxTarget(clientX: number, left: number, width: number): number {
   if (!finite(clientX) || !finite(left) || !finite(width) || width <= 0) return 0;
   const f = Math.max(0, Math.min(1, (clientX - left) / width));
-  return (f - 0.5) * -2 * PARALLAX_MAX;
+  return (f - 0.5) * -2 * PARALLAX_MAX || 0;
 }
 
 export type RedrawMode = "still" | "live" | "tick" | "idle";
@@ -256,19 +269,8 @@ export function drawDigits(o: PixelCtx, text: string, x: number, y: number, col:
   }
 }
 
-const WINDOW_SKY: Record<SkyBand, { glass: string; top: string }> = {
-  dawn: { glass: "#f6a6a0", top: "#ffd9a0" },
-  day: { glass: "#8fd6ff", top: "#c6ecff" },
-  dusk: { glass: "#ff9d6b", top: "#ffd27a" },
-  night: { glass: "#1d2350", top: "#2c3060" },
-};
-/** The room's light for each band, laid over the picture before the lights. */
-export const ROOM_TINT: Record<SkyBand, { col: string; a: number } | null> = {
-  dawn: { col: "#ffb28a", a: 0.1 },
-  day: null,
-  dusk: { col: "#ff8a4a", a: 0.12 },
-  night: { col: "#1a2050", a: 0.3 },
-};
+/** The room light never darkens the picture by more than this (lights stay readable). */
+export const MAX_TINT = 0.3;
 /** Fixed firefly spots near Ember's window (art px). */
 export const FIREFLY_SPOTS: readonly (readonly [number, number])[] = [
   [20, 70], [44, 76], [30, 88], [56, 68], [14, 98], [40, 104], [60, 92],
@@ -307,6 +309,10 @@ export function drawBack(o: StudioCtx, s: StudioState, _t: number): void {
   // Tidy's pegboard
   h.r(222, 84, 50, 14, "#c9a878");
   [228, 236, 246, 256, 264].forEach((x, n) => h.r(x, 86, 2, 10, ["#7d8c96", "#c8443a", "#e8c86a", "#3fb0a0", "#7d8c96"][n]));
+  // Tidy's counter over her pegboard: the fixes Yap made to today's takes.
+  h.r(240, 76, 14, 7, "#2a2d35");
+  const txt = tidyCounter(s.fixesToday);
+  drawDigits(o, txt, 253 - txt.length * 4, 77, "#7fdc7a");
   // the back door (the back room: Mochi's frame, Sal's furnace)
   h.r(282, 30, 34, FLOOR - 30, "#5f3c22"); h.r(285, 33, 28, FLOOR - 33, "#7a4b2e"); h.r(288, 36, 22, 30, "#6b4428"); h.r(288, 70, 22, 30, "#6b4428"); h.ell(309, 84, 1.5, 1.5, "#e8c86a");
   // floor
@@ -339,12 +345,9 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   // Yappy stands behind his desk (the desk is in the front layer).
   const yf = s.yappy === "sleep" ? 1 : s.yappy === "work" ? (Math.floor(t * 6) % 3 === 0 ? 2 : 0) : s.yappy === "cheer" ? 2 : (t % 3.4) < 0.15 ? 1 : 0;
   stamp(o, "yappy", 140, FLOOR - 50, yf);
-  // Tidy's bench + today's fixes counter.
+  // Tidy's bench (her counter hangs over the pegboard, back layer).
   h.r(190, FLOOR - 22, 36, 4, "#6b4428"); h.r(190, FLOOR - 22, 36, 1, "#8a5a36"); h.r(192, FLOOR - 18, 2, 18, "#4a2c1e"); h.r(222, FLOOR - 18, 2, 18, "#4a2c1e"); h.r(196, FLOOR - 27, 10, 5, "#9aa3ad");
   stamp(o, "tidy", 186, FLOOR - 34, fr);
-  h.r(208, FLOOR - 17, 14, 7, "#2a2d35");
-  const txt = tidyCounter(s.fixesToday);
-  drawDigits(o, txt, 222 - txt.length * 4, FLOOR - 16, "#7fdc7a");
   // Gulp's jar: one card per eighth of a full Dictionary.
   h.r(262, FLOOR - 30, 14, 30, "#9fc8d0"); h.r(262, FLOOR - 30, 14, 1, "#ffffff"); h.r(261, FLOOR - 33, 16, 3, "#8a5a36"); h.r(264, FLOOR - 28, 1, 26, "#d8eef2");
   const cards = jarCards(s.dictionarySize);
@@ -391,8 +394,8 @@ export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: numb
   o.save();
   o.translate(backDx, 0);
   const h = H(o);
-  const sky = WINDOW_SKY[band];
-  h.r(13, 19, 40, 38, sky.glass); h.r(13, 19, 40, 10, sky.top);
+  // The window shows the room's real-clock sky: upper pane the zenith, lower the horizon.
+  h.r(13, 19, 40, 18, s.sky.top); h.r(13, 39, 40, 18, s.sky.bot);
   if (band === "night") {
     h.ell(46, 26, 3, 3, "#f6f0cf");
     [[18, 24], [24, 44], [42, 48], [20, 52]].forEach((q) => h.r(q[0], q[1], 1, 1, "#fffbe0"));
@@ -426,8 +429,14 @@ export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: numb
 
 /** The room's light for the clock, over the whole picture (before the lights). */
 export function drawTint(o: PixelCtx, s: StudioState): void {
-  const tint = ROOM_TINT[skyBand(s.phase)];
-  if (tint) H(o).r(0, 0, STUDIO_W, STUDIO_H, tint.col, tint.a);
+  const a = roomTintAlpha(s.sky);
+  if (a > 0) H(o).r(0, 0, STUDIO_W, STUDIO_H, s.sky.amb, a);
+}
+
+/** The room light's strength for a sky (0 by day, at most MAX_TINT at night). */
+export function roomTintAlpha(sky: Pick<StudioSky, "ambA"> | null | undefined): number {
+  const a = sky && finite(sky.ambA) ? sky.ambA : 0;
+  return Math.max(0, Math.min(MAX_TINT, a * 0.7));
 }
 
 /** The wooden pixel frame (artifact `frame`), in the buffer so it scales with the room. */
@@ -439,7 +448,7 @@ export function drawFrame(o: PixelCtx): void {
   for (let y = 9; y < Hh - 9; y += 13) { h.r(2, y, 1, 4, "#9a6a40"); h.r(W - 3, y + 5, 1, 3, "#5a3420"); }
   h.r(0, 0, W, 1, "#3a2418"); h.r(0, Hh - 1, W, 1, "#2a1a10"); h.r(0, 0, 1, Hh, "#3a2418"); h.r(W - 1, 0, 1, Hh, "#2a1a10");
   h.r(F, F, W - F * 2, 1, "#3a2418"); h.r(F, F, 1, Hh - F * 2, "#3a2418"); h.r(F, Hh - F - 1, W - F * 2, 1, "#5a3420"); h.r(W - F - 1, F, 1, Hh - F * 2, "#5a3420");
-  h.r(F + 1, F + 1, W - F * 2 - 2, 1, "rgba(0,0,0,.18)"); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, "rgba(0,0,0,.12)");
+  h.r(F + 1, F + 1, W - F * 2 - 2, 1, "#000000", 0.18); h.r(F + 1, F + 1, 1, Hh - F * 2 - 2, "#000000", 0.12);
   [[2, 2], [W - 4, 2], [2, Hh - 4], [W - 4, Hh - 4]].forEach((c) => { h.r(c[0], c[1], 2, 2, "#e8c86a"); h.r(c[0], c[1], 1, 1, "#fff2b0"); });
   const px = Math.floor(W / 2) - 14;
   h.r(px, Hh - F, 28, F, "#c9a03a"); h.r(px, Hh - F, 28, 1, "#f0d27a"); h.r(px, Hh - 1, 28, 1, "#8a6a1f"); h.r(px + 1, Hh - F + 1, 1, 1, "#8a6a1f"); h.r(px + 26, Hh - F + 1, 1, 1, "#8a6a1f");

@@ -78,19 +78,20 @@ const attention = (failed: FailedDictation[]) =>
 
 describe("the room: full column width at a whole-number scale (option A)", () => {
   it("picks 5x, 4x or 3x — the largest that fits — never a fraction", () => {
-    expect(roomScale(1400)).toBe(5);
-    expect(roomScale(ROOM_W * 5)).toBe(5);
-    expect(roomScale(ROOM_W * 5 - 1)).toBe(4);
+    expect(roomScale(1400)).toBe(4);
     expect(roomScale(ROOM_W * 4)).toBe(4);
     expect(roomScale(ROOM_W * 4 - 1)).toBe(3);
-    expect(roomScale(400)).toBe(3);
-    expect(roomScale(Number.NaN)).toBe(3);
-    expect(roomScale(undefined)).toBe(3);
+    expect(roomScale(ROOM_W * 3)).toBe(3);
+    expect(roomScale(ROOM_W * 3 - 1)).toBe(2);
+    expect(roomScale(400)).toBe(2);
+    expect(roomScale(Number.NaN)).toBe(2);
+    expect(roomScale(undefined)).toBe(2);
     for (let w = 0; w <= 2400; w += 7) expect(Number.isInteger(roomScale(w))).toBe(true);
   });
   it("the stage is the room's height at that scale", () => {
-    expect(roomBox(1100)).toEqual({ scale: 5, width: 960, height: 640 });
-    expect(roomBox(800)).toEqual({ scale: 4, width: 768, height: ROOM_H * 4 });
+    // yap-1106-studio-room: the 320 x 160 studio, 3x on the design page's 960 px column.
+    expect(roomBox(1100)).toEqual({ scale: 3, width: 960, height: 480 });
+    expect(roomBox(1300)).toEqual({ scale: 4, width: 1280, height: ROOM_H * 4 });
   });
   it("the room has no size cap any more", () => {
     const rule = appCss.slice(appCss.indexOf(".yappy-house {"), appCss.indexOf("}", appCss.indexOf(".yappy-house {")));
@@ -173,7 +174,9 @@ describe("during a meeting: no floating timer on Home, Hoot in the room", () => 
     const html = home(base({ history: [take(0)], meetingStatus: { recording: true, elapsedSeconds: 336, captureAvailable: true } }));
     expect(html).toContain("Recording meeting · 05:36");
     expect(html).toContain('data-room-label="recording"');
-    expect(html).toContain("Hoot the owl sits on the desk lamp");
+    // yap-1106-studio-room: Hoot's booth ON AIR light is lit only while the meeting records.
+    expect(html).toContain("Hoot&#x27;s ON AIR light is on: a meeting is recording.");
+    expect(html).toContain('data-on-air="on"');
     // The only clock on Home is the room label: no meeting badge or timer markup.
     expect(html.match(/05:36/g)?.length).toBe(1);
     expect(html).not.toMatch(/meeting-badge|meeting-timer|float/);
