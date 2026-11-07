@@ -236,3 +236,15 @@ describe("yap-1106-diarize-wire — the Finding speakers stage", () => {
     expect(meetingStateLabel("complete", ev(100, "complete"), false)).toBe("Transcript ready");
   });
 });
+
+describe("yap-fx-05 a meeting that died mid-job stays retryable", () => {
+  it("shows Retry on a crash-looped failed row that kept its audio", () => {
+    // The row `meeting_pipeline::guarded_job` leaves after two launches died
+    // mid-job: state `failed`, audio kept, wav path intact.
+    const row = { state: "failed", audioKept: true, micWavPath: "/tmp/yap/m1-mic.wav" };
+    expect(canRetry(row.state, row.audioKept, row.micWavPath)).toBe(true);
+    expect(meetingActions(row, undefined, false)).toContain("retry");
+    // A late `failed` progress event for it does not hide the Retry either.
+    expect(meetingActions(row, ev(12, "failed"), false)).toContain("retry");
+  });
+});
