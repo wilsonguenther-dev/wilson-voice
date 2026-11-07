@@ -30,6 +30,8 @@ export type SettingsTab =
   | "privacy"
   | "diagnostics"
   | "notifications"
+  // yap-1106-news-prefs-onboarding — Settings → Yappy News.
+  | "news"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -43,6 +45,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "companion", label: "Companion" },
   // WF-17 — quiet mode: which of the pill's soft messages show.
   { id: "notifications", label: "Notifications" },
+  // yap-1106-news-prefs-onboarding — topics, tickers, on/off, last refresh.
+  { id: "news", label: "Yappy News" },
   { id: "advanced", label: "Advanced" },
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },

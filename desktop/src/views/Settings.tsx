@@ -1,6 +1,7 @@
 import BootNote from "../BootNote";
 import Companion from "./settings/Companion";
 import Notifications from "./settings/Notifications";
+import News from "./settings/News";
 import Dictation from "./settings/Dictation";
 import Snippets from "./settings/Snippets";
 import Audio from "./settings/Audio";
@@ -64,6 +65,9 @@ export default function Settings() {
 
               {/* ── Notifications (WF-17) — mute tips, feature news, milestones ── */}
               {settingsTab === "notifications" && <Notifications />}
+
+              {/* ── Yappy News (yap-1106-news-prefs-onboarding) — topics, on/off, last refresh ── */}
+              {settingsTab === "news" && <News />}
 
               {/* ── Dictation — how your speech becomes clean text ── */}
               {settingsTab === "dictation" && <Dictation />}
