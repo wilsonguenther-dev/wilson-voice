@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::{asr_engine, dictation, models, record, transcription::TranscriptionManager};
+use crate::{dictation, models, record, transcription::TranscriptionManager};
 
 /// Flag that switches the binary into headless transcribe mode.
 const TRANSCRIBE_FILE_FLAG: &str = "--transcribe-file";
@@ -156,10 +156,9 @@ pub fn handle_args() -> Option<i32> {
 fn print_capabilities() -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
-    match ensure_model().and_then(|(id, path)| {
-        let engine = asr_engine::load(&path)?;
-        Ok((id, asr_engine::capabilities(&engine)))
-    }) {
+    match ensure_model()
+        .and_then(|(id, path)| Ok((id, crate::engine_owner::probe_capabilities(&path)?)))
+    {
         Ok((id, caps)) => {
             println!("model: {id}");
             println!("{}", caps.report());
@@ -543,8 +542,11 @@ fn bench_take(
     let leveled = record::bench_capture_chain(&raw);
     drop(raw);
 
+    // SP-06 — the fade, RNNoise and Silero stream during capture in the app,
+    // so the bench streams them here, before the release clock, too.
+    let streamed = record::bench_capture_stream(&leveled, settings.denoise, vad);
     let t_release = Instant::now();
-    let dsp = record::bench_release_dsp(&leveled, settings.denoise, vad)?;
+    let dsp = record::bench_release_streamed(&leveled, settings.denoise, vad, streamed)?;
     let dsp_ms = ms_since(t_release);
     let decoded_s = dsp.samples.len() as f64 / f64::from(record::TARGET_RATE);
     let asr = crate::transcribe_native(

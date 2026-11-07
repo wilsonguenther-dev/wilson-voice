@@ -15,6 +15,13 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
+import { EngineHealthChip } from "./pill/EngineHealthChip";
+import {
+  ENGINE_HEALTH_EVENT,
+  engineHealthTakesStrip,
+  parseEngineHealth,
+  type EngineHealth,
+} from "./pill/engineHealth";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
@@ -22,6 +29,8 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import MeetingDictationCard from "./pill/MeetingDictationCard";
+import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
@@ -86,6 +95,7 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixMeetingDictationScenes,
   matrixStyleChipScene,
   matrixRailScene,
   matrixLicenseScenes,
@@ -246,6 +256,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // yap-fx-06 — Esc during a meeting, the hands-free question, stop failed.
+    ...matrixMeetingDictationScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
@@ -259,6 +271,30 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
   }
 }
+
+/**
+ * WF-04 — right-click (or Ctrl-click, which WebKit reports as the same
+ * `contextmenu` event) on the pill pops Yap's native pill menu: Hide for 1
+ * hour, the three docks, Microphone, Languages, Open Scratchpad, Open Yap.
+ * The rows are decided in Rust from the menu bar's own item table
+ * (`tray_menu::pill_context_menu`), so nothing about them lives here. A text
+ * field inside a card keeps the system's Cut / Copy / Paste menu.
+ */
+function wantsPillMenu(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (!el) return true;
+  return !el.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+}
+
+window.addEventListener("contextmenu", (e) => {
+  if (!wantsPillMenu(e.target)) return;
+  e.preventDefault();
+  invoke("pill_context_menu").catch((err: unknown) => {
+    // Rust already logged the cause; the pill has no toast surface, and the
+    // menu bar icon carries every row of this menu.
+    console.warn("pill context_menu failed", err);
+  });
+});
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
@@ -280,6 +316,7 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -379,6 +416,17 @@ function Float() {
     listen<unknown>("transcript", () => setProgress(null)).then(push);
     listen<unknown>("transcript_error", () => setProgress(null)).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  // yap-1106-engine-owner — the speech engine's one health state, pushed by
+  // `engine_owner` on every transition (never polled). "Catching up…" while a
+  // stuck engine is being waited out, "Restarting…" while it is replaced.
+  useEffect(() => {
+    let dead = false;
+    let unsub: (() => void) | null = null;
+    listen<unknown>(ENGINE_HEALTH_EVENT, (e) => setEngineHealth(parseEngineHealth(e.payload))).then(
+      (u) => (dead ? u() : (unsub = u)),
+    );
+    return () => { dead = true; unsub?.(); };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -655,6 +703,9 @@ function Float() {
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* yap-fx-06 — "Dictation cancelled — meeting still recording. Stop meeting?",
+          the once-per-meeting hands-free question, and a Stop that failed. */}
+      <MeetingDictationCard forced={FORCED ? forcedMeetingNotice(window.location.search) : null} />
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
@@ -674,7 +725,11 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+        {/* yap-1106-engine-owner — while the engine is loading, stuck or
+            restarting, THAT is the one line worth saying during a decode. */}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
           // announcement (`handsFreeLabel`); the clickable Stop is the rail's.

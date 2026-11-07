@@ -63,12 +63,17 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
   "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-engine-owner — the speech engine's health state, in plain words.
+  "pill/engineHealth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-fx-06 — the meeting + dictation card's model (Esc toast, hands-free ask, stop failed).
+  "pill/meetingDictation.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  "pill/governor.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-pill-rec-headphones-hoot-tape — the meeting scene: sun clock, glance, redraw key.
   "pill/meetingScene.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   // yap-1106-pill-sky — the pill sky: the Home room's time of day, cached backdrop.

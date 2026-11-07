@@ -290,6 +290,11 @@ work waiting its turn, coarser than the 10 ms handback poll on purpose. lib.rs g
 literal is inside `#[cfg(test)] mod retry_engine_tests` (fake-engine decode durations, test
 deadlines, and 5/10 ms sleeps in test-only wait loops). No production wakeup was added to lib.rs.
 
+Row change (2026-11-07, loop3 batch 1): transcription.rs `2:2 -> 2:4` is yap-1106-engine-owner's
+teardown-order test (a stub engine waiting in 2 ms steps inside `#[cfg(test)] mod tests`), and lib.rs
+gains `20:1`, a fake engine's 20 ms decode in yap-1106-retry-replay-regression's `#[cfg(test)]`
+replay tests. No production wakeup was added to either file.
+
 Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
 `ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
 disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
