@@ -9601,6 +9601,80 @@ fn dismiss_news_offer(
     news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
 }
 
+/// yap-1106-news-refresh-setting — Settings → Yappy News → "How often".
+#[tauri::command]
+fn set_news_cadence(
+    state: State<'_, Arc<AppState>>,
+    cadence: news_prefs::Cadence,
+) -> Result<news_prefs::NewsView, String> {
+    news_prefs::save_cadence(&*state.db, cadence, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
+/// yap-1106-news-refresh-setting — the quiet rules news obeys: a recording
+/// meeting, a screen share, Do Not Disturb, or low battery (the governor held
+/// back for a power reason).
+fn news_quiet_now(state: &AppState) -> news::schedule::Quiet {
+    let pill = pill_quiet::current();
+    let low_battery = resource_governor::installed().is_some_and(|g| {
+        let v = g.verdict(std::time::Duration::from_secs(30));
+        v.power_limited && v.level != resource_governor::Level::Full
+    });
+    news::schedule::Quiet {
+        in_meeting: meeting_still_recording(state),
+        screen_sharing: pill.screen_sharing,
+        do_not_disturb: pill.do_not_disturb,
+        low_battery,
+    }
+}
+
+/// yap-1106-news-refresh-setting — one refresh, only if the user's "How
+/// often", the 30-minute floor and the quiet rules allow it. `trigger` is
+/// `timer`, `home_opened`, `home_tick` or `tap` (Settings' "Refresh now").
+#[tauri::command]
+async fn news_refresh(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    trigger: String,
+) -> Result<news::RefreshOutcome, String> {
+    let Some(trigger) = news::schedule::Trigger::parse(&trigger) else {
+        log::warn!("news refresh_refused reason=unknown_trigger");
+        return Err("Yap didn't recognise that refresh request. Try again.".to_string());
+    };
+    let quiet = news_quiet_now(&state);
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<news::RefreshOutcome, String> {
+        let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
+        news::refresh_if_due(
+            &state.db,
+            &quote,
+            trigger,
+            quiet,
+            news_prefs::now_ms(),
+            news::schedule::local_utc_offset_ms(),
+            news::cache::DEFAULT_LIMIT,
+        )
+        .map_err(|tag| {
+            log::warn!(
+                "news refresh_failed trigger={} reason={tag}",
+                trigger.as_str()
+            );
+            match tag.as_str() {
+                "cloud_off" => {
+                    "Yappy News needs the cloud option. Connect it in Advanced.".to_string()
+                }
+                "disabled" => "Yappy News is off. Turn it on above to refresh.".to_string(),
+                "no_topics" => "Pick at least one topic, then refresh.".to_string(),
+                _ => "Yap couldn't refresh the news. Try again in a moment.".to_string(),
+            }
+        })
+    })
+    .await
+    .map_err(|e| {
+        log::error!("news refresh_worker_failed error=\"{e}\"");
+        "Yap couldn't refresh the news. Try again in a moment.".to_string()
+    })?
+}
+
 /// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
 /// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
 fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
@@ -14061,6 +14135,9 @@ pub fn run() {
             // yap-1106-news-prefs-onboarding — Yappy News interests.
             get_news_prefs,
             set_news_prefs,
+            // yap-1106-news-refresh-setting — "How often" + a gated refresh.
+            set_news_cadence,
+            news_refresh,
             // yap-1106-friend-visits — quiet state for friend visits.
             pill_quiet_state,
             dismiss_news_offer,
