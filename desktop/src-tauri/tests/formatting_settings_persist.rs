@@ -55,7 +55,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
-const APP_SETTINGS_FIELD_COUNT: usize = 48;
+// yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
+const APP_SETTINGS_FIELD_COUNT: usize = 49;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the

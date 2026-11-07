@@ -915,7 +915,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     all.insert(
         "src/transcription.rs",
         BTreeMap::from([
-            (2, 2),
+            // yap-1106-engine-owner — 2:2->4: the teardown-order test's stub
+            // engine (`#[cfg(test)] mod tests`) spins in 2 ms test-only waits.
+            (2, 4),
             (5, 2),
             (10, 2),
             (20, 2),
@@ -942,6 +944,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // production wakeup was added to lib.rs (docs/BUDGETS.md).
             (5, 5),
             (10, 2),
+            // yap-1106-retry-replay-regression — a fake engine's 20 ms decode in
+            // the retry replay tests (`#[cfg(test)]`); not a production timer.
+            (20, 1),
             (50, 1),
             (100, 2),
             (150, 2),
