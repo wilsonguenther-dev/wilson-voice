@@ -10,7 +10,7 @@
     "test": "vitest run --coverage",
     "smoke": "../scripts/loop-smoke.sh",
     "tauri": "tauri",
-    "sidecar": "cargo build -p yap-polish -p yap-diarize -p yap-asr --release && mkdir -p src-tauri/binaries && TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}') && cp ${CARGO_TARGET_DIR:-target}/release/yap-polish src-tauri/binaries/yap-polish-$TRIPLE && cp ${CARGO_TARGET_DIR:-target}/release/yap-diarize src-tauri/binaries/yap-diarize-$TRIPLE && cp ${CARGO_TARGET_DIR:-target}/release/yap-asr src-tauri/binaries/yap-asr-$TRIPLE",
+    "sidecar": "cargo build -p yap-polish -p yap-diarize -p yap-asr --release && mkdir -p src-tauri/binaries && TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}') && cp ${CARGO_TARGET_DIR:-target}/release/yap-polish src-tauri/binaries/yap-polish-$TRIPLE && cp ${CARGO_TARGET_DIR:-target}/release/yap-diarize src-tauri/binaries/yap-diarize-$TRIPLE && cp ${CARGO_TARGET_DIR:-target}/release/yap-asr src-tauri/binaries/yap-asr-$TRIPLE && bash ../scripts/build-ane-engine.sh",
     "desktop:dev": "npm run sidecar && tauri dev",
     "desktop:build": "npm run sidecar && bash ../scripts/sign-local.sh --tauri-build",
     "loop:build": "node ../scripts/loop/build.mjs",

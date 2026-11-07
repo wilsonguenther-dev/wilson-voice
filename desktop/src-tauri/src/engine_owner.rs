@@ -381,18 +381,32 @@ fn probe_in_process(_model_path: &Path) -> Result<asr_engine::ModelCapabilities,
 /// `externalBin`, and where a workspace build puts it in dev), or one level up
 /// for a test binary in `target/<profile>/deps/` (the workspace build puts
 /// `yap-asr` in `target/<profile>/`).
+///
+/// SP-10: the helper's name comes from `asr_engine::EngineKind::selected()`.
+/// The default is `yap-asr` (unchanged); `YAP_ASR_ENGINE=ane` (the bench)
+/// picks `yap-engine-ane`, which speaks the same protocol. A selected ANE
+/// helper that is not staged is NOT swapped for the default silently: it is
+/// reported, so a bench can never time the wrong engine.
 fn helper_binary() -> Option<PathBuf> {
+    let kind = asr_engine::EngineKind::selected();
+    let name = kind.helper_bin();
+    debug_assert!(kind != asr_engine::EngineKind::DEFAULT || name == ASR_HELPER_BIN);
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let here = dir.join(ASR_HELPER_BIN);
+    let here = dir.join(name);
     if here.is_file() {
+        log::info!("engine helper engine={}", kind.as_str());
         return Some(here);
     }
     if dir.file_name().map(|n| n == "deps").unwrap_or(false) {
-        let up = dir.parent()?.join(ASR_HELPER_BIN);
+        let up = dir.parent()?.join(name);
         if up.is_file() {
+            log::info!("engine helper engine={}", kind.as_str());
             return Some(up);
         }
+    }
+    if kind != asr_engine::EngineKind::DEFAULT {
+        log::warn!("engine helper_missing engine={}", kind.as_str());
     }
     None
 }

@@ -660,6 +660,8 @@ fn run_bench(args: &BenchArgs) -> i32 {
         "bench": "sp-03",
         "model": model_id,
         "backend": "native",
+        // SP-10: which helper was timed ("gguf" default, "ane" with YAP_ASR_ENGINE=ane).
+        "engine": crate::asr_engine::EngineKind::selected().as_str(),
         "cold_load_ms": cold_load_ms,
         "vad": if vad.is_some() { "silero" } else { "energy" },
         "denoise": settings.denoise,
