@@ -2763,3 +2763,26 @@ html[data-dock="right"] .friend-visit {
   .who-card { animation: none; }
   .who-wave-bar { animation: none; transform: scaleY(0.6); }
 }
+
+/* yap-1107-pill-click-always-registers — the pressed state is instant.
+   pill.html (approved 2026-11-06) motion table: "Press anywhere on the pill —
+   Shell scales to 96 percent while pressed." drag.ts sets data-pill-pressed
+   synchronously on pointer-down (pill/press.ts markPressed), so the press shows
+   on the next frame and never waits for the backend. The blob (a drag) clears
+   it. Reduce Motion keeps the state but drops the animation. */
+html[data-pill-pressed] .pill,
+html[data-pill-pressed] .kami-canvas {
+  transform: scale(0.96);
+}
+html[data-pill-pressed] .kami-canvas {
+  transform-origin: var(--blob-cx, 50%) var(--blob-cy, 50%);
+}
+html[data-pill-drag-motion="animate"]:not([data-pill-drag]) .pill {
+  transition: transform var(--duration-quick) var(--ease-glide);
+}
+html[data-pill-drag-motion="animate"]:not([data-pill-drag]) .kami-canvas {
+  /* keeps the blob's clip-path glide (above) and adds the press scale */
+  transition:
+    clip-path var(--duration-quick) var(--ease-glide),
+    transform var(--duration-quick) var(--ease-glide);
+}
