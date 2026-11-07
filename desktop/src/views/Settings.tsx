@@ -1,6 +1,7 @@
 import BootNote from "../BootNote";
 import Companion from "./settings/Companion";
 import Notifications from "./settings/Notifications";
+import News from "./settings/News";
 import Dictation from "./settings/Dictation";
 import Snippets from "./settings/Snippets";
 import Audio from "./settings/Audio";
@@ -11,6 +12,7 @@ import Meetings from "./settings/Meetings";
 import License from "./settings/License";
 import Diagnostics from "./settings/Diagnostics";
 import ModelProviders from "../settings/ModelProviders";
+import CloudRouteSettings from "../settings/CloudRoute";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -65,6 +67,9 @@ export default function Settings() {
               {/* ── Notifications (WF-17) — mute tips, feature news, milestones ── */}
               {settingsTab === "notifications" && <Notifications />}
 
+              {/* ── Yappy News (yap-1106-news-prefs-onboarding) — topics, on/off, last refresh ── */}
+              {settingsTab === "news" && <News />}
+
               {/* ── Dictation — how your speech becomes clean text ── */}
               {settingsTab === "dictation" && <Dictation />}
 
@@ -94,6 +99,7 @@ export default function Settings() {
                   <Advanced />
                   {/* yap-byom-0 — where notes and polish run, and whether that leaves this Mac. */}
                   <ModelProviders />
+                  <CloudRouteSettings />
                 </>
               )}
 

@@ -283,6 +283,7 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
             };
             let mut ticks = 0u64;
             let mut failed = 0u64;
+            let mut paused = false;
             let still_ours = |s: &LiveState| {
                 crate::meeting::active_capture()
                     .map(|c| c.spill_paths())
@@ -296,6 +297,19 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
                     if !still_ours(&state) {
                         break 'outer;
                     }
+                }
+                // yap-1106-resource-governor: at minimal the live view pauses;
+                // the recording and the spill keep going underneath it.
+                if crate::resource_governor::live_transcript_paused() {
+                    if !paused {
+                        paused = true;
+                        log::info!("live_transcript paused reason=governor level=minimal");
+                    }
+                    continue;
+                }
+                if paused {
+                    paused = false;
+                    log::info!("live_transcript resumed reason=governor");
                 }
                 let demand = || {
                     use crate::meeting_asr::EngineDemand;

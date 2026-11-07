@@ -1,6 +1,7 @@
 import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
 import YappyHouse from "../home/YappyHouse";
+import NewsHomeCard from "../news/NewsHomeCard";
 import DiffView from "../DiffView";
 import { type TranscriptEntry, retainedClipsLabel, undoAiEditText, type DictCandidate, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
@@ -123,6 +124,10 @@ export default function Home() {
                 streakDays={insights?.streakDays}
                 companionTone={settings?.companionTone}
               />
+
+              {/* yap-1106-news-prefs-onboarding — the one-time Yappy News offer,
+                  only once the cloud option is connected and never answered. */}
+              <NewsHomeCard />
 
               {/* yap-uiux-2026-10-16-H2 — with Microphone or Accessibility
                   ungranted, "hold fn" cannot work, so the empty Home's first

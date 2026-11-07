@@ -10,6 +10,8 @@ import {
   usePolishModel,
 } from "./ModelSetup";
 import { describePolishOffer } from "./polishOffer";
+import NewsOnboardingStep from "./news/NewsOnboardingStep";
+import { loadNews, newsStepDue } from "./news/newsPrefs";
 import { adviceFor, errorText } from "./errors";
 import { awaitMicDecision } from "./micStatus";
 import { PermissionRepair } from "./PermissionRepairRow";
@@ -181,6 +183,21 @@ export default function Onboarding({
   onEnableAutoPaste: () => Promise<void> | void;
 }) {
   const [step, setStep] = useState<Step>("welcome");
+  // yap-1106-news-prefs-onboarding — the Yappy News step exists only when the
+  // cloud option is connected and the offer was never answered. A failed read
+  // leaves it off: the one-time Home card is the fallback, never a dead end.
+  const [newsStep, setNewsStep] = useState(false);
+  useEffect(() => {
+    let live = true;
+    loadNews()
+      .then((v) => {
+        if (live) setNewsStep(newsStepDue(v));
+      })
+      .catch((e) => console.warn("onboarding news read failed", e));
+    return () => {
+      live = false;
+    };
+  }, []);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   /**
    * PERM-B — whether Yap has invoked `request_microphone` in this session. It
@@ -439,7 +456,7 @@ export default function Onboarding({
   function go(outcome: Outcome) {
     if (outcome.kind === "success") setProven(true);
     if (outcome.kind === "skip") setProven(false);
-    setStep((s) => nextStep(s, outcome));
+    setStep((s) => nextStep(s, outcome, { newsStep }));
   }
 
   async function openPrivacyPane(pane: "Accessibility") {
@@ -916,6 +933,17 @@ export default function Onboarding({
               </button>
             </div>
           </div>
+        )}
+
+        {step === "news" && (
+          <NewsOnboardingStep
+            onNext={() => {
+              // Answered (saved or Not now): Back from try-it skips it now.
+              setNewsStep(false);
+              goNext();
+            }}
+            onBack={goBack}
+          />
         )}
 
         {step === "try-it" && (

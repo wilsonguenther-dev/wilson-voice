@@ -932,6 +932,10 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // production wakeup was added to lib.rs (docs/BUDGETS.md).
             (5, 5),
             (10, 2),
+            // yap-1106-retry-replay-regression — the 20 ms fake decode in
+            // `#[cfg(test)] mod retry_engine_tests` (Retry-all over today's three
+            // kept clips on one engine). Test-only; no production wakeup.
+            (20, 1),
             (50, 1),
             (100, 2),
             (150, 2),
