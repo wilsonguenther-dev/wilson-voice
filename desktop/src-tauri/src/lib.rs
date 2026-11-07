@@ -1899,14 +1899,12 @@ fn update_activity(state: &AppState) -> tray_menu::Activity {
         .get()
         .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
         .unwrap_or(false);
+    let busy = *state.busy.lock();
     tray_menu::Activity {
         dictating: *state.recording.lock(),
         // fix-b7-1: the take's `TakeGuard` covers the stop edge, where
         // `recording` is already false and `busy` not yet true.
-        take_in_flight: tray_menu::take_in_flight(
-            *state.busy.lock(),
-            state.transcription.is_busy(),
-        ),
+        take_in_flight: tray_menu::take_in_flight(busy, state.transcription.is_busy()),
         polishing: tray_menu::polish_in_flight(),
         notes,
         meeting: state.meeting().is_some_and(|c| c.is_recording()),
