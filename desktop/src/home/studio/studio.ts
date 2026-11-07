@@ -157,8 +157,8 @@ export function tidyCounter(fixes: number | null | undefined): string {
 /** A take's `createdAt` (ISO, or SQLite "YYYY-MM-DD HH:MM:SS" in UTC). */
 export function parseTakeTime(s: string | null | undefined): Date | null {
   if (!s) return null;
-  let d = new Date(s);
-  if (Number.isNaN(d.getTime()) && /^\d{4}-\d\d-\d\d \d\d:\d\d/.test(s)) d = new Date(`${s.replace(" ", "T")}Z`);
+  // SQLite's "YYYY-MM-DD HH:MM:SS" is UTC; `new Date` would read it as local time.
+  const d = /^\d{4}-\d\d-\d\d \d\d:\d\d(:\d\d(\.\d+)?)?$/.test(s) ? new Date(`${s.replace(" ", "T")}Z`) : new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
