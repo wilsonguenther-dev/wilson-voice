@@ -273,7 +273,8 @@ fn every_stop_call_site_goes_through_stop_take() {
         assert!(lib.contains(surface), "surface sends its intent: {surface}");
     }
     assert_eq!(
-        lib.matches("stop_take(app, state, StopOrigin::MenuBar)").count(),
+        lib.matches("stop_take(app, state, StopOrigin::MenuBar)")
+            .count(),
         0,
         "the tray Stop item goes through take_intent"
     );

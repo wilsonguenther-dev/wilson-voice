@@ -382,7 +382,10 @@ impl std::fmt::Display for WriteFailure {
 }
 
 /// One attempt: write, then prove it by reading back.
-fn attempt_write(io: &mut dyn PasteboardIo, text: &str) -> Result<Option<i64>, (WriteCause, String)> {
+fn attempt_write(
+    io: &mut dyn PasteboardIo,
+    text: &str,
+) -> Result<Option<i64>, (WriteCause, String)> {
     let before = io.change_count();
     io.write(text).map_err(|e| (WriteCause::Refused, e))?;
     let after = io.change_count();
@@ -634,17 +637,21 @@ mod mac {
             // The target demonstrably read the transcript: hand the user their
             // own clipboard back. This is the receipt, not a guess at a sleep.
             match &p.saved_text {
-                Some(text) => match super::write_verified(&mut GeneralPasteboard, text, "restore") {
-                    Ok(_) => log::info!("reliable-paste: read confirmed — prior clipboard restored"),
-                    // The transcript stays on the clipboard (the take already
-                    // landed); the user's prior copy is what we failed to put
-                    // back, so say so in the log rather than claim a restore.
-                    Err(e) => diag_warn!(
-                        "paste_tx",
-                        "reliable-paste: read confirmed — prior clipboard NOT restored: {err}",
-                        err = e
-                    ),
-                },
+                Some(text) => {
+                    match super::write_verified(&mut GeneralPasteboard, text, "restore") {
+                        Ok(_) => {
+                            log::info!("reliable-paste: read confirmed — prior clipboard restored")
+                        }
+                        // The transcript stays on the clipboard (the take already
+                        // landed); the user's prior copy is what we failed to put
+                        // back, so say so in the log rather than claim a restore.
+                        Err(e) => diag_warn!(
+                            "paste_tx",
+                            "reliable-paste: read confirmed — prior clipboard NOT restored: {err}",
+                            err = e
+                        ),
+                    }
+                }
                 None => {
                     if let Err(e) = app.clipboard().clear() {
                         diag_warn!(
@@ -653,7 +660,9 @@ mod mac {
                             err = e
                         );
                     } else {
-                        log::info!("reliable-paste: read confirmed — prior (empty) clipboard restored");
+                        log::info!(
+                            "reliable-paste: read confirmed — prior (empty) clipboard restored"
+                        );
                     }
                 }
             }
@@ -863,7 +872,11 @@ mod mac {
             if let Ok(mut st) = state.lock() {
                 st.injection_failed = true;
             }
-            diag_error!("paste_tx", "reliable-paste: ⌘V injection failed: {err}", err = e);
+            diag_error!(
+                "paste_tx",
+                "reliable-paste: ⌘V injection failed: {err}",
+                err = e
+            );
         }
 
         let pending = Arc::new(Mutex::new(Pending {
@@ -1065,8 +1078,10 @@ mod tests {
     fn verified_write_lands_on_the_first_try_without_sleeping() {
         let mut board = FakeBoard::new(vec![FakeWrite::Lands]);
         let mut slept = Vec::new();
-        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| slept.push(d))
-            .expect("a landing write verifies");
+        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+            slept.push(d)
+        })
+        .expect("a landing write verifies");
         assert_eq!(r.attempts, 1);
         assert_eq!(r.change_count, Some(8));
         assert!(slept.is_empty());
@@ -1076,10 +1091,16 @@ mod tests {
     /// backoff and verified on a later try — never reported as copied early.
     #[test]
     fn verified_write_retries_a_clobbered_write_with_backoff() {
-        let mut board = FakeBoard::new(vec![FakeWrite::Clobbered, FakeWrite::Refused, FakeWrite::Lands]);
+        let mut board = FakeBoard::new(vec![
+            FakeWrite::Clobbered,
+            FakeWrite::Refused,
+            FakeWrite::Lands,
+        ]);
         let mut slept = Vec::new();
-        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| slept.push(d))
-            .expect("third try lands");
+        let r = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+            slept.push(d)
+        })
+        .expect("third try lands");
         assert_eq!(r.attempts, 3);
         assert_eq!(
             slept,
@@ -1100,8 +1121,10 @@ mod tests {
         ] {
             let mut board = FakeBoard::new(vec![step; all]);
             let mut slept = Vec::new();
-            let e = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| slept.push(d))
-                .expect_err("never verified");
+            let e = write_verified_with(&mut board, "hello", "test", &mut |d: Duration| {
+                slept.push(d)
+            })
+            .expect_err("never verified");
             assert_eq!(e.attempts as usize, all);
             assert_eq!(e.cause, cause);
             assert_eq!(board.writes as usize, all, "every retry really wrote");
@@ -1155,7 +1178,9 @@ mod tests {
         let saved = board.read();
         let mut hammer = Command::new("/bin/sh")
             .arg("-c")
-            .arg("i=0; while :; do i=$((i+1)); printf 'contender-%s' \"$i\" | /usr/bin/pbcopy; done")
+            .arg(
+                "i=0; while :; do i=$((i+1)); printf 'contender-%s' \"$i\" | /usr/bin/pbcopy; done",
+            )
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

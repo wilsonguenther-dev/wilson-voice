@@ -285,10 +285,10 @@ pub mod structure;
 // yap-1106-sp-05 — streaming decode during capture: the take is decoded in
 // pause-cut windows while it records, so release decodes only the tail.
 pub mod stream_decode;
-pub mod take_stage;
 /// yap-1107-start-stop-any-surface — THE take state machine every surface
 /// (pill, hotkey, menu bar, Dictate button) sends its start / stop intent to.
 pub mod take_control;
+pub mod take_stage;
 /// yap-1106-fb-04 — paste waits for a typing pause.
 pub mod typing_pause;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
@@ -13023,9 +13023,7 @@ fn stop_origin_for(surface: take_control::Surface) -> StopOrigin {
     match surface {
         take_control::Surface::Hotkey => StopOrigin::Hotkey,
         take_control::Surface::MenuBar => StopOrigin::MenuBar,
-        take_control::Surface::Pill | take_control::Surface::DictateButton => {
-            StopOrigin::OnScreen
-        }
+        take_control::Surface::Pill | take_control::Surface::DictateButton => StopOrigin::OnScreen,
     }
 }
 
