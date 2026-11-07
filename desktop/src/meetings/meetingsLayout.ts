@@ -264,6 +264,17 @@ export function moveSelection(ids: readonly string[], current: string | null, by
   return ids[Math.min(ids.length - 1, Math.max(0, at + by))];
 }
 
+/**
+ * yap-1107-meetings-row-whole-click-target — the list is ONE Tab stop (a
+ * roving tabindex): the selected row if it is listed, else the open one, else
+ * the first row. Every other row button takes tabIndex -1; ↑/↓ move the stop.
+ */
+export function rowTabStop(ids: readonly string[], selected: string | null, open: string | null): string | null {
+  if (selected !== null && ids.includes(selected)) return selected;
+  if (open !== null && ids.includes(open)) return open;
+  return ids[0] ?? null;
+}
+
 // ─── Delete + restore: the 10 s Undo ─────────────────────────────────────────
 
 /** How long a deleted meeting can be put back. Its files go only after this. */

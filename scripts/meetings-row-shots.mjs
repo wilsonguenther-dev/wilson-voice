@@ -30,6 +30,29 @@
  *       in Finder / Delete meeting; Delete shows the Undo bar ("s to undo"),
  *       and Undo restores the row.
  *
+ *
+ * yap-1107-meetings-row-whole-click-target (PNGs to --click-out):
+ *   C1  every row: the open button's rect equals the visible card (li) rect,
+ *       each edge within 1 px; elementFromPoint at a 5x5 grid inside the card
+ *       (inset 2 px: corners, edges, centre) and over the title, a person chip,
+ *       the state chip and the time resolves to the row's open button or a
+ *       descendant — never the list or a gap (a row's own status button is its
+ *       own target and is skipped); a real click at each point opens THAT
+ *       meeting (aria-current="true" on the row button, detail title = row
+ *       title), with Escape closing the detail between clicks.
+ *   C2  idle / hover / pressed (:active) / selected / focus-visible each give a
+ *       distinct computed (row bg, button bg, row box-shadow, button outline),
+ *       idle != hover != selected, and the fills equal tokens.css --row-hover /
+ *       --row-pressed / --row-selected, resolved in the page.
+ *   C3  cursor is pointer at every C1 point.
+ *   C4  Tab walks into the list ONCE (exactly one row button is a Tab stop and
+ *       Tab from the search field reaches one row, the next Tab leaves the
+ *       list); ↓/↑ move the selection and keyboard focus together; Return opens
+ *       the selected row; no button/link/input/[role=button] inside a row button.
+ *   C5  PNGs <label>-idle/hover/pressed/selected/focus-visible. The BEFORE shot:
+ *       build origin/main's desktop to a dir and run this script with
+ *       --dist <that dir> --label before (its checks are EXPECTED to fail).
+ *
  * USAGE   node scripts/meetings-row-shots.mjs [--out <dir>] [--label after|before] [--dist <built dist>]
  *   --out    default docs/loop/evidence/yap-1107-meetings-row-actions-no-overlay
  *   --label  PNG name prefix (default "after"). The BEFORE shots come from the
@@ -65,6 +88,8 @@ const arg = (k, d) => {
 const OUT = resolve(arg("--out", join(ROOT, "docs", "loop", "evidence", ID)));
 const LABEL = arg("--label", "after");
 const PREBUILT = arg("--dist", null);
+const CLICK_ID = "yap-1107-meetings-row-whole-click-target";
+const CLICK_OUT = resolve(arg("--click-out", join(ROOT, "docs", "loop", "evidence", CLICK_ID)));
 
 /* ── the meetings fixture ─────────────────────────────────────────────── */
 const now = Date.now();
@@ -182,6 +207,227 @@ const MENU_CHECK = String.raw`((name) => {
   return { open: true, rect: [r.left, r.top, r.right, r.bottom], labels: items.map((i) => i.textContent.trim()), bad };
 })`;
 
+/* ── yap-1107-meetings-row-whole-click-target ─────────────────────────── */
+/* get_meeting answers for the id asked (the static table answers row 0 for
+   every id), so a click on row N can prove the detail shows row N. */
+const PER_ID_MEETING = String.raw`(() => {
+  const T = window.__TAURI_INTERNALS__;
+  const all = (window.__YAP_FIXTURES__ || {}).list_meetings || [];
+  if (!T || typeof T.invoke !== "function") return;
+  const inner = T.invoke;
+  T.invoke = (cmd, payload, opts) => {
+    if (cmd === "get_meeting" && payload && typeof payload === "object") {
+      const m = all.find((x) => Object.values(payload).includes(x.id));
+      if (m) return Promise.resolve({ meeting: m, segments: [], audioOnDisk: true });
+    }
+    return inner(cmd, payload, opts);
+  };
+})();`;
+
+/* C1/C3/C4-DOM: the card vs its open button, and what sits under each point. */
+const CLICK_POINTS = String.raw`((id) => {
+  const row = document.querySelector('li.meeting-row[data-meeting-id="' + id + '"]');
+  if (!row) return null;
+  const btn = row.querySelector(".meeting-row-main");
+  const R = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+  const card = R(row);
+  const bad = [];
+  if (!btn) return { bad: ["no .meeting-row-main in the row"], points: [] };
+  const target = R(btn);
+  for (const k of ["l", "t", "r", "b"])
+    if (Math.abs(card[k] - target[k]) > 1) bad.push("edge " + k + ": card " + card[k].toFixed(1) + " vs open target " + target[k].toFixed(1));
+  if (btn.querySelector('button, a[href], input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])'))
+    bad.push("an interactive element is nested inside the row button");
+  const points = [];
+  const inset = 2;
+  for (let i = 0; i < 5; i++)
+    for (let j = 0; j < 5; j++)
+      points.push({
+        name: "grid" + i + j,
+        x: card.l + inset + ((card.r - card.l - 2 * inset) * i) / 4,
+        y: card.t + inset + ((card.b - card.t - 2 * inset) * j) / 4,
+      });
+  for (const [name, sel] of [["title", ".meeting-row-title"], ["chip", ".person-chip"], ["state", ".meeting-state"], ["time", ".meeting-row-when"]]) {
+    const el = row.querySelector(sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) points.push({ name, x: r.left + r.width / 2, y: r.top + r.height / 2 });
+  }
+  for (const p of points) {
+    const at = document.elementFromPoint(p.x, p.y);
+    p.status = !!(at && at.closest(".meeting-row-status") && row.contains(at));
+    p.ok = !!at && (at === btn || btn.contains(at));
+    p.cursor = at ? getComputedStyle(at).cursor : "none";
+    p.hit = at ? at.tagName.toLowerCase() + (at.className && typeof at.className === "string" ? "." + at.className.split(" ")[0] : "") : "nothing";
+  }
+  return { bad, points, title: row.querySelector(".meeting-row-title")?.textContent || "" };
+})`;
+
+/* C2: one row's measured state, plus the tokens resolved in the page. */
+const ROW_STATE = String.raw`((id) => {
+  const row = document.querySelector('li.meeting-row[data-meeting-id="' + id + '"]');
+  const btn = row && row.querySelector(".meeting-row-main");
+  if (!btn) return null;
+  const rc = getComputedStyle(row);
+  const bc = getComputedStyle(btn);
+  const token = (name) => {
+    const probe = document.createElement("div");
+    probe.style.background = "var(" + name + ")";
+    row.appendChild(probe);
+    const v = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return v;
+  };
+  return {
+    rowBg: rc.backgroundColor,
+    btnBg: bc.backgroundColor,
+    shadow: rc.boxShadow,
+    outline: bc.outlineStyle === "none" ? "none" : bc.outlineStyle + " " + bc.outlineWidth + " " + bc.outlineColor,
+    cursor: bc.cursor,
+    tokens: { hover: token("--row-hover"), pressed: token("--row-pressed"), selected: token("--row-selected") },
+  };
+})`;
+
+async function clickTargetChecks(cdp, s, ids, fail) {
+  mkdirSync(CLICK_OUT, { recursive: true });
+  const shot2 = async (name) => {
+    await sleep(SETTLE_MS);
+    const png = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
+    writeFileSync(join(CLICK_OUT, `${LABEL}-${name}.png`), Buffer.from(png.data, "base64"));
+  };
+  const openIs = (id, title) =>
+    `(() => { const b = document.querySelector('li.meeting-row[data-meeting-id="${id}"] .meeting-row-main'); const t = document.querySelector(".meeting-title-edit"); return !!b && b.getAttribute("aria-current") === "true" && !!t && t.value === ${JSON.stringify(title)}; })()`;
+  const noneOpen = `!document.querySelector('.meeting-row-main[aria-current="true"]') && !document.querySelector(".meeting-title-edit")`;
+  const press = async (keyName, code, vk, extra = {}) => {
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: keyName, code, windowsVirtualKeyCode: vk, ...extra }, s);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: vk, modifiers: extra.modifiers || 0 }, s);
+  };
+
+  // C1 + C3 — every row, every point.
+  for (const id of ids) {
+    const m = await evaluate(cdp, s, `${CLICK_POINTS}(${JSON.stringify(id)})`);
+    if (!m) { fail("C1", "row vanished " + id); continue; }
+    for (const b of m.bad) fail(b.startsWith("an interactive") ? "C4" : "C1", `${id}: ${b}`);
+    for (const p of m.points) {
+      if (p.status) continue; // the row's own status button (Retry) is its own target
+      if (!p.ok) { fail("C1", `${id} ${p.name} (${p.x.toFixed(0)},${p.y.toFixed(0)}) hits ${p.hit}, not the row's open target`); continue; }
+      if (p.cursor !== "pointer") fail("C3", `${id} ${p.name}: cursor ${p.cursor}`);
+      await press("Escape", "Escape", 27);
+      if (!(await waitFor(cdp, s, noneOpen, 2000))) fail("C1", `${id} ${p.name}: Escape did not close the detail before the click`);
+      await click(cdp, s, p.x, p.y);
+      if (!(await waitFor(cdp, s, openIs(id, m.title), 3000))) fail("C1", `${id} ${p.name}: a click at (${p.x.toFixed(0)},${p.y.toFixed(0)}) did not open this meeting`);
+    }
+  }
+
+  // C2 + C5 — states on a row that is neither open nor selected and has no status column.
+  await press("Escape", "Escape", 27);
+  await waitFor(cdp, s, noneOpen, 2000);
+  const plain = await evaluate(
+    cdp,
+    s,
+    `(() => { const r = [...document.querySelectorAll("li.meeting-row[data-meeting-id]")].find((li) => !li.classList.contains("has-status") && !li.querySelector(".meeting-row-status")); return r ? r.dataset.meetingId : null; })()`,
+  );
+  const T = plain || ids[0];
+  // Move the selection off T with the keyboard so it starts idle.
+  await evaluate(cdp, s, "(document.activeElement && document.activeElement.blur && document.activeElement.blur(), true)");
+  const other = ids.find((x) => x !== T);
+  if (other) await evaluate(cdp, s, `(() => { const b = document.querySelector('li.meeting-row[data-meeting-id="${other}"] .meeting-row-main'); if (b) { b.focus(); b.blur(); } return true; })()`);
+  const box = await centre(cdp, s, `li.meeting-row[data-meeting-id="${T}"]`);
+  if (!box) { fail("C2", "state row vanished " + T); return; }
+  const state = () => evaluate(cdp, s, `${ROW_STATE}(${JSON.stringify(T)})`);
+  const states = {};
+  await mouse(cdp, s, "mouseMoved", W - 4, H - 4);
+  await sleep(250);
+  states.idle = await state();
+  await shot2("idle");
+  await mouse(cdp, s, "mouseMoved", box.x, box.y);
+  await sleep(250);
+  states.hover = await state();
+  await shot2("hover");
+  await mouse(cdp, s, "mousePressed", box.x, box.y, "left", { clickCount: 1, buttons: 1 });
+  await sleep(250);
+  states.pressed = await state();
+  await shot2("pressed");
+  await mouse(cdp, s, "mouseReleased", box.x, box.y, "left", { clickCount: 1, buttons: 0 });
+  await mouse(cdp, s, "mouseMoved", W - 4, H - 4);
+  await evaluate(cdp, s, "(document.activeElement && document.activeElement.blur && document.activeElement.blur(), true)");
+  await sleep(250);
+  states.selected = await state();
+  await shot2("selected");
+
+  // C4 — Tab from the search field reaches the list as ONE stop (T, the selected row).
+  const stops = await evaluate(cdp, s, `[...document.querySelectorAll(".meeting-row-main")].filter((b) => b.tabIndex === 0).length`);
+  if (stops !== 1) fail("C4", `expected exactly one row button in the Tab order, found ${stops}`);
+  const searched = await evaluate(cdp, s, `(() => { const i = document.querySelector(".meetings-list-pane input"); if (i) i.focus(); return !!i; })()`);
+  if (!searched) fail("C4", "no search field in the list pane to Tab from");
+  let rowStops = 0;
+  let entered = false;
+  for (let i = 0; i < 40; i++) {
+    await press("Tab", "Tab", 9);
+    const at = await evaluate(
+      cdp,
+      s,
+      `(() => { const a = document.activeElement; if (!a) return null; return { main: a.classList.contains("meeting-row-main"), id: a.closest("li.meeting-row")?.dataset.meetingId || null, inList: !!a.closest("[data-meetings-list]"), inPane: !!a.closest(".meetings-list-pane") }; })()`,
+    );
+    if (!at) break;
+    if (at.main) {
+      rowStops++;
+      if (rowStops === 1) {
+        if (at.id !== T) fail("C4", `Tab reached row ${at.id}, expected the selected row ${T}`);
+        await sleep(250);
+        states.focus = await state();
+        await shot2("focus-visible");
+      }
+    }
+    if (at.inList) entered = true;
+    if (entered && !at.inList) break;
+    if (!at.inPane && !entered && i > 0) break;
+  }
+  if (rowStops !== 1) fail("C4", `Tab stopped on ${rowStops} row buttons on the way through the list (want 1)`);
+
+  // C2 — distinct, token-true states.
+  const sig = (x) => (x ? [x.rowBg, x.btnBg, x.shadow, x.outline].join(" | ") : "missing");
+  console.log("row states " + JSON.stringify(Object.fromEntries(Object.entries(states).map(([k, v]) => [k, sig(v)]))));
+  const names = ["idle", "hover", "pressed", "selected", "focus"];
+  for (const n of names) if (!states[n]) fail("C2", `no measurement for ${n}`);
+  for (let i = 0; i < names.length; i++)
+    for (let j = i + 1; j < names.length; j++)
+      if (states[names[i]] && states[names[j]] && sig(states[names[i]]) === sig(states[names[j]]))
+        fail("C2", `${names[i]} and ${names[j]} look the same: ${sig(states[names[i]])}`);
+  const tk = states.idle?.tokens;
+  if (tk) {
+    if (states.hover && states.hover.rowBg !== tk.hover) fail("C2", `hover fill ${states.hover.rowBg} is not --row-hover ${tk.hover}`);
+    if (states.pressed && states.pressed.btnBg !== tk.pressed) fail("C2", `pressed fill ${states.pressed.btnBg} is not --row-pressed ${tk.pressed}`);
+    if (states.selected && states.selected.rowBg !== tk.selected) fail("C2", `selected fill ${states.selected.rowBg} is not --row-selected ${tk.selected}`);
+    if (states.selected && !/inset/.test(states.selected.shadow) && !/ 3px 0px 0px/.test(states.selected.shadow)) fail("C2", `selected has no inset bar: ${states.selected.shadow}`);
+  }
+  if (states.focus && states.focus.outline === "none") fail("C2", "focus-visible drew no ring");
+  for (const n of names) if (states[n] && states[n].cursor !== "pointer") fail("C3", `${n}: row button cursor ${states[n].cursor}`);
+
+  // C4 — ↓ moves selection AND focus; ↑ comes back; Return opens the selected row.
+  const focusedRow = `(() => { const a = document.activeElement; return a && a.classList.contains("meeting-row-main") ? a.closest("li.meeting-row").dataset.meetingId : null; })()`;
+  const selectedRow = `(document.querySelector("li.meeting-row.selected") || {}).dataset?.meetingId || null`;
+  const start = await evaluate(cdp, s, focusedRow);
+  if (!start) fail("C4", "no row button had keyboard focus before ↓");
+  else {
+    const at = ids.indexOf(start);
+    const next = ids[Math.min(ids.length - 1, at + 1)];
+    await press("ArrowDown", "ArrowDown", 40);
+    await sleep(200);
+    if ((await evaluate(cdp, s, selectedRow)) !== next) fail("C4", `↓ did not select ${next}`);
+    if ((await evaluate(cdp, s, focusedRow)) !== next) fail("C4", `↓ did not move keyboard focus to ${next}`);
+    await press("ArrowUp", "ArrowUp", 38);
+    await sleep(200);
+    if ((await evaluate(cdp, s, selectedRow)) !== start) fail("C4", `↑ did not come back to ${start}`);
+    await press("ArrowDown", "ArrowDown", 40);
+    await sleep(150);
+    await press("Enter", "Enter", 13, { text: "\r", unmodifiedText: "\r" });
+    const title = await evaluate(cdp, s, `document.querySelector('li.meeting-row[data-meeting-id="${next}"] .meeting-row-title')?.textContent || ""`);
+    if (!(await waitFor(cdp, s, openIs(next, title), 3000))) fail("C4", `Return did not open the selected row ${next}`);
+  }
+  await press("Escape", "Escape", 27);
+}
+
 /* ── CDP helpers ──────────────────────────────────────────────────────── */
 async function mouse(cdp, s, type, x, y, button = "none", extra = {}) {
   await cdp.send("Input.dispatchMouseEvent", { type, x, y, button, ...extra }, s);
@@ -276,7 +522,7 @@ async function run() {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
     await cdp.send(
       "Page.addScriptToEvaluateOnNewDocument",
-      { source: "window.__YAP_FIXTURES__ = " + JSON.stringify(fixtures()) + ";\n" + TAURI_SHIM },
+      { source: "window.__YAP_FIXTURES__ = " + JSON.stringify(fixtures()) + ";\n" + TAURI_SHIM + ";\n" + PER_ID_MEETING },
       s,
     );
     await cdp.send("Page.navigate", { url }, s);
@@ -395,6 +641,8 @@ async function run() {
         if (!closed) fail("A3", "Escape did not close the export menu");
       }
     }
+    /* ── yap-1107-meetings-row-whole-click-target (C1–C5) ─────────────── */
+    await clickTargetChecks(cdp, s, idle.map((r) => r.id), fail);
     const errs = chrome.cdp.errors.get(s) || [];
     if (errs.length) console.log("page errors (informational): " + JSON.stringify(errs.slice(0, 5)));
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
