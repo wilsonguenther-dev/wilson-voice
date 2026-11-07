@@ -657,6 +657,11 @@ pub struct UserContextView {
     pub max_rules_words: usize,
 }
 
+/// yap-1106-voiceprints — the `speaker_profiles` columns, in
+/// `Database::map_speaker_profile` order.
+const SPEAKER_PROFILE_COLS: &str =
+    "id, display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at";
+
 /// YV94 — walk `PRAGMA user_version` up to [`SCHEMA_VERSION`], one transaction
 /// per step.
 ///
@@ -675,11 +680,6 @@ pub struct UserContextView {
 ///     user reopens this build, we do not "downgrade" — we log and carry on with
 ///     the tables we understand. Every step is additive, so that is safe.
 ///   * **Shipped steps are immutable.** Add an arm; never edit one.
-/// yap-1106-voiceprints — the `speaker_profiles` columns, in
-/// `Database::map_speaker_profile` order.
-const SPEAKER_PROFILE_COLS: &str =
-    "id, display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at";
-
 fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version > SCHEMA_VERSION {

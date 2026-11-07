@@ -418,7 +418,7 @@ pub fn encode_embedding(v: &[f32]) -> Vec<u8> {
 }
 
 pub fn decode_embedding(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(format!(
             "a voiceprint BLOB of {} bytes is not f32s",
             bytes.len()
