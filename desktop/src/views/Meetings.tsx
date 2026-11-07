@@ -118,7 +118,6 @@ export default function Meetings() {
     setSelected(openMeeting.meeting.id);
     logUi("open", { id: shortId(openMeeting.meeting.id), segments: openMeeting.segments.length });
     // Only a DIFFERENT meeting resets the tab; a refresh of the same one keeps it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openId]);
 
   // ── Delete + restore: the 10 s Undo ─────────────────────────────────────
@@ -156,7 +155,6 @@ export default function Meetings() {
     if (due.length === 0) return;
     setPending(waiting);
     for (const p of due) void commitDelete(p);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, pending]);
   // Leaving the view keeps the promise the Undo made: the time ran with the
   // person's attention, so whatever is still waiting is deleted now.
@@ -232,7 +230,11 @@ export default function Meetings() {
           break;
         case "close":
           if (field) (e.target as HTMLElement).blur();
-          else closeDetail();
+          else if (k.openMeeting) {
+            // Read through the ref: this listener is installed once.
+            logUi("close", { id: shortId(k.openMeeting.meeting.id) });
+            setOpenMeeting(null);
+          }
           break;
         case "tab":
           if (k.openMeeting) {
@@ -244,7 +246,6 @@ export default function Meetings() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Y5-B — a third `return null` blank page, and the worst of them: the read
@@ -452,6 +453,16 @@ export default function Meetings() {
   }
 
   const paneMode = narrow ? (openMeeting ? "detail" : "list") : "split";
+  // The Notes tab's one action when there are no notes: write them (the same
+  // pure decision the row uses), or point at the notes model on a finished
+  // meeting that has nothing to write them with.
+  const notesTabAction: "notes" | "model" | null = !openMeeting
+    ? null
+    : meetingActions(openMeeting.meeting, progress[openMeeting.meeting.id], false).includes("notes")
+      ? "notes"
+      : openMeeting.meeting.state === "complete"
+        ? "model"
+        : null;
   return (
     <div className="meetings-view" data-meetings-pane={paneMode}>
       {/* yap-notetaker-onboard — the Set up Notetaker card. */}
@@ -725,25 +736,18 @@ export default function Meetings() {
                       <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
                       <p>Notes are written on this Mac once the transcript is ready.</p>
                       <div className="actions">
-                        {canRetryTranscript(
-                          { ...openMeeting.meeting, audioKept: openMeeting.meeting.audioKept && openMeeting.audioOnDisk },
-                          progress[openMeeting.meeting.id],
-                        ) || openMeeting.meeting.state !== "complete" ? null : meetingActions(
-                            openMeeting.meeting,
-                            progress[openMeeting.meeting.id],
-                            false,
-                          ).includes("notes") ? (
+                        {notesTabAction === "notes" ? (
                           <button
                             className="primary"
                             onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
                           >
                             {retryNotesLabel(progress[openMeeting.meeting.id])}
                           </button>
-                        ) : (
+                        ) : notesTabAction === "model" ? (
                           <button type="button" className="ghost" onClick={openModelSettings}>
                             Add a notes model
                           </button>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   ))}
