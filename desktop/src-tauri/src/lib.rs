@@ -13430,6 +13430,33 @@ async fn engine_status(
     Ok(state.transcription.status())
 }
 
+/// yap-1106-launch-walk — the last engine load progress (0..=100 and its
+/// stage), or `None` before this process has loaded an engine. The pill reads
+/// it once when it opens, then follows `engine_load_progress` events.
+#[tauri::command]
+async fn engine_load_progress(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<transcription::EngineLoadProgress>, String> {
+    Ok(state.transcription.last_load_progress())
+}
+
+/// yap-1106-launch-walk — the pill's Retry after a failed engine load. Starts
+/// the same single, coalesced load a take's arm does (`arm_asr_engine`), so a
+/// retry can never stack a second engine. `false` means there is no
+/// downloaded model to load (the pill then points at Settings).
+#[tauri::command]
+fn retry_engine_load(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    let state: Arc<AppState> = state.inner().clone();
+    let native = state.settings.lock().native_model.clone();
+    if native_model_ready(&native).is_none() {
+        log::info!("engine load_retry result=no_model");
+        return Ok(false);
+    }
+    log::info!("engine load_retry result=started");
+    arm_asr_engine(&app, &state);
+    Ok(true)
+}
+
 /// A newer Yap release the user has not dismissed (YV44). Returned by
 /// `check_for_update` and rendered as the "Update available" prompt; the
 /// release bytes are NOT touched until the user asks for them.
@@ -14486,6 +14513,8 @@ pub fn run() {
             select_model,
             delete_model,
             engine_status,
+            engine_load_progress,
+            retry_engine_load,
             notetaker_status,
             check_for_update,
             install_update,
@@ -14498,6 +14527,25 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // yap-1106-launch-walk — every change in the engine load percentage
+            // goes to the pill as an event; the launch walk is drawn from it.
+            // A load that began before this (the eager startup preload) is
+            // still readable through `engine_load_progress`.
+            {
+                let handle = app.handle().clone();
+                app.state::<Arc<AppState>>()
+                    .transcription
+                    .set_load_progress_sink(Arc::new(
+                        move |p: &transcription::EngineLoadProgress| {
+                            if let Err(e) =
+                                handle.emit(transcription::ENGINE_LOAD_PROGRESS_EVENT, p)
+                            {
+                                log::warn!("engine load_progress_emit_failed err={e}");
+                            }
+                        },
+                    ));
+            }
 
             // yap-1106-engine-owner — every engine health transition reaches
             // the pill and Diagnostics as one small event.

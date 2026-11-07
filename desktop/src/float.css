@@ -2352,6 +2352,63 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
   }
 }
 
+/* yap-1106-launch-walk (+ FB-11) — Yappy walks to work while the engine loads.
+ * The 176 x 44 scene sits over the capsule, pointer-transparent so fn and the
+ * capsule keep working underneath; only Retry takes a click. The scroll is
+ * painted from the load percentage (pill/launchWalk.ts), never a CSS timer. */
+.bar:has(.launch-walk) {
+  position: relative;
+}
+.launch-walk {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.launch-walk-canvas {
+  display: block;
+  border-radius: var(--radius-xs);
+  image-rendering: pixelated;
+}
+/* Reduce motion: the still frame's progress line, along the ground. */
+.launch-walk-line {
+  position: absolute;
+  left: 50%;
+  bottom: calc(50% - 22px + 3px);
+  width: 160px;
+  height: 2px;
+  transform: translateX(-50%);
+  border-radius: var(--radius-pill);
+  background: rgba(42, 45, 53, 0.25);
+  overflow: hidden;
+}
+.launch-walk-line-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-action);
+}
+.launch-walk-retry {
+  position: absolute;
+  right: calc(50% - 88px + 4px);
+  top: calc(50% - 22px + 4px);
+  pointer-events: auto;
+  padding: 2px var(--space-1);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inverse);
+  color: var(--text-on-inverse);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.launch-walk-retry:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
 /* yap-1106-friend-visits — the visiting friend, beside the capsule's right
  * end. Decorative (aria-hidden, no pointer events): it never takes a click
  * from the pill. Whole-number scale is set on the canvas (crisp.ts). */
