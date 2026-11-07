@@ -2,7 +2,7 @@
 //!
 //! This is NOT a normal NSWindow with rounded CSS.
 //! Flow: WebviewWindow → to_panel::<DictatePill>() → NSPanel flags:
-//!   nonactivatingPanel, PopUpMenu level or above (FB-03), canJoinAllSpaces,
+//!   nonactivatingPanel, floating/status level, canJoinAllSpaces,
 //!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
@@ -13,10 +13,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
-use tauri_nspanel::{tauri_panel, CollectionBehavior, ManagerExt, StyleMask, WebviewWindowExt};
-
-/// FB-03 — the level rule, the front-app reading and the presence log.
-pub(crate) mod presence;
+use tauri_nspanel::{
+    tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
+};
 
 // WINDOW size — deliberately LARGER than the pill so its ambient shadow renders
 // inside the transparent window. A pill-sized window clips the shadow at its edge,
@@ -529,10 +528,6 @@ fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
     // so the WindowServer nonactivating tag desyncs → flicker + focus theft. Just
     // re-assert front (without activating the app).
     if let Ok(panel) = app.get_webview_panel("float") {
-        // FB-03: the level is re-asserted with the front, every time. Anything
-        // that touched the NSWindow level since (Tauri's always_on_top is
-        // `NSFloatingWindowLevel`, 3) would otherwise stick until relaunch.
-        panel.set_level(presence::wanted_level());
         panel.order_front_regardless();
         PANEL_READY.store(true, Ordering::SeqCst);
         return Ok(());
@@ -546,9 +541,7 @@ fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
         .to_panel::<DictatePill>()
         .map_err(|e| format!("to_panel: {e}"))?;
 
-    // FB-03: PopUpMenu (101) or just above a presenting front app, never
-    // Status (25) — see `presence::level_for`.
-    panel.set_level(presence::wanted_level());
+    panel.set_level(PanelLevel::Status.value());
     // KILL THE GREY BOX: NSPanel defaults hasShadow=YES, and macOS draws that
     // native shadow tracing the ALPHA SILHOUETTE of the content — i.e. the outer
     // edge of the pill's big soft CSS box-shadow, a rounded rectangle much larger
@@ -634,17 +627,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         // Re-assert from that live state, never a blind `true`, or a show landing
         // mid-hover would take the grab away until the pointer left and returned.
         let _ = w.set_ignore_cursor_events(!INTERACTIVE.load(Ordering::SeqCst));
-        // FB-03 — on macOS `set_always_on_top` is tao's async
-        // `setLevel:NSFloatingWindowLevel` (3): called after the NSPanel
-        // conversion it dropped the pill from its level on EVERY show, under any
-        // app's floating window. Only the un-converted fallback window uses it.
-        #[cfg(target_os = "macos")]
-        let use_window_level = app.get_webview_panel("float").is_err();
-        #[cfg(not(target_os = "macos"))]
-        let use_window_level = true;
-        if use_window_level {
-            let _ = w.set_always_on_top(true);
-        }
+        let _ = w.set_always_on_top(true);
         // Transparent content so only CSS pill paints
         let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     }
@@ -679,11 +662,6 @@ pub fn show_float(app: &AppHandle) -> Result<(), String> {
 
 pub fn hide_float(app: &AppHandle) {
     set_shown(app, false);
-    // FB-03 — an intentional hide is not a lost pill: close any open gap
-    // silently so the next show starts the presence log clean.
-    if let Ok(mut latch) = presence::LATCH.lock() {
-        latch.reset();
-    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("float") {
@@ -1546,131 +1524,21 @@ pub fn start_space_keeper(app: AppHandle) {
             }
             let app_main = app.clone();
             let app_inner = app.clone();
-            let _ = app_main.run_on_main_thread(move || keep_on_top(&app_inner));
+            let _ = app_main.run_on_main_thread(move || {
+                // Only re-assert if visible
+                let visible = app_inner
+                    .get_webview_window("float")
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
+                if !visible {
+                    return;
+                }
+                park_pill(&app_inner);
+                // apply_panel_hud already re-asserts front on the converted panel.
+                let _ = apply_panel_hud(&app_inner);
+            });
         })
         .ok();
-}
-
-/// What the pill is doing, for the presence log (FB-03 asks "resting or
-/// recording").
-fn phase() -> &'static str {
-    if DICTATING.load(Ordering::SeqCst) {
-        "dictating"
-    } else if meeting_recording() {
-        "meeting"
-    } else {
-        "resting"
-    }
-}
-
-/// FB-03 — one keeper tick, main thread. The pill is MEANT to be up
-/// (`PILL_SHOWN`; every intentional hide clears it first in [`hide_float`]), so:
-///   1. read the window list once and the frontmost app out of it;
-///   2. log the edge if the panel is ordered out, off this Space, missing from
-///      the on-screen list, below its level or fully covered — with the front
-///      app, its top layer and whether it is full screen (the "reproduce first"
-///      half of the item);
-///   3. put the level back (raised over a presenting front app, capped), order
-///      it in again if something ordered it out, and front it.
-///
-/// Before FB-03 the keeper returned early when the window was not visible, so
-/// a pill macOS had ordered out stayed gone until the next dictation.
-fn keep_on_top(app: &AppHandle) {
-    if !is_shown() {
-        return; // hidden on purpose after this tick was queued
-    }
-    park_pill(app);
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(panel) = app.get_webview_panel("float") {
-            let windows = presence::window_list();
-            let front = crate::pill_click::frontmost();
-            let front_pid = front.as_ref().map(|f| f.pid).unwrap_or(0);
-            let bundle = front
-                .and_then(|f| f.bundle_id)
-                .unwrap_or_else(|| "unknown".to_string());
-            let reading = presence::read_front(
-                &windows,
-                front_pid,
-                std::process::id() as i32,
-                &presence::display_bounds(),
-            );
-            let wanted = presence::level_for(reading.max_layer);
-            let ns = panel.as_panel();
-            let state = presence::PanelState {
-                visible: ns.isVisible(),
-                on_active_space: ns.isOnActiveSpace(),
-                listed: presence::panel_listed(&windows, ns.windowNumber() as i64),
-                unoccluded: ns.occlusionState().0
-                    & objc2_app_kit::NSWindowOcclusionState::Visible.0
-                    != 0,
-                level: ns.level() as i64,
-                wanted_level: wanted,
-            };
-            let front_layer = reading
-                .max_layer
-                .map(|l| l.to_string())
-                .unwrap_or_else(|| "none".to_string());
-            let edge = presence::LATCH
-                .lock()
-                .map(|mut latch| latch.step(presence::presence_gap(state), now_ms()))
-                .unwrap_or(None);
-            match edge {
-                Some(presence::GapEdge::Lost(gap)) => log::warn!(
-                    "float_pill presence_lost reason={} phase={} front={} front_layer={} \
-                     front_full_screen={} panel_level={} wanted_level={} visible={} \
-                     on_active_space={} listed={}",
-                    gap.as_str(),
-                    phase(),
-                    bundle,
-                    front_layer,
-                    reading.full_screen,
-                    state.level,
-                    wanted,
-                    state.visible,
-                    state.on_active_space,
-                    state.listed
-                ),
-                Some(presence::GapEdge::Back { gap, after_ms }) => log::info!(
-                    "float_pill presence_back reason={} after_ms={} phase={} front={} \
-                     front_layer={} front_full_screen={}",
-                    gap.as_str(),
-                    after_ms,
-                    phase(),
-                    bundle,
-                    front_layer,
-                    reading.full_screen
-                ),
-                None => {}
-            }
-            presence::set_wanted_level(wanted);
-            if state.level != wanted {
-                panel.set_level(wanted);
-                log::info!(
-                    "float_pill level_set from={} to={} front={} front_layer={} front_full_screen={}",
-                    state.level,
-                    wanted,
-                    bundle,
-                    front_layer,
-                    reading.full_screen
-                );
-            }
-            if !state.visible {
-                panel.show();
-            }
-            panel.order_front_regardless();
-            PANEL_READY.store(true, Ordering::SeqCst);
-            return;
-        }
-    }
-    // Un-converted fallback window: the old re-assert, only while it is up.
-    let visible = app
-        .get_webview_window("float")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    if visible {
-        let _ = apply_panel_hud(app);
-    }
 }
 
 #[cfg(test)]
