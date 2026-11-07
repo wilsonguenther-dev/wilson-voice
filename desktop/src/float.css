@@ -1663,6 +1663,73 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 /* Y5-J — focus ring for .backtrack-caught-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 .backtrack-caught-actions .backtrack-caught-undo { background: var(--overlay-action); color: var(--overlay-text-on-action); }
 .backtrack-caught-actions button:disabled { opacity: 0.6; cursor: default; }
+/* ── WF-05 — "Polished — Reveal" (pill/PolishRevealCard.tsx) ──
+   The toast is the Backtrack caught surface at one line: a quiet label and
+   Reveal. Reveal grows it into the diff card (the shared DiffView, restyled
+   for the dark pill surface) with Use original as the primary answer. */
+.polish-reveal-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.polish-reveal {
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: var(--overlay-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.polish-reveal p { margin: 0; }
+.polish-reveal-toast { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.polish-reveal-label { font-weight: 600; }
+.polish-reveal-title { font-size: 11px; opacity: 0.72; }
+.polish-reveal-error { margin-top: 4px; font-size: 11px; color: var(--overlay-text-urgent); }
+.polish-reveal-actions { display: flex; gap: 6px; }
+.polish-reveal-card .polish-reveal-actions { margin-top: 6px; }
+.polish-reveal-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+}
+/* Focus ring for .polish-reveal-actions buttons: drawn once, globally, by src/a11y/focus.css. */
+.polish-reveal-actions .polish-reveal-open,
+.polish-reveal-actions .polish-reveal-original { background: var(--overlay-action); color: var(--overlay-text-on-action); }
+.polish-reveal-actions button:disabled { opacity: 0.6; cursor: default; }
+.polish-reveal .diff-view { margin-top: 5px; }
+.polish-reveal .diff-summary,
+.polish-reveal .diff-stages,
+.polish-reveal .diff-route { font-size: 11px; opacity: 0.72; }
+.polish-reveal .diff-body {
+  margin: 4px 0;
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.polish-reveal .diff-added { background: var(--overlay-diff-added); border-radius: 3px; }
+.polish-reveal .diff-removed { background: var(--overlay-diff-removed); border-radius: 3px; text-decoration: line-through; opacity: 0.8; }
+.polish-reveal .diff-route-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.polish-reveal .diff-actions:empty { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .polish-reveal-wrap { animation: polish-reveal-in 140ms ease-out; }
+  @keyframes polish-reveal-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+}
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
  * capsule says which way that runs (a column only for a strip phase at a side

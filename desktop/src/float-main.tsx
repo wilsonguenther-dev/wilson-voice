@@ -24,6 +24,8 @@ import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import PolishRevealCard from "./pill/PolishRevealCard";
+import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
 import SilentMicRow from "./pill/SilentMicRow";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
@@ -88,6 +90,7 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixPolishRevealScenes,
   matrixStyleChipScene,
   matrixSilentMicScene,
   matrixRailScene,
@@ -251,6 +254,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // WF-05 — "Polished — Reveal": the toast, then the opened diff card.
+    ...matrixPolishRevealScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
     // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
@@ -696,6 +701,11 @@ function Float() {
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
+      {/* WF-05 — "Polished — Reveal" (Reveal → diff with Use original / Keep). Muted with Tips. */}
+      <PolishRevealCard
+        forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
