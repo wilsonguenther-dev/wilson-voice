@@ -295,6 +295,13 @@ teardown-order test (a stub engine waiting in 2 ms steps inside `#[cfg(test)] mo
 gains `20:1`, a fake engine's 20 ms decode in yap-1106-retry-replay-regression's `#[cfg(test)]`
 replay tests. No production wakeup was added to either file.
 
+Row change (2026-11-07, loop3 batch 8, yap-1106-quit-during-asr-crash): lib.rs gains `90:1`,
+`EXIT_MEETING_JOIN_TIMEOUT`, the one-shot bound the quit's drain step waits to JOIN the meeting-pipeline
+worker (sized so drain + join fit `QuitStep::AsrDrain`'s 1 s deadline); it runs once, at quit, and is
+not a polling interval. The other new literals (`5:5 -> 6`, `20:1 -> 2`, `100:2 -> 3`, `800:1`) are
+inside `#[cfg(test)] mod tests`: the stub join's 5 ms wait step, the wedged-decode test's 100 ms /
+20 ms budgets and its stub engine's 800 ms decode. No production wakeup was added to lib.rs.
+
 Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
 `ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
 disappears mid-take is noticed within a quarter second and the take carries on on the next ranked
