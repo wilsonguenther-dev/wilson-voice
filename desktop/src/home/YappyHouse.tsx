@@ -51,6 +51,8 @@ import {
   parallaxTarget,
   redrawPlan,
   studioAriaLabel,
+  furnaceState,
+  mochiQuietReason,
   yappyPose,
   type RedrawMode,
   type StudioInputs,
@@ -148,7 +150,16 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
     inputsRef.current = inputs;
     wakeRef.current?.();
     // Primitive deps: Home rebuilds the object each render; only a real change redraws.
-  }, [inputs.fixesToday, inputs.dictionarySize, inputs.battery?.percent, inputs.battery?.charging, inputs.streakDays, inputs.newsReady]);
+  }, [inputs.fixesToday, inputs.dictionarySize, inputs.battery?.percent, inputs.battery?.charging, inputs.streakDays, inputs.newsReady, inputs.engineLoading, inputs.modelReady, inputs.screenSharing, inputs.doNotDisturb]);
+  // yap-1106-sal-and-mochi — one log line when Sal's furnace or Mochi's spot changes.
+  const furnace = furnaceState(inputs);
+  const mochiWhy = mochiQuietReason(inputs);
+  useEffect(() => {
+    console.info(`home studio_furnace state=${furnace}`);
+  }, [furnace]);
+  useEffect(() => {
+    console.info(`home studio_mochi on_door=${mochiWhy !== null} reason=${mochiWhy ?? "none"}`);
+  }, [mochiWhy]);
   const moodRef = useRef<HTMLSpanElement | null>(null);
   // YV27 — the live tone in a ref so the mood label reads it without re-running the loop.
   const toneRef = useRef<ChatTone>(toChatTone(companionTone));
@@ -256,6 +267,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
         reacting: reacting(),
         parallaxSettling: settling(),
         meetingRecording: meetingRef.current,
+        furnaceLighting: inputsRef.current.engineLoading,
       });
       if (p.mode !== mode) {
         console.info(`home studio_mode from=${mode ?? "none"} to=${p.mode} draws=${draws}`);

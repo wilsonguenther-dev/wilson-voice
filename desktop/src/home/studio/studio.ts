@@ -17,7 +17,14 @@
  *   - Shelly's nook: plugged in while the Mac charges; the meter shows the real
  *     battery level (no meter on a Mac without a battery).
  *   - Ember's window: one firefly per streak day, at night only, at most 7.
- *   - The back room: Sal on the furnace by the back door, Mochi on the frame.
+ *   - The back room (yap-1106-sal-and-mochi): Sal sits on the furnace by the
+ *     back door and LIGHTS it while the speech engine loads (the engine is
+ *     ready when the fire is; a cold furnace = the model is not on this Mac
+ *     yet). Mochi hangs over the door frame, and climbs down onto the door
+ *     itself during a Focus / Do Not Disturb or a screen share (the quiet
+ *     state pill_quiet.rs emits), the reason the whole crew goes silent.
+ *     Both are ROOM-ONLY: they never appear in the pill (friendVisits.ts
+ *     ROOM_ONLY, characterFit.ts PILL_CHARACTERS; salMochi.test.ts pins it).
  *   - Cinder delivers the news at the back door when a briefing is waiting.
  *
  * Budget (FB-08): idle redraw at most once a minute; reduce motion = one still
@@ -91,6 +98,14 @@ export interface StudioState {
   streakDays: number | null;
   /** A morning briefing is waiting: Cinder stands at the back door with it. */
   newsReady: boolean;
+  /** yap-1106-sal-and-mochi: the speech engine is loading (AppStatus.engineLoading). */
+  engineLoading: boolean;
+  /** The speech model is on this Mac (AppStatus.modelReady); null = not known yet. */
+  modelReady: boolean | null;
+  /** The screen is shared or presented (pill_quiet `screenSharing`). */
+  screenSharing: boolean;
+  /** A Focus / Do Not Disturb is on (pill_quiet `doNotDisturb`). */
+  doNotDisturb: boolean;
   yappy: YappyPose;
 }
 
@@ -103,6 +118,10 @@ export const EMPTY_STUDIO_INPUTS: StudioInputs = {
   battery: null,
   streakDays: null,
   newsReady: false,
+  engineLoading: false,
+  modelReady: null,
+  screenSharing: false,
+  doNotDisturb: false,
 };
 
 /* ── pure station rules ─────────────────────────────────────────────────── */
@@ -188,6 +207,61 @@ export function yappyPose(d: { appState: HabitatAppState; activity: string; reac
   return "rest";
 }
 
+/* ── the back room: Sal's furnace and Mochi's door (yap-1106-sal-and-mochi) ── */
+
+/** lit = the engine is ready; lighting = Sal is lighting it (engine loading); cold = no model yet. */
+export type FurnaceState = "lit" | "lighting" | "cold";
+
+/** The furnace follows the real speech engine: the engine is ready when the fire is. */
+export function furnaceState(s: Pick<StudioState, "engineLoading" | "modelReady">): FurnaceState {
+  if (s.engineLoading === true) return "lighting";
+  if (s.modelReady === false) return "cold";
+  return "lit";
+}
+
+/** One lighting loop (seconds): the flame grows from a spark to the full fire, then Sal strikes again. */
+export const LIGHTING_CYCLE_S = 1.2;
+/** The lit furnace's flame (art px radii), the approved artifact's fire. */
+export const FULL_FLAME = { rx: 6, ry: 5 } as const;
+
+/** The flame's radii at `t`, or null for a cold furnace. Lighting never outgrows the lit fire. */
+export function furnaceFlame(f: FurnaceState, t: number): { rx: number; ry: number } | null {
+  if (f === "cold") return null;
+  if (f === "lit") return { rx: FULL_FLAME.rx, ry: FULL_FLAME.ry };
+  const tt = finite(t) && t > 0 ? t : 0;
+  const k = Math.min(4, Math.floor(((tt % LIGHTING_CYCLE_S) / LIGHTING_CYCLE_S) * 5));
+  return { rx: 2 + k, ry: 1 + k };
+}
+
+/** Why Mochi is on the door, or null when she is up on the frame (a screen share outranks a Focus). */
+export function mochiQuietReason(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): "screen-sharing" | "do-not-disturb" | null {
+  if (s.screenSharing === true) return "screen-sharing";
+  if (s.doNotDisturb === true) return "do-not-disturb";
+  return null;
+}
+
+/** Mochi hangs on the door during a Focus / Do Not Disturb or a screen share. */
+export function mochiOnDoor(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): boolean {
+  return mochiQuietReason(s) !== null;
+}
+
+/** Mochi over the door frame (the approved spot) and on the door's upper panel (quiet). */
+export const MOCHI_ON_FRAME = { x: 278, y: 12 } as const;
+export const MOCHI_ON_DOOR = { x: 279, y: 36 } as const;
+
+/** Where Mochi hangs (her sprite's top-left, art px). */
+export function mochiSpot(s: Pick<StudioState, "screenSharing" | "doNotDisturb">): { x: number; y: number } {
+  return mochiOnDoor(s) ? { ...MOCHI_ON_DOOR } : { ...MOCHI_ON_FRAME };
+}
+
+/** Sal's sprite frame: busy while lighting, dozing by a cold furnace, a slow blink when lit. */
+export function salFrame(f: FurnaceState, t: number): number {
+  const tt = finite(t) ? t : 0;
+  if (f === "lighting") return Math.floor(tt * 4) % 2 === 0 ? 0 : 1;
+  if (f === "cold") return 1;
+  return Math.floor(tt * 2) % 2 === 0 ? 0 : 1;
+}
+
 /** Reduce motion's one still frame is drawn at this t (no friend mid-blink). */
 export const STILL_T = 1;
 
@@ -214,6 +288,8 @@ export interface RedrawInputs {
   reacting: boolean;
   parallaxSettling: boolean;
   meetingRecording: boolean;
+  /** yap-1106-sal-and-mochi: Sal is lighting the furnace (the engine is loading) — the flame moves. */
+  furnaceLighting?: boolean;
 }
 
 /**
@@ -223,7 +299,7 @@ export interface RedrawInputs {
  */
 export function redrawPlan(i: RedrawInputs): { mode: RedrawMode; delayMs: number | null } {
   if (i.reduceMotion) return { mode: "still", delayMs: null };
-  if (i.appState !== "idle" || i.reacting || i.parallaxSettling) return { mode: "live", delayMs: LIVE_FRAME_MS };
+  if (i.appState !== "idle" || i.reacting || i.parallaxSettling || i.furnaceLighting === true) return { mode: "live", delayMs: LIVE_FRAME_MS };
   if (i.meetingRecording) return { mode: "tick", delayMs: MEETING_REDRAW_MS };
   return { mode: "idle", delayMs: IDLE_REDRAW_MS };
 }
@@ -353,10 +429,14 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   const cards = jarCards(s.dictionarySize);
   for (let n = 0; n < cards; n++) h.r(265 + ((n * 3) % 4), FLOOR - 4 - n * 3, 6, 2, n % 2 ? "#fff2b0" : "#fffdf5");
   stamp(o, "gulp", 220, FLOOR - 37, (t % 5) < 0.6 ? 1 : 0);
-  // The back room: Sal's furnace + Sal on top; Mochi on the door frame.
+  // The back room: Sal's furnace + Sal on top (lighting it while the engine
+  // loads); Mochi over the door frame, or ON the door during a Focus / DND / share.
   h.r(282, FLOOR - 28, 30, 28, "#2a2d35"); h.r(284, FLOOR - 26, 26, 24, "#3b3f4a"); h.r(296, FLOOR - 70, 4, 42, "#2a2d35");
-  stamp(o, "sal", 274, FLOOR - 56, fr);
-  stamp(o, "mochi", 278, 12, 1);
+  const furnace = furnaceState(s);
+  if (furnace === "cold") { h.r(291, FLOOR - 8, 12, 2, "#6a6a72"); h.r(293, FLOOR - 9, 3, 1, "#8a8a92"); h.r(299, FLOOR - 9, 2, 1, "#8a8a92"); }
+  stamp(o, "sal", 274, FLOOR - 56, salFrame(furnace, t));
+  const mochi = mochiSpot(s);
+  stamp(o, "mochi", mochi.x, mochi.y, 1);
   // Cinder's news delivery at the back door, when a briefing is waiting.
   if (s.newsReady) {
     stamp(o, "cinder", 240, FLOOR - 40, Math.floor(t * 3) % 2, { talk: Math.floor(t * 3) % 2 === 1, t });
@@ -416,7 +496,20 @@ export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: numb
   o.save();
   o.translate(midDx, 0);
   const m = H(o);
-  m.ell(297, FLOOR - 12, 6, 5, fr ? "#ff8a3c" : "#ffb04a"); m.ell(297, FLOOR - 11, 3, 3, "#ffe27a");
+  // Sal's furnace: the full fire when the engine is ready, a growing flame plus
+  // the sparks from Sal's tail while it loads, nothing when it is cold.
+  const furnace = furnaceState(s);
+  const flame = furnaceFlame(furnace, t);
+  if (flame) {
+    m.ell(297, FLOOR - 12, flame.rx, flame.ry, fr ? "#ff8a3c" : "#ffb04a");
+    m.ell(297, FLOOR - 11, Math.min(3, flame.rx - 1), Math.min(3, flame.ry), "#ffe27a");
+  }
+  if (furnace === "lighting") {
+    for (let i = 0; i < 3; i++) {
+      const p = (((finite(t) ? t : 0) * 1.5 + i / 3) % 1 + 1) % 1;
+      m.r(316 - Math.round(p * 12), FLOOR - 38 + Math.round(p * 24), 1, 1, i % 2 ? "#ffd23f" : "#fff2b0");
+    }
+  }
   const flies = fireflyCount(s.streakDays, band);
   for (let i = 0; i < flies; i++) {
     const [fx, fy] = FIREFLY_SPOTS[i];
@@ -473,6 +566,25 @@ export function studioAriaLabel(s: StudioState): string {
   const flies = fireflyCount(s.streakDays, band);
   if (flies > 0) parts.push(`Ember has ${flies} ${flies === 1 ? "firefly" : "fireflies"} out for your streak.`);
   if (s.newsReady) parts.push("Cinder is at the back door with the news.");
-  parts.push("Sal keeps the furnace warm in the back room and Mochi hangs over the door.");
+  parts.push(studioBackRoomLabel(s));
   return parts.join(" ");
+}
+
+/** The back room in plain words (Sal's furnace, Mochi's spot), from the same rules the picture draws. */
+export function studioBackRoomLabel(s: Pick<StudioState, "engineLoading" | "modelReady" | "screenSharing" | "doNotDisturb">): string {
+  const furnace = furnaceState(s);
+  const sal =
+    furnace === "lighting"
+      ? "Sal is lighting the furnace in the back room while the speech engine loads."
+      : furnace === "cold"
+        ? "Sal waits by a cold furnace in the back room: the speech engine is not ready yet."
+        : "Sal keeps the furnace warm in the back room.";
+  const why = mochiQuietReason(s);
+  const mochi =
+    why === "screen-sharing"
+      ? "Mochi hangs on the door, so the crew stays quiet while your screen is shared."
+      : why === "do-not-disturb"
+        ? "Mochi hangs on the door, so the crew stays quiet during Do Not Disturb."
+        : "Mochi hangs over the door.";
+  return `${sal} ${mochi}`;
 }
