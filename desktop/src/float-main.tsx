@@ -782,7 +782,7 @@ function Float() {
   const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
   const silentMicUp = silentMicShows(silentMicWarning, phase);
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
-  // yap-1106-partial-transcript-stream — SP-05's committed words, drawn in the
+  // yap-1106-partial-transcript-stream — SP-05's committed words plus its live tentative guess, drawn in the
   // phase strip while the take records (pill only, never history; hidden when
   // the governor is not at full). Every line that already owns the strip during
   // a take — a rail error, "Still recording", the fn hint, the engine's health —

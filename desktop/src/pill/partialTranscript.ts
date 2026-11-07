@@ -14,8 +14,9 @@
  *   `listening-locked` and nowhere else; a new take, a finished take, an error
  *   or a cancel clears them, and a late partial from an older take is dropped.
  * * **Off under load.** The resource governor at anything but `full` hides
- *   them (the backend also stops streaming then: `a_constrained_governor_
- *   degrades_to_batch`), so a hot or low-battery Mac does no extra drawing.
+ *   them (the backend also stops guessing then — `tentative_allowed` is
+ *   full-only — and stops streaming at minimal: `a_constrained_governor_
+ *   degrades_to_batch`), so a hot or low-battery Mac does no extra work.
  * * **Throttled.** The pill redraws at most once every
  *   {@link PARTIAL_RENDER_MIN_MS} (trailing edge, so the newest words always
  *   land), on top of the backend's own 500 ms emit limit.

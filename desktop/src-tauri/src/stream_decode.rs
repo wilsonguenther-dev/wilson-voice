@@ -33,7 +33,8 @@
 //!   guess never reaches [`StreamedTake::text`], history or the polish feed;
 //!   it is dropped the moment a window commits over its audio, it never runs
 //!   while a committed window is queued (committed work always goes first),
-//!   it stops while the resource governor is constrained, and it is held to
+//!   it runs only while the resource governor is at full (the pill hides the
+//!   words at any other level), and it is held to
 //!   [`TentativeConfig::max_duty`] (10 %) of the take's wall time
 //!   ([`tentative_gate`]), so it adds at most that much decode over a take
 //!   that streams without it.
@@ -317,6 +318,12 @@ pub trait WindowDecoder: Send + Sync {
     /// True while the resource governor wants background decode to stand down.
     fn constrained(&self) -> bool {
         false
+    }
+    /// yap-1106-partial-transcript-stream — may a display-only guess run now?
+    /// The app allows one only while the governor runs at full (the pill hides
+    /// live words at any other level, so a guess then would be wasted work).
+    fn tentative_allowed(&self) -> bool {
+        !self.constrained()
     }
 }
 
@@ -688,7 +695,7 @@ impl StreamDecoder {
             self.last_tentative = Some(now);
             return;
         }
-        if self.decoder.constrained() {
+        if !self.decoder.tentative_allowed() {
             let first = {
                 let mut p = lock(&self.shared.progress);
                 let first = p.tentative_off.is_none();
@@ -1046,7 +1053,7 @@ fn run_tentative(
         shared.tentative_busy.store(false, Ordering::Release);
         return;
     }
-    if decoder.constrained() {
+    if !decoder.tentative_allowed() {
         lock(&shared.progress).tentative_off = Some(REASON_GOVERNOR);
         shared.tentative_busy.store(false, Ordering::Release);
         return;

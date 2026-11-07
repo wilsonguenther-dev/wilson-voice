@@ -3127,6 +3127,13 @@ impl stream_decode::WindowDecoder for EngineWindowDecoder {
     fn constrained(&self) -> bool {
         resource_governor::live_transcript_paused()
     }
+
+    /// yap-1106-partial-transcript-stream — the display-only guess at the
+    /// uncommitted words runs only at a full governor; the pill hides live
+    /// words at any other level, so a guess then would be wasted work.
+    fn tentative_allowed(&self) -> bool {
+        matches!(resource_governor::level_now(), resource_governor::Level::Full)
+    }
 }
 
 /// yap-1106-sp-05 — arm the streaming decode for the take about to record.
