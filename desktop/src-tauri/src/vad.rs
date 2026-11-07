@@ -25,6 +25,7 @@
 //! unit-tested below; only the ONNX inference needs the model asset.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use vad_rs::Vad;
@@ -308,6 +309,13 @@ pub struct Isolation {
 /// exists because the engine carries recurrent state.
 pub struct WarmVad {
     engine: Mutex<SmoothedVad<SileroVad>>,
+    /// SP-06 — a SECOND session for the take being captured. A streamed take
+    /// holds its engine for as long as the key is down, and the meeting
+    /// chunker's [`WarmVad::speech_spans`] resets `engine` whenever it runs;
+    /// one shared LSTM state would let either corrupt the other. `None` while a
+    /// take has it out (or when the second load failed), which sends that take
+    /// down the batch path — never a wait.
+    stream: Mutex<Option<SmoothedVad<SileroVad>>>,
 }
 
 impl WarmVad {
@@ -315,13 +323,39 @@ impl WarmVad {
     /// caller keeps running on the energy VAD alone.
     pub fn load(model_path: &Path) -> Result<Self, String> {
         let silero = SileroVad::new(model_path, SPEECH_THRESHOLD)?;
+        // SP-06: the streamed-take session. Its failure only costs the stream
+        // (takes run the batch pass, exactly as before), so it is not an error.
+        let stream = match SileroVad::new(model_path, SPEECH_THRESHOLD) {
+            Ok(v) => Some(smoothed(v)),
+            Err(e) => {
+                log::warn!("vad stream_session_load_failed err={e}");
+                None
+            }
+        };
         Ok(Self {
-            engine: Mutex::new(SmoothedVad::new(
-                silero,
-                PREFILL_FRAMES,
-                HANGOVER_FRAMES,
-                ONSET_FRAMES,
-            )),
+            engine: Mutex::new(smoothed(silero)),
+            stream: Mutex::new(stream),
+        })
+    }
+
+    /// SP-06 — start analysing a take AS IT IS CAPTURED, on the second warm
+    /// session. `None` when that session is out (another take has it) or never
+    /// loaded: the caller then runs [`WarmVad::isolate`] after stop, as before.
+    pub fn begin_stream(self: &Arc<Self>) -> Option<StreamIsolation<'static>> {
+        let vad = self.stream.lock().take()?;
+        Some(StreamIsolation {
+            home: Home::Shared(Arc::clone(self)),
+            core: Some(StreamMask::new(vad)),
+        })
+    }
+
+    /// [`WarmVad::begin_stream`] for a borrowed engine (`wilson-voice --bench`
+    /// holds its `WarmVad` by value, not in an `Arc`).
+    pub fn begin_stream_local(&self) -> Option<StreamIsolation<'_>> {
+        let vad = self.stream.lock().take()?;
+        Some(StreamIsolation {
+            home: Home::Borrowed(self),
+            core: Some(StreamMask::new(vad)),
         })
     }
 
@@ -330,6 +364,20 @@ impl WarmVad {
     /// segments, then compute the gate decision + the trimmed-to-voiced buffer.
     /// Returns `Err` on inference failure (caller falls back to the energy VAD).
     pub fn isolate(&self, samples: &[f32], rate: u32) -> Result<Isolation, String> {
+        let mut engine = self.engine.lock();
+        isolate_with(&mut *engine, samples, rate)
+    }
+}
+
+/// The batch isolation pass over any frame detector — [`WarmVad::isolate`]'s
+/// body, generic so the streamed pass can be proved identical to it on a
+/// scripted detector (SP-06 tests).
+fn isolate_with<V: FrameVad>(
+    engine: &mut SmoothedVad<V>,
+    samples: &[f32],
+    rate: u32,
+) -> Result<Isolation, String> {
+    {
         if rate != VAD_SR {
             // The clip is written at 16 kHz; anything else means an unexpected path.
             return Err(format!("silero needs {VAD_SR} Hz, got {rate}"));
@@ -337,11 +385,9 @@ impl WarmVad {
         if samples.len() < FRAME_SAMPLES {
             return Err("clip shorter than one VAD frame".into());
         }
-        let mut engine = self.engine.lock();
         // Fresh recurrent + smoothing state per dictation.
         engine.reset();
-        let mask = speech_mask(&mut engine, samples)?;
-        drop(engine);
+        let mask = speech_mask(engine, samples)?;
 
         let segs = mask_to_segments(&mask, FRAME_SAMPLES);
         let voiced_samples = segments_voiced_samples(&segs);
@@ -364,6 +410,229 @@ impl WarmVad {
             voiced_seconds,
             trimmed,
         })
+    }
+}
+
+/// The dictation tuning of the smoothing state machine, in one place.
+fn smoothed(silero: SileroVad) -> SmoothedVad<SileroVad> {
+    SmoothedVad::new(silero, PREFILL_FRAMES, HANGOVER_FRAMES, ONSET_FRAMES)
+}
+
+// ── SP-06: the same pass, frame by frame, while the take is captured ────────
+
+/// What the gate and the trim need from a mask, kept up to date one frame at a
+/// time: the voiced frame count and the first/last voiced frame. The batch
+/// pass derives the same three from its finished mask; [`isolation_from_summary`]
+/// turns either into the verdict.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MaskSummary {
+    voiced_frames: usize,
+    /// First voiced frame (pre-roll included).
+    first: Option<usize>,
+    /// One past the last voiced frame.
+    last_end: usize,
+}
+
+/// The summary of a finished mask — what the streamed pass maintains
+/// incrementally. Test-only: the live paths never build a whole mask twice.
+#[cfg(test)]
+fn summarize_mask(mask: &[bool]) -> MaskSummary {
+    let mut sum = MaskSummary::default();
+    for (f, &v) in mask.iter().enumerate() {
+        if v {
+            sum.voiced_frames += 1;
+            if sum.first.is_none() {
+                sum.first = Some(f);
+            }
+            sum.last_end = f + 1;
+        }
+    }
+    sum
+}
+
+/// The gate + trim verdict from a summary. Same arithmetic as the segment path
+/// in [`isolate_with`] (voiced samples = voiced frames x frame; span = first
+/// voiced frame .. last voiced frame, padded, clamped), which the tests check.
+fn isolation_from_summary(sum: MaskSummary, samples: &[f32], rate: u32) -> Isolation {
+    let voiced_samples = sum.voiced_frames * FRAME_SAMPLES;
+    let has = voiced_samples >= MIN_SPEECH_SAMPLES;
+    let len = samples.len();
+    let pad = FRAME_SAMPLES * PAD_FRAMES;
+    let span = match sum.first {
+        Some(first) if len > 0 => {
+            let start = (first * FRAME_SAMPLES).saturating_sub(pad);
+            let end = (sum.last_end * FRAME_SAMPLES).saturating_add(pad).min(len);
+            (end > start).then_some((start, end))
+        }
+        _ => None,
+    };
+    let trimmed = match span {
+        Some((s, e)) if has && e - s < len => Some(samples[s..e].to_vec()),
+        _ => None,
+    };
+    Isolation {
+        has_speech: has,
+        voiced_seconds: voiced_samples as f64 / rate as f64,
+        trimmed,
+    }
+}
+
+/// The smoothed pass, fed in whatever chunks the capture delivers. Frames are
+/// cut on the same 480-sample grid the batch pass uses (from the first sample
+/// of the take), every frame is decided the moment it is whole, and the onset
+/// pre-roll is backfilled into the summary as it is released — so after the
+/// last chunk the verdict is a lookup, not a pass.
+struct StreamMask<V: FrameVad> {
+    vad: SmoothedVad<V>,
+    /// Samples of the frame not yet whole (always < `FRAME_SAMPLES`).
+    pending: Vec<f32>,
+    /// One flag per decided frame — needed so a pre-roll released over frames
+    /// that hangover had already kept is not counted twice.
+    mask: Vec<bool>,
+    summary: MaskSummary,
+    /// The first inference error; once set, nothing more is decided and
+    /// `finish` reports it (the caller then runs the batch pass).
+    failed: Option<String>,
+}
+
+impl<V: FrameVad> StreamMask<V> {
+    fn new(mut vad: SmoothedVad<V>) -> Self {
+        // Fresh recurrent + smoothing state per take, exactly as the batch pass.
+        vad.reset();
+        Self {
+            vad,
+            pending: Vec::with_capacity(FRAME_SAMPLES),
+            mask: Vec::new(),
+            summary: MaskSummary::default(),
+            failed: None,
+        }
+    }
+
+    /// Feed the next samples of the take. `gain` scales what the detector sees
+    /// (hard-limited like `apply_gain`); exactly `1.0` passes samples through
+    /// untouched, which is what makes the stream byte-identical to the batch pass.
+    fn push(&mut self, samples: &[f32], gain: f32) {
+        let mut rest = samples;
+        while !rest.is_empty() && self.failed.is_none() {
+            let take = (FRAME_SAMPLES - self.pending.len()).min(rest.len());
+            if gain == 1.0 {
+                self.pending.extend_from_slice(&rest[..take]);
+            } else {
+                self.pending
+                    .extend(rest[..take].iter().map(|&s| (s * gain).clamp(-1.0, 1.0)));
+            }
+            rest = &rest[take..];
+            if self.pending.len() == FRAME_SAMPLES {
+                self.step();
+            }
+        }
+    }
+
+    fn step(&mut self) {
+        let f = self.mask.len();
+        self.mask.push(false);
+        match self.vad.push_frame(&self.pending) {
+            Ok(FrameDecision::Noise) => {}
+            Ok(FrameDecision::Speech { prefill }) => {
+                let from = f - prefill.min(f);
+                for slot in &mut self.mask[from..=f] {
+                    if !*slot {
+                        *slot = true;
+                        self.summary.voiced_frames += 1;
+                    }
+                }
+                let first = self.summary.first.map_or(from, |v| v.min(from));
+                self.summary.first = Some(first);
+                self.summary.last_end = f + 1;
+            }
+            Err(e) => self.failed = Some(e),
+        }
+        self.pending.clear();
+    }
+
+    fn frames(&self) -> usize {
+        self.mask.len()
+    }
+
+    /// The verdict over the take's FINAL buffer. Refuses (so the caller runs the
+    /// batch pass) whenever that buffer is not the one the stream saw frame for
+    /// frame — e.g. the session ceiling cut it after capture.
+    fn finish(&self, samples: &[f32], rate: u32) -> Result<Isolation, String> {
+        if let Some(e) = &self.failed {
+            return Err(e.clone());
+        }
+        if rate != VAD_SR {
+            return Err(format!("silero needs {VAD_SR} Hz, got {rate}"));
+        }
+        if samples.len() < FRAME_SAMPLES {
+            return Err("clip shorter than one VAD frame".into());
+        }
+        let frames = samples.len() / FRAME_SAMPLES;
+        if frames != self.mask.len() {
+            return Err(format!(
+                "stream decided {} frames, the clip holds {frames}",
+                self.mask.len()
+            ));
+        }
+        Ok(isolation_from_summary(self.summary, samples, rate))
+    }
+}
+
+/// Who a streamed session goes back to.
+enum Home<'a> {
+    Shared(Arc<WarmVad>),
+    Borrowed(&'a WarmVad),
+}
+
+/// SP-06 — a take's Silero pass, run on each frame as the capture delivers it
+/// on the warm second session. Hand it every sample of the take in order
+/// ([`StreamIsolation::push`]); at stop, [`StreamIsolation::finish`] gives the
+/// same [`Isolation`] [`WarmVad::isolate`] would have computed over the same
+/// buffer, without a pass over the clip. Dropping it (an aborted take) returns
+/// the session, so the next take streams too.
+pub struct StreamIsolation<'a> {
+    home: Home<'a>,
+    core: Option<StreamMask<SileroVad>>,
+}
+
+impl StreamIsolation<'_> {
+    /// Feed the next samples of the take (see [`StreamMask::push`] for `gain`).
+    pub fn push(&mut self, samples: &[f32], gain: f32) {
+        if let Some(core) = self.core.as_mut() {
+            core.push(samples, gain);
+        }
+    }
+
+    /// Frames decided so far (telemetry).
+    pub fn frames(&self) -> usize {
+        self.core.as_ref().map_or(0, StreamMask::frames)
+    }
+
+    /// The verdict over the take's final buffer; `Err` means "run the batch
+    /// pass" (inference failed mid-take, or the buffer is not what was seen).
+    pub fn finish(mut self, samples: &[f32], rate: u32) -> Result<Isolation, String> {
+        let result = match self.core.as_ref() {
+            Some(core) => core.finish(samples, rate),
+            None => Err("streamed vad already finished".into()),
+        };
+        self.give_back();
+        result
+    }
+
+    fn give_back(&mut self) {
+        if let Some(core) = self.core.take() {
+            let warm: &WarmVad = match &self.home {
+                Home::Shared(a) => a,
+                Home::Borrowed(w) => w,
+            };
+            *warm.stream.lock() = Some(core.vad);
+        }
+    }
+}
+
+impl Drop for StreamIsolation<'_> {
+    fn drop(&mut self) {
+        self.give_back();
     }
 }
 
@@ -762,5 +1031,155 @@ mod tests {
             "digital silence must not register as speech"
         );
         assert_eq!(iso.voiced_seconds, 0.0);
+    }
+
+    // ── SP-06: the streamed pass ────────────────────────────────────────────
+
+    /// A voiced/unvoiced script with onsets, a hangover-bridged gap, a
+    /// pre-roll that overlaps the previous segment's hangover, and a blip.
+    fn sp06_script() -> Vec<bool> {
+        let mut s = Vec::new();
+        for (v, n) in [
+            (false, 20),
+            (true, 12),
+            (false, 5),
+            (true, 8),
+            (false, 18),
+            (true, 3),
+            (false, 9),
+            (true, 1),
+            (false, 30),
+        ] {
+            s.resize(s.len() + n, v);
+        }
+        s
+    }
+
+    /// A ramp, so a trim that cut one sample off is visible in the content.
+    fn sp06_samples(frames: usize, extra: usize) -> Vec<f32> {
+        (0..frames * FRAME_SAMPLES + extra)
+            .map(|i| (i % 9973) as f32 * 1e-5)
+            .collect()
+    }
+
+    fn streamed(script: Vec<bool>, samples: &[f32], chunks: &[usize]) -> Isolation {
+        let vad = SmoothedVad::new(
+            ScriptedVad::new(script),
+            PREFILL_FRAMES,
+            HANGOVER_FRAMES,
+            ONSET_FRAMES,
+        );
+        let mut stream = StreamMask::new(vad);
+        let mut at = 0;
+        let mut k = 0;
+        while at < samples.len() {
+            let n = chunks[k % chunks.len()].min(samples.len() - at);
+            stream.push(&samples[at..at + n], 1.0);
+            at += n;
+            k += 1;
+        }
+        assert_eq!(stream.frames(), samples.len() / FRAME_SAMPLES);
+        assert_eq!(stream.summary, summarize_mask(&stream.mask));
+        stream.finish(samples, VAD_SR).expect("stream verdict")
+    }
+
+    fn batch(script: Vec<bool>, samples: &[f32]) -> Isolation {
+        let mut vad = SmoothedVad::new(
+            ScriptedVad::new(script),
+            PREFILL_FRAMES,
+            HANGOVER_FRAMES,
+            ONSET_FRAMES,
+        );
+        isolate_with(&mut vad, samples, VAD_SR).expect("batch verdict")
+    }
+
+    fn assert_same(a: &Isolation, b: &Isolation) {
+        assert_eq!(a.has_speech, b.has_speech);
+        assert_eq!(a.voiced_seconds.to_bits(), b.voiced_seconds.to_bits());
+        let bits = |v: &Option<Vec<f32>>| {
+            v.as_ref()
+                .map(|t| t.iter().map(|x| x.to_bits()).collect::<Vec<u32>>())
+        };
+        assert_eq!(bits(&a.trimmed), bits(&b.trimmed));
+    }
+
+    #[test]
+    fn streamed_isolation_is_byte_identical_to_the_batch_pass() {
+        let script = sp06_script();
+        let samples = sp06_samples(script.len(), 123);
+        let want = batch(script.clone(), &samples);
+        assert!(want.has_speech && want.trimmed.is_some());
+        // Callback-sized, frame-sized, one-sample and ragged chunks.
+        for chunks in [
+            vec![170usize],
+            vec![FRAME_SAMPLES],
+            vec![1],
+            vec![7, 997, 480, 1, 333],
+            vec![samples.len()],
+        ] {
+            assert_same(&streamed(script.clone(), &samples, &chunks), &want);
+        }
+    }
+
+    #[test]
+    fn streamed_trim_span_matches_the_batch_span_on_silence_and_whole_clip_speech() {
+        // No speech: no trim, gate shut — same as batch.
+        let silent = vec![false; 40];
+        let samples = sp06_samples(40, 0);
+        assert_same(
+            &streamed(silent.clone(), &samples, &[211]),
+            &batch(silent, &samples),
+        );
+        // Speech from the first frame to the last: the span is the whole clip,
+        // so neither pass proposes a trim.
+        let all = vec![true; 40];
+        let a = streamed(all.clone(), &samples, &[211]);
+        assert!(a.has_speech && a.trimmed.is_none());
+        assert_same(&a, &batch(all, &samples));
+    }
+
+    #[test]
+    fn stream_refuses_a_buffer_it_did_not_see_frame_for_frame() {
+        let script = sp06_script();
+        let samples = sp06_samples(script.len(), 0);
+        let vad = SmoothedVad::new(ScriptedVad::new(script), 15, 15, 2);
+        let mut stream = StreamMask::new(vad);
+        stream.push(&samples, 1.0);
+        // The session ceiling cut the clip after capture: batch must decide.
+        let cut = &samples[..samples.len() - 2 * FRAME_SAMPLES];
+        assert!(stream.finish(cut, VAD_SR).is_err());
+        assert!(stream.finish(&samples, 8_000).is_err());
+        assert!(stream.finish(&samples, VAD_SR).is_ok());
+    }
+
+    #[test]
+    fn real_model_streamed_matches_batch_on_the_fixture() {
+        let model = crate::models::models_dir().join("silero_vad_v4.onnx");
+        if !model.exists() {
+            eprintln!("skipping: no cached silero model at {}", model.display());
+            return;
+        }
+        let warm = Arc::new(WarmVad::load(&model).expect("cached model loads"));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("quick-brown-fox-16k.wav");
+        let mut reader = hound::WavReader::open(&fixture).expect("fixture reads");
+        let speech: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / i16::MAX as f32)
+            .collect();
+        let mut clip = vec![0.0f32; VAD_SR as usize];
+        clip.extend_from_slice(&speech);
+        clip.resize(clip.len() + VAD_SR as usize, 0.0);
+        let want = warm.isolate(&clip, VAD_SR).expect("batch isolate");
+        let mut stream = warm.begin_stream().expect("stream session free");
+        for chunk in clip.chunks(170) {
+            stream.push(chunk, 1.0);
+        }
+        let got = stream.finish(&clip, VAD_SR).expect("stream isolate");
+        assert_same(&got, &want);
+        // The session went home: the next take streams too.
+        assert!(warm.begin_stream().is_some());
     }
 }
