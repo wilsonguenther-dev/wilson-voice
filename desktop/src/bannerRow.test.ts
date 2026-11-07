@@ -4,6 +4,7 @@
  * without a browser. The geometry half (rects, elementFromPoint, the exact
  * push delta at 1190x773 2x) is scripts/settings-banner-shots.mjs.
  */
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
