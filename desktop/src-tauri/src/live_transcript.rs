@@ -806,12 +806,32 @@ impl LiveState {
             LiveAnswer::Same { cluster, yes } => {
                 AnswerEffect::Same(roster.confirm_same(cluster, yes)?)
             }
-            LiveAnswer::Skip { cluster, .. } => {
+            LiveAnswer::Skip { cluster, reason } => {
                 roster.skip(cluster)?;
+                log::info!("live_ask deferred cluster={cluster} reason={reason}");
                 AnswerEffect::Skipped
             }
         };
         self.relabel();
+        let speakers = self.roster.as_ref().map_or(0, LiveRoster::speakers);
+        match &effect {
+            AnswerEffect::Seed(seed) => {
+                log::info!(
+                    "live_ask named cluster={} speakers={speakers}",
+                    seed.cluster
+                )
+            }
+            AnswerEffect::Same(SameOutcome::MergedInto { cluster }) => {
+                log::info!("live_ask merged into={cluster} speakers={speakers}")
+            }
+            AnswerEffect::Same(SameOutcome::AddedToProfile { .. }) => {
+                log::info!("live_ask merged into=profile speakers={speakers}")
+            }
+            AnswerEffect::Same(SameOutcome::NewSpeaker) => {
+                log::info!("live_ask new_speaker speakers={speakers}")
+            }
+            AnswerEffect::Skipped => {}
+        }
         Ok(effect)
     }
 

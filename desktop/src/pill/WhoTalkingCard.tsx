@@ -196,16 +196,22 @@ export default function WhoTalkingCard({ recording }: { recording: boolean }) {
         if (e.key === "Escape") dispatch({ type: "skip", nowMs: Date.now() });
       }}
     >
-      <div className="who-card-head">
-        <span className="who-card-title">{view.title}</span>
-        <VoiceWave />
-      </div>
+      <span className="who-card-title">
+        {card.kind === "same" ? (
+          <>
+            Same person as {card.name}? <span className="who-card-sure">{card.percent}% sure</span>
+          </>
+        ) : (
+          view.title
+        )}
+      </span>
+      <VoiceWave />
       {view.hasField && (
         <input
           className="who-card-field"
           type="text"
           aria-label={`Name for ${card.label}`}
-          placeholder="First name"
+          placeholder="Type a name"
           maxLength={40}
           value={name}
           onChange={(e) => setName(e.target.value)}
