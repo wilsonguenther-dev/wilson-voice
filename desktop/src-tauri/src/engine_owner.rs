@@ -155,8 +155,25 @@ pub fn transition_line(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every health this thread published, in order. The app-wide health is
+    /// one global that parallel tests share; a test reads its OWN thread's
+    /// transitions here instead.
+    static HEALTH_SEEN: std::cell::RefCell<Vec<EngineHealth>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take (and clear) the health states this thread published.
+#[cfg(test)]
+fn take_health_seen() -> Vec<EngineHealth> {
+    HEALTH_SEEN.with(|seen| std::mem::take(&mut *seen.borrow_mut()))
+}
+
 /// Move the APP-WIDE health to `to`, log it, and tell the listener.
 fn publish(to: EngineHealth, reason: &str, job: &str) {
+    #[cfg(test)]
+    HEALTH_SEEN.with(|seen| seen.borrow_mut().push(to));
     let from = EngineHealth::from_u8(APP_HEALTH.swap(to.to_u8(), Ordering::AcqRel));
     log::info!("{}", transition_line(from, to, reason, LIVE.live(), job));
     // Diagnostics shows the same plain word under "Routes and stages".
@@ -2689,10 +2706,11 @@ mod engine_owner_tests {
             })
         };
         let worker = std::thread::spawn(move || {
+            let _ = take_health_seen();
             let result = engine.transcribe(&[0.0f32; 16_000], None, None);
-            (result, engine)
+            (result, engine, take_health_seen())
         });
-        let (result, engine) = worker.join().expect("worker thread");
+        let (result, engine, seen) = worker.join().expect("worker thread");
         let took = started.elapsed();
         stop.store(true, Ordering::Release);
         let (max_helpers, max_live, samples, first_gone_at) = sampler.join().expect("sampler");
@@ -2718,7 +2736,31 @@ mod engine_owner_tests {
         assert_ne!(second, first);
         assert_eq!(mine(&before), vec![second]);
         assert!(!pid_alive(first), "the stuck helper {first} must be gone");
-        assert_eq!(health(), EngineHealth::Ready);
+        // The pill's sequence, read from THIS decode's own transitions (the
+        // global health is shared with tests running in parallel):
+        // busy -> stuck -> restarting -> ready, ending ready.
+        let at = |h: EngineHealth| {
+            seen.iter()
+                .position(|s| *s == h)
+                .unwrap_or_else(|| panic!("{h:?} never published: {seen:?}"))
+        };
+        assert!(at(EngineHealth::Busy) < at(EngineHealth::Stuck), "{seen:?}");
+        assert!(
+            at(EngineHealth::Stuck) < at(EngineHealth::Restarting),
+            "{seen:?}"
+        );
+        assert!(
+            at(EngineHealth::Restarting) < seen.len() - 1,
+            "restarting is not the last word: {seen:?}"
+        );
+        assert_eq!(seen.last(), Some(&EngineHealth::Ready), "{seen:?}");
+        assert_eq!(
+            seen.iter()
+                .filter(|s| **s == EngineHealth::Restarting)
+                .count(),
+            1,
+            "restarted exactly once: {seen:?}"
+        );
         assert!(
             matches!(bystander.try_wait(), Ok(None)),
             "a child the engine did not spawn was signalled"
