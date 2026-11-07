@@ -114,9 +114,15 @@ export const BUBBLE_LIFT = 10;
 /** `.phase-strip` max-width (SIDE_DOCK_TEXT_PX) and its 11px/1.25 line. */
 export const HINT_W = 192;
 export const HINT_LINE_H = 14;
-/** The clock row: dot + "00:03:37" + call-audio mark + stop; the after badge is wider. */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 184, after: 184 };
-export const CLOCK_H = 26;
+/**
+ * The clock row. yap-1106-pill-rec-headphones-hoot-tape: no red dot any more —
+ * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 112 x 40: sun, time,
+ * Hoot at the tape, Yappy in headphones) + call-audio mark + stop. 40 tall is
+ * the scene at a whole-number scale, and still clears the bubble row above
+ * (vertically centred on the 22 pt capsule: -9 vs the bubble's -10).
+ */
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
+export const CLOCK_H = 40;
 /** Y3-C's decode fill + numeral (`.kami-progress`): a row under Yappy while transcribing. */
 export const PROGRESS_W = 100;
 export const PROGRESS_H = 14;

@@ -148,7 +148,7 @@ export function meetingScene(i: MeetingSceneInput): MeetingSceneModel {
   const s = secs(i.elapsedS);
   const sun = sunPosition(s);
   const moon = moonPosition(s);
-  const body = sun ?? moon ?? { x: SCENE_W - 6, y: 13 };
+  const body = (sun ?? moon) as { x: number; y: number };
   const handover = i.handover === true;
   const pose: YappyMeetingPose = i.dictating ? "notepad" : isGlancing(s, i) ? "glance" : "listening";
   return {
