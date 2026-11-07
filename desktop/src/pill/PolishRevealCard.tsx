@@ -1,10 +1,14 @@
 // WF-05 — the pill's "Polished — Reveal" toast. Mounted by float-main.tsx
 // beside the Backtrack caught toast. The toast offers Reveal; Reveal opens the
 // take's diff (the shared DiffView) with Use original (the Undo AI Edit paste)
-// and Keep. Esc closes either face. Unanswered, the toast leaves after
-// POLISH_REVEAL_TTL_MS; the opened card waits for an answer. A new recording
-// clears it so it never sits over a live take, and the Tips switch in
-// Settings › Notifications mutes it (`live.ts` PILL_MESSAGES "polish-reveal").
+// and Keep. yap-1107-reveal-stays-until-read: unanswered, the toast stays at
+// least 8 s, never leaves while the pointer is on it or within 2 s of its last
+// move there, and never leaves on its own with "Keep the reveal open until I
+// close it" on (`revealDwell.ts`); the opened card waits for an answer. Esc
+// (read by the backend, the webview keydown is a fallback), a click outside
+// (backend), the close button, Keep / Dismiss and a new recording close either
+// face at once. The Tips switch in Settings › Notifications mutes it
+// (`live.ts` PILL_MESSAGES "polish-reveal").
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -12,11 +16,13 @@ import DiffView from "../DiffView";
 import type { DiffLayout } from "../diff";
 import type { AppStatus } from "../appTypes";
 import { holdPillHitbox } from "./drag";
+import { PILL_HOVER_OUT_EVENT } from "./hitbox";
 import { pillMessageAllowed } from "./live";
 import {
   LOCAL_ROUTE_LABEL,
+  POLISH_REVEAL_CLOSE_EVENT,
   POLISH_REVEAL_EVENT,
-  POLISH_REVEAL_TTL_MS,
+  REVEAL_STATE_COMMAND,
   USE_ORIGINAL_COMMAND,
   isPolishReveal,
   polishRevealLines,
@@ -28,6 +34,7 @@ import {
   type PolishRevealFace,
 } from "./polishReveal";
 import { POLISH_RESULT_EVENT, isPolishResult } from "./polishResult";
+import { createRevealDwell, type RevealCloseReason, type RevealDwell } from "./revealDwell";
 
 /** Stable default so the listener effect does not re-subscribe every render. */
 const NOTHING_MUTED: ReadonlySet<string> = new Set();
@@ -38,6 +45,44 @@ export function pasteOriginal(
   call: (cmd: string, args: Record<string, unknown>) => Promise<unknown> = invoke,
 ): Promise<unknown> {
   return call(USE_ORIGINAL_COMMAND, useOriginalArgs(reveal));
+}
+
+/**
+ * Tell the backend the reveal opened ("shown") or closed (why, and how long it
+ * was up): it arms / disarms the Esc + click-outside watch and writes the one
+ * telemetry line. Never blocks the card; a missing backend (the headless
+ * matrix) is ignored.
+ */
+export function reportRevealState(
+  open: boolean,
+  reason: RevealCloseReason | "shown",
+  dwellMs: number,
+  call: (cmd: string, args: Record<string, unknown>) => Promise<unknown> = invoke,
+): Promise<unknown> {
+  return call(REVEAL_STATE_COMMAND, { open, reason, dwellMs: Math.round(dwellMs) }).catch(() => undefined);
+}
+
+/** The backend's close event payload, if it is one of the two it may send. */
+export function backendCloseReason(payload: unknown): "esc" | "click_outside" | null {
+  return payload === "esc" || payload === "click_outside" ? payload : null;
+}
+
+/** The close button: an X glyph with an accessible name. */
+function CloseButton({ label, busy, onClick }: { label: string; busy?: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="polish-reveal-close"
+      aria-label={label}
+      title={label}
+      disabled={busy}
+      onClick={onClick}
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+        <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+      </svg>
+    </button>
+  );
 }
 
 /** Should a `polish_reveal` payload reach the pill? The payload check plus the WF-17 mute gate. */
@@ -57,6 +102,7 @@ export function PolishRevealView({
   onReveal,
   onUseOriginal,
   onKeep,
+  onClose,
 }: {
   reveal: PolishReveal;
   view: PolishRevealFace;
@@ -72,8 +118,11 @@ export function PolishRevealView({
   onReveal: () => void;
   onUseOriginal: () => void;
   onKeep: () => void;
+  /** The close button (top right of either face). Defaults to `onKeep`. */
+  onClose?: () => void;
 }) {
   const lines = polishRevealLines(reveal);
+  const close = onClose ?? onKeep;
   if (view === "toast") {
     return (
       <div className="polish-reveal polish-reveal-toast" role="status" aria-label={lines.aria} data-polish-reveal={reveal.id}>
@@ -85,6 +134,7 @@ export function PolishRevealView({
           <button type="button" className="polish-reveal-dismiss" onClick={onKeep}>
             {lines.dismiss}
           </button>
+          <CloseButton label={lines.close} onClick={close} />
         </div>
       </div>
     );
@@ -118,6 +168,7 @@ export function PolishRevealView({
           {lines.keep}
         </button>
       </div>
+      <CloseButton label={lines.close} busy={busy} onClick={close} />
     </div>
   );
 }
@@ -125,22 +176,43 @@ export function PolishRevealView({
 export default function PolishRevealCard({
   forced = null,
   muted = NOTHING_MUTED,
+  keepOpen = false,
 }: {
   /** A dev-only matrix scene (`forcedPolishReveal`); `null` in a release. */
-  forced?: { reveal: PolishReveal; view: PolishRevealFace; layout?: DiffLayout } | null;
+  forced?: { reveal: PolishReveal; view: PolishRevealFace; layout?: DiffLayout; hover?: true } | null;
   /** WF-17 muted pill categories. This toast is a `tip`, so muting Tips hides it. */
   muted?: ReadonlySet<string>;
+  /** Settings › Notifications "Keep the reveal open until I close it" (`keepPolishRevealOpen`). */
+  keepOpen?: boolean;
 } = {}) {
   const [reveal, setReveal] = useState<PolishReveal | null>(forced?.reveal ?? null);
   const [view, setView] = useState<PolishRevealFace>(forced?.view ?? "toast");
   const [route, setRoute] = useState<string>(LOCAL_ROUTE_LABEL);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pointerIn, setPointerIn] = useState<boolean>(forced?.hover === true);
   // The toggle's choice lives for the card session: kept while this take's
   // toast/card is up, cleared when the next take arrives.
   const [layout, setLayout] = useState<DiffLayout | null>(forced?.layout ?? null);
   const ref = useRef<HTMLDivElement | null>(null);
-  const isForced = forced !== null;
+
+  // The dwell rule + timer (`revealDwell.ts`). One per mount; every close path
+  // goes through `closeWith`, so each close is logged exactly once.
+  const dwellRef = useRef<RevealDwell | null>(null);
+  if (dwellRef.current === null) {
+    dwellRef.current = createRevealDwell(keepOpen, {
+      onClose: (reason, dwellMs) => {
+        setReveal(null);
+        setPointerIn(false);
+        void reportRevealState(false, reason, dwellMs);
+      },
+    });
+  }
+  const closeWith = useCallback((reason: RevealCloseReason) => {
+    const d = dwellRef.current;
+    if (d && d.isOpen()) d.close(reason);
+    else setReveal(null);
+  }, []);
 
   const show = useCallback(
     (p: unknown) => {
@@ -150,9 +222,21 @@ export default function PolishRevealCard({
       setLayout(null);
       setError(null);
       setBusy(false);
+      setPointerIn(false);
+      dwellRef.current?.show("toast");
+      void reportRevealState(true, "shown", 0);
     },
     [muted],
   );
+
+  useEffect(() => {
+    dwellRef.current?.setKeepOpen(keepOpen);
+  }, [keepOpen]);
+
+  useEffect(() => {
+    const d = dwellRef.current;
+    return () => d?.dispose();
+  }, []);
 
   useEffect(() => {
     let dead = false;
@@ -170,33 +254,58 @@ export default function PolishRevealCard({
     }).then(push);
     // A new take starts: the toast is about the LAST take, so it goes.
     listen<boolean>("recording", (e) => {
-      if (e.payload) setReveal(null);
+      if (e.payload) closeWith("new_recording");
+    }).then(push);
+    // Esc / a click outside, read by the backend hover watch (the panel is
+    // normally never key, so the webview keydown below rarely fires).
+    listen<unknown>(POLISH_REVEAL_CLOSE_EVENT, (e) => {
+      const why = backendCloseReason(e.payload);
+      if (why) closeWith(why);
+    }).then(push);
+    // The panel went click-through again: the pointer left the reveal, and
+    // the webview may never see a pointerleave.
+    listen<unknown>(PILL_HOVER_OUT_EVENT, () => {
+      dwellRef.current?.pointerLeave();
+      setPointerIn(false);
     }).then(push);
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
     };
-  }, [show]);
+  }, [show, closeWith]);
 
   // Muting Tips while the toast is up takes it down too.
   useEffect(() => {
-    if (!pillMessageAllowed("polish-reveal", muted)) setReveal(null);
-  }, [muted]);
+    if (!pillMessageAllowed("polish-reveal", muted)) closeWith("muted");
+  }, [muted, closeWith]);
 
-  const keep = useCallback(() => setReveal(null), []);
-  const open = useCallback(() => setView("card"), []);
+  const keep = useCallback(() => closeWith("keep"), [closeWith]);
+  const closeButton = useCallback(() => closeWith("close_button"), [closeWith]);
+  const open = useCallback(() => {
+    setView("card");
+    dwellRef.current?.setFace("card");
+  }, []);
+  const pointerEnter = useCallback(() => {
+    dwellRef.current?.pointerEnter();
+    setPointerIn(true);
+  }, []);
+  const pointerMove = useCallback(() => dwellRef.current?.pointerMove(), []);
+  const pointerLeave = useCallback(() => {
+    dwellRef.current?.pointerLeave();
+    setPointerIn(false);
+  }, []);
 
   const original = useCallback(() => {
     if (!reveal) return;
     setBusy(true);
     setError(null);
     pasteOriginal(reveal)
-      .then(() => setReveal(null))
+      .then(() => closeWith("use_original"))
       .catch((e: unknown) => {
         setBusy(false);
         setError(useOriginalError(e));
       });
-  }, [reveal]);
+  }, [reveal, closeWith]);
 
   useEffect(() => {
     if (!reveal) return;
@@ -207,23 +316,31 @@ export default function PolishRevealCard({
       const r = el.getBoundingClientRect();
       holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "polish-reveal");
     }
-    // Only the toast times out; an opened card or a forced matrix scene waits.
-    const ttl =
-      view === "toast" && !isForced ? window.setTimeout(() => setReveal(null), POLISH_REVEAL_TTL_MS) : null;
+    // The timer is `revealDwell.ts` (a forced matrix scene never starts it).
+    // Esc here is only the fallback: the panel is normally never key, so the
+    // backend reads Esc and sends POLISH_REVEAL_CLOSE_EVENT.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") keep();
+      if (e.key === "Escape") closeWith("esc");
     };
     window.addEventListener("keydown", onKey);
     return () => {
-      if (ttl !== null) window.clearTimeout(ttl);
       window.removeEventListener("keydown", onKey);
       holdPillHitbox(null, "polish-reveal");
     };
-  }, [reveal, view, isForced, keep]);
+  }, [reveal, view, layout, closeWith]);
 
   if (!reveal) return null;
   return (
-    <div ref={ref} className="polish-reveal-wrap" data-view={view}>
+    <div
+      ref={ref}
+      className="polish-reveal-wrap"
+      data-view={view}
+      data-pointer={pointerIn ? "inside" : undefined}
+      data-keep-open={keepOpen ? "true" : undefined}
+      onPointerEnter={pointerEnter}
+      onPointerMove={pointerMove}
+      onPointerLeave={pointerLeave}
+    >
       <PolishRevealView
         reveal={reveal}
         view={view}
@@ -235,6 +352,7 @@ export default function PolishRevealCard({
         onReveal={open}
         onUseOriginal={original}
         onKeep={keep}
+        onClose={closeButton}
       />
     </div>
   );

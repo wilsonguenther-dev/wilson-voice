@@ -6,8 +6,12 @@
 
 /** Mirrors `lib.rs` `POLISH_RESULT_EVENT`. */
 export const POLISH_RESULT_EVENT = "polish_result";
-/** "Polished · Reveal edit" stays on the pill about this long (Wispr parity). */
-export const REVEAL_EDIT_TTL_MS = 4_000;
+/**
+ * "Polished · Reveal edit" stays on the pill at least this long
+ * (yap-1107-reveal-stays-until-read: 8 s minimum, never under the pointer;
+ * the full rule is `revealDwell.ts`).
+ */
+export const REVEAL_EDIT_TTL_MS = 8_000;
 
 export type PolishRoute = "cloud" | "local";
 
