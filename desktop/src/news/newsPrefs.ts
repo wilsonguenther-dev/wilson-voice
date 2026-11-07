@@ -167,3 +167,60 @@ export function saveNews(prefs: NewsPrefs, source: NewsSource): Promise<NewsView
 export function dismissNews(source: NewsSource): Promise<NewsView> {
   return invoke<NewsView>("dismiss_news_offer", { source });
 }
+
+// ── yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced ──
+// An optional own key for the quote feed (Finnhub or Alpha Vantage). It lives
+// only in the Keychain; the backend returns "saved" plus the last four
+// characters, never the key. With no key the free tier applies.
+
+export type QuoteProvider = "finnhub" | "alpha_vantage";
+export type QuoteTier = "free" | QuoteProvider;
+
+/** `news::quote_key::ProviderInfo`. */
+export interface QuoteProviderInfo {
+  id: QuoteProvider;
+  label: string;
+  host: string;
+  refreshLine: string;
+}
+
+/** `news::quote_key::QuoteKeyView`. */
+export interface QuoteKeyView {
+  provider: QuoteProvider | null;
+  saved: boolean;
+  hint: string;
+  tier: QuoteTier;
+  leavesLabel: string;
+  providers: QuoteProviderInfo[];
+  error: string | null;
+}
+
+/** The label beside the key field (the backend sends the same words). */
+export const QUOTE_KEY_LEAVES_LABEL = "Leaves this Mac: only to that provider";
+
+/** One sentence: what the next refresh does for tickers. */
+export function quoteTierLine(v: QuoteKeyView): string {
+  const p = v.providers.find((x) => x.id === v.tier);
+  if (v.tier === "free" || !p) {
+    return "Free sources: your tickers show as headlines from the public news feeds. No key needed.";
+  }
+  const ending = v.hint ? ` (key ending ${v.hint})` : "";
+  return `Prices from ${p.label}${ending}. ${p.refreshLine}`;
+}
+
+/** The provider the form starts on: the saved one, else the first. */
+export function initialQuoteProvider(v: QuoteKeyView): QuoteProvider {
+  return v.provider ?? v.providers[0]?.id ?? "finnhub";
+}
+
+export function loadQuoteKey(): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("get_news_quote_key");
+}
+
+export function saveQuoteKey(provider: QuoteProvider, key: string): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("set_news_quote_key", { provider, key });
+}
+
+export function clearQuoteKey(): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("clear_news_quote_key");
+}

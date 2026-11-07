@@ -79,6 +79,14 @@ export interface ActiveLeave {
   host: string;
 }
 
+/**
+ * fix-l3b3-1 — fired on `window` after the cloud route's key or mode changes
+ * (Settings → Cloud route). That route sends notes and polish off this Mac
+ * without being a provider pick, and `list_model_providers.activeLeaves`
+ * counts it, so every "Leaves this Mac" surface re-reads on this event.
+ */
+export const CLOUD_ROUTE_CHANGED_EVENT = "yap:cloud-route-changed";
+
 /** "Notes go to openrouter.ai" / "Polish goes to api.groq.com". */
 export function leaveLines(active: readonly ActiveLeave[]): string[] {
   return active.map((a) =>

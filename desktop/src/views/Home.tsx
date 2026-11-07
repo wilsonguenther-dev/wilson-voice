@@ -1,6 +1,9 @@
 import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
+import { useRef } from "react";
 import YappyHouse from "../home/YappyHouse";
+import { fixesToday, type StudioInputs } from "../home/studio/studio";
+import { useGovernor } from "../pill/GovernorChip";
 import NewsHomeCard from "../news/NewsHomeCard";
 import { type FailedDictation, type TranscriptEntry, retainedClipsLabel, formatTime, missingDictationGrants } from "../appTypes";
 import { useAppCtx } from "../appShell";
@@ -117,7 +120,23 @@ export default function Home() {
     failed, history, insights, meetingStatus, pasteText, perms, query,
     retryAll, retryAllFailed, retryFailed, retrying, retryPhase, setFailed,
     setNav, setQuery, dropRetry, settings, status, toastError, toggleRecord,
+    dictionary,
   } = useAppCtx();
+  // yap-1106-studio-room — the studio's stations read REAL app state: Tidy's
+  // counter (today's fixes, kept while a search filters the list), Gulp's jar
+  // (Dictionary size), Shelly (the governor's battery view), Ember (streak).
+  const governor = useGovernor();
+  const fixesRef = useRef<number | null>(null);
+  if (!query && !booting) fixesRef.current = fixesToday(history, new Date());
+  const studio: StudioInputs = {
+    fixesToday: fixesRef.current,
+    dictionarySize: booting || !Array.isArray(dictionary) ? null : dictionary.length,
+    battery: governor ? { percent: governor.batteryPercent, charging: governor.onAc } : null,
+    streakDays: insights ? insights.streakDays : null,
+    // No backend event says a briefing was delivered on this base yet: Cinder
+    // waits off-stage until one does (see studio.ts drawMid).
+    newsReady: false,
+  };
   // Y5-B fix round (#192) — bootError only replaces THIS view when this view's
   // own data never landed; each of history and stats names its own error.
   const homeError =
@@ -171,10 +190,10 @@ export default function Home() {
   return (
     <div className="home-view">
       <BootNote keys={["get_status", "list_failed_dictations", "list_crash_events"]} />
-      {/* The room, full column width at a whole-number scale. During a meeting
-          Hoot sits in it and its label carries the meeting clock — Home shows
-          no other timer. */}
-      <YappyHouse companionTone={settings?.companionTone} meeting={meetingStatus} />
+      {/* The studio, full column width at a whole-number scale. During a meeting
+          Hoot's ON AIR light is lit and the label carries the meeting clock —
+          Home shows no other timer. */}
+      <YappyHouse companionTone={settings?.companionTone} meeting={meetingStatus} studio={studio} />
 
       {/* The three stat tiles, now one quiet line under the room. */}
       <p className="home-stats" data-home="stats">

@@ -9,10 +9,11 @@
 // on origin/main (before: no Yappy News tab) and on this branch (after);
 // `captureSettingsTabs` clicks every tab, so the new pane lands as
 // settings-news-<size>.png.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAppCtx } from "../../appShell";
 import { errorText } from "../../errors";
 import NewsInterests from "../../news/NewsInterests";
+import NewsQuoteKey from "../../news/NewsQuoteKey";
 import {
   NEWS_PRIVACY_LINE,
   lastRefreshLine,
@@ -35,6 +36,7 @@ export function NewsSettingsView({
   onSave,
   onRevert,
   onConnect,
+  advanced,
 }: {
   view: NewsView;
   draft: NewsPrefs;
@@ -44,6 +46,8 @@ export function NewsSettingsView({
   onSave: () => void;
   onRevert: () => void;
   onConnect: () => void;
+  /** yap-1106-fb-14-news-quote-key — the Advanced section (optional quote key). */
+  advanced?: ReactNode;
 }) {
   const dirty = !samePrefs(draft, prefsOf(view));
   const saved = topicLabels(view);
@@ -86,6 +90,8 @@ export function NewsSettingsView({
         <NewsInterests value={draft} onChange={onChange} disabled={!view.cloudConnected || saving} />
         <p className="settings-hint">{NEWS_PRIVACY_LINE}</p>
       </div>
+
+      {advanced}
 
       <div className="settings-footer">
         <button type="button" className="ghost" onClick={onRevert} disabled={!dirty || saving}>
@@ -165,6 +171,7 @@ export default function News() {
       onSave={() => void save()}
       onRevert={() => setDraft(prefsOf(view))}
       onConnect={() => setSettingsTab("advanced")}
+      advanced={<NewsQuoteKey />}
     />
   );
 }

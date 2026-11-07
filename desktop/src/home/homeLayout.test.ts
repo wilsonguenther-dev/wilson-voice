@@ -6,6 +6,7 @@
  * The markup half lives in views/__tests__/home.fullWidthRoom.test.tsx.
  */
 import { describe, expect, it } from "vitest";
+import { STUDIO_H, STUDIO_W } from "./studio/studio";
 import {
   HISTORY_PAGE,
   HOME_RECENT,
@@ -28,28 +29,29 @@ import {
 } from "./homeLayout";
 
 describe("roomScale / roomBox — whole-number scale, never a fraction (option A)", () => {
-  it("the scene is 192 x 128 and the only scales are 5, 4, 3", () => {
-    expect([ROOM_W, ROOM_H]).toEqual([192, 128]);
-    expect([...ROOM_SCALES]).toEqual([5, 4, 3]);
+  it("the scene is the 320 x 160 studio and the only scales are 4, 3, 2", () => {
+    expect([ROOM_W, ROOM_H]).toEqual([320, 160]);
+    expect([ROOM_W, ROOM_H]).toEqual([STUDIO_W, STUDIO_H]);
+    expect([...ROOM_SCALES]).toEqual([4, 3, 2]);
   });
 
-  it("picks the largest scale whose room fits the column", () => {
-    expect(roomScale(960)).toBe(5);
-    expect(roomScale(1400)).toBe(5);
-    expect(roomScale(959)).toBe(4);
-    expect(roomScale(768)).toBe(4);
-    expect(roomScale(767)).toBe(3);
-    expect(roomScale(576)).toBe(3);
+  it("picks the largest scale whose room fits the column (3x on the design page's 960 px)", () => {
+    expect(roomScale(1280)).toBe(4);
+    expect(roomScale(1600)).toBe(4);
+    expect(roomScale(1279)).toBe(3);
+    expect(roomScale(960)).toBe(3);
+    expect(roomScale(959)).toBe(2);
+    expect(roomScale(640)).toBe(2);
   });
 
-  it("a column narrower than 3x still draws at 3x (the frame crops); junk reads as 3x", () => {
-    expect(roomScale(400)).toBe(3);
-    expect(roomScale(0)).toBe(3);
-    expect(roomScale(-50)).toBe(3);
-    expect(roomScale(Number.NaN)).toBe(3);
-    expect(roomScale(Number.POSITIVE_INFINITY)).toBe(3);
-    expect(roomScale(null)).toBe(3);
-    expect(roomScale(undefined)).toBe(3);
+  it("a column narrower than 2x still draws at 2x (the frame crops); junk reads as 2x", () => {
+    expect(roomScale(400)).toBe(2);
+    expect(roomScale(0)).toBe(2);
+    expect(roomScale(-50)).toBe(2);
+    expect(roomScale(Number.NaN)).toBe(2);
+    expect(roomScale(Number.POSITIVE_INFINITY)).toBe(2);
+    expect(roomScale(null)).toBe(2);
+    expect(roomScale(undefined)).toBe(2);
   });
 
   it("every width maps to an integer scale and an integer box", () => {
@@ -58,8 +60,8 @@ describe("roomScale / roomBox — whole-number scale, never a fraction (option A
       expect(Number.isInteger(b.scale)).toBe(true);
       expect(b).toEqual({ scale: b.scale, width: ROOM_W * b.scale, height: ROOM_H * b.scale });
     }
-    expect(roomBox(1000)).toEqual({ scale: 5, width: 960, height: 640 });
-    expect(roomBox(null)).toEqual({ scale: 3, width: 576, height: 384 });
+    expect(roomBox(1000)).toEqual({ scale: 3, width: 960, height: 480 });
+    expect(roomBox(null)).toEqual({ scale: 2, width: 640, height: 320 });
   });
 });
 

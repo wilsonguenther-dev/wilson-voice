@@ -9,7 +9,10 @@ use crate::meetings::{
     self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
-use crate::speaker_profiles::{self, MatchBands, SpeakerProfile, VoiceMatch};
+use crate::speaker_profiles::{
+    self, ClusterCandidate, ClusterLine, ClusterVoice, ClusterVoiceState, MatchBands, NameTarget,
+    NamedCluster, SpeakerProfile, VoiceCard, VoiceMatch,
+};
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -708,6 +711,9 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             // yap-1106-voiceprints — speaker profiles, their samples, and the
             // plain-text name a past meeting's segment keeps.
             11 => crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
+            // yap-1106-who-is-this — each diarized cluster's voice and the
+            // person's answer to "Who was this?".
+            12 => crate::speaker_profiles::MIGRATION_12_CLUSTER_VOICES,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1132,6 +1138,10 @@ impl Database {
         // once (it is dropped in the same transaction, so a deleted note can
         // never be resurrected by a later open).
         fold_legacy_scratchpad(&conn).map_err(|e| OpenErr::classify("scratchpad fold", e))?;
+        // yap-1106-news-rank-cache — the Yappy News story cache and seen-set.
+        // Disposable, so `IF NOT EXISTS` on every open rather than a ladder step
+        // (see `news::cache`'s docs).
+        crate::news::cache::ensure_schema(&conn).map_err(|e| OpenErr::classify("news cache", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -2523,6 +2533,13 @@ impl Database {
         let profiles = tx
             .execute("DELETE FROM speaker_profiles", [])
             .map_err(|e| e.to_string())?;
+        // yap-1106-who-is-this — a meeting's kept cluster voices are
+        // voiceprints too: "Forget all voices" forgets them.
+        tx.execute(
+            "UPDATE meeting_cluster_voices SET embedding = NULL, embedder_digest = NULL, profile_id = NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM settings_kv WHERE key = ?1",
             params![speaker_profiles::ENROLL_ME_SETTING],
@@ -2568,6 +2585,399 @@ impl Database {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|e| e.to_string())
+    }
+
+    // ── yap-1106-who-is-this · the "Who was this?" cards ─────────────────────
+
+    /// Replace one track's cluster voices after a diarize pass (a re-run's
+    /// cluster ids are new, so the old rows and answers go with it). An empty
+    /// embedding is stored as NULL: that card can still be named from text.
+    pub fn save_meeting_cluster_voices(
+        &self,
+        meeting_id: &str,
+        track: i64,
+        embedder_digest: Option<&str>,
+        voices: &[(i64, Vec<f32>, f64)],
+    ) -> Result<usize, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM meeting_cluster_voices WHERE meeting_id = ?1 AND track = ?2",
+            params![meeting_id, track],
+        )
+        .map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        for (cluster, embedding, seconds) in voices {
+            let (digest, blob) = match (embedder_digest, embedding.is_empty()) {
+                (Some(d), false) => (Some(d), Some(speaker_profiles::encode_embedding(embedding))),
+                _ => (None, None),
+            };
+            tx.execute(
+                "INSERT INTO meeting_cluster_voices
+                   (meeting_id, track, cluster_index, embedder_digest, embedding, seconds, state, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'unknown', ?7)",
+                params![meeting_id, track, cluster, digest, blob, seconds, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(voices.len())
+    }
+
+    /// Every stored cluster voice of a meeting.
+    pub fn meeting_cluster_voices(&self, meeting_id: &str) -> Result<Vec<ClusterVoice>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT track, cluster_index, embedder_digest, embedding, seconds, state
+                   FROM meeting_cluster_voices WHERE meeting_id = ?1
+                  ORDER BY track, cluster_index",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![meeting_id], |r| {
+                let blob: Option<Vec<u8>> = r.get(3)?;
+                let state: String = r.get(5)?;
+                Ok(ClusterVoice {
+                    track: r.get(0)?,
+                    cluster_index: r.get(1)?,
+                    embedder_digest: r.get(2)?,
+                    embedding: blob
+                        .and_then(|b| speaker_profiles::decode_embedding(&b).ok())
+                        .filter(|v| !v.is_empty()),
+                    seconds: r.get(4)?,
+                    state: ClusterVoiceState::parse(&state),
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// `(segment id, name)` for every line of a meeting labelled with a saved
+    /// voice: what the transcript shows in place of "Speaker N".
+    pub fn meeting_speaker_names(&self, meeting_id: &str) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, speaker_name FROM meeting_segments
+                  WHERE meeting_id = ?1 AND speaker_name IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![meeting_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// The "Who was this?" cards of a meeting (`speaker_profiles::pick_voice_cards`).
+    pub fn meeting_voice_cards(
+        &self,
+        meeting_id: &str,
+        bands: MatchBands,
+    ) -> Result<Vec<VoiceCard>, String> {
+        let segments = self.list_meeting_segments(meeting_id)?;
+        let labelled: std::collections::HashSet<String> = self
+            .meeting_speaker_names(meeting_id)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let voices = self.meeting_cluster_voices(meeting_id)?;
+        let profiles = self.list_speaker_profiles()?;
+        let me_profile_id = profiles.iter().find(|p| p.is_me).map(|p| p.id);
+        let mut groups: std::collections::BTreeMap<(i64, i64), Vec<ClusterLine>> =
+            std::collections::BTreeMap::new();
+        for s in &segments {
+            let Some(cluster) = s.cluster_index else {
+                continue;
+            };
+            groups
+                .entry((s.track, cluster))
+                .or_default()
+                .push(ClusterLine {
+                    segment_id: s.id.clone(),
+                    start_seconds: s.start_seconds,
+                    end_seconds: s.end_seconds,
+                    text: s.text.clone(),
+                    labelled: labelled.contains(&s.id),
+                });
+        }
+        let candidates: Vec<ClusterCandidate> = groups
+            .into_iter()
+            .map(|((track, cluster_index), lines)| {
+                let voice = voices
+                    .iter()
+                    .find(|v| v.track == track && v.cluster_index == cluster_index);
+                let voice_match = voice.and_then(|v| match (&v.embedding, &v.embedder_digest) {
+                    (Some(e), Some(d)) => {
+                        Some(speaker_profiles::match_voice(e, d, &profiles, bands))
+                    }
+                    _ => None,
+                });
+                ClusterCandidate {
+                    track,
+                    cluster_index,
+                    state: voice.map(|v| v.state).unwrap_or(ClusterVoiceState::Unknown),
+                    lines,
+                    voice_match,
+                    me_profile_id,
+                }
+            })
+            .collect();
+        let cards = speaker_profiles::pick_voice_cards(&candidates);
+        log::info!(
+            "speaker_profiles voice_cards meeting={meeting_id} clusters={} cards={}",
+            candidates.len(),
+            cards.len()
+        );
+        Ok(cards)
+    }
+
+    /// "Save" / "That's me" / "Yes, same person": create or update the
+    /// profile, add the cluster's voice as a sample when the pass kept one,
+    /// and relabel EVERY line of that cluster in this meeting, in one
+    /// transaction. Lines move as whole word-exact turns (diarize-wire split
+    /// rows at every speaker switch), so a relabel never crosses a switch.
+    pub fn name_meeting_cluster(
+        &self,
+        meeting_id: &str,
+        track: i64,
+        cluster_index: i64,
+        target: &NameTarget,
+    ) -> Result<NamedCluster, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let stored: Option<(Option<String>, Option<Vec<u8>>, f64)> = tx
+            .query_row(
+                "SELECT embedder_digest, embedding, seconds FROM meeting_cluster_voices
+                  WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3",
+                params![meeting_id, track, cluster_index],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let sample: Option<(String, Vec<f32>, f64)> = match stored {
+            Some((Some(digest), Some(blob), seconds)) => speaker_profiles::decode_embedding(&blob)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|v| (digest, v, seconds)),
+            _ => None,
+        };
+        let existing: Option<SpeakerProfile> = match target {
+            NameTarget::Profile { profile_id } => Some(
+                Self::speaker_profile_on(&tx, *profile_id)?
+                    .ok_or_else(|| "That speaker no longer exists.".to_string())?,
+            ),
+            NameTarget::Me => {
+                let id: Option<i64> = tx
+                    .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| {
+                        r.get(0)
+                    })
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                match id {
+                    Some(id) => Self::speaker_profile_on(&tx, id)?,
+                    None => None,
+                }
+            }
+            NameTarget::NewName { name } => {
+                let clean = speaker_profiles::clean_display_name(name)?;
+                let id: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM speaker_profiles
+                          WHERE display_name = ?1 COLLATE NOCASE AND is_me = 0
+                          ORDER BY id LIMIT 1",
+                        params![clean],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                match id {
+                    Some(id) => Self::speaker_profile_on(&tx, id)?,
+                    None => None,
+                }
+            }
+        };
+        let now = Utc::now().to_rfc3339();
+        let mut sample_added = false;
+        let profile_id = match existing {
+            Some(p) => {
+                if let Some((digest, embedding, seconds)) = &sample {
+                    let empty = p.n_samples == 0 || p.centroid.is_empty();
+                    if empty
+                        || (p.embedder_digest == *digest && p.centroid.len() == embedding.len())
+                    {
+                        let centroid = if empty {
+                            speaker_profiles::fold_into_centroid(&[], 0, embedding)?
+                        } else {
+                            speaker_profiles::fold_into_centroid(
+                                &p.centroid,
+                                p.n_samples,
+                                embedding,
+                            )?
+                        };
+                        tx.execute(
+                            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![p.id, meeting_id, speaker_profiles::encode_embedding(embedding), seconds, now],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        tx.execute(
+                            "UPDATE speaker_profiles
+                                SET centroid = ?2, n_samples = n_samples + 1, embedder_digest = ?3,
+                                    updated_at = ?4, last_heard_at = ?4
+                              WHERE id = ?1",
+                            params![
+                                p.id,
+                                speaker_profiles::encode_embedding(&centroid),
+                                digest,
+                                now
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        sample_added = true;
+                    } else {
+                        log::warn!(
+                            "speaker_profiles name_cluster_sample_skipped id={} reason=digest_mismatch",
+                            p.id
+                        );
+                    }
+                }
+                p.id
+            }
+            None => {
+                let (name, is_me) = match target {
+                    NameTarget::NewName { name } => {
+                        (speaker_profiles::clean_display_name(name)?, false)
+                    }
+                    NameTarget::Me => (speaker_profiles::ME_DISPLAY_NAME.to_string(), true),
+                    NameTarget::Profile { .. } => {
+                        return Err("That speaker no longer exists.".into());
+                    }
+                };
+                let (digest, centroid, n) = match &sample {
+                    Some((d, e, _)) => (
+                        d.clone(),
+                        speaker_profiles::fold_into_centroid(&[], 0, e)?,
+                        1i64,
+                    ),
+                    // Named from text only (no voice kept): a name with no
+                    // voiceprint yet. `comparable` skips it until a sample lands.
+                    None => (
+                        speaker_profiles::pinned_embedder_digest().unwrap_or_else(|| "none".into()),
+                        Vec::new(),
+                        0i64,
+                    ),
+                };
+                tx.execute(
+                    "INSERT INTO speaker_profiles
+                       (display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?3)",
+                    params![name, is_me as i64, now, digest, speaker_profiles::encode_embedding(&centroid), n],
+                )
+                .map_err(|e| e.to_string())?;
+                let id = tx.last_insert_rowid();
+                if let Some((_, embedding, seconds)) = &sample {
+                    tx.execute(
+                        "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![id, meeting_id, speaker_profiles::encode_embedding(embedding), seconds, now],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    sample_added = true;
+                }
+                id
+            }
+        };
+        let display_name: String = tx
+            .query_row(
+                "SELECT display_name FROM speaker_profiles WHERE id = ?1",
+                params![profile_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let relabelled = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = ?1, speaker_name = ?2
+                  WHERE meeting_id = ?3 AND track = ?4 AND cluster_index = ?5",
+                params![profile_id, display_name, meeting_id, track, cluster_index],
+            )
+            .map_err(|e| e.to_string())?;
+        let state = if matches!(target, NameTarget::Me) {
+            ClusterVoiceState::Me
+        } else {
+            ClusterVoiceState::Named
+        };
+        tx.execute(
+            "INSERT INTO meeting_cluster_voices
+               (meeting_id, track, cluster_index, seconds, state, profile_id, updated_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
+             ON CONFLICT(meeting_id, track, cluster_index)
+             DO UPDATE SET state = excluded.state, profile_id = excluded.profile_id,
+                           updated_at = excluded.updated_at",
+            params![
+                meeting_id,
+                track,
+                cluster_index,
+                state.as_str(),
+                profile_id,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        let target_tag = match target {
+            NameTarget::Profile { .. } => "profile",
+            NameTarget::NewName { .. } => "new",
+            NameTarget::Me => "me",
+        };
+        log::info!(
+            "speaker_profiles name_cluster meeting={meeting_id} track={track} cluster={cluster_index} \
+             target={target_tag} profile={profile_id} relabelled={relabelled} sample_added={sample_added}"
+        );
+        Ok(NamedCluster {
+            profile_id,
+            display_name,
+            relabelled,
+            sample_added,
+        })
+    }
+
+    /// "Not sure" / "Ignore this voice": record the answer and keep NOTHING of
+    /// the voice (its stored embedding is dropped). The lines stay "Speaker N".
+    pub fn dismiss_meeting_cluster(
+        &self,
+        meeting_id: &str,
+        track: i64,
+        cluster_index: i64,
+        state: ClusterVoiceState,
+    ) -> Result<(), String> {
+        if !matches!(
+            state,
+            ClusterVoiceState::NotSure | ClusterVoiceState::Ignored
+        ) {
+            return Err("Only \"Not sure\" or \"Ignore this voice\" can dismiss a voice.".into());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO meeting_cluster_voices
+               (meeting_id, track, cluster_index, seconds, state, updated_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5)
+             ON CONFLICT(meeting_id, track, cluster_index)
+             DO UPDATE SET state = excluded.state, embedding = NULL, embedder_digest = NULL,
+                           profile_id = NULL, updated_at = excluded.updated_at",
+            params![meeting_id, track, cluster_index, state.as_str(), now],
+        )
+        .map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles dismiss_cluster meeting={meeting_id} track={track} cluster={cluster_index} state={}",
+            state.as_str()
+        );
+        Ok(())
     }
 
     /// The one-time "use my dictation audio to save my voice" answer.
@@ -3377,6 +3787,12 @@ impl Database {
             params![id],
         )
         .map_err(|e| e.to_string())?;
+        // yap-1106-who-is-this — the meeting's cluster voices go with it.
+        tx.execute(
+            "DELETE FROM meeting_cluster_voices WHERE meeting_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM meetings WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -4074,6 +4490,16 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(inserted > 0)
+    }
+
+    /// yap-1106-news-rank-cache — run `f` on the connection for the Yappy News
+    /// cache (`news::cache`). Keep `f` short: it holds the one DB lock.
+    pub fn with_news_cache<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        f(&conn).map_err(|e| e.to_string())
     }
 
     /// Y9-A — persist one transform invocation. Counts and tags only; the
