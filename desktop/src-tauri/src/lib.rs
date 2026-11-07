@@ -156,6 +156,8 @@ pub mod mic_select;
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
 pub mod net;
+/// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
+pub mod news_prefs;
 pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
@@ -8624,6 +8626,30 @@ fn list_model_providers(app: AppHandle, state: State<'_, Arc<AppState>>) -> mode
     model_providers::list_view(&*state.db, &byom_keychain(&app))
 }
 
+/// yap-1106-news-prefs-onboarding — the one record behind the onboarding step,
+/// the one-time Home card and Settings → Yappy News.
+#[tauri::command]
+fn get_news_prefs(state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
+    news_prefs::view(&*state.db, news_prefs::now_ms())
+}
+
+#[tauri::command]
+fn set_news_prefs(
+    state: State<'_, Arc<AppState>>,
+    prefs: news_prefs::NewsPrefs,
+    source: String,
+) -> Result<news_prefs::NewsView, String> {
+    news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
+#[tauri::command]
+fn dismiss_news_offer(
+    state: State<'_, Arc<AppState>>,
+    source: String,
+) -> Result<news_prefs::NewsView, String> {
+    news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
 #[tauri::command]
 fn delete_model_provider(
     app: AppHandle,
@@ -12484,6 +12510,10 @@ pub fn run() {
             delete_model_provider,
             set_model_provider_choice,
             test_model_provider,
+            // yap-1106-news-prefs-onboarding — Yappy News interests.
+            get_news_prefs,
+            set_news_prefs,
+            dismiss_news_offer,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
