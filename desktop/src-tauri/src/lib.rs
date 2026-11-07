@@ -748,11 +748,36 @@ pub struct AppSettings {
     /// back in captures when it stops. `float_pill::sync_capture_hidden`.
     #[serde(default = "default_true")]
     pub hide_from_capture_in_meetings: bool,
+    /// yap-1106-chatter-setting — "Yappy talks" (Settings › Companion):
+    /// `always` | `less` (default: quieter from the 50th take) | `milestones`.
+    /// Only those three are stored ([`sanitize_yappy_talks`]); the policy it
+    /// drives is `desktop/src/pill/chatter.ts`.
+    #[serde(default = "default_yappy_talks")]
+    pub yappy_talks: String,
 }
 
 /// WF-17 — the pill-message categories a user may mute. Mirrors
 /// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
 pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
+
+/// yap-1106-chatter-setting — the "Yappy talks" modes. Mirrors
+/// `CHATTER_MODES` in `desktop/src/pill/chatter.ts`.
+pub const YAPPY_TALKS_MODES: [&str; 3] = ["always", "less", "milestones"];
+
+/// yap-1106-chatter-setting — a stored "Yappy talks" value, or the default
+/// (`less`) for anything unknown, so a bad value can never silence or unmute
+/// Yappy by accident.
+pub fn sanitize_yappy_talks(raw: &str) -> String {
+    if YAPPY_TALKS_MODES.contains(&raw) {
+        raw.to_string()
+    } else {
+        default_yappy_talks()
+    }
+}
+
+fn default_yappy_talks() -> String {
+    "less".into()
+}
 
 /// WF-17 — keep only mutable categories, once each, in table order. A stored
 /// `"error"` (or anything unknown) is dropped: an error can never be muted.
@@ -881,6 +906,7 @@ impl Default for AppSettings {
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
             hide_from_capture_in_meetings: true,
+            yappy_talks: default_yappy_talks(),
         }
     }
 }
@@ -1873,9 +1899,12 @@ fn update_activity(state: &AppState) -> tray_menu::Activity {
         .get()
         .map(|j| j.statuses().iter().any(|s| s.phase.is_active()))
         .unwrap_or(false);
+    let busy = *state.busy.lock();
     tray_menu::Activity {
         dictating: *state.recording.lock(),
-        take_in_flight: *state.busy.lock() || state.transcription.is_busy(),
+        // fix-b7-1: the take's `TakeGuard` covers the stop edge, where
+        // `recording` is already false and `busy` not yet true.
+        take_in_flight: tray_menu::take_in_flight(busy, state.transcription.is_busy()),
         polishing: tray_menu::polish_in_flight(),
         notes,
         meeting: state.meeting().is_some_and(|c| c.is_recording()),
@@ -3095,21 +3124,24 @@ impl stream_decode::WindowDecoder for EngineWindowDecoder {
 /// yap-1106-sp-05 — arm the streaming decode for the take about to record.
 /// Called BEFORE the capture opens, so the stream sees the take's first sample
 /// (the seal in `record` proves it saw every one).
-fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
+///
+/// Returns the stream's take id (the polish pipeline listens on it), or `None`
+/// when this take does not stream.
+fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) -> Option<u64> {
     let (native, prefs) = {
         let settings = state.settings.lock();
         (settings.native_model.clone(), settings.language_prefs())
     };
     let Some((model_id, model_path)) = native_model_ready(&native) else {
         stream_decode::disarm("no_model");
-        return;
+        return None;
     };
     let Some(language) =
         stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
     else {
         stream_decode::disarm("auto_language");
         log::info!("stream_decode skipped reason=auto_language");
-        return;
+        return None;
     };
     let take = stream_decode::next_take_id();
     let decoder: Arc<dyn stream_decode::WindowDecoder> = Arc::new(EngineWindowDecoder {
@@ -3122,6 +3154,9 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
     let app_ev = app.clone();
     let sink: stream_decode::PartialSink =
         Arc::new(move |partial: &stream_decode::TranscriptPartial| {
+            // yap-1106-sp-07 — the same committed text feeds the polish
+            // pipeline, which polishes its finished chunks right away.
+            polish::pipeline_feed(partial.take, &partial.committed);
             if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
                 log::warn!(
                     "stream_decode partial_emit_failed take={} error={e}",
@@ -3136,6 +3171,108 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
         Some(sink),
     ));
     log::info!("stream_decode armed take={take}");
+    Some(take)
+}
+
+/// yap-1106-sp-07 — key-down half of the pipelined, warm polish: pre-warm the
+/// sidecar (AC + governor at full only) and, when the take streams, start the
+/// pipeline that polishes each committed window's finished chunks while the
+/// user is still talking. Runs on its own thread, so the frontmost-app read,
+/// the two DB reads and the sidecar spawn never delay the capture opening.
+fn arm_polish_for_take(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u64>) {
+    polish::pipeline_disarm("new_take");
+    let app = app.clone();
+    let state = state.clone();
+    let spawned = std::thread::Builder::new()
+        .name("yap-polish-arm".into())
+        .spawn(move || arm_polish_now(&app, &state, stream_take));
+    if let Err(e) = spawned {
+        log::warn!("polish pipeline arm_spawn_failed error={e}");
+    }
+}
+
+fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u64>) {
+    // The take's app as it stands at key-down. The release path reads it
+    // again (plus the AX context); if the mode it resolves differs, the
+    // pre-polished chunks do not match and the release polishes them live.
+    let app_name = focus::frontmost_app_name().unwrap_or_default();
+    let bundle_id = focus::frontmost_bundle_id().unwrap_or_default();
+    let (setting, level, structure_on, overrides, language) = {
+        let s = state.settings.lock();
+        (
+            s.dictation_mode.clone(),
+            dictation::CleanupLevel::from_setting(&s.cleanup_level),
+            s.structure_enabled && s.dictation_mode.trim() != "plain",
+            s.structure_app_overrides.clone(),
+            s.language.clone(),
+        )
+    };
+    let mode = dictation::resolve_mode_with_context(&setting, &app_name, None, None);
+    let mode = apply_style_override(app, &setting, &app_name, mode);
+    let cfg = {
+        let s = state.settings.lock();
+        polish::PolishConfig::from_settings(&s, mode)
+    }
+    .with_preferences(
+        state
+            .db
+            .matching_voice_preferences(&voice_prefs::TakeContext {
+                mode,
+                bundle_id: &bundle_id,
+                language: &language,
+            }),
+    )
+    .with_profile(state.db.style_profile());
+    if level != dictation::CleanupLevel::High
+        || mode == dictation::DictationMode::Code
+        || cfg.model.trim().is_empty()
+    {
+        log::info!("polish prewarm outcome=not_eligible");
+        return;
+    }
+    polish::prewarm_sidecar(&cfg);
+    let Some(take) = stream_take else {
+        return;
+    };
+    let Some(client) = polish::installed_client(&cfg) else {
+        return;
+    };
+    let structure =
+        dictation::structure_format_for_take(structure_on, &overrides, &bundle_id, mode);
+    let style = cfg.style;
+    let st = state.clone();
+    // The rules stages exactly as the release runs them, stopped at the door
+    // of the polish stage: the text the polish closure receives IS the polish
+    // input. Pauses are not known until release, so none are passed; a take
+    // whose pauses add a paragraph break mid-chunk just reuses fewer chunks.
+    let prepare: polish::PolishPrepare = Arc::new(move |raw: &str| {
+        let seen = std::cell::RefCell::new(None::<String>);
+        let _ = dictation::run_cleanup_for_language(
+            raw,
+            level,
+            mode,
+            structure,
+            style,
+            &[],
+            &language,
+            |t| st.db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
+            |t| {
+                *seen.borrow_mut() = Some(t.to_string());
+                Err("pipeline_rules_only")
+            },
+        );
+        seen.into_inner()
+    });
+    if let Some(pipeline) = polish::PolishPipeline::start(
+        take,
+        mode,
+        cfg,
+        Box::new(client),
+        prepare,
+        Arc::new(polish::sidecar_ready_for_pipeline),
+    ) {
+        polish::pipeline_arm(pipeline);
+    }
 }
 
 /// yap-1106-sp-05 — the take's streamed decode, when streaming carried it all
@@ -3396,7 +3533,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
         None
     };
     // yap-1106-sp-05 — the streaming decode is armed before the capture opens.
-    arm_stream_decode(app, state);
+    let stream_take = arm_stream_decode(app, state);
+    // yap-1106-sp-07 — and the warm, pipelined polish rides on it.
+    arm_polish_for_take(app, state, stream_take);
     match record::start_recording(
         data_dir().join("recordings"),
         &recovery_dir(),
@@ -3508,6 +3647,7 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
             stream_decode::disarm("capture_failed");
+            polish::pipeline_disarm("capture_failed");
             let line =
                 "Yap could not open the microphone — check that an input device is connected.";
             *state.last_error.lock() = Some(take_error::LastError::new(
@@ -4327,6 +4467,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     if !*state.recording.lock() {
         return;
     }
+    // fix-b7-1 (WF-14): from here until the worker sets `busy` false this take
+    // counts as busy for the restart gate. `recording` goes false on the next
+    // line and `busy` only goes true after the context reads below (which can
+    // stall for seconds), so without this an `emit_status` landing in between
+    // fired a deferred restart mid-take. Moved into the worker; every early
+    // return before that drops it.
+    let stop_edge_guard = tray_menu::TakeGuard::enter();
     *state.recording.lock() = false;
     // yap24-NT2 R1: meeting ASR yields to a live take without a time cap.
     state.transcription.set_live_recording(false);
@@ -4416,6 +4563,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             app: app2.clone(),
             armed: true,
         };
+        // fix-b7-1: declared AFTER `busy_guard`, so on a panic unwind it drops
+        // first and the guard's force-reset `emit_status` already sees a quiet
+        // take (a deferred restart may then fire, as it would on the normal end).
+        let take_guard = stop_edge_guard;
         // YV52 dictation recovery — the take's clip guard, parked here as soon
         // as capture finishes so the `Err` arm below can PRESERVE the wav and
         // record a recoverable row instead of letting the guard unlink it. On
@@ -4543,6 +4694,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     rec.speech_present
                 );
                 stream_decode::disarm("no_speech");
+                polish::pipeline_disarm("no_speech");
                 return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
             // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
@@ -4843,6 +4995,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // budget, empty (and so a byte-identical request) when unset.
                 .with_profile(db.style_profile());
             let t_cleanup = std::time::Instant::now();
+            // yap-1106-sp-07 — stop the pipeline (after the chunk in flight)
+            // and park what it polished during capture; the polish stage below
+            // reuses every chunk that still matches and asks only for the rest.
+            // Inside cleanup_ms on purpose: that wait is release time.
+            polish::pipeline_finish();
             // yap-format-structure: list syntax for THIS paste target, from the
             // Structure switch and the per-app override list. A user-picked
             // Plain mode means "exactly what I said" — no structure either.
@@ -5424,6 +5581,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         }
         *state2.busy.lock() = false;
         *state2.hands_free.lock() = false;
+        // fix-b7-1: busy is false now, so the take no longer needs its guard —
+        // released BEFORE the `emit_status` below so an armed restart fires on
+        // this very transition instead of waiting for the next one.
+        drop(take_guard);
         // Y3-D: the take is over on EVERY path that reaches here — success,
         // soft, rejection, silent capture, error and cancel alike — so Escape
         // goes back to the rest of the Mac here, once, instead of in six arms
@@ -6398,6 +6559,15 @@ fn save_settings(
                 "settings pill_quiet_changed muted={} count={}",
                 next.muted_pill_categories.join(","),
                 next.muted_pill_categories.len()
+            );
+        }
+        // yap-1106-chatter-setting — only the three "Yappy talks" modes are stored.
+        next.yappy_talks = sanitize_yappy_talks(&next.yappy_talks);
+        if next.yappy_talks != live.yappy_talks {
+            log::info!(
+                "settings yappy_talks_changed from={} to={}",
+                live.yappy_talks,
+                next.yappy_talks
             );
         }
         if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
@@ -9487,6 +9657,120 @@ fn unlearn_voice_meeting(
     state.db.unlearn_meeting_from_profile(id, &meeting_id)
 }
 
+// ── yap-1106-who-is-this · "Who was this?" ──────────────────────────────────
+//
+// Asked only AFTER a meeting (decisions: live asking is optional and off,
+// FB-22a). Every command takes ids; none returns a voiceprint.
+
+/// The cards for one finished meeting: unknown voices with ≥ 20 s of speech,
+/// five at most, most speaking time first. Never during a recording.
+#[tauri::command]
+fn meeting_voice_cards(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+) -> Result<Vec<speaker_profiles::VoiceCard>, String> {
+    let meeting = state
+        .db
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    if meeting.ended_at.is_none() {
+        // Live asking interrupts the meeting: nothing until it has finished.
+        return Ok(Vec::new());
+    }
+    state.db.meeting_voice_cards(
+        &meeting_id,
+        speaker_profiles::MatchBands::from_env_or_provisional(),
+    )
+}
+
+/// "Save" / "That's me" / "Yes, same person": relabel every line of the
+/// cluster in this meeting and feed the voiceprint when a voice was kept.
+#[tauri::command]
+fn name_cluster(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    cluster_index: i64,
+    target: speaker_profiles::NameTarget,
+) -> Result<speaker_profiles::NamedCluster, String> {
+    state
+        .db
+        .name_meeting_cluster(&meeting_id, track, cluster_index, &target)
+        .inspect_err(|e| {
+            log::warn!(
+                "speaker_profiles name_cluster_failed meeting={meeting_id} track={track} \
+                 cluster={cluster_index} error=\"{e}\""
+            )
+        })
+}
+
+/// "Ignore this voice" (`ignore = true`) or "Not sure": keeps nothing.
+#[tauri::command]
+fn ignore_cluster(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    cluster_index: i64,
+    ignore: bool,
+) -> Result<(), String> {
+    let answer = if ignore {
+        speaker_profiles::ClusterVoiceState::Ignored
+    } else {
+        speaker_profiles::ClusterVoiceState::NotSure
+    };
+    state
+        .db
+        .dismiss_meeting_cluster(&meeting_id, track, cluster_index, answer)
+}
+
+/// `(segment id, name)` for the lines already labelled with a saved voice.
+#[tauri::command]
+fn meeting_speaker_names(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+) -> Result<Vec<(String, String)>, String> {
+    state.db.meeting_speaker_names(&meeting_id)
+}
+
+/// The card's clip as a base64 WAV, cut from the KEPT audio of that track.
+/// Purged audio (the 7-day retention) is an error the card turns into
+/// "The audio was deleted, so there is no clip. You can still name them."
+#[tauri::command]
+fn meeting_cluster_clip(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    track: i64,
+    start: f64,
+    end: f64,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let meeting = state
+        .db
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    let path = if track == meetings::SYSTEM_TRACK {
+        meeting.sys_wav_path
+    } else {
+        meeting.mic_wav_path
+    };
+    let Some(path) = path.map(std::path::PathBuf::from).filter(|p| p.is_file()) else {
+        log::info!(
+            "speaker_profiles clip_unavailable meeting={meeting_id} track={track} reason=purged"
+        );
+        return Err("audio_purged".into());
+    };
+    let started = std::time::Instant::now();
+    let bytes = speaker_profiles::wav_clip_bytes(&path, start, end).inspect_err(|e| {
+        log::warn!("speaker_profiles clip_failed meeting={meeting_id} track={track} error=\"{e}\"")
+    })?;
+    log::info!(
+        "speaker_profiles clip meeting={meeting_id} track={track} bytes={} ms={}",
+        bytes.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// The one-time "save my voice from my dictation" answer; `None` = not asked.
 #[tauri::command]
 fn voices_enroll_me_choice(state: State<'_, Arc<AppState>>) -> Option<bool> {
@@ -9544,7 +9828,18 @@ fn set_news_prefs(
     prefs: news_prefs::NewsPrefs,
     source: String,
 ) -> Result<news_prefs::NewsView, String> {
-    news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+    let view = news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms())
+        .map_err(|e| e.plain())?;
+    // yap-1106-news-rank-cache — switching Yappy News off deletes the story
+    // cache and the seen-set. A failure here never fails the save (the switch
+    // is already off, so nothing reads the cache); it is logged.
+    if let Err(e) = state
+        .db
+        .with_news_cache(|c| news::cache::apply_prefs(c, &prefs))
+    {
+        log::warn!("news cache_clear_failed reason=feature_off error=\"{e}\"");
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -9553,6 +9848,42 @@ fn dismiss_news_offer(
     source: String,
 ) -> Result<news_prefs::NewsView, String> {
     news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
+/// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
+/// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
+fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
+    keychain::MacKeychain::with_service(news::quote_key::keychain_service_for(
+        &app.config().identifier,
+    ))
+}
+
+/// Settings → Yappy News → Advanced: which provider, whether a key is saved
+/// (last four characters only), and the tier the next refresh uses.
+#[tauri::command]
+fn get_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> news::quote_key::QuoteKeyView {
+    news::quote_key::view(&*state.db, &news_quote_keychain(&app))
+}
+
+#[tauri::command]
+fn set_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    provider: news::quote_key::QuoteProvider,
+    key: String,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::save(&*state.db, &news_quote_keychain(&app), provider, &key)
+}
+
+#[tauri::command]
+fn clear_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::clear(&*state.db, &news_quote_keychain(&app))
 }
 
 #[tauri::command]
@@ -13117,6 +13448,33 @@ async fn engine_status(
     Ok(state.transcription.status())
 }
 
+/// yap-1106-launch-walk — the last engine load progress (0..=100 and its
+/// stage), or `None` before this process has loaded an engine. The pill reads
+/// it once when it opens, then follows `engine_load_progress` events.
+#[tauri::command]
+async fn engine_load_progress(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<transcription::EngineLoadProgress>, String> {
+    Ok(state.transcription.last_load_progress())
+}
+
+/// yap-1106-launch-walk — the pill's Retry after a failed engine load. Starts
+/// the same single, coalesced load a take's arm does (`arm_asr_engine`), so a
+/// retry can never stack a second engine. `false` means there is no
+/// downloaded model to load (the pill then points at Settings).
+#[tauri::command]
+fn retry_engine_load(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    let state: Arc<AppState> = state.inner().clone();
+    let native = state.settings.lock().native_model.clone();
+    if native_model_ready(&native).is_none() {
+        log::info!("engine load_retry result=no_model");
+        return Ok(false);
+    }
+    log::info!("engine load_retry result=started");
+    arm_asr_engine(&app, &state);
+    Ok(true)
+}
+
 /// A newer Yap release the user has not dismissed (YV44). Returned by
 /// `check_for_update` and rendered as the "Update available" prompt; the
 /// release bytes are NOT touched until the user asks for them.
@@ -13803,8 +14161,11 @@ pub fn run() {
         if !adopted.is_empty() {
             log::info!("recover: {} crashed meeting(s) recovered", adopted.len());
         }
+        // yap-fx-05: every stranded / recovered meeting waits its turn — 60 s
+        // after launch, 30 s of no dictation, and the resource governor —
+        // so a take dictated right after a relaunch keeps the warm engine.
         let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &meetings_dir(), &|id| {
-            meeting_pipeline::enqueue(id);
+            meeting_pipeline::enqueue_recovered(id);
         });
         if !reconciled.is_empty() {
             log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
@@ -13982,6 +14343,10 @@ pub fn run() {
             // yap-1106-friend-visits — quiet state for friend visits.
             pill_quiet_state,
             dismiss_news_offer,
+            // yap-1106-fb-14-news-quote-key — optional own quote-feed key.
+            get_news_quote_key,
+            set_news_quote_key,
+            clear_news_quote_key,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
@@ -14117,6 +14482,11 @@ pub fn run() {
             delete_voice,
             forget_all_voices,
             unlearn_voice_meeting,
+            meeting_voice_cards,
+            name_cluster,
+            ignore_cluster,
+            meeting_speaker_names,
+            meeting_cluster_clip,
             voices_enroll_me_choice,
             set_voices_enroll_me_choice,
             delete_meeting,
@@ -14161,6 +14531,8 @@ pub fn run() {
             select_model,
             delete_model,
             engine_status,
+            engine_load_progress,
+            retry_engine_load,
             notetaker_status,
             check_for_update,
             install_update,
@@ -14173,6 +14545,25 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // yap-1106-launch-walk — every change in the engine load percentage
+            // goes to the pill as an event; the launch walk is drawn from it.
+            // A load that began before this (the eager startup preload) is
+            // still readable through `engine_load_progress`.
+            {
+                let handle = app.handle().clone();
+                app.state::<Arc<AppState>>()
+                    .transcription
+                    .set_load_progress_sink(Arc::new(
+                        move |p: &transcription::EngineLoadProgress| {
+                            if let Err(e) =
+                                handle.emit(transcription::ENGINE_LOAD_PROGRESS_EVENT, p)
+                            {
+                                log::warn!("engine load_progress_emit_failed err={e}");
+                            }
+                        },
+                    ));
+            }
 
             // yap-1106-engine-owner — every engine health transition reaches
             // the pill and Diagnostics as one small event.

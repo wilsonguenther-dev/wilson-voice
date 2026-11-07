@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../errors";
+import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 export type CloudMode = "always_local" | "cloud_when_online" | "cloud_only";
 
@@ -169,7 +170,14 @@ export default function CloudRouteSettings() {
   const call = useCallback(
     (cmd: string, args?: Record<string, unknown>) =>
       invoke<CloudRouteView>(cmd, args)
-        .then(apply)
+        .then((v) => {
+          apply(v);
+          // fix-l3b3-1 — a key or mode change moves what leaves this Mac;
+          // Model providers re-reads its "Leaves this Mac" summary.
+          if (cmd !== "cloud_route_view") {
+            window.dispatchEvent(new Event(CLOUD_ROUTE_CHANGED_EVENT));
+          }
+        })
         .catch((e) => setError(errorText(e))),
     [apply],
   );

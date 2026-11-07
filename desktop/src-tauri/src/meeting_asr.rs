@@ -148,6 +148,20 @@ impl ChunkConfig {
                 WORST_CASE_RTF_BUDGET
             ));
         }
+        // yap-1106-sp-01 — every dictation take over 35 s now decodes in THESE
+        // windows, each under its own `latency::window_decode_timeout`
+        // (10–60 s). The widest window at the worst-case RTF has to finish
+        // inside its own bound, or a healthy-but-slow window would be cut and
+        // the take marked degraded for nothing.
+        let widest = self.max_decode_seconds();
+        let expected = widest * WORST_CASE_RTF_BUDGET;
+        let window_bound =
+            crate::latency::window_decode_timeout(widest, WORST_CASE_RTF_BUDGET).as_secs_f64();
+        if expected >= window_bound {
+            return Err(format!(
+                "widest window {widest}s decodes in {expected}s at RTF {WORST_CASE_RTF_BUDGET}, past its own {window_bound}s window timeout"
+            ));
+        }
         Ok(())
     }
 }
@@ -2871,6 +2885,25 @@ mod tests {
             ..cfg
         };
         assert!(swallowed.validate().is_err());
+    }
+
+    /// yap-1106-sp-01 — a full-width window at the worst-case RTF finishes
+    /// inside its OWN per-window timeout (10–60 s), and the dictation window
+    /// threshold is exactly one default window's width.
+    #[test]
+    fn default_geometry_fits_its_own_window_timeout_at_the_worst_case_rtf() {
+        use crate::latency::{window_decode_timeout, WINDOW_TIMEOUT_CAP};
+        let cfg = ChunkConfig::default();
+        cfg.validate().expect("the shipped geometry validates");
+        let widest = cfg.max_decode_seconds();
+        let bound = window_decode_timeout(widest, WORST_CASE_RTF_BUDGET);
+        assert!(widest * WORST_CASE_RTF_BUDGET < bound.as_secs_f64());
+        assert!(bound <= WINDOW_TIMEOUT_CAP);
+        // The dictation threshold IS one default window's width (SP-01).
+        assert_eq!(
+            crate::transcription::DICTATION_CHUNK_THRESHOLD_SECONDS,
+            cfg.max_seconds
+        );
     }
 
     /// YAP-FX-04 — the decode timeout is no longer a fixed 120 s: it is

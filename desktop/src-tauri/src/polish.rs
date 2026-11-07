@@ -938,12 +938,42 @@ pub fn polish_stage_chunked(
     cfg: &PolishConfig,
     client: &dyn PolishClient,
 ) -> PolishOutcome {
-    let chunks = plan_polish_chunks(text);
+    polish_stage_chunked_pre(text, mode, cfg, client, None)
+}
+
+/// yap-1106-sp-07 — [`polish_stage_chunked`], reusing the chunks the pipeline
+/// already polished while the take was recording.
+///
+/// `pre` is consulted ONLY when it was made for this mode and this config, and
+/// a pre-polished chunk stands in for the model call ONLY when its body is the
+/// byte-identical chunk of `text` and its context (the previous chunk's
+/// output tail) is the one this pass would send. That is exactly the request
+/// the batch pass would make (request ids aside), so the output is the batch
+/// output; the one documented difference is the chunk BOUNDARIES, which come
+/// from the pipeline's seeds (see [`plan_polish_chunks_seeded`]). A seed that
+/// no longer matches simply falls back to a live call — never lost text.
+pub fn polish_stage_chunked_pre(
+    text: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+    client: &dyn PolishClient,
+    pre: Option<&PrePolished>,
+) -> PolishOutcome {
+    let usable = pre.filter(|p| p.matches(mode, cfg));
+    let seeds: Vec<&str> = usable
+        .map(|p| p.chunks.iter().map(|c| c.body.as_str()).collect())
+        .unwrap_or_default();
+    let (chunks, seeded) = plan_polish_chunks_seeded(text, &seeds);
+    let pre_chunks: &[PrePolishedChunk] = match usable {
+        Some(p) => &p.chunks[..seeded.min(p.chunks.len())],
+        None => &[],
+    };
+    let mut reused = 0usize;
     let mut assembled = String::with_capacity(text.len());
     let mut outcomes: Vec<ChunkOutcome> = Vec::new();
     let mut context: Option<String> = None;
     let mut stopped: Option<&'static str> = None;
-    for chunk in &chunks {
+    for (k, chunk) in chunks.iter().enumerate() {
         assembled.push_str(&chunk.sep);
         if chunk.body.is_empty() {
             continue;
@@ -956,6 +986,17 @@ pub fn polish_stage_chunked(
             reason = Some(why);
         } else if index >= MAX_POLISH_CHUNKS {
             reason = Some("chunk_ceiling");
+        } else if let Some(hit) = pre_chunks
+            .get(k)
+            .filter(|p| p.body == chunk.body && p.context == context && reusable(&p.result))
+        {
+            // Polished while the user was still talking — same body, same
+            // context, same mode and config: the request batch would send.
+            reused += 1;
+            match &hit.result {
+                Ok(out) => rewritten = Some(out.clone()),
+                Err(why) => reason = Some(*why),
+            }
         } else {
             match build_chunk_request(&chunk.body, mode, cfg, context.as_deref()) {
                 None => reason = Some("not_eligible"),
@@ -982,6 +1023,14 @@ pub fn polish_stage_chunked(
             accepted: reason.is_none(),
             reason,
         });
+    }
+    if let Some(p) = pre {
+        log::info!(
+            "polish pipeline release take={} seeded={seeded} reused={reused} live={} matched={}",
+            p.take,
+            outcomes.len().saturating_sub(reused),
+            usable.is_some()
+        );
     }
     let accepted = outcomes.iter().filter(|c| c.accepted).count();
     if accepted == 0 {
@@ -1388,11 +1437,16 @@ pub fn polish_llm_outcome(
     mode: DictationMode,
     cfg: &PolishConfig,
 ) -> Option<PolishOutcome> {
-    Some(polish_stage_chunked(
+    let client = installed_client(cfg)?;
+    // yap-1106-sp-07 — the chunks polished during capture, if the take that
+    // just released had a pipeline. Taken (not peeked) so it serves one take.
+    let pre = take_prepolished();
+    Some(polish_stage_chunked_pre(
         text,
         mode,
         cfg,
-        &installed_client(cfg)?,
+        &client,
+        pre.as_ref(),
     ))
 }
 
@@ -1491,7 +1545,513 @@ pub fn unload_sidecar_for_governor(level: &str) -> bool {
 /// one through the ordinary YV75 path: the slot is empty and the state is
 /// `NotInstalled`, which is the same shape as "never spawned this session".
 pub fn sweep_idle_sidecar() -> bool {
-    pool().sweep_idle()
+    // yap-1106-sp-07: on AC, while takes keep coming, the window stretches
+    // (see [`keep_warm_window`]); battery keeps the YV81 ten minutes and
+    // memory pressure unloads at once.
+    pool().sweep_idle_with(current_power_hint())
+}
+
+// ── yap-1106-sp-07: pipelined, warm polish ──────────────────────────────────
+//
+// SP-05 decodes a take window by window while it records. This section polishes
+// the finished CHUNKS of that committed text on a background thread as soon as
+// they exist, so at release only the tail chunk is left for the model; and it
+// pre-warms the sidecar at key-down (AC + governor at full only) and keeps it
+// resident on AC while takes keep coming, so the take after a coffee break does
+// not find a cold model.
+
+/// Why a chunk polished during capture may NOT stand in for the release-time
+/// call: these describe the moment (a cold or busy sidecar), not the text.
+const TRANSIENT_POLISH_REASONS: &[&str] = &[
+    "no_sidecar",
+    "deadline",
+    "client_deadline",
+    "client_panic",
+    "protocol",
+];
+
+/// On AC, while the take cadence is under the idle window, the sidecar stays
+/// resident this long unused. 30 min covers the 12 min gap the acceptance
+/// bench uses with room; past it the YV81 reasoning holds again.
+pub const SIDECAR_KEEP_WARM_AC: Duration = Duration::from_secs(30 * 60);
+
+fn reusable(result: &Result<String, &'static str>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(why) => !TRANSIENT_POLISH_REASONS.contains(why),
+    }
+}
+
+/// One chunk polished while the take was still recording.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrePolishedChunk {
+    pub body: String,
+    /// The `topic` it was sent with: the previous chunk's output tail.
+    pub context: Option<String>,
+    /// The guarded, validated answer — or the closed-set reason it kept its
+    /// rules text.
+    pub result: Result<String, &'static str>,
+}
+
+/// What one take's pipeline produced by release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrePolished {
+    pub take: u64,
+    pub mode: DictationMode,
+    pub cfg: PolishConfig,
+    pub chunks: Vec<PrePolishedChunk>,
+}
+
+impl PrePolished {
+    /// Made for this exact request shape (mode, tone, model, preferences,
+    /// profile, instruction) — anything else would not be the batch request.
+    pub fn matches(&self, mode: DictationMode, cfg: &PolishConfig) -> bool {
+        self.mode == mode && &self.cfg == cfg
+    }
+}
+
+/// [`plan_polish_chunks`], but the first chunks are `seeds` (bodies, in order)
+/// as long as each one is the next text of `text` (leading whitespace aside)
+/// and ends where a word ends. Returns the plan and how many seeds held.
+///
+/// The plan stays byte-exact: a seed's separator is the whitespace actually in
+/// `text`, and the rest is planned by [`plan_polish_chunks`] as usual. This is
+/// the ONE documented difference from the batch pass: chunk boundaries come
+/// from the seeds. On a single paragraph the greedy packer cuts a prefix where
+/// it cuts the whole take, so the seeds ARE the batch boundaries there
+/// (`pipelined_polish_matches_batch_and_leaves_only_the_tail`); a paragraph
+/// break or a rewrite earlier in the take only moves where the seeds stop.
+///
+/// A tail too short to polish on its own (under [`MIN_POLISH_WORDS`]) gives
+/// its last seed back, so the batch pass's tail fold still happens.
+pub fn plan_polish_chunks_seeded(text: &str, seeds: &[&str]) -> (Vec<PolishChunk>, usize) {
+    plan_seeded(text, seeds, true)
+}
+
+fn plan_seeded(text: &str, seeds: &[&str], fold_tail: bool) -> (Vec<PolishChunk>, usize) {
+    let mut seeded: Vec<PolishChunk> = Vec::new();
+    let mut pos = 0usize;
+    for body in seeds {
+        if body.is_empty() {
+            break;
+        }
+        let rest = &text[pos..];
+        let ws = rest.len() - rest.trim_start().len();
+        if !rest[ws..].starts_with(*body) {
+            break;
+        }
+        let end = ws + body.len();
+        if rest[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            break;
+        }
+        seeded.push(PolishChunk {
+            sep: rest[..ws].to_string(),
+            body: (*body).to_string(),
+        });
+        pos += end;
+    }
+    loop {
+        let rest = plan_polish_chunks(&text[pos..]);
+        let mut bodies = rest.iter().filter(|c| !c.body.is_empty());
+        let tiny_tail = match (bodies.next(), bodies.next()) {
+            (Some(only), None) => only.words() < MIN_POLISH_WORDS,
+            _ => false,
+        };
+        if fold_tail && tiny_tail {
+            if let Some(back) = seeded.pop() {
+                pos -= back.sep.len() + back.body.len();
+                continue;
+            }
+        }
+        let n = seeded.len();
+        seeded.extend(rest);
+        return (seeded, n);
+    }
+}
+
+/// One pipeline round over the latest committed rules text: keep the chunks
+/// already polished that still prefix it, then polish every COMPLETE chunk
+/// after them — all but the last, which may still grow. Returns how many
+/// chunks this round polished.
+///
+/// `ready` gates every model call (the sidecar is loaded and the governor
+/// allows polish), so a capture never spends a `no_sidecar` skip: a chunk that
+/// cannot be polished now is simply left for a later round or the release.
+pub(crate) fn pipeline_step(
+    done: &mut Vec<PrePolishedChunk>,
+    rules: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+    client: &dyn PolishClient,
+    ready: &dyn Fn() -> bool,
+    stop: &AtomicBool,
+) -> usize {
+    let (chunks, seeded) = {
+        let seeds: Vec<&str> = done.iter().map(|c| c.body.as_str()).collect();
+        plan_seeded(rules, &seeds, false)
+    };
+    if seeded < done.len() {
+        log::info!(
+            "polish pipeline rewound kept={seeded} dropped={}",
+            done.len() - seeded
+        );
+        done.truncate(seeded);
+    }
+    let open: Vec<&PolishChunk> = chunks[seeded..]
+        .iter()
+        .filter(|c| !c.body.is_empty())
+        .collect();
+    let complete = open.len().saturating_sub(1);
+    let mut polished = 0usize;
+    for chunk in open.into_iter().take(complete) {
+        if stop.load(Ordering::Acquire) || done.len() >= MAX_POLISH_CHUNKS || !ready() {
+            break;
+        }
+        let context = done.last().map(|c| {
+            tail_words(
+                c.result.as_deref().unwrap_or(c.body.as_str()),
+                POLISH_CHUNK_CONTEXT_WORDS,
+            )
+        });
+        let started = Instant::now();
+        let result = match build_chunk_request(&chunk.body, mode, cfg, context.as_deref()) {
+            None => Err("not_eligible"),
+            Some(req) => polish_attempt(&chunk.body, req, client),
+        };
+        let outcome = match &result {
+            Ok(_) => "accepted",
+            Err(why) => *why,
+        };
+        log::info!(
+            "polish pipeline chunk index={} words={} ms={} outcome={outcome}",
+            done.len(),
+            chunk.words(),
+            started.elapsed().as_millis()
+        );
+        if !reusable(&result) {
+            // A late or cold answer says nothing about the text: the release
+            // pass asks again rather than inherit it.
+            break;
+        }
+        done.push(PrePolishedChunk {
+            body: chunk.body.clone(),
+            context,
+            result,
+        });
+        polished += 1;
+    }
+    polished
+}
+
+/// Turns committed ASR text into the rules text the polish stage would get.
+pub type PolishPrepare = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// True when a model call may be made right now.
+pub type ReadyProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// One take's polish pipeline: a worker thread fed with committed text.
+pub struct PolishPipeline {
+    take: u64,
+    mode: DictationMode,
+    cfg: PolishConfig,
+    tx: Option<mpsc::Sender<String>>,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<Vec<PrePolishedChunk>>>,
+}
+
+impl PolishPipeline {
+    /// Start the worker. `None` when the thread could not be spawned (the
+    /// take then polishes the batch way at release).
+    pub fn start(
+        take: u64,
+        mode: DictationMode,
+        cfg: PolishConfig,
+        client: Box<dyn PolishClient + Send>,
+        prepare: PolishPrepare,
+        ready: ReadyProbe,
+    ) -> Option<PolishPipeline> {
+        let (tx, rx) = mpsc::channel::<String>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawned = {
+            let stop = Arc::clone(&stop);
+            let cfg = cfg.clone();
+            std::thread::Builder::new()
+                .name("yap-polish-pipeline".into())
+                .spawn(move || {
+                    pipeline_worker(
+                        rx,
+                        &stop,
+                        take,
+                        mode,
+                        &cfg,
+                        client.as_ref(),
+                        prepare.as_ref(),
+                        ready.as_ref(),
+                    )
+                })
+        };
+        match spawned {
+            Ok(worker) => Some(PolishPipeline {
+                take,
+                mode,
+                cfg,
+                tx: Some(tx),
+                stop,
+                worker: Some(worker),
+            }),
+            Err(e) => {
+                log::warn!("polish pipeline spawn_failed take={take} error={e}");
+                None
+            }
+        }
+    }
+
+    pub fn take_id(&self) -> u64 {
+        self.take
+    }
+
+    /// The take's committed text so far (cumulative). Never blocks.
+    pub fn feed(&self, committed: &str) {
+        if let Some(tx) = self.tx.as_ref() {
+            let _ = tx.send(committed.to_string());
+        }
+    }
+
+    /// Release: stop after the chunk in flight (if any) and hand back what
+    /// was polished.
+    pub fn finish(mut self) -> PrePolished {
+        self.stop.store(true, Ordering::Release);
+        self.tx.take();
+        let chunks = match self.worker.take().map(|w| w.join()) {
+            Some(Ok(chunks)) => chunks,
+            Some(Err(_)) => {
+                log::warn!("polish pipeline worker_panicked take={}", self.take);
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        PrePolished {
+            take: self.take,
+            mode: self.mode,
+            cfg: self.cfg.clone(),
+            chunks,
+        }
+    }
+}
+
+impl Drop for PolishPipeline {
+    fn drop(&mut self) {
+        // A discarded pipeline (cancelled take, replaced by the next one) lets
+        // its worker finish the chunk in flight and exit on its own.
+        self.stop.store(true, Ordering::Release);
+        self.tx.take();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pipeline_worker(
+    rx: mpsc::Receiver<String>,
+    stop: &AtomicBool,
+    take: u64,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+    client: &dyn PolishClient,
+    prepare: &(dyn Fn(&str) -> Option<String> + Send + Sync),
+    ready: &(dyn Fn() -> bool + Send + Sync),
+) -> Vec<PrePolishedChunk> {
+    let mut done: Vec<PrePolishedChunk> = Vec::new();
+    while let Ok(mut committed) = rx.recv() {
+        // Only the newest committed text matters: it contains the older ones.
+        while let Ok(newer) = rx.try_recv() {
+            committed = newer;
+        }
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        let Some(rules) = prepare(&committed) else {
+            continue;
+        };
+        pipeline_step(&mut done, &rules, mode, cfg, client, ready, stop);
+    }
+    log::info!(
+        "polish pipeline worker_done take={take} chunks={}",
+        done.len()
+    );
+    done
+}
+
+static PIPELINE: Mutex<Option<PolishPipeline>> = Mutex::new(None);
+static PREPOLISHED: Mutex<Option<PrePolished>> = Mutex::new(None);
+
+/// Arm the pipeline for the take that just started (replacing any older one).
+pub fn pipeline_arm(pipeline: PolishPipeline) {
+    *PREPOLISHED.lock() = None;
+    let take = pipeline.take_id();
+    if let Some(old) = PIPELINE.lock().replace(pipeline) {
+        log::info!(
+            "polish pipeline disarmed take={} reason=replaced",
+            old.take_id()
+        );
+    }
+    log::info!("polish pipeline armed take={take}");
+}
+
+/// Drop the pipeline without using it (no speech, capture failed, …).
+pub fn pipeline_disarm(reason: &str) {
+    let old = PIPELINE.lock().take();
+    if let Some(old) = old {
+        log::info!(
+            "polish pipeline disarmed take={} reason={reason}",
+            old.take_id()
+        );
+    }
+    *PREPOLISHED.lock() = None;
+}
+
+/// The stream's committed text for `take`. Ignored unless that take's
+/// pipeline is the armed one.
+pub fn pipeline_feed(take: u64, committed: &str) {
+    if let Some(p) = PIPELINE.lock().as_ref() {
+        if p.take_id() == take {
+            p.feed(committed);
+        }
+    }
+}
+
+/// Release: finish the armed pipeline and park its chunks for the polish
+/// stage of this take. Returns how many chunks were polished during capture.
+pub fn pipeline_finish() -> usize {
+    let armed = PIPELINE.lock().take();
+    let Some(pipeline) = armed else {
+        return 0;
+    };
+    let started = Instant::now();
+    let pre = pipeline.finish();
+    let n = pre.chunks.len();
+    log::info!(
+        "polish pipeline finished take={} chunks={n} wait_ms={}",
+        pre.take,
+        started.elapsed().as_millis()
+    );
+    *PREPOLISHED.lock() = Some(pre);
+    n
+}
+
+fn take_prepolished() -> Option<PrePolished> {
+    PREPOLISHED.lock().take()
+}
+
+/// What the machine can afford for a resident model right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerHint {
+    Ac,
+    Battery,
+    Pressure,
+}
+
+impl PowerHint {
+    pub fn tag(self) -> &'static str {
+        match self {
+            PowerHint::Ac => "ac",
+            PowerHint::Battery => "battery",
+            PowerHint::Pressure => "memory",
+        }
+    }
+}
+
+/// How long the sidecar may sit unused. Memory pressure: not at all. Battery:
+/// the YV81 window. AC: [`SIDECAR_KEEP_WARM_AC`] while takes come at least
+/// every `base` (or this is the session's first), else the YV81 window.
+pub fn keep_warm_window(base: Duration, power: PowerHint, last_gap: Option<Duration>) -> Duration {
+    match power {
+        PowerHint::Pressure => Duration::ZERO,
+        PowerHint::Battery => base,
+        PowerHint::Ac => {
+            if last_gap.is_none_or(|gap| gap <= base) {
+                base.max(SIDECAR_KEEP_WARM_AC)
+            } else {
+                base
+            }
+        }
+    }
+}
+
+/// The installed governor's power and memory reading as a [`PowerHint`]. A Mac
+/// with no battery is on AC.
+pub fn current_power_hint() -> PowerHint {
+    use crate::resource_governor::MemoryPressure;
+    let pressured =
+        |m: &MemoryPressure| matches!(m, MemoryPressure::Warn | MemoryPressure::Critical);
+    if pressured(&crate::resource_governor::memory_pressure()) {
+        return PowerHint::Pressure;
+    }
+    let view = crate::resource_governor::view_now();
+    if pressured(&view.memory) {
+        PowerHint::Pressure
+    } else if view.on_ac || view.battery_percent.is_none() {
+        PowerHint::Ac
+    } else {
+        PowerHint::Battery
+    }
+}
+
+/// Whether to pre-warm at key-down. `Err` carries the closed-set reason.
+pub fn prewarm_decision(
+    model_ready: bool,
+    power: PowerHint,
+    governor_full: bool,
+) -> Result<(), &'static str> {
+    if !model_ready {
+        return Err("no_model");
+    }
+    match power {
+        PowerHint::Battery => Err("battery"),
+        PowerHint::Pressure => Err("memory"),
+        PowerHint::Ac if !governor_full => Err("governor"),
+        PowerHint::Ac => Ok(()),
+    }
+}
+
+fn governor_allows_local_polish() -> bool {
+    matches!(
+        crate::resource_governor::polish_plan_now(false),
+        crate::resource_governor::PolishPlan::Local
+    )
+}
+
+/// yap-1106-sp-07 — key-down: note the take for the keep-warm cadence, then
+/// spawn the sidecar if it is not resident, on AC with the governor at full.
+/// Never waits for the model to load. Returns the outcome tag it logged.
+pub fn prewarm_sidecar(cfg: &PolishConfig) -> &'static str {
+    pool().note_take();
+    let model = models::polish_model(cfg.model.trim())
+        .filter(|m| models::is_polish_downloaded(m))
+        .map(models::polish_model_path);
+    let decision = prewarm_decision(
+        model.is_some(),
+        current_power_hint(),
+        governor_allows_local_polish(),
+    );
+    let tag = match (decision, model) {
+        (Ok(()), Some(path)) => match pool().warm(&path) {
+            Ok(true) => "spawned",
+            Ok(false) => "resident",
+            Err(e) => e.reason(),
+        },
+        (Ok(()), None) => "no_model",
+        (Err(why), _) => why,
+    };
+    log::info!("polish prewarm outcome={tag}");
+    tag
+}
+
+/// The pipeline's gate before every model call: the sidecar has loaded and
+/// the governor still allows a local polish.
+pub fn sidecar_ready_for_pipeline() -> bool {
+    sidecar_status().state == SidecarState::Ready && governor_allows_local_polish()
 }
 
 /// How the sidecar answered the handshake, as the reader thread saw it.
@@ -1622,6 +2182,10 @@ struct SidecarPool {
     last_used: Mutex<Instant>,
     /// How long unused before [`sweep_idle`](Self::sweep_idle) kills the child.
     idle_unload: Duration,
+    /// yap-1106-sp-07 — when the last take started (key-down), and the gap
+    /// before it: the take cadence the AC keep-warm window reads.
+    last_take: Mutex<Option<Instant>>,
+    last_gap: Mutex<Option<Duration>>,
     /// The clock the idle window is measured on — injected so
     /// `polish_sidecar_unloads_after_idle` can jump ten minutes instead of
     /// sleeping through them.
@@ -1658,7 +2222,71 @@ impl SidecarPool {
             ready_budget,
             last_used: Mutex::new(started),
             idle_unload,
+            last_take: Mutex::new(None),
+            last_gap: Mutex::new(None),
             now,
+        }
+    }
+
+    /// yap-1106-sp-07 — a take started: remember the gap since the last one.
+    fn note_take(&self) {
+        let now = (self.now)();
+        let mut last = self.last_take.lock();
+        if let Some(prev) = *last {
+            *self.last_gap.lock() = Some(now.saturating_duration_since(prev));
+        }
+        *last = Some(now);
+    }
+
+    /// How long this child may sit unused right now.
+    fn keep_window(&self, power: PowerHint) -> Duration {
+        keep_warm_window(self.idle_unload, power, *self.last_gap.lock())
+    }
+
+    /// yap-1106-sp-07 — spawn the child ahead of the take (key-down) so it has
+    /// loaded by the time the first window commits. Never waits for the
+    /// handshake. `Ok(true)` = spawned now, `Ok(false)` = already resident.
+    fn warm(&self, model: &Path) -> Result<bool, PolishError> {
+        let mut held = self.slot.lock();
+        *self.last_used.lock() = (self.now)();
+        self.ensure_child(&mut held, model)
+    }
+
+    /// The model-change rule plus the spawn, shared by [`Self::rewrite`] and
+    /// [`Self::warm`].
+    fn ensure_child(&self, held: &mut Option<Sidecar>, model: &Path) -> Result<bool, PolishError> {
+        // A model change (Settings) invalidates the warm child — and it is a
+        // deliberate act, not a failure, so the restart budget AND any sticky
+        // failure start over. Keyed on the pool's own record rather than the
+        // slot, so picking a new model also revives a stage that gave up on the
+        // old one.
+        if self.launched.lock().as_deref() != Some(model) {
+            if let Some(stale) = held.take() {
+                stale.kill();
+            }
+            *self.launched.lock() = Some(model.to_path_buf());
+            self.restarts.store(0, Ordering::Relaxed);
+            self.set(SidecarState::NotInstalled, None);
+        }
+        if held.is_some() {
+            return Ok(false);
+        }
+        // Failure is sticky: past the restart budget we stop paying a
+        // process launch per dictation and stay honestly failed.
+        if self.status().state == SidecarState::Failed {
+            return Err(PolishError::Unavailable);
+        }
+        match Sidecar::spawn(self.launch.as_ref(), model) {
+            Ok(fresh) => {
+                log::info!("polish sidecar starting");
+                self.set(SidecarState::Starting, None);
+                *held = Some(fresh);
+                Ok(true)
+            }
+            Err(e) => {
+                self.fail("spawn_failed");
+                Err(e)
+            }
         }
     }
 
@@ -1668,15 +2296,29 @@ impl SidecarPool {
     /// Deliberately NOT a failure: the state goes back to `NotInstalled` (the
     /// same state as "nothing spawned yet"), the restart budget is untouched,
     /// and the next take walks the ordinary spawn path.
+    #[cfg(test)]
     fn sweep_idle(&self) -> bool {
+        self.sweep_idle_with(PowerHint::Battery)
+    }
+
+    /// [`Self::sweep_idle`] against the power state's window
+    /// ([`keep_warm_window`]).
+    fn sweep_idle_with(&self, power: PowerHint) -> bool {
         let mut held = self.slot.lock();
         if held.is_none() {
             return false;
         }
         let idle = (self.now)().saturating_duration_since(*self.last_used.lock());
-        if idle < self.idle_unload {
+        let window = self.keep_window(power);
+        if idle < window {
             return false;
         }
+        log::info!(
+            "polish sidecar sweep power={} window_s={} idle_s={}",
+            power.tag(),
+            window.as_secs(),
+            idle.as_secs()
+        );
         if let Some(child) = held.take() {
             child.kill();
         }
@@ -1735,37 +2377,7 @@ impl SidecarPool {
         // work below so a request that fails still counts as use: an idle
         // unload is for a sidecar nobody is dictating at, not for a bad take.
         *self.last_used.lock() = (self.now)();
-        // A model change (Settings) invalidates the warm child — and it is a
-        // deliberate act, not a failure, so the restart budget AND any sticky
-        // failure start over. Keyed on the pool's own record rather than the
-        // slot, so picking a new model also revives a stage that gave up on the
-        // old one.
-        if self.launched.lock().as_deref() != Some(model) {
-            if let Some(stale) = held.take() {
-                stale.kill();
-            }
-            *self.launched.lock() = Some(model.to_path_buf());
-            self.restarts.store(0, Ordering::Relaxed);
-            self.set(SidecarState::NotInstalled, None);
-        }
-        if held.is_none() {
-            // Failure is sticky: past the restart budget we stop paying a
-            // process launch per dictation and stay honestly failed.
-            if self.status().state == SidecarState::Failed {
-                return Err(PolishError::Unavailable);
-            }
-            match Sidecar::spawn(self.launch.as_ref(), model) {
-                Ok(fresh) => {
-                    log::info!("polish sidecar starting");
-                    self.set(SidecarState::Starting, None);
-                    *held = Some(fresh);
-                }
-                Err(e) => {
-                    self.fail("spawn_failed");
-                    return Err(e);
-                }
-            }
-        }
+        self.ensure_child(&mut held, model)?;
         let sidecar = held.as_mut().expect("spawned above");
         match sidecar.readiness() {
             Readiness::Ready => self.set(SidecarState::Ready, None),
@@ -2721,5 +3333,291 @@ mod polish_fallback_tests {
         // even though this take ends on exactly the sign-off line `auto` wants.
         assert!(crate::dictation::ends_with_signoff_line(&out));
         assert!(!out.contains(SIGNATURE));
+    }
+
+    // ── yap-1106-sp-07: pipelined, warm polish ─────────────────────────────
+
+    /// A deterministic client that records every request it is asked
+    /// (body + context), so "the pipeline asked what batch asks" is provable.
+    #[derive(Default)]
+    struct Recording {
+        calls: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl PolishClient for Recording {
+        fn rewrite(&self, req: &PolishRequest) -> Result<String, PolishError> {
+            self.calls
+                .lock()
+                .push((req.text.clone(), req.topic.clone()));
+            Ok(req.text.replace(" teh ", " the "))
+        }
+    }
+
+    /// The 240 s fixture's shape: ~600 words (150 wpm × 4 min) in one
+    /// paragraph of 11-word sentences.
+    fn sentences(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| format!("Sentence number {i} covers teh quarterly plan and the launch."))
+            .collect()
+    }
+
+    fn pipeline_cfg() -> PolishConfig {
+        PolishConfig {
+            model: "qwen2.5-0.5b-instruct-q4_k_m".to_string(),
+            deadline_ms: MAX_POLISH_DEADLINE_MS,
+            style: Style::Default,
+            ..PolishConfig::default()
+        }
+    }
+
+    /// Feed the pipeline the committed text the way SP-05 commits it: one
+    /// window (~6 sentences, a 20–30 s window at dictation pace) at a time.
+    fn run_capture(
+        all: &[String],
+        mode: DictationMode,
+        cfg: &PolishConfig,
+        client: &dyn PolishClient,
+    ) -> Vec<PrePolishedChunk> {
+        let stop = AtomicBool::new(false);
+        let mut done = Vec::new();
+        let mut n = 6;
+        while n < all.len() {
+            let committed = all[..n].join(" ");
+            pipeline_step(&mut done, &committed, mode, cfg, client, &|| true, &stop);
+            n += 6;
+        }
+        done
+    }
+
+    /// Acceptance: windows are polished as they commit in 160-word chunks
+    /// with 24 words of context, only the tail chunk is left at release, and
+    /// the output is the batch chunked polish's output. Chunk boundaries: on
+    /// this one-paragraph fixture the greedy packer cuts the committed prefix
+    /// where it cuts the whole take, so even the REQUESTS are batch's.
+    #[test]
+    fn pipelined_polish_matches_batch_and_leaves_only_the_tail() {
+        let all = sentences(55);
+        let text = all.join(" ");
+        let mode = DictationMode::Notes;
+        let cfg = pipeline_cfg();
+
+        let batch_client = Recording::default();
+        let batch = polish_stage_chunked(&text, mode, &cfg, &batch_client);
+
+        let capture_client = Recording::default();
+        let done = run_capture(&all, mode, &cfg, &capture_client);
+        assert!(
+            done.len() >= 3,
+            "finished chunks were polished during capture"
+        );
+        for chunk in &done {
+            assert!(chunk.body.split_whitespace().count() <= POLISH_CHUNK_WORDS);
+        }
+        for pair in done.windows(2) {
+            let ctx = pair[1]
+                .context
+                .as_deref()
+                .expect("a later chunk carries context");
+            assert_eq!(ctx.split_whitespace().count(), POLISH_CHUNK_CONTEXT_WORDS);
+        }
+        let pre = PrePolished {
+            take: 1,
+            mode,
+            cfg: cfg.clone(),
+            chunks: done,
+        };
+
+        let release_client = Recording::default();
+        let out = polish_stage_chunked_pre(&text, mode, &cfg, &release_client, Some(&pre));
+        assert_eq!(out, batch, "identical to the batch chunked polish");
+        assert_eq!(
+            release_client.calls.lock().len(),
+            1,
+            "only the tail chunk at release"
+        );
+
+        let mut asked = capture_client.calls.lock().clone();
+        asked.extend(release_client.calls.lock().iter().cloned());
+        assert_eq!(
+            asked,
+            *batch_client.calls.lock(),
+            "the same requests batch makes"
+        );
+    }
+
+    #[test]
+    fn seeded_plan_is_byte_exact_and_ignores_a_stale_seed() {
+        let text = sentences(30).join(" ");
+        let plain = plan_polish_chunks(&text);
+        let (stale, held) = plan_polish_chunks_seeded(&text, &["Nothing like this was said"]);
+        assert_eq!(held, 0);
+        assert_eq!(stale, plain);
+
+        let seed = plain[0].body.clone();
+        let (seeded, held) = plan_polish_chunks_seeded(&text, &[seed.as_str()]);
+        assert_eq!(held, 1);
+        let joined: String = seeded
+            .iter()
+            .map(|c| format!("{}{}", c.sep, c.body))
+            .collect();
+        assert_eq!(joined, text, "every byte carried");
+
+        // A seed that stops mid-word is not a boundary.
+        let (_, held) = plan_polish_chunks_seeded(&text, &["Sentence num"]);
+        assert_eq!(held, 0);
+
+        // A tail too short to polish alone gives its seed back.
+        let short = format!("{} Ok then.", seed);
+        let (folded, held) = plan_polish_chunks_seeded(&short, &[seed.as_str()]);
+        assert_eq!(held, 0);
+        assert_eq!(folded, plan_polish_chunks(&short));
+    }
+
+    #[test]
+    fn prepolish_for_another_mode_is_not_reused() {
+        let all = sentences(40);
+        let text = all.join(" ");
+        let cfg = pipeline_cfg();
+        let capture_client = Recording::default();
+        let done = run_capture(&all, DictationMode::Notes, &cfg, &capture_client);
+        assert!(!done.is_empty());
+        let pre = PrePolished {
+            take: 2,
+            mode: DictationMode::Notes,
+            cfg: cfg.clone(),
+            chunks: done,
+        };
+        let batch_client = Recording::default();
+        let batch = polish_stage_chunked(&text, DictationMode::Email, &cfg, &batch_client);
+        let release_client = Recording::default();
+        let out = polish_stage_chunked_pre(
+            &text,
+            DictationMode::Email,
+            &cfg,
+            &release_client,
+            Some(&pre),
+        );
+        assert_eq!(out, batch);
+        assert_eq!(
+            release_client.calls.lock().len(),
+            batch_client.calls.lock().len(),
+            "every chunk asked live"
+        );
+    }
+
+    /// Capture never spends a model call (and so never a `no_sidecar` skip)
+    /// while the sidecar is still loading.
+    #[test]
+    fn pipeline_waits_for_a_ready_sidecar() {
+        let text = sentences(40).join(" ");
+        let client = Recording::default();
+        let stop = AtomicBool::new(false);
+        let mut done = Vec::new();
+        let n = pipeline_step(
+            &mut done,
+            &text,
+            DictationMode::Notes,
+            &pipeline_cfg(),
+            &client,
+            &|| false,
+            &stop,
+        );
+        assert_eq!(n, 0);
+        assert!(done.is_empty());
+        assert!(client.calls.lock().is_empty());
+    }
+
+    #[test]
+    fn keep_warm_window_follows_power_and_cadence() {
+        let base = Duration::from_secs(10 * 60);
+        let min = |m: u64| Some(Duration::from_secs(m * 60));
+        assert_eq!(
+            keep_warm_window(base, PowerHint::Ac, min(4)),
+            SIDECAR_KEEP_WARM_AC
+        );
+        assert_eq!(
+            keep_warm_window(base, PowerHint::Ac, None),
+            SIDECAR_KEEP_WARM_AC
+        );
+        assert_eq!(keep_warm_window(base, PowerHint::Ac, min(12)), base);
+        assert_eq!(keep_warm_window(base, PowerHint::Battery, min(4)), base);
+        assert_eq!(
+            keep_warm_window(base, PowerHint::Pressure, min(4)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn prewarm_only_on_ac_with_the_governor_at_full() {
+        assert_eq!(prewarm_decision(true, PowerHint::Ac, true), Ok(()));
+        assert_eq!(
+            prewarm_decision(true, PowerHint::Ac, false),
+            Err("governor")
+        );
+        assert_eq!(
+            prewarm_decision(true, PowerHint::Battery, true),
+            Err("battery")
+        );
+        assert_eq!(
+            prewarm_decision(true, PowerHint::Pressure, true),
+            Err("memory")
+        );
+        assert_eq!(
+            prewarm_decision(false, PowerHint::Ac, true),
+            Err("no_model")
+        );
+    }
+
+    /// The 30 min session with a 12 min gap: takes every few minutes on AC
+    /// keep the child through the gap; memory pressure still unloads it.
+    #[test]
+    fn warm_sidecar_survives_a_12_minute_gap_on_ac() {
+        let base = Instant::now();
+        let offset = Arc::new(AtomicU64::new(0));
+        let hand = Arc::clone(&offset);
+        let pool = SidecarPool::with_clock(
+            stub(READY_STUB),
+            Duration::from_secs(10),
+            Duration::from_secs(10 * 60),
+            Box::new(move || base + Duration::from_secs(hand.load(Ordering::Relaxed))),
+        );
+        let model = stub_model();
+        pool.note_take();
+        assert_eq!(pool.warm(&model), Ok(true), "key-down spawns the child");
+        assert_eq!(pool.warm(&model), Ok(false), "and never a second one");
+        let answer = poll_until(|| pool.rewrite(&model, &stub_request()).ok());
+        assert!(answer.is_some());
+
+        offset.store(4 * 60, Ordering::Relaxed);
+        pool.note_take();
+        assert!(pool.rewrite(&model, &stub_request()).is_ok());
+
+        // Twelve minutes with no take.
+        offset.store(16 * 60, Ordering::Relaxed);
+        assert!(!pool.sweep_idle_with(PowerHint::Ac), "kept warm on AC");
+        assert!(pool.slot.lock().is_some());
+        assert!(
+            pool.sweep_idle_with(PowerHint::Pressure),
+            "pressure unloads"
+        );
+        assert!(pool.slot.lock().is_none());
+    }
+
+    #[test]
+    fn battery_keeps_the_ten_minute_unload() {
+        let base = Instant::now();
+        let offset = Arc::new(AtomicU64::new(0));
+        let hand = Arc::clone(&offset);
+        let pool = SidecarPool::with_clock(
+            stub(READY_STUB),
+            Duration::from_secs(10),
+            Duration::from_secs(10 * 60),
+            Box::new(move || base + Duration::from_secs(hand.load(Ordering::Relaxed))),
+        );
+        let model = stub_model();
+        assert!(poll_until(|| pool.rewrite(&model, &stub_request()).ok()).is_some());
+        offset.store(12 * 60, Ordering::Relaxed);
+        assert!(pool.sweep_idle_with(PowerHint::Battery));
+        assert!(pool.slot.lock().is_none());
     }
 }

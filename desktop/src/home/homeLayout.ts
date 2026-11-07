@@ -4,8 +4,10 @@
  * ("What to approve", 2026-11-06 17:08Z). Everything here is a plain function
  * so the vitest can pin it without a webview:
  *
- *   - the room fills the main column at a WHOLE-NUMBER scale (5x, 4x or 3x of
- *     the 192 x 128 scene, never a fraction — option A);
+ *   - the room fills the main column at a WHOLE-NUMBER scale (4x, 3x or 2x of
+ *     the 320 x 160 studio, never a fraction — option A; yap-1106-studio-room
+ *     moved the room to the approved layered studio, shown at 3x on the design
+ *     page's 960 px column);
  *   - the three stat tiles become one quiet line under the room;
  *   - Home shows the last 5 takes, then a "See all" row (no list grows as you
  *     scroll); History pages 50 at a time;
@@ -13,24 +15,25 @@
  *   - during a meeting the room label reads "Recording meeting · mm:ss".
  */
 
-/** The Home room's art grid (YappyHouse draws its scene at exactly this size). */
-export const ROOM_W = 192;
-export const ROOM_H = 128;
+/** The Home room's art grid (YappyHouse draws the studio at exactly this size;
+ * equal to studio/studio.ts STUDIO_W x STUDIO_H, pinned by the test). */
+export const ROOM_W = 320;
+export const ROOM_H = 160;
 
 /** The only scales the room is ever drawn at, largest first. */
-export const ROOM_SCALES = [5, 4, 3] as const;
+export const ROOM_SCALES = [4, 3, 2] as const;
 export type RoomScale = (typeof ROOM_SCALES)[number];
 
 /**
  * The largest whole-number scale whose room still fits `columnWidth` CSS px.
- * A column narrower than 3x (576 px) still draws at 3x and the frame crops the
- * sides: shrinking to 2x would make the room a stamp, and a fraction is never
- * allowed. Missing / non-finite widths (a detached node, a test) read as 3x.
+ * A column narrower than 2x (640 px) still draws at 2x and the frame crops the
+ * sides: shrinking to 1x would make the room a stamp, and a fraction is never
+ * allowed. Missing / non-finite widths (a detached node, a test) read as 2x.
  */
 export function roomScale(columnWidth: number | null | undefined): RoomScale {
   const w = typeof columnWidth === "number" && Number.isFinite(columnWidth) ? columnWidth : 0;
   for (const s of ROOM_SCALES) if (ROOM_W * s <= w) return s;
-  return 3;
+  return ROOM_SCALES[ROOM_SCALES.length - 1];
 }
 
 /** The stage box for a column: full column width, the room's height at `scale`. */
