@@ -4,6 +4,8 @@
  * `meeting` emit does; no timers, no canvas.
  */
 import { describe, expect, it } from "vitest";
+import { CHICK_DETAIL, drawChick, type ChickPose } from "../sprites/art";
+import { Raster } from "../sprites/raster";
 import {
   COMPANION_VISIT_CAP_MS,
   GLANCE_EVERY_S,
@@ -16,6 +18,7 @@ import {
   REC_LIGHT_PULSE_MS,
   SAVED_HOLD_MS,
   SAVED_LABEL,
+  SCENE_H,
   SCENE_LAYOUT,
   SCENE_W,
   sceneTimeLabel,
@@ -162,4 +165,29 @@ describe("the recording light, Hoot and the tape", () => {
     expect(m.recLight.on).toBe(false);
     expect(meetingFrameKey({ elapsedS: 25 * MIN, handover: true })).toContain("|h");
   });
+});
+
+describe("yap-1106-yappy-detail-pass — the detail-pass Yappy stands whole in the meeting scene", () => {
+  const REST: ChickPose = { hop: 0, sx: 0, sy: 0, blink: 0, mood: 0, beakF: 0, sway: 0, flap: 0, look: "fwd", glasses: false, pencil: false, droop: false };
+  for (const pose of [REST, { ...REST, look: "down" as const, pencil: true }]) {
+    it(`meeting_yappy_fits_scene_buffer pencil=${pose.pencil}: toes and shadow inside ${SCENE_W}x${SCENE_H}`, () => {
+      const { cx, feetY } = SCENE_LAYOUT.yappy;
+      // a taller raster, so anything that would fall off the real buffer is visible here
+      const r = new Raster(SCENE_W, SCENE_H + 12);
+      drawChick(r, cx, feetY, pose);
+      let below = 0, toes = 0, top = Infinity;
+      for (let y = 0; y < r.height; y++) for (let x = 0; x < r.width; x++) {
+        const p = r.px(x, y);
+        if (p.a === 0) continue;
+        top = Math.min(top, y);
+        if (y >= SCENE_H) below++;
+        const hex = "#" + [p.r, p.g, p.b].map((v) => v.toString(16).padStart(2, "0")).join("");
+        if (p.a === 255 && hex === CHICK_DETAIL.toe && y < SCENE_H) toes++;
+      }
+      expect(below, "no pixel of Yappy or his shadow below the scene buffer").toBe(0);
+      expect(toes, "both three-pixel toes are on screen").toBe(6);
+      expect(top, "his sprout is on screen too").toBeGreaterThanOrEqual(0);
+      expect(r.subpixel).toBe(0);
+    });
+  }
 });

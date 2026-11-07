@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 // @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
-import { CHICK_BOX, FRIENDS, H, SPRITE_FRAMES, SPRITE_NAMES, drawChick, type ChickPose, type Helpers, type PixelCtx, type SpriteName, type SpriteOpt } from "./art";
+import { CHICK_BOX, CHICK_COLORS, CHICK_DETAIL, CHICK_DETAIL_BOX, FRIENDS, H, SPRITE_FRAMES, SPRITE_NAMES, drawChick, type ChickPose, type Helpers, type PixelCtx, type SpriteName, type SpriteOpt } from "./art";
 import { Raster, snapDiff } from "./raster";
 
 const readSibling = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf8") as string;
@@ -100,29 +100,96 @@ describe("sprite_snapshot_matches_approved — zero colour tolerance, one pixel 
       }
 });
 
-describe("chick_snapshot_matches_approved — the pill's Yappy vs approved yappy.js", () => {
+describe("chick_snapshot_matches_approved — the pill's Yappy is the approved detail pass (yap-1106-yappy-detail-pass)", () => {
   const BASE: ChickPose = { hop: 0, sx: 0, sy: 0, blink: 0, mood: 0, beakF: 0, sway: 0, flap: 0, look: "fwd", glasses: false, pencil: false, droop: false };
+  /** Every pose field the pill's phases drive (YappyPill drawScene), alone and combined. */
   const POSES: Partial<ChickPose>[] = [
     {}, { blink: 1 }, { mood: 0.8 }, { mood: -0.8 }, { look: "down" }, { glasses: true }, { pencil: true },
-    { beakF: 1 }, { beakF: 2 }, { hop: 2 }, { sx: 1, sy: -1 }, { sway: 1.4 }, { flap: 1 }, { glasses: true, pencil: true, beakF: 2, look: "down" },
+    { beakF: 1 }, { beakF: 2 }, { hop: 2 }, { hop: 6 }, { hop: -2 }, { sx: 1, sy: -1 }, { sx: 3, sy: 2 }, { sx: -1, sy: -4 },
+    { sway: 1.4 }, { sway: -2 }, { flap: 1 }, { flap: 2 }, { droop: true }, { droop: true, sway: 2 },
+    { glasses: true, pencil: true, beakF: 2, look: "down" }, { glasses: true, mood: 0.8, hop: 3, flap: 2 },
   ];
-  for (const p of POSES) {
-    it(`pose ${JSON.stringify(p)}`, () => {
-      const got = new Raster(CHICK_BOX.w, CHICK_BOX.h), want = new Raster(CHICK_BOX.w, CHICK_BOX.h);
-      drawChick(got, CHICK_BOX.cx, CHICK_BOX.feetY, { ...BASE, ...p });
-      APPROVED.Yappy.drawChick(want, CHICK_BOX.cx, CHICK_BOX.feetY, APPROVED.Yappy.base({ ...BASE, ...p }));
+  const hexOf = (p: { r: number; g: number; b: number }) => "#" + [p.r, p.g, p.b].map((v) => v.toString(16).padStart(2, "0")).join("");
+  /** Opaque pixels of exactly `hex`. */
+  const count = (r: Raster, hex: string): number => {
+    let n = 0;
+    for (let y = 0; y < r.height; y++) for (let x = 0; x < r.width; x++) { const p = r.px(x, y); if (p.a === 255 && hexOf(p) === hex) n++; }
+    return n;
+  };
+  const paint = (p: Partial<ChickPose>): Raster => {
+    const r = new Raster(CHICK_DETAIL_BOX.w + 8, CHICK_DETAIL_BOX.h + 8);
+    drawChick(r, CHICK_DETAIL_BOX.cx + 4, CHICK_DETAIL_BOX.feetY + 4, { ...BASE, ...p });
+    return r;
+  };
+
+  // The approved frames: f=0 rest, f=1 blink, f=2 talking. Same box, same pixels.
+  for (const [f, p] of [[0, {}], [1, { blink: 1 }], [2, { beakF: 2 }]] as const) {
+    it(`detail_pass_frame_f${f}_is_the_approved_yappy`, () => {
+      const got = new Raster(CHICK_DETAIL_BOX.w, CHICK_DETAIL_BOX.h);
+      drawChick(got, CHICK_DETAIL_BOX.cx, CHICK_DETAIL_BOX.feetY, { ...BASE, ...p });
+      const want = renderApproved("yappy", f);
       const d = snapDiff(got, want, 1);
       expect(d.painted).toBeGreaterThan(0);
-      expect(d.mismatched, `pose ${JSON.stringify(p)}: ${d.mismatched} px differ`).toBe(0);
+      expect(d.mismatched, `f=${f}: ${d.mismatched} px differ at best shift (${d.dx},${d.dy})`).toBe(0);
+      expect([d.dx, d.dy], "no drift at all against the approved frame").toEqual([0, 0]);
       expect(got.subpixel).toBe(0);
     });
   }
 
-  it("the pill draws THIS chick (no second copy in YappyPill)", () => {
+  it("the_shipped_0_9_3_chick_is_gone: the rest pose no longer matches yappy.js drawChick", () => {
+    const got = new Raster(CHICK_BOX.w, CHICK_BOX.h), old = new Raster(CHICK_BOX.w, CHICK_BOX.h);
+    drawChick(got, CHICK_BOX.cx, CHICK_BOX.feetY, BASE);
+    APPROVED.Yappy.drawChick(old, CHICK_BOX.cx, CHICK_BOX.feetY, APPROVED.Yappy.base({ ...BASE }));
+    expect(snapDiff(got, old, 1).mismatched).toBeGreaterThan(0);
+  });
+
+  // Every pose: whole pixels, and each named detail is on the bird.
+  for (const p of POSES) {
+    it(`detail_in_every_pose ${JSON.stringify(p)}`, () => {
+      const r = paint(p);
+      expect(r.subpixel, "every draw lands on whole art pixels").toBe(0);
+      expect(count(r, CHICK_DETAIL.outline), "warm outline").toBeGreaterThan(20);
+      expect(count(r, CHICK_DETAIL.rim), "rim light on the outline").toBeGreaterThan(2);
+      expect(count(r, CHICK_DETAIL.shade), "shade crescent").toBeGreaterThan(4);
+      expect(count(r, CHICK_DETAIL.stem), "sprout stem").toBeGreaterThan(0);
+      expect(count(r, CHICK_COLORS.sprout), "sprout leaves").toBeGreaterThan(2);
+      expect(count(r, CHICK_DETAIL.tail), "wing feathers + tail").toBeGreaterThan(2);
+      expect(count(r, CHICK_DETAIL.toe), "toes").toBe(6);
+      const eyesOpen = !(p.blink && p.blink > .5) && !(p.mood != null && Math.abs(p.mood) > .55);
+      // the reading-glasses frame crosses the top shine row, the way the 0.9.3 frame crossed the eye
+      if (eyesOpen) expect(count(r, "#ffffff"), "eye shine, both eyes").toBeGreaterThanOrEqual(p.glasses && p.look !== "down" ? 2 : 4);
+      if (p.droop) expect(count(r, CHICK_DETAIL.leafHi), "a wilted sprout has no lit leaf").toBe(0);
+      else expect(count(r, CHICK_DETAIL.leafHi), "the lit leaf tip").toBe(1);
+    });
+  }
+
+  it("larger_eye_shine: two-pixel shine top-left in each eye (the 0.9.3 chick had one)", () => {
+    const r = paint({});
+    // rest eyes at (cx-5, ey) and (cx+5, ey), ey = feetY - 10 in the padded raster
+    const cx = CHICK_DETAIL_BOX.cx + 4, ey = CHICK_DETAIL_BOX.feetY + 4 - 10;
+    for (const ex of [cx - 5, cx + 5]) {
+      expect(hexOf(r.px(ex - 1, ey - 2)), `shine at ${ex - 1},${ey - 2}`).toBe("#ffffff");
+      expect(hexOf(r.px(ex, ey - 2)), `shine at ${ex},${ey - 2}`).toBe("#ffffff");
+      expect(hexOf(r.px(ex - 1, ey - 1)), `shine at ${ex - 1},${ey - 1}`).toBe("#ffffff");
+    }
+  });
+
+  it("the ground shadow stays on the ground when he hops", () => {
+    const rest = paint({}), up = paint({ hop: 6 });
+    const feet = CHICK_DETAIL_BOX.feetY + 4 + 2, cx = CHICK_DETAIL_BOX.cx + 4;
+    expect(rest.px(cx, feet).a, "shadow under him at rest").toBeGreaterThan(0);
+    expect(up.px(cx, feet).a, "shadow still on the ground mid-hop").toBeGreaterThan(0);
+    expect(up.px(cx, feet).a, "and nothing else painted there mid-hop").toBeLessThan(255);
+  });
+
+  it("the pill draws THIS chick (no second copy in YappyPill), in every phase", () => {
     const pill = readSibling("../pill/YappyPill.tsx");
     expect(pill).toMatch(/import \{ drawChick as drawChickArt \} from "\.\.\/sprites\/art";/);
     expect(pill).toMatch(/drawChickArt\(octx, cx, feetY, A\)/);
     expect(pill).not.toMatch(/const cy = feetY - 11 - A\.hop/);
+    // one call site in drawScene, never skipped by phase
+    expect(pill.match(/drawChick\(cx, feet, clampChickPose\(A\)\)/g)?.length).toBe(1);
+    expect(pill).not.toMatch(/hideChick/);
   });
 });
 
