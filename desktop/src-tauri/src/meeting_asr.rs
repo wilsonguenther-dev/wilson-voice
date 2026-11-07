@@ -2591,6 +2591,239 @@ pub fn median_utterance_seconds(pieces: &[Utterance]) -> f64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ENGINEERING MUST (a) — speaker turns from ASR WORD times, no bleed
+// ---------------------------------------------------------------------------
+
+/// How much of a turn's edge an embedding skips (seconds, each side). The
+/// 0.2 s nearest a speaker switch is where the previous voice's tail and the
+/// segmentation model's own boundary error live; embedding it pulls a turn's
+/// vector toward the other speaker.
+pub const TURN_EMBED_GUARD_SECONDS: f64 = 0.2;
+
+/// One speaker turn: a run of WHOLE words on one track that all went to the
+/// same speaker. `start_seconds` / `end_seconds` are the first word's start
+/// and the last word's end, exactly — never a window, chunk or diarization
+/// time, never interpolated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeakerTurn {
+    pub track: i64,
+    /// The diarization cluster the words went to; `None` = an unattributed
+    /// segment (or no segment on this track at all).
+    pub cluster_index: Option<i64>,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    /// The words of this turn, as indices into the slice given to
+    /// [`build_speaker_turns`].
+    pub words: std::ops::Range<usize>,
+    pub text: String,
+}
+
+impl SpeakerTurn {
+    /// The span a speaker embedding may use: the turn minus
+    /// [`TURN_EMBED_GUARD_SECONDS`] at each end. `None` when nothing is left.
+    pub fn embedding_window(&self) -> Option<(f64, f64)> {
+        let start = self.start_seconds + TURN_EMBED_GUARD_SECONDS;
+        let end = self.end_seconds - TURN_EMBED_GUARD_SECONDS;
+        (end > start).then_some((start, end))
+    }
+
+    pub fn seconds(&self) -> f64 {
+        (self.end_seconds - self.start_seconds).max(0.0)
+    }
+}
+
+/// What [`build_speaker_turns`] produced, plus the evidence for the log line.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpeakerTurns {
+    pub turns: Vec<SpeakerTurn>,
+    /// Parallel to the input words: the index (into the segments slice) of the
+    /// diarization segment each word was assigned to. `None` only when the
+    /// track has no segment at all.
+    pub word_segment: Vec<Option<usize>>,
+    /// Words that overlap segments of two or more different speakers — a
+    /// switch falls inside the word — and were therefore placed by rule
+    /// (midpoint, then larger overlap) rather than by simple containment.
+    pub boundary_words_reassigned: usize,
+}
+
+/// Which speaker a segment stands for. An unattributed segment (`None`
+/// cluster) is its OWN speaker: two neighbouring unknowns may be two people,
+/// so their words never merge into one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnKey {
+    Cluster(i64),
+    Unattributed(usize),
+    NoSegment,
+}
+
+fn turn_key(segments: &[crate::diarize::DiarizedSegment], seg: Option<usize>) -> TurnKey {
+    match seg {
+        Some(i) => match segments[i].cluster_index {
+            Some(c) => TurnKey::Cluster(c),
+            None => TurnKey::Unattributed(i),
+        },
+        None => TurnKey::NoSegment,
+    }
+}
+
+fn overlap_seconds(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// The segment one word belongs to. The rule, in order:
+/// 1. a segment that covers the word's MIDPOINT (half-open `[start, end)`,
+///    the last segment's end inclusive); among several, the larger overlap;
+/// 2. no segment covers the midpoint (it fell in a gap): the segment with the
+///    larger overlap with the word;
+/// 3. the word touches no segment: the nearest segment on the track.
+///
+/// Rule 1 is what makes "no turn contains a word whose midpoint lies in
+/// another speaker's segment" true by construction.
+fn assign_word(
+    word: &TimedSpan,
+    segments: &[crate::diarize::DiarizedSegment],
+    on_track: &[usize],
+) -> Option<usize> {
+    let (w0, w1) = (word.start_seconds, word.end_seconds.max(word.start_seconds));
+    let mid = (w0 + w1) / 2.0;
+    let last_end = on_track
+        .iter()
+        .map(|&i| segments[i].end_seconds)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let covers = |i: usize| {
+        let s = &segments[i];
+        s.start_seconds <= mid
+            && (mid < s.end_seconds || (mid <= s.end_seconds && s.end_seconds >= last_end))
+    };
+    let overlap = |i: usize| {
+        let s = &segments[i];
+        overlap_seconds(w0, w1, s.start_seconds, s.end_seconds)
+    };
+    if let Some(i) = best_by(on_track.iter().copied().filter(|&i| covers(i)), overlap) {
+        return Some(i);
+    }
+    if let Some(i) = best_by(on_track.iter().copied().filter(|&i| overlap(i) > 0.0), overlap) {
+        return Some(i);
+    }
+    best_by(on_track.iter().copied(), |i: usize| {
+        let s = &segments[i];
+        let distance = if mid < s.start_seconds {
+            s.start_seconds - mid
+        } else {
+            (mid - s.end_seconds).max(0.0)
+        };
+        -distance
+    })
+}
+
+/// The candidate with the highest score; the FIRST one on a tie.
+fn best_by(candidates: impl Iterator<Item = usize>, score: impl Fn(usize) -> f64) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for i in candidates {
+        let v = score(i);
+        let better = match best {
+            None => true,
+            Some((_, b)) => v > b,
+        };
+        if better {
+            best = Some((i, v));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Build speaker turns for ONE track from that track's ASR word rows (in time
+/// order, track-WAV seconds — the base `meeting_segments` is on) and the
+/// diarization segments (only those whose `track` matches are used).
+///
+/// A turn is a run of whole words; a word is never split. A word goes to the
+/// segment covering its midpoint (see `assign_word`), so a switch to another
+/// speaker never bleeds a word across the boundary. Turn bounds are the first
+/// word's start and the last word's end. Clips, embeddings
+/// ([`SpeakerTurn::embedding_window`]) and relabels use these bounds.
+pub fn build_speaker_turns(
+    track: i64,
+    words: &[TimedSpan],
+    segments: &[crate::diarize::DiarizedSegment],
+) -> SpeakerTurns {
+    let on_track: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.track == track && s.end_seconds > s.start_seconds)
+        .map(|(i, _)| i)
+        .collect();
+    let mut out = SpeakerTurns::default();
+    let mut current: Option<(TurnKey, usize)> = None;
+    for (wi, word) in words.iter().enumerate() {
+        let seg = assign_word(word, segments, &on_track);
+        let (w0, w1) = (word.start_seconds, word.end_seconds.max(word.start_seconds));
+        let mut speakers: Vec<TurnKey> = Vec::new();
+        for &i in &on_track {
+            let s = &segments[i];
+            if overlap_seconds(w0, w1, s.start_seconds, s.end_seconds) > 0.0 {
+                let key = turn_key(segments, Some(i));
+                if !speakers.contains(&key) {
+                    speakers.push(key);
+                }
+            }
+        }
+        if speakers.len() > 1 {
+            out.boundary_words_reassigned += 1;
+        }
+        out.word_segment.push(seg);
+        let key = turn_key(segments, seg);
+        match current {
+            Some((k, _)) if k == key => {}
+            Some((k, first)) => {
+                out.turns.push(turn_of(track, segments, k, words, first..wi));
+                current = Some((key, wi));
+            }
+            None => current = Some((key, wi)),
+        }
+    }
+    if let Some((k, first)) = current {
+        out.turns
+            .push(turn_of(track, segments, k, words, first..words.len()));
+    }
+    log::info!(
+        "meeting_asr turns built n={} words={} boundary_words_reassigned={} track={}",
+        out.turns.len(),
+        words.len(),
+        out.boundary_words_reassigned,
+        track
+    );
+    out
+}
+
+fn turn_of(
+    track: i64,
+    segments: &[crate::diarize::DiarizedSegment],
+    key: TurnKey,
+    words: &[TimedSpan],
+    range: std::ops::Range<usize>,
+) -> SpeakerTurn {
+    let cluster_index = match key {
+        TurnKey::Cluster(c) => Some(c),
+        TurnKey::Unattributed(i) => segments[i].cluster_index,
+        TurnKey::NoSegment => None,
+    };
+    let text = words[range.clone()]
+        .iter()
+        .map(|w| w.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    SpeakerTurn {
+        track,
+        cluster_index,
+        start_seconds: words[range.start].start_seconds,
+        end_seconds: words[range.end - 1].end_seconds,
+        words: range,
+        text,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
