@@ -655,7 +655,7 @@ fn evaluate_calls(
         return;
     }
     #[cfg(target_os = "macos")]
-    let (snapshot, snapshot_ms) = {
+    let snapshot = {
         call_signals::sys::sync_listeners();
         let started = std::time::Instant::now();
         let snap = call_signals::sys::snapshot(
@@ -664,31 +664,25 @@ fn evaluate_calls(
             false,
             calendar,
         );
-        (snap, Some(started.elapsed().as_millis() as u64))
+        crate::diagnostics::record_duration(
+            "call_signals",
+            "snapshot_ms",
+            started.elapsed().as_millis() as u64,
+        );
+        snap
     };
     #[cfg(not(target_os = "macos"))]
-    let (snapshot, snapshot_ms): (Result<call_signals::CallSnapshot, String>, Option<u64>) = {
+    let snapshot: Result<call_signals::CallSnapshot, String> = {
         let _ = calendar;
-        (Err("call detection is macOS-only".to_string()), None)
+        Err("call detection is macOS-only".to_string())
     };
-    // SP-11 — the duration stat is kept on every snapshot; its log line is
-    // written only when the snapshot was slow or its result changed.
-    let record_ms = |changed: bool| {
-        if let Some(ms) = snapshot_ms {
-            crate::diagnostics::record_duration_quiet(
-                "call_signals",
-                "snapshot_ms",
-                ms,
-                call_signals::snapshot_duration_due(ms, changed),
-            );
+    let snap = match snapshot {
+        Ok(snap) => {
+            calls.last_error = None;
+            snap
         }
-    };
-    let (snap, recovered) = match snapshot {
-        Ok(snap) => (snap, calls.last_error.take().is_some()),
         Err(e) => {
-            let changed = calls.last_error.as_deref() != Some(e.as_str());
-            record_ms(changed);
-            if changed {
+            if calls.last_error.as_deref() != Some(e.as_str()) {
                 log::warn!("call_signals snapshot_failed error={e:?}");
                 calls.last_error = Some(e);
             }
@@ -702,7 +696,6 @@ fn evaluate_calls(
     let logged = candidate
         .as_ref()
         .map(|c| (c.bundle_id.clone(), c.offers()));
-    record_ms(recovered || logged != calls.last_logged);
     if logged != calls.last_logged {
         match &candidate {
             Some(c) => log::info!(

@@ -130,23 +130,4 @@ describe("the habitat director (Y5-K)", () => {
     expect(feed).not.toMatch(/setInterval|setTimeout|requestAnimationFrame/);
     expect(read("../YappyHouse.tsx")).toContain("subscribeHabitat(");
   });
-
-  it("SP-11: the main window takes only its own audio_level copy; the float pill keeps animating", () => {
-    // The backend emits the level with emit_to("float") and copies it to
-    // "main" only while the main window is visible. An untargeted listener
-    // would receive both copies, so every listener names its window.
-    const feed = read("./events.ts");
-    expect(feed).toMatch(/listen<number>\("audio_level",[^]*?\{\s*target: "main",?\s*\}/);
-    for (const f of ["../../float-main.tsx", "../../pill/PillShell.tsx", "../../pill/YappyPill.tsx"]) {
-      const src = read(f);
-      // The pill still subscribes to the live level (it animates) …
-      expect(src, f).toMatch(/listen<number>\("audio_level"/);
-      // … aimed at the float window, never at the untargeted broadcast.
-      expect(src, f).toContain('{ target: "float" }');
-    }
-    const lib = read("../../../src-tauri/src/lib.rs");
-    expect(lib).not.toMatch(/\.emit\("audio_level"/);
-    expect(lib).toMatch(/emit_to\(\*target, "audio_level"/);
-    expect(lib).toMatch(/&\["float"\]/);
-  });
 });

@@ -186,9 +186,7 @@ function useListenEstimate(listening: boolean): ListenEstimate {
         shownSec = Math.floor(sec);
         setEst({ estWords: f.estWords, sec });
       }
-      // SP-11: the level stream is aimed at the float window; the main window
-      // gets its own copy only while it is visible, never a second one here.
-    }, { target: "float" }).then((u) => (dead ? u() : (unsub = u)));
+    }).then((u) => (dead ? u() : (unsub = u)));
     return () => {
       dead = true;
       unsub?.();

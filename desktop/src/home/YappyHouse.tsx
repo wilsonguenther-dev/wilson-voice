@@ -13,9 +13,6 @@
  *       "recording" / "status" (busy) / "transcript" / "audio_level" — NOT demo
  *       buttons. Recording → hurries to the desk and works; busy → thinking; a
  *       transcript landing → a brief happy reaction, then back to the ambient life.
- *       SP-11: "audio_level" reaches this window only while it is visible (the
- *       backend aims it at the float pill and copies it to "main" when shown),
- *       so a hidden Home tab costs no per-frame IPC.
  *   (2) The sky phase follows the REAL system clock (new Date().getHours()).
  *   (3) The stat strip shows only REAL numbers passed in (words today / streak).
  *   (4) prefers-reduced-motion renders a single calm frame with no loop.
