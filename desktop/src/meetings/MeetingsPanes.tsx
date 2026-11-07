@@ -128,7 +128,8 @@ export function PeopleChipLine({ people, shown }: { people: readonly string[]; s
 /**
  * The measured chip line: every chip gets its real width, and whatever does
  * not fit beside the state chip collapses into "+N" (never a second line).
- * Re-measures when the line's width changes (window resize, pane resize).
+ * Re-measures when the line's width or a chip's width changes (window or
+ * pane resize, the web font arriving).
  * Without ResizeObserver (jsdom, SSR) it shows every chip — the CSS still
  * clips, so it can never wrap.
  */
@@ -154,8 +155,11 @@ function FitPeopleChips({ people }: { people: readonly string[] }) {
     };
     fit();
     if (typeof ResizeObserver === "undefined") return;
+    // The line AND every chip: a chip's width changes when the web font
+    // lands, without the line's width changing.
     const ro = new ResizeObserver(fit);
     ro.observe(el);
+    for (const c of Array.from(el.querySelectorAll<HTMLElement>("[data-person-chip], [data-people-more]"))) ro.observe(c);
     return () => ro.disconnect();
   }, [key]);
   return (
