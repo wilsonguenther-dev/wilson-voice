@@ -64,7 +64,6 @@ import {
   advanceLive,
   createLiveState,
   CANCELLED_SETTLE_MS,
-  GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
   parseMutedCategories,
@@ -74,6 +73,10 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import {
+  GATE_HOLD_IDLE, gateHovered, gateSettleDueIn, onGateHover, reduceGateHold,
+  type GateHold,
+} from "./pill/gateClick";
 import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
@@ -403,15 +406,44 @@ function Float() {
     // permanent noise. Fire-and-forget like Y3-D's cancel timer: `gate_settled`
     // only ever moves the phase it owns, so a press that has already moved the
     // pill on is left alone.
+    //
+    // yap-1106-pill-trial-clickable — the refusal is now the BUY button, so it
+    // holds GATE_HOLD_MS (6 s) and for as long as the pointer rests on it, then
+    // settles a short grace after the pointer leaves. The policy is pure
+    // (pill/gateClick.ts); this effect only owns the one timer.
+    let hold: GateHold = reduceGateHold(GATE_HOLD_IDLE, { type: "hover", on: gateHovered(), at: performance.now() });
+    let settleTimer: number | null = null;
+    const armSettle = () => {
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      const due = gateSettleDueIn(hold, performance.now());
+      if (due === null || dead) return;
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        const again = gateSettleDueIn(hold, performance.now());
+        if (again === null) return;
+        if (again > 0) { armSettle(); return; }
+        hold = reduceGateHold(hold, { type: "settled" });
+        setGate((p) => reduceGatePhase(p, { type: "gate_settled" }));
+      }, due);
+    };
+    unsubs.push(onGateHover((on) => {
+      hold = reduceGateHold(hold, { type: "hover", on, at: performance.now() });
+      armSettle();
+    }));
     listen<LicenseStatus>("license_required", (e) => {
       setLicense(e.payload);
       setGate((p) => reduceGatePhase(p, { type: "license_required" }));
-      setTimeout(
-        () => setGate((p) => reduceGatePhase(p, { type: "gate_settled" })),
-        GATED_SETTLE_MS,
-      );
+      hold = reduceGateHold(hold, { type: "shown", at: performance.now() });
+      armSettle();
     }).then(push);
-    return () => { dead = true; unsubs.forEach((u) => u()); };
+    return () => {
+      dead = true;
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      unsubs.forEach((u) => u());
+    };
   }, []);
   useEffect(() => {
     let dead = false;
