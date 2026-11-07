@@ -2139,7 +2139,9 @@ impl Database {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         if is_me {
             let existing: Option<i64> = tx
-                .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| r.get(0))
+                .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| {
+                    r.get(0)
+                })
                 .optional()
                 .map_err(|e| e.to_string())?;
             if existing.is_some() {
@@ -2227,7 +2229,11 @@ impl Database {
             "UPDATE speaker_profiles
                 SET centroid = ?2, n_samples = n_samples + 1, updated_at = ?3, last_heard_at = ?3
               WHERE id = ?1",
-            params![profile_id, speaker_profiles::encode_embedding(&centroid), now],
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                now
+            ],
         )
         .map_err(|e| e.to_string())?;
         let out = Self::speaker_profile_on(&tx, profile_id)?
@@ -2291,7 +2297,11 @@ impl Database {
     }
 
     /// Rename a profile. Segments labelled with it take the new name too.
-    pub fn rename_speaker_profile(&self, id: i64, display_name: &str) -> Result<SpeakerProfile, String> {
+    pub fn rename_speaker_profile(
+        &self,
+        id: i64,
+        display_name: &str,
+    ) -> Result<SpeakerProfile, String> {
         let name = speaker_profiles::clean_display_name(display_name)?;
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2332,7 +2342,9 @@ impl Database {
         let a = Self::speaker_profile_on(&tx, absorb)?
             .ok_or_else(|| "That speaker no longer exists.".to_string())?;
         if k.embedder_digest != a.embedder_digest {
-            log::warn!("speaker_profiles merge_refused keep={keep} absorb={absorb} reason=digest_mismatch");
+            log::warn!(
+                "speaker_profiles merge_refused keep={keep} absorb={absorb} reason=digest_mismatch"
+            );
             return Err(
                 "These voices were saved with different voice models and cannot be merged.".into(),
             );
@@ -2359,8 +2371,11 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         // Delete first so the one-"me" unique index never sees two rows.
-        tx.execute("DELETE FROM speaker_profiles WHERE id = ?1", params![absorb])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM speaker_profiles WHERE id = ?1",
+            params![absorb],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE speaker_profiles
                 SET centroid = ?2, n_samples = ?3, last_heard_at = ?4, is_me = ?5, updated_at = ?6
@@ -2396,7 +2411,10 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         let samples = tx
-            .execute("DELETE FROM speaker_samples WHERE profile_id = ?1", params![id])
+            .execute(
+                "DELETE FROM speaker_samples WHERE profile_id = ?1",
+                params![id],
+            )
             .map_err(|e| e.to_string())?;
         let n = tx
             .execute("DELETE FROM speaker_profiles WHERE id = ?1", params![id])
@@ -2463,7 +2481,10 @@ impl Database {
     }
 
     /// A segment's stored speaker: `(profile id, plain-text name)`.
-    pub fn segment_speaker(&self, segment_id: &str) -> Result<(Option<i64>, Option<String>), String> {
+    pub fn segment_speaker(
+        &self,
+        segment_id: &str,
+    ) -> Result<(Option<i64>, Option<String>), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
             "SELECT speaker_profile_id, speaker_name FROM meeting_segments WHERE id = ?1",

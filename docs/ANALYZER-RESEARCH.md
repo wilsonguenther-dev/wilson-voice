@@ -140,8 +140,10 @@ measurements show one is better. A swap is a new dated section here plus a
 changed pins block, never a silent catalog edit.
 
 The voiceprint `embedder_digest` stores the embedding model's sha256 below
-(`c46fad10…`). That store is not on main yet; when it lands, its test must
-compare against this pins block.
+(`c46fad10…`). The store landed with yap-1106-voiceprints (see the dated
+section below); `tests/supply_chain.rs`
+(`the_voiceprint_embedder_digest_is_the_pinned_embedding_model`) compares it
+against this pins block.
 
 ## Pinned versions
 
@@ -181,3 +183,26 @@ Yap's corpus yet — the PENDING measurements in the table above still decide th
 Not ported in this item (later analyzer items own them): folding clusters under 1.6 s
 into the nearest centroid (`_merge_small`), single-window smoothing (`_mode_smooth`),
 enrolled voiceprints, the talk-time summary, and overlap flags.
+
+## 2026-11-07 — yap-1106-voiceprints: saved voiceprints (no new package)
+
+No crate or model changes. Enrolled speaker profiles (a re-port of the parked
+`feat/yv128` / `feat/yv129` designs, and the "enrolled speaker profiles" idea of
+the hedgehog analyzer's DIARIZE.md "Pipeline") live in `speaker_profiles.rs`
+and migration 11 (`speaker_profiles`, `speaker_samples`, plus
+`meeting_segments.speaker_profile_id` / `speaker_name`).
+
+- A profile's `embedder_digest` is the catalog's pinned sha256 of
+  `wespeaker-en-voxceleb-campplus` (the pins block above), read at runtime via
+  `speaker_profiles::pinned_embedder_digest`. Profiles of another digest or
+  dimension are never compared: the matcher answers "re-enroll".
+- The centroid is the normalised mean of normalised turn embeddings. Only
+  turns attributed to one cluster are embedded, inside the word-exact bounds of
+  section 2 minus `TURN_EMBED_GUARD_SECONDS` (0.2 s) at each end.
+- Two cosine-SIMILARITY bands, both PROVISIONAL until #152's scored population
+  is measured: `auto` = `PROVISIONAL_AUTO_SIMILARITY = 0.70` (the one shared
+  0.70), `ask` = `PROVISIONAL_ASK_SIMILARITY = 0.55`; eval-only overrides
+  `YAP_EVAL_VOICEPRINT_AUTO` / `YAP_EVAL_VOICEPRINT_ASK`;
+  `MatchBands::tuned` derives them from a genuine/impostor population
+  (`ask` = the EER threshold, `auto` = the lowest threshold within a FAR cap).
+- Everything stays on this Mac ("Leaves this Mac: No").

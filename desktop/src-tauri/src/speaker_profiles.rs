@@ -102,8 +102,9 @@ pub const PROVISIONAL_AUTO_SIMILARITY: f32 = 0.70;
 pub const PROVISIONAL_ASK_SIMILARITY: f32 = 0.55;
 
 /// Audio this close to a turn boundary never feeds an embedding (ENGINEERING
-/// MUSTS (a): "embeddings skip the 0.2 s nearest a boundary").
-pub const EMBED_BOUNDARY_GUARD_SECONDS: f64 = 0.2;
+/// MUSTS (a): "embeddings skip the 0.2 s nearest a boundary"). The one
+/// definition lives with the turn builder.
+pub const EMBED_BOUNDARY_GUARD_SECONDS: f64 = crate::meeting_asr::TURN_EMBED_GUARD_SECONDS;
 
 /// The `settings_kv` key holding the "enroll my voice from dictation" answer:
 /// `yes` / `no`; absent = never asked. Asked once, opt-in.
@@ -152,7 +153,11 @@ impl MatchBands {
     /// logged) rather than shipping a broken band.
     pub fn from_env_or_provisional() -> Self {
         let base = Self::provisional();
-        let read = |key: &str| std::env::var(key).ok().and_then(|v| v.trim().parse::<f32>().ok());
+        let read = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+        };
         let (auto, ask) = (read(EVAL_AUTO_ENV), read(EVAL_ASK_ENV));
         if auto.is_none() && ask.is_none() {
             return base;
@@ -342,16 +347,20 @@ pub fn suggestion_text(m: &VoiceMatch) -> Option<String> {
             "Is this {display_name}? Voice match {:.2}",
             similarity.get()
         )),
-        VoiceMatch::ReEnrollNeeded { .. } => Some(
-            "The voice model changed, so saved voices need to be enrolled again.".to_string(),
-        ),
+        VoiceMatch::ReEnrollNeeded { .. } => {
+            Some("The voice model changed, so saved voices need to be enrolled again.".to_string())
+        }
         VoiceMatch::Unknown { .. } => None,
     }
 }
 
 /// L2-normalised copy; an all-zero vector stays zero.
 pub fn normalized(v: &[f32]) -> Vec<f32> {
-    let norm = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let norm = v
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if norm <= 0.0 || !norm.is_finite() {
         return vec![0.0; v.len()];
     }
@@ -404,7 +413,10 @@ pub fn encode_embedding(v: &[f32]) -> Vec<u8> {
 
 pub fn decode_embedding(bytes: &[u8]) -> Result<Vec<f32>, String> {
     if bytes.len() % 4 != 0 {
-        return Err(format!("a voiceprint BLOB of {} bytes is not f32s", bytes.len()));
+        return Err(format!(
+            "a voiceprint BLOB of {} bytes is not f32s",
+            bytes.len()
+        ));
     }
     Ok(bytes
         .chunks_exact(4)
@@ -430,9 +442,11 @@ pub fn embed_window_bounds(start: f64, end: f64, min_seconds: f64) -> Option<(f6
 
 /// The embedding window of a diarized turn. Only a turn attributed to ONE
 /// cluster is a single-speaker turn; an unattributed one is never embedded.
+/// The trim is the turn's own [`SpeakerTurn::embedding_window`].
 pub fn embed_window(turn: &SpeakerTurn, min_seconds: f64) -> Option<(f64, f64)> {
     turn.cluster_index?;
-    embed_window_bounds(turn.start_seconds, turn.end_seconds, min_seconds)
+    let (s, e) = turn.embedding_window()?;
+    (e - s >= min_seconds.max(0.0)).then_some((s, e))
 }
 
 /// The embedding-model digest a voiceprint made today stores: the catalog's
