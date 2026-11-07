@@ -75,6 +75,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.

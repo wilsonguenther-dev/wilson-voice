@@ -250,11 +250,16 @@ describe("pixelGrid — the pure fit", () => {
 
 describe("pixelGrid — reachability: the canvases that draw pixel art use it", () => {
   const pill = readSibling("./YappyPill.tsx");
+  const fit = readSibling("./characterFit.ts");
   const house = readSibling("../home/YappyHouse.tsx");
 
   it("YappyPill draws the camera through sceneBlit on an unclamped backing scale", () => {
     expect(pill).toMatch(/from "\.\/pixelGrid"/);
-    expect(pill).toMatch(/sceneBlit\(/);
+    // yap-1106-fb-10 — the camera is fitted by characterFit's pillCamera, which
+    // blits through sceneBlit (the whole-cell, buffer-clamped path).
+    expect(pill).toMatch(/pillCamera\(/);
+    expect(fit).toMatch(/from "\.\/pixelGrid"/);
+    expect(fit).toMatch(/sceneBlit\(/);
     expect(pill).toMatch(/toDevice\(W, DPR\)/);
     expect(pill).not.toMatch(/Math\.min\(devicePixelRatio/);
     // the old fractional camera blit: drawImage(os, vcx - viewW / 2, …, x0 + 1, y0 + 1, iw, ih)
@@ -280,7 +285,9 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
   });
 
   it("YappyPill hands its scene buffer to sceneBlit (the src clamp needs it)", () => {
-    expect(pill).toMatch(/buffer: \{ w: PW, h: PH \}/);
+    // yap-1106-fb-10 — pillCamera hands sceneBlit the same buffer YappyPill draws into.
+    expect(pill).toMatch(/const PW = PILL_SCENE\.w, PH = PILL_SCENE\.h/);
+    expect(fit).toMatch(/buffer: \{ w: PILL_SCENE\.w, h: PILL_SCENE\.h \}/);
   });
 
   it("ClassicPill draws no pixel art: it is a DOM capsule with no canvas", () => {

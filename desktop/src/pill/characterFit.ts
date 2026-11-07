@@ -65,11 +65,13 @@ export const REST_MIN_W = 72;
 
 /**
  * Yappy's world buffer, in art px. Big enough that at ONE device px per art px
- * it still covers the widest open capsule (274 x 70 at the desk tier, less the
- * border), so the cell is never forced up past the one that fits him. The sky
- * rows above the ground give a hop room to stay inside the world.
+ * it still covers every capsule the camera fits him into at cell 1 — the
+ * widest is a 1.5x display mid-lerp (about 370 x 92 device px), and the resting
+ * capsule at 1.5x is 123 x 78 — so the cover cell is never forced up past the
+ * one that fits him (a 72-row buffer forced cell 2 at rest on 1.5x and cropped
+ * him). The sky rows above the ground give a hop room to stay inside the world.
  */
-export const PILL_SCENE = { w: 280, h: 72, groundY: 50, faceX: 140 } as const;
+export const PILL_SCENE = { w: 420, h: 104, groundY: 66, faceX: 210 } as const;
 /** The chick is drawn this far left of `faceX` at the desk tier (YappyPill drawScene). */
 export const CHICK_DESK_SHIFT = 6;
 
@@ -236,7 +238,8 @@ export const OPEN_TIERS = [1, 1.05, 1.16] as const;
 
 /**
  * The smallest resting capsule (CSS px, whole) that holds every pill
- * character's box at ONE device px per art px on a 1x display: least area,
+ * character's box at ONE device px per art px on a 1x display, lying down and
+ * stood on its end (the side-tall dock): least area,
  * then least height, never narrower than REST_MIN_W.
  */
 export function restCapsuleFor(arts: readonly Size[]): Size {
@@ -244,7 +247,9 @@ export function restCapsuleFor(arts: readonly Size[]): Size {
   for (let h = 22; h <= 120; h++) {
     for (let w = REST_MIN_W; w <= 240; w++) {
       const { stadium } = capsuleStadium({ x: 0, y: 0, w, h }, 1);
-      if (arts.every((a) => largestFittingCell(stadium, a, POSITION_GUARD) >= 1)) {
+      // Both orientations: a side dock stands the same capsule on its end
+      // (capsuleForDock "side-tall"), which is the art turned a quarter in this one.
+      if (arts.every((a) => largestFittingCell(stadium, a, POSITION_GUARD) >= 1 && largestFittingCell(stadium, { w: a.h, h: a.w }, POSITION_GUARD) >= 1)) {
         if (!best || w * h < best.w * best.h) best = { w, h };
         break;
       }
