@@ -18,7 +18,7 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, useRef, type CSSProperties } from "react";
+import { useCallback, useEffect, useReducer, useRef, type CSSProperties, type ReactNode } from "react";
 import MeetingWorld from "./MeetingWorld";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -142,6 +142,9 @@ export function useMeetingPill(): {
   return { status: state.status, phase: state.phase, dismiss };
 }
 
+/** The last live state of the recording meeting, across slot remounts (see useLiveSpeaker). */
+let liveCarry: { id: string; state: LiveSpeakerState } | null = null;
+
 type LiveSpeakerAction = { type: "live"; payload: LiveSnapshot | null } | { type: "clear" };
 
 function liveSpeakerReducer(s: LiveSpeakerState, a: LiveSpeakerAction): LiveSpeakerState {
@@ -157,8 +160,17 @@ function liveSpeakerReducer(s: LiveSpeakerState, a: LiveSpeakerAction): LiveSpea
  * unlistens and clears. One `pill live_speaker shown=<kind>` line per change
  * of what the pill shows — never the name or any transcript text.
  */
-export function useLiveSpeaker(recording: boolean): LiveSpeaker {
-  const [state, dispatch] = useReducer(liveSpeakerReducer, LIVE_SPEAKER_IDLE);
+export function useLiveSpeaker(recording: boolean, meetingId: string | null = null): LiveSpeaker {
+  // The slot remounts when the badge flips between the scene and the stack
+  // (a take starts or ends); the last speaker of THIS meeting carries over so
+  // the word does not blank until the next ~10 s tick. A new meeting id, or
+  // none, starts empty.
+  const [state, dispatch] = useReducer(liveSpeakerReducer, meetingId, (id: string | null) =>
+    id !== null && liveCarry?.id === id ? liveCarry.state : LIVE_SPEAKER_IDLE,
+  );
+  useEffect(() => {
+    if (recording && meetingId !== null) liveCarry = { id: meetingId, state };
+  }, [recording, meetingId, state]);
   useEffect(() => {
     if (!recording) return;
     // Same late-listener guard as useMeetingPill: a cleanup that runs before
@@ -176,9 +188,10 @@ export function useLiveSpeaker(recording: boolean): LiveSpeaker {
   }, [recording]);
   const speaker = recording ? state.speaker : LIVE_SPEAKER_IDLE.speaker;
   // The change key holds the word so a new name logs again, but the line
-  // itself carries only the kind. Mounting with nothing shown logs nothing.
+  // itself carries only the kind. A mount (fresh, or a scene/stack remount
+  // that carried the speaker over) is not a change and logs nothing.
   const key = `${speaker.shown}|${speaker.word ?? ""}`;
-  const lastKey = useRef("none|");
+  const lastKey = useRef(key);
   useEffect(() => {
     if (lastKey.current === key) return;
     lastKey.current = key;
@@ -226,11 +239,19 @@ export default function MeetingBadge({
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
   const callApp = badgeCallLabel(useCallRecordingView());
-  // fix-l3b4-1 — the hook runs on every render (rules of hooks) but only
-  // listens while the meeting records and no fixture snapshot was handed in.
-  const heard = useLiveSpeaker(status.recording && live === undefined);
-  const speaker = live === undefined ? heard : pickLiveSpeaker(live, status.recording);
-  const speakerLine = liveSpeakerLine(speaker);
+  // fix-l3b4-1 — who is talking. The badge itself stays hook-free beyond the
+  // call-offer view (tests call it as a plain function): the listener lives in
+  // the LiveSpeakerSlot child, and a fixture snapshot skips it entirely.
+  const speakerSlot = (mode: "row" | "stack", children: ReactNode, baseTitle = "") =>
+    live === undefined ? (
+      <LiveSpeakerSlot recording={status.recording} meetingId={status.id ?? null} mode={mode} baseTitle={baseTitle}>
+        {children}
+      </LiveSpeakerSlot>
+    ) : (
+      <LiveSpeakerView speaker={pickLiveSpeaker(live, status.recording)} mode={mode} baseTitle={baseTitle}>
+        {children}
+      </LiveSpeakerView>
+    );
   if (!status.recording) {
     // yap-1106-pill-rec-headphones-hoot-tape / fix-b8-1 — the stop beat:
     // Hoot hands over the tape and the pill reads "Saved". It is the shell's
@@ -264,24 +285,20 @@ export default function MeetingBadge({
   // while listening: the layout's box and this branch share one source.
   if (stacked) {
     const audioLine = callAudio ? `${callAudio.label}. ${callAudio.detail}` : systemAudio ?? "";
-    // fix-l3b4-1 — the 96 px stack has no room for a word: who is talking
-    // rides the stack's tooltip and the Stop label, next to the call-audio line.
-    const stackLines = [audioLine, speakerLine ?? ""].filter(Boolean);
     const time = stackClockLabel(elapsedLabel(status));
     return (
       <div className="meeting-badge meeting-stacked" data-pill-slot="clock" data-meeting-phase="stacked" role="status" aria-live="off">
-        <span
-          className="meeting-stack"
-          data-meeting-stack
-          data-live-speaker={speaker.word ? speaker.shown : undefined}
-          title={[callApp ? `Recording ${callApp} call` : "Recording a meeting", ...stackLines].join(" · ")}
-        >
-          <span className="meeting-stack-time" data-scene-time>{time}</span>
-        </span>
+        {/* fix-l3b4-1 — the 96 px stack has no room for a word: who is
+            talking rides the stack's tooltip and label, after the call-audio line. */}
+        {speakerSlot(
+          "stack",
+          <span className="meeting-stack-time" data-scene-time>{time}</span>,
+          [callApp ? `Recording ${callApp} call` : "Recording a meeting", audioLine].filter(Boolean).join(" · "),
+        )}
         <button
           type="button"
           className="rec-stop"
-          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${stackLines.map((l) => `. ${l}`).join("")}`}
+          aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             // yap-fx-06 — the same one-click Stop as the scene's: a failure is
@@ -324,24 +341,8 @@ export default function MeetingBadge({
         </span>
       )}
       {/* fix-l3b4-1 — who is talking: one word stacked OVER the call-audio
-          chip in one column, so the clock row (CLOCK_W 208) gains no width.
-          The hint is the title / label, so a name always reads as a guess.
-          No speaker = the row is exactly what it was. */}
-      {speaker.word ? (
-        <span className="rec-side" data-live-speaker-side>
-          <span
-            className={`rec-speaker is-${speaker.shown}`}
-            data-live-speaker={speaker.shown}
-            title={liveSpeakerTitle(speaker) ?? undefined}
-            aria-label={speakerLine ?? undefined}
-          >
-            {speaker.word}
-          </span>
-          {audioChip}
-        </span>
-      ) : (
-        audioChip
-      )}
+          chip, so the clock row (CLOCK_W 208) gains no width. */}
+      {speakerSlot("row", audioChip)}
       <button
         type="button"
         className="rec-stop"
@@ -416,5 +417,81 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
     >
       {body}
     </div>
+  );
+}
+
+/**
+ * fix-l3b4-1 — the live listener as a child of the badge: listens to
+ * `meeting:live` only while the meeting records (useLiveSpeaker), then draws
+ * through the same view a fixture snapshot uses.
+ */
+function LiveSpeakerSlot({
+  recording,
+  meetingId,
+  mode,
+  baseTitle,
+  children,
+}: {
+  recording: boolean;
+  meetingId: string | null;
+  mode: "row" | "stack";
+  baseTitle: string;
+  children: ReactNode;
+}) {
+  const speaker = useLiveSpeaker(recording, meetingId);
+  return (
+    <LiveSpeakerView speaker={speaker} mode={mode} baseTitle={baseTitle}>
+      {children}
+    </LiveSpeakerView>
+  );
+}
+
+/**
+ * fix-l3b4-1 — the speaker inside the one meeting surface.
+ * "row" (the scene badge): the word stacked over the call-audio chip in one
+ *   column; the hint is its title and label, so a name reads as a guess.
+ *   No speaker = exactly the children, the row unchanged.
+ * "stack" (mid-take, 96 px): no room for a word — the stack's tooltip gets
+ *   the speaker line after the call-audio line, and a screen-reader-only line
+ *   carries it to the accessible text.
+ */
+function LiveSpeakerView({
+  speaker,
+  mode,
+  baseTitle,
+  children,
+}: {
+  speaker: LiveSpeaker;
+  mode: "row" | "stack";
+  baseTitle: string;
+  children: ReactNode;
+}) {
+  const line = liveSpeakerLine(speaker);
+  if (mode === "stack") {
+    return (
+      <span
+        className="meeting-stack"
+        data-meeting-stack
+        data-live-speaker={line ? speaker.shown : undefined}
+        title={[baseTitle, line ?? ""].filter(Boolean).join(" · ")}
+      >
+        {children}
+        {line && <span className="sr-only">{line}</span>}
+      </span>
+    );
+  }
+  if (!speaker.word) return <>{children}</>;
+  return (
+    <span className="rec-side" data-live-speaker-side>
+      <span
+        className={`rec-speaker is-${speaker.shown}`}
+        data-live-speaker={speaker.shown}
+        title={liveSpeakerTitle(speaker) ?? undefined}
+        aria-label={line ?? undefined}
+      >
+        {speaker.word}
+      </span>
+      {children}
+    </span>
   );
 }
