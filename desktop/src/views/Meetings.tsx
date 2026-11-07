@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
@@ -13,23 +13,64 @@ import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
 import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meetings/callAudio";
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
+import {
+  NO_FILTER, defaultTab, detailPeople, duePendingDeletes, filterActive, filterMeetings, groupMeetings, isNarrow,
+  listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, schedulePendingDelete, shortId,
+  stopNeedsConfirm, undoPendingDelete, unnamedVoices, withoutPending,
+  type DetailTab, type MeetingFilter, type PendingDelete,
+} from "../meetings/meetingsLayout";
+import {
+  DetailTabs, ListSkeleton, MeetingFilters, PeopleChips, PeopleTab, PickAMeeting, RecordingHero, UndoDeleteBar,
+  WhoIsTalkingStrip,
+} from "../meetings/MeetingsPanes";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
-import { ErrorState, LoadingState, RoomGlyph } from "../ViewStates";
+import { ErrorState, RoomGlyph } from "../ViewStates";
 
+/** yap-1106-meetings-redesign — one line per Meetings action (§1 telemetry). */
+function logUi(event: string, fields: Record<string, string | number | boolean> = {}): void {
+  console.info(meetingsLogLine(event, fields));
+}
+
+function inTextField(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
+}
+
+/**
+ * yap-1106-meetings-redesign (YAP-UI-SPEC-2026-11 §3.3) — two panes: the list
+ * on the left (date groups, people chips, state chip), the detail on the
+ * right (title, date, duration, tracks chip, people chips; Notes |
+ * Transcript | People), and the recording state as its own hero card with the
+ * live transcript. Under 900 px the detail covers the list and has a Back
+ * button. Delete takes effect after a 10 s Undo.
+ */
 export default function Meetings() {
   const {
-    booting, confirmDeleteMeeting, insights, loadMeetings, meetingBusy, meetingKind, meetingKinds,
+    booting, insights, loadMeetings, meetingBusy, meetingKind, meetingKinds,
     meetingsError, meetingsLoading,
     meetingQuery, meetingStatus, meetings, modelSetup, openMeeting, openMeetingDetail,
-    openModelSettings, setConfirmDeleteMeeting,
+    openModelSettings,
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting,
     runSystemAudioSetup, sysAudioBusy, toast, toastError,
   } = useAppCtx();
   // yap-1106-call-audio-truth — the live chip, decided once in callAudio.ts.
   const callAudio = callAudioChip(meetingStatus);
   const { meetingProgress: progress, retryMeeting: retry, retryNotes, cancelNotes } = useAppCtx();
+
+  const [filter, setFilter] = useState<MeetingFilter>(NO_FILTER);
+  const [tab, setTab] = useState<DetailTab>("transcript");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingDelete[]>([]);
+  const [now, setNow] = useState(() => Date.now());
+  const [narrow, setNarrow] = useState(() => (typeof window === "undefined" ? false : isNarrow(window.innerWidth)));
+  const [confirmStop, setConfirmStop] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const pendingRef = useRef<PendingDelete[]>(pending);
+  pendingRef.current = pending;
+
   const retryMeeting = async (id: string) => {
     try {
       await retry(id);
@@ -61,6 +102,151 @@ export default function Meetings() {
       toastError(e);
     }
   }
+
+  // ── Layout: two panes, or one under 900 px ──────────────────────────────
+  useEffect(() => {
+    const onResize = () => setNarrow(isNarrow(window.innerWidth));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // ── Open: a new detail opens on Notes when it has notes, else Transcript ─
+  const openId = openMeeting?.meeting.id ?? null;
+  useEffect(() => {
+    if (!openMeeting) return;
+    setTab(defaultTab(openMeeting));
+    setSelected(openMeeting.meeting.id);
+    logUi("open", { id: shortId(openMeeting.meeting.id), segments: openMeeting.segments.length });
+    // Only a DIFFERENT meeting resets the tab; a refresh of the same one keeps it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId]);
+
+  // ── Delete + restore: the 10 s Undo ─────────────────────────────────────
+  async function commitDelete(p: PendingDelete) {
+    const started = Date.now();
+    try {
+      await invoke("delete_meeting", { id: p.id });
+      logUi("delete", { id: shortId(p.id), undone: false, ms: Date.now() - started });
+    } catch (e) {
+      logUi("delete_failed", { id: shortId(p.id) });
+      toastError(e, "Couldn't delete this meeting, so it is back in the list.");
+    }
+    await loadMeetings(meetingQuery);
+  }
+  function requestDelete(id: string, title: string) {
+    setPending((list) => schedulePendingDelete(list, id, title, Date.now()));
+    setNow(Date.now());
+    setOpenMeeting((m) => (m?.meeting.id === id ? null : m));
+    setSelected((s) => (s === id ? null : s));
+    logUi("delete_requested", { id: shortId(id) });
+  }
+  function undoDelete(id: string) {
+    setPending((list) => undoPendingDelete(list, id));
+    logUi("delete", { id: shortId(id), undone: true });
+    toast("Meeting restored");
+  }
+  // A 1 s local tick, only while something waits out its Undo (no I/O).
+  useEffect(() => {
+    if (pending.length === 0) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [pending.length]);
+  useEffect(() => {
+    const { due, waiting } = duePendingDeletes(pending, now);
+    if (due.length === 0) return;
+    setPending(waiting);
+    for (const p of due) void commitDelete(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now, pending]);
+  // Leaving the view keeps the promise the Undo made: the time ran with the
+  // person's attention, so whatever is still waiting is deleted now.
+  useEffect(
+    () => () => {
+      for (const p of pendingRef.current) {
+        invoke("delete_meeting", { id: p.id })
+          .then(() => logUi("delete", { id: shortId(p.id), undone: false, on: "leave" }))
+          .catch(() => logUi("delete_failed", { id: shortId(p.id), on: "leave" }));
+      }
+    },
+    [],
+  );
+
+  // ── Find: search + filters, then date groups ───────────────────────────
+  const visible = useMemo(() => filterMeetings(withoutPending(meetings, pending), filter), [meetings, pending, filter]);
+  const groups = useMemo(() => groupMeetings(visible, new Date()), [visible]);
+  const people = useMemo(() => peopleOptions(meetings), [meetings]);
+  const ids = useMemo(() => groups.flatMap((g) => g.meetings.map((m) => m.id)), [groups]);
+  const detailPeopleRows = useMemo(
+    () => (openMeeting ? detailPeople(openMeeting.segments, openMeeting.meeting.kind) : []),
+    [openMeeting],
+  );
+  useEffect(() => {
+    if (filterActive(filter)) logUi("filter", { kind: filter.kind, notes: filter.notes, person: Boolean(filter.person) });
+  }, [filter]);
+
+  function openRow(id: string) {
+    setSelected(id);
+    void openMeetingDetail(id);
+  }
+  function closeDetail() {
+    if (!openMeeting) return;
+    logUi("close", { id: shortId(openMeeting.meeting.id) });
+    setOpenMeeting(null);
+  }
+
+  // ── Keyboard (§3.3): ↑/↓, Return, ⌫, ⌘F, Escape, ⌥⌘1/2/3 ─────────────
+  const keyState = useRef({ ids, selected, openMeeting, meetings });
+  keyState.current = { ids, selected, openMeeting, meetings };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const field = inTextField(e.target);
+      const action = meetingsKeyAction(e, field);
+      if (!action) return;
+      const k = keyState.current;
+      switch (action.kind) {
+        case "move": {
+          e.preventDefault();
+          const next = moveSelection(k.ids, k.selected, action.by);
+          setSelected(next);
+          if (next) document.querySelector(`[data-meeting-id="${next}"]`)?.scrollIntoView({ block: "nearest" });
+          break;
+        }
+        case "open":
+          if (k.selected) {
+            e.preventDefault();
+            openRow(k.selected);
+          }
+          break;
+        case "delete": {
+          const id = k.selected ?? k.openMeeting?.meeting.id ?? null;
+          const row = id ? k.meetings.find((m) => m.id === id) : undefined;
+          if (row) {
+            e.preventDefault();
+            requestDelete(row.id, row.title);
+          }
+          break;
+        }
+        case "search":
+          e.preventDefault();
+          searchRef.current?.focus();
+          break;
+        case "close":
+          if (field) (e.target as HTMLElement).blur();
+          else closeDetail();
+          break;
+        case "tab":
+          if (k.openMeeting) {
+            e.preventDefault();
+            setTab(action.tab);
+          }
+          break;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Y5-B — a third `return null` blank page, and the worst of them: the read
   // that feeds it (loadMeetings) swallowed its own rejection, so a failed
   // meetings query rendered as "No meetings yet" — Yap telling a user their
@@ -107,6 +293,7 @@ export default function Meetings() {
     }
   }
   function onExportAction(action: ExportAction, id: string) {
+    logUi("export", { id: shortId(id), action });
     switch (action) {
       case "export":
         void exportMeeting(id);
@@ -120,6 +307,13 @@ export default function Meetings() {
     }
   }
   async function toggleMeetingRecording() {
+    // §2 ways out: Stop asks first only under 10 s (a mis-click) or over 3 h.
+    if (meetingStatus.recording && stopNeedsConfirm(meetingStatus.elapsedSeconds) && !confirmStop) {
+      setConfirmStop(true);
+      return;
+    }
+    const wasRecording = meetingStatus.recording;
+    const recordingId = meetingStatus.id ?? null;
     setMeetingBusy(true);
     try {
       const next = await invoke<MeetingStatus>("toggle_meeting_recording", {
@@ -128,32 +322,26 @@ export default function Meetings() {
         kind: meetingKind,
       });
       setMeetingStatus(next);
-      if (!next.recording) await loadMeetings(meetingQuery);
+      logUi(next.recording ? "record" : "stop", next.recording ? { kind: meetingKind } : {});
+      if (!next.recording) {
+        await loadMeetings(meetingQuery);
+        // The hero becomes the meeting's detail once it stops (§2).
+        if (wasRecording && recordingId) void openMeetingDetail(recordingId);
+      }
     } catch (e) {
+      logUi(wasRecording ? "stop_failed" : "record_failed");
       toastError(e);
     } finally {
-      setMeetingBusy(false);
-    }
-  }
-  async function removeMeeting(id: string) {
-    setMeetingBusy(true);
-    try {
-      await invoke("delete_meeting", { id });
-      setConfirmDeleteMeeting(null);
-      setOpenMeeting((m) => (m?.meeting.id === id ? null : m));
-      await loadMeetings(meetingQuery);
-      toast("Meeting deleted");
-    } catch (e) {
-      toastError(e);
-    } finally {
+      setConfirmStop(false);
       setMeetingBusy(false);
     }
   }
   async function renameMeeting(id: string, title: string) {
     const next = title.trim();
-    if (!next) return;
+    if (!next || next === openMeeting?.meeting.title) return;
     try {
       await invoke("rename_meeting", { id, title: next });
+      logUi("rename", { id: shortId(id) });
       setOpenMeeting((m) =>
         m?.meeting.id === id
           ? { ...m, meeting: { ...m.meeting, title: next } }
@@ -161,7 +349,8 @@ export default function Meetings() {
       );
       await loadMeetings(meetingQuery);
     } catch (e) {
-      toastError(e);
+      logUi("rename_failed", { id: shortId(id) });
+      toastError(e, "Couldn't rename this meeting. Try again.");
     }
   }
   if (state === "error")
@@ -174,469 +363,430 @@ export default function Meetings() {
         onAction={() => void loadMeetings(meetingQuery)}
       />
     );
-  if (state === "loading" || !insights)
+  const loading = state === "loading" || !insights;
+
+  const kindPicker = meetingKinds.length > 0 && !meetingStatus.recording && (
+    // YV125 — the start-of-meeting kind picker, beside Record. "Not sure" is a
+    // real answer; the choice decides whether diarization clusters the mic.
+    <div className="meeting-kind-picker" role="radiogroup" aria-label="What kind of meeting is this?">
+      {meetingKinds.map((c) => (
+        <button
+          key={c.kind}
+          type="button"
+          role="radio"
+          aria-checked={meetingKind === c.kind}
+          className={meetingKind === c.kind ? "chip selected" : "chip"}
+          onClick={() => setMeetingKind(c.kind)}
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const hero = meetingStatus.recording && (
+    <RecordingHero
+      title={meetingStatus.title || ""}
+      clock={elapsedLabel(meetingStatus)}
+      elapsedSeconds={meetingStatus.elapsedSeconds}
+      note={systemAudioBadge(meetingStatus)}
+      busy={meetingBusy}
+      stopLabel={confirmStop ? "Stop now? Press again" : "Stop meeting"}
+      onStop={() => void toggleMeetingRecording()}
+      callAudio={
+        callAudio && (
+          <p className="tiny rec-call-audio" data-call-audio={callAudio.state}>
+            <span className={`call-audio-chip is-${callAudio.state}`}>{callAudio.label}</span>
+            <span>{callAudio.detail}</span>
+            {callAudio.action === "turn-on" && (
+              <button type="button" className="ghost" disabled={sysAudioBusy} onClick={() => void runSystemAudioSetup()}>
+                {CALL_AUDIO_ACTION_LABEL}
+              </button>
+            )}
+          </p>
+        )
+      }
+      live={<LiveTranscript recording={meetingStatus.recording} />}
+    />
+  );
+
+  // ── Empty: no meetings at all and no search (§3.3 Empty) ──────────────
+  if (!loading && meetings.length === 0 && !meetingQuery) {
     return (
-      <LoadingState
-        data-loading-state="meetings"
-        noun="meetings"
-        expected={insights?.meetings?.totalMeetings ?? null}
-        onRetry={() => void loadMeetings(meetingQuery)}
-      />
-    );
-  return (
-    <>
-      {!openMeeting && (
+      <div className="meetings-view">
+        <NotetakerSetupCard onImported={() => void loadMeetings(meetingQuery)} />
+        {hero}
+        <div className="empty" data-empty-state="meetings">
+          {/* Y5-B — Meetings gets its OWN drawing. */}
+          <div className="view-state-glyph">
+            <RoomGlyph />
+          </div>
+          <h3>No meetings yet</h3>
+          <p>
+            Record one, or Yap will offer when a call starts. Audio is kept for{" "}
+            {/* 0 is "no meetings yet" in Insights, never a real policy. */}
+            {insights?.meetings?.audioRetentionDays || 7} days; the transcript is kept for good.
+          </p>
+          {!meetingStatus.recording && (
             <>
-              {/* yap-notetaker-onboard — the Set up Notetaker card: top of the
-                  Meetings view until every step is done or it is closed. */}
-              <NotetakerSetupCard onImported={() => void loadMeetings(meetingQuery)} />
-              {/* YV95 — the live recording banner. Present ONLY while a meeting
-                  is running, and it carries the same clock the pill shows,
-                  rendered once in Rust and emitted at 1 Hz. */}
-              {meetingStatus.recording && (
-                <div className="recording-bar" role="status">
-                  <span className="rec-dot" aria-hidden />
-                  <div className="recording-copy">
-                    <strong>{meetingStatus.title || "Recording a meeting"}</strong>
-                    <span className="tiny">
-                      Recording for {elapsedLabel(meetingStatus)} · stop from here, the
-                      menu bar, ⌃⌘M, or the pill.
-                    </span>
-                    {/* YV110 — matrix rows 1 and 2. A meeting that is recording
-                        the microphone only, or that lost the call's audio
-                        mid-way, says so here in full while it is still
-                        recording — never afterwards, and never as a dialog. */}
-                    {systemAudioBadge(meetingStatus) && (
-                      <span className="tiny rec-sysaudio-note">
-                        {systemAudioBadge(meetingStatus)}
-                      </span>
+              {kindPicker}
+              <button
+                className="primary big"
+                disabled={meetingBusy || !!disabledReason(meetingStatus)}
+                title={disabledReason(meetingStatus) || undefined}
+                onClick={() => void toggleMeetingRecording()}
+              >
+                {recordLabel(meetingStatus)}
+              </button>
+              <p className="tiny">
+                {disabledReason(meetingStatus) ??
+                  `Or press ⌃⌘M from anywhere, or pick “Record a meeting” in the menu bar. Everything stays on this Mac.`}
+              </p>
+            </>
+          )}
+          <SpeechEngineNotice setup={modelSetup} />
+        </div>
+        <UndoDeleteBar pending={pending} now={now} onUndo={undoDelete} />
+      </div>
+    );
+  }
+
+  const paneMode = narrow ? (openMeeting ? "detail" : "list") : "split";
+  return (
+    <div className="meetings-view" data-meetings-pane={paneMode}>
+      {/* yap-notetaker-onboard — the Set up Notetaker card. */}
+      <NotetakerSetupCard onImported={() => void loadMeetings(meetingQuery)} />
+      {/* YV95 + §3.3 — the recording hero, pinned above both panes. */}
+      {hero}
+      <div className="meetings-panes">
+        <aside className="meetings-list-pane" aria-label="Meetings list">
+          <div className="toolbar">
+            {!meetingStatus.recording && (
+              <button
+                className="primary"
+                disabled={meetingBusy || !!disabledReason(meetingStatus)}
+                title={disabledReason(meetingStatus) || undefined}
+                onClick={() => void toggleMeetingRecording()}
+              >
+                Record a meeting
+              </button>
+            )}
+            {kindPicker}
+          </div>
+          <div className="meetings-find">
+            <input
+              ref={searchRef}
+              type="search"
+              value={meetingQuery}
+              onChange={(e) => setMeetingQuery(e.target.value)}
+              placeholder="Search titles and every word said (⌘F)"
+              aria-label="Search meetings"
+            />
+            {meetingQuery && (
+              <button className="ghost" onClick={() => setMeetingQuery("")}>
+                Clear
+              </button>
+            )}
+          </div>
+          <MeetingFilters filter={filter} kinds={meetingKinds} people={people} onChange={setFilter} />
+          {/* The needs-model state: one click installs the speech engine. */}
+          <SpeechEngineNotice setup={modelSetup} />
+          {backlog?.offer && (
+            <div className="card notes-backlog" role="region" aria-label="Notes for past meetings">
+              <p className="meeting-title">
+                Summarize {backlog.count} past meeting{backlog.count === 1 ? "" : "s"}?
+              </p>
+              <p className="tiny muted">
+                Yap writes notes on this Mac, one meeting at a time. If the notes model isn't here yet, it
+                downloads once first (about 1.1 GB).
+              </p>
+              <div className="actions">
+                <button className="primary" onClick={() => void answerBacklog(true)}>Summarize</button>
+                <button className="ghost" onClick={() => void answerBacklog(false)}>Not now</button>
+              </div>
+            </div>
+          )}
+          {loading ? (
+            <ListSkeleton />
+          ) : groups.length === 0 ? (
+            <div className="empty" data-empty-state="meetings:filtered">
+              <h3>No meetings match that</h3>
+              <p>Search covers meeting titles and every word transcribed inside them.</p>
+              <div className="actions">
+                {meetingQuery && <button className="ghost" onClick={() => setMeetingQuery("")}>Clear search</button>}
+                {filterActive(filter) && <button className="ghost" onClick={() => setFilter(NO_FILTER)}>Clear filters</button>}
+              </div>
+            </div>
+          ) : (
+            <div className="meetings-groups" data-meetings-list>
+              {groups.map((g) => (
+                <section key={g.id} className="meetings-group" aria-label={g.label}>
+                  <h4 className="meetings-group-label">{g.label}</h4>
+                  <ul className="meetings-list">
+                    {g.meetings.map((m) => {
+                      const tp = transcribeProgress(m, progress[m.id]);
+                      const notes = summaryFirstLine(m.summary);
+                      const stateLabel = tp
+                        ? `Transcribing ${transcribePercent(tp)}%`
+                        : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
+                      const notesJob = notesLabel(progress[m.id]);
+                      // yap24-NT6: one pure decision for every button.
+                      const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
+                      const isOpen = openId === m.id;
+                      const isSelected = selected === m.id;
+                      return (
+                        <li
+                          key={m.id}
+                          className={`meeting-row${isOpen ? " open" : ""}${isSelected ? " selected" : ""}`}
+                          data-meeting-id={m.id}
+                          data-meeting-state={m.state}
+                          aria-current={isOpen ? "true" : undefined}
+                        >
+                          <button type="button" className="meeting-row-main" title={m.title} onClick={() => openRow(m.id)}>
+                            <span className="meeting-row-head">
+                              <span className="meeting-row-title">{m.title}</span>
+                              <span className={`meeting-state ${m.state}`}>{stateLabel}</span>
+                            </span>
+                            <span className="meeting-row-when">
+                              {formatTime(m.startedAt)} · {formatMeetingDuration(m.durationSeconds)}
+                            </span>
+                            {m.error ? (
+                              <span className="meeting-row-detail bad">{m.error}</span>
+                            ) : tp ? (
+                              <span className="meeting-row-detail" data-meeting-progress>
+                                <span
+                                  className="meeting-row-track"
+                                  role="progressbar"
+                                  aria-label={`${m.title} transcription`}
+                                  aria-valuenow={transcribePercent(tp)}
+                                  aria-valuemin={0}
+                                  aria-valuemax={100}
+                                >
+                                  <span style={{ width: `${transcribePercent(tp)}%` }} />
+                                </span>
+                                <span>{transcribedLabel(tp)}</span>
+                              </span>
+                            ) : notes ? (
+                              <span className="meeting-row-detail">{notes}</span>
+                            ) : m.state === "complete" && notesJob && canCancelNotes(progress[m.id]) ? (
+                              <span className="meeting-row-detail">{notesJob}</span>
+                            ) : null}
+                            <PeopleChips people={listPeople(m)} />
+                          </button>
+                          <div className="actions">
+                            {actions.includes("retry") && (
+                              <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                            )}
+                            {actions.includes("cancel-notes") && (
+                              <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
+                                Cancel notes
+                              </button>
+                            )}
+                            {actions.includes("notes") && (
+                              <button onClick={() => void notesAction(retryNotes, m.id)}>
+                                {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
+                                  ? "Retry notes"
+                                  : retryNotesLabel(progress[m.id])}
+                              </button>
+                            )}
+                            <ExportMenu meetingId={m.id} disabled={meetingBusy} onAction={onExportAction} />
+                            <button
+                              className="ghost danger"
+                              disabled={meetingBusy}
+                              onClick={() => requestDelete(m.id, m.title)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+        </aside>
+
+        <section className="meetings-detail-pane" aria-label="Meeting detail">
+          {!openMeeting ? (
+            loading ? (
+              <div className="meeting-detail is-skeleton" aria-hidden data-loading-state="meetings:detail">
+                <span className="skeleton-line wide" />
+                <span className="skeleton-line" />
+                <span className="skeleton-line" />
+              </div>
+            ) : (
+              <PickAMeeting count={visible.length} />
+            )
+          ) : (
+            <article className="meeting-detail" aria-label={openMeeting.meeting.title}>
+              {/* §9 — the "Who's talking?" strip sits at the top of the detail. */}
+              <WhoIsTalkingStrip unnamed={unnamedVoices(detailPeopleRows)} onOpenPeople={() => setTab("people")} />
+              <header className="meeting-detail-head">
+                <div className="meeting-detail-bar">
+                  {narrow ? (
+                    <button className="ghost" onClick={closeDetail}>
+                      ← All meetings
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  <div className="actions">
+                    {/* yap24-NT6: Retry only when the WAV is still on disk. */}
+                    {canRetryTranscript(
+                      { ...openMeeting.meeting, audioKept: openMeeting.meeting.audioKept && openMeeting.audioOnDisk },
+                      progress[openMeeting.meeting.id],
+                    ) && (
+                      <button
+                        onClick={async () => {
+                          await retryMeeting(openMeeting.meeting.id);
+                          await openMeetingDetail(openMeeting.meeting.id);
+                        }}
+                      >
+                        Retry
+                      </button>
                     )}
-                    {/* yap-1106-call-audio-truth — is the call's sound landing?
-                        on / silent / off, from YV104's "ever delivered a
-                        non-zero sample" bit, with the one action when the tap
-                        never delivered and the grant is unproven. */}
-                    {callAudio && (
-                      <span className="tiny rec-call-audio" data-call-audio={callAudio.state}>
-                        <span className={`call-audio-chip is-${callAudio.state}`}>{callAudio.label}</span>
-                        <span>{callAudio.detail}</span>
-                        {callAudio.action === "turn-on" && (
+                    <ExportMenu meetingId={openMeeting.meeting.id} disabled={meetingBusy} primary onAction={onExportAction} />
+                    <button
+                      className="ghost danger"
+                      disabled={meetingBusy}
+                      onClick={() => requestDelete(openMeeting.meeting.id, openMeeting.meeting.title)}
+                    >
+                      Delete meeting
+                    </button>
+                    {!narrow && (
+                      <button className="ghost" aria-label="Close meeting" title="Close (Escape)" onClick={closeDetail}>
+                        Close
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {/* Editable in place; Return saves, Escape puts the old title back. */}
+                <input
+                  className="meeting-title-edit"
+                  defaultValue={openMeeting.meeting.title}
+                  aria-label="Meeting title"
+                  key={openMeeting.meeting.id}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") e.currentTarget.value = openMeeting.meeting.title;
+                  }}
+                  onBlur={(e) => void renameMeeting(openMeeting.meeting.id, e.target.value)}
+                />
+                <p className="card-meta">
+                  <span>
+                    {formatTime(openMeeting.meeting.startedAt)} ·{" "}
+                    {formatMeetingDuration(openMeeting.meeting.durationSeconds)} ·{" "}
+                    {meetingStateLabel(
+                      openMeeting.meeting.state,
+                      progress[openMeeting.meeting.id],
+                      Boolean(openMeeting.meeting.summary),
+                    )}
+                  </span>
+                  {/* yap-1106-call-audio-truth — the tracks chip. */}
+                  <span
+                    className="meeting-tracks"
+                    data-meeting-tracks={recordedTracks(openMeeting.meeting).twoTrack ? "two" : "mic"}
+                  >
+                    {recordedTracks(openMeeting.meeting).label}
+                  </span>
+                  <span>
+                    {openMeeting.audioOnDisk
+                      ? "audio kept"
+                      : `audio deleted after ${insights?.meetings?.audioRetentionDays ?? 7} days`}
+                  </span>
+                </p>
+                {recordedTracks(openMeeting.meeting).detail && (
+                  <p className="tiny meeting-tracks-why">{recordedTracks(openMeeting.meeting).detail}</p>
+                )}
+                <PeopleChips people={detailPeopleRows.map((p) => p.name)} />
+              </header>
+
+              <DetailTabs
+                tab={tab}
+                counts={{ transcript: openMeeting.segments.length, people: detailPeopleRows.length }}
+                onTab={(t) => {
+                  setTab(t);
+                  logUi("tab", { tab: t });
+                }}
+              />
+              <div
+                className="meeting-tab-panel"
+                role="tabpanel"
+                id={`meeting-panel-${tab}`}
+                aria-labelledby={`meeting-tab-${tab}`}
+              >
+                {tab === "notes" &&
+                  (openMeeting.meeting.summary ? (
+                    <NotesView markdown={openMeeting.meeting.summary} />
+                  ) : (
+                    <div className="empty" data-empty-state="meetings:notes">
+                      <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
+                      <p>Notes are written on this Mac once the transcript is ready.</p>
+                      <div className="actions">
+                        {canRetryTranscript(
+                          { ...openMeeting.meeting, audioKept: openMeeting.meeting.audioKept && openMeeting.audioOnDisk },
+                          progress[openMeeting.meeting.id],
+                        ) || openMeeting.meeting.state !== "complete" ? null : meetingActions(
+                            openMeeting.meeting,
+                            progress[openMeeting.meeting.id],
+                            false,
+                          ).includes("notes") ? (
                           <button
-                            type="button"
-                            className="ghost"
-                            disabled={sysAudioBusy}
-                            onClick={() => void runSystemAudioSetup()}
+                            className="primary"
+                            onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
                           >
-                            {CALL_AUDIO_ACTION_LABEL}
+                            {retryNotesLabel(progress[openMeeting.meeting.id])}
+                          </button>
+                        ) : (
+                          <button type="button" className="ghost" onClick={openModelSettings}>
+                            Add a notes model
                           </button>
                         )}
-                      </span>
-                    )}
-                    {/* yap-notetaker-notes — the light live transcript. */}
-                    <LiveTranscript recording={meetingStatus.recording} />
-                  </div>
-                  <span className="rec-clock">{elapsedLabel(meetingStatus)}</span>
-                  <button
-                    className="primary danger"
-                    disabled={meetingBusy}
-                    onClick={toggleMeetingRecording}
-                  >
-                    Stop meeting
-                  </button>
-                </div>
-              )}
-
-              {/* The toolbar exists once there is a list to search (or a
-                  search to clear). With zero meetings the empty state below
-                  carries the picker and the record button, so neither is
-                  shown twice. Record is the FIRST control (walk rule). */}
-              {(meetings.length > 0 || meetingQuery) && (
-              <div className="toolbar">
-                {!meetingStatus.recording && (
-                  <button
-                    className="primary"
-                    disabled={meetingBusy || !!disabledReason(meetingStatus)}
-                    title={disabledReason(meetingStatus) || undefined}
-                    onClick={toggleMeetingRecording}
-                  >
-                    Record a meeting
-                  </button>
-                )}
-                <input
-                  type="search"
-                  value={meetingQuery}
-                  onChange={(e) => setMeetingQuery(e.target.value)}
-                  placeholder="Search meetings — titles and every word said in them…"
-                  aria-label="Search meetings"
-                />
-                {meetingQuery && (
-                  <button className="ghost" onClick={() => setMeetingQuery("")}>
-                    Clear
-                  </button>
-                )}
-                {/* YV125 — the start-of-meeting kind picker. It sits BESIDE
-                    the record button rather than in front of it: there is no
-                    calendar in this phase to infer the kind from, so it is
-                    asked, and "Not sure" is a real answer that changes nothing
-                    about whether the recording starts. Which choice is
-                    selected decides whether diarization clusters the
-                    microphone or treats it as one speaker. */}
-                {meetingKinds.length > 0 && !meetingStatus.recording && (
-                  <div
-                    className="meeting-kind-picker"
-                    role="radiogroup"
-                    aria-label="What kind of meeting is this?"
-                  >
-                    {meetingKinds.map((c) => (
-                      <button
-                        key={c.kind}
-                        type="button"
-                        role="radio"
-                        aria-checked={meetingKind === c.kind}
-                        className={
-                          meetingKind === c.kind ? "chip selected" : "chip"
-                        }
-                        onClick={() => setMeetingKind(c.kind)}
-                      >
-                        {c.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              )}
-
-              {/* yap-uiux-2026-10-16-MEETINGS — the needs-model state: one
-                  click installs the speech engine; never an error. It sits
-                  AFTER the record control (record/stop is always the first
-                  control); with no meetings it lives inside the empty state. */}
-              {(meetings.length > 0 || meetingQuery) && (
-                <SpeechEngineNotice setup={modelSetup} />
-              )}
-
-              {meetings.length === 0 ? (
-                <div className="empty" data-empty-state="meetings">
-                  {/* Y5-B — Meetings gets its OWN drawing. The item forbids one
-                      generic illustration reused across seven views. */}
-                  <div className="view-state-glyph">
-                    <RoomGlyph />
-                  </div>
-                  <h3>
-                    {meetingQuery ? "No meetings match that" : "No meetings yet"}
-                  </h3>
-                  <p>
-                    {meetingQuery
-                      ? "Search covers meeting titles and every word transcribed inside them."
-                      : `Recorded meetings land here — searchable and exportable. Audio is kept for ${
-                          // 0 is "no meetings yet" in Insights, never a real policy.
-                          insights?.meetings?.audioRetentionDays || 7
-                        } days; the transcript is kept for good.`}
-                  </p>
-                  {/* YV95 / finding #6 — the empty state IS the entry point.
-                      Everything above this item shipped a feature with no way
-                      to reach it; this is the one big button that fixes that. */}
-                  {!meetingQuery && (
-                    <>
-                      {/* The same three choices as the toolbar's, from the same
-                          list — a first-time user gets the question too. */}
-                      {meetingKinds.length > 0 && !meetingStatus.recording && (
-                        <div
-                          className="meeting-kind-picker"
-                          role="radiogroup"
-                          aria-label="What kind of meeting is this?"
-                        >
-                          {meetingKinds.map((c) => (
-                            <button
-                              key={c.kind}
-                              type="button"
-                              role="radio"
-                              aria-checked={meetingKind === c.kind}
-                              className={
-                                meetingKind === c.kind ? "chip selected" : "chip"
-                              }
-                              onClick={() => setMeetingKind(c.kind)}
-                            >
-                              {c.label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <button
-                        className="primary big"
-                        disabled={meetingBusy || !!disabledReason(meetingStatus)}
-                        title={disabledReason(meetingStatus) || undefined}
-                        onClick={toggleMeetingRecording}
-                      >
-                        {recordLabel(meetingStatus)}
-                      </button>
-                      <p className="tiny">
-                        {disabledReason(meetingStatus) ??
-                          `Or press ⌃⌘M from anywhere, or pick “Record a meeting” in the menu bar. Everything stays on this Mac.`}
-                      </p>
-                      <SpeechEngineNotice setup={modelSetup} />
-                    </>
-                  )}
-                </div>
-              ) : (
-                <>
-                {backlog?.offer && (
-                  <div className="card notes-backlog" role="region" aria-label="Notes for past meetings">
-                    <p className="meeting-title">
-                      Summarize {backlog.count} past meeting{backlog.count === 1 ? "" : "s"}?
-                    </p>
-                    <p className="tiny muted">
-                      Yap writes notes on this Mac, one meeting at a time. If the notes model isn't here yet, it
-                      downloads once first (about 1.1 GB).
-                    </p>
-                    <div className="actions">
-                      <button className="primary" onClick={() => void answerBacklog(true)}>Summarize</button>
-                      <button className="ghost" onClick={() => void answerBacklog(false)}>Not now</button>
+                      </div>
                     </div>
-                  </div>
-                )}
-                <ul className="meetings-list" data-meetings-list>
-                  {meetings.map((m) => {
-                    const tp = transcribeProgress(m, progress[m.id]);
-                    const notes = summaryFirstLine(m.summary);
-                    // #250: meetingStateLabel already says "Transcript ready" when no
-                    // notes job is known, and names every notes phase when one is.
-                    const stateLabel = tp
-                      ? `Transcribing ${transcribePercent(tp)}%`
-                      : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
-                    const notesJob = notesLabel(progress[m.id]);
-                    // yap24-NT6: one pure decision for every button — Retry only
-                    // when the audio is still there (audio_kept = 1 and a WAV).
-                    const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
-                    return (
-                      <li key={m.id} className="meeting-row" data-meeting-state={m.state}>
-                        <div className="meeting-row-main">
-                          <div className="meeting-row-head">
-                            <button
-                              type="button"
-                              className="meeting-row-title"
-                              title={m.title}
-                              onClick={() => openMeetingDetail(m.id)}
-                            >
-                              {m.title}
-                            </button>
-                            <span className={`meeting-state ${m.state}`}>{stateLabel}</span>
-                            <span className="meeting-row-when">
-                              {formatMeetingDuration(m.durationSeconds)} · {formatTime(m.startedAt)}
-                            </span>
-                          </div>
-                          {/* One line of detail, in priority order: the failure,
-                              the transcription's progress, the notes, or what to
-                              do about missing notes. */}
-                          {m.error ? (
-                            <p className="meeting-row-detail bad" title={m.error}>
-                              <span>{m.error}</span>
-                            </p>
-                          ) : tp ? (
-                            <p className="meeting-row-detail" data-meeting-progress>
-                              <span
-                                className="meeting-row-track"
-                                role="progressbar"
-                                aria-label={`${m.title} transcription`}
-                                aria-valuenow={transcribePercent(tp)}
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                              >
-                                <span style={{ width: `${transcribePercent(tp)}%` }} />
-                              </span>
-                              <span>{transcribedLabel(tp)}</span>
-                            </p>
-                          ) : notes ? (
-                            <p className="meeting-row-detail" title={notes}>
-                              <span>{notes}</span>
-                            </p>
-                          ) : m.state === "complete" && notesJob && canCancelNotes(progress[m.id]) ? (
-                            <p className="meeting-row-detail">
-                              <span>{notesJob}</span>
-                            </p>
-                          ) : m.state === "complete" ? (
-                            <p className="meeting-row-detail">
-                              <span>No notes yet — </span>
-                              <button type="button" className="link" onClick={openModelSettings}>
-                                add a notes model
-                              </button>
-                            </p>
-                          ) : (
-                            <p className="meeting-row-detail">
-                              <span>
-                                {m.segmentCount} {m.segmentCount === 1 ? "segment" : "segments"}
-                                {m.audioKept ? "" : " · audio expired"}
-                              </span>
-                            </p>
-                          )}
-                        </div>
-                        <div className="actions">
-                          <button className="primary" onClick={() => openMeetingDetail(m.id)}>
-                            Open
-                          </button>
-                          {actions.includes("retry") && (
-                            <button onClick={() => void retryMeeting(m.id)}>Retry</button>
-                          )}
-                          {actions.includes("cancel-notes") && (
-                            <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
-                              Cancel notes
-                            </button>
-                          )}
-                          {actions.includes("notes") && (
-                            <button onClick={() => void notesAction(retryNotes, m.id)}>
-                              {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
-                                ? "Retry notes"
-                                : retryNotesLabel(progress[m.id])}
-                            </button>
-                          )}
-                          <ExportMenu
-                            meetingId={m.id}
-                            disabled={meetingBusy}
-                            onAction={onExportAction}
-                          />
-                          <button
-                            className="ghost danger"
-                            disabled={meetingBusy}
-                            onClick={() =>
-                              confirmDeleteMeeting === m.id
-                                ? removeMeeting(m.id)
-                                : setConfirmDeleteMeeting(m.id)
-                            }
-                          >
-                            {confirmDeleteMeeting === m.id
-                              ? "Delete for good?"
-                              : "Delete"}
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-                </>
-              )}
-            </>
-      )}
-      {openMeeting && (
-            <div className="meeting-detail">
-              <div className="actions">
-                <button className="ghost" onClick={() => setOpenMeeting(null)}>
-                  ← All meetings
-                </button>
-                {/* yap24-NT6: the detail page offers the same Retry the card does,
-                    and only when the WAV is still on disk. */}
-                {canRetryTranscript(
-                  { ...openMeeting.meeting, audioKept: openMeeting.meeting.audioKept && openMeeting.audioOnDisk },
-                  progress[openMeeting.meeting.id],
-                ) && (
-                  <button
-                    onClick={async () => {
-                      await retryMeeting(openMeeting.meeting.id);
-                      await openMeetingDetail(openMeeting.meeting.id);
-                    }}
-                  >
-                    Retry
-                  </button>
-                )}
-                <ExportMenu
-                  meetingId={openMeeting.meeting.id}
-                  disabled={meetingBusy}
-                  primary
-                  onAction={onExportAction}
-                />
-                <button
-                  className="ghost danger"
-                  disabled={meetingBusy}
-                  onClick={() =>
-                    confirmDeleteMeeting === openMeeting.meeting.id
-                      ? removeMeeting(openMeeting.meeting.id)
-                      : setConfirmDeleteMeeting(openMeeting.meeting.id)
-                  }
-                >
-                  {confirmDeleteMeeting === openMeeting.meeting.id
-                    ? "Delete for good?"
-                    : "Delete meeting"}
-                </button>
+                  ))}
+                {tab === "transcript" &&
+                  (openMeeting.segments.length === 0 ? (
+                    <div className="empty" data-empty-state="meetings:segments">
+                      <h3>No transcript yet</h3>
+                      <p>
+                        {openMeeting.meeting.state === "recording" ||
+                        openMeeting.meeting.state === "transcribing"
+                          ? "Yap is still working through the audio. This page does not refresh itself."
+                          : openMeeting.meeting.state === "waiting_for_model"
+                            ? "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically. The audio is kept until then."
+                            : openMeeting.audioOnDisk
+                              ? `Nothing was transcribed from this recording. The audio is still on disk for ${
+                                  insights?.meetings?.audioRetentionDays ?? 7
+                                } days.`
+                              : "Nothing was transcribed from this recording, and its audio is gone, so it can't be transcribed again."}
+                      </p>
+                      <div className="actions">
+                        <button
+                          type="button"
+                          className="primary"
+                          onClick={() => void openMeetingDetail(openMeeting.meeting.id)}
+                        >
+                          Check again
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <TranscriptList
+                      segments={openMeeting.segments}
+                      hidden={openMeeting.echoSegments}
+                      kind={openMeeting.meeting.kind}
+                    />
+                  ))}
+                {tab === "people" && <PeopleTab people={detailPeopleRows} />}
               </div>
-
-              {/* The title is editable in place — ASR names a meeting
-                  "Meeting", a person names it after what it was. */}
-              <input
-                className="meeting-title-edit"
-                defaultValue={openMeeting.meeting.title}
-                aria-label="Meeting title"
-                key={openMeeting.meeting.id}
-                onBlur={(e) =>
-                  renameMeeting(openMeeting.meeting.id, e.target.value)
-                }
-              />
-              <p className="card-meta">
-                <span>
-                  {formatTime(openMeeting.meeting.startedAt)} ·{" "}
-                  {formatMeetingDuration(openMeeting.meeting.durationSeconds)} ·{" "}
-                  {meetingStateLabel(
-                    openMeeting.meeting.state,
-                    progress[openMeeting.meeting.id],
-                    Boolean(openMeeting.meeting.summary),
-                  )}
-                </span>
-                <span>
-                  {openMeeting.audioOnDisk
-                    ? "audio kept"
-                    : `audio deleted after ${
-                        insights?.meetings?.audioRetentionDays ?? 7
-                      } days`}
-                </span>
-                {/* yap-1106-call-audio-truth — which tracks this meeting has. */}
-                <span
-                  className="meeting-tracks"
-                  data-meeting-tracks={recordedTracks(openMeeting.meeting).twoTrack ? "two" : "mic"}
-                >
-                  {recordedTracks(openMeeting.meeting).label}
-                </span>
-              </p>
-              {recordedTracks(openMeeting.meeting).detail && (
-                <p className="tiny meeting-tracks-why">{recordedTracks(openMeeting.meeting).detail}</p>
-              )}
-
-              {openMeeting.meeting.summary && (
-                <div className="panel">
-                  <h3>Notes</h3>
-                  <NotesView markdown={openMeeting.meeting.summary} />
-                </div>
-              )}
-
-              {openMeeting.segments.length === 0 ? (
-                <div className="empty" data-empty-state="meetings:segments">
-                  <h3>No transcript yet</h3>
-                  <p>
-                    {openMeeting.meeting.state === "recording" ||
-                    openMeeting.meeting.state === "transcribing"
-                      ? "Yap is still working through the audio. This page does not refresh itself."
-                      : openMeeting.meeting.state === "waiting_for_model"
-                        ? "No speech model is downloaded yet. Download one in Settings and Yap transcribes this meeting automatically. The audio is kept until then."
-                        : openMeeting.audioOnDisk
-                          ? `Nothing was transcribed from this recording. The audio is still on disk for ${
-                              insights?.meetings?.audioRetentionDays ?? 7
-                            } days.`
-                          : "Nothing was transcribed from this recording, and its audio is gone, so it can't be transcribed again."}
-                  </p>
-                  <div className="actions">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void openMeetingDetail(openMeeting.meeting.id)}
-                    >
-                      Check again
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <TranscriptList
-                  segments={openMeeting.segments}
-                  hidden={openMeeting.echoSegments}
-                  kind={openMeeting.meeting.kind}
-                />
-              )}
-            </div>
-      )}
-    </>
+            </article>
+          )}
+        </section>
+      </div>
+      <UndoDeleteBar pending={pending} now={now} onUndo={undoDelete} />
+    </div>
   );
 }
