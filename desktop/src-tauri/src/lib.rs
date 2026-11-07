@@ -9795,10 +9795,7 @@ impl CorrectedSpeakers {
 }
 
 impl summarize::SpeakerSource for CorrectedSpeakers {
-    fn speaker_for(
-        &self,
-        segment: &meetings::MeetingSegment,
-    ) -> Option<summarize::SegmentSpeaker> {
+    fn speaker_for(&self, segment: &meetings::MeetingSegment) -> Option<summarize::SegmentSpeaker> {
         match self.names.get(&segment.id) {
             Some(name) => Some(summarize::SegmentSpeaker::Named(name.trim().to_string())),
             None => summarize::SpeakerSource::speaker_for(&self.fallback, segment),
@@ -11403,10 +11400,8 @@ pub(crate) fn summarize_meeting_with(
     let speakers = summarize::TrackSpeakers::for_meeting(meeting.kind(), &segments);
     // yap-1106-auto-label-and-correct — a line a saved voice or a correction
     // named is attributed to that PERSON in the notes, as on the transcript.
-    let speakers = CorrectedSpeakers::new(
-        db.meeting_speaker_names(id).unwrap_or_default(),
-        speakers,
-    );
+    let speakers =
+        CorrectedSpeakers::new(db.meeting_speaker_names(id).unwrap_or_default(), speakers);
     let summary = summarize::summarize_segments_with(&segments, &client, &speakers);
 
     let summary = summary.map_err(|e| match e {
