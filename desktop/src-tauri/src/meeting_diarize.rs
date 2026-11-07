@@ -37,8 +37,8 @@ use std::time::{Duration, Instant};
 use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::diarize::{
-    attribute_clusters, cluster_track, DiarizeError, DiarizePool, DiarizedSegment, MeetingTracks,
-    TargetMode,
+    attribute_clusters, cluster_track_with_voices, DiarizeError, DiarizePool, DiarizedSegment,
+    MeetingTracks, TargetMode,
 };
 use crate::diarize_metrics::CosineDistance;
 use crate::meeting_asr::{build_speaker_turns, ChunkStatus, JsonProgressStore, ProgressStore};
@@ -373,7 +373,7 @@ fn run(
         mic_wav: &mic,
         system_wav: sys.as_deref(),
     };
-    let diarized = match cluster_track(
+    let (diarized, voices) = match cluster_track_with_voices(
         pool,
         tracks,
         meeting.kind(),
@@ -402,6 +402,23 @@ fn run(
         failed.track = Some(track);
         failed.labels = diarize_sidecar_degrade(&DiarizeError::Protocol);
         return failed;
+    }
+    // yap-1106-who-is-this — keep each cluster's voice for the "Who was this?"
+    // cards. A failure here costs the cards their voice sample (they can still
+    // be named from text), never the attribution that already landed.
+    let digest = crate::speaker_profiles::pinned_embedder_digest();
+    let stored: Vec<(i64, Vec<f32>, f64)> = voices
+        .into_iter()
+        .map(|v| (v.cluster_index, v.embedding, v.seconds))
+        .collect();
+    match db.save_meeting_cluster_voices(meeting_id, track, digest.as_deref(), &stored) {
+        Ok(n) => log::info!(
+            "meeting_diarize cluster_voices saved n={n} with_digest={} meeting={meeting_id} track={track}",
+            digest.is_some()
+        ),
+        Err(e) => log::warn!(
+            "meeting_diarize cluster_voices_failed meeting={meeting_id} track={track} error=\"{e}\""
+        ),
     }
     outcome
 }

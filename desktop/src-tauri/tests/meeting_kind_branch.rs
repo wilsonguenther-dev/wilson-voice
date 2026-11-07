@@ -281,6 +281,8 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         meetings::MIGRATION_10_DETECTED_CALL,
         // yap-1106-voiceprints: step 11 is the speaker-profile tables.
         wilson_voice_lib::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
+        // yap-1106-who-is-this: step 12 keeps each cluster's voice for the cards.
+        wilson_voice_lib::speaker_profiles::MIGRATION_12_CLUSTER_VOICES,
     ];
     let mentions = ladder
         .iter()

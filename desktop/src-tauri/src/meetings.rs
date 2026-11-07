@@ -55,10 +55,13 @@ use serde::{Deserialize, Serialize};
 /// 11 = yap-1106-voiceprints' `speaker_profiles` / `speaker_samples` tables
 ///      and `meeting_segments.speaker_profile_id` / `speaker_name`
 ///      ([`crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES`]).
+/// 12 = yap-1106-who-is-this' `meeting_cluster_voices` (each diarized
+///      cluster's voice and what the person decided about it)
+///      ([`crate::speaker_profiles::MIGRATION_12_CLUSTER_VOICES`]).
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
