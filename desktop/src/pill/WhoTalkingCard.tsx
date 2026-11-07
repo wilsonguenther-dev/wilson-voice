@@ -6,7 +6,7 @@
  * the screen-share quiet state, the backend's `meeting:live-ask`, and the
  * answers back (`meeting_live_name` / `meeting_live_same` / `meeting_live_skip`).
  *
- * It never takes focus: no autoFocus, no focus() call, nothing that activates
+ * It never takes focus: no auto-focus attribute, no focus call, nothing that activates
  * the pill — you click the field to type. One `setTimeout` to the next
  * deadline (20 s ignore, 2 s toast), never an interval.
  */
