@@ -1817,6 +1817,27 @@ impl TranscriptionManager {
         )
     }
 
+    /// yap-1106-sp-05 — ONE window of a take that is still recording,
+    /// decoded by `stream_decode` while the user keeps talking. The same
+    /// interactive, non-preemptible, model-pinned decode a dictation's
+    /// single-call path runs, so a streamed window and a batch take decode on
+    /// the same engine under the same rules (and a meeting yields to it).
+    pub fn transcribe_window_on(
+        &self,
+        model_id: &str,
+        model_path: &Path,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<String, String> {
+        self.transcribe_interactive_on(
+            Some((model_id, model_path)),
+            samples_16k_mono,
+            language,
+            bias_prompt,
+        )
+    }
+
     /// Y10-A — the probed language support of `model_id`, loading it first
     /// if it is not resident. Pinned like a dictation decode, so the answer is
     /// about the dictation's model and never the meeting's.

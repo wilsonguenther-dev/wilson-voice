@@ -655,6 +655,9 @@ fn bench_take(
     let audio_s = raw.len() as f64 / f64::from(record::TARGET_RATE);
     let leveled = record::bench_capture_chain(&raw);
     drop(raw);
+    // SP-05 — the streaming decode the app runs WHILE a take records, over the
+    // same leveled audio, reported next to the batch numbers.
+    let stream_row = bench_stream(manager, model_id, model_path, settings, &leveled, wav);
 
     // SP-06 — the fade, RNNoise and Silero stream during capture in the app,
     // so the bench streams them here, before the release clock, too.
@@ -709,7 +712,107 @@ fn bench_take(
         "degraded": asr.degraded,
         "words": normalized_words(&asr.text).len(),
         "wer": wer,
+        "stream": stream_row,
     }))
+}
+
+/// SP-05 — a bench window decoder: the same pinned interactive decode the app
+/// streams with.
+struct BenchWindowDecoder {
+    manager: TranscriptionManager,
+    model_id: String,
+    model_path: PathBuf,
+    language: String,
+}
+
+impl crate::stream_decode::WindowDecoder for BenchWindowDecoder {
+    fn decode(&self, samples: Vec<f32>) -> Result<String, String> {
+        self.manager.transcribe_window_on(
+            &self.model_id,
+            &self.model_path,
+            samples,
+            Some(self.language.clone()),
+            None,
+        )
+    }
+}
+
+/// SP-05 — stream `leveled` through [`crate::stream_decode::StreamDecoder`]
+/// as capture would, then time the release (in-flight window + tail only).
+///
+/// Paced on the decode: after each committed window the feed waits for it to
+/// finish, which is what real time looks like whenever decode runs faster than
+/// speech (the measured RTF is ~20x). `release_text_ms` is the number the SP-05
+/// targets are written against (≤ 300 ms at 240 s, ≤ 150 ms at 20 s);
+/// `wer_vs_batch` is computed by the caller's reference when one exists.
+fn bench_stream(
+    manager: &TranscriptionManager,
+    model_id: &str,
+    model_path: &Path,
+    settings: &crate::AppSettings,
+    leveled: &[f32],
+    wav: &Path,
+) -> serde_json::Value {
+    use crate::stream_decode::{StreamConfig, StreamDecoder, StreamOutcome, WindowDecoder};
+    let prefs = settings.language_prefs();
+    let Some(language) =
+        crate::stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    else {
+        return serde_json::json!({ "outcome": "skipped", "reason": "auto_language" });
+    };
+    let decoder: Arc<dyn WindowDecoder> = Arc::new(BenchWindowDecoder {
+        manager: manager.clone(),
+        model_id: model_id.to_string(),
+        model_path: model_path.to_path_buf(),
+        language,
+    });
+    let take = crate::stream_decode::next_take_id();
+    let mut stream = StreamDecoder::start(take, StreamConfig::default(), decoder, None);
+    let capture = Instant::now();
+    // 10 ms blocks, the capture consumer's order of magnitude.
+    for block in leveled.chunks(160) {
+        stream.push(block, 1.0);
+        while stream.backlog() > 0 && !stream.is_degraded() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    stream.seal(leveled.len());
+    let capture_ms = ms_since(capture);
+    let t_release = Instant::now();
+    let outcome = stream.finish();
+    let release_text_ms = ms_since(t_release);
+    match outcome {
+        StreamOutcome::Streamed(s) => {
+            let wer = reference_text(wav).map(|r| word_error_rate(&r, &s.text));
+            log::info!(
+                "bench stream file={} windows={} release_text_ms={release_text_ms} tail_s={:.2}",
+                basename(wav),
+                s.windows,
+                s.tail_seconds
+            );
+            serde_json::json!({
+                "outcome": "streamed",
+                "windows": s.windows,
+                "tail_s": (s.tail_seconds * 100.0).round() / 100.0,
+                "tail_ms": s.tail_ms,
+                "release_text_ms": release_text_ms,
+                "capture_decode_ms": s.capture_decode_ms,
+                "capture_ms": capture_ms,
+                "words": normalized_words(&s.text).len(),
+                "wer": wer,
+            })
+        }
+        StreamOutcome::NotUsed(reason) => serde_json::json!({
+            "outcome": "not_used",
+            "reason": reason,
+            "release_text_ms": release_text_ms,
+        }),
+        StreamOutcome::Degraded(reason) => serde_json::json!({
+            "outcome": "degraded",
+            "reason": reason,
+            "release_text_ms": release_text_ms,
+        }),
+    }
 }
 
 /// `wilson-voice --bench <wav…>` — load the model once (reported as
