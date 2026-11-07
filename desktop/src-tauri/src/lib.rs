@@ -716,6 +716,12 @@ pub struct AppSettings {
     /// back in captures when it stops. `float_pill::sync_capture_hidden`.
     #[serde(default = "default_true")]
     pub hide_from_capture_in_meetings: bool,
+    /// yap-1106-chatter-setting — "Yappy talks" (Settings › Companion):
+    /// `always` | `less` (default: quieter from the 50th take) | `milestones`.
+    /// Only those three are stored ([`sanitize_yappy_talks`]); the policy it
+    /// drives is `desktop/src/pill/chatter.ts`.
+    #[serde(default = "default_yappy_talks")]
+    pub yappy_talks: String,
 }
 
 /// WF-17 — the pill-message categories a user may mute. Mirrors
@@ -724,6 +730,25 @@ pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
 
 /// WF-17 — keep only mutable categories, once each, in table order. A stored
 /// `"error"` (or anything unknown) is dropped: an error can never be muted.
+/// yap-1106-chatter-setting — the "Yappy talks" modes. Mirrors
+/// `CHATTER_MODES` in `desktop/src/pill/chatter.ts`.
+pub const YAPPY_TALKS_MODES: [&str; 3] = ["always", "less", "milestones"];
+
+/// yap-1106-chatter-setting — a stored "Yappy talks" value, or the default
+/// (`less`) for anything unknown, so a bad value can never silence or unmute
+/// Yappy by accident.
+pub fn sanitize_yappy_talks(raw: &str) -> String {
+    if YAPPY_TALKS_MODES.contains(&raw) {
+        raw.to_string()
+    } else {
+        default_yappy_talks()
+    }
+}
+
+fn default_yappy_talks() -> String {
+    "less".into()
+}
+
 pub fn sanitize_muted_pill_categories(raw: &[String]) -> Vec<String> {
     MUTABLE_PILL_CATEGORIES
         .iter()
@@ -848,6 +873,7 @@ impl Default for AppSettings {
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
             hide_from_capture_in_meetings: true,
+            yappy_talks: default_yappy_talks(),
         }
     }
 }
@@ -5886,6 +5912,15 @@ fn save_settings(
                 "settings pill_quiet_changed muted={} count={}",
                 next.muted_pill_categories.join(","),
                 next.muted_pill_categories.len()
+            );
+        }
+        // yap-1106-chatter-setting — only the three "Yappy talks" modes are stored.
+        next.yappy_talks = sanitize_yappy_talks(&next.yappy_talks);
+        if next.yappy_talks != live.yappy_talks {
+            log::info!(
+                "settings yappy_talks_changed from={} to={}",
+                live.yappy_talks,
+                next.yappy_talks
             );
         }
         if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
