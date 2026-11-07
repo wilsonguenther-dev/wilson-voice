@@ -286,4 +286,51 @@ describe("item 18 / WF-03 pill rail", () => {
     railFailed("meeting_stop", "boom", "ignored after unsubscribe");
     expect(seen).toEqual(["Meeting didn't stop — use Stop in the menu bar."]);
   });
+
+  it("note_opens_the_scratchpad_on_the_note_it_made", async () => {
+    // fix-b5-1 — the id save_note_draft returns is the id the open carries.
+    const inv = vi.mocked(invoke);
+    inv.mockClear();
+    inv.mockImplementation(((cmd: string) =>
+      Promise.resolve(
+        cmd === "save_note_draft"
+          ? { id: "note-b", title: "Meeting note · Standup · 12:34", content: "[12:34] ", pinned: false }
+          : undefined,
+      )) as unknown as typeof invoke);
+    const lines: string[] = [];
+    const info = vi.spyOn(console, "info").mockImplementation((l: unknown) => { lines.push(String(l)); });
+    try {
+      pressSlot(slotById("note"), railCtx({ meetingRecording: true, meetingClock: "12:34", meetingTitle: "Standup" }), noop, false);
+      await flush();
+      await flush();
+      await flush();
+      expect(inv).toHaveBeenCalledWith("save_note_draft", {
+        id: null,
+        title: "Meeting note · Standup · 12:34",
+        content: "[12:34] ",
+      });
+      expect(inv).toHaveBeenCalledWith("open_scratchpad", { noteId: "note-b" });
+      const names = inv.mock.calls.map((c) => c[0]);
+      expect(names.indexOf("save_note_draft")).toBeLessThan(names.indexOf("open_scratchpad"));
+      // One meeting_note line, and no note text (title or seed) in any line.
+      expect(lines.filter((l) => l.startsWith("pill_rail meeting_note "))).toHaveLength(1);
+      for (const l of lines) {
+        expect(l).not.toContain("12:34");
+        expect(l).not.toContain("Standup");
+        expect(l).not.toContain("note-b");
+      }
+
+      // The plain Scratchpad (Note's no-meeting path) is unchanged: no note
+      // made, no id carried.
+      inv.mockClear();
+      pressSlot(slotById("scratchpad"), railCtx(), noop, false);
+      await flush();
+      const calls = inv.mock.calls;
+      expect(calls.map((c) => c[0])).not.toContain("save_note_draft");
+      expect(calls.find((c) => c[0] === "open_scratchpad")).toEqual(["open_scratchpad"]);
+    } finally {
+      info.mockRestore();
+      inv.mockImplementation((() => Promise.resolve()) as unknown as typeof invoke);
+    }
+  });
 });
