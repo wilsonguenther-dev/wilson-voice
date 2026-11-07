@@ -1630,6 +1630,15 @@ button.star.on {
   color: var(--muted);
 }
 
+/* yap-1106-chatter-setting — "Yappy talks": the take count that drives the
+   quieting sits right after its one plain sentence, set apart by weight only. */
+.chatter-explain .chatter-count {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* yap-1106-curse-setting — the Badass-only curse toggle sits under the voice
    cards, one step below them. */
 .curse-setting {
@@ -2301,42 +2310,29 @@ button.star.on {
 }
 .yappy-house .yh-frame {
   position: relative;
-  /* A column narrower than the 3x room (576 px) crops the room's sides
-     evenly instead of drawing it at a fraction. */
+  /* yap-1106-studio-room — the wooden frame is drawn INSIDE the picture (the
+     approved home.html section 5 frame, at the room's whole-number scale), so
+     this box adds no wood, padding or rounded mat of its own. A column narrower
+     than the 2x studio (640 px) crops the sides evenly, never a fraction. */
   display: flex;
   justify-content: center;
   overflow: hidden;
-  background: var(--retro-wood);
-  border-radius: 20px;
-  padding: 12px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.3) inset,
-    0 -3px 0 var(--retro-wood-deep) inset,
-    var(--elevation-house);
-}
-.yappy-house .yh-frame::after {
-  content: "";
-  position: absolute;
-  inset: 12px;
-  border-radius: 10px;
-  box-shadow: 0 0 0 3px var(--retro-wood-deep) inset;
-  pointer-events: none;
+  padding: 0;
 }
 .yappy-house .yh-stage {
   display: block;
   flex: none;
   /* yap-1106-home-full-width-room — full column width; the HEIGHT is set
-     inline by YappyHouse to 128 x the whole-number scale (5x / 4x / 3x), so the
-     art is drawn at exactly that many CSS px per art px with the side margin in
-     the room's own wall shade. Never a fraction, never letterboxed vertically.
+     inline by YappyHouse to 160 x the whole-number scale (4x / 3x / 2x), so the
+     studio is drawn at exactly that many CSS px per art px, centred, with the
+     page showing beside it. Never a fraction, never letterboxed vertically.
      object-fit is READ by YappyHouse (contain = the whole room). */
   width: 100%;
-  min-width: 576px;
+  min-width: 640px;
   object-fit: contain;
-  border-radius: 8px;
   /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
-  background: var(--retro-lcd-backdrop);
+  background: transparent;
 }
 /* The room's label: Yappy's live mood, or the meeting clock while one records. */
 .yappy-house .yh-label {
@@ -2348,18 +2344,6 @@ button.star.on {
 .yappy-house .yh-meeting {
   color: hsl(var(--accent-meeting));
   font-variant-numeric: tabular-nums;
-}
-@media (prefers-color-scheme: dark) {
-  .yappy-house .yh-frame {
-    background: var(--retro-wood-shadow);
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.14) inset,
-      0 -3px 0 var(--retro-wood-darkest) inset,
-      var(--elevation-house);
-  }
-  .yappy-house .yh-frame::after {
-    box-shadow: 0 0 0 3px var(--retro-wood-darkest) inset;
-  }
 }
 
 /* ── YP3 · Licensing — the chip, the License tab, the purchase sheet ──────────
@@ -3954,4 +3938,60 @@ button.primary.big {
   .news-chips button.chip {
     transition: none;
   }
+}
+
+/* yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced. */
+.news-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.news-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.news-advanced > summary h3 {
+  display: inline;
+}
+.news-advanced > summary::after {
+  content: " +";
+  color: var(--muted);
+}
+.news-advanced[open] > summary::after {
+  content: " −";
+}
+.news-quote-key {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.news-quote-key h4 {
+  margin: 0;
+}
+.news-quote-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.news-quote-providers legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+.news-quote-field {
+  display: grid;
+  gap: var(--space-1);
+}
+.news-quote-field input {
+  font-family: var(--font-mono);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+}
+.news-quote-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }

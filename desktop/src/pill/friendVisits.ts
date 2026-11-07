@@ -36,6 +36,7 @@
  */
 import type { FriendId } from "../sprites/friends";
 import { COMPANION_VISIT_CAP_MS } from "./meetingScene";
+import type { ChatterMode } from "./chatter";
 
 /** A pill visitor: any friend, or Yappy when someone else sits in the pill. */
 export type VisitorId = FriendId | "yappy";
@@ -100,6 +101,13 @@ export interface VisitContext {
   occupant: string;
   /** The cloud connection is on (Cinder's precondition). */
   cloudConnected: boolean;
+  /**
+   * yap-1106-chatter-setting — "Yappy talks" (Settings › Companion). Omitted
+   * or "less": the 50 / 200 ladder above. "always": the ladder is off, every
+   * friend keeps the full first-day rate. "milestones": only the milestone
+   * visit (Yappy's 100th / 1000th take); every other friend stays home.
+   */
+  chatter?: ChatterMode;
 }
 
 /** What has already been shown. Survives a relaunch (one localStorage row). */
@@ -134,7 +142,8 @@ export type VisitSkip =
   | "visit-showing"
   | "already-today"
   | "daily-cap"
-  | "too-soon";
+  | "too-soon"
+  | "chatter-milestones";
 
 /** The three quiet states (a recording meeting or live call, a shared screen, Do Not Disturb). */
 export type QuietState = Pick<VisitContext, "meetingRecording" | "screenSharing" | "doNotDisturb">;
@@ -151,6 +160,14 @@ export function dayKey(ms: number): string {
 }
 
 const takes = (n: number) => (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
+
+/**
+ * yap-1106-chatter-setting — the take count the quieting ladder reads. With
+ * "Yappy talks: always" the ladder never starts (0); otherwise the real count.
+ */
+export function quietingTakes(ctx: Pick<VisitContext, "takesSoFar" | "chatter">): number {
+  return ctx.chatter === "always" ? 0 : takes(ctx.takesSoFar);
+}
 
 /** The reason everyone is silent right now, or null. Meeting outranks the rest. */
 export function quietReason(ctx: QuietState): VisitSkip | null {
@@ -203,6 +220,9 @@ export function decideVisit(
   const friend = EVENT_OWNER[event];
   if (requested !== undefined && requested !== friend) return { show: false, reason: "not-own-event" };
   // Room-only friends own no event (EVENT_OWNER), so they can never get here.
+  // yap-1106-chatter-setting — "only milestones": the milestone visit is the only one
+  // (checked before the occupant so the skip reason names the setting).
+  if (ctx.chatter === "milestones" && event !== "milestone") return { show: false, reason: "chatter-milestones" };
   if (ctx.occupant === friend) return { show: false, reason: "occupant" };
   if (friend === "cinder" && !ctx.cloudConnected) return { show: false, reason: "cloud-off" };
   const quiet = quietReason(ctx);
@@ -211,16 +231,17 @@ export function decideVisit(
   const today = dayKey(nowMs);
   if (ledger.lastDay[friend] === today) return { show: false, reason: "already-today" };
   const countToday = ledger.day === today ? ledger.count : 0;
-  if (countToday >= dailyVisitCap(ctx.takesSoFar)) return { show: false, reason: "daily-cap" };
+  const quietTakes = quietingTakes(ctx);
+  if (countToday >= dailyVisitCap(quietTakes)) return { show: false, reason: "daily-cap" };
   if (
-    takes(ctx.takesSoFar) >= QUIETER_AFTER_TAKES &&
+    quietTakes >= QUIETER_AFTER_TAKES &&
     ledger.lastAtMs !== null &&
     nowMs >= ledger.lastAtMs &&
     nowMs - ledger.lastAtMs < VISIT_GAP_QUIETER_MS
   ) {
     return { show: false, reason: "too-soon" };
   }
-  const ms = visitDurationMs(ctx.takesSoFar);
+  const ms = visitDurationMs(quietTakes);
   return { show: true, visit: { friend, event, startMs: nowMs, untilMs: nowMs + ms } };
 }
 

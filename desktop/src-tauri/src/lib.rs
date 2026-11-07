@@ -748,11 +748,36 @@ pub struct AppSettings {
     /// back in captures when it stops. `float_pill::sync_capture_hidden`.
     #[serde(default = "default_true")]
     pub hide_from_capture_in_meetings: bool,
+    /// yap-1106-chatter-setting — "Yappy talks" (Settings › Companion):
+    /// `always` | `less` (default: quieter from the 50th take) | `milestones`.
+    /// Only those three are stored ([`sanitize_yappy_talks`]); the policy it
+    /// drives is `desktop/src/pill/chatter.ts`.
+    #[serde(default = "default_yappy_talks")]
+    pub yappy_talks: String,
 }
 
 /// WF-17 — the pill-message categories a user may mute. Mirrors
 /// `MUTABLE_CATEGORIES` in `desktop/src/pill/live.ts`.
 pub const MUTABLE_PILL_CATEGORIES: [&str; 3] = ["tip", "news", "milestone"];
+
+/// yap-1106-chatter-setting — the "Yappy talks" modes. Mirrors
+/// `CHATTER_MODES` in `desktop/src/pill/chatter.ts`.
+pub const YAPPY_TALKS_MODES: [&str; 3] = ["always", "less", "milestones"];
+
+/// yap-1106-chatter-setting — a stored "Yappy talks" value, or the default
+/// (`less`) for anything unknown, so a bad value can never silence or unmute
+/// Yappy by accident.
+pub fn sanitize_yappy_talks(raw: &str) -> String {
+    if YAPPY_TALKS_MODES.contains(&raw) {
+        raw.to_string()
+    } else {
+        default_yappy_talks()
+    }
+}
+
+fn default_yappy_talks() -> String {
+    "less".into()
+}
 
 /// WF-17 — keep only mutable categories, once each, in table order. A stored
 /// `"error"` (or anything unknown) is dropped: an error can never be muted.
@@ -881,6 +906,7 @@ impl Default for AppSettings {
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
             hide_from_capture_in_meetings: true,
+            yappy_talks: default_yappy_talks(),
         }
     }
 }
@@ -6400,6 +6426,15 @@ fn save_settings(
                 next.muted_pill_categories.len()
             );
         }
+        // yap-1106-chatter-setting — only the three "Yappy talks" modes are stored.
+        next.yappy_talks = sanitize_yappy_talks(&next.yappy_talks);
+        if next.yappy_talks != live.yappy_talks {
+            log::info!(
+                "settings yappy_talks_changed from={} to={}",
+                live.yappy_talks,
+                next.yappy_talks
+            );
+        }
         if next.hide_from_capture_in_meetings != live.hide_from_capture_in_meetings {
             log::info!(
                 "settings capture_hide_changed on={}",
@@ -9544,7 +9579,18 @@ fn set_news_prefs(
     prefs: news_prefs::NewsPrefs,
     source: String,
 ) -> Result<news_prefs::NewsView, String> {
-    news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+    let view = news_prefs::save(&*state.db, &prefs, &source, news_prefs::now_ms())
+        .map_err(|e| e.plain())?;
+    // yap-1106-news-rank-cache — switching Yappy News off deletes the story
+    // cache and the seen-set. A failure here never fails the save (the switch
+    // is already off, so nothing reads the cache); it is logged.
+    if let Err(e) = state
+        .db
+        .with_news_cache(|c| news::cache::apply_prefs(c, &prefs))
+    {
+        log::warn!("news cache_clear_failed reason=feature_off error=\"{e}\"");
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -9553,6 +9599,42 @@ fn dismiss_news_offer(
     source: String,
 ) -> Result<news_prefs::NewsView, String> {
     news_prefs::dismiss_offer(&*state.db, &source, news_prefs::now_ms()).map_err(|e| e.plain())
+}
+
+/// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
+/// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
+fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
+    keychain::MacKeychain::with_service(news::quote_key::keychain_service_for(
+        &app.config().identifier,
+    ))
+}
+
+/// Settings → Yappy News → Advanced: which provider, whether a key is saved
+/// (last four characters only), and the tier the next refresh uses.
+#[tauri::command]
+fn get_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> news::quote_key::QuoteKeyView {
+    news::quote_key::view(&*state.db, &news_quote_keychain(&app))
+}
+
+#[tauri::command]
+fn set_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    provider: news::quote_key::QuoteProvider,
+    key: String,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::save(&*state.db, &news_quote_keychain(&app), provider, &key)
+}
+
+#[tauri::command]
+fn clear_news_quote_key(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<news::quote_key::QuoteKeyView, String> {
+    news::quote_key::clear(&*state.db, &news_quote_keychain(&app))
 }
 
 #[tauri::command]
@@ -13982,6 +14064,10 @@ pub fn run() {
             // yap-1106-friend-visits — quiet state for friend visits.
             pill_quiet_state,
             dismiss_news_offer,
+            // yap-1106-fb-14-news-quote-key — optional own quote-feed key.
+            get_news_quote_key,
+            set_news_quote_key,
+            clear_news_quote_key,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,

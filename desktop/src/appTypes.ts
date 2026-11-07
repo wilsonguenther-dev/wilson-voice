@@ -167,6 +167,12 @@ export interface AppSettings {
    */
   companionTone?: string;
   /**
+   * yap-1106-chatter-setting (backend `yappy_talks`, default "less"): "Yappy
+   * talks" — always | less (quieter from the 50th take) | milestones. Read
+   * live by YappyPill and NudgeRow through float-main (`pill/chatter.ts`).
+   */
+  yappyTalks?: string;
+  /**
    * yap-1106-curse-setting (backend `companion_curse`, default false): the
    * Badass voice may swear about one finished-take line in four. Offered only
    * under Badass; ignored by every other voice and in any meeting state.

@@ -48,6 +48,7 @@ import {
   type VisitorId,
 } from "./friendVisits";
 import { prefersReducedMotion } from "./motion";
+import { DEFAULT_CHATTER_MODE, type ChatterMode } from "./chatter";
 import { drawFriendFrame, friendManifest, pickFrame } from "../sprites/friends";
 import { FRIENDS } from "../sprites/art";
 import { crispPlan, domBuffer, paintCrisp } from "../sprites/crisp";
@@ -117,9 +118,11 @@ export interface FriendVisitProps {
   occupant: string;
   /** DEV / matrix only: a visitor pinned on screen (`?friend=`). */
   forced?: VisitorId | null;
+  /** yap-1106-chatter-setting — "Yappy talks"; omitted, it is "less over time". */
+  chatter?: ChatterMode;
 }
 
-export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, forced = null }: FriendVisitProps) {
+export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, forced = null, chatter = DEFAULT_CHATTER_MODE }: FriendVisitProps) {
   const [visit, setVisit] = useState<Visit | null>(null);
   const [quiet, setQuiet] = useState({ screenSharing: false, doNotDisturb: false });
   /** A call app is live (offering / chip / recording) — as quiet as a meeting. */
@@ -129,11 +132,11 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const ledgerRef = useRef<VisitLedger>(EMPTY_LEDGER);
   const takesRef = useRef(0);
   const visitRef = useRef<Visit | null>(null);
-  const ctxRef = useRef({ meetingQuiet, occupant, quiet });
+  const ctxRef = useRef({ meetingQuiet, occupant, quiet, chatter });
   // Synced first, so every effect below (and every listener) reads this render.
   useEffect(() => {
-    ctxRef.current = { meetingQuiet, occupant, quiet };
-  }, [meetingQuiet, occupant, quiet]);
+    ctxRef.current = { meetingQuiet, occupant, quiet, chatter };
+  }, [meetingQuiet, occupant, quiet, chatter]);
 
   useEffect(() => {
     ledgerRef.current = loadLedger();
@@ -149,6 +152,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       takesSoFar: takesRef.current,
       occupant: c.occupant,
       cloudConnected,
+      chatter: c.chatter,
     };
     const d = decideVisit(event, ctx, ledgerRef.current, Date.now(), visitRef.current);
     console.info(visitLogLine(event, d));
