@@ -58,10 +58,10 @@ export function BacktrackCaughtView({
         </p>
       )}
       <div className="backtrack-caught-actions">
-        <button type="button" className="backtrack-caught-undo" data-pill-control="backtrack-caught-undo" disabled={busy} onClick={onUndo}>
+        <button type="button" className="backtrack-caught-undo" disabled={busy} onClick={onUndo}>
           {undo}
         </button>
-        <button type="button" className="backtrack-caught-dismiss" data-pill-control="backtrack-caught-dismiss" disabled={busy} onClick={onDismiss}>
+        <button type="button" className="backtrack-caught-dismiss" disabled={busy} onClick={onDismiss}>
           {dismiss}
         </button>
       </div>

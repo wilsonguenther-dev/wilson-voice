@@ -65,12 +65,6 @@
  *   node scripts/pill-matrix.mjs --out <dir>             every phase x 3 docks x 2 characters
  *   node scripts/pill-matrix.mjs --out <dir> --only gated  one phase x 3 x 2 (what each PILL item runs)
  *   node scripts/pill-matrix.mjs --self-test-must-fail   prove the detectors are not blind
- *   node scripts/pill-matrix.mjs --clicks [--only <phase>]  yap-1106-fb-02: click every control
- *           (`[data-pill-control]`) of the one pill at its centre and four inner
- *           corners, once each, in every dock x {no meeting, meeting}; assert ONE
- *           click lands on that control per press, the control is >= 24 x 24 pt,
- *           and every probe point is inside the hit rects the page told the
- *           NSPanel (window.__YAP_PILL_HITBOXES__). Writes clicks.json to --out.
  *
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
  *           for a PR, never a commit — do not point this inside the repo.
@@ -115,7 +109,7 @@ const CHROME =
 /* ── args ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const a = { out: null, only: null, sky: "day", selfTest: false, clicks: false };
+  const a = { out: null, only: null, sky: "day", selfTest: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--out" || k === "--only" || k === "--sky") {
@@ -126,7 +120,6 @@ function parseArgs(argv) {
     else if (k.startsWith("--only=")) a.only = k.slice(7);
     else if (k.startsWith("--sky=")) a.sky = k.slice(6);
     else if (k === "--self-test-must-fail") a.selfTest = true;
-    else if (k === "--clicks") a.clicks = true;
     else usage("unknown argument " + k);
   }
   if (a.sky !== "all" && !SKY_TIMES.includes(a.sky)) usage("--sky must be one of " + SKY_TIMES.join("|") + "|all");
@@ -541,7 +534,6 @@ async function run() {
     await cdp.send("Page.close", {}, s).catch(() => {});
 
     if (ARGS.selfTest) return await selfTest(cdp, base, phases);
-    if (ARGS.clicks) return await clickMatrix(cdp, base, phases, outDir);
 
     let todo = phases;
     if (ARGS.only) {
@@ -595,136 +587,6 @@ async function run() {
     rmSync(profile, { recursive: true, force: true });
     rmSync(work, { recursive: true, force: true });
   }
-}
-
-/* ── --clicks (yap-1106-fb-02-pill-first-click) ─────────────────────────── */
-/*
- * Wilson 15:29Z: "the first time i click it the second time doesn't work the
- * third time it works". For every scene of the ONE pill (Yappy — the Classic
- * pill is retired) x dock x meeting state, every visible `[data-pill-control]`
- * is pressed at its centre and its four inner corners (1 pt in), ONE press per
- * point, through real CDP mouse events. Findings:
- *   control-too-small     the control is drawn under 24 x 24 pt
- *   probe-outside-hitbox  the point is not inside the rects the page published
- *                         for the NSPanel's click-through region
- *   probe-missed          the press produced no click on the control
- *   probe-double          the press produced more than one click
- *   probe-wrong-target    the press clicked something else
- * A control whose click changes the pill (a card's Dismiss) is re-probed on a
- * freshly loaded page for each point, so every point gets its own first press.
- */
-const MIN_CONTROL_PT = 24;
-const CLICK_LIST = String.raw`(() => {
-  const els = [...document.querySelectorAll("[data-pill-control]")].filter((el) => {
-    const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none" && cs.pointerEvents !== "none";
-  });
-  window.__probeEls = els;
-  window.__probeCounts = els.map(() => 0);
-  window.__probeStray = 0;
-  if (!window.__probeHooked) {
-    window.__probeHooked = true;
-    document.addEventListener("click", (e) => {
-      const hit = e.target instanceof Element ? e.target.closest("[data-pill-control]") : null;
-      const i = (window.__probeEls || []).indexOf(hit);
-      if (i >= 0) window.__probeCounts[i]++;
-      else window.__probeStray++;
-    }, true);
-  }
-  return els.map((el) => {
-    const r = el.getBoundingClientRect();
-    return { name: el.getAttribute("data-pill-control"), x: r.left, y: r.top, w: r.width, h: r.height };
-  });
-})()`;
-
-function probePoints(c) {
-  const i = Math.min(1, c.w / 2, c.h / 2);
-  return [
-    ["centre", c.x + c.w / 2, c.y + c.h / 2],
-    ["top-left", c.x + i, c.y + i],
-    ["top-right", c.x + c.w - i, c.y + i],
-    ["bottom-left", c.x + i, c.y + c.h - i],
-    ["bottom-right", c.x + c.w - i, c.y + c.h - i],
-  ];
-}
-
-async function clickMatrix(cdp, base, phases, outDir) {
-  const todo = ARGS.only ? phases.filter((p) => p.id === ARGS.only || p.phase === ARGS.only) : phases;
-  if (!todo.length) {
-    console.error("pill-matrix --clicks: --only " + ARGS.only + " is not a phase");
-    return 2;
-  }
-  const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
-  const s = await openPage(cdp, tones);
-  const rows = [];
-  let probed = 0;
-  for (const p of todo) {
-    for (const dock of DOCKS) {
-      for (const meeting of MEETINGS) {
-        const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=yappy&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
-        const fresh = async () => {
-          await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
-          await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
-          await settle(cdp, s, p.phaseId || p.id);
-          await fitPanel(cdp, s);
-          return await evaluate(cdp, s, CLICK_LIST);
-        };
-        const controls = await fresh();
-        const ordinal = new Map();
-        for (const c of controls) {
-          const ord = ordinal.get(c.name) || 0;
-          ordinal.set(c.name, ord + 1);
-          const findings = [];
-          if (c.w < MIN_CONTROL_PT - 0.5 || c.h < MIN_CONTROL_PT - 0.5) {
-            findings.push({ id: "control-too-small", detail: c.name + " is " + c.w.toFixed(1) + "x" + c.h.toFixed(1) + " pt" });
-          }
-          for (const [where] of probePoints(c)) {
-            // Every point gets the FIRST press on a freshly loaded page.
-            const list = await fresh();
-            const now = list.filter((x) => x.name === c.name)[ord];
-            if (!now) {
-              findings.push({ id: "probe-missed", detail: c.name + " " + where + ": control not on the reloaded page" });
-              continue;
-            }
-            const idx = list.indexOf(now);
-            const [, x, y] = probePoints(now).find((pt) => pt[0] === where);
-            const hb = (await evaluate(cdp, s, "window.__YAP_PILL_HITBOXES__ || []")) || [];
-            if (!hb.some((r) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3])) {
-              findings.push({ id: "probe-outside-hitbox", detail: c.name + " " + where + " (" + x.toFixed(1) + "," + y.toFixed(1) + ") is not in the panel's hit rects " + JSON.stringify(hb) });
-            }
-            // What the browser's own hit test puts under the point (rounded
-            // corners, an overlapping slot, an ancestor's clip) — named in the
-            // finding, so a miss says WHY instead of only "nothing".
-            const under = await evaluate(cdp, s, "(() => { const e = document.elementFromPoint(" + x + "," + y + "); if (!e) return 'nothing'; const c = e.closest('[data-pill-control]'); return c ? 'control ' + c.getAttribute('data-pill-control') : e.tagName.toLowerCase() + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).join('.') : ''); })()");
-            await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 }, s);
-            await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, s);
-            await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, s);
-            await sleep(80);
-            const got = await evaluate(cdp, s, "({ c: window.__probeCounts, stray: window.__probeStray })");
-            const mine = got.c[idx] || 0;
-            const others = got.c.reduce((a, b) => a + b, 0) - mine + (got.stray || 0);
-            probed++;
-            if (mine === 0) findings.push({ id: "probe-missed", detail: c.name + " " + where + ": the press clicked nothing on the control (the point hit-tests to " + under + ")" });
-            if (mine > 1) findings.push({ id: "probe-double", detail: c.name + " " + where + ": " + mine + " clicks from one press" });
-            if (others > 0) findings.push({ id: "probe-wrong-target", detail: c.name + " " + where + ": " + others + " click(s) landed elsewhere (on " + under + ")" });
-          }
-          rows.push({ id: p.id, dock, meeting, control: c.name, w: c.w, h: c.h, findings });
-          console.log((findings.length ? "FAIL " : "ok   ") + p.id.padEnd(14) + dock.padEnd(7) + meeting.padEnd(10) + c.name);
-          for (const f of findings) console.log("       " + f.id + " — " + f.detail);
-        }
-      }
-    }
-  }
-  await cdp.send("Page.close", {}, s).catch(() => {});
-  const failing = rows.filter((r) => r.findings.length);
-  writeFileSync(join(outDir, "clicks.json"), JSON.stringify({ probes: probed, controls: rows.length, failing: failing.length, rows }, null, 2));
-  console.log("pill-matrix --clicks: " + rows.length + " control(s), " + probed + " press(es), " + failing.length + " failing -> " + join(outDir, "clicks.json"));
-  if (rows.length === 0) {
-    console.error("pill-matrix --clicks: no [data-pill-control] on any scene — the bundle predates fb-02 (INSTRUMENT failure)");
-    return 3;
-  }
-  return failing.length ? 1 : 0;
 }
 
 /* ── --self-test-must-fail ──────────────────────────────────────────────── */

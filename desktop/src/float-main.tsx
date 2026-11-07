@@ -25,7 +25,6 @@ import LanguageOfferCard from "./pill/LanguageOfferCard";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
-import { startPillControlTargets } from "./pill/hitTargets";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -264,10 +263,6 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
-  // yap-1106-fb-02-pill-first-click — every `[data-pill-control]` publishes
-  // its own drawn rect as hit area, holds the panel through a press, and logs
-  // `pill.click {control, handled}` (pill/hitTargets.ts).
-  useEffect(() => startPillControlTargets(), []);
   const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
