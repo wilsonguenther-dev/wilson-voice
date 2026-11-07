@@ -4,7 +4,7 @@ import {
   canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
-import NotesView from "../meetings/NotesView";
+import NotesView, { StreamingNotes } from "../meetings/NotesView";
 import ExportMenu, { type ExportAction } from "../meetings/ExportMenu";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -807,24 +807,26 @@ export default function Meetings() {
                   (openMeeting.meeting.summary ? (
                     <NotesView markdown={openMeeting.meeting.summary} meetingId={openMeeting.meeting.id} />
                   ) : (
-                    <div className="empty" data-empty-state="meetings:notes">
-                      <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
-                      <p>Notes are written on this Mac once the transcript is ready.</p>
-                      <div className="actions">
-                        {notesTabAction === "notes" ? (
-                          <button
-                            className="primary"
-                            onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
-                          >
-                            {retryNotesLabel(progress[openMeeting.meeting.id])}
-                          </button>
-                        ) : notesTabAction === "model" ? (
-                          <button type="button" className="ghost" onClick={openModelSettings}>
-                            Add a notes model
-                          </button>
-                        ) : null}
+                    <StreamingNotes meetingId={openMeeting.meeting.id}>
+                      <div className="empty" data-empty-state="meetings:notes">
+                        <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
+                        <p>Notes are written on this Mac once the transcript is ready.</p>
+                        <div className="actions">
+                          {notesTabAction === "notes" ? (
+                            <button
+                              className="primary"
+                              onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
+                            >
+                              {retryNotesLabel(progress[openMeeting.meeting.id])}
+                            </button>
+                          ) : notesTabAction === "model" ? (
+                            <button type="button" className="ghost" onClick={openModelSettings}>
+                              Add a notes model
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
+                    </StreamingNotes>
                   ))}
                 {tab === "transcript" &&
                   (openMeeting.segments.length === 0 ? (

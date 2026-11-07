@@ -3228,6 +3228,110 @@ impl SummaryClient for SidecarSummaryClient {
     }
 }
 
+/// SP-08 — words of transcript per map pass on the hosted route. A long
+/// meeting becomes several passes sent in parallel (at most
+/// [`crate::cloud_route::MAX_IN_FLIGHT`] at once) instead of one long request,
+/// so notes for an hour-long meeting arrive in seconds, not minutes.
+pub const CLOUD_MAP_WORDS: usize = 1_500;
+
+/// SP-08 — the system turn for one hosted map pass. Text only; the hosted
+/// route never receives audio (ASR stays on this Mac).
+pub const CLOUD_MAP_SYSTEM: &str = "You are reading ONE part of a longer meeting transcript. \
+Write terse notes for this part only, as '- ' bullets under the headings Points, Decisions, \
+Action items (with the owner exactly as said) and Open questions. Leave a heading out when \
+this part has nothing for it. Never invent a name, number, date or commitment that is not in \
+the text. No preamble.";
+
+/// SP-08 — group rendered transcript lines into map passes of at most
+/// `max_words` words. A line is never split (a single line longer than the
+/// budget is its own pass), order is kept, and nothing is dropped.
+pub fn plan_cloud_map_chunks(lines: &[String], max_words: usize) -> Vec<String> {
+    let max_words = max_words.max(1);
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut words = 0usize;
+    for line in lines {
+        let n = line.split_whitespace().count();
+        if n == 0 {
+            continue;
+        }
+        if words > 0 && words + n > max_words {
+            chunks.push(std::mem::take(&mut current));
+            words = 0;
+        }
+        current.push_str(line.trim_end());
+        current.push('\n');
+        words += n;
+    }
+    if words > 0 {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// SP-08 — the user turn of the hosted reduce pass: every map pass's notes,
+/// in transcript order, under the same notes system prompt the one-request
+/// path uses (so the stored notes keep exactly the same shape).
+pub fn cloud_reduce_input(parts: &[String]) -> String {
+    let mut out = format!(
+        "This meeting was long, so its transcript was read in {} consecutive parts. \
+Below are the notes for each part, in order. Write the meeting notes from them.\n\n",
+        parts.len()
+    );
+    for (i, part) in parts.iter().enumerate() {
+        out.push_str(&format!(
+            "Notes for part {} of {}:\n{}\n\n",
+            i + 1,
+            parts.len(),
+            part.trim()
+        ));
+    }
+    out
+}
+
+/// SP-08 — meeting notes on the hosted route: map passes in parallel, then one
+/// streamed reduce. `map(i, chunk)` and `reduce(user_turn)` each go through
+/// `cloud_route::run_routed` in the caller, so the §22 fallback, breaker and
+/// cap rules apply to every request. A meeting that fits one pass is sent as
+/// one request, exactly as before. `None` (→ the bundled notes model) when
+/// any map pass or the reduce has no accepted answer. Never logs text.
+pub fn cloud_notes_parallel(
+    lines: &[String],
+    max_words: usize,
+    max_in_flight: usize,
+    map: &(dyn Fn(usize, &str) -> Option<String> + Sync),
+    reduce: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    let chunks = plan_cloud_map_chunks(lines, max_words);
+    match chunks.len() {
+        0 => return None,
+        1 => return reduce(&chunks[0]),
+        _ => {}
+    }
+    let started = std::time::Instant::now();
+    let run_map = |i: usize, c: &String| -> Option<String> { map(i, c.as_str()) };
+    let parts = crate::cloud_route::map_in_order(&chunks, max_in_flight, &run_map);
+    let map_ms = started.elapsed().as_millis();
+    let parts: Option<Vec<String>> = parts.into_iter().map(|p| p.flatten()).collect();
+    let Some(parts) = parts else {
+        log::info!(
+            "summarize cloud_notes outcome=map_failed chunks={} map_ms={map_ms}",
+            chunks.len()
+        );
+        return None;
+    };
+    let reduce_started = std::time::Instant::now();
+    let out = reduce(&cloud_reduce_input(&parts));
+    log::info!(
+        "summarize cloud_notes outcome={} chunks={} map_ms={map_ms} reduce_ms={} total_ms={}",
+        if out.is_some() { "ok" } else { "reduce_failed" },
+        chunks.len(),
+        reduce_started.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3335,5 +3439,119 @@ mod tests {
         let text = "One two three. Four five six seven eight nine ten.";
         assert_eq!(clamp_words(text, 100), text);
         assert_eq!(clamp_words(text, 5), "One two three.");
+    }
+}
+
+#[cfg(test)]
+mod cloud_parallel_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A stand-in for the dddbea70 transcript: about an hour of talk.
+    fn hour_of_lines() -> Vec<String> {
+        (0..300)
+            .map(|i| {
+                let words: Vec<String> = (0..30).map(|w| format!("w{i}x{w}")).collect();
+                format!(
+                    "[{:02}:{:02}] S{}: {}",
+                    i / 5,
+                    i % 60,
+                    i % 3,
+                    words.join(" ")
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn map_chunks_never_split_a_line_and_keep_every_word_in_order() {
+        let lines = hour_of_lines();
+        let chunks = plan_cloud_map_chunks(&lines, CLOUD_MAP_WORDS);
+        assert!(chunks.len() >= 4);
+        for c in &chunks {
+            assert!(c.split_whitespace().count() <= CLOUD_MAP_WORDS);
+        }
+        let joined: String = chunks.concat();
+        let expected: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(joined, expected);
+        let long = vec!["a ".repeat(40)];
+        assert_eq!(
+            plan_cloud_map_chunks(&long, 10).len(),
+            1,
+            "an oversized line is its own pass"
+        );
+    }
+
+    /// The hosted route's realistic latency, scaled down 10x so the test is
+    /// quick: a map pass is ~0.6 s TTFT + ~400 tokens at 150 tokens/s, the
+    /// reduce ~0.8 s + ~700 tokens. The 15 s budget scales to 1.5 s.
+    #[test]
+    fn hosted_notes_for_an_hour_long_meeting_finish_inside_the_budget() {
+        let lines = hour_of_lines();
+        let n = plan_cloud_map_chunks(&lines, CLOUD_MAP_WORDS).len();
+        let started = Instant::now();
+        let mut reduce_input = String::new();
+        let out = cloud_notes_parallel(
+            &lines,
+            CLOUD_MAP_WORDS,
+            crate::cloud_route::MAX_IN_FLIGHT,
+            &|i, _chunk| {
+                std::thread::sleep(Duration::from_millis((600 + 400 * 1000 / 150) / 10));
+                Some(format!("- point {i}"))
+            },
+            &mut |turn| {
+                reduce_input = turn.to_string();
+                std::thread::sleep(Duration::from_millis((800 + 700 * 1000 / 150) / 10));
+                Some("## Notes".to_string())
+            },
+        );
+        let took = started.elapsed();
+        assert_eq!(out.as_deref(), Some("## Notes"));
+        assert!(
+            took <= Duration::from_millis(1500),
+            "took {took:?} (x10 = real)"
+        );
+        let last = format!("Notes for part {n} of {n}:\n- point {}", n - 1);
+        assert!(reduce_input.contains("Notes for part 1 of"));
+        assert!(
+            reduce_input.contains(&last),
+            "parts reach the reduce in order"
+        );
+    }
+
+    #[test]
+    fn one_failed_map_pass_hands_notes_to_the_local_model() {
+        let lines = hour_of_lines();
+        let mut reduced = false;
+        let out = cloud_notes_parallel(
+            &lines,
+            CLOUD_MAP_WORDS,
+            4,
+            &|i, _| (i != 1).then(String::new),
+            &mut |_| {
+                reduced = true;
+                Some("x".into())
+            },
+        );
+        assert_eq!(out, None);
+        assert!(!reduced, "no reduce spend after a failed map");
+    }
+
+    #[test]
+    fn a_short_meeting_is_still_one_request() {
+        let lines = vec!["[00:00] S1: we ship friday".to_string()];
+        let mut turns = Vec::new();
+        let out = cloud_notes_parallel(
+            &lines,
+            CLOUD_MAP_WORDS,
+            4,
+            &|_, _| panic!("no map pass"),
+            &mut |t| {
+                turns.push(t.to_string());
+                Some("ok".into())
+            },
+        );
+        assert_eq!(out.as_deref(), Some("ok"));
+        assert_eq!(turns, vec!["[00:00] S1: we ship friday\n".to_string()]);
     }
 }

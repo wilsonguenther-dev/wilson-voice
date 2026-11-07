@@ -5,7 +5,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import NotesView from "./NotesView";
+import NotesView, {
+  NO_STREAM,
+  reduceNotesDelta,
+  StreamedNotesView,
+  streamStatusLine,
+} from "./NotesView";
 import { inlineRuns, parseNotes } from "./notes";
 
 /** The notes `summarize::render_notes` stores, for the PR #250 fixture. */
@@ -91,5 +96,28 @@ describe("meeting notes view", () => {
       { text: "A", bold: true },
       { text: " — b", bold: false },
     ]);
+  });
+});
+
+describe("streamed notes (yap-1106-sp-08)", () => {
+  it("shows map progress, then the notes as they stream, for this meeting only", () => {
+    let s = reduceNotesDelta(NO_STREAM, { id: "m1", progress: { done: 2, of: 6 } }, "m1");
+    expect(streamStatusLine(s)).toBe("Reading the meeting: part 2 of 6 done");
+    s = reduceNotesDelta(s, { id: "other", delta: "## Wrong" }, "m1");
+    expect(s.text).toBe("");
+    s = reduceNotesDelta(s, { id: "m1", delta: "## Pricing" }, "m1");
+    s = reduceNotesDelta(s, { id: "m1", delta: " review\n\n- One" }, "m1");
+    expect(streamStatusLine(s)).toBe("Writing notes…");
+    const html = renderToStaticMarkup(<StreamedNotesView stream={s} />);
+    expect(html).toContain("Pricing review");
+    expect(html).toContain('aria-busy="true"');
+    s = reduceNotesDelta(s, { id: "m1", done: true, route: "cloud" }, "m1");
+    expect(streamStatusLine(s)).toBeNull();
+    expect(s.text).toContain("Pricing review");
+  });
+
+  it("drops a partial stream when the bundled model takes over", () => {
+    const s = reduceNotesDelta({ ...NO_STREAM, text: "## Half" }, { id: "m1", done: true, route: "local" }, "m1");
+    expect(s).toEqual(NO_STREAM);
   });
 });

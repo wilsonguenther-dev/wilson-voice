@@ -1016,6 +1016,11 @@ pub fn run_routed<R>(
                     out.tokens_in = reply.tokens_in;
                     out.tokens_out = reply.tokens_out;
                     // Spend is real whether or not the answer is accepted.
+                    // SP-08: chunks run in parallel, so the ledger's
+                    // load → record → save is one critical section — two
+                    // chunks finishing together must both be counted, or
+                    // the daily cap would under-count spend.
+                    let _ledger_guard = LEDGER_LOCK.lock().unwrap_or_else(|p| p.into_inner());
                     let mut ledger = Ledger::load(ctx.kv, ctx.today);
                     out.cost_usd =
                         ledger.record(ctx.today, ctx.model, reply.tokens_in, reply.tokens_out);
@@ -1159,6 +1164,79 @@ pub fn run_routed<R>(
     done
 }
 
+/// SP-08: the most requests one job keeps in flight on the hosted route
+/// (cleanup chunks, notes map passes). Four keeps a 700-word take to two
+/// waves of 160-word chunks while staying polite to the provider's rate limit.
+pub const MAX_IN_FLIGHT: usize = 4;
+
+/// Serialises the ledger's load → record → save in [`run_routed`] so parallel
+/// chunks never lose each other's spend (§22 cap rule, unchanged).
+static LEDGER_LOCK: Mutex<()> = Mutex::new(());
+
+/// SP-08: run `f` over `items` with at most `max_in_flight` calls at once and
+/// return the answers IN INPUT ORDER (index `i` is `f(i, &items[i])`).
+///
+/// The calling thread is one of the workers, so a refused thread spawn only
+/// lowers the concurrency — every item still runs. A panicking call is that
+/// item's `None` (the caller falls back), never a lost take. Each call goes
+/// through [`run_routed`] on its own, so mode, key, path, breaker, cap, retry
+/// and local fallback apply per chunk exactly as they do to a whole take.
+pub fn map_in_order<T: Sync, R: Send>(
+    items: &[T],
+    max_in_flight: usize,
+    f: &(dyn Fn(usize, &T) -> R + Sync),
+) -> Vec<Option<R>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let n = items.len();
+    let slots: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    if n == 0 {
+        return Vec::new();
+    }
+    let next = AtomicUsize::new(0);
+    let started = Instant::now();
+    let work = || loop {
+        let i = next.fetch_add(1, Ordering::SeqCst);
+        if i >= n {
+            break;
+        }
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i, &items[i])));
+        match out {
+            Ok(v) => {
+                if let Ok(mut slot) = slots[i].lock() {
+                    *slot = Some(v);
+                }
+            }
+            Err(_) => log::warn!("cloud_route parallel_item_panicked index={i}"),
+        }
+    };
+    let workers = max_in_flight.max(1).min(n);
+    let mut spawned = 0usize;
+    std::thread::scope(|s| {
+        for k in 1..workers {
+            match std::thread::Builder::new()
+                .name(format!("yap-cloud-par-{k}"))
+                .spawn_scoped(s, work)
+            {
+                Ok(_) => spawned += 1,
+                Err(e) => {
+                    log::warn!("cloud_route parallel_spawn_failed error={e}");
+                    break;
+                }
+            }
+        }
+        work();
+    });
+    log::info!(
+        "cloud_route parallel items={n} in_flight={} total_ms={}",
+        spawned + 1,
+        started.elapsed().as_millis()
+    );
+    slots
+        .into_iter()
+        .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
+        .collect()
+}
+
 /// What the pill reads: the last route, for the chip + tooltip (DO 9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1186,6 +1264,101 @@ impl RouteChip {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// SP-08: a mock of the hosted route's realistic latency for one cleanup
+    /// chunk: time to first token plus streaming at a measured output rate.
+    fn mock_chunk_latency(words: usize) -> Duration {
+        // 300 ms TTFT + ~1.3 tokens per word out at 600 tokens/s (the
+        // hosted cleanup model's measured order of magnitude).
+        Duration::from_millis(300 + (words as u64 * 13 / 10) * 1000 / 600)
+    }
+
+    #[test]
+    fn parallel_chunks_keep_order_and_never_exceed_four_in_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let items: Vec<usize> = (0..11).collect();
+        let live = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let out = map_in_order(&items, MAX_IN_FLIGHT, &|i, v| {
+            let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            // Later items finish FIRST, so order can only come from the slots.
+            std::thread::sleep(Duration::from_millis(5 * (11 - i as u64)));
+            live.fetch_sub(1, Ordering::SeqCst);
+            v * 10
+        });
+        let got: Vec<usize> = out.into_iter().map(|v| v.unwrap()).collect();
+        assert_eq!(got, (0..11).map(|v| v * 10).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= MAX_IN_FLIGHT);
+        assert!(
+            peak.load(Ordering::SeqCst) >= 2,
+            "it actually ran in parallel"
+        );
+    }
+
+    #[test]
+    fn parallel_item_panic_is_that_items_none_only() {
+        let items = [1, 2, 3];
+        let out = map_in_order(&items, MAX_IN_FLIGHT, &|_, v| {
+            if *v == 2 {
+                panic!("boom");
+            }
+            *v
+        });
+        assert_eq!(out, vec![Some(1), None, Some(3)]);
+        assert!(map_in_order::<u8, u8>(&[], 4, &|_, v| *v).is_empty());
+    }
+
+    #[test]
+    fn a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency() {
+        let text = (0..700)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let chunks = crate::polish::plan_polish_chunks(&text);
+        assert!(chunks.len() >= 4, "700 words is several 160-word chunks");
+        let started = Instant::now();
+        let out = crate::polish::polish_chunks_parallel(&text, MAX_IN_FLIGHT, &|c| {
+            std::thread::sleep(mock_chunk_latency(c.words()));
+            Some(c.body.clone())
+        });
+        let took = started.elapsed();
+        assert_eq!(out.as_deref(), Some(text.as_str()), "reassembled in order");
+        assert!(took <= Duration::from_millis(1500), "took {took:?}");
+        // Serial would be well past the budget, so the parallelism is what passes.
+        let serial: Duration = chunks.iter().map(|c| mock_chunk_latency(c.words())).sum();
+        assert!(serial > Duration::from_millis(1500), "serial {serial:?}");
+    }
+
+    /// SP-08 / §22: ASR never leaves the Mac. The only code that talks to a
+    /// hosted model sends text; nothing in it can carry audio.
+    #[test]
+    fn no_audio_upload_path_exists() {
+        let sources = [
+            ("cloud_client.rs", include_str!("cloud_client.rs")),
+            ("http_client.rs", include_str!("http_client.rs")),
+            ("model_providers.rs", include_str!("model_providers.rs")),
+        ];
+        let banned = [
+            concat!("audio", "/transcriptions"),
+            concat!("audio", "/translations"),
+            concat!("multi", "part"),
+            concat!("input_", "audio"),
+            concat!("audio", "/wav"),
+            concat!("audio", "/mpeg"),
+            concat!(".w", "av\""),
+            concat!("whisper", "-1"),
+        ];
+        for (name, src) in sources {
+            let lower = src.to_ascii_lowercase();
+            for b in banned {
+                assert!(
+                    !lower.contains(b),
+                    "{name} contains an audio upload marker: {b}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn nw_path_answers_map_onto_the_route_paths() {
