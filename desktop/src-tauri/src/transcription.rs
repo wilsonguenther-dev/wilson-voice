@@ -65,7 +65,11 @@ pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// ceiling — `latency::DECODE_TIMEOUT_CAP` in the app, a few hundred
 /// milliseconds in the lifecycle tests). `None` (a probe that decodes nothing,
 /// e.g. language support) gets the ceiling itself.
-pub fn effective_decode_timeout(cap: Duration, audio_seconds: Option<f64>, recent_rtf: f64) -> Duration {
+pub fn effective_decode_timeout(
+    cap: Duration,
+    audio_seconds: Option<f64>,
+    recent_rtf: f64,
+) -> Duration {
     match audio_seconds {
         None => cap,
         Some(audio) => crate::latency::adaptive_decode_timeout(audio, recent_rtf).min(cap),
@@ -1080,7 +1084,9 @@ impl TranscriptionManager {
         let mut reloads = 0u32;
         loop {
             let run = job.clone();
-            match self.leased_on(false, Some(model_id), audio_seconds, move |engine| run(engine)) {
+            match self.leased_on(false, Some(model_id), audio_seconds, move |engine| {
+                run(engine)
+            }) {
                 // yap-1106-retry-failed-dictation — the slot is empty because a
                 // timed-out lease still holds the engine on its worker thread.
                 // Reloading here is what stacked engines on the GPU in the
@@ -3086,5 +3092,116 @@ mod tests {
         let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(decoded, vec!["dict".to_string()]);
         assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+    }
+
+    /// YAP-FX-04 — a fake engine whose decode takes `audio × rtf` of wall
+    /// time; `rtf` is shared so a test can make the "Mac" fast again.
+    struct FixedRtfEngine {
+        rtf: Arc<Mutex<f64>>,
+    }
+
+    impl Transcriber for FixedRtfEngine {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            let audio_s = samples.len() as f64 / DICTATION_CHUNK_SAMPLE_RATE as f64;
+            let rtf = *self.rtf.lock();
+            std::thread::sleep(Duration::from_secs_f64(audio_s * rtf));
+            Ok("decoded".to_string())
+        }
+    }
+
+    /// YAP-FX-04 acceptance, end to end through the manager: a fake slow
+    /// engine at RTF 0.5 trips the slow-machine state on the second take in a
+    /// row (decode wall time measured exactly as the live path measures it),
+    /// and two fast takes later the state recovers.
+    #[test]
+    fn a_fake_slow_engine_through_the_manager_trips_the_slow_machine_state_and_recovers() {
+        use crate::latency::{decode_rtf, SlowMachineChange, SlowMachineDetector};
+        let rtf = Arc::new(Mutex::new(0.5f64));
+        let engine_rtf = rtf.clone();
+        let path = stub_model_file("rtf.gguf");
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(FixedRtfEngine {
+                    rtf: engine_rtf.clone(),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(30),
+        );
+        m.load("stub/model", &path).expect("load");
+        // One second of audio per take.
+        let take = |m: &TranscriptionManager| -> f64 {
+            let started = Instant::now();
+            let text = m
+                .transcribe(
+                    vec![0.1f32; DICTATION_CHUNK_SAMPLE_RATE as usize],
+                    None,
+                    None,
+                )
+                .expect("decode");
+            assert_eq!(text, "decoded");
+            decode_rtf(started.elapsed().as_millis() as i64, 1.0)
+        };
+        let mut detector = SlowMachineDetector::new();
+
+        let first = take(&m);
+        assert!(
+            first >= 0.5,
+            "the fake engine decodes at RTF 0.5, measured {first}"
+        );
+        assert_eq!(detector.observe(first, Instant::now()), None);
+        assert_eq!(
+            detector.observe(take(&m), Instant::now()),
+            Some(SlowMachineChange::Tripped)
+        );
+        assert!(detector.is_slow());
+
+        // The Mac speeds back up.
+        *rtf.lock() = 0.01;
+        assert_eq!(detector.observe(take(&m), Instant::now()), None);
+        assert_eq!(
+            detector.observe(take(&m), Instant::now()),
+            Some(SlowMachineChange::Recovered)
+        );
+        assert!(!detector.is_slow());
+    }
+
+    /// YAP-FX-04 — the decode timeout is audio × RTF between the 30 s floor
+    /// and the 180 s cap, never a fixed 120 s, and an injected (test) ceiling
+    /// still wins.
+    #[test]
+    fn the_decode_timeout_is_adaptive_under_the_manager_ceiling() {
+        use crate::latency::{DECODE_TIMEOUT_CAP, DECODE_TIMEOUT_FLOOR};
+        let cap = DECODE_TIMEOUT_CAP;
+        assert_eq!(
+            effective_decode_timeout(cap, Some(5.0), 0.05),
+            DECODE_TIMEOUT_FLOOR
+        );
+        assert_eq!(
+            effective_decode_timeout(cap, Some(60.0), 0.5),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            effective_decode_timeout(cap, Some(80.0), 0.5),
+            Duration::from_secs(160)
+        );
+        assert_eq!(effective_decode_timeout(cap, Some(600.0), 0.5), cap);
+        assert_eq!(effective_decode_timeout(cap, None, 0.5), cap);
+        let tiny = Duration::from_millis(50);
+        assert_eq!(effective_decode_timeout(tiny, Some(60.0), 0.5), tiny);
+
+        let m = manager(
+            stub_loader("x", Duration::ZERO, false),
+            Duration::from_secs(600),
+            cap,
+        );
+        let t = m.decode_timeout_for(Some(1.0));
+        assert!(t >= DECODE_TIMEOUT_FLOOR && t <= cap, "{t:?}");
+        assert_eq!(audio_seconds_16k(&[0.0f32; 8_000]), 0.5);
     }
 }

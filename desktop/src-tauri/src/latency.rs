@@ -385,7 +385,12 @@ impl PipelineSpans<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_rtf, PipelineSpans, RtfWindow};
+    use super::{
+        adaptive_decode_timeout, decode_rtf, rtf_estimate, PipelineSpans, RtfWindow,
+        SlowMachineChange, SlowMachineDetector, DECODE_TIMEOUT_CAP, DECODE_TIMEOUT_FLOOR,
+        SLOW_MACHINE_COOLDOWN,
+    };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn summary_line_is_stable_key_value_with_every_span() {
@@ -497,5 +502,127 @@ mod tests {
         assert_eq!(decode_rtf(500, 0.0), 0.0);
         assert_eq!(decode_rtf(500, f64::NAN), 0.0);
         assert_eq!(decode_rtf(-1, 10.0), 0.0);
+    }
+
+    /// YAP-FX-04 — a fake engine that decodes at a fixed real-time factor:
+    /// `audio_s` of audio takes `audio_s × rtf` seconds. Reports the decode
+    /// milliseconds the live path hands `record_decode_rtf`.
+    struct FakeEngine {
+        rtf: f64,
+    }
+
+    impl FakeEngine {
+        fn decode_ms(&self, audio_s: f64) -> i64 {
+            (audio_s * self.rtf * 1000.0).round() as i64
+        }
+    }
+
+    #[test]
+    fn adaptive_decode_timeout_scales_with_audio_and_rtf_between_floor_and_cap() {
+        // Fast Mac, short take: the floor, not 120 s.
+        assert_eq!(adaptive_decode_timeout(5.0, 0.05), DECODE_TIMEOUT_FLOOR);
+        assert_eq!(DECODE_TIMEOUT_FLOOR, Duration::from_secs(30));
+        assert_eq!(DECODE_TIMEOUT_CAP, Duration::from_secs(180));
+        // Scales with audio length at a fixed RTF…
+        let a = adaptive_decode_timeout(20.0, 0.5);
+        let b = adaptive_decode_timeout(40.0, 0.5);
+        assert_eq!(a, Duration::from_secs(40));
+        assert_eq!(b, Duration::from_secs(80));
+        // …and with RTF at a fixed length.
+        assert!(adaptive_decode_timeout(40.0, 0.8) > b);
+        // Never past the cap, however long or slow.
+        assert_eq!(adaptive_decode_timeout(3600.0, 2.0), DECODE_TIMEOUT_CAP);
+        // Unmeasured / degenerate inputs are bounded, never NaN or zero.
+        assert_eq!(
+            adaptive_decode_timeout(20.0, 0.0),
+            adaptive_decode_timeout(20.0, 0.5)
+        );
+        assert_eq!(
+            adaptive_decode_timeout(20.0, f64::NAN),
+            adaptive_decode_timeout(20.0, 0.5)
+        );
+        assert_eq!(adaptive_decode_timeout(f64::NAN, 0.5), DECODE_TIMEOUT_FLOOR);
+        assert_eq!(adaptive_decode_timeout(-3.0, 0.5), DECODE_TIMEOUT_FLOOR);
+    }
+
+    #[test]
+    fn rtf_estimate_takes_the_slower_of_median_and_last() {
+        let mut w = RtfWindow::new();
+        assert_eq!(rtf_estimate(&w), 0.0, "unmeasured");
+        for _ in 0..5 {
+            w.push(0.05);
+        }
+        assert!((rtf_estimate(&w) - 0.05).abs() < 1e-12);
+        // One slow take widens the next timeout at once…
+        w.push(0.5);
+        assert!((rtf_estimate(&w) - 0.5).abs() < 1e-12);
+        // …one fast outlier does not shrink it under the median.
+        w.push(0.001);
+        assert!((rtf_estimate(&w) - 0.05).abs() < 1e-12);
+    }
+
+    /// The acceptance test: a fake slow engine at RTF 0.5 trips the
+    /// slow-machine state on the SECOND slow take in a row, and the state
+    /// recovers after two healthy takes.
+    #[test]
+    fn a_fake_slow_engine_at_rtf_half_trips_the_slow_machine_state_and_later_recovers() {
+        let slow = FakeEngine { rtf: 0.5 };
+        let fast = FakeEngine { rtf: 0.05 };
+        let mut d = SlowMachineDetector::new();
+        let t0 = Instant::now();
+        let take = |e: &FakeEngine| decode_rtf(e.decode_ms(8.0), 8.0);
+
+        assert_eq!(
+            d.observe(take(&slow), t0),
+            None,
+            "one slow take is not a slow Mac"
+        );
+        assert!(!d.is_slow());
+        assert_eq!(d.observe(take(&slow), t0), Some(SlowMachineChange::Tripped));
+        assert!(d.is_slow());
+        assert_eq!(d.trips(), 1);
+        // Still slow: stays tripped, no second transition.
+        assert_eq!(d.observe(take(&slow), t0), None);
+        assert!(d.is_slow());
+
+        // One healthy take is not enough to call it recovered…
+        assert_eq!(d.observe(take(&fast), t0), None);
+        assert!(d.is_slow());
+        // …two in a row are.
+        assert_eq!(
+            d.observe(take(&fast), t0),
+            Some(SlowMachineChange::Recovered)
+        );
+        assert!(!d.is_slow());
+
+        // A slow take between two fast ones breaks the streak: no trip.
+        let mut d = SlowMachineDetector::new();
+        d.observe(take(&slow), t0);
+        d.observe(take(&fast), t0);
+        assert_eq!(d.observe(take(&slow), t0), None);
+        assert!(!d.is_slow());
+        // Degenerate takes (empty clip -> rtf 0.0) neither extend nor break it.
+        assert_eq!(d.observe(decode_rtf(500, 0.0), t0), None);
+        assert_eq!(d.observe(take(&slow), t0), Some(SlowMachineChange::Tripped));
+    }
+
+    #[test]
+    fn the_slow_machine_state_expires_after_the_cooldown_without_a_slow_take() {
+        let slow = FakeEngine { rtf: 0.5 };
+        let mut d = SlowMachineDetector::new();
+        let t0 = Instant::now();
+        d.observe(decode_rtf(slow.decode_ms(4.0), 4.0), t0);
+        assert_eq!(
+            d.observe(decode_rtf(slow.decode_ms(4.0), 4.0), t0),
+            Some(SlowMachineChange::Tripped)
+        );
+        assert_eq!(d.expire(t0 + SLOW_MACHINE_COOLDOWN / 2), None);
+        assert!(d.is_slow());
+        assert_eq!(
+            d.expire(t0 + SLOW_MACHINE_COOLDOWN),
+            Some(SlowMachineChange::Expired)
+        );
+        assert!(!d.is_slow());
+        assert_eq!(d.expire(t0 + SLOW_MACHINE_COOLDOWN * 2), None);
     }
 }

@@ -577,12 +577,12 @@ impl Governor {
         let held = heavy_work_deferred_by(&verdict)
             .or_else(crate::latency::slow_machine_deferred)
             .filter(|_| {
-            !self
-                .inner
-                .lock()
-                .map(|g| g.overrides.contains(job))
-                .unwrap_or(false)
-        });
+                !self
+                    .inner
+                    .lock()
+                    .map(|g| g.overrides.contains(job))
+                    .unwrap_or(false)
+            });
         // Track who is waiting so the UI can offer "Run anyway" per job.
         if let Ok(mut g) = self.inner.lock() {
             let idx = g.waiting.iter().position(|w| w == job);
@@ -1426,5 +1426,32 @@ mod tests {
         note_power_state_change();
         assert!(take_power_state_event(), "the posted change is seen");
         assert!(!take_power_state_event(), "and consumed, not re-seen");
+    }
+
+    /// YAP-FX-04 — the slow-machine state holds heavy work at FULL and says so
+    /// in one plain sentence; a constrained verdict keeps its own reason.
+    #[test]
+    fn a_slow_machine_overlays_the_full_view_but_not_a_constrained_one() {
+        let mut full = Governor::view_of_parts(
+            &Verdict::full(),
+            &Readings::default(),
+            DEFAULT_PAUSE_BELOW_PERCENT,
+        );
+        overlay_slow_machine(&mut full, false);
+        assert!(!full.heavy_work_deferred);
+        overlay_slow_machine(&mut full, true);
+        assert!(full.heavy_work_deferred);
+        assert_eq!(
+            full.reason.as_deref(),
+            Some(crate::latency::SLOW_MACHINE_REASON)
+        );
+        assert_eq!(full.main_sentence.as_deref(), Some(SLOW_MACHINE_SENTENCE));
+
+        let thermal = Verdict::of(Level::Light, "thermal", "serious", false);
+        let mut hot =
+            Governor::view_of_parts(&thermal, &Readings::default(), DEFAULT_PAUSE_BELOW_PERCENT);
+        let before = hot.clone();
+        overlay_slow_machine(&mut hot, true);
+        assert_eq!(hot, before, "the governor's own reason wins");
     }
 }
