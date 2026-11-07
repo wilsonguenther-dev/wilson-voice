@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS news_cache (
   published_ms INTEGER,
   points INTEGER,
   comments INTEGER,
+  snippet TEXT,
   fetched_ms INTEGER NOT NULL,
   expires_ms INTEGER NOT NULL
 );
@@ -66,7 +67,17 @@ CREATE TABLE IF NOT EXISTS news_seen (
 "#;
 
 pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA)
+    conn.execute_batch(SCHEMA)?;
+    // yap-1106-news-explain — a cache made before the `snippet` column.
+    let has_snippet: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('news_cache') WHERE name = 'snippet'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_snippet == 0 {
+        conn.execute_batch("ALTER TABLE news_cache ADD COLUMN snippet TEXT")?;
+    }
+    Ok(())
 }
 
 fn source_from_tag(tag: &str) -> Source {
@@ -93,7 +104,7 @@ pub fn prune(conn: &Connection, now_ms: i64) -> rusqlite::Result<usize> {
 /// Unexpired cached stories, oldest fetched first.
 pub fn cached(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Story>> {
     let mut stmt = conn.prepare(
-        "SELECT source, topic, title, url, outlet, outlets, published_ms, points, comments
+        "SELECT source, topic, title, url, outlet, outlets, published_ms, points, comments, snippet
          FROM news_cache WHERE expires_ms > ?1 ORDER BY fetched_ms ASC, rowid ASC",
     )?;
     let rows = stmt.query_map(params![now_ms], |r| {
@@ -109,6 +120,7 @@ pub fn cached(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Story>> {
             published_ms: r.get(6)?,
             points: r.get(7)?,
             comments: r.get(8)?,
+            snippet: r.get(9)?,
         })
     })?;
     rows.collect()
@@ -223,8 +235,8 @@ pub fn ingest(
         let mut stmt = tx.prepare(
             "INSERT OR IGNORE INTO news_cache
              (url_key, title_key, source, topic, title, url, outlet, outlets,
-              published_ms, points, comments, fetched_ms, expires_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+              published_ms, points, comments, fetched_ms, expires_ms, snippet)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         for k in kept.iter().filter(|k| !old_keys.contains(&k.url_key)) {
             let s = &k.story;
@@ -242,6 +254,7 @@ pub fn ingest(
                 s.comments,
                 now_ms,
                 now_ms + TTL_MS,
+                s.snippet,
             ])?;
         }
         tx.execute(

@@ -329,6 +329,7 @@ pub(crate) mod tests {
             published_ms: age_h.map(|h| NOW - h * HOUR),
             points: None,
             comments: None,
+            snippet: None,
         }
     }
 
