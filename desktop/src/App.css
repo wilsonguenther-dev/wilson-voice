@@ -277,8 +277,9 @@ body:has(.float-pill),
 /* yap-1107-sidebar-version-line-fits — the brand text column may shrink to
    the rail (a flex item floors at its min-content width otherwise, which is
    the whole nowrap version line, and pushed test-build versions past the
-   sidebar's right edge). */
-.brand-text {
+   sidebar's right edge). Test builds only: the shipped one-line tag keeps
+   its original layout pixel for pixel (acceptance 3). */
+.brand-text:has(> .brand-tag-build) {
   min-width: 0;
 }
 
