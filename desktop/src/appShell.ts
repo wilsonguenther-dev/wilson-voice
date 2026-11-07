@@ -4,7 +4,7 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sectionForTab } from "./settingsIndex";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   MEETING_PROGRESS_EVENT, foldProgress, notesStatusEvent, reloadsMeetings,
   type MeetingProgressEvent, type NotesStatus,
@@ -25,6 +25,24 @@ import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, 
 import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, isEngineUnhealthy, raceRetryWatchdog, retryAllSummary, retryDeadlineMs, runRetryAll, type RetryOutcome, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
 import type { MicList } from "./views/settings/parts/MicrophonePicker";
+import { FRIEND_EVENT, type FriendEvent } from "./pill/friendVisits";
+
+/**
+ * yap-1106-friend-visits — a view raises a friend's app event (Gulp: a word
+ * went into the Dictionary) through the shell, so no view module imports the
+ * event bridge (views.test.tsx no_view_module_registers_a_listener). The pill
+ * decides whether the friend visits (the quiet rules, pill/friendVisits.ts);
+ * a failed emit costs only the visit, never the action that raised it.
+ */
+export function raiseFriendEvent(event: FriendEvent): void {
+  const warn = (err: unknown) =>
+    console.warn(`shell friend_event_failed event=${event} reason=${err instanceof Error ? err.name : "unknown"}`);
+  try {
+    void emit(FRIEND_EVENT, { event }).catch(warn);
+  } catch (err) {
+    warn(err);
+  }
+}
 
 /**
  * yap-p0-insertion-bridge-fallback DO 3 — the boot batch, one entry per backend

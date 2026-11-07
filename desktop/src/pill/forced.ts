@@ -197,6 +197,25 @@ export interface MatrixOfferRow extends MatrixPhase {
 }
 
 /**
+ * yap-fx-06 — the meeting + dictation card's three matrix rows: an idle pill
+ * with `?meetingNotice=cancelled|ask|stop-failed` drawn over it (see
+ * `forcedMeetingNotice` in meetingDictation.ts). `offer` is empty: the
+ * language-offer detector does not apply to this card.
+ */
+export function matrixMeetingDictationScenes(): MatrixOfferRow[] {
+  const v = phaseVisual("idle");
+  return (["cancelled", "ask", "stop-failed"] as const).map((kind) => ({
+    phase: "idle" as const,
+    id: `meeting-dictation-${kind}`,
+    phaseId: PHASE_ID.idle,
+    query: `meetingNotice=${kind}`,
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  }));
+}
+
+/**
  * WF-06 — the "Backtrack caught" toast scene (`float.html?phase=idle&backtrack=1`,
  * the sample in `backtrackCaught.ts`). `offer` is empty: the matrix detector's
  * language-offer check does not apply to this card.
@@ -212,6 +231,25 @@ export function matrixBacktrackCaughtScene(): MatrixOfferRow {
     tone: v.tone,
     label: v.label,
   };
+}
+
+/**
+ * WF-05 — the "Polished — Reveal" toast and its opened card over an idle pill
+ * (`float.html?phase=idle&polish=toast|card`, see `forcedPolishReveal` in
+ * polishReveal.ts). `offer` is empty: the language-offer detector does not
+ * apply to this card.
+ */
+export function matrixPolishRevealScenes(): MatrixOfferRow[] {
+  const v = phaseVisual("idle");
+  return (["toast", "card"] as const).map((view) => ({
+    phase: "idle",
+    id: `polish-reveal-${view}`,
+    phaseId: PHASE_ID.idle,
+    query: `polish=${view}`,
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  }));
 }
 
 /**
@@ -309,6 +347,25 @@ export function matrixRailScene(): MatrixOfferRow {
     id: "rail",
     phaseId: PHASE_ID.idle,
     query: "rail=open",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
+/**
+ * yap-1106-friend-visits — a friend visiting a resting pill
+ * (`float.html?phase=idle&friend=tidy`, see `forcedFriendVisit` in
+ * friendVisits.ts). Tidy, because her event (Backtrack caught) is the one a
+ * new user meets first. The matrix photographs it at every dock.
+ */
+export function matrixFriendVisitScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "friend-visit",
+    phaseId: PHASE_ID.idle,
+    query: "friend=tidy",
     offer: "",
     tone: v.tone,
     label: v.label,

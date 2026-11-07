@@ -8232,6 +8232,7 @@ fn meeting_eval_lecture_stop_to_notes_through_the_shipped_pipeline() {
         demand: Arc::new(NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|_| {}),
+        diarize: wilson_voice_lib::meeting_diarize::DiarizeBackend::Off,
         after_transcript: None,
         config: MeetingAsrConfig::default(),
         start_delay: Duration::ZERO,
