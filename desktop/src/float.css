@@ -1215,7 +1215,7 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   inset: 0 auto 0 0;
   width: 100%;
   border-radius: 2px;
-  background: var(--pill-bar-fill); /* yap-1107-parity-pill: pill.html .bar i #f2c14e */
+  background: var(--pill-bar-fill); /* yap-1107-parity-pill: pill.html .bar i (the gold in tokens.css) */
   transform-origin: left center;
   transform: scaleX(var(--progress, 0));
 }
@@ -2621,7 +2621,7 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
   inset: 0 auto 0 0;
   width: 100%;
   border-radius: 2px;
-  background: var(--pill-warmup-fill); /* = --pill-bar-fill, pill.html .bar i #f2c14e */
+  background: var(--pill-warmup-fill); /* = --pill-bar-fill, pill.html .bar i (the gold in tokens.css) */
   transform-origin: left center;
 }
 .warmup-retry {
