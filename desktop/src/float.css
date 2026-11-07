@@ -1252,27 +1252,40 @@ html[data-dock="right"] .style-chip { left: auto; right: var(--flow-bar-inset); 
   left: 50%;
   bottom: calc(50% + 16px);
   transform: translateX(-50%);
+  /* Two rows (loop3 bounce fix): the line gets the whole width, the button
+     sits under it. Beside the button the line had ~105 px and "I can't hear
+     MacBook Pro Microphone" was cut off. silentMic.ts fits every line to
+     SILENT_MIC_LINE_PX (192 - 2 x 8); SILENT_MIC_ROW_H (36) is this box's
+     height and the layout reserves SILENT_MIC_HINT_LINES for it. */
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  max-width: 192px; /* HINT_W in pill/state.ts */
-  height: 18px;
-  padding: 0 3px 0 8px;
-  border-radius: 9px;
+  gap: 2px;
+  box-sizing: border-box;
+  max-width: 192px; /* HINT_W in pill/state.ts = SILENT_MIC_ROW_W */
+  height: 36px;
+  padding: 3px 8px;
+  border-radius: 10px;
   background: var(--pill-chip-surface);
   color: var(--pill-silent-mic-text);
-  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  font: 500 11px/14px ui-sans-serif, -apple-system, system-ui, sans-serif;
   white-space: nowrap;
   pointer-events: auto;
 }
+/* After a switch the button is gone: one line, so a one-line chip. */
+.silent-mic-row[data-silent-mic-row="switched"] { height: 20px; }
+html[data-dock="left"] .silent-mic-row { align-items: flex-start; }
+html[data-dock="right"] .silent-mic-row { align-items: flex-end; }
 .silent-mic-line {
-  min-width: 0;
+  max-width: 100%;
+  height: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .silent-mic-switch {
   flex: none;
   height: 14px;
+  line-height: 14px;
   padding: 0 6px;
   border: 0;
   border-radius: 7px;
@@ -1901,6 +1914,26 @@ html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-or
 }
 html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .phase-strip {
   text-align: right;
+}
+/* WF-13 — the silent-mic row sits IN the hint slot, its bottom on the slot's
+ * bottom (just above the bubble), aligned to the dock edge like the phase
+ * line. float-main reserves SILENT_MIC_HINT_LINES for the slot while it is up,
+ * so the 36 px row is inside the panel. */
+html[data-one-pill="true"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: calc(var(--hint-x) + var(--hint-w) / 2);
+  top: calc(var(--hint-y) + var(--hint-h));
+  right: auto;
+  bottom: auto;
+  max-width: var(--hint-w);
+  transform: translate(-50%, -100%);
+}
+html[data-one-pill="true"][data-dock="left"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: var(--hint-x);
+  transform: translateY(-100%);
+}
+html[data-one-pill="true"][data-dock="right"] .bar[data-bar-position][data-bar-orientation] ~ .silent-mic-row {
+  left: calc(var(--hint-x) + var(--hint-w));
+  transform: translate(-100%, -100%);
 }
 /* No free-floating clock: until the first layout has placed it (one frame at
  * mount), Yappy's clock slot is not painted anywhere. */

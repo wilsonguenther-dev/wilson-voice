@@ -61,17 +61,75 @@ export function nextMicrophone(list: SilentMicList | null | undefined): SilentMi
   return others.find((d) => !d.isVirtual) ?? others[0] ?? null;
 }
 
+/* ── fitting the row ─────────────────────────────────────────────────────────
+ * loop3 bounce fix: the row used to be ONE 18 px line capped at HINT_W
+ * (192 px) with the button beside the text, which left the text ~105 px —
+ * "I can't hear MacBook Pro Microphone" (200 px) was cut to "I can't hear
+ * Mac…". The row is now TWO rows inside the hint slot: the line on top with
+ * the whole width, the button under it. Every line the row can show is fitted
+ * here so it never overflows that width, measured with the same pessimistic
+ * 6.0 px/char estimate the phase strip uses (live.ts STRIP_CHAR_PX); the full
+ * warning stays in the tooltip and the accessible name.
+ */
+
+/** The row's width: the hint slot (pill/state.ts HINT_W). */
+export const SILENT_MIC_ROW_W = 192;
+/** `.silent-mic-row { padding: 0 8px }`, both sides. */
+export const SILENT_MIC_ROW_PAD_X = 16;
+/** The drawable width of the line, px. */
+export const SILENT_MIC_LINE_PX = SILENT_MIC_ROW_W - SILENT_MIC_ROW_PAD_X;
+/** Pessimistic advance width at 11 px system sans (live.ts STRIP_CHAR_PX). */
+export const SILENT_MIC_CHAR_PX = 6.0;
+/** The row's height: 3 px pad + 14 px line + 2 px gap + 14 px button + 3 px pad. */
+export const SILENT_MIC_ROW_H = 36;
+/** Hint lines (pill/state.ts HINT_LINE_H = 14) the layout reserves while the row is up. */
+export const SILENT_MIC_HINT_LINES = 3;
+
+const WARNING_PREFIX = "I can't hear ";
+const SWITCHED_PREFIX = "Next take uses ";
+
+/** Estimated drawn width of a line, px. */
+export const silentMicLineWidthPx = (text: string): number => text.length * SILENT_MIC_CHAR_PX;
+
+/** Does a line fit the row on one line? */
+export const fitsSilentMicRow = (text: string): boolean => silentMicLineWidthPx(text) <= SILENT_MIC_LINE_PX;
+
+/**
+ * `prefix + name`, fitted to the row: as is when it fits; else without a
+ * generic trailing "Microphone"/"Mic" ("MacBook Pro Microphone" is
+ * "MacBook Pro"); else the name cut to the room left, with an ellipsis.
+ */
+export function fitMicName(prefix: string, name: string): string {
+  const n = name.replace(/\s+/g, " ").trim();
+  const full = prefix + n;
+  if (fitsSilentMicRow(full)) return full;
+  const short = n.replace(/\s+(microphone|mic)$/i, "").trim();
+  const base = short || n;
+  if (fitsSilentMicRow(prefix + base)) return prefix + base;
+  const room = Math.max(1, Math.floor(SILENT_MIC_LINE_PX / SILENT_MIC_CHAR_PX) - prefix.length - 1);
+  return prefix + base.slice(0, room).trimEnd() + "\u2026";
+}
+
+/** The warning as the row draws it: "I can't hear <mic>", fitted to the row. */
+export function silentMicLine(warning: string): string {
+  const one = warning.replace(/\s+/g, " ").trim();
+  if (fitsSilentMicRow(one)) return one;
+  if (one.startsWith(WARNING_PREFIX)) return fitMicName(WARNING_PREFIX, one.slice(WARNING_PREFIX.length));
+  const room = Math.floor(SILENT_MIC_LINE_PX / SILENT_MIC_CHAR_PX) - 1;
+  return one.slice(0, room).trimEnd() + "\u2026";
+}
+
 /** The row's line after a switch: the pick applies from the next take. */
 export function switchedLine(name: string): string {
   const n = name.trim();
-  return n ? `Next take uses ${n}` : "Next take uses the new microphone";
+  return n ? fitMicName(SWITCHED_PREFIX, n) : "Next take uses the new mic";
 }
 
 /** No other microphone is plugged in: say so, with the one thing to do. */
-export const NO_OTHER_MIC_LINE = "No other microphone — check the mute switch";
+export const NO_OTHER_MIC_LINE = "No other mic \u2014 check mute";
 
 /** The switch failed (the backend logged why): one sentence. */
-export const SWITCH_FAILED_LINE = "Couldn't switch mics — try Settings → Audio";
+export const SWITCH_FAILED_LINE = "Couldn't switch. Try Settings";
 
 /** The accessible name of the row: the warning plus what the button does. */
 export function silentMicAccessibleName(warning: string): string {
