@@ -18,6 +18,7 @@ import PillShell from "./pill/PillShell";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
+import { DEFAULT_CHATTER_MODE, parseChatterMode, type ChatterMode } from "./pill/chatter";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
@@ -105,6 +106,8 @@ interface Settings {
   pillStyle?: string;
   pillPosition?: string;
   companionTone?: string;
+  /** yap-1106-chatter-setting — "Yappy talks": always | less | milestones (backend `yappy_talks`). */
+  yappyTalks?: string;
   /**
    * Y8-B — the Scratchpad's "Add to Flow Bar" toggle. Not on the backend's
    * Settings yet: it ships with DB-D (the Scratchpad window), and until then
@@ -317,6 +320,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // yap-1106-chatter-setting — "Yappy talks", read live off the settings payload like the tone.
+  const [chatter, setChatter] = useState<ChatterMode>(DEFAULT_CHATTER_MODE);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
@@ -497,6 +502,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setChatter(parseChatterMode(s?.yappyTalks));
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
@@ -612,7 +618,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -662,7 +668,7 @@ function Float() {
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} chatter={chatter} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
