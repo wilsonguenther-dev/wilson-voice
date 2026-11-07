@@ -956,6 +956,11 @@ pub struct AppStatus {
     /// field — <chord> still works". `None` when not blocked or not exposed.
     #[serde(default)]
     pub secure_input_app: Option<String>,
+    /// yap-1107-secure-input-own-field-quiet — Secure Input is held by Yap's
+    /// OWN masked key field. Never sets `secure_input_blocked`; the window
+    /// shows only the one neutral `secure_input::OWN_FIELD_MESSAGE` line.
+    #[serde(default)]
+    pub secure_input_own_field: bool,
     /// yap24-PILL3 — the Carbon dictate chord is REALLY registered, so the
     /// pill may say "<dictate_toggle_label> still works" under Secure Input
     /// (hotkeys.rs: Carbon hotkeys are delivered while Secure Input is on).
@@ -1727,6 +1732,7 @@ fn build_status(state: &AppState) -> AppStatus {
             .as_deref()
             .filter(|_| secure.blocked)
             .map(|c| secure_input::holder_app(c).to_string()),
+        secure_input_own_field: secure.own_field && !secure.blocked,
         dictate_chord_registered,
         engine_loading,
         tap_health_message,
@@ -3234,9 +3240,28 @@ fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u6
     let Some(take) = stream_take else {
         return;
     };
-    let Some(client) = polish::installed_client(&cfg) else {
-        return;
-    };
+    // yap-1106-sp-08 + sp-07: on the hosted route the committed chunks go out
+    // to the cloud DURING the take (one at a time, as they commit); the release
+    // reuses them byte-exactly. Otherwise the bundled model, as before.
+    let (client, ready): (Box<dyn polish::PolishClient + Send>, polish::ReadyProbe) =
+        if cloud_polish_wanted(app, &state.db) {
+            log::info!("polish pipeline route=cloud take={take}");
+            (
+                Box::new(CloudChunkClient {
+                    app: app.clone(),
+                    db: Arc::clone(&state.db),
+                }) as Box<dyn polish::PolishClient + Send>,
+                Arc::new(|| true) as polish::ReadyProbe,
+            )
+        } else {
+            let Some(client) = polish::installed_client(&cfg) else {
+                return;
+            };
+            (
+                Box::new(client) as Box<dyn polish::PolishClient + Send>,
+                Arc::new(polish::sidecar_ready_for_pipeline) as polish::ReadyProbe,
+            )
+        };
     let structure =
         dictation::structure_format_for_take(structure_on, &overrides, &bundle_id, mode);
     let style = cfg.style;
@@ -3263,14 +3288,7 @@ fn arm_polish_now(app: &AppHandle, state: &Arc<AppState>, stream_take: Option<u6
         );
         seen.into_inner()
     });
-    if let Some(pipeline) = polish::PolishPipeline::start(
-        take,
-        mode,
-        cfg,
-        Box::new(client),
-        prepare,
-        Arc::new(polish::sidecar_ready_for_pipeline),
-    ) {
+    if let Some(pipeline) = polish::PolishPipeline::start(take, mode, cfg, client, prepare, ready) {
         polish::pipeline_arm(pipeline);
     }
 }
@@ -9160,13 +9178,21 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
         return;
     };
     let raw = raw.to_string();
+    let polished = entry.text.clone();
     let app = app.clone();
+    let started = std::time::Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        // Explicit re-paste: the current frontmost app is the intended target,
-        // so pass `None` (the YV21 source-app guard does not apply here).
-        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
-        if !o.copied {
-            log::warn!("undo ai edit failed: {}", o.message);
+        // fix-l3b7-1: select the polished take right before the caret and type
+        // the raw take OVER it (never after it). A field where the polished
+        // words cannot be found is copy-only — the raw take on the clipboard,
+        // nothing typed. Explicit re-paste: the frontmost app is the target.
+        let r = paste::replace_take(&app, &polished, &raw);
+        log::info!(
+            "{}",
+            paste::replace_log_line("dictation undo_ai_edit", &r, started.elapsed().as_millis())
+        );
+        if !r.outcome.copied {
+            log::warn!("undo ai edit failed: {}", r.outcome.message);
         }
     });
 }
@@ -9213,29 +9239,45 @@ async fn use_original_take(
             });
         }
     };
+    let polished = newest.text.clone();
     let started = std::time::Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        // Explicit re-paste, exactly like Undo AI Edit: the frontmost app is
-        // the intended target, so the YV21 source-app guard does not apply.
-        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
+        // fix-l3b7-1: REPLACE the polished take in its field, exactly like Undo
+        // AI Edit (the same helper): select it right before the caret, then
+        // type the raw take over it. When it cannot be found the raw take is
+        // copied only and the pill shows the clipboard sentence.
+        let r = paste::replace_take(&app, &polished, &raw);
         log::info!(
-            "dictation polish_reveal_use_original pasted={} copied={} ms={}",
-            o.pasted,
-            o.copied,
-            started.elapsed().as_millis()
+            "{}",
+            paste::replace_log_line(
+                "dictation polish_reveal_use_original",
+                &r,
+                started.elapsed().as_millis()
+            )
         );
-        if o.copied {
-            Ok(o.message)
-        } else {
-            log::warn!(
-                "dictation polish_reveal_use_original failed=paste: {}",
-                o.message
-            );
-            Err("Couldn’t paste the original. Try Use original again.".to_string())
-        }
+        use_original_reply(&r)
     })
     .await
     .map_err(|e| format!("paste task join failed: {e}"))?
+}
+
+/// fix-l3b7-1 — what `use_original_take` answers the pill. A replace that
+/// landed (or was carded) is `Ok(message)`; a refused replace whose copy worked
+/// is `Err(REPLACE_NOT_FOUND_MESSAGE)` so the card shows the clipboard
+/// sentence; anything that could not even copy is the generic retry line.
+pub fn use_original_reply(r: &paste::ReplaceResult) -> Result<String, String> {
+    const FAILED: &str = "Couldn’t paste the original. Try Use original again.";
+    match (&r.replaced, r.outcome.copied) {
+        (Ok(()), true) => Ok(r.outcome.message.clone()),
+        (Err(_), true) => Err(r.outcome.message.clone()),
+        (_, false) => {
+            log::warn!(
+                "dictation polish_reveal_use_original failed=paste: {}",
+                r.outcome.message
+            );
+            Err(FAILED.to_string())
+        }
+    }
 }
 
 /// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to
@@ -9758,6 +9800,70 @@ fn meeting_speaker_names(
     state.db.meeting_speaker_names(&meeting_id)
 }
 
+/// yap-1106-auto-label-and-correct — the notes' speaker source: the name a
+/// saved voice or a correction gave a line (a person, `Named`), else the
+/// track-label source the transcript uses.
+struct CorrectedSpeakers {
+    names: std::collections::HashMap<String, String>,
+    fallback: summarize::TrackSpeakers,
+}
+
+impl CorrectedSpeakers {
+    fn new(names: Vec<(String, String)>, fallback: summarize::TrackSpeakers) -> Self {
+        Self {
+            names: names
+                .into_iter()
+                .filter(|(_, n)| !n.trim().is_empty())
+                .collect(),
+            fallback,
+        }
+    }
+}
+
+impl summarize::SpeakerSource for CorrectedSpeakers {
+    fn speaker_for(&self, segment: &meetings::MeetingSegment) -> Option<summarize::SegmentSpeaker> {
+        match self.names.get(&segment.id) {
+            Some(name) => Some(summarize::SegmentSpeaker::Named(name.trim().to_string())),
+            None => summarize::SpeakerSource::speaker_for(&self.fallback, segment),
+        }
+    }
+}
+
+/// yap-1106-auto-label-and-correct — a speaker chip's Rename / This is someone
+/// else / Merge with… / Split this speaker. Returns the changed lines and the
+/// 10 s undo ticket.
+#[tauri::command]
+fn correct_meeting_speakers(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    correction: speaker_profiles::SpeakerCorrection,
+) -> Result<speaker_profiles::CorrectionApplied, String> {
+    let kind = correction.kind();
+    state
+        .db
+        .correct_meeting_speakers(&meeting_id, &correction)
+        .inspect_err(|e| {
+            log::warn!(
+                "speaker_profiles correction_failed kind={kind} meeting={meeting_id} error=\"{e}\""
+            )
+        })
+}
+
+/// yap-1106-auto-label-and-correct — "Undo" on a correction (asks the lock).
+#[tauri::command]
+fn undo_speaker_correction(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    undo: speaker_profiles::CorrectionUndo,
+) -> Result<speaker_profiles::CorrectionUndone, String> {
+    state
+        .db
+        .undo_speaker_correction(&meeting_id, &undo)
+        .inspect_err(|e| {
+            log::warn!("speaker_profiles undo_correction_failed meeting={meeting_id} error=\"{e}\"")
+        })
+}
+
 /// The card's clip as a base64 WAV, cut from the KEPT audio of that track.
 /// Purged audio (the 7-day retention) is an error the card turns into
 /// "The audio was deleted, so there is no clip. You can still name them."
@@ -9844,12 +9950,39 @@ fn pill_quiet_state() -> pill_quiet::QuietState {
 }
 
 #[tauri::command]
-fn get_news_prefs(state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
-    news_prefs::view(&*state.db, news_prefs::now_ms())
+fn get_news_prefs(app: AppHandle, state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
+    let view = news_prefs::view(&*state.db, news_prefs::now_ms());
+    spawn_news_connect_refresh(&app, &state);
+    view
+}
+
+/// yap-1107-news-honours-cloud-key — the connect transition. Settings re-reads
+/// the News view on `yap:cloud-route-changed` (a key saved or removed, a mode
+/// change) and after every news save; each read lands here. When the gate has
+/// just opened (cloud on, switch on, one topic) and Yap never refreshed, run
+/// the one connect refresh on a blocking thread. `feeds::refresh_on_connect`
+/// stamps its marker under the shared limiter, so two reads in a row fetch
+/// once. Cheap when nothing is owed: one settings read, no thread.
+fn spawn_news_connect_refresh(app: &AppHandle, state: &State<'_, Arc<AppState>>) {
+    if !news::feeds::first_refresh_due(&*state.db) {
+        return;
+    }
+    let db = state.db.clone();
+    let quote = news::quote_key::feed(&*db, &news_quote_keychain(app));
+    tauri::async_runtime::spawn_blocking(move || {
+        match news::refresh_on_connect_ranked(&db, &quote, news::cache::DEFAULT_LIMIT) {
+            Some(Ok((_, ingest))) => {
+                log::info!("news connect_refresh ok stories={}", ingest.stories.len())
+            }
+            Some(Err(reason)) => log::warn!("news connect_refresh failed reason={reason}"),
+            None => log::debug!("news connect_refresh not_owed"),
+        }
+    });
 }
 
 #[tauri::command]
 fn set_news_prefs(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     prefs: news_prefs::NewsPrefs,
     source: String,
@@ -9865,6 +9998,9 @@ fn set_news_prefs(
     {
         log::warn!("news cache_clear_failed reason=feature_off error=\"{e}\"");
     }
+    // yap-1107-news-honours-cloud-key — the first topic saved after the cloud
+    // is connected opens the gate: that is the connect refresh too.
+    spawn_news_connect_refresh(&app, &state);
     Ok(view)
 }
 
@@ -10273,14 +10409,78 @@ fn cloud_run<R>(
     routed
 }
 
+/// yap-1106-sp-08 — is the hosted cleanup route on AND keyed? (The rest of
+/// `decide` — path, breaker, cap — is asked per request by `cloud_run`.)
+fn cloud_polish_wanted(app: &AppHandle, db: &Database) -> bool {
+    cloud_route::CloudMode::load(db).wants_cloud()
+        && model_providers::cloud_key_provider(db, &byom_keychain(app)).is_some()
+}
+
+/// yap-1106-sp-08 — one cleanup chunk on the cloud route: the validated answer,
+/// or `None` (offline, breaker, cap, timeout, rejected …) so the caller hands
+/// the whole take to the bundled model. Spend, retry and breaker are
+/// `run_routed`'s, per chunk.
+fn cloud_polish_chunk(app: &AppHandle, db: &Database, body: &str) -> Option<String> {
+    let words = body.split_whitespace().count() as u32;
+    let max_tokens = (words.saturating_mul(3) + 64).clamp(64, 4096);
+    let mut sink = |_: &str| {};
+    cloud_run(
+        app,
+        db,
+        cloud_route::Job::Polish,
+        cloud_client::CLEANUP_SYSTEM,
+        body,
+        max_tokens,
+        &summary_jobs::CancelToken::new(),
+        &mut sink,
+        &|out| polish::validate_polish(body, out).map(Some),
+        &mut || None::<String>,
+    )
+    .value
+}
+
+/// yap-1106-sp-08 + sp-07 — the pipeline's client on the hosted route: each
+/// committed chunk goes to the cloud while the take is still recording. Any
+/// failure is an `Err`, so the chunk is simply asked for again at release.
+struct CloudChunkClient {
+    app: AppHandle,
+    db: Arc<Database>,
+}
+
+impl polish::PolishClient for CloudChunkClient {
+    fn rewrite(&self, req: &polish_protocol::PolishRequest) -> Result<String, polish::PolishError> {
+        cloud_polish_chunk(&self.app, &self.db, &req.text).ok_or(polish::PolishError::Unavailable)
+    }
+}
+
 /// Dictation cleanup on the cloud route: pastes only a COMPLETE, validated
 /// answer; anything else is the bundled model's result.
+///
+/// yap-1106-sp-08: a take longer than one 160-word chunk goes out as chunks,
+/// at most `cloud_route::MAX_IN_FLIGHT` in flight, reassembled in order and
+/// re-checked as a whole; chunks the pipeline already sent during the take are
+/// not sent again. One chunk without an accepted answer → the whole take runs
+/// on the bundled model, exactly the §22 fallback.
 fn cloud_polish(
     app: &AppHandle,
     db: &Database,
     text: &str,
     local: &dyn Fn(&str) -> Result<String, &'static str>,
 ) -> Result<String, &'static str> {
+    if text.split_whitespace().count() > polish::POLISH_CHUNK_WORDS && cloud_polish_wanted(app, db)
+    {
+        let pre = polish::take_prepolished_for_cloud();
+        let run = |chunk: &polish::PolishChunk| cloud_polish_chunk(app, db, &chunk.body);
+        return match polish::polish_chunks_parallel_seeded(
+            text,
+            &pre,
+            cloud_route::MAX_IN_FLIGHT,
+            &run,
+        ) {
+            Some(out) => Ok(out),
+            None => local(text),
+        };
+    }
     let words = text.split_whitespace().count() as u32;
     let max_tokens = (words.saturating_mul(3) + 64).clamp(64, 4096);
     let mut sink = |_: &str| {};
@@ -10309,14 +10509,46 @@ fn cloud_notes(
     cancel: &summary_jobs::CancelToken,
 ) -> Option<String> {
     let app = MEETING_APP.get()?.clone();
-    let lines = meetings::render_transcript(segments, kind);
-    let transcript: String = lines
+    // yap-1106-auto-label-and-correct — the notes read the corrected names.
+    let names = state.db.meeting_speaker_names(id).unwrap_or_default();
+    // yap-1106-sp-08: rendered lines, so a long meeting can be read as map
+    // passes in parallel; a short one is still the one request it always was.
+    let lines: Vec<String> = meetings::render_transcript_named(segments, kind, &names)
         .iter()
-        .map(|l| format!("[{}] {}: {}\n", l.offset, l.label(), l.text))
+        .map(|l| format!("[{}] {}: {}", l.offset, l.label(), l.text))
         .collect();
-    if transcript.trim().is_empty() {
+    let passes = summarize::plan_cloud_map_chunks(&lines, summarize::CLOUD_MAP_WORDS).len();
+    if passes == 0 {
         return None;
     }
+    let notes_accept = |out: &str| {
+        let t = out.trim();
+        (!t.is_empty()).then(|| Some(t.to_string()))
+    };
+    let finished = std::sync::atomic::AtomicUsize::new(0);
+    let map = |_i: usize, chunk: &str| -> Option<String> {
+        let mut sink = |_: &str| {};
+        let routed = cloud_run(
+            &app,
+            &state.db,
+            cloud_route::Job::Notes,
+            summarize::CLOUD_MAP_SYSTEM,
+            chunk,
+            1024,
+            cancel,
+            &mut sink,
+            &notes_accept,
+            &mut || None::<String>,
+        );
+        let done = finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if let Err(e) = app.emit(
+            NOTES_DELTA_EVENT,
+            serde_json::json!({"id": id, "progress": {"done": done, "of": passes}}),
+        ) {
+            log::warn!("byom notes_progress_emit_failed error={e}");
+        }
+        routed.value
+    };
     let emitter = app.clone();
     let meeting_id = id.to_string();
     let mut on_delta = move |delta: &str| {
@@ -10327,28 +10559,40 @@ fn cloud_notes(
             log::warn!("byom notes_delta_emit_failed error={e}");
         }
     };
-    let routed = cloud_run(
-        &app,
-        &state.db,
-        cloud_route::Job::Notes,
-        cloud_client::NOTES_SYSTEM,
-        &transcript,
-        4096,
-        cancel,
-        &mut on_delta,
-        &|out| {
-            let t = out.trim();
-            (!t.is_empty()).then(|| Some(t.to_string()))
-        },
-        &mut || None::<String>,
+    let mut route = cloud_route::Route::Local;
+    let mut reduce = |turn: &str| -> Option<String> {
+        let routed = cloud_run(
+            &app,
+            &state.db,
+            cloud_route::Job::Notes,
+            cloud_client::NOTES_SYSTEM,
+            turn,
+            4096,
+            cancel,
+            &mut on_delta,
+            &notes_accept,
+            &mut || None::<String>,
+        );
+        route = routed.route;
+        routed.value
+    };
+    let value = summarize::cloud_notes_parallel(
+        &lines,
+        summarize::CLOUD_MAP_WORDS,
+        cloud_route::MAX_IN_FLIGHT,
+        &map,
+        &mut reduce,
     );
+    if value.is_none() {
+        route = cloud_route::Route::Local;
+    }
     if let Err(e) = app.emit(
         NOTES_DELTA_EVENT,
-        serde_json::json!({"id": id, "done": true, "route": routed.route}),
+        serde_json::json!({"id": id, "done": true, "route": route}),
     ) {
         log::warn!("byom notes_done_emit_failed error={e}");
     }
-    routed.value
+    value
 }
 
 /// Settings › Models & privacy — everything the cloud section renders.
@@ -11353,6 +11597,10 @@ pub(crate) fn summarize_meeting_with(
     // the transcript row it cites cannot come apart. On the clustering branch
     // this source declines and the summary is exactly what YV97 produced.
     let speakers = summarize::TrackSpeakers::for_meeting(meeting.kind(), &segments);
+    // yap-1106-auto-label-and-correct — a line a saved voice or a correction
+    // named is attributed to that PERSON in the notes, as on the transcript.
+    let speakers =
+        CorrectedSpeakers::new(db.meeting_speaker_names(id).unwrap_or_default(), speakers);
     let summary = summarize::summarize_segments_with(&segments, &client, &speakers);
 
     let summary = summary.map_err(|e| match e {
@@ -14707,6 +14955,8 @@ pub fn run() {
             name_cluster,
             ignore_cluster,
             meeting_speaker_names,
+            correct_meeting_speakers,
+            undo_speaker_correction,
             meeting_cluster_clip,
             voices_enroll_me_choice,
             set_voices_enroll_me_choice,

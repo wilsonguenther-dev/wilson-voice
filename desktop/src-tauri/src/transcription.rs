@@ -376,6 +376,15 @@ pub trait Transcriber: Send + 'static {
         None
     }
 
+    /// yap-1106-pill-warmup-engine — step 3 of the load signal, "first test
+    /// pass": a check that the freshly loaded engine answers before it is
+    /// stored and reported ready. Defaulted to a pass so every stub (and an
+    /// engine with no cheap self-check) stays a legal `Transcriber`; a failure
+    /// is logged and never fails the load (the loader is the authority).
+    fn first_pass(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Clear a cancellation left over from a PREVIOUS decode (YV93).
     ///
     /// The real engine's cancel flag is sticky (see
@@ -501,12 +510,32 @@ type EngineLoader = Arc<dyn Fn(&Path) -> Result<Box<dyn Transcriber>, String> + 
 pub struct EngineLoadProgress {
     /// 0..=100. 100 is sent ONLY with `stage == "ready"`.
     pub pct: u8,
-    /// "starting" | "reading" | "waiting" | "ready" | "failed".
+    /// "starting" | "reading" | "waiting" | "testing" | "ready" | "failed".
     pub stage: &'static str,
+    /// yap-1106-pill-warmup-engine — the three-step load signal the compact
+    /// warm-up pill fills a third of its bar per step from: 1 reading the
+    /// file, 2 warming up (the native load), 3 first test pass. 0 = not
+    /// started yet ("starting"); 4 = ready. A failure keeps the step it
+    /// failed in. See [`load_step`].
+    pub step: u8,
     /// Model id (catalog id, never a path).
     pub model_id: String,
     /// Milliseconds since this load started.
     pub elapsed_ms: u64,
+}
+
+/// yap-1106-pill-warmup-engine — the warm-up pill's step for a stage (see
+/// [`EngineLoadProgress::step`]). `failed` is resolved by the caller (it keeps
+/// the step the load was in), so here it reads as the step before ready.
+pub fn load_step(stage: &str) -> u8 {
+    match stage {
+        "starting" => 0,
+        "reading" => 1,
+        "waiting" => 2,
+        "testing" | "failed" => 3,
+        "ready" => 4,
+        _ => 0,
+    }
 }
 
 /// Where the walk waits for the native load: the office door.
@@ -645,6 +674,10 @@ struct InFlight {
     /// its result away. Read back by the lease so the caller is told which of
     /// the two happened instead of being handed a decode failure.
     discard: Option<Discard>,
+    /// yap-1106-sp-04 — catalog id of the leased engine. A load that finds its
+    /// own model out on a lease reuses it (waits for the handback) instead of
+    /// building a second copy.
+    model_id: String,
 }
 
 /// Shared guts. Held by an `Arc` so the idle watcher can keep a `Weak` and exit
@@ -895,8 +928,81 @@ impl TranscriptionManager {
         self.inner.generation.fetch_add(1, Ordering::AcqRel);
         let previous = self.inner.engine.lock().take();
         if let Some(engine) = previous {
-            log::info!("ASR model '{}' unloaded", engine.model_id);
+            let model = engine.model_id.clone();
             drop(engine);
+            log::info!(
+                "engine free reason=unload model={model} engines_live={}",
+                crate::engine_owner::engines_live()
+            );
+        }
+    }
+
+    /// yap-1106-sp-04 — catalog id of the engine that is out on a lease right
+    /// now (a decode holds it), if any. Together with [`Self::loaded_model`]
+    /// this is everything resident: the slot is empty while a decode runs.
+    pub fn leased_model(&self) -> Option<String> {
+        self.inner
+            .in_flight
+            .lock()
+            .as_ref()
+            .map(|f| f.model_id.clone())
+    }
+
+    /// yap-1106-sp-04 — ONE engine copy. Before `model_id` is built, any OTHER
+    /// model must be gone: one sitting in the slot is freed now, one out on a
+    /// lease is asked back (a meeting chunk is cancelled through its hook and
+    /// re-decodes after the handback) and freed when it returns. If it does
+    /// not come back inside [`ENGINE_HANDBACK_WAIT`], the load is refused with
+    /// the queue's own `CATCHING_UP` sentence instead of stacking a copy.
+    fn free_other_model_for(&self, model_id: &str) -> Result<(), String> {
+        let started = Instant::now();
+        let mut asked_back = false;
+        loop {
+            let other = {
+                let mut slot = self.inner.engine.lock();
+                let differs = slot.as_ref().is_some_and(|e| e.model_id != model_id);
+                if differs {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(old) = other {
+                // A copy of `old` still out on another lease must not come
+                // back into the slot after this: the generation bump drops it.
+                self.inner.generation.fetch_add(1, Ordering::AcqRel);
+                let from = old.model_id.clone();
+                drop(old);
+                log::info!(
+                    "engine free reason=model_swap from={from} to={model_id} engines_live={}",
+                    crate::engine_owner::engines_live()
+                );
+            }
+            if self.inner.leases.load(Ordering::Acquire) == 0 {
+                return Ok(());
+            }
+            match self.leased_model() {
+                // Our own model is out: the caller reuses it after handback.
+                Some(id) if id == model_id => return Ok(()),
+                Some(id) => {
+                    if !asked_back {
+                        asked_back = true;
+                        log::info!("engine swap waiting for handback from={id} to={model_id}");
+                        self.preempt_in_flight();
+                    }
+                }
+                // Between take and publish, or between handback and release.
+                None => {}
+            }
+            if started.elapsed() >= ENGINE_HANDBACK_WAIT {
+                log::warn!(
+                    "engine swap refused: the other model never came back to={model_id} waited_ms={} engines_live={}",
+                    started.elapsed().as_millis(),
+                    crate::engine_owner::engines_live()
+                );
+                return Err(crate::engine_owner::CATCHING_UP.to_string());
+            }
+            std::thread::sleep(ENGINE_HANDBACK_POLL);
         }
     }
 
@@ -988,9 +1094,22 @@ impl TranscriptionManager {
         } else {
             pct.min(LOAD_HOLD_PCT)
         };
+        let step = if stage == "failed" {
+            // A failure keeps the step it happened in (the pill shows smoke there).
+            self.inner
+                .last_progress
+                .lock()
+                .as_ref()
+                .filter(|p| p.model_id == model_id)
+                .map(|p| p.step.min(3))
+                .unwrap_or(1)
+        } else {
+            load_step(stage)
+        };
         let next = EngineLoadProgress {
             pct,
             stage,
+            step,
             model_id: model_id.to_string(),
             elapsed_ms: started.elapsed().as_millis() as u64,
         };
@@ -1006,9 +1125,12 @@ impl TranscriptionManager {
             }
             *last = Some(next.clone());
         }
-        if matches!(stage, "starting" | "waiting" | "ready" | "failed") {
+        if matches!(
+            stage,
+            "starting" | "waiting" | "testing" | "ready" | "failed"
+        ) {
             log::info!(
-                "engine load_progress stage={stage} pct={pct} model={model_id} elapsed_ms={}",
+                "engine load_progress stage={stage} step={step} pct={pct} model={model_id} elapsed_ms={}",
                 next.elapsed_ms
             );
         }
@@ -1059,6 +1181,17 @@ impl TranscriptionManager {
             self.touch();
             return Ok(());
         }
+        // yap-1106-sp-04 — the slot is empty while a decode holds the engine.
+        // If that engine IS this model, it is resident: building another copy
+        // here is exactly the second Parakeet the 2026-11-06 session found.
+        if self.leased_model().as_deref() == Some(model_id) {
+            log::info!(
+                "engine load reused model={model_id} reason=leased engines_live={}",
+                crate::engine_owner::engines_live()
+            );
+            self.touch();
+            return Ok(());
+        }
         if !model_path.is_file() {
             return Err(format!(
                 "model '{model_id}' is not downloaded ({} missing)",
@@ -1071,6 +1204,14 @@ impl TranscriptionManager {
         // Whoever held the gate before us may have loaded the very model we
         // came for — the arm-then-transcribe pair of a first dictation.
         if self.loaded_model().as_deref() == Some(model_id) {
+            self.touch();
+            return Ok(());
+        }
+        // yap-1106-sp-04 — free the other model BEFORE building this one, so
+        // two copies are never resident at once (the old order loaded first
+        // and dropped the old engine only when the new one took the slot).
+        self.free_other_model_for(model_id)?;
+        if self.leased_model().as_deref() == Some(model_id) {
             self.touch();
             return Ok(());
         }
@@ -1109,7 +1250,7 @@ impl TranscriptionManager {
         // leave a half-built engine in the slot.
         let loaded = catch_unwind(AssertUnwindSafe(|| (self.inner.loader)(model_path)))
             .unwrap_or_else(|p| Err(format!("ASR model load panicked: {}", panic_message(&p))));
-        let engine = match loaded {
+        let mut engine = match loaded {
             Ok(engine) => engine,
             Err(e) => {
                 self.inner.loading.store(false, Ordering::Release);
@@ -1117,6 +1258,22 @@ impl TranscriptionManager {
                 return Err(e);
             }
         };
+        // yap-1106-pill-warmup-engine — step 3, the first test pass. Still at
+        // the hold: only the engine being stored below may report ready.
+        self.report_progress(model_id, load_started, LOAD_HOLD_PCT, "testing");
+        let pass_started = Instant::now();
+        match catch_unwind(AssertUnwindSafe(|| engine.first_pass())) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn!(
+                "engine first_pass_failed model={model_id} err_len={} elapsed_ms={}",
+                e.len(),
+                pass_started.elapsed().as_millis()
+            ),
+            Err(_) => log::warn!(
+                "engine first_pass_panicked model={model_id} elapsed_ms={}",
+                pass_started.elapsed().as_millis()
+            ),
+        }
         // YV70: the loader above runs for SECONDS — the exit drain can start
         // inside that window, and it ends by making a fresh Metal device. Check
         // `exiting` again before storing, under the slot lock, and drop the
@@ -1146,8 +1303,10 @@ impl TranscriptionManager {
         self.touch();
         let loads = self.inner.loads.fetch_add(1, Ordering::AcqRel) + 1;
         log::info!(
-            "ASR model '{model_id}' loaded and warm loads={loads} abandoned_live={}",
-            self.abandoned_engines()
+            "engine load model={model_id} loads={loads} abandoned_live={} engines_live={} load_ms={}",
+            self.abandoned_engines(),
+            crate::engine_owner::engines_live(),
+            load_started.elapsed().as_millis()
         );
         Ok(())
     }
@@ -1294,8 +1453,23 @@ impl TranscriptionManager {
                 }
                 Err(e) if e == NO_ENGINE_LOADED && reloads < DICTATION_MODEL_RELOADS => {
                     reloads += 1;
+                    // yap-1106-sp-04 — a reload only when the model id truly
+                    // differs. Our own model out on a meeting chunk is the
+                    // SAME engine: wait for its handback (the chunk was
+                    // cancelled through its hook) and decode on it.
+                    let leased = self.leased_model();
+                    if leased.as_deref() == Some(model_id) {
+                        log::info!(
+                            "dictation reuses the leased engine model={model_id} attempt={reloads} engines_live={}",
+                            crate::engine_owner::engines_live()
+                        );
+                        self.preempt_in_flight();
+                        continue;
+                    }
+                    let resident = self.loaded_model().or(leased);
                     log::info!(
-                        "dictation needs '{model_id}' but another model is resident — reloading it (attempt {reloads})"
+                        "dictation model_swap from={} to={model_id} attempt={reloads}",
+                        resident.as_deref().unwrap_or("none")
                     );
                     self.load(model_id, model_path)?;
                 }
@@ -1585,6 +1759,14 @@ impl TranscriptionManager {
         // ticket is held to the end of this function, i.e. until the engine
         // is back in its slot (or dropped) and the lease count is down.
         let kind = crate::engine_owner::current_job_kind(preemptible);
+        // yap-1106-sp-04 — meeting and recovery decoding run on a thread in
+        // the Darwin background band (PRIO_DARWIN_BG), so a dictation that
+        // decodes next to them is never starved. A dictation or a retry the
+        // user asked for stays in the foreground.
+        let background = matches!(
+            kind,
+            crate::engine_owner::JobKind::Meeting | crate::engine_owner::JobKind::Recovery
+        );
         // A meeting chunk keeps the words its driver already understands:
         // turned away by quit it is `ABANDONED_FOR_EXIT` (re-decoded next
         // launch, never written as a failure), and out-waited it is the same
@@ -1627,6 +1809,7 @@ impl TranscriptionManager {
             cancel: engine.engine.cancel_handle(),
             preemptible,
             discard: None,
+            model_id: engine.model_id.clone(),
         });
         // A dictation that raised its claim between `take_engine` and the line
         // above found no in-flight record and cancelled nothing. Re-ask now that
@@ -1660,6 +1843,9 @@ impl TranscriptionManager {
         let worker_fate = Arc::clone(&fate);
         let worker_abandoned = Arc::clone(&abandoned_live);
         std::thread::spawn(move || {
+            if background && !crate::asr_protocol::set_current_thread_background(true) {
+                log::debug!("engine decode background_priority=unavailable");
+            }
             let mut engine = engine;
             // Panic containment: on unwind the engine is dropped instead of
             // returned, so a poisoned native session is never reused.
@@ -3356,6 +3542,187 @@ mod tests {
         assert_eq!(m.loaded_model().as_deref(), Some("dict"));
     }
 
+    // ---- yap-1106-sp-04: one engine copy, background meeting decode ----
+
+    /// An engine that counts itself alive: built by the loader, uncounted on
+    /// drop — so `peak` is the most copies that were ever resident at once.
+    struct LiveEngine {
+        live: Arc<AtomicU64>,
+        delay: Duration,
+    }
+
+    impl Transcriber for LiveEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            std::thread::sleep(self.delay);
+            Ok("live".to_string())
+        }
+    }
+
+    impl Drop for LiveEngine {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    struct LiveCounts {
+        live: Arc<AtomicU64>,
+        peak: Arc<AtomicU64>,
+        loads: Arc<AtomicU64>,
+    }
+
+    fn live_counting_manager(delay: Duration) -> (TranscriptionManager, LiveCounts) {
+        let counts = LiveCounts {
+            live: Arc::new(AtomicU64::new(0)),
+            peak: Arc::new(AtomicU64::new(0)),
+            loads: Arc::new(AtomicU64::new(0)),
+        };
+        let (live, peak, loads) = (
+            counts.live.clone(),
+            counts.peak.clone(),
+            counts.loads.clone(),
+        );
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(LiveEngine {
+                live: live.clone(),
+                delay,
+            }) as Box<dyn Transcriber>)
+        });
+        (
+            manager(loader, Duration::from_secs(600), Duration::from_secs(120)),
+            counts,
+        )
+    }
+
+    #[test]
+    fn swapping_models_frees_the_old_copy_before_building_the_new_one() {
+        let a = stub_model_file("a");
+        let b = stub_model_file("b");
+        let (m, counts) = live_counting_manager(Duration::ZERO);
+        m.load("a", &a).expect("a loads");
+        m.load("b", &b).expect("b swaps in");
+        m.load("a", &a).expect("a swaps back");
+        assert_eq!(counts.loads.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            counts.peak.load(Ordering::SeqCst),
+            1,
+            "two engine copies were resident during a swap"
+        );
+        assert_eq!(counts.live.load(Ordering::SeqCst), 1);
+        assert_eq!(m.loaded_model().as_deref(), Some("a"));
+        std::fs::remove_dir_all(a.parent().unwrap()).ok();
+        std::fs::remove_dir_all(b.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_load_of_the_model_a_meeting_chunk_holds_reuses_it_instead_of_building_a_second() {
+        let path = stub_model_file("stub.gguf");
+        let (m, counts) = live_counting_manager(Duration::from_millis(400));
+        m.load("stub/model", &path).expect("load");
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        assert_eq!(m.leased_model().as_deref(), Some("stub/model"));
+        m.load("stub/model", &path)
+            .expect("the leased engine counts as resident");
+        assert_eq!(
+            counts.loads.load(Ordering::SeqCst),
+            1,
+            "a second copy was built while the meeting held the first"
+        );
+        assert!(meeting.join().expect("meeting thread").is_ok());
+        let dictated = m.transcribe(vec![0.2; 16_000], None, None);
+        assert_eq!(
+            dictated.as_deref(),
+            Ok("live"),
+            "the dictation reuses the same engine"
+        );
+        assert_eq!(counts.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.loads.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_swap_during_a_meeting_chunk_on_another_model_waits_for_the_handback_and_frees_it_first() {
+        let pinned = stub_model_file("pinned");
+        let dict = stub_model_file("dict");
+        let (m, counts) = live_counting_manager(Duration::from_millis(300));
+        m.load("pinned", &pinned)
+            .expect("the meeting's model loads");
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        m.load("dict", &dict)
+            .expect("the swap waits for the chunk and then loads");
+        assert_eq!(
+            counts.peak.load(Ordering::SeqCst),
+            1,
+            "the dictation model was built while the meeting's copy was still out"
+        );
+        assert_eq!(counts.live.load(Ordering::SeqCst), 1);
+        assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+        assert!(meeting.join().expect("meeting thread").is_ok());
+        std::fs::remove_dir_all(pinned.parent().unwrap()).ok();
+        std::fs::remove_dir_all(dict.parent().unwrap()).ok();
+    }
+
+    /// Records whether each decode ran in the Darwin background band.
+    #[cfg(target_os = "macos")]
+    struct PriorityProbe {
+        seen: Arc<Mutex<Vec<bool>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Transcriber for PriorityProbe {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.seen
+                .lock()
+                .push(crate::asr_protocol::current_thread_background());
+            Ok("probe".to_string())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn meeting_chunks_decode_at_background_priority_and_dictations_do_not() {
+        let path = stub_model_file("stub.gguf");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let probe_seen = seen.clone();
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            Ok(Box::new(PriorityProbe {
+                seen: probe_seen.clone(),
+            }) as Box<dyn Transcriber>)
+        });
+        let m = manager(loader, Duration::from_secs(600), Duration::from_secs(120));
+        m.load("stub/model", &path).expect("load");
+        m.transcribe_timed(vec![0.1; 16_000], None, None)
+            .expect("meeting chunk decodes");
+        m.transcribe(vec![0.2; 16_000], None, None)
+            .expect("dictation decodes");
+        assert_eq!(
+            *seen.lock(),
+            vec![true, false],
+            "meeting chunk must decode at PRIO_DARWIN_BG, the dictation in the foreground"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     // ---- yap-1106-launch-walk: engine load progress ----
 
     type ProgressLog = Arc<Mutex<Vec<(EngineLoadProgress, bool)>>>;
@@ -3465,6 +3832,78 @@ mod tests {
             .all(|(p, _)| p.pct < 100 && p.stage != "ready"));
         assert_eq!(events.last().map(|(p, _)| p.stage), Some("failed"));
         assert_eq!(m.last_load_progress().map(|p| p.stage), Some("failed"));
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    // ---- yap-1106-pill-warmup-engine: the three-step load signal ----
+
+    /// A fake loader: the steps arrive in order 0 → 1 → 2 → 3 → 4, never
+    /// skip back, and step 4 (ready, the bell) is only ever sent after the
+    /// loader returned and its first pass ran.
+    #[test]
+    fn warmup_three_step_signal_is_ordered_and_ready_comes_last() {
+        let returned = Arc::new(AtomicBool::new(false));
+        let flag = returned.clone();
+        // No sleep: the order is what is under test (and a new sub-second
+        // literal would need a long_take_budget row); the slowed-loader timing
+        // case is launch_walk_slowed_fake_loader_never_reports_ready_before_ready.
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            flag.store(true, Ordering::SeqCst);
+            Ok(Box::new(StubEngine {
+                text: "steps".to_string(),
+                delay: Duration::ZERO,
+                panics: false,
+                seen_language: Arc::new(Mutex::new(None)),
+                seen_prompt: Arc::new(Mutex::new(None)),
+            }) as Box<dyn Transcriber>)
+        });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let log: ProgressLog = Arc::new(Mutex::new(Vec::new()));
+        m.set_load_progress_sink(recording_sink(log.clone(), returned.clone()));
+        let model = stub_model_file("steps.gguf");
+        m.load("steps/model", &model).expect("load ok");
+        let events = log.lock().clone();
+        let steps: Vec<u8> = events.iter().map(|(p, _)| p.step).collect();
+        let mut last = 0u8;
+        for s in &steps {
+            assert!(*s >= last, "steps never go backwards: {steps:?}");
+            last = *s;
+        }
+        for want in 0..=4u8 {
+            assert!(steps.contains(&want), "step {want} reported: {steps:?}");
+        }
+        for (p, loader_done) in &events {
+            assert_eq!(p.step, load_step(p.stage), "step matches stage: {p:?}");
+            if p.step == 4 {
+                assert!(
+                    *loader_done,
+                    "ready (the bell) before the engine was stored"
+                );
+                assert_eq!((p.pct, p.stage), (100, "ready"));
+            } else {
+                assert!(p.pct <= LOAD_HOLD_PCT);
+            }
+            if p.stage == "testing" {
+                assert!(*loader_done, "the first test pass runs on a loaded engine");
+            }
+        }
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    #[test]
+    fn warmup_failed_load_keeps_the_step_it_failed_in() {
+        let loader: EngineLoader =
+            Arc::new(|_path: &Path| -> Result<Box<dyn Transcriber>, String> {
+                Err("bad model".into())
+            });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let model = stub_model_file("broken-steps.gguf");
+        assert!(m.load("broken/steps", &model).is_err());
+        let last = m.last_load_progress().expect("progress recorded");
+        assert_eq!(last.stage, "failed");
+        // The native load (step 2, warming up) is where this one failed.
+        assert_eq!(last.step, 2);
+        assert!(last.pct < 100);
         let _ = std::fs::remove_dir_all(model.parent().unwrap());
     }
 

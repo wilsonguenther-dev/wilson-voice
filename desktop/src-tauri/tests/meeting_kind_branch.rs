@@ -283,6 +283,9 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         wilson_voice_lib::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
         // yap-1106-who-is-this: step 12 keeps each cluster's voice for the cards.
         wilson_voice_lib::speaker_profiles::MIGRATION_12_CLUSTER_VOICES,
+        // yap-1106-auto-label-and-correct: step 13 is the correction lock and
+        // the "this was NOT them" samples.
+        wilson_voice_lib::speaker_profiles::MIGRATION_13_SPEAKER_CORRECTIONS,
     ];
     // yap-1106-who-is-this: step 12's NEW table `meeting_cluster_voices` has its
     // own `cluster_index` key column; only a step that ALTERs `meeting_segments`

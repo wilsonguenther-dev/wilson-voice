@@ -767,3 +767,641 @@ pub fn wav_clip_bytes(path: &std::path::Path, start: f64, end: f64) -> Result<Ve
     }
     Ok(out.into_inner())
 }
+
+// ---------------------------------------------------------------------------
+// yap-1106-auto-label-and-correct — known voices are labelled automatically,
+// and any label can be corrected (absorbs Y11-D and the parked `feat/yv130`
+// correction UX; see #153).
+//
+// Every function below is a pure reducer over [`LabelRow`]s, the per-line
+// speaker state of one meeting. `Database::correct_meeting_speakers`,
+// `Database::undo_speaker_correction` and `Database::auto_label_meeting` load
+// the rows, run these, and write back exactly the rows they return, so the
+// unit tests at the bottom of this file test the shipped decisions.
+//
+// Rows are the word-exact turns of `meeting_asr::build_speaker_turns`
+// (diarize-wire splits a stored row at every speaker switch), so moving whole
+// rows moves whole turns: a correction never leaves a word with the old
+// speaker, and never pulls a word across a switch.
+// ---------------------------------------------------------------------------
+
+/// Migration 13: the per-line correction lock and the negative samples a
+/// correction feeds ("this was NOT Alex").
+///
+/// `speaker_locked` is 0 when no person has touched the line, else the LOCK
+/// TOKEN of the correction that last wrote it (a millisecond stamp, unique per
+/// correction). It is a token rather than a flag so undo can ask "is this still
+/// what MY correction wrote?" of the lock, not only of the value — the YV130
+/// rule ("undo asks the lock"): a later correction that happens to write the
+/// same name is still a person's decision, and undo must not revert it.
+pub const MIGRATION_13_SPEAKER_CORRECTIONS: &str = r#"
+ALTER TABLE meeting_segments ADD COLUMN speaker_locked INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS speaker_negative_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+  meeting_id TEXT REFERENCES meetings(id) ON DELETE SET NULL,
+  embedding BLOB NOT NULL,
+  seconds REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_speaker_negative_samples_profile
+  ON speaker_negative_samples(profile_id);
+"#;
+
+/// How long "Undo" stays on screen after a correction.
+pub const UNDO_WINDOW_SECONDS: i64 = 10;
+
+/// Slack the backend allows past [`UNDO_WINDOW_SECONDS`] for a click that was
+/// already on its way when the bar closed.
+pub const UNDO_GRACE_SECONDS: i64 = 5;
+
+/// One transcript line's speaker state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelRow {
+    pub segment_id: String,
+    pub track: i64,
+    pub cluster_index: Option<i64>,
+    pub profile_id: Option<i64>,
+    pub speaker_name: Option<String>,
+    /// 0 = no person touched it; otherwise the lock token of the correction
+    /// that last wrote it (see [`MIGRATION_13_SPEAKER_CORRECTIONS`]).
+    #[serde(default)]
+    pub locked: i64,
+}
+
+/// The four things a speaker chip offers.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SpeakerCorrection {
+    /// "Rename": every line of this speaker becomes `target`.
+    #[serde(rename_all = "camelCase")]
+    Rename {
+        track: i64,
+        cluster_index: i64,
+        target: NameTarget,
+    },
+    /// "This is someone else": these lines (whole turns) belong to `target`.
+    /// Moving a whole speaker keeps its cluster; moving some of its lines
+    /// gives them a fresh cluster so a later rename of the old speaker never
+    /// sweeps them back.
+    #[serde(rename_all = "camelCase")]
+    SomeoneElse {
+        track: i64,
+        segment_ids: Vec<String>,
+        target: NameTarget,
+    },
+    /// "Merge with…": every line of `from_cluster` joins `into_cluster` and
+    /// takes its name.
+    #[serde(rename_all = "camelCase")]
+    Merge {
+        track: i64,
+        from_cluster: i64,
+        into_cluster: i64,
+    },
+    /// "Split this speaker": these lines of the speaker become a new,
+    /// unnamed speaker. Never all of them (that is a rename).
+    #[serde(rename_all = "camelCase")]
+    Split {
+        track: i64,
+        cluster_index: i64,
+        segment_ids: Vec<String>,
+    },
+}
+
+impl SpeakerCorrection {
+    /// The telemetry tag.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            SpeakerCorrection::Rename { .. } => "rename",
+            SpeakerCorrection::SomeoneElse { .. } => "someone_else",
+            SpeakerCorrection::Merge { .. } => "merge",
+            SpeakerCorrection::Split { .. } => "split",
+        }
+    }
+
+    /// The name target, for the two corrections that name someone.
+    pub fn target(&self) -> Option<&NameTarget> {
+        match self {
+            SpeakerCorrection::Rename { target, .. }
+            | SpeakerCorrection::SomeoneElse { target, .. } => Some(target),
+            _ => None,
+        }
+    }
+}
+
+/// The profile a [`NameTarget`] resolved to (found or created by the DB).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedName {
+    pub profile_id: i64,
+    pub display_name: String,
+}
+
+/// A cluster number no line of `track` uses yet.
+pub fn fresh_cluster_index(rows: &[LabelRow], track: i64) -> i64 {
+    rows.iter()
+        .filter(|r| r.track == track)
+        .filter_map(|r| r.cluster_index)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0)
+}
+
+fn cluster_rows<'a>(
+    rows: &'a [LabelRow],
+    track: i64,
+    cluster: i64,
+) -> impl Iterator<Item = &'a LabelRow> + 'a {
+    rows.iter()
+        .filter(move |r| r.track == track && r.cluster_index == Some(cluster))
+}
+
+/// Do `ids` name every line of one cluster on `track` (and nothing else)?
+/// Returns that cluster.
+pub fn whole_cluster_of(rows: &[LabelRow], track: i64, ids: &[String]) -> Option<i64> {
+    let picked: Vec<&LabelRow> = rows
+        .iter()
+        .filter(|r| r.track == track && ids.contains(&r.segment_id))
+        .collect();
+    let cluster = picked.first()?.cluster_index?;
+    if picked.len() != ids.len() || picked.iter().any(|r| r.cluster_index != Some(cluster)) {
+        return None;
+    }
+    (cluster_rows(rows, track, cluster).count() == picked.len()).then_some(cluster)
+}
+
+/// Apply one correction. Returns ONLY the rows it changes, in their new state,
+/// each stamped with `lock`. `resolved` is required for Rename / SomeoneElse.
+pub fn apply_correction(
+    rows: &[LabelRow],
+    correction: &SpeakerCorrection,
+    resolved: Option<&ResolvedName>,
+    lock: i64,
+) -> Result<Vec<LabelRow>, String> {
+    let named = |r: &LabelRow, cluster: Option<i64>, who: &ResolvedName| LabelRow {
+        cluster_index: cluster,
+        profile_id: Some(who.profile_id),
+        speaker_name: Some(who.display_name.clone()),
+        locked: lock,
+        ..r.clone()
+    };
+    match correction {
+        SpeakerCorrection::Rename {
+            track,
+            cluster_index,
+            ..
+        } => {
+            let who = resolved.ok_or("Pick a name first.")?;
+            let out: Vec<LabelRow> = cluster_rows(rows, *track, *cluster_index)
+                .map(|r| named(r, r.cluster_index, who))
+                .collect();
+            if out.is_empty() {
+                return Err("That speaker has no lines in this meeting.".into());
+            }
+            Ok(out)
+        }
+        SpeakerCorrection::SomeoneElse {
+            track, segment_ids, ..
+        } => {
+            let who = resolved.ok_or("Pick a name first.")?;
+            if segment_ids.is_empty() {
+                return Err("Pick at least one line.".into());
+            }
+            let cluster = match whole_cluster_of(rows, *track, segment_ids) {
+                Some(c) => Some(c),
+                None => Some(fresh_cluster_index(rows, *track)),
+            };
+            let out: Vec<LabelRow> = rows
+                .iter()
+                .filter(|r| r.track == *track && segment_ids.contains(&r.segment_id))
+                .map(|r| named(r, cluster, who))
+                .collect();
+            if out.len() != segment_ids.len() {
+                return Err("Some of those lines are no longer in this meeting.".into());
+            }
+            Ok(out)
+        }
+        SpeakerCorrection::Merge {
+            track,
+            from_cluster,
+            into_cluster,
+        } => {
+            if from_cluster == into_cluster {
+                return Err("Pick a different speaker to merge with.".into());
+            }
+            let into = cluster_rows(rows, *track, *into_cluster)
+                .next()
+                .ok_or("That speaker has no lines in this meeting.")?;
+            let (profile_id, speaker_name) = (into.profile_id, into.speaker_name.clone());
+            let out: Vec<LabelRow> = cluster_rows(rows, *track, *from_cluster)
+                .map(|r| LabelRow {
+                    cluster_index: Some(*into_cluster),
+                    profile_id,
+                    speaker_name: speaker_name.clone(),
+                    locked: lock,
+                    ..r.clone()
+                })
+                .collect();
+            if out.is_empty() {
+                return Err("That speaker has no lines in this meeting.".into());
+            }
+            Ok(out)
+        }
+        SpeakerCorrection::Split {
+            track,
+            cluster_index,
+            segment_ids,
+        } => {
+            if segment_ids.is_empty() {
+                return Err("Pick at least one line.".into());
+            }
+            let total = cluster_rows(rows, *track, *cluster_index).count();
+            let fresh = fresh_cluster_index(rows, *track);
+            let out: Vec<LabelRow> = cluster_rows(rows, *track, *cluster_index)
+                .filter(|r| segment_ids.contains(&r.segment_id))
+                .map(|r| LabelRow {
+                    cluster_index: Some(fresh),
+                    profile_id: None,
+                    speaker_name: None,
+                    locked: lock,
+                    ..r.clone()
+                })
+                .collect();
+            if out.len() != segment_ids.len() {
+                return Err("Some of those lines are not this speaker's.".into());
+            }
+            if out.len() == total {
+                return Err("Pick some of this speaker's lines, not all of them.".into());
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// What a correction hands the webview so it can be undone for
+/// [`UNDO_WINDOW_SECONDS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionUndo {
+    pub lock: i64,
+    /// The changed rows as they were before.
+    pub prior: Vec<LabelRow>,
+    /// Voice samples the correction fed (removed again on undo).
+    #[serde(default)]
+    pub positive_sample_ids: Vec<i64>,
+    #[serde(default)]
+    pub negative_sample_ids: Vec<i64>,
+    /// Unix milliseconds after which "Undo" is gone.
+    pub expires_at_ms: i64,
+}
+
+/// What `Database::correct_meeting_speakers` returns.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionApplied {
+    /// The rows in their new state (the webview merges them in place).
+    pub rows: Vec<LabelRow>,
+    pub undo: CorrectionUndo,
+}
+
+/// What `Database::undo_speaker_correction` returns.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionUndone {
+    pub rows: Vec<LabelRow>,
+    /// Lines a later correction took over since; they keep that answer.
+    pub skipped_changed: Vec<String>,
+}
+
+/// Undo, asking the LOCK (YV130): a row is restored only while it still
+/// carries this correction's lock token. A row a later correction rewrote —
+/// even to the very same name — carries that correction's token and is
+/// skipped, so undo never reverts a person's later decision.
+pub fn undo_plan(
+    current: &[LabelRow],
+    prior: &[LabelRow],
+    lock: i64,
+) -> (Vec<LabelRow>, Vec<String>) {
+    let mut restore = Vec::new();
+    let mut skipped = Vec::new();
+    for p in prior {
+        match current.iter().find(|c| c.segment_id == p.segment_id) {
+            Some(c) if c.locked == lock => restore.push(p.clone()),
+            _ => skipped.push(p.segment_id.clone()),
+        }
+    }
+    (restore, skipped)
+}
+
+/// Is the voice closer to a "this was NOT them" sample of the profile than to
+/// the profile's own centroid? Then a match against it is not trusted.
+pub fn vetoed_by_negatives(embedding: &[f32], centroid: &[f32], negatives: &[Vec<f32>]) -> bool {
+    if embedding.is_empty() || embedding.len() != centroid.len() {
+        return false;
+    }
+    let own = cosine_similarity(embedding, centroid).get();
+    negatives
+        .iter()
+        .filter(|n| n.len() == embedding.len())
+        .any(|n| cosine_similarity(embedding, n).get() >= own)
+}
+
+/// One cluster the auto-labeller names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoLabel {
+    pub track: i64,
+    pub cluster_index: i64,
+    pub profile_id: i64,
+    pub display_name: String,
+    pub similarity: f32,
+}
+
+/// Which clusters of a new meeting get a saved voice's name on their own:
+/// only `auto`-band matches, only clusters no person has touched (no lock,
+/// no name yet), and one cluster per profile per track (the best match) —
+/// two clusters that both sound like Alex are a question, not two Alexes.
+pub fn auto_label_plan(rows: &[LabelRow], matches: &[((i64, i64), VoiceMatch)]) -> Vec<AutoLabel> {
+    let mut best: Vec<AutoLabel> = Vec::new();
+    for ((track, cluster), m) in matches {
+        let VoiceMatch::Auto {
+            profile_id,
+            display_name,
+            similarity,
+        } = m
+        else {
+            continue;
+        };
+        let mut lines = cluster_rows(rows, *track, *cluster).peekable();
+        if lines.peek().is_none() {
+            continue;
+        }
+        if lines.any(|r| r.locked != 0 || r.profile_id.is_some() || r.speaker_name.is_some()) {
+            continue;
+        }
+        let candidate = AutoLabel {
+            track: *track,
+            cluster_index: *cluster,
+            profile_id: *profile_id,
+            display_name: display_name.clone(),
+            similarity: similarity.get(),
+        };
+        match best
+            .iter_mut()
+            .find(|b| b.track == *track && b.profile_id == *profile_id)
+        {
+            Some(b) if b.similarity >= candidate.similarity => {}
+            Some(b) => *b = candidate,
+            None => best.push(candidate),
+        }
+    }
+    best.sort_by_key(|b| (b.track, b.cluster_index));
+    best
+}
+
+#[cfg(test)]
+mod correction_tests {
+    use super::*;
+
+    fn row(id: &str, cluster: Option<i64>, name: Option<(i64, &str)>) -> LabelRow {
+        LabelRow {
+            segment_id: id.into(),
+            track: 0,
+            cluster_index: cluster,
+            profile_id: name.map(|n| n.0),
+            speaker_name: name.map(|n| n.1.to_string()),
+            locked: 0,
+        }
+    }
+
+    fn alex() -> ResolvedName {
+        ResolvedName {
+            profile_id: 7,
+            display_name: "Alex".into(),
+        }
+    }
+
+    /// A: s1 s3 s5 (cluster 0, auto-labelled John), B: s2 s4 (cluster 1).
+    fn meeting() -> Vec<LabelRow> {
+        vec![
+            row("s1", Some(0), Some((3, "John"))),
+            row("s2", Some(1), None),
+            row("s3", Some(0), Some((3, "John"))),
+            row("s4", Some(1), None),
+            row("s5", Some(0), Some((3, "John"))),
+        ]
+    }
+
+    fn rename(cluster: i64) -> SpeakerCorrection {
+        SpeakerCorrection::Rename {
+            track: 0,
+            cluster_index: cluster,
+            target: NameTarget::NewName {
+                name: "Alex".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn relabel_moves_every_line_of_the_speaker_and_locks_them() {
+        let out = apply_correction(&meeting(), &rename(0), Some(&alex()), 42).unwrap();
+        let ids: Vec<&str> = out.iter().map(|r| r.segment_id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s3", "s5"]);
+        assert!(out
+            .iter()
+            .all(|r| r.speaker_name.as_deref() == Some("Alex") && r.profile_id == Some(7)));
+        assert!(out
+            .iter()
+            .all(|r| r.locked == 42 && r.cluster_index == Some(0)));
+    }
+
+    #[test]
+    fn relabel_needs_a_name_and_a_speaker_with_lines() {
+        assert!(apply_correction(&meeting(), &rename(0), None, 1).is_err());
+        assert!(apply_correction(&meeting(), &rename(9), Some(&alex()), 1).is_err());
+    }
+
+    #[test]
+    fn someone_else_on_some_lines_moves_whole_turns_to_a_fresh_speaker() {
+        let c = SpeakerCorrection::SomeoneElse {
+            track: 0,
+            segment_ids: vec!["s3".into()],
+            target: NameTarget::NewName {
+                name: "Alex".into(),
+            },
+        };
+        let out = apply_correction(&meeting(), &c, Some(&alex()), 5).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].segment_id, "s3");
+        assert_eq!(
+            out[0].cluster_index,
+            Some(2),
+            "a fresh cluster, so a later rename of John never sweeps it back"
+        );
+        assert_eq!(out[0].speaker_name.as_deref(), Some("Alex"));
+    }
+
+    #[test]
+    fn someone_else_on_a_whole_speaker_keeps_its_cluster() {
+        let c = SpeakerCorrection::SomeoneElse {
+            track: 0,
+            segment_ids: vec!["s2".into(), "s4".into()],
+            target: NameTarget::NewName {
+                name: "Alex".into(),
+            },
+        };
+        let out = apply_correction(&meeting(), &c, Some(&alex()), 5).unwrap();
+        assert!(out.iter().all(|r| r.cluster_index == Some(1)));
+        assert_eq!(
+            whole_cluster_of(&meeting(), 0, &["s2".into(), "s4".into()]),
+            Some(1)
+        );
+        assert_eq!(whole_cluster_of(&meeting(), 0, &["s2".into()]), None);
+    }
+
+    #[test]
+    fn merge_moves_the_speaker_into_the_other_and_takes_its_name() {
+        let c = SpeakerCorrection::Merge {
+            track: 0,
+            from_cluster: 1,
+            into_cluster: 0,
+        };
+        let out = apply_correction(&meeting(), &c, None, 9).unwrap();
+        let ids: Vec<&str> = out.iter().map(|r| r.segment_id.as_str()).collect();
+        assert_eq!(ids, ["s2", "s4"]);
+        assert!(out.iter().all(|r| r.cluster_index == Some(0)
+            && r.speaker_name.as_deref() == Some("John")
+            && r.profile_id == Some(3)
+            && r.locked == 9));
+    }
+
+    #[test]
+    fn merge_refuses_itself_and_a_missing_speaker() {
+        let same = SpeakerCorrection::Merge {
+            track: 0,
+            from_cluster: 0,
+            into_cluster: 0,
+        };
+        assert!(apply_correction(&meeting(), &same, None, 1).is_err());
+        let missing = SpeakerCorrection::Merge {
+            track: 0,
+            from_cluster: 1,
+            into_cluster: 8,
+        };
+        assert!(apply_correction(&meeting(), &missing, None, 1).is_err());
+    }
+
+    #[test]
+    fn split_makes_a_new_unnamed_speaker_from_some_lines() {
+        let c = SpeakerCorrection::Split {
+            track: 0,
+            cluster_index: 0,
+            segment_ids: vec!["s3".into(), "s5".into()],
+        };
+        let out = apply_correction(&meeting(), &c, None, 4).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.cluster_index == Some(2)
+            && r.speaker_name.is_none()
+            && r.profile_id.is_none()
+            && r.locked == 4));
+    }
+
+    #[test]
+    fn split_refuses_all_lines_and_lines_of_another_speaker() {
+        let all = SpeakerCorrection::Split {
+            track: 0,
+            cluster_index: 1,
+            segment_ids: vec!["s2".into(), "s4".into()],
+        };
+        assert!(apply_correction(&meeting(), &all, None, 1).is_err());
+        let foreign = SpeakerCorrection::Split {
+            track: 0,
+            cluster_index: 0,
+            segment_ids: vec!["s2".into()],
+        };
+        assert!(apply_correction(&meeting(), &foreign, None, 1).is_err());
+    }
+
+    #[test]
+    fn undo_restores_only_rows_that_still_carry_its_lock() {
+        let before = meeting();
+        let written = apply_correction(&before, &rename(0), Some(&alex()), 42).unwrap();
+        let prior: Vec<LabelRow> = before
+            .iter()
+            .filter(|r| written.iter().any(|w| w.segment_id == r.segment_id))
+            .cloned()
+            .collect();
+        let mut current = written.clone();
+        // A later correction rewrote s3 to the SAME name: only its lock differs.
+        current[1].locked = 43;
+        let (restore, skipped) = undo_plan(&current, &prior, 42);
+        let ids: Vec<&str> = restore.iter().map(|r| r.segment_id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s5"]);
+        assert_eq!(skipped, vec!["s3".to_string()]);
+        assert!(restore
+            .iter()
+            .all(|r| r.speaker_name.as_deref() == Some("John") && r.locked == 0));
+    }
+
+    fn auto(profile: i64, name: &str, sim: f32) -> VoiceMatch {
+        VoiceMatch::Auto {
+            profile_id: profile,
+            display_name: name.into(),
+            similarity: CosineSimilarity::new(sim),
+        }
+    }
+
+    #[test]
+    fn auto_label_names_only_untouched_auto_band_clusters_once_per_profile() {
+        let rows = vec![
+            row("a", Some(0), None),
+            row("b", Some(1), None),
+            row("c", Some(2), Some((9, "Kim"))),
+            row("d", Some(3), None),
+        ];
+        let matches = vec![
+            ((0, 0), auto(7, "Alex", 0.81)),
+            ((0, 1), auto(7, "Alex", 0.74)),
+            ((0, 2), auto(7, "Alex", 0.95)),
+            (
+                (0, 3),
+                VoiceMatch::Ask {
+                    profile_id: 8,
+                    display_name: "Sam".into(),
+                    similarity: CosineSimilarity::new(0.6),
+                },
+            ),
+        ];
+        let plan = auto_label_plan(&rows, &matches);
+        assert_eq!(plan.len(), 1);
+        assert_eq!((plan[0].cluster_index, plan[0].profile_id), (0, 7));
+    }
+
+    #[test]
+    fn a_locked_cluster_is_never_auto_labelled() {
+        let mut rows = vec![row("a", Some(0), None)];
+        rows[0].locked = 11;
+        assert!(auto_label_plan(&rows, &[((0, 0), auto(7, "Alex", 0.9))]).is_empty());
+    }
+
+    #[test]
+    fn a_negative_sample_closer_than_the_centroid_vetoes_the_match() {
+        let centroid = vec![1.0, 0.0, 0.0];
+        let voice = vec![0.6, 0.8, 0.0];
+        assert!(!vetoed_by_negatives(&voice, &centroid, &[]));
+        assert!(vetoed_by_negatives(
+            &voice,
+            &centroid,
+            &[vec![0.0, 1.0, 0.0]]
+        ));
+        assert!(!vetoed_by_negatives(
+            &voice,
+            &centroid,
+            &[vec![0.0, 0.0, 1.0]]
+        ));
+        assert!(
+            !vetoed_by_negatives(&voice, &centroid, &[vec![1.0, 0.0]]),
+            "another dimension is ignored"
+        );
+    }
+}

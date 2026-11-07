@@ -319,3 +319,132 @@ export function clusterLabel(
   const target = diarizationTarget(kind, isTwoTrack(segments));
   return clusteredSpeakerLabel(track, target, clusterRanks(segments, target).get(`${track}:${clusterIndex}`));
 }
+
+// ---------------------------------------------------------------------------
+// yap-1106-auto-label-and-correct — speaker corrections, webview side.
+//
+// The decisions live in Rust (`speaker_profiles::apply_correction`, unit-tested
+// there); the webview builds the request, then merges the rows the backend
+// says changed. These helpers are pure so the chip menu is tested without a DOM.
+// ---------------------------------------------------------------------------
+
+/** How long "Undo" stays after a correction. Mirrors `UNDO_WINDOW_SECONDS`. */
+export const UNDO_WINDOW_MS = 10_000;
+
+/** One line's speaker state. Mirrors `speaker_profiles::LabelRow`. */
+export interface LabelRow {
+  segmentId: string;
+  track: number;
+  clusterIndex: number | null;
+  profileId: number | null;
+  speakerName: string | null;
+  locked: number;
+}
+
+/** Mirrors `speaker_profiles::NameTarget`. */
+export type NameTarget =
+  | { kind: "profile"; profileId: number }
+  | { kind: "newName"; name: string }
+  | { kind: "me" };
+
+/** Mirrors `speaker_profiles::SpeakerCorrection`. */
+export type SpeakerCorrection =
+  | { kind: "rename"; track: number; clusterIndex: number; target: NameTarget }
+  | { kind: "someoneElse"; track: number; segmentIds: string[]; target: NameTarget }
+  | { kind: "merge"; track: number; fromCluster: number; intoCluster: number }
+  | { kind: "split"; track: number; clusterIndex: number; segmentIds: string[] };
+
+/** Mirrors `speaker_profiles::CorrectionUndo` (handed back untouched on Undo). */
+export interface CorrectionUndo {
+  lock: number;
+  prior: LabelRow[];
+  positiveSampleIds: number[];
+  negativeSampleIds: number[];
+  expiresAtMs: number;
+}
+
+export interface CorrectionApplied {
+  rows: LabelRow[];
+  undo: CorrectionUndo;
+}
+
+export interface CorrectionUndone {
+  rows: LabelRow[];
+  skippedChanged: string[];
+}
+
+/**
+ * Merge changed rows into the segments: cluster and name move together, and a
+ * row whose name was cleared (a split, an undo) falls back to "Speaker N".
+ */
+export function applyLabelRows<S extends TranscriptSegment>(
+  segments: readonly S[],
+  rows: readonly LabelRow[],
+): S[] {
+  if (rows.length === 0) return segments.slice();
+  const byId = new Map(rows.map((r) => [r.segmentId, r] as const));
+  return segments.map((s) => {
+    const r = byId.get(s.id);
+    return r ? { ...s, clusterIndex: r.clusterIndex, speakerName: r.speakerName } : s;
+  });
+}
+
+/** The other speakers on a line's track, for "Merge with…" (label as shown). */
+export function mergeChoices(
+  segments: readonly TranscriptSegment[],
+  kind: string | null | undefined,
+  track: number,
+  clusterIndex: number,
+): { clusterIndex: number; label: string }[] {
+  const seen = new Map<number, string>();
+  for (const line of orderedTranscript(segments, kind)) {
+    const c = line.segment.clusterIndex;
+    if (line.track !== track || c === null || c === undefined || c === clusterIndex) continue;
+    if (!seen.has(c)) seen.set(c, line.speaker);
+  }
+  return [...seen.entries()].map(([c, label]) => ({ clusterIndex: c, label }));
+}
+
+/**
+ * "Split this speaker": this line and every LATER line of the same speaker
+ * become a new speaker — the usual shape of a label that drifted onto someone
+ * else partway through. Whole rows only (rows are word-exact turns). Empty
+ * when that would be every line of the speaker (that is a rename, not a split).
+ */
+export function splitFromHere(
+  segments: readonly TranscriptSegment[],
+  track: number,
+  clusterIndex: number,
+  fromSegmentId: string,
+): string[] {
+  const mine = segments
+    .filter((s) => trackOf(s) === track && s.clusterIndex === clusterIndex && oneLine(s.text) !== "")
+    .slice()
+    .sort((a, b) => a.startSeconds - b.startSeconds);
+  const at = mine.findIndex((s) => s.id === fromSegmentId);
+  if (at <= 0) return [];
+  return mine.slice(at).map((s) => s.id);
+}
+
+/** A typed name as a target; null when it is blank. */
+export function nameTarget(input: string): NameTarget | null {
+  const name = oneLine(input);
+  return name === "" ? null : { kind: "newName", name };
+}
+
+/** The undo bar's sentence for a correction. */
+export function correctionSentence(c: SpeakerCorrection, mergedInto?: string): string {
+  switch (c.kind) {
+    case "rename":
+      return c.target.kind === "newName" ? `Renamed to ${c.target.name}` : "Speaker renamed";
+    case "someoneElse": {
+      const who = c.target.kind === "newName" ? c.target.name : "someone else";
+      const n = c.segmentIds.length;
+      return `${n} ${n === 1 ? "line" : "lines"} moved to ${who}`;
+    }
+    case "merge":
+      return mergedInto ? `Merged with ${mergedInto}` : "Speakers merged";
+    case "split":
+      return "Split into a new speaker";
+  }
+}

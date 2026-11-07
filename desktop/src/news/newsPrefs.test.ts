@@ -16,13 +16,17 @@ import {
   normalizeTicker,
   prefsOf,
   removeTicker,
+  revealCloudRoute,
+  CLOUD_ROUTE_SELECTOR,
   samePrefs,
   saveNews,
   statusLine,
   toggleTopic,
   topicLabels,
+  watchCloudRoute,
   type NewsView,
 } from "./newsPrefs";
+import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 const view = (over: Partial<NewsView> = {}): NewsView => ({
   ...EMPTY_PREFS,
@@ -115,5 +119,40 @@ describe("yap-1106 news prefs — the commands", () => {
     });
     await dismissNews("home");
     expect(invoke).toHaveBeenCalledWith("dismiss_news_offer", { source: "home" });
+  });
+});
+
+describe("yap-1107 news honours a saved cloud key", () => {
+  it("news_status_line_drops_the_cloud_sentence_once_connected", () => {
+    expect(statusLine(view({ cloudConnected: false }))).toContain("needs the cloud option");
+    for (const v of [view(), view({ topics: ["tech"] }), view({ enabled: false })]) {
+      expect(statusLine(v)).not.toContain("needs the cloud option");
+    }
+    expect(statusLine(view({ topics: ["tech"] }))).toBe("On.");
+  });
+
+  it("news_cloud_route_event_rereads_through_get_news_prefs", async () => {
+    const target = new EventTarget();
+    const seen: NewsView[] = [];
+    vi.mocked(invoke).mockResolvedValueOnce(view({ cloudConnected: true }));
+    const stop = watchCloudRoute((v) => seen.push(v), target);
+    target.dispatchEvent(new Event(CLOUD_ROUTE_CHANGED_EVENT));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(invoke).toHaveBeenCalledWith("get_news_prefs");
+    expect(seen[0].cloudConnected).toBe(true);
+    stop();
+  });
+
+  it("news_connect_reveals_the_cloud_key_block", async () => {
+    const heading = { tabIndex: 0, focus: vi.fn() };
+    const block = { scrollIntoView: vi.fn(), querySelector: vi.fn(() => heading) };
+    const doc = { querySelector: vi.fn(() => block), defaultView: null } as unknown as Document;
+    await expect(revealCloudRoute(doc)).resolves.toBe(true);
+    expect(doc.querySelector).toHaveBeenCalledWith(CLOUD_ROUTE_SELECTOR);
+    expect(block.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(heading.focus).toHaveBeenCalledTimes(1);
+    expect(heading.tabIndex).toBe(-1);
+    const empty = { querySelector: vi.fn(() => null), defaultView: null } as unknown as Document;
+    await expect(revealCloudRoute(empty, 1)).resolves.toBe(false);
   });
 });

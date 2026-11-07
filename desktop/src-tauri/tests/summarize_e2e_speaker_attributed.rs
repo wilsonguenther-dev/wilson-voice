@@ -217,10 +217,11 @@ fn summarize_e2e_speaker_attributed() {
 /// `TrackSpeakers` is the only `SpeakerSource` the app constructs (`lib.rs`,
 /// `summarize_meeting_blocking`). It answers from a channel number, so it can
 /// only ever be `Anonymous` — YV128's `speaker_profiles` table and YV129's
-/// matcher are what make the test above reachable from the app, and neither
-/// exists on `main`.
+/// matcher are what make the test above reachable from the app; since
+/// yap-1106-auto-label-and-correct, lib.rs's `CorrectedSpeakers` is the one
+/// source that names a line, from the meeting's saved/corrected names.
 #[test]
-fn the_app_cannot_reach_a_named_speaker_yet() {
+fn a_track_index_never_names_and_names_come_only_from_corrected_speakers() {
     // Both shapes, because they take different branches and only one of them
     // produces a label at all. The IRL fixture above is single-track, so every
     // kind resolves to `ClusterTrackA` and the source declines — a test built
@@ -288,15 +289,29 @@ fn the_app_cannot_reach_a_named_speaker_yet() {
         impls, 2,
         "…and summarize.rs still has exactly two speaker sources (NoSpeakers, TrackSpeakers)"
     );
-    for (name, src) in [("lib.rs", lib), ("speaker_profiles.rs", profiles)] {
-        assert!(
-            !src.contains("SpeakerSource for"),
-            "…and there is no enrolled-profile speaker source wired yet ({name} implements one)"
-        );
-    }
+    // yap-1106-auto-label-and-correct wrote that source: lib.rs's
+    // `CorrectedSpeakers` names a line a saved voice or a correction labelled
+    // (from `meeting_speaker_names`) and falls back to TrackSpeakers for every
+    // other line. It is the ONE profile-backed source, and it lives in lib.rs.
+    assert_eq!(
+        lib.matches("SpeakerSource for ").count(),
+        1,
+        "…lib.rs implements exactly one profile-backed speaker source"
+    );
+    assert!(
+        lib.contains("impl summarize::SpeakerSource for CorrectedSpeakers"),
+        "…and it is CorrectedSpeakers"
+    );
+    assert!(
+        lib.contains("CorrectedSpeakers::new(") && lib.contains("db.meeting_speaker_names(id)"),
+        "…wired to the meeting's corrected names in summarize_meeting_with"
+    );
+    assert!(
+        !profiles.contains("SpeakerSource for"),
+        "…and speaker_profiles.rs implements none (it is the store, not a source)"
+    );
     println!(
-        "the app's only speaker source is TrackSpeakers (Me/Them on a live \
-         two-track call, nothing on the clustering branch); enrolled names \
-         become reachable with YV128–130"
+        "track indices never name a speaker; the app names a line only through \
+         CorrectedSpeakers (saved voices + corrections), falling back to TrackSpeakers"
     );
 }

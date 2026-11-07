@@ -57,7 +57,7 @@ const ADAPTERS: Record<string, string> = {
  * must be registered here or carry a test — a pill piece nobody looked at is
  * how the pill stops being drivable.
  */
-const PILL_COMPONENTS = ["CopyCard.tsx", "EngineHealthChip.tsx", "GovernorChip.tsx", "LanguageChip.tsx", "CallOffer.tsx", "FriendVisit.tsx", "LanguageOfferCard.tsx", "LaunchWalkScene.tsx", "BacktrackCaughtCard.tsx", "MeetingDictationCard.tsx", "PolishRevealCard.tsx", "StyleChipButton.tsx", "MeetingBadge.tsx", "MeetingWorld.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "PillShell.tsx", "RouteChip.tsx", "SilentMicRow.tsx", "YappyPill.tsx", "characters/classic/index.tsx", "characters/example/index.tsx", "characters/yappy/index.tsx"];
+const PILL_COMPONENTS = ["CopyCard.tsx", "EngineHealthChip.tsx", "GovernorChip.tsx", "LanguageChip.tsx", "CallOffer.tsx", "FriendVisit.tsx", "WarmupEngine.tsx", "LanguageOfferCard.tsx", "LaunchWalkScene.tsx", "BacktrackCaughtCard.tsx", "MeetingDictationCard.tsx", "PolishRevealCard.tsx", "StyleChipButton.tsx", "MeetingBadge.tsx", "MeetingWorld.tsx", "MeetingOfferCard.tsx", "NudgeRow.tsx", "PhaseAnnouncer.tsx", "PillShell.tsx", "RouteChip.tsx", "SilentMicRow.tsx", "YappyPill.tsx", "characters/classic/index.tsx", "characters/example/index.tsx", "characters/yappy/index.tsx"];
 /** Docs and data under src/pill/ (dock-geometry.json is the Y5-I table dock.ts reads and dock.test.ts pins). */
 const PILL_DOCS = ["README.md", "dock-geometry.json"];
 

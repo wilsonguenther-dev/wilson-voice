@@ -69,8 +69,10 @@ export const FRIEND_HOUSES: readonly FriendHouse[] = [
   { at: 84, id: "cinder", wall: "#fde3e0", roof: "#b82a33", from: "roof" },
 ];
 
-export type LoadStage = "starting" | "reading" | "waiting" | "ready" | "failed";
-const STAGES: readonly LoadStage[] = ["starting", "reading", "waiting", "ready", "failed"];
+// yap-1106-pill-warmup-engine — "testing" (the first test pass, step 3) waits
+// at the door like "waiting": the walk never moves past the hold for it.
+export type LoadStage = "starting" | "reading" | "waiting" | "testing" | "ready" | "failed";
+const STAGES: readonly LoadStage[] = ["starting", "reading", "waiting", "testing", "ready", "failed"];
 
 /** The backend's `engine_load_progress` payload (transcription.rs EngineLoadProgress). */
 export interface EngineLoadProgress {
@@ -78,6 +80,12 @@ export interface EngineLoadProgress {
   stage: LoadStage;
   modelId: string;
   elapsedMs: number;
+  /**
+   * yap-1106-pill-warmup-engine — the three-step signal (transcription.rs
+   * `load_step`): 0 starting, 1 reading the file, 2 warming up, 3 first test
+   * pass, 4 ready. Optional: an older backend omits it (the pill derives it).
+   */
+  step?: number;
 }
 
 export const ENGINE_LOAD_PROGRESS_EVENT = "engine_load_progress";
@@ -101,6 +109,7 @@ export function parseLoadProgress(raw: unknown): EngineLoadProgress | null {
     stage,
     modelId: typeof r.modelId === "string" ? r.modelId.slice(0, 64) : "",
     elapsedMs: typeof r.elapsedMs === "number" && Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0,
+    ...(typeof r.step === "number" && Number.isInteger(r.step) && r.step >= 0 && r.step <= 4 ? { step: r.step } : {}),
   };
 }
 
@@ -230,7 +239,7 @@ export function launchWalkModel(i: WalkInput): WalkModel {
       label: "The speech engine did not load",
     };
   }
-  const waiting = p.stage === "waiting" || pct >= HOLD_PCT;
+  const waiting = p.stage === "waiting" || p.stage === "testing" || pct >= HOLD_PCT;
   // Reduce motion: one still frame at the office door, with a progress line.
   const scroll = rm || waiting ? DOOR_SCROLL : scrollForPct(pct);
   const stalled = !waiting && i.sinceChangeMs >= STALL_MS;

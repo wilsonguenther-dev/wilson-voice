@@ -1410,6 +1410,83 @@ pub fn use_original_for_take<'a>(
     undo_ai_edit_text(polished, raw).ok_or(UseOriginalRefusal::NothingToUndo)
 }
 
+/// fix-l3b7-1 — why an in-place swap of the polished take could not go ahead
+/// (a tag for the log, never shown, never carrying text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceRefusal {
+    /// No readable value or selection: Accessibility denied, a secure field,
+    /// or a control that is not a text field.
+    Unreadable,
+    /// The user has a non-empty selection: replacing it would eat their words.
+    Selection,
+    /// The words right before the caret are not the polished take (the user
+    /// typed after it, moved the caret, or edited it).
+    NotBeforeCaret,
+    /// The polished take is empty or whitespace.
+    EmptyTake,
+    /// Setting `AXSelectedTextRange` was refused or did not read back.
+    SelectFailed,
+    /// A `--smoke` launch: nothing is ever typed.
+    PasteNotAllowed,
+}
+
+impl ReplaceRefusal {
+    pub fn tag(self) -> &'static str {
+        match self {
+            ReplaceRefusal::Unreadable => "ax_unreadable",
+            ReplaceRefusal::Selection => "selection_not_empty",
+            ReplaceRefusal::NotBeforeCaret => "not_before_caret",
+            ReplaceRefusal::EmptyTake => "empty_take",
+            ReplaceRefusal::SelectFailed => "select_failed",
+            ReplaceRefusal::PasteNotAllowed => "paste_not_allowed",
+        }
+    }
+}
+
+/// fix-l3b7-1 — the AX range (location, length, both UTF-16 units) that holds
+/// the polished take, so "Use original" / Undo AI Edit can select it and type
+/// the raw take OVER it instead of after it.
+///
+/// `value` / `selection` are the focused field's `AXValue` and
+/// `AXSelectedTextRange`. Only a zero-length selection (a caret) whose UTF-16
+/// run immediately before it equals `polished` qualifies; anything else is a
+/// refusal and the caller must not type at all. Only the text before the caret
+/// is materialised. `polished` is tried as pasted, then trimmed (a stored take
+/// with stray outer whitespace still matches what landed).
+pub fn replace_range_for_take(
+    value: Option<&str>,
+    selection: Option<(usize, usize)>,
+    polished: &str,
+) -> Result<(usize, usize), ReplaceRefusal> {
+    if polished.trim().is_empty() {
+        return Err(ReplaceRefusal::EmptyTake);
+    }
+    let (Some(value), Some((caret, length))) = (value, selection) else {
+        return Err(ReplaceRefusal::Unreadable);
+    };
+    if length != 0 {
+        return Err(ReplaceRefusal::Selection);
+    }
+    let prefix: Vec<u16> = value.encode_utf16().take(caret).collect();
+    if prefix.len() != caret {
+        // The caret sits past the end of the value we read: the field changed
+        // between the two reads, so nothing about it can be trusted.
+        return Err(ReplaceRefusal::NotBeforeCaret);
+    }
+    // As pasted first, then trimmed (identical for most takes: harmless).
+    for candidate in [polished, polished.trim()] {
+        let want: Vec<u16> = candidate.encode_utf16().collect();
+        if want.is_empty() || want.len() > caret {
+            continue;
+        }
+        let start = caret - want.len();
+        if prefix[start..] == want[..] {
+            return Ok((start, want.len()));
+        }
+    }
+    Err(ReplaceRefusal::NotBeforeCaret)
+}
+
 // ---------------------------------------------------------------------------
 // Backtrack v2 (YV58) — rule-based filler + self-correction cleanup (on-device).
 //

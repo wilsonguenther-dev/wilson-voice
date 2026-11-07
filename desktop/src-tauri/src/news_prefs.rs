@@ -5,7 +5,10 @@
 //! connected, if onboarding never offered it), and Settings → Yappy News.
 //!
 //! "The cloud option" is a model provider that sends text off this Mac
-//! (`model_providers::leaves_this_mac` is Yes for notes or polish). With it off
+//! (`model_providers::leaves_this_mac` is Yes for notes or polish), or the
+//! "Cloud model (your key)" route: the cloud mode wants the cloud and a
+//! cloud-key provider is saved (that route never becomes a task pick; it is
+//! `CloudMode` + `ProviderKind::CloudKey`, see `cloud_route`). With it off
 //! the feature does not exist: nothing here fetches anything, and the later
 //! feed items gate every request on [`NewsView::active`].
 //!
@@ -208,12 +211,44 @@ impl NewsPrefsError {
 }
 
 /// Is the cloud option connected? True when notes or polish runs on a
-/// provider whose requests leave this Mac.
+/// provider whose requests leave this Mac, or when the "Cloud model (your
+/// key)" route is on (see [`cloud_key_route_on`]).
 pub fn cloud_connected(kv: &dyn SettingsKv) -> bool {
+    cloud_via(kv).is_some()
+}
+
+/// Which route makes the cloud option connected, for the log line:
+/// `"task"` (a notes/polish pick leaves this Mac), `"cloud_key"` (the byom
+/// route), or `None` when the cloud option is off.
+fn cloud_via(kv: &dyn SettingsKv) -> Option<&'static str> {
     let s = model_providers::load(kv);
-    [Task::Notes, Task::Polish]
+    let by_task = [Task::Notes, Task::Polish]
         .into_iter()
-        .any(|t| model_providers::leaves_this_mac(&s.for_task(t)).is_yes())
+        .any(|t| model_providers::leaves_this_mac(&s.for_task(t)).is_yes());
+    if by_task {
+        Some("task")
+    } else if cloud_key_route_on(kv, &s) {
+        Some("cloud_key")
+    } else {
+        None
+    }
+}
+
+/// fix-l3b3-3 — the byom "Cloud model (your key)" route counts as the cloud
+/// option: the cloud mode wants the cloud (not `always_local`) and a
+/// `ProviderKind::CloudKey` provider row is saved whose requests leave this
+/// Mac. This module only has a `SettingsKv`, so it checks the provider row,
+/// not the keychain; `save_cloud_key` deletes that row when the key is
+/// cleared, so the row standing means a key was saved.
+/// `model_providers::cloud_route_leaves` is the same rule with the key read.
+fn cloud_key_route_on(kv: &dyn SettingsKv, s: &model_providers::ProviderSettings) -> bool {
+    if !crate::cloud_route::CloudMode::load(kv).wants_cloud() {
+        return false;
+    }
+    s.providers
+        .iter()
+        .filter(|p| p.kind == model_providers::ProviderKind::CloudKey)
+        .any(|p| model_providers::leaves_this_mac(p).is_yes())
 }
 
 /// `$nvda ` → `NVDA`; `None` when it cannot be a ticker.
@@ -298,12 +333,16 @@ fn read_ms(kv: &dyn SettingsKv, key: &str) -> Option<i64> {
 /// recorded (that is "the day the cloud is connected" the Home card keys on).
 pub fn view(kv: &dyn SettingsKv, now_ms: i64) -> NewsView {
     let prefs = load(kv);
-    let cloud = cloud_connected(kv);
+    let via = cloud_via(kv);
+    let cloud = via.is_some();
     let mut connected_at = read_ms(kv, CONNECTED_AT_KEY);
     if cloud && connected_at.is_none() {
         match kv.kv_set(CONNECTED_AT_KEY, &now_ms.to_string()) {
             Ok(()) => {
-                log::info!("news_prefs cloud_seen first=true");
+                log::info!(
+                    "news_prefs cloud_seen first=true via={}",
+                    via.unwrap_or("none")
+                );
                 connected_at = Some(now_ms);
             }
             Err(e) => log::warn!("news_prefs cloud_seen failed error=\"{e}\""),
@@ -478,6 +517,18 @@ mod tests {
         model_providers::save(kv, &s).expect("save providers");
     }
 
+    /// fix-l3b3-3 — the byom route as Settings leaves it after a key is
+    /// pasted: a CloudKey provider row, no notes/polish pick, and `mode`.
+    fn connect_cloud_key(kv: &MemKv, mode: crate::cloud_route::CloudMode) {
+        let s = ProviderSettings {
+            providers: vec![ProviderConfig::bundled(), ProviderConfig::cloud_key()],
+            notes_provider: String::new(),
+            polish_provider: String::new(),
+        };
+        model_providers::save(kv, &s).expect("save providers");
+        crate::cloud_route::CloudMode::save(kv, mode).expect("save mode");
+    }
+
     fn prefs(topics: &[&str], tickers: &[&str], custom: &[&str]) -> NewsPrefs {
         NewsPrefs {
             enabled: true,
@@ -512,6 +563,116 @@ mod tests {
         let v = dismiss_offer(&kv, "home", 6_000).unwrap();
         assert_eq!(v.offer, Offer::Declined);
         assert!(!v.home_card_due && !v.onboarding_step_due);
+    }
+
+    #[test]
+    fn news_prefs_cloud_key_route_offers_step_and_card_once() {
+        let kv = MemKv::default();
+        connect_cloud_key(&kv, crate::cloud_route::CloudMode::CloudWhenOnline);
+        assert!(
+            cloud_connected(&kv),
+            "the cloud-key route is the cloud option"
+        );
+        let v = view(&kv, 1_000);
+        assert!(v.cloud_connected);
+        assert!(v.onboarding_step_due && v.home_card_due);
+        assert_eq!(v.cloud_connected_at_ms, Some(1_000));
+        assert_eq!(view(&kv, 5_000).cloud_connected_at_ms, Some(1_000));
+        // Once: a dismiss from either surface clears both.
+        let v = dismiss_offer(&kv, "home", 6_000).unwrap();
+        assert_eq!(v.offer, Offer::Declined);
+        assert!(!v.home_card_due && !v.onboarding_step_due);
+        assert!(view(&kv, 7_000).cloud_connected);
+        assert!(!view(&kv, 7_000).home_card_due);
+    }
+
+    #[test]
+    fn news_prefs_cloud_key_route_cloud_only_counts() {
+        let kv = MemKv::default();
+        connect_cloud_key(&kv, crate::cloud_route::CloudMode::CloudOnly);
+        let v = view(&kv, 1_000);
+        assert!(v.cloud_connected);
+        assert!(v.onboarding_step_due && v.home_card_due);
+    }
+
+    #[test]
+    fn news_prefs_cloud_key_always_local_is_not_offered() {
+        let kv = MemKv::default();
+        connect_cloud_key(&kv, crate::cloud_route::CloudMode::AlwaysLocal);
+        save(&kv, &prefs(&["developer"], &[], &[]), "settings", 1).unwrap();
+        let v = view(&kv, 2);
+        assert!(!v.cloud_connected);
+        assert!(!v.onboarding_step_due && !v.home_card_due);
+        assert!(!v.active, "always local means news never runs");
+        assert_eq!(v.cloud_connected_at_ms, None);
+    }
+
+    #[test]
+    fn news_prefs_cloud_mode_without_key_row_is_not_offered() {
+        // Mode on but the key was cleared (save_cloud_key deletes the row).
+        let kv = MemKv::default();
+        crate::cloud_route::CloudMode::save(&kv, crate::cloud_route::CloudMode::CloudWhenOnline)
+            .unwrap();
+        let v = view(&kv, 2);
+        assert!(!v.cloud_connected);
+        assert!(!v.onboarding_step_due && !v.home_card_due);
+    }
+
+    /// yap-1107-news-honours-cloud-key — the whole route as `save_cloud_key`
+    /// leaves it: the key goes to a (fake) Keychain, the CloudKey provider row
+    /// is upserted, no notes/polish pick names it. News turns on once a topic
+    /// is set and the connect day is stamped exactly once; `always_local` or
+    /// the row deleted (what an empty key does) turns it back off.
+    #[test]
+    fn news_prefs_saved_cloud_key_turns_news_on() {
+        use crate::cloud_route::CloudMode;
+        use crate::keychain::{MemoryKeychain, PRODUCTION_SERVICE};
+        for mode in [CloudMode::CloudWhenOnline, CloudMode::CloudOnly] {
+            let kv = MemKv::default();
+            let keys = MemoryKeychain::new(PRODUCTION_SERVICE);
+            let cfg = model_providers::upsert_provider(
+                &kv,
+                &keys,
+                ProviderConfig::cloud_key(),
+                Some("sk-UNIT-0123456789abcdefWXYZ"),
+            )
+            .expect("save cloud key");
+            assert_eq!(model_providers::load(&kv).notes_provider, "");
+            assert_eq!(model_providers::load(&kv).polish_provider, "");
+            CloudMode::save(&kv, mode).expect("save mode");
+
+            let v = view(&kv, 1_000);
+            assert!(
+                v.cloud_connected,
+                "{mode:?}: a saved key is the cloud option"
+            );
+            assert!(!v.active, "no topic yet");
+            assert_eq!(v.cloud_connected_at_ms, Some(1_000));
+
+            let v = save(&kv, &prefs(&["developer"], &[], &[]), "settings", 2_000).unwrap();
+            assert!(
+                v.cloud_connected && v.active,
+                "{mode:?}: on once a topic is set"
+            );
+            // Stamped once: later reads keep the first connect time.
+            assert_eq!(view(&kv, 9_000).cloud_connected_at_ms, Some(1_000));
+            assert!(!serde_json::to_string(&v).unwrap().contains("sk-UNIT"));
+
+            // Always on this Mac: off, nothing runs.
+            CloudMode::save(&kv, CloudMode::AlwaysLocal).unwrap();
+            let v = view(&kv, 10_000);
+            assert!(!v.cloud_connected && !v.active);
+
+            // Back to the cloud, then the key removed: off again.
+            CloudMode::save(&kv, mode).unwrap();
+            assert!(view(&kv, 11_000).active);
+            model_providers::delete_provider(&kv, &keys, &cfg.id).expect("remove key");
+            let v = view(&kv, 12_000);
+            assert!(
+                !v.cloud_connected && !v.active,
+                "{mode:?}: key removed is off"
+            );
+        }
     }
 
     #[test]

@@ -1161,6 +1161,139 @@ pub fn copy_and_maybe_paste(
     insert_take(app, text, want_paste, target, None, None)
 }
 
+/// fix-l3b7-1 — what a refused in-place replace ("Use original", Undo AI Edit)
+/// says: nothing was typed, the raw take is on the clipboard.
+pub const REPLACE_NOT_FOUND_MESSAGE: &str =
+    "Couldn't find the polished words in that field. The original is on your clipboard.";
+
+/// fix-l3b7-1 — the focused field as [`replace_take_with`] sees it: a read and
+/// a selection set, behind a trait so the decision runs against a fake.
+pub trait FieldSelection {
+    /// `AXValue` and `AXSelectedTextRange` (UTF-16) of the focused field;
+    /// `(None, None)` when unreadable or secure.
+    fn read_field(&mut self) -> (Option<String>, Option<(usize, usize)>);
+    /// Select (location, length). `Err` = refused or never read back.
+    fn select(&mut self, location: usize, length: usize) -> Result<(), String>;
+}
+
+/// What an in-place replace did: the usual outcome, whether the polished take
+/// was replaced (or why not), and the insert trace when an insert ran.
+#[derive(Debug)]
+pub struct ReplaceResult {
+    pub outcome: PasteOutcome,
+    pub replaced: Result<(), crate::dictation::ReplaceRefusal>,
+    pub trace: Option<InsertTrace>,
+}
+
+fn replace_refused(
+    b: &mut dyn InsertBackend,
+    raw: &str,
+    why: crate::dictation::ReplaceRefusal,
+) -> ReplaceResult {
+    ReplaceResult {
+        outcome: copy_only_with(b, raw, REPLACE_NOT_FOUND_MESSAGE),
+        replaced: Err(why),
+        trace: None,
+    }
+}
+
+/// fix-l3b7-1 — swap the polished take for the raw one IN PLACE. Reads the
+/// field, asks [`crate::dictation::replace_range_for_take`] where the polished
+/// take sits right before the caret, selects exactly that run, re-reads to
+/// confirm the selection took, and only then inserts `raw` over it through the
+/// normal insert path (`kAXSelectedText` or the paste bridge, both replace a
+/// selection). Any failed check is copy-only: the raw take goes on the
+/// clipboard, nothing is typed, and the outcome says
+/// [`REPLACE_NOT_FOUND_MESSAGE`] — never a blind paste after the polished text.
+pub fn replace_take_with(
+    field: &mut dyn FieldSelection,
+    b: &mut dyn InsertBackend,
+    path: InsertPath,
+    polished: &str,
+    raw: &str,
+) -> ReplaceResult {
+    let (value, selection) = field.read_field();
+    let decided = crate::dictation::replace_range_for_take(value.as_deref(), selection, polished);
+    drop(value);
+    let (location, length) = match decided {
+        Ok(range) => range,
+        Err(why) => return replace_refused(b, raw, why),
+    };
+    if field.select(location, length).is_err() {
+        return replace_refused(b, raw, crate::dictation::ReplaceRefusal::SelectFailed);
+    }
+    let (_, now) = field.read_field();
+    if now != Some((location, length)) {
+        return replace_refused(b, raw, crate::dictation::ReplaceRefusal::SelectFailed);
+    }
+    let (outcome, trace) = insert_traced(b, path, raw, true, PasteTarget::Explicit);
+    ReplaceResult {
+        outcome,
+        replaced: Ok(()),
+        trace: Some(trace),
+    }
+}
+
+/// fix-l3b7-1 — the ONE log line of an in-place replace. `event` names the
+/// action ("dictation polish_reveal_use_original", "dictation undo_ai_edit").
+/// Flags, a reason tag and a duration only: never the field, the take or the
+/// clipboard text.
+pub fn replace_log_line(event: &str, r: &ReplaceResult, ms: u128) -> String {
+    match r.replaced {
+        Ok(()) => format!(
+            "{event} replaced=true pasted={} copied={} ms={ms}",
+            r.outcome.pasted, r.outcome.copied
+        ),
+        Err(why) => format!(
+            "{event} replaced=false reason={} copied={} ms={ms}",
+            why.tag(),
+            r.outcome.copied
+        ),
+    }
+}
+
+/// The live [`FieldSelection`]: the focused element through Accessibility.
+struct LiveField;
+
+impl FieldSelection for LiveField {
+    fn read_field(&mut self) -> (Option<String>, Option<(usize, usize)>) {
+        crate::focus::focused_value_and_range()
+    }
+    fn select(&mut self, location: usize, length: usize) -> Result<(), String> {
+        crate::focus::set_selected_range(location, length)
+    }
+}
+
+/// fix-l3b7-1 — [`replace_take_with`] on the live field and backend, under the
+/// insert lock (the read → select → insert must not interleave with a take).
+/// Explicit re-paste: the frontmost field is the intended target. Must run
+/// off the main thread, like every insert.
+pub fn replace_take(app: &AppHandle, polished: &str, raw: &str) -> ReplaceResult {
+    if !crate::smoke::paste_allowed() {
+        diag_warn!("paste", crate::smoke::PASTE_REFUSAL);
+        return ReplaceResult {
+            outcome: copy_only(app, raw, crate::smoke::PASTE_REFUSAL),
+            replaced: Err(crate::dictation::ReplaceRefusal::PasteNotAllowed),
+            trace: None,
+        };
+    }
+    let probe = perm_probe::probe_all();
+    let path = choose_insert_path(&probe);
+    let mut live = LiveInsert {
+        app,
+        ax_granted: probe.accessibility.usable(),
+    };
+    let mut field = LiveField;
+    let r = {
+        let _turn = INSERT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        replace_take_with(&mut field, &mut live, path, polished, raw)
+    };
+    if let Some(trace) = &r.trace {
+        log::info!("{}", insert_log_line(trace));
+    }
+    r
+}
+
 /// A dictation take. `target_bundle_id` is the take's resolved paste target
 /// (`focus::resolve_paste_target`, read at the stop edge); `None` (unreadable)
 /// means the take is copied and never typed anywhere.

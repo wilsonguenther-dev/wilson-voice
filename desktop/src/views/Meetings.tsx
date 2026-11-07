@@ -4,7 +4,7 @@ import {
   canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
-import NotesView from "../meetings/NotesView";
+import NotesView, { StreamingNotes } from "../meetings/NotesView";
 import ExportMenu, { FloatingMenu, exportItems, type ExportAction } from "../meetings/ExportMenu";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -14,7 +14,15 @@ import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meeti
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
 import WhoIsTalking from "../meetings/WhoIsTalking";
-import { clusterLabel, withSpeakerNames } from "../meetings/transcript";
+import {
+  applyLabelRows,
+  clusterLabel,
+  withSpeakerNames,
+  type CorrectionApplied,
+  type CorrectionUndone,
+  type LabelRow,
+  type SpeakerCorrection,
+} from "../meetings/transcript";
 import {
   NO_FILTER, defaultTab, detailPeople, duePendingDeletes, filterActive, filterMeetings, groupMeetings, isNarrow,
   listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, schedulePendingDelete, shortId,
@@ -479,6 +487,50 @@ export default function Meetings() {
       : openMeeting.meeting.state === "complete"
         ? "model"
         : null;
+
+  // yap-1106-auto-label-and-correct — a speaker chip's correction: the backend
+  // decides which whole turns move and locks them; the lines change in place,
+  // and the returned function is the 10 s Undo (which asks the lock).
+  const mergeLabelRows = (meetingId: string, rows: LabelRow[]) =>
+    setOpenMeeting((m) =>
+      m && m.meeting.id === meetingId
+        ? {
+            ...m,
+            segments: applyLabelRows(m.segments, rows),
+            echoSegments: m.echoSegments ? applyLabelRows(m.echoSegments, rows) : m.echoSegments,
+          }
+        : m,
+    );
+  const correctSpeakers = async (
+    meetingId: string,
+    correction: SpeakerCorrection,
+  ): Promise<(() => Promise<void>) | null> => {
+    try {
+      const applied = await invoke<CorrectionApplied>("correct_meeting_speakers", {
+        meetingId,
+        correction,
+      });
+      mergeLabelRows(meetingId, applied.rows);
+      return async () => {
+        try {
+          const undone = await invoke<CorrectionUndone>("undo_speaker_correction", {
+            meetingId,
+            undo: applied.undo,
+          });
+          mergeLabelRows(meetingId, undone.rows);
+          const kept = undone.skippedChanged.length;
+          if (kept > 0) {
+            toast(`Undone. ${kept} ${kept === 1 ? "line keeps" : "lines keep"} a later correction.`);
+          }
+        } catch (e) {
+          toast(`Couldn't undo that: ${String(e)}`);
+        }
+      };
+    } catch (e) {
+      toast(`Couldn't change the speaker: ${String(e)}`);
+      return null;
+    }
+  };
   return (
     <div className="meetings-view" data-meetings-pane={paneMode}>
       {/* yap-notetaker-onboard — the Set up Notetaker card. */}
@@ -769,24 +821,26 @@ export default function Meetings() {
                   (openMeeting.meeting.summary ? (
                     <NotesView markdown={openMeeting.meeting.summary} meetingId={openMeeting.meeting.id} />
                   ) : (
-                    <div className="empty" data-empty-state="meetings:notes">
-                      <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
-                      <p>Notes are written on this Mac once the transcript is ready.</p>
-                      <div className="actions">
-                        {notesTabAction === "notes" ? (
-                          <button
-                            className="primary"
-                            onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
-                          >
-                            {retryNotesLabel(progress[openMeeting.meeting.id])}
-                          </button>
-                        ) : notesTabAction === "model" ? (
-                          <button type="button" className="ghost" onClick={openModelSettings}>
-                            Add a notes model
-                          </button>
-                        ) : null}
+                    <StreamingNotes meetingId={openMeeting.meeting.id}>
+                      <div className="empty" data-empty-state="meetings:notes">
+                        <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
+                        <p>Notes are written on this Mac once the transcript is ready.</p>
+                        <div className="actions">
+                          {notesTabAction === "notes" ? (
+                            <button
+                              className="primary"
+                              onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
+                            >
+                              {retryNotesLabel(progress[openMeeting.meeting.id])}
+                            </button>
+                          ) : notesTabAction === "model" ? (
+                            <button type="button" className="ghost" onClick={openModelSettings}>
+                              Add a notes model
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
+                    </StreamingNotes>
                   ))}
                 {tab === "transcript" &&
                   (openMeeting.segments.length === 0 ? (
@@ -819,6 +873,7 @@ export default function Meetings() {
                       segments={openMeeting.segments}
                       hidden={openMeeting.echoSegments}
                       kind={openMeeting.meeting.kind}
+                      onCorrect={(c) => correctSpeakers(openMeeting.meeting.id, c)}
                     />
                   ))}
                 {tab === "people" && <PeopleTab people={detailPeopleRows} />}

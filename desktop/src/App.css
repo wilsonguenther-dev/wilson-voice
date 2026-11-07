@@ -274,12 +274,35 @@ body:has(.float-pill),
   letter-spacing: -0.02em;
 }
 
+/* yap-1107-sidebar-version-line-fits — the brand text column may shrink to
+   the rail (a flex item floors at its min-content width otherwise, which is
+   the whole nowrap version line, and pushed test-build versions past the
+   sidebar's right edge). Test builds only: the shipped one-line tag keeps
+   its original layout pixel for pixel (acceptance 3). */
+.brand-text:has(> .brand-tag-build) {
+  min-width: 0;
+}
+
 .brand-tag {
   font-family: var(--mono);
   white-space: nowrap;
-  font-size: 0.62rem;
   font-size: 0.72rem;
   color: var(--muted);
+}
+
+/* Test builds only (a version with a suffix): "v0.9.4-loop3.8" on its own
+   line, then "local · private". Each line clips to the column; only the
+   version can ever be long enough to need the ellipsis. Single class on
+   purpose, so the narrow strip's `.brand-tag { display: none }` still wins. */
+.brand-tag-build {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-tag-build > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav {
@@ -293,6 +316,10 @@ body:has(.float-pill),
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* yap-1107-sidebar-version-line-fits — label and count never touch, and a
+     long label clips inside the rail instead of shoving the count out. */
+  gap: 8px;
+  min-width: 0;
   text-align: left;
   border: none;
   background: transparent;
@@ -300,6 +327,17 @@ body:has(.float-pill),
   border-radius: 10px;
   color: var(--muted);
   font-weight: 550;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-item .count {
+  flex: none;
 }
 
 .nav-item.active {
@@ -373,6 +411,18 @@ button.banner {
   display: block;
   font-size: 0.8rem;
   opacity: 0.85;
+}
+
+/* yap-1107-secure-input-own-field-quiet — Yap's OWN masked key field holds
+   Secure Input while it has focus. The user caused it and blurring the field
+   ends it, so this is deliberately NOT a `.banner`: no tint, no border, no
+   red, muted text, one line. */
+.secure-input-quiet {
+  margin: 0 24px 8px;
+  padding: 4px 14px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* YV44 — an update is available. Informational + consent-based: it carries its
@@ -506,6 +556,8 @@ code {
 
 .dictate-side {
   width: 100%;
+  min-width: 0;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2164,6 +2216,17 @@ button.star.on {
 
 .sidebar-foot .model-ribbon-track {
   flex: 1 0 100%;
+}
+
+/* yap-1107-sidebar-version-line-fits — an error line or a long model name
+   wraps inside the rail instead of running past it. */
+.sidebar-foot .model-ribbon {
+  min-width: 0;
+}
+
+.sidebar-foot .model-ribbon-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* In the narrow one-row strip (see the H5 block) the ribbon has a full-width
