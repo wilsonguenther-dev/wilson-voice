@@ -60,7 +60,7 @@ ENT="$SRC/Entitlements.plist"
 # Entitlements.plist, so a Tauri-built / DMG sidecar carries the app's
 # entitlements, device.audio-input included. verify_bundle reports which.
 SIDECAR_ENT_DIR="$SRC/entitlements"
-SIDECARS=(yap-polish yap-diarize)
+SIDECARS=(yap-polish yap-diarize yap-asr yap-engine-ane)
 # The hardened runtime is ON for every signature this script makes. Without
 # it cs.* entitlements are inert and an entitlement audit passes vacuously;
 # notarization requires it anyway (docs/RELEASE.md, Entitlement audit).

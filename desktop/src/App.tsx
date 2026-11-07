@@ -17,7 +17,10 @@ import SupportBundleSheet from "./support/SupportBundleSheet";
 import type { Toast } from "./toast";
 import HideHint from "./HideHint";
 import Banner from "./Banner";
+import { useGovernor } from "./pill/GovernorChip";
+import { governorMainBanner } from "./pill/governor";
 import Home from "./views/Home";
+import History from "./views/History";
 import Permissions from "./views/Permissions";
 import Meetings from "./views/Meetings";
 import Insights from "./views/Insights";
@@ -28,6 +31,7 @@ import "./App.css";
 
 export default function App() {
   const ctx = useAppShell();
+  const governorBanner = governorMainBanner(useGovernor());
   const {
     bootError, buyPrompt, buyYap, closeConsentNotice, consentOpen,
     copyText, dictionary, dismissToast, finishOnboarding, openModelSettings, openSupportSheet, toasts, toastError,
@@ -37,7 +41,7 @@ export default function App() {
     saveSettings, scratch, sendSupportBundle, setBuyPrompt, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
-    userName, insights, query,
+    insights, engine,
   } = ctx;
 
   // Y5-F — what each catalogue action does in the main window. The pill shows
@@ -71,13 +75,20 @@ export default function App() {
     dismissToast(t.id);
   }
 
-  // yap-uiux-2026-10-16-H1 — "Welcome back" to someone who has never dictated
-  // reads as a mistake. Returning means a take exists: in the store
-  // (insights) or on screen. A search that matches nothing is still a
-  // returning user, so the filtered list alone is not the test.
-  const returning =
-    history.length > 0 || !!query || (insights?.totalSessions ?? 0) > 0;
-  const greeting = returning ? "Welcome back" : "Welcome";
+  // yap-1106-home-full-width-room — the greeting is gone from Home (Wilson's
+  // approved round two): the page is titled "Home" like every other view, and
+  // its lede is the live state the big Hold-fn card used to carry.
+  const homeLede = status.recording
+    ? "Listening · release fn⌃, or tap Stop, to finish"
+    : status.busy
+      ? "Transcribing…"
+      : "Ready · hold fn⌃ to talk, double-tap for hands-free";
+  // The footer's engine sentence: plain words, never a model or vendor name.
+  const engineLine = status.modelReady
+    ? engine?.loading
+      ? "Engine warming up · on this Mac"
+      : "Engine ready · on this Mac"
+    : "Engine getting ready · on this Mac";
   // yap-uiux-2026-10-16-H6 — the header status chip rendered status.message
   // verbatim, so an idle bridge that reports "" left an unlabeled dark
   // capsule beside the license chip. It always says something now, and
@@ -138,7 +149,9 @@ export default function App() {
         <nav className="nav">
           {(
             [
-              ["home", "Home", history.length],
+              ["home", "Home", insights?.totalSessions ?? history.length],
+              // yap-1106-home-full-width-room — every take, 50 to a page.
+              ["history", "History", null],
               ["permissions", "Permissions", needsPerms ? 1 : null],
               // YV94 — Meetings sits next to Home because it is the second
               // thing Yap keeps for you, not a setting.
@@ -203,7 +216,8 @@ export default function App() {
           )}
           <div>
             <h1>
-              {nav === "home" && (userName ? `${greeting}, ${userName}` : greeting)}
+              {nav === "home" && "Home"}
+              {nav === "history" && "History"}
               {nav === "permissions" && "Permissions"}
               {nav === "meetings" && "Meetings"}
               {nav === "insights" && "Insights"}
@@ -212,8 +226,8 @@ export default function App() {
               {nav === "settings" && "Settings"}
             </h1>
             <p className="lede">
-              {nav === "home" &&
-                "Hold fn⌃ and talk — your words land where the cursor is."}
+              {nav === "home" && homeLede}
+              {nav === "history" && "Every take you have dictated, 50 to a page, newest first."}
               {nav === "permissions" &&
                 nameProduct(
                   "macOS must grant these to Yap itself. Without them, dictation or paste fails.",
@@ -356,6 +370,14 @@ export default function App() {
             the same probe onboarding renders. */}
         <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
 
+        {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
+            meeting's transcription waits for power, heat or memory. */}
+        {governorBanner && (
+          <Banner tone="warn" role="status">
+            {governorBanner}
+          </Banner>
+        )}
+
         {status.modelReady && needsPerms && nav === "home" && (
           <Banner tone="warn" onActivate={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
@@ -407,6 +429,8 @@ export default function App() {
 
           {nav === "home" && <Home />}
 
+          {nav === "history" && <History />}
+
           {/* YV94 — Meetings. Two states in one screen: the list, and one
               meeting's transcript. Nothing here STARTS a meeting — capture is
               YV91 and the entry points (tray, hotkey, pill, the empty state's
@@ -429,6 +453,49 @@ export default function App() {
           {/* Y5-B fix round (#192): no `settings &&` gate - Settings renders its own LoadingState while settings is null. */}
           {nav === "settings" && <Settings />}
         </div>
+
+        {/* yap-1106-home-contained-scroll-footer — only .content scrolls
+            (overscroll contained); this footer, like the sidebar, never moves. */}
+        <footer className="app-footer" data-app-footer>
+          <span className="app-footer-engine" role="status">
+            <span className={status.modelReady ? "dot ok" : "dot"} aria-hidden />
+            {engineLine}
+          </span>
+          <span className="app-footer-version">Yap {__APP_VERSION__}</span>
+          <span className="app-footer-links">
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setSettingsTab("privacy");
+                setNav("settings");
+              }}
+            >
+              Privacy
+            </button>
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                // Help is the guided tour: the same walk-through first run shows.
+                console.info("footer help_opened");
+                replayOnboarding();
+              }}
+            >
+              Help
+            </button>
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                console.info("footer feedback_opened");
+                void openSupportSheet();
+              }}
+            >
+              Send feedback
+            </button>
+          </span>
+        </footer>
       </section>
 
       {/* ── YP3 · the warm purchase sheet ──

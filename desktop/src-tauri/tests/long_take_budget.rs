@@ -94,6 +94,8 @@ const PRESS_TO_CAPTURE_SPILL_OVERHEAD_MS: u128 = 25;
 /// legitimately costs something (per-window model priming, the overlap region
 /// decoded twice), and 60% of a single-window decode is the most that is worth
 /// paying for a take that can be shown progressing.
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 const CHUNK_DECODE_WALL_PER_AUDIO_SECOND_RATIO_CEILING: f64 = 1.60;
 
 /// `progress_events_per_minute_of_audio` — a CEILING, not a target. 60/min is
@@ -159,6 +161,8 @@ fn manifest(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 fn skip(reason: &str) {
     println!("long_take_budget SKIPPED — {reason}");
 }
@@ -341,6 +345,9 @@ fn press_to_capture_start_is_not_paid_by_the_spill_writer() {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Read the committed fixture and tile it up to `seconds` of 16 kHz mono.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
     let path = manifest("tests/fixtures/quick-brown-fox-16k.wav");
     let mut reader = hound::WavReader::open(&path).ok()?;
@@ -377,6 +384,9 @@ fn fixture_tiled(seconds: f64) -> Option<Vec<f32>> {
 /// a fresh clone and CI print one line and pass instead of silently asserting
 /// nothing. That is the same contract `docs/BUDGETS.md` describes for
 /// `polish_envelope.rs`.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn chunk_decode_wall_per_audio_second() {
     use wilson_voice_lib::{asr_engine, models};
@@ -905,7 +915,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     all.insert(
         "src/transcription.rs",
         BTreeMap::from([
-            (2, 2),
+            // yap-1106-engine-owner — 2:2->4: the teardown-order test's stub
+            // engine (`#[cfg(test)] mod tests`) spins in 2 ms test-only waits.
+            (2, 4),
             (5, 2),
             (10, 2),
             (20, 2),
@@ -913,7 +925,10 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // retry re-checks `is_busy` on the single engine until the live take
             // hands it back, bounded by the clip-scaled retry deadline. Background
             // work waiting on a live take, not a take waiting on a chunk (docs/BUDGETS.md).
-            (50, 4),
+            // yap-fx-04-adaptive-decode-timeout — 50:4->5: a 50 ms manager
+            // ceiling passed to `effective_decode_timeout` in `#[cfg(test)] mod
+            // tests` (a value under test, never slept on).
+            (50, 5),
             (80, 1),
             (120, 1),
             (150, 1),
@@ -930,10 +945,22 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // `#[cfg(test)] mod retry_engine_tests`: fake-engine decode durations,
             // test deadlines and 5/10 ms sleeps inside test-only wait loops. No
             // production wakeup was added to lib.rs (docs/BUDGETS.md).
-            (5, 5),
+            // yap-1106-quit-during-asr-crash — 5:5->6 is the 5 ms step of the
+            // test-only `stub_join` wait loop in `#[cfg(test)] mod tests`.
+            (5, 6),
             (10, 2),
+            // yap-1106-retry-replay-regression — the 20 ms fake decode in
+            // `#[cfg(test)] mod retry_engine_tests` (Retry-all over today's three
+            // kept clips on one engine). Test-only; no production wakeup.
+            // yap-1106-quit-during-asr-crash — 20:1->2 and 100:2->3 are the take /
+            // drain budgets its wedged-decode exit test passes in `#[cfg(test)]`.
+            (20, 2),
             (50, 1),
-            (100, 2),
+            // yap-1106-quit-during-asr-crash — EXIT_MEETING_JOIN_TIMEOUT (90 ms):
+            // the one-shot bound on joining the meeting worker at quit, sized so
+            // drain + join fit QuitStep::AsrDrain's 1 s deadline. Not a polling timer.
+            (90, 1),
+            (100, 3),
             (150, 2),
             (200, 1),
             (300, 2),
@@ -944,6 +971,9 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // (600 ms): one-shot quit deadlines, cut from 3 s each so the whole
             // quit fits lifecycle::QUIT_BUDGET. Not polling timers (docs/BUDGETS.md).
             (600, 1),
+            // yap-1106-quit-during-asr-crash — the 800 ms decode of the stub
+            // engine that ignores the cancel, in `#[cfg(test)] mod tests`.
+            (800, 1),
             (900, 1),
         ]),
     );
@@ -1011,6 +1041,9 @@ fn no_new_polling_timer_was_introduced() {
 /// the budget sits with the other budgets. When both models are installed this
 /// test loads the engine itself and asserts the parent's own contribution is
 /// real, so the ceiling is never asserted against a run where nothing loaded.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn peak_resident_bytes_with_asr_and_polish_loaded() {
     use wilson_voice_lib::{asr_engine, models};
