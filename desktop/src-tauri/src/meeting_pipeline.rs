@@ -711,6 +711,12 @@ pub fn spawn(deps: PipelineDeps) -> MeetingPipeline {
     let spawned = std::thread::Builder::new()
         .name("wv-meeting-pipeline".into())
         .spawn(move || {
+            // yap-1106-sp-04 — meeting and recovery work (merge, diarize,
+            // chunk planning) runs in the Darwin background band; every chunk
+            // DECODE is put there by its own lease thread too, so a dictation
+            // decoding at the same moment always wins the CPU.
+            let background = crate::asr_protocol::set_current_thread_background(true);
+            log::info!("meeting pipeline: priority background={background}");
             // R2: let the dictation engine warm up first. Stepped, so a quit
             // during the delay is not held up by it.
             let mut waited = Duration::ZERO;

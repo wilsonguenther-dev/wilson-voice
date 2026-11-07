@@ -85,6 +85,12 @@ pub struct AsrRequest {
     pub bias_prompt: Option<String>,
     #[serde(default)]
     pub timed: bool,
+    /// yap-1106-sp-04 — decode this request at background priority
+    /// (`PRIO_DARWIN_BG`): set for meeting and recovery chunks so a dictation
+    /// decoding next to them keeps the CPU. Written only when true, so a line
+    /// from an older app (or to an older helper) is unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 impl AsrRequest {
@@ -225,6 +231,54 @@ pub fn samples_from_le_bytes(bytes: &[u8]) -> Result<Vec<f32>, String> {
         .collect())
 }
 
+// ---------------------------------------------------------------------------
+// yap-1106-sp-04 — background decode priority, shared by both binaries
+// ---------------------------------------------------------------------------
+
+/// `<sys/resource.h>`: `which` for a per-thread Darwin priority.
+#[allow(dead_code)]
+pub const PRIO_DARWIN_THREAD: i32 = 3;
+/// `<sys/resource.h>`: the background band (low CPU, throttled I/O).
+#[allow(dead_code)]
+pub const PRIO_DARWIN_BG: i32 = 0x1000;
+
+/// Put the CALLING thread into (or take it out of) the Darwin background
+/// band. Meeting and recovery decoding run here so a dictation decoding at the
+/// same moment is never starved by them. True when the kernel accepted it;
+/// always false off macOS, where it does nothing.
+#[allow(dead_code)]
+pub fn set_current_thread_background(on: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let prio = if on { PRIO_DARWIN_BG } else { 0 };
+        // SAFETY: plain syscall on the calling thread (`who` = 0), no pointers.
+        let rc = unsafe { libc::setpriority(PRIO_DARWIN_THREAD, 0 as libc::id_t, prio) };
+        rc == 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = on;
+        false
+    }
+}
+
+/// True while the calling thread is in the Darwin background band (the
+/// remote engine reads it to tag its request; tests read it to prove it).
+#[allow(dead_code)]
+pub fn current_thread_background() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: plain syscall on the calling thread, no pointers. getpriority
+        // reports a non-zero value for a thread in the background band.
+        let prio = unsafe { libc::getpriority(PRIO_DARWIN_THREAD, 0 as libc::id_t) };
+        prio > 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 #[cfg(test)]
 mod asr_protocol_tests {
     use super::*;
@@ -252,5 +306,40 @@ mod asr_protocol_tests {
         let bytes = samples_to_le_bytes(&s);
         assert_eq!(samples_from_le_bytes(&bytes).unwrap(), s);
         assert!(samples_from_le_bytes(&bytes[..5]).is_err());
+    }
+
+    #[test]
+    fn background_is_written_only_when_set_and_old_lines_still_parse() {
+        let mut req = AsrRequest::transcribe(7, "/p", None, None, true);
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(
+            !line.contains("background"),
+            "a foreground request is unchanged: {line}"
+        );
+        req.background = true;
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains("\"background\":true"), "{line}");
+        let back: AsrRequest = serde_json::from_str(&line).unwrap();
+        assert!(back.background);
+        let old: AsrRequest =
+            serde_json::from_str(r#"{"id":1,"kind":"transcribe","timed":false}"#).unwrap();
+        assert!(!old.background);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_thread_enters_and_leaves_the_background_band() {
+        std::thread::spawn(|| {
+            assert!(
+                !current_thread_background(),
+                "a fresh thread starts in the foreground"
+            );
+            assert!(set_current_thread_background(true));
+            assert!(current_thread_background(), "PRIO_DARWIN_BG did not stick");
+            assert!(set_current_thread_background(false));
+            assert!(!current_thread_background());
+        })
+        .join()
+        .expect("priority thread");
     }
 }

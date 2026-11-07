@@ -833,10 +833,12 @@ impl HelperEngine {
         let started = Instant::now();
         publish(EngineHealth::Busy, "job_started", "decode");
         running.store(id, Ordering::Release);
-        let sent = send_line(
-            &process.stdin,
-            &AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed),
-        );
+        // yap-1106-sp-04 — a meeting/recovery lease runs this on a thread in
+        // the background band; the helper decodes that request there too.
+        let mut request =
+            AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed);
+        request.background = crate::asr_protocol::current_thread_background();
+        let sent = send_line(&process.stdin, &request);
         // Err((message, what happens to the helper)).
         let outcome: Result<AsrResponse, (String, AfterFailure)> = match sent {
             Err(e) => Err((e, AfterFailure::Kill)),
