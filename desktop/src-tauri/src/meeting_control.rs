@@ -551,18 +551,32 @@ impl MeetingController {
         self
     }
 
+    /// yap-fx-06 — the one way into the live-meeting slot, and it never says
+    /// "wedged". A poisoned lock means some thread panicked while holding it;
+    /// the `Option<Active>` inside is still the truth about whether a capture
+    /// is running. Before this, a poisoned lock made `is_recording` false and
+    /// `status` idle (so the pill hid the meeting and its Stop button) while
+    /// `stop` answered "the meeting controller is wedged; restart Yap" — a
+    /// recording nothing could stop, and force quit the only way out. Now the
+    /// poison is cleared once, logged once, and every caller sees the real
+    /// slot, so Stop stops it.
+    fn active_slot(&self) -> std::sync::MutexGuard<'_, Option<Active>> {
+        match self.active.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!("meeting_control lock_poisoned recovered=true");
+                self.active.clear_poison();
+                poisoned.into_inner()
+            }
+        }
+    }
+
     pub fn is_recording(&self) -> bool {
-        self.active.lock().map(|a| a.is_some()).unwrap_or(false)
+        self.active_slot().is_some()
     }
 
     pub fn status(&self) -> MeetingStatus {
-        let guard = match self.active.lock() {
-            Ok(g) => g,
-            // A poisoned lock means a panic while a meeting was live. Reporting
-            // "idle" is the honest answer for a control plane that has lost
-            // track, and it leaves the entry points usable.
-            Err(_) => return MeetingStatus::idle(),
-        };
+        let guard = self.active_slot();
         match guard.as_ref() {
             None => MeetingStatus::idle(),
             Some(a) => {
@@ -609,10 +623,7 @@ impl MeetingController {
         title: Option<String>,
         kind: MeetingKind,
     ) -> Result<String, String> {
-        let mut guard = self
-            .active
-            .lock()
-            .map_err(|_| "the meeting controller is wedged; restart Yap".to_string())?;
+        let mut guard = self.active_slot();
         if guard.is_some() {
             return Err("a meeting is already recording".into());
         }
@@ -764,10 +775,7 @@ impl MeetingController {
     /// recording did not run to the user's stop, and the sentence leads the
     /// row's note. `None` is the ordinary stop.
     fn stop_inner(&self, reason: &str, cut_short: Option<&str>) -> Result<StoppedMeeting, String> {
-        let mut guard = self
-            .active
-            .lock()
-            .map_err(|_| "the meeting controller is wedged; restart Yap".to_string())?;
+        let mut guard = self.active_slot();
         let mut active = guard.take().ok_or("no meeting is recording")?;
         drop(guard);
 
@@ -975,7 +983,7 @@ impl MeetingController {
 
     /// When the meeting started, for a UI that wants to show a wall-clock start.
     pub fn started_at(&self) -> Option<DateTime<Utc>> {
-        self.active.lock().ok()?.as_ref().map(|a| a.started_at)
+        self.active_slot().as_ref().map(|a| a.started_at)
     }
 }
 
@@ -1805,6 +1813,37 @@ mod tests {
             requeue_line("2ba0baab", "interrupted_by_quit"),
             "pipeline requeue meeting=2ba0baab reason=interrupted_by_quit"
         );
+    }
+
+    /// yap-fx-06 — a panic while the meeting slot is held must not leave a
+    /// recording nobody can stop. The poisoned lock is recovered: the
+    /// controller still answers, `stop` gives its ordinary answer (here "no
+    /// meeting is recording", because the slot is empty) instead of "wedged;
+    /// restart Yap".
+    #[test]
+    fn a_poisoned_meeting_lock_is_recovered_not_wedged() {
+        let db = Arc::new(Database::open_in_memory().expect("in-memory db"));
+        let sink: StatusSink = Arc::new(|_s: &MeetingStatus| {});
+        let c = Arc::new(MeetingController::new(db, sink));
+        let poisoner = Arc::clone(&c);
+        let joined = thread::spawn(move || {
+            let _held = poisoner.active.lock().unwrap();
+            panic!("poison the meeting slot on purpose");
+        })
+        .join();
+        assert!(joined.is_err(), "the helper thread must have panicked");
+        assert!(c.active.is_poisoned(), "precondition: the lock is poisoned");
+
+        assert!(!c.is_recording());
+        assert!(!c.status().recording);
+        assert!(
+            !c.active.is_poisoned(),
+            "the first reader clears the poison"
+        );
+        let err = c.stop("user stopped").unwrap_err();
+        assert!(!err.contains("wedged"), "stop must not say wedged: {err}");
+        assert_eq!(err, "no meeting is recording");
+        assert!(c.started_at().is_none());
     }
 
     #[test]

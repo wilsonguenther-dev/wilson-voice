@@ -42,7 +42,8 @@
     "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/yap-polish",
-      "binaries/yap-diarize"
+      "binaries/yap-diarize",
+      "binaries/yap-asr"
     ],
     "resources": {
       "assets/sounds/dictation-start.wav": "sounds/dictation-start.wav",

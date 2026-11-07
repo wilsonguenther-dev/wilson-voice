@@ -97,10 +97,12 @@ export function clampChickPose<P extends { hop: number; sx: number; sy: number; 
 
 /**
  * The pill chick's bounding box relative to `drawChick(cx, feetY)`, over every
- * pose inside CHICK_LIMITS: tufts (his ears), wings, tail, pencil and feet.
- * From the draw code: tufts top at feetY - 25 - hop - sy, tail right edge at
- * cx + rx + 3, pencil left edge at cx - rx - 4, feet bottom at cy + ry + 1,
- * plus slack for the ellipse rows' floor/ceil.
+ * pose inside CHICK_LIMITS: sprout (his ears), wings, tail, pencil, toes and
+ * the ground shadow. From the draw code (yap-1106-yappy-detail-pass): sprout
+ * top at feetY - 26 - hop - sy, tail right edge at cx + rx + 3, pencil left
+ * edge at cx - rx - 5, toes bottom at cy + ry + 2 (feetY + 6 at the limits),
+ * shadow rows feetY .. feetY + 3 within cx +- 10, plus slack for the ellipse
+ * rows' floor/ceil. `chick_box_holds_every_pose` paints every pose to prove it.
  */
 export const CHICK_EXTENT = { left: 20, right: 20, up: 36, down: 7 } as const;
 
@@ -115,7 +117,7 @@ export function chickBox(): FitBox {
 export function characterArt(name: SpriteName): Size {
   if (name === "yappy") {
     const b = chickBox();
-    // The pill draws the shipped chick; the round-two Yappy sprite must fit the same pill too.
+    // The pill chick IS the round-two Yappy (detail pass); the sprite manifest must fit the same pill too.
     return { w: Math.max(b.w, FRIENDS.yappy.w), h: Math.max(b.h, FRIENDS.yappy.h) };
   }
   return { w: FRIENDS[name].w, h: FRIENDS[name].h };

@@ -140,6 +140,7 @@ fn deps(
         demand: Arc::new(NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|_: &MeetingProgressEvent| {}),
+        diarize: wilson_voice_lib::meeting_diarize::DiarizeBackend::Off,
         after_transcript: None,
         // The SHIPPED chunk geometry (30 s target, 25-35 s search, 2 s overlap).
         config: MeetingAsrConfig {

@@ -80,6 +80,10 @@ export interface TranscriptSegment {
    * missing track is the mic, exactly as the column's `DEFAULT 0` says.
    */
   track?: number | null;
+  /** yap-1106-diarize-wire — the row's speaker cluster (`meeting_segments.cluster_index`); null = unattributed. */
+  clusterIndex?: number | null;
+  /** End time; only used to weigh a cluster's talk time for its rank. */
+  endSeconds?: number | null;
 }
 
 /** One rendered line. Mirrors `meetings::TranscriptLine`. */
@@ -152,6 +156,60 @@ export function speakerLabel(track: number, target: DiarizationTarget): string {
 }
 
 /**
+ * yap-1106-diarize-wire — rank each (track, cluster) by talk time, most first
+ * (ties: earliest start, then cluster id), 1-based per track. The mic of a
+ * virtual call ("micIsMe") is never ranked: it is "You" by mechanism. Key is
+ * `${track}:${cluster}`. Mirrors `meetings::cluster_ranks`.
+ */
+export function clusterRanks(
+  segments: readonly TranscriptSegment[],
+  target: DiarizationTarget,
+): Map<string, number> {
+  const talk = new Map<string, { track: number; cluster: number; seconds: number; first: number }>();
+  for (const s of segments) {
+    const cluster = s.clusterIndex;
+    if (cluster === null || cluster === undefined || oneLine(s.text) === "") continue;
+    const track = trackOf(s);
+    if (track === MIC_TRACK && target === "micIsMe") continue;
+    const key = `${track}:${cluster}`;
+    const entry = talk.get(key) ?? { track, cluster, seconds: 0, first: Number.POSITIVE_INFINITY };
+    const end = typeof s.endSeconds === "number" ? s.endSeconds : s.startSeconds;
+    entry.seconds += Math.max(0, end - s.startSeconds);
+    entry.first = Math.min(entry.first, s.startSeconds);
+    talk.set(key, entry);
+  }
+  const ordered = [...talk.values()].sort(
+    (a, b) => a.track - b.track || b.seconds - a.seconds || a.first - b.first || a.cluster - b.cluster,
+  );
+  const ranks = new Map<string, number>();
+  let lastTrack: number | null = null;
+  let rank = 0;
+  for (const e of ordered) {
+    if (e.track !== lastTrack) {
+      lastTrack = e.track;
+      rank = 0;
+    }
+    rank += 1;
+    ranks.set(`${e.track}:${e.cluster}`, rank);
+  }
+  return ranks;
+}
+
+/**
+ * The label a line shows: "Speaker 2" on a clustered mic track, "Call · Speaker 2"
+ * on a clustered call track, else the plain track label. Mirrors `TranscriptLine::label`.
+ */
+export function clusteredSpeakerLabel(
+  track: number,
+  target: DiarizationTarget,
+  rank: number | undefined,
+): string {
+  if (rank === undefined) return speakerLabel(track, target);
+  const name = `${UNCLUSTERED_SPEAKER_LABEL} ${rank}`;
+  return track === MIC_TRACK ? name : `${SYSTEM_SPEAKER_LABEL} · ${name}`;
+}
+
+/**
  * Does this meeting have a second track? A mic-only (22-A) meeting must render
  * exactly as it always did — no phantom "Them", no layout implying a speaker
  * who was never recorded.
@@ -192,6 +250,7 @@ export function orderedTranscript<S extends TranscriptSegment>(
   // `render_transcript` reads it: a tap that delivered nothing is a mic-only
   // meeting to the reader, so it must be one to the labeller too.
   const target = diarizationTarget(kind, isTwoTrack(segments));
+  const ranks = clusterRanks(segments, target);
   const lines: (TranscriptLine<S> & { index: number })[] = [];
   segments.forEach((segment, index) => {
     const text = oneLine(segment.text);
@@ -200,7 +259,13 @@ export function orderedTranscript<S extends TranscriptSegment>(
     lines.push({
       segment,
       track,
-      speaker: speakerLabel(track, target),
+      speaker: clusteredSpeakerLabel(
+        track,
+        target,
+        segment.clusterIndex === null || segment.clusterIndex === undefined
+          ? undefined
+          : ranks.get(`${track}:${segment.clusterIndex}`),
+      ),
       offset: formatOffset(segment.startSeconds),
       startSeconds: segment.startSeconds,
       text,

@@ -354,6 +354,10 @@ pub trait Transcriber: Send + 'static {
     }
 }
 
+// yap-1106-engine-owner: the in-process engine exists only with
+// `--features in-process-asr`; shipped builds decode in the `yap-asr` helper
+// (`engine_owner::HelperEngine`).
+#[cfg(feature = "in-process-asr")]
 impl Transcriber for asr_engine::AsrEngine {
     fn transcribe(
         &mut self,
@@ -597,6 +601,10 @@ struct Inner {
     idle_timeout: Duration,
     idle_check_interval: Duration,
     transcribe_timeout: Duration,
+    /// yap-1106-engine-owner — every lease is a job on this queue first:
+    /// one decode at a time, dictation before retry before meeting, a plain
+    /// "catching up" sentence instead of a parallel engine, closed at quit.
+    jobs: crate::engine_owner::JobQueue,
 }
 
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
@@ -628,9 +636,9 @@ impl TranscriptionManager {
     /// Production manager: real transcribe-cpp loads, Handy's idle timeout.
     pub fn new() -> Self {
         Self::with_loader(
-            Arc::new(|path: &Path| {
-                asr_engine::load(path).map(|e| Box::new(e) as Box<dyn Transcriber>)
-            }),
+            // yap-1106-engine-owner: the one construction site — the `yap-asr`
+            // helper process, never a model inside the app.
+            Arc::new(|path: &Path| crate::engine_owner::load_engine(path)),
             IDLE_UNLOAD_AFTER,
             IDLE_CHECK_INTERVAL,
             TRANSCRIBE_TIMEOUT,
@@ -664,6 +672,9 @@ impl TranscriptionManager {
                 idle_timeout,
                 idle_check_interval,
                 transcribe_timeout,
+                jobs: crate::engine_owner::JobQueue::new(
+                    crate::engine_owner::JOB_QUEUE_MAX_WAITING,
+                ),
             }),
         };
         manager.spawn_idle_watcher();
@@ -782,6 +793,13 @@ impl TranscriptionManager {
     /// [`unload`]: Self::unload
     pub fn drain_and_unload(&self, wait: Duration) -> DrainOutcome {
         self.inner.exiting.store(true, Ordering::Release);
+        // yap-1106-engine-owner — quit stops the queue first: nothing new is
+        // admitted and every waiting job fails with a plain sentence, so the
+        // only decode left to end is the one running now.
+        let turned_away = self.inner.jobs.close();
+        if turned_away > 0 {
+            log::info!("exit: engine queue closed turned_away={turned_away}");
+        }
         if !self.engine_in_flight() {
             self.unload();
             return DrainOutcome::Idle;
@@ -1316,6 +1334,27 @@ impl TranscriptionManager {
         expect_model: Option<&str>,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        // yap-1106-engine-owner — this decode is a job on the engine's queue.
+        // It waits its turn behind the running one (dictation first), and the
+        // ticket is held to the end of this function, i.e. until the engine
+        // is back in its slot (or dropped) and the lease count is down.
+        let kind = crate::engine_owner::current_job_kind(preemptible);
+        // A meeting chunk keeps the words its driver already understands:
+        // turned away by quit it is `ABANDONED_FOR_EXIT` (re-decoded next
+        // launch, never written as a failure), and out-waited it is the same
+        // `NO_ENGINE_LOADED` the handback wait always gave it. A dictation
+        // that cannot get its turn gets the plain `CATCHING_UP` sentence and
+        // keeps its audio — it never loads a second engine to jump the queue.
+        let _job = match self.inner.jobs.admit(kind, self.job_wait_cap()) {
+            Ok(ticket) => ticket,
+            Err(e) if preemptible && e == crate::engine_owner::OWNER_QUITTING => {
+                return Err(ABANDONED_FOR_EXIT.into())
+            }
+            Err(e) if preemptible && e == crate::engine_owner::CATCHING_UP => {
+                return Err(NO_ENGINE_LOADED.into())
+            }
+            Err(e) => return Err(e),
+        };
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let mut engine = self.take_engine()?;
@@ -1403,6 +1442,12 @@ impl TranscriptionManager {
         });
 
         let mut outcome = rx.recv_timeout(self.inner.transcribe_timeout);
+        // yap-1106-engine-owner — an abandoned decode is never left running:
+        // it is cancelled the moment the lease gives up on it. For the
+        // `yap-asr` helper that cancel escalates to a kill BY ITS PID past the
+        // cancel grace, so the GPU memory comes back and the next take loads
+        // at most one fresh copy instead of piling a second one on top.
+        let mut cancel_abandoned = false;
         if matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)) {
             let mut f = fate.lock();
             match *f {
@@ -1415,6 +1460,7 @@ impl TranscriptionManager {
                 }
                 LeaseFate::Waiting => {
                     *f = LeaseFate::Abandoned;
+                    cancel_abandoned = true;
                     let live = abandoned_live.fetch_add(1, Ordering::AcqRel) + 1;
                     log::warn!(
                         "ASR decode timed out after {}s — engine abandoned to its worker thread abandoned_live={live}",
@@ -1422,6 +1468,22 @@ impl TranscriptionManager {
                     );
                 }
                 LeaseFate::Abandoned => {}
+            }
+        }
+        if cancel_abandoned {
+            let cancel = self
+                .inner
+                .in_flight
+                .lock()
+                .as_ref()
+                .and_then(|f| f.cancel.clone());
+            log::warn!(
+                "engine lease_timeout cancel_abandoned={} engines_live={}",
+                cancel.is_some(),
+                crate::engine_owner::engines_live()
+            );
+            if let Some(cancel) = cancel {
+                cancel();
             }
         }
         let result = match outcome {
@@ -1467,6 +1529,19 @@ impl TranscriptionManager {
             None => {}
         }
         result
+    }
+
+    /// yap-1106-engine-owner — how long one decode job waits for its turn on
+    /// the queue: the job ahead of it is ended by its own lease timeout, and
+    /// a chunk handback is bounded by `ENGINE_HANDBACK_WAIT`, so this is
+    /// never the wait that fails a healthy take.
+    fn job_wait_cap(&self) -> Duration {
+        self.inner.transcribe_timeout + ENGINE_HANDBACK_WAIT
+    }
+
+    /// yap-1106-engine-owner — decode jobs waiting for their turn right now.
+    pub fn jobs_waiting(&self) -> usize {
+        self.inner.jobs.waiting()
     }
 
     /// Y3-D — arm a new take: drop any cancel latch left by the previous one.
@@ -2173,6 +2248,162 @@ mod tests {
         );
         // The abandoned engine stays with the worker thread; nothing is resident.
         assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// yap-1106-engine-owner (absorbs quit-during-asr-crash) — a stub engine
+    /// that records what happens to it, in order.
+    struct DropOrderStub {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl DropOrderStub {
+        fn decode(&self) -> Result<String, String> {
+            self.events.lock().push("decode_started");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if self.cancel.load(Ordering::Acquire) {
+                    self.events.lock().push("decode_returned");
+                    return Err("aborted".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.events.lock().push("decode_returned");
+            Ok("ran to the end".to_string())
+        }
+    }
+
+    impl Transcriber for DropOrderStub {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.decode()
+        }
+
+        fn transcribe_timed(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<asr_engine::TimedTranscript, String> {
+            self.decode().map(asr_engine::TimedTranscript::text_only)
+        }
+
+        fn cancel_handle(&self) -> Option<CancelHandle> {
+            let flag = self.cancel.clone();
+            let events = self.events.clone();
+            Some(Arc::new(move || {
+                events.lock().push("cancel");
+                flag.store(true, Ordering::Release);
+            }))
+        }
+
+        fn reset_cancel(&mut self) {
+            self.cancel.store(false, Ordering::Release);
+        }
+    }
+
+    impl Drop for DropOrderStub {
+        fn drop(&mut self) {
+            self.events.lock().push("engine_dropped");
+        }
+    }
+
+    /// The teardown order the quit crash needed: quit cancels the decode in
+    /// flight, the decode returns, the engine is DROPPED, and only then does
+    /// the drain return — i.e. before `exit()` could run any C++ static
+    /// destructor over a live Metal device.
+    #[test]
+    fn exit_teardown_cancels_the_decode_and_frees_the_engine_before_the_drain_returns() {
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let path = stub_model_file("stub.gguf");
+        let loader_events = events.clone();
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(DropOrderStub {
+                    events: loader_events.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        m.load("stub/model", &path).expect("load");
+        let chunk_manager = m.clone();
+        let chunk = std::thread::spawn(move || {
+            chunk_manager.transcribe_timed(vec![0.1f32; 16_000], None, None)
+        });
+        let started = Instant::now();
+        while !events.lock().contains(&"decode_started") {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the decode never started"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let outcome = m.drain_and_unload(Duration::from_secs(5));
+        events.lock().push("drain_returned");
+
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert_eq!(
+            chunk.join().expect("chunk thread").err().as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        let seen = events.lock().clone();
+        let at = |name: &str| {
+            seen.iter()
+                .position(|e| *e == name)
+                .unwrap_or_else(|| panic!("{name} never happened: {seen:?}"))
+        };
+        assert!(at("decode_started") < at("cancel"), "{seen:?}");
+        assert!(at("cancel") < at("decode_returned"), "{seen:?}");
+        assert!(at("decode_returned") < at("engine_dropped"), "{seen:?}");
+        assert!(
+            at("engine_dropped") < at("drain_returned"),
+            "the engine must be freed before the drain returns: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|e| **e == "engine_dropped").count(),
+            1,
+            "one engine, freed once: {seen:?}"
+        );
+        assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// yap-1106-engine-owner — quit closes the engine's job queue: a meeting
+    /// chunk turned away is `ABANDONED_FOR_EXIT` (re-decoded next launch,
+    /// never recorded as failed) and a dictation gets the plain quitting line.
+    #[test]
+    fn after_quit_the_queue_turns_new_jobs_away_with_their_own_words() {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            stub_loader("never", Duration::ZERO, false),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        m.load("stub/model", &path).expect("load");
+        assert_eq!(
+            m.drain_and_unload(Duration::from_secs(1)),
+            DrainOutcome::Idle
+        );
+        assert_eq!(
+            m.transcribe_timed(vec![0.1; 16], None, None)
+                .err()
+                .as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        assert_eq!(
+            m.transcribe(vec![0.1; 16], None, None).err().as_deref(),
+            Some(crate::engine_owner::OWNER_QUITTING)
+        );
+        assert_eq!(m.jobs_waiting(), 0);
+        assert_eq!(m.engine_loads(), 1, "quit never loads another engine");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
