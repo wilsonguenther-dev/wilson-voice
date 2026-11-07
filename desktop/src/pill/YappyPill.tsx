@@ -557,7 +557,7 @@ export default function YappyPill(
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
     listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }, { target: "float" }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV81 — the pill window's own visibility. Two sources, because neither is
     // complete on its own: `pill_visible` is the panel being ordered out/in by
     // the backend (float_pill::set_shown), and `visibilitychange` is the webview

@@ -76,14 +76,15 @@ jobs:
       # checked-in archive + one env var is enough — `SHERPA_ONNX_LIB_DIR`
       # (which needs an already-extracted lib tree, produced and cached
       # somewhere) is not required.
-      - name: Build + stage the sidecars (yap-polish, yap-diarize)
+      - name: Build + stage the sidecars (yap-polish, yap-diarize, yap-asr)
         working-directory: desktop
         run: |
-          cargo build -p yap-polish -p yap-diarize --release
+          cargo build -p yap-polish -p yap-diarize -p yap-asr --release
           TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
           mkdir -p src-tauri/binaries
           cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
           cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
+          cp target/release/yap-asr "src-tauri/binaries/yap-asr-${TRIPLE}"
       # Reuses the artifacts just built, so this costs seconds. It runs each
       # protocol's tests a SECOND time — from inside the sidecar, where the
       # shared `*_protocol.rs` is compiled by the other end of the wire.
@@ -93,6 +94,9 @@ jobs:
       - name: cargo test (yap-diarize)
         working-directory: desktop
         run: cargo test -p yap-diarize --release
+      - name: cargo test (yap-asr)
+        working-directory: desktop
+        run: cargo test -p yap-asr --release
 
       # Y0-A: rustfmt is ADVISORY for this loop, by ledger decision (PANEL
       # 2026-09-12). The tree-wide sweep landed once (b4b8d06, listed in
@@ -123,7 +127,7 @@ jobs:
       # matches how they are built and staged above, so it reuses that build.
       - name: clippy (sidecars)
         working-directory: desktop
-        run: cargo clippy -p yap-polish -p yap-diarize --all-targets --release -- -D warnings
+        run: cargo clippy -p yap-polish -p yap-diarize -p yap-asr --all-targets --release -- -D warnings
 
       # Build, tests and clippy are the gate.
       - name: cargo build (release, embedded frontend)

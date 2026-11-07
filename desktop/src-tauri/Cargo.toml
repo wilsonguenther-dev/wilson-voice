@@ -77,7 +77,11 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e
 # Embedded ASR engine (YV30) — same crate + version Handy ships for GGUF/ggml
 # native inference. Base dep is static CPU-only (no features); the macOS target
 # table below adds the Metal backend, mirroring Handy's per-platform posture.
-transcribe-cpp = { version = "0.1.3", default-features = false }
+# yap-1106-engine-owner: OPTIONAL. The app binary no longer links the speech
+# model; the `yap-asr` helper does. `--features in-process-asr` brings the
+# in-process engine back for the model-gated benches/tests and the dev fallback
+# only; a release build never enables it (tests/supply_chain.rs checks).
+transcribe-cpp = { version = "0.1.3", default-features = false, optional = true }
 # Verified model downloader (YV30): resumable HTTP + mandatory sha256 check.
 reqwest = { version = "0.13", features = ["stream"] }
 sha2 = "0.10"
@@ -115,7 +119,7 @@ base64 = "0.22"
 tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-transcribe-cpp = { version = "0.1.3", default-features = false, features = ["metal"] }
+transcribe-cpp = { version = "0.1.3", default-features = false, features = ["metal"], optional = true }
 # YV39 receipt-sequenced paste: `declareTypes:owner:` publishes the transcript
 # as a lazy NSPasteboard promise, and the owner's provideDataForType: callback
 # is the read receipt that gates the clipboard restore (see src/paste_tx.rs).
@@ -153,3 +157,6 @@ objc2-core-audio-types = "=0.3.2"
 default = ["custom-protocol", "macos-private-api"]
 custom-protocol = ["tauri/custom-protocol"]
 macos-private-api = ["tauri/macos-private-api"]
+# yap-1106-engine-owner: the in-process speech engine (transcribe-cpp/ggml).
+# Never in `default`: the shipped app talks to the `yap-asr` helper instead.
+in-process-asr = ["dep:transcribe-cpp"]

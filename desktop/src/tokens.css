@@ -197,6 +197,9 @@
   --overlay-action-urgent: #e5484d;
   --overlay-text-on-action: #fff;
   --overlay-focus-ring: #9db6ff;
+  /* WF-05 — the pill's polish diff (pill/PolishRevealCard.tsx): words Yap added / removed. */
+  --overlay-diff-added: rgba(64, 192, 112, 0.3);
+  --overlay-diff-removed: rgba(230, 86, 86, 0.26);
 
   /* The test-channel chip — "TEST BUILD <sha>" on a test build only (main
      window and float window alike). Never themed: it must read identically in

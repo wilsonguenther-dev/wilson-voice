@@ -557,6 +557,9 @@ fn polish_envelope_curve_against_the_real_weights() {
 /// Measured as parent RSS (which contains the ASR engine, loaded in-process)
 /// plus the child's RSS, because they are two processes and a user's machine
 /// pays for both at once.
+// yap-1106-engine-owner: loads the speech model IN this process, which only an
+// `--features in-process-asr` build can do (the shipped app links no engine).
+#[cfg(feature = "in-process-asr")]
 #[test]
 fn polish_envelope_peak_resident_bytes_with_asr_and_polish_loaded() {
     let (binary, weights) = match prerequisites() {

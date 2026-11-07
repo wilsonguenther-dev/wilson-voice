@@ -278,6 +278,18 @@ pub fn record_duration(module: &str, name: &str, ms: u64) {
     log::info!("{module} duration {name}_ms={ms}");
 }
 
+/// SP-11 — [`record_duration`] for a hot path: the stat (last / count / max)
+/// is kept on every call so the health line sees each sample, but the INFO
+/// line is written only when `log_it` (the caller's "slow or changed" rule).
+/// Returns whether it logged.
+pub fn record_duration_quiet(module: &str, name: &str, ms: u64, log_it: bool) -> bool {
+    record_value(format!("{module}.{name}_ms"), ms);
+    if log_it {
+        log::info!("{module} duration {name}_ms={ms}");
+    }
+    log_it
+}
+
 /// A non-time quantity (bytes, items) kept as `<module>.<name>`.
 pub fn record_amount(module: &str, name: &str, value: u64) {
     record_value(format!("{module}.{name}"), value);
@@ -827,5 +839,14 @@ mod tests {
         assert!(s.count >= 2);
         let h = Health::default();
         assert!(health_line(&h).contains("loaded=no"));
+    }
+
+    #[test]
+    fn quiet_duration_keeps_the_stat_but_logs_only_when_asked() {
+        assert!(!record_duration_quiet("diagquiet", "snap", 7, false));
+        assert!(record_duration_quiet("diagquiet", "snap", 150, true));
+        let s = global().stats.get("diagquiet.snap_ms").copied().unwrap();
+        assert_eq!((s.last, s.max), (150, 150));
+        assert!(s.count >= 2);
     }
 }

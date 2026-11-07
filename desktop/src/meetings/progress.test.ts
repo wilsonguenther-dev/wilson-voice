@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canRetry, canRetryTranscript, canCancelNotes, canRetryNotes, foldProgress, meetingActions, meetingStateLabel, notesStatusEvent,
   reloadsMeetings, retryNotesLabel, OFFLINE_REASON, summaryFirstLine, summaryTitle, transcribedLabel, transcribePercent,
-  transcribeProgress, type MeetingProgressEvent,
+  transcribeProgress, type MeetingProgressEvent, FINDING_SPEAKERS_STATE,
 } from "./progress";
 
 const ev = (percent: number, state = "transcribing"): MeetingProgressEvent => ({
@@ -222,5 +222,17 @@ describe("yap-uiux-2026-10-16-M2 — a compact row shows the notes' first line",
   it("is null with no notes", () => {
     expect(summaryFirstLine(null)).toBeNull();
     expect(summaryFirstLine("  \n ")).toBeNull();
+  });
+});
+
+describe("yap-1106-diarize-wire — the Finding speakers stage", () => {
+  it("a finished meeting whose speaker pass is running says so, then notes take over", () => {
+    expect(meetingStateLabel("complete", ev(100, FINDING_SPEAKERS_STATE), false)).toBe(
+      "Transcript ready · Finding speakers",
+    );
+    expect(meetingStateLabel("partial", ev(100, FINDING_SPEAKERS_STATE), false)).toBe(
+      "Partly transcribed · Finding speakers",
+    );
+    expect(meetingStateLabel("complete", ev(100, "complete"), false)).toBe("Transcript ready");
   });
 });
