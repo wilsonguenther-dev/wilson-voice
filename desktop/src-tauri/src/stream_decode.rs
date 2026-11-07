@@ -420,6 +420,12 @@ impl StreamDecoder {
         self.windows_sent
     }
 
+    /// Committed windows not yet decoded (in flight included). The bench
+    /// paces its feed on this.
+    pub fn backlog(&self) -> usize {
+        self.shared.queued.load(Ordering::Acquire)
+    }
+
     pub fn is_degraded(&self) -> bool {
         self.shared.degraded.load(Ordering::Acquire)
     }

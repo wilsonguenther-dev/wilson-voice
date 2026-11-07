@@ -3012,7 +3012,8 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
         stream_decode::disarm("no_model");
         return;
     };
-    let Some(language) = stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    let Some(language) =
+        stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
     else {
         stream_decode::disarm("auto_language");
         log::info!("stream_decode skipped reason=auto_language");
@@ -3053,7 +3054,8 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
 fn streamed_asr_output(prefs: &languages::LanguagePrefs) -> Option<transcription::AsrOutput> {
     let stream = stream_decode::take_active()?;
     let take = stream.take_id();
-    let Some(language) = stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    let Some(language) =
+        stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
     else {
         log::info!("stream_decode discarded take={take} reason=language_changed");
         return None;
