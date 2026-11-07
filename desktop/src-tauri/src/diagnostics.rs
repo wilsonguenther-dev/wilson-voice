@@ -384,11 +384,7 @@ pub struct DiagSnapshot {
 pub fn snapshot(health: Health) -> DiagSnapshot {
     let (mut events, counters, states) = {
         let g = global();
-        (
-            g.ring.newest(SNAPSHOT_EVENTS),
-            g.stats.clone(),
-            g.states.clone(),
-        )
+        (g.ring.newest(SNAPSHOT_EVENTS), g.stats.clone(), g.states.clone())
     };
     for e in &mut events {
         e.fields.retain(|k, _| !is_sensitive_key(k));

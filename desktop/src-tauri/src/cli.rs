@@ -198,8 +198,7 @@ fn probe_calls(raw_titles: bool) -> i32 {
         use crate::call_signals;
         let started = Instant::now();
         let ax_source = cli_ax_source();
-        let snap =
-            call_signals::sys::snapshot(call_signals::catalog(), ax_source, raw_titles, None);
+        let snap = call_signals::sys::snapshot(call_signals::catalog(), ax_source, raw_titles, None);
         match snap.and_then(|s| {
             serde_json::to_string_pretty(&s)
                 .map(|json| (s, json))
@@ -799,13 +798,11 @@ fn basename(p: &Path) -> String {
 fn transcribe_meeting_cmd(argv: &[String]) -> i32 {
     // Our own lines (and the diagnostics durations) at INFO on stderr; every
     // other module stays at WARN so stdout holds ONLY the JSON report.
-    let _ =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-            "warn,wilson_voice_lib::cli=info,wilson_voice_lib::diagnostics=info",
-        ))
-        .try_init();
-    if let Some(refusal) = meeting_root_refusal(std::env::var(crate::DATA_DIR_ENV).ok().as_deref())
-    {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
+        "warn,wilson_voice_lib::cli=info,wilson_voice_lib::diagnostics=info",
+    ))
+    .try_init();
+    if let Some(refusal) = meeting_root_refusal(std::env::var(crate::DATA_DIR_ENV).ok().as_deref()) {
         log::error!("cli transcribe_meeting_refused reason=data_dir — {refusal}");
         return EXIT_REFUSED;
     }
@@ -902,11 +899,7 @@ fn headless_deps(
         demand: Arc::new(meeting_asr::NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|e: &meeting_pipeline::MeetingProgressEvent| {
-            log::debug!(
-                "cli meeting_progress state={} percent={}",
-                e.state,
-                e.percent
-            );
+            log::debug!("cli meeting_progress state={} percent={}", e.state, e.percent);
         }),
         after_transcript: None,
         config: meeting_asr::MeetingAsrConfig::default(),
@@ -915,8 +908,8 @@ fn headless_deps(
 }
 
 fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingReport, String> {
-    use crate::meeting_pipeline::{self, MIC_TRACK, SYSTEM_TRACK};
     use crate::meetings::{MeetingKind, MeetingState};
+    use crate::meeting_pipeline::{self, MIC_TRACK, SYSTEM_TRACK};
     use crate::summary_jobs::{CancelToken, NotesPhase};
 
     let mic_secs = wav_seconds(mic)?;
@@ -933,11 +926,7 @@ fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingRep
     let db = Arc::new(crate::db::Database::open(root.join("wilson_voice.db"))?);
     // A two-track meeting is a call (the other side arrives on its own track);
     // one track is a room. Stored at INSERT, as the start surface does.
-    let kind = if sys.is_some() {
-        MeetingKind::Virtual
-    } else {
-        MeetingKind::InPerson
-    };
+    let kind = if sys.is_some() { MeetingKind::Virtual } else { MeetingKind::InPerson };
     let row = db.create_meeting_with_kind(title, CLI_MEETING_SOURCE, kind)?;
     let id = row.id.clone();
     // The inputs are COPIED into the scratch root's meetings dir under the
@@ -962,7 +951,8 @@ fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingRep
     // ggml-metal's residency-set assert in its static destructor (SIGABRT,
     // exit 134) after every line of the report was already printed.
     let manager = TranscriptionManager::new();
-    let pipeline = meeting_pipeline::spawn(headless_deps(Arc::clone(&db), dir, manager.clone()));
+    let pipeline =
+        meeting_pipeline::spawn(headless_deps(Arc::clone(&db), dir, manager.clone()));
     pipeline.enqueue(&id);
     let drained = pipeline.wait_idle(MEETING_TIMEOUT);
     manager.unload();
@@ -984,27 +974,28 @@ fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingRep
     // otherwise the #250 job would sit queued for the model, which is what we
     // report (never an error, never a download).
     let notes_start = Instant::now();
-    let (notes, notes_error) =
-        if !crate::summary_jobs::transcript_settled(&meeting.state) || segments.is_empty() {
-            (NotesPhase::Queued.as_str(), None)
-        } else {
-            match crate::summarize::plan_summary_model("", &crate::summary_model_on_disk) {
-                crate::summarize::SummaryModelPlan::Download(m) => {
-                    log::info!("cli notes_waiting model={m} reason=not_installed");
-                    (NotesPhase::Queued.as_str(), None)
-                }
-                crate::summarize::SummaryModelPlan::Use(m) => {
-                    match crate::summarize_meeting_with(&db, &m, &id, &CancelToken::new()) {
-                        Ok(_) => (NotesPhase::Ready.as_str(), None),
-                        Err(e) => {
-                            let reason = e.plain();
-                            log::warn!("cli notes_failed model={m} reason={reason}");
-                            (NotesPhase::Failed.as_str(), Some(reason))
-                        }
+    let (notes, notes_error) = if !crate::summary_jobs::transcript_settled(&meeting.state)
+        || segments.is_empty()
+    {
+        (NotesPhase::Queued.as_str(), None)
+    } else {
+        match crate::summarize::plan_summary_model("", &crate::summary_model_on_disk) {
+            crate::summarize::SummaryModelPlan::Download(m) => {
+                log::info!("cli notes_waiting model={m} reason=not_installed");
+                (NotesPhase::Queued.as_str(), None)
+            }
+            crate::summarize::SummaryModelPlan::Use(m) => {
+                match crate::summarize_meeting_with(&db, &m, &id, &CancelToken::new()) {
+                    Ok(_) => (NotesPhase::Ready.as_str(), None),
+                    Err(e) => {
+                        let reason = e.plain();
+                        log::warn!("cli notes_failed model={m} reason={reason}");
+                        (NotesPhase::Failed.as_str(), Some(reason))
                     }
                 }
             }
-        };
+        }
+    };
     let notes_ms = notes_start.elapsed().as_millis() as u64;
     crate::diagnostics::record_duration("cli", "meeting_notes", notes_ms);
 
@@ -1021,10 +1012,7 @@ fn run_meeting(mic: &Path, sys: Option<&Path>, title: &str) -> Result<MeetingRep
         asr_model,
         notes,
         notes_error,
-        summary: meeting
-            .summary
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty()),
+        summary: meeting.summary.as_deref().is_some_and(|s| !s.trim().is_empty()),
         export: PathBuf::from(export.path),
         transcribe_ms,
         notes_ms,
@@ -1108,10 +1096,7 @@ mod tests {
     #[test]
     fn meeting_flags_parse_both_spellings_and_refuse_a_missing_value() {
         let a = args(&["--transcribe-meeting", "m.wav", "--sys=s.wav"]);
-        assert_eq!(
-            flag_value(&a, TRANSCRIBE_MEETING_FLAG).unwrap().as_deref(),
-            Some("m.wav")
-        );
+        assert_eq!(flag_value(&a, TRANSCRIBE_MEETING_FLAG).unwrap().as_deref(), Some("m.wav"));
         assert_eq!(flag_value(&a, SYS_FLAG).unwrap().as_deref(), Some("s.wav"));
         assert_eq!(flag_value(&a, TITLE_FLAG).unwrap(), None);
         let bad = args(&["--transcribe-meeting", "--sys", "s.wav"]);
