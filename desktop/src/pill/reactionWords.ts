@@ -253,7 +253,7 @@ export function reactToPartial(s: ReactionState, take: number, committed: string
   const m = findReaction(committed, ctx.voice);
   if (!m) return { state, reaction: null, log: null };
   const done: ReactionState = { take, done: true };
-  const held = !ctx.chatterAllows ? "chatter" : ctx.meeting ? "meeting" : null;
+  const held = !ctx.chatterAllows ? "chatter" : ctx.meeting ? "in_meeting" : null;
   if (held) {
     return { state: done, reaction: null, log: `pill reaction held take=${take} voice=${ctx.voice} row=${m.index} kind=${m.row.kind} reason=${held}` };
   }

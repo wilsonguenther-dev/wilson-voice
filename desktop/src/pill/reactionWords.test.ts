@@ -186,7 +186,7 @@ describe("one reaction per take", () => {
     expect(reactToPartial(quiet.state, 2, "toot wow", ctx()).reaction).toBeNull();
     const meet = reactToPartial(REACTION_IDLE, 2, "toot", ctx({ meeting: true }));
     expect(meet.reaction).toBeNull();
-    expect(meet.log).toContain("reason=meeting");
+    expect(meet.log).toContain("reason=in_meeting");
   });
 
   it("the log names the row and kind, never the transcript", () => {
