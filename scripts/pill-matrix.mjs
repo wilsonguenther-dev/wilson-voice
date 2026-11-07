@@ -97,7 +97,7 @@ const H = 140; // float_pill.rs PILL_H
 const SCALE = 2;
 const DOCKS = ["bottom", "left", "right"];
 /* yap-1106-retire-classic-pill — Classic is retired; Yappy is the only pill. */
-const CHARACTERS = ["yappy"];
+const CHARACTERS = ["yappy", "hoot", "tidy", "gulp", "shelly"]; // yap-1106-main-character-switch: every character that can sit in the pill
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
 const MEETINGS = ["none", "recording"];
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
