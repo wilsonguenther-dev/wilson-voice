@@ -1714,6 +1714,14 @@ pub fn reconcile_stranded_meetings(
             if state == MeetingState::Recording {
                 let _ = db.set_meeting_state(&m.id, MeetingState::Partial, m.error.as_deref());
             }
+            if state == MeetingState::Transcribing {
+                // yap-1106-engine-owner (absorbs quit-during-asr-crash): a row
+                // left `transcribing` has no live job after a quit or crash.
+                log::info!(
+                    "pipeline requeue meeting={} reason=interrupted_by_quit",
+                    m.id
+                );
+            }
             enqueue(&m.id);
             if state == MeetingState::Recording {
                 MeetingState::Partial

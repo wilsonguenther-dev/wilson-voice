@@ -15,6 +15,13 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
+import { EngineHealthChip } from "./pill/EngineHealthChip";
+import {
+  ENGINE_HEALTH_EVENT,
+  engineHealthTakesStrip,
+  parseEngineHealth,
+  type EngineHealth,
+} from "./pill/engineHealth";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
@@ -24,6 +31,8 @@ import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import PolishRevealCard from "./pill/PolishRevealCard";
+import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
 import SilentMicRow from "./pill/SilentMicRow";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
@@ -88,6 +97,7 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixPolishRevealScenes,
   matrixStyleChipScene,
   matrixSilentMicScene,
   matrixRailScene,
@@ -251,6 +261,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // WF-05 — "Polished — Reveal": the toast, then the opened diff card.
+    ...matrixPolishRevealScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
     // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
@@ -311,6 +323,7 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -412,6 +425,17 @@ function Float() {
     listen<unknown>("transcript", () => setProgress(null)).then(push);
     listen<unknown>("transcript_error", () => setProgress(null)).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  // yap-1106-engine-owner — the speech engine's one health state, pushed by
+  // `engine_owner` on every transition (never polled). "Catching up…" while a
+  // stuck engine is being waited out, "Restarting…" while it is replaced.
+  useEffect(() => {
+    let dead = false;
+    let unsub: (() => void) | null = null;
+    listen<unknown>(ENGINE_HEALTH_EVENT, (e) => setEngineHealth(parseEngineHealth(e.payload))).then(
+      (u) => (dead ? u() : (unsub = u)),
+    );
+    return () => { dead = true; unsub?.(); };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -698,6 +722,11 @@ function Float() {
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
         muted={mutedCats}
       />
+      {/* WF-05 — "Polished — Reveal" (Reveal → diff with Use original / Keep). Muted with Tips. */}
+      <PolishRevealCard
+        forced={FORCED ? forcedPolishReveal(window.location.search) : null}
+        muted={mutedCats}
+      />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
       {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
@@ -712,7 +741,11 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+        {/* yap-1106-engine-owner — while the engine is loading, stuck or
+            restarting, THAT is the one line worth saying during a decode. */}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
           // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
