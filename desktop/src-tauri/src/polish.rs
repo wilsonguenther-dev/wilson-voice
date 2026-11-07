@@ -1944,6 +1944,100 @@ fn take_prepolished() -> Option<PrePolished> {
     PREPOLISHED.lock().take()
 }
 
+/// SP-08 + SP-07 — the hosted route's share of the pipeline: the leading run
+/// of chunks the pipeline already cleaned during the take, as (body, answer)
+/// pairs, consumed so it serves one take. Called ONLY when the release
+/// actually runs the cloud route; a local release keeps reading
+/// [`take_prepolished`] as before.
+pub fn take_prepolished_for_cloud() -> Vec<(String, String)> {
+    let Some(pre) = take_prepolished() else {
+        return Vec::new();
+    };
+    pre.chunks
+        .into_iter()
+        .map_while(|c| c.result.ok().map(|r| (c.body, r)))
+        .collect()
+}
+
+/// SP-08 — cleanup on the hosted route, chunked: the take is planned into the
+/// same [`POLISH_CHUNK_WORDS`] chunks the local pass uses, `run` is called for
+/// every chunk with at most `max_in_flight` in flight, and the answers are
+/// reassembled IN ORDER with each chunk's original separator. `None` (→ the
+/// caller runs the bundled model on the whole take) when any chunk has no
+/// accepted answer, the take is past [`MAX_POLISH_CHUNKS`], or the reassembled
+/// text fails [`validate_aggregate`]. Never logs text.
+pub fn polish_chunks_parallel(
+    text: &str,
+    max_in_flight: usize,
+    run: &(dyn Fn(&PolishChunk) -> Option<String> + Sync),
+) -> Option<String> {
+    polish_chunks_parallel_seeded(text, &[], max_in_flight, run)
+}
+
+/// [`polish_chunks_parallel`], reusing `pre` — chunks the SP-07 pipeline sent
+/// to the hosted route while the take was still recording (see
+/// [`take_prepolished_for_cloud`]). A seed stands in for a request only when
+/// its body is the byte-identical next chunk of `text`
+/// ([`plan_polish_chunks_seeded`]); anything else is asked for again.
+pub fn polish_chunks_parallel_seeded(
+    text: &str,
+    pre: &[(String, String)],
+    max_in_flight: usize,
+    run: &(dyn Fn(&PolishChunk) -> Option<String> + Sync),
+) -> Option<String> {
+    let started = Instant::now();
+    let seeds: Vec<&str> = pre.iter().map(|(b, _)| b.as_str()).collect();
+    let (chunks, seeded) = plan_polish_chunks_seeded(text, &seeds);
+    if chunks.len() > MAX_POLISH_CHUNKS {
+        log::info!(
+            "polish cloud_parallel outcome=too_many_chunks chunks={}",
+            chunks.len()
+        );
+        return None;
+    }
+    let answer_for = |i: usize, chunk: &PolishChunk| -> Option<String> {
+        if chunk.body.trim().is_empty() {
+            return Some(chunk.body.clone());
+        }
+        if i < seeded {
+            return Some(pre[i].1.clone());
+        }
+        run(chunk)
+    };
+    let answers = crate::cloud_route::map_in_order(&chunks, max_in_flight, &answer_for);
+    let mut assembled = String::with_capacity(text.len() + 16);
+    let mut failed = 0usize;
+    for (chunk, answer) in chunks.iter().zip(answers) {
+        match answer.flatten() {
+            Some(body) => {
+                assembled.push_str(&chunk.sep);
+                assembled.push_str(&body);
+            }
+            None => failed += 1,
+        }
+    }
+    let ms = started.elapsed().as_millis();
+    if failed > 0 {
+        log::info!(
+            "polish cloud_parallel outcome=chunk_failed chunks={} failed={failed} reused={seeded} ms={ms}",
+            chunks.len()
+        );
+        return None;
+    }
+    let out = validate_aggregate(text, &assembled);
+    log::info!(
+        "polish cloud_parallel outcome={} chunks={} reused={seeded} in_flight_max={} ms={ms}",
+        if out.is_some() {
+            "accepted"
+        } else {
+            "aggregate_rejected"
+        },
+        chunks.len(),
+        max_in_flight
+    );
+    out
+}
+
 /// What the machine can afford for a resident model right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerHint {
@@ -3619,5 +3713,55 @@ mod polish_fallback_tests {
         offset.store(12 * 60, Ordering::Relaxed);
         assert!(pool.sweep_idle_with(PowerHint::Battery));
         assert!(pool.slot.lock().is_none());
+    }
+}
+
+#[cfg(test)]
+mod cloud_parallel_tests {
+    use super::*;
+
+    fn take(words: usize) -> String {
+        (0..words)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn cloud_chunks_reassemble_in_order_with_their_separators() {
+        let text = format!("{}\n\n{}", take(300), take(250));
+        let out = polish_chunks_parallel(&text, crate::cloud_route::MAX_IN_FLIGHT, &|c| {
+            // Out-of-order completion: short chunks answer first.
+            std::thread::sleep(std::time::Duration::from_millis(200 - c.words() as u64));
+            Some(c.body.clone())
+        });
+        assert_eq!(out.as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn one_failed_cloud_chunk_hands_the_whole_take_to_the_local_model() {
+        let text = take(500);
+        let out = polish_chunks_parallel(&text, 4, &|c| {
+            (!c.body.split_whitespace().any(|w| w == "word250")).then(|| c.body.clone())
+        });
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn pipeline_chunks_sent_during_the_take_are_not_sent_again() {
+        let text = take(500);
+        let first = plan_polish_chunks(&text)[0].body.clone();
+        let pre = vec![(first.clone(), first.clone())];
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let out = polish_chunks_parallel_seeded(&text, &pre, 4, &|c| {
+            assert_ne!(c.body, first, "a seeded chunk is never re-sent");
+            calls.fetch_add(1, Ordering::SeqCst);
+            Some(c.body.clone())
+        });
+        assert_eq!(out.as_deref(), Some(text.as_str()));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            plan_polish_chunks(&text).len() - 1
+        );
     }
 }
