@@ -1540,5 +1540,32 @@
       },
       "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
     }
+  ],
+  "buildShell": {
+    "openCapsule": {
+      "w": 228,
+      "h": 53,
+      "source": "desktop/src/pill/characterFit.ts OPEN_CAPSULE",
+      "deltaPctVsArtifact": {
+        "w": 0,
+        "h": 1.9
+      }
+    },
+    "propTiers": "openCapsuleFor(tier): width x tier (1, 1.05, 1.16), height fixed at 53 like the page's 52-tall shells (was height x tier: 63 at the desk tier, +21 percent)",
+    "why53": "52 leaves a 0 art px hop at the artifact's 2x scale (cell 3); 53 is the least height with a 1 art px hop and is inside the 3 percent rule"
+  },
+  "knownConflicts": [
+    {
+      "state": "resting",
+      "artifact": "72 x 28 nub showing only Yappy's eyes (pill.html Resting, PK.pill h 28)",
+      "build": "REST_CAPSULE, at most 56 tall (characterFit REST_MAX_H)",
+      "why": "the item prompt says the idle pill is 56 px tall with Yappy at full sprite scale, and yap-1106-fb-10 enlarged it because the 22-28 px nub cropped heads; needs Wilson's call before the resting row can pass the 3 percent rule"
+    },
+    {
+      "state": "hands-free, long-take, meeting-dictating, writing-it-up, polishing, pasting, pasted, docked-side",
+      "artifact": ".ypill measures the whole shell including the right segment (lock, fn key, stop, word count)",
+      "build": ".yappy-capsule-box measures the drawn capsule only; the segments are DOM slots beside it",
+      "why": "the rows' width compares different boxes until the slot row has its own measured twin; the integrator's sheet shows the delta per row"
+    }
   ]
 }

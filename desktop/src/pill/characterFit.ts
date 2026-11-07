@@ -142,7 +142,7 @@ export function chickBox(): FitBox {
  * the box ends one row lower; the ground shadow (ell at feetY + 2, ry 1.6) ends
  * at feetY + 4. CHICK_EXTENT keeps two rows of slack on top for the full-range
  * box (fb-10, unchanged); a clamped pose uses these exact rows, which is what
- * lets the artifact-height shell (52, built at 54) hold him whole at its scale.
+ * lets the artifact-height shell (52, built at 53) hold him whole at its scale.
  */
 export const CHICK_ROWS = { sproutAbove: 26, toeBelow: 3, shadowBelow: 4 } as const;
 
@@ -195,7 +195,7 @@ export interface PillFit {
  * clamped pose sits inside the stadium). When no cell above the full-hop fit
  * holds even a resting pose, the full-hop fit is used, as before. On a 1x
  * display the artifact's 1.56 rounds down to cell 1, so 1x is unchanged; on
- * 2x the open capsule (228 x 54) draws cell 3 (1.5 CSS px per art px, 96
+ * 2x the open capsule (228 x 53) draws cell 3 (1.5 CSS px per art px, 96
  * percent of the artifact) with a one-art-px hop.
  */
 export function pillFit(stadium: FitBox, dprRaw: number): PillFit {
@@ -352,16 +352,32 @@ export const ARTIFACT_OPEN_SHELL = { w: 228, h: 52 } as const;
 export const ARTIFACT_REST_H = 56;
 
 /**
- * Yappy's open capsule at tier 1 (YappyPill: OPEN_CAPSULE x tier).
- * yap-1107-pill-matches-artifact-size (bounce fix): the artifact's 228 wide and
- * 54 tall (52 + 3.8 percent, inside the item's 5) — the least height at which a
- * 2x display draws him at the artifact's scale (cell 3 = 1.5 CSS px per art px)
- * whole AND still hopping one art px (at 52 the hop budget is 0: a frozen done
- * hop). Was 236 x 60 (+15 percent tall), which the batch-10 gate bounced.
+ * Yappy's open capsule at tier 1 (YappyPill: openCapsuleFor(tier)).
+ * yap-1107-pill-matches-artifact-size (bounce fix): the artifact's 228 wide;
+ * was 236 x 60 (+15 percent tall), which the batch-10 gate bounced.
+ * yap-1107-parity-pill (batch-5 bounce fix): 53 tall, not 54. The parity rule is
+ * 3 percent of the artifact's 52 (54 was 3.8 percent off); 53 is 1.9 percent and
+ * is still the least height at which a 2x display draws him at the artifact's
+ * scale (cell 3 = 1.5 CSS px per art px) whole AND hopping one art px: the 2x
+ * clip is (53 - 2) x 2 = 102 device px, the stadium 100, less the 2 px position
+ * guard each side 96 = 3 x 32 (chickBoxFor(1) is 32 art px tall). At 52 the hop
+ * budget is 0 (a frozen done hop), so 52 stays the artifact's number, 53 the build.
  */
-export const OPEN_CAPSULE = { w: 228, h: 54 } as const;
+export const OPEN_CAPSULE = { w: 228, h: 53 } as const;
 /** The open tiers: plain, notepad, desk. */
 export const OPEN_TIERS = [1, 1.05, 1.16] as const;
+
+/**
+ * yap-1107-parity-pill — the open capsule at a prop tier. The approved page
+ * keeps EVERY open shell 52 tall (pill.html: Holding fn, Hands-free with the
+ * notepad and Long take with the desk all draw PK.pill({ h: 52, win: { h: 44 } })),
+ * so a prop tier widens the capsule for the notepad / desk but never makes it
+ * taller (it used to scale the height too: 54 x 1.16 = 63, +21 percent).
+ */
+export function openCapsuleFor(tier: number): Size {
+  const t = Number.isFinite(tier) && tier > 0 ? tier : 1;
+  return { w: OPEN_CAPSULE.w * t, h: OPEN_CAPSULE.h };
+}
 
 /**
  * yap-1107-pill-matches-artifact-size (bounce fix) — the resting capsule is never

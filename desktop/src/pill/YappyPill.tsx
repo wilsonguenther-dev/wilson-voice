@@ -56,7 +56,7 @@ import { DURATION } from "./motion";
 import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 // yap-1106-fb-10 — no character is ever cropped: the scene buffer, the pose
 // range, the resting capsule and the camera all come from one pure rule.
-import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera, scaleEvent } from "./characterFit";
+import { CHICK_DESK_SHIFT, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, openCapsuleFor, pillCamera, scaleEvent } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout, meetingClockStacked, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
@@ -894,7 +894,10 @@ export default function YappyPill(
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
       // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
-      const capW = lerp(REST_CAPSULE.w, OPEN_CAPSULE.w * tierOpen, openV), capH = lerp(REST_CAPSULE.h, OPEN_CAPSULE.h * tierOpen, openV);
+      // yap-1107-parity-pill — a prop tier widens the open capsule, never heightens
+      // it: the approved page keeps every open shell 52 tall (built at 53).
+      const openCap = openCapsuleFor(tierOpen);
+      const capW = lerp(REST_CAPSULE.w, openCap.w, openV), capH = lerp(REST_CAPSULE.h, openCap.h, openV);
       // YV53 — dock edge (read live off <html data-dock>, set by float-main): the
       // window is parked flush to that screen edge, so the capsule hugs it instead
       // of sitting mid-window. ONLY the anchor moves — capsule size and the camera

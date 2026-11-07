@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { FRIENDS, H, SPRITE_FRAMES, drawChick, type ChickPose, type SpriteOpt } from "../sprites/art";
 import { Raster } from "../sprites/raster";
 import {
-  CHICK_EXTENT, CHICK_LIMITS, FIT_DOCKS, OPEN_CAPSULE, OPEN_TIERS, PILL_CHARACTERS, PILL_SCENE, REST_CAPSULE, REST_MIN_W,
+  CHICK_EXTENT, CHICK_LIMITS, FIT_DOCKS, OPEN_CAPSULE, OPEN_TIERS, openCapsuleFor, PILL_CHARACTERS, PILL_SCENE, REST_CAPSULE, REST_MIN_W,
   capsuleForDock, chickBox, characterArt, clampChickPose, cropWarning, inStadium, largestFittingCell, pillCamera,
   placeCharacter, placeSprite, restCapsuleFor, stadiumContains, type FitBox, type FitDock,
   ARTIFACT_SPRITE_SCALE, ARTIFACT_TOLERANCE, MAX_LIFT, chickBoxFor, cssPerArtPx, liftBudget, pillFit, scaleEvent,
@@ -46,7 +46,8 @@ function* chickPoses(): Generator<ChickPose> {
 /** The capsule a state draws (CSS px): resting phases the rest capsule, every other phase the open one at `tier`. */
 function capsuleSize(phase: LivePhase, tier: number, t = 1): { w: number; h: number } {
   if (RESTING_PHASES.has(phase)) return { w: REST_CAPSULE.w, h: REST_CAPSULE.h };
-  return { w: lerp(REST_CAPSULE.w, OPEN_CAPSULE.w * tier, t), h: lerp(REST_CAPSULE.h, OPEN_CAPSULE.h * tier, t) };
+  const open = openCapsuleFor(tier);
+  return { w: lerp(REST_CAPSULE.w, open.w, t), h: lerp(REST_CAPSULE.h, open.h, t) };
 }
 
 /**
@@ -295,9 +296,11 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
     expect(pillFit(stadium, 1)).toEqual({ cell: 1, lift: MAX_LIFT });
   });
 
-  it("shell_matches_the_artifact_within_5_percent: open 228 x 54 vs the artifact's 228 x 52, resting 56 tall", () => {
+  it("shell_matches_the_artifact_within_3_percent: open 228 x 53 vs the artifact's 228 x 52, resting 56 tall", () => {
     expect(OPEN_CAPSULE.w).toBe(ARTIFACT_OPEN_SHELL.w);
-    expect(Math.abs(OPEN_CAPSULE.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h).toBeLessThanOrEqual(0.05);
+    // yap-1107-parity-pill: the parity rule is 3 percent (batch 5 bounced 54 and 60)
+    expect(Math.abs(OPEN_CAPSULE.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h).toBeLessThanOrEqual(0.03);
+    expect(OPEN_CAPSULE.h).not.toBe(54);
     expect(Math.abs(REST_CAPSULE.h - ARTIFACT_REST_H) / ARTIFACT_REST_H).toBeLessThanOrEqual(0.05);
     expect(REST_CAPSULE.h).toBeLessThanOrEqual(REST_MAX_H);
     // the batch-10 bounce: 80 x 59 resting and 236 x 60 open were both outside the 5 percent
@@ -338,5 +341,37 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
 
   it("scaleEvent is one structured line with numbers only", () => {
     expect(scaleEvent({ cell: 3, lift: 1 }, { w: 236.2, h: 59.8 }, 2)).toBe("pill sprite-scale cell=3 lift=1 cssPerArt=1.500 capW=236 capH=60 dpr=2");
+  });
+});
+
+describe("yap-1107-parity-pill the open shell is the approved page's height at every prop tier", () => {
+  it("open_tiers_keep_the_artifact_height_within_3_percent: the notepad and desk widen the shell, never heighten it", () => {
+    for (const tier of OPEN_TIERS) {
+      const c = openCapsuleFor(tier);
+      expect(Math.abs(c.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h, `tier=${tier}`).toBeLessThanOrEqual(0.03);
+      expect(c.h, `tier=${tier}`).toBe(OPEN_CAPSULE.h);
+      expect(c.w, `tier=${tier}`).toBeCloseTo(OPEN_CAPSULE.w * tier, 6);
+      // the panel envelope still holds the widest tier (the window does not move)
+      expect(c.w).toBeLessThanOrEqual(CHARACTER_OPEN.w);
+      expect(c.h).toBeLessThanOrEqual(CHARACTER_OPEN.h);
+    }
+    // a bad tier never yields a zero or NaN capsule
+    expect(openCapsuleFor(Number.NaN)).toEqual({ w: OPEN_CAPSULE.w, h: OPEN_CAPSULE.h });
+    expect(openCapsuleFor(0)).toEqual({ w: OPEN_CAPSULE.w, h: OPEN_CAPSULE.h });
+  });
+
+  it("artifact_height_holds_him_whole_at_every_tier_on_2x_and_1x: cell 3 with a one-art-px hop on 2x, the full hop on 1x", () => {
+    for (const tier of OPEN_TIERS) for (const phase of ["listening", "transcribing", "done"] as const) {
+      const { cap } = placeCapsule(phase, "none", "bottom", capsuleSize(phase, tier));
+      expect(cap.h, `${phase} tier=${tier}`).toBe(OPEN_CAPSULE.h);
+      const two = pillCamera(cap, 2);
+      expect(two.blit.cell, `${phase} tier=${tier} 2x`).toBe(3);
+      expect(two.lift, `${phase} tier=${tier} 2x`).toBeGreaterThanOrEqual(1);
+      expect(two.fits, `${phase} tier=${tier} 2x`).toBe(true);
+      const one = pillCamera(cap, 1);
+      expect(one.blit.cell, `${phase} tier=${tier} 1x`).toBe(1);
+      expect(one.lift, `${phase} tier=${tier} 1x`).toBe(MAX_LIFT);
+      expect(one.fits, `${phase} tier=${tier} 1x`).toBe(true);
+    }
   });
 });
