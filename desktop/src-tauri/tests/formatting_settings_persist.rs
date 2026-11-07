@@ -123,7 +123,6 @@ fn fully_populated() -> AppSettings {
         pill_style: "yappy".into(),
         pill_position: "right".into(),
         companion_tone: "rude".into(),
-        companion_curse: false,
         dictation_mode: "email".into(),
         cleanup_level: "high".into(),
         // Y4-A — both non-default (the shipped values are `false`), so the
