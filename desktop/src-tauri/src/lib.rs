@@ -9278,7 +9278,8 @@ async fn use_original_take(
 
 /// yap-1107 — the generic Use original retry line. Mirrors `polishReveal.ts`
 /// `USE_ORIGINAL_FAILED`, which is on the pill's allowlist of our sentences.
-pub const USE_ORIGINAL_FAILED_MESSAGE: &str = "Couldn’t paste the original. Try Use original again.";
+pub const USE_ORIGINAL_FAILED_MESSAGE: &str =
+    "Couldn’t paste the original. Try Use original again.";
 
 /// fix-l3b7-1 — what `use_original_take` answers the pill. A replace that
 /// landed (or was carded) is `Ok(message)`; a refused replace whose copy worked

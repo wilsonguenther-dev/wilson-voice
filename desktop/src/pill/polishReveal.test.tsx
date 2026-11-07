@@ -162,7 +162,7 @@ describe("WF-05 polish reveal — model", () => {
     const sentences = [...body.matchAll(/"([^"]+)"\.into\(\)/g)].map((m) => m[1]);
     expect(sentences.length).toBeGreaterThanOrEqual(4);
     for (const s of sentences) expect(USE_ORIGINAL_SENTENCES).toContain(s);
-    const failed = /pub const USE_ORIGINAL_FAILED_MESSAGE: &str = "([^"]+)";/.exec(rs);
+    const failed = /pub const USE_ORIGINAL_FAILED_MESSAGE: &str =\s*"([^"]+)";/.exec(rs);
     expect(failed?.[1]).toBe(USE_ORIGINAL_FAILED);
     // The command asks for the state the app manages (Arc<AppState>).
     expect(body).toContain("tauri::State<'_, Arc<AppState>>");
