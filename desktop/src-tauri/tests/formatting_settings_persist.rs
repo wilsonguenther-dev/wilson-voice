@@ -55,7 +55,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
-const APP_SETTINGS_FIELD_COUNT: usize = 48;
+// yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
+const APP_SETTINGS_FIELD_COUNT: usize = 49;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -156,6 +157,9 @@ fn fully_populated() -> AppSettings {
             "com.apple.mail".to_string(),
             "markdown".to_string(),
         )]),
+        // yap-1106-resource-governor — a non-default value, so the round-trip
+        // proves the field is written and read, not defaulted.
+        pause_heavy_work_below_percent: 35,
         // WF-17 — non-default: two of the three quiet-mode switches off.
         muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
         // WF-19 — non-default: side button 4 as click-to-toggle hands-free.
