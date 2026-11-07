@@ -350,6 +350,18 @@
   --radius: var(--radius-lg);
   --shadow: var(--elevation-raised);
   --blur: var(--blur-glass);
+  /* yap-1106-fb-22a — "Who's talking right now?" card, measured from the
+     approved Meetings page §A (.qcard / .toast). */
+  --who-card-bg: #fbfaf7;
+  --who-card-ink: #1d1c1a;
+  --who-card-line: rgba(29, 28, 26, 0.16);
+  --who-card-field-bg: #ffffff;
+  --who-card-placeholder: #9a958a;
+  --who-card-muted: #8a8578;
+  --who-card-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  --who-card-w: 252px;
+  --who-toast-bg: #1d1c1a;
+  --who-toast-ink: #f3efe6;
 }
 
 @media (prefers-color-scheme: dark) {

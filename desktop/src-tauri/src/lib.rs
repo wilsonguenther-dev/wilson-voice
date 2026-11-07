@@ -753,6 +753,12 @@ pub struct AppSettings {
     /// back in captures when it stops. `float_pill::sync_capture_hidden`.
     #[serde(default = "default_true")]
     pub hide_from_capture_in_meetings: bool,
+    /// yap-1106-fb-22a — "Ask who's talking during meetings" (Settings ›
+    /// Meetings). OFF by default: when on, a new voice that has spoken about
+    /// 5 s gets one quiet "Who's talking right now?" card under the pill
+    /// (`live_transcript::LiveRoster`); when off, no live card ever shows.
+    #[serde(default)]
+    pub ask_whos_talking_live: bool,
     /// yap-1106-chatter-setting — "Yappy talks" (Settings › Companion):
     /// `always` | `less` (default: quieter from the 50th take) | `milestones`.
     /// Only those three are stored ([`sanitize_yappy_talks`]); the policy it
@@ -911,6 +917,7 @@ impl Default for AppSettings {
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
             hide_from_capture_in_meetings: true,
+            ask_whos_talking_live: false,
             yappy_talks: default_yappy_talks(),
         }
     }
@@ -15064,6 +15071,10 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-1106-fb-22a — "Who's talking right now?" answers from the pill.
+            live_transcript::meeting_live_name,
+            live_transcript::meeting_live_same,
+            live_transcript::meeting_live_skip,
             // yap-byom-0 — Settings → Model providers.
             list_model_providers,
             delete_model_provider,

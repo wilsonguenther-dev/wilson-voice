@@ -92,6 +92,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   // yap-fx-06 — the meeting + dictation card's model (Esc toast, hands-free ask, stop failed).
   "pill/meetingDictation.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-fb-22a — "Who's talking right now?" live card state machine.
+  "pill/whoTalking.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/silentMic.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
