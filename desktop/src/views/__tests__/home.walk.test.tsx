@@ -119,8 +119,7 @@ describe("Home walk rows (yap-uiux-2026-10-16)", () => {
   it("H4: the search placeholder speaks to the user, not about SQLite", () => {
     const html = home(base());
     expect(html).not.toContain("FTS5");
-    // yap-1107-parity-home: the approved page's words, without the ellipsis.
-    expect(html).toContain("Search everything you&#x27;ve said</span>");
+    expect(html).toContain("Search everything you&#x27;ve said…");
   });
 
   it("H6: an empty bridge message never leaves an unlabeled status chip", () => {

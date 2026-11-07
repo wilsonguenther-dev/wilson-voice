@@ -1073,15 +1073,10 @@ code {
   display: flex;
   align-items: center;
   gap: 16px;
-  /* yap-1107-parity-home — the approved .appfoot: 40 px tall, 0 24 px,
-     its own paper (--home-foot-bg), 12 px ink-3. */
-  box-sizing: border-box;
-  height: 40px;
-  padding: 0 24px;
-  border-top: 1px solid var(--home-line);
-  background: var(--home-foot-bg);
+  padding: 8px 24px;
+  border-top: 1px solid var(--border);
   font-size: 12px;
-  color: var(--home-ink-3);
+  color: var(--muted);
 }
 .app-footer-engine {
   display: inline-flex;
@@ -1095,7 +1090,7 @@ code {
   background: var(--muted);
 }
 .app-footer-engine .dot.ok {
-  background: var(--home-ok);
+  background: var(--status-ready);
 }
 .app-footer-version {
   font-family: var(--mono);
@@ -1104,24 +1099,7 @@ code {
 .app-footer-links {
   margin-left: auto;
   display: inline-flex;
-  gap: 16px;
-}
-.app-footer-kbd {
-  display: inline-block;
-  padding: 3px 5px 2px;
-  border: 1px solid var(--home-kbd-line);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--home-kbd-ink);
-}
-.app-footer-links button.link,
-.app-footer-links a {
-  color: var(--home-ink-2);
-  text-decoration: none;
+  gap: 14px;
 }
 button.link {
   background: none;
@@ -1139,71 +1117,26 @@ button.link:hover {
 /* ── yap-1106-home-full-width-room — Home, round two ──────────────────────
    Room (full width), one quiet stats line, the latest take beside Needs
    attention, search, the last 5 takes, then a definite end. */
-/* yap-1107-parity-home — every number below is MEASURED from the approved
-   Home page (design-2026-11-06/home.html section 5 + assets/review.css), and
-   every colour is a --home-* token holding that page's exact hex. Home is one
-   column of blocks 16 px apart (.scroll gap), 20 px under the header
-   (.scroll padding-top: .content gives 8, the view adds 12). */
-.home-view {
-  display: grid;
-  gap: var(--home-gap);
-  align-content: start;
-  color: var(--home-ink);
-  /* review.css body: 15px/1.55 — the rows' heights come from this. */
-  line-height: 1.55;
-}
-.content:has(> .home-view) {
-  padding-top: 20px;
-}
-.home-view > * {
-  min-width: 0;
-}
-/* .stats: one quiet line, 14 px ink-2 labels, numbers mono 20 px ink. */
 .home-stats {
   display: flex;
   align-items: baseline;
-  gap: 28px;
-  box-sizing: border-box;
-  /* The approved line box, measured (the 20 px numbers' font shorthand sets
-     line-height normal there): 30.69 px whatever font this Mac draws. */
-  height: var(--home-stats-h);
-  margin: 0;
-  padding: 2px 4px;
-  font-size: 14px;
-  color: var(--home-ink-2);
-}
-.home-stat b {
-  margin-right: 6px;
-  line-height: var(--home-panel-h-lh);
+  gap: 14px;
+  margin: 0 0 16px;
   font-family: var(--mono);
-  font-size: 20px;
-  font-weight: 500;
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--home-ink);
+  color: var(--muted);
 }
-@media (max-width: 900px) {
-  /* A narrow column may wrap the line; it then grows instead of overlapping. */
-  .home-stats {
-    height: auto;
-    flex-wrap: wrap;
-    row-gap: 4px;
-  }
-}
-.home-stats .home-stats-insights {
+.home-stats .link {
   margin-left: auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--home-ink-3);
+  font-family: inherit;
 }
-/* .lower: the last take (1.6) beside Needs attention (1), 16 px apart. */
 .home-split {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: var(--home-gap);
-  /* .lower is a plain grid: both panels stretch to the row (the approved last
-     take is as tall as Needs attention beside it). */
-  align-items: stretch;
-  margin: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 16px;
 }
 .home-split.single {
   grid-template-columns: minmax(0, 1fr);
@@ -1211,87 +1144,32 @@ button.link:hover {
 .home-split:empty {
   display: none;
 }
-@media (max-width: 900px) {
+@media (max-width: 980px) {
   .home-split {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* .panel */
-.home-panel {
-  margin: 0;
-  padding: 16px;
-  border: 1px solid var(--home-line);
-  border-radius: 14px;
-  background: var(--home-sheet);
-  box-shadow: none;
-}
-/* .panel h4 */
-.home-view .home-panel-h {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin: 0 0 10px;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: var(--home-panel-h-lh);
-  color: var(--home-ink);
-}
-/* .meta */
-.home-meta {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-  color: var(--home-ink-3);
-}
-/* .take: 14 px / 1.6, 150 px tall at most, fading into the panel. */
 .latest-take .latest-text {
-  position: relative;
-  max-height: 150px;
-  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
   overflow: hidden;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--home-ink);
 }
-.latest-take .latest-text::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 40px;
-  background: linear-gradient(transparent, var(--home-sheet));
-  pointer-events: none;
+.needs-attention {
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-card));
+  border-radius: 12px;
+  padding: 12px 14px;
 }
-/* .acts + .b / .b.dark */
-.home-acts,
-.needs-attention .actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
+.needs-attention .failed-head {
+  flex-wrap: wrap;
 }
-.home-btn {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--home-line);
-  border-radius: 8px;
-  background: var(--home-btn-bg);
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 26px;
-  color: var(--home-ink);
+.needs-attention .failed-head h3 {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
 }
-.home-btn.dark {
-  border-color: var(--home-btn-dark);
-  background: var(--home-btn-dark);
-  color: var(--home-btn-dark-ink);
-}
-/* Past two parked takes, Retry all sits after the count in the panel head. */
-.needs-attention .failed-retry-all {
-  margin-left: 8px;
-  font-family: var(--font-body);
-}
-/* .att .it */
 .attention-list {
   list-style: none;
   margin: 0;
@@ -1299,151 +1177,59 @@ button.link:hover {
   display: grid;
   gap: 10px;
 }
-.attention-row {
-  display: grid;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--home-ink-2);
+.attention-row + .attention-row {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
 }
-.attention-row:not(:last-child) {
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--home-line);
+.attention-row .failed-why {
+  margin: 4px 0 6px;
+  color: var(--warn-ink);
+  font-size: 0.82rem;
 }
-.attention-row .card-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.attention-row .card-meta strong {
-  font-weight: 400;
-  color: var(--home-ink);
-}
-.attention-row .card-meta span {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--home-ink-3);
-}
-.attention-row .failed-why,
-.attention-row .failed-partial {
-  margin: 0;
-  font-size: 13px;
-  color: var(--home-ink-2);
-}
-.needs-attention .actions {
-  margin-top: 4px;
-}
-/* .search: 36 px, sheet, 13 px ink-3 hint. */
-/* The box IS the approved .search: flex, 8 px gap, 36 px, 0 12 px padding,
-   sheet, line border, 10 px corners, 13 px ink-3. The input lies over the
-   whole box (transparent, same 12 px inset) so a click anywhere types. */
-.home-view .home-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  box-sizing: border-box;
-  height: 36px;
-  margin: 0;
-  padding: 0 12px;
-  border: 1px solid var(--home-line);
-  border-radius: 10px;
-  background: var(--home-sheet);
-  font-size: 13px;
-  color: var(--home-ink-3);
-}
-.home-view .home-search input[type="search"] {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  box-shadow: none;
-  font-size: 13px;
-  color: var(--home-ink);
-}
-/* The approved .search is a box holding its hint as TEXT (13 px ink-3); the
-   hint sits over the empty input and goes away as soon as you type. */
-.home-search-hint {
-  position: relative;
-  font-size: 13px;
-  color: var(--home-ink-3);
-  pointer-events: none;
-}
-/* .hist .r: 110 px | 1fr | 70 px, 9 px 4 px rows, 13 px. */
 .recent-takes {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  overflow: hidden;
 }
-.recent-takes li {
-  border-bottom: 1px solid var(--home-line);
+.recent-takes li + li {
+  border-top: 1px solid var(--border);
 }
 .recent-row {
   display: grid;
-  grid-template-columns: 110px minmax(0, 1fr) 70px;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
   gap: 12px;
-  /* .hist .r is a plain grid: every cell starts at the row's top. */
-  align-items: start;
+  align-items: baseline;
   width: 100%;
-  padding: 9px 4px;
+  padding: 10px 14px;
   background: none;
   border: 0;
   border-radius: 0;
-  box-shadow: none;
   text-align: left;
-  font-family: inherit;
-  font-size: 13px;
-  color: var(--home-ink-2);
+  font: inherit;
+  color: inherit;
   cursor: pointer;
 }
 .recent-row:hover {
-  background: var(--home-sheet);
+  background: var(--bg-elev);
 }
-.recent-when {
-  white-space: nowrap;
-}
+.recent-when,
 .recent-words {
-  text-align: right;
   font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--home-ink-3);
+  color: var(--muted);
   white-space: nowrap;
 }
 .recent-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--home-ink);
 }
-/* .endrow: Home's definite end, a dashed rule then the "See all" link. */
-.home-end {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0;
-  padding: 12px 4px 4px;
-  border-top: 1px dashed var(--home-line);
-  font-size: 13px;
-  color: var(--home-ink-3);
-}
-.home-see-all {
-  padding: 0;
-  border: 0;
-  background: none;
-  box-shadow: none;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--home-ink-3);
-  cursor: pointer;
-}
+.home-end,
 .history-pager {
   display: flex;
   align-items: center;
@@ -2727,13 +2513,7 @@ button.star.on {
   /* yap15: the habitat IS Home's hero — full measure, room to live in.
      yap-1106-home-full-width-room: no size cap — the room fills the main
      column at a whole-number scale (YappyHouse / homeLayout.roomBox). */
-  /* yap-1107-parity-home — the approved .room.lay: the studio sits on wood
-     (--home-room-wood), 3 px corners, and bleeds 20 px past the column padding on both
-     sides so it is edge to edge; the 16 px .home-view gap spaces it. */
-  margin: 0 calc(-1 * var(--home-room-bleed));
-  border-radius: 3px;
-  background: var(--home-room-wood);
-  overflow: hidden;
+  margin: 4px 0 10px;
 }
 .yappy-house .yh-frame {
   position: relative;
@@ -2754,46 +2534,19 @@ button.star.on {
      studio is drawn at exactly that many CSS px per art px, centred, with the
      page showing beside it. Never a fraction, never letterboxed vertically.
      object-fit is READ by YappyHouse (contain = the whole room). */
-  /* yap-1107-parity-home — the canvas is EXACTLY the room at its scale (the
-     width is set inline with the height: 960 x 480 at 3x, 640 x 320 at 2x),
-     centred on the wood, so its box is the artifact's #layRoom box. */
-  width: auto;
+  width: 100%;
+  min-width: 640px;
   object-fit: contain;
   /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
   background: transparent;
 }
 /* The room's label: Yappy's live mood, or the meeting clock while one records. */
-/* yap-1107-parity-home — the approved .room .label, ON the room at 26/24 px:
-   dark glass, 12 px medium cream text, a 7 px green dot, 5 x 9 px padding. */
 .yappy-house .yh-label {
-  position: absolute;
-  left: 26px;
-  top: 24px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  box-sizing: border-box;
-  /* The approved box: 134.3 x 25 px. A longer live mood (or the meeting
-     clock) grows it; it never shrinks below the approved label. */
-  min-width: var(--home-room-label-w);
-  padding: 5px 9px;
-  border-radius: 8px;
-  background: var(--home-room-label-bg);
+  margin: 8px 2px 0;
+  font-family: var(--mono);
   font-size: 12px;
-  font-weight: 500;
-  line-height: var(--home-room-label-lh);
-  white-space: nowrap;
-  color: var(--home-room-label-ink);
-  pointer-events: none;
-}
-.yappy-house .yh-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 4px;
-  background: var(--home-room-label-dot);
-  flex: none;
+  color: var(--muted);
 }
 .yappy-house .yh-meeting {
   color: hsl(var(--accent-meeting));

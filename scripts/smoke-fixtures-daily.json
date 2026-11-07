@@ -989,23 +989,5 @@
     "offerDetected": true,
     "useCalendar": false,
     "calendarAccess": "not_determined"
-  },
-  "list_failed_dictations": [
-    {
-      "id": "smoke-f-01",
-      "wavPath": "/tmp/yap-smoke/failed-01.wav",
-      "speechSeconds": 3.1,
-      "error": "Cancelled by you",
-      "sourceApp": "Notes",
-      "createdAt": "2026-10-16T17:05:00.000Z"
-    },
-    {
-      "id": "smoke-f-02",
-      "wavPath": "/tmp/yap-smoke/failed-02.wav",
-      "speechSeconds": 6.7,
-      "error": "The engine stopped before it finished this clip.",
-      "sourceApp": "Mail",
-      "createdAt": "2026-10-14T15:10:00.000Z"
-    }
-  ]
+  }
 }

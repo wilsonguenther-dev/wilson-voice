@@ -624,10 +624,6 @@ export default function App() {
             >
               Send feedback
             </button>
-            {/* yap-1107-parity-home — the approved footer ends with the Settings shortcut (⌘,). */}
-            <span className="app-footer-kbd" title="Settings" aria-label="Settings shortcut: Command comma">
-              ⌘,
-            </span>
           </span>
         </footer>
       </section>

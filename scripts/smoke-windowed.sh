@@ -93,10 +93,8 @@ DRIVER="$ROOT/scripts/smoke-windowed.mjs"
 # The two window sizes under test. 980x700 is the comfortable desktop window;
 # 720x520 is the smallest size the window is allowed to reach, which is where
 # overflow and clipping actually show up.
-# yap-1107-parity-home: a caller may set the sizes (the parity sheets capture Home
-# at 1188x1600, where the main column holds the 3x room and Home down to its end).
-export YAP_SMOKE_W1="${YAP_SMOKE_W1:-980}" YAP_SMOKE_H1="${YAP_SMOKE_H1:-700}"
-export YAP_SMOKE_W2="${YAP_SMOKE_W2:-720}" YAP_SMOKE_H2="${YAP_SMOKE_H2:-520}"
+export YAP_SMOKE_W1=980 YAP_SMOKE_H1=700
+export YAP_SMOKE_W2=720 YAP_SMOKE_H2=520
 
 # Condition 5's marker attribute. A view with nothing to show must SAY it has
 # nothing to show; data-empty-state is how it says so.

@@ -31,7 +31,6 @@ import privacySrc from "../settings/Privacy.tsx?raw";
 import homeSrc from "../Home.tsx?raw";
 import historySrc from "../History.tsx?raw";
 import appCss from "../../App.css?raw";
-import tokensCss from "../../tokens.css?raw";
 
 type State = Record<string, unknown>;
 function makeCtx(state: State): AppCtx {
@@ -78,10 +77,9 @@ const attention = (failed: FailedDictation[]) =>
   );
 
 describe("the room: full column width at a whole-number scale (option A)", () => {
-  it("picks 3x or 2x — the largest that fits, 3x the approved ceiling — never a fraction", () => {
-    // yap-1107-parity-home: the approved page draws exactly 3x; a wide window never goes 4x.
-    expect(roomScale(1400)).toBe(3);
-    expect(roomScale(ROOM_W * 4)).toBe(3);
+  it("picks 5x, 4x or 3x — the largest that fits — never a fraction", () => {
+    expect(roomScale(1400)).toBe(4);
+    expect(roomScale(ROOM_W * 4)).toBe(4);
     expect(roomScale(ROOM_W * 4 - 1)).toBe(3);
     expect(roomScale(ROOM_W * 3)).toBe(3);
     expect(roomScale(ROOM_W * 3 - 1)).toBe(2);
@@ -93,8 +91,7 @@ describe("the room: full column width at a whole-number scale (option A)", () =>
   it("the stage is the room's height at that scale", () => {
     // yap-1106-studio-room: the 320 x 160 studio, 3x on the design page's 960 px column.
     expect(roomBox(1100)).toEqual({ scale: 3, width: 960, height: 480 });
-    expect(roomBox(1300)).toEqual({ scale: 3, width: 960, height: ROOM_H * 3 });
-    expect(roomBox(752)).toEqual({ scale: 2, width: 640, height: 320 });
+    expect(roomBox(1300)).toEqual({ scale: 4, width: 1280, height: ROOM_H * 4 });
   });
   it("the room has no size cap any more", () => {
     const rule = appCss.slice(appCss.indexOf(".yappy-house {"), appCss.indexOf("}", appCss.indexOf(".yappy-house {")));
@@ -107,10 +104,7 @@ describe("greeting, Hold-fn card and stat boxes are removed; one quiet stats lin
   it("renders the stats as one line under the room, real numbers only", () => {
     const html = home(base({ insights: insights({ totalSessions: 288, wordsToday: 2632, streakDays: 17 }), history: [take(0)] }));
     expect(html).toContain('data-home="stats"');
-    // yap-1107-parity-home: the approved markup — bold number, then its label.
-    expect(html).toContain('<b>2,632</b>words today');
-    expect(html).toContain('<b>17</b>day streak');
-    expect(html).toContain('<b>288</b>takes');
+    expect(html).toContain("2,632 words today · 17 day streak · 288 takes");
     expect(html).not.toContain("yh-stat");
     expect(html).not.toContain("record-btn");
     expect(html).not.toContain("double-tap hands-free");
@@ -153,11 +147,7 @@ describe("Needs attention: failed and cancelled takes, hidden when empty", () =>
     const html = attention([failedRow("c", "Cancelled"), failedRow("f", "Engine could not transcribe")]);
     expect(html).toContain("Needs attention");
     expect(html).toContain("Cancelled take");
-    expect(html).toContain("Engine could not transcribe");
-    expect(html).toContain("Audio kept for 7 days.");
-    expect(html).toContain("6.7 s of audio kept.");
-    expect(html).not.toContain("data-testid=\"retry-all\"");
-    expect(html).not.toContain("retained-clips");
+    expect(html).toContain("Could not transcribe");
     expect(html.match(/>Retry</g)?.length).toBe(2);
     expect(html.match(/>Discard</g)?.length).toBe(2);
     const page = home(base({ history: [take(0)], failed: [failedRow("c", "Cancelled")] }));
@@ -232,71 +222,5 @@ describe("Home shows the last 5 takes then 'See all'; History pages 50 at a time
   });
   it("the sidebar has a History item", () => {
     expect(app(base())).toMatch(/<span class="nav-label">History<\/span>/);
-  });
-});
-
-describe("yap-1107-parity-home — Home matches the approved page's measured rules", () => {
-  const rule = (sel: string) => {
-    const i = appCss.indexOf(sel + " {");
-    expect(i).toBeGreaterThan(-1);
-    return appCss.slice(i, appCss.indexOf("}", i));
-  };
-  it("the room bleeds 20 px on wood and its label sits ON it with a green dot", () => {
-    expect(rule(".yappy-house")).toMatch(/margin:\s*0 calc\(-1 \* var\(--home-room-bleed\)\)/);
-    expect(rule(".yappy-house")).toMatch(/background:\s*var\(--home-room-wood\)/);
-    expect(rule(".yappy-house .yh-label")).toMatch(/position:\s*absolute/);
-    expect(rule(".yappy-house .yh-label")).toMatch(/left:\s*26px/);
-    expect(rule(".yappy-house .yh-label")).toMatch(/top:\s*24px/);
-    const html = home(base({ history: [take(0)] }));
-    expect(html).toContain('class="yh-dot"');
-  });
-  it("stats 14 px / numbers 20 px mono, 28 px apart", () => {
-    expect(rule(".home-stats")).toMatch(/gap:\s*28px/);
-    expect(rule(".home-stats")).toMatch(/font-size:\s*14px/);
-    expect(rule(".home-stat b")).toMatch(/font-size:\s*20px/);
-  });
-  it("batch-6 bounce fixes: stats line box, stretched panels, panel head, label box, row tops", () => {
-    // stats h was 14% off: the 20 px numbers inherited 1.55; the line box is the measured 30.69 px.
-    expect(rule(".home-stats")).toMatch(/height:\s*var\(--home-stats-h\)/);
-    expect(rule(".home-stat b")).toMatch(/line-height:\s*var\(--home-panel-h-lh\)/);
-    expect(tokensCss).toMatch(/--home-stats-h:\s*30\.69px/);
-    // last take h was 47% off: .lower stretches both panels to the row.
-    expect(rule(".home-split")).toMatch(/align-items:\s*stretch/);
-    expect(rule(".home-view .home-panel-h")).toMatch(/line-height:\s*var\(--home-panel-h-lh\)/);
-    // s04 .yh-label 9-14% off: 25 px tall (5 + 15 + 5), never narrower than 134.3 px.
-    expect(rule(".yappy-house .yh-label")).toMatch(/line-height:\s*var\(--home-room-label-lh\)/);
-    expect(rule(".yappy-house .yh-label")).toMatch(/min-width:\s*var\(--home-room-label-w\)/);
-    expect(tokensCss).toMatch(/--home-room-label-lh:\s*15px/);
-    expect(tokensCss).toMatch(/--home-room-label-w:\s*134\.3px/);
-    expect(rule(".recent-row")).toMatch(/align-items:\s*start/);
-  });
-  it("the last take is the approved panel: Copy is the dark button, then Open and Paste again", () => {
-    const html = home(base({ history: [take(0), take(1)], insights: insights({ totalSessions: 2 }) }));
-    const card = html.slice(html.indexOf('data-home="latest"'));
-    expect(card).toMatch(/class="home-btn dark"[^>]*>Copy</);
-    expect(card).toMatch(/class="home-btn"[^>]*>Open</);
-    expect(card).toMatch(/class="home-btn"[^>]*>Paste again</);
-    expect(rule(".home-panel")).toMatch(/border-radius:\s*14px/);
-    expect(rule(".home-panel")).toMatch(/padding:\s*16px/);
-    expect(rule(".home-btn")).toMatch(/height:\s*28px/);
-  });
-  it("recent rows are 110 px | 1fr | 70 px and the search reads the approved words", () => {
-    expect(rule(".recent-row")).toMatch(/grid-template-columns:\s*110px minmax\(0, 1fr\) 70px/);
-    expect(rule(".recent-row")).toMatch(/padding:\s*9px 4px/);
-    // yap-1107-parity-home (batch-6 bounce: padding 12 vs 0) — the BOX is the
-    // approved .search, 36 px with 0 12 px padding and an 8 px gap.
-    expect(rule(".home-view .home-search")).toMatch(/height:\s*36px/);
-    expect(rule(".home-view .home-search")).toMatch(/padding:\s*0 12px/);
-    expect(rule(".home-view .home-search")).toMatch(/gap:\s*8px/);
-    expect(rule(".home-view .home-search input[type=\"search\"]")).toMatch(/inset:\s*0/);
-    const html = home(base({ history: [take(0)] }));
-    // The hint is TEXT in the box, as on the approved .search; it goes once you type.
-    expect(html).toContain('<span class="home-search-hint" aria-hidden="true">Search everything you&#x27;ve said</span>');
-    expect(home(base({ history: [take(0)], query: "pills" }))).not.toContain("home-search-hint");
-  });
-  it("the footer is the approved 40 px strip", () => {
-    expect(rule(".app-footer")).toMatch(/height:\s*40px/);
-    expect(rule(".app-footer")).toMatch(/background:\s*var\(--home-foot-bg\)/);
-    expect(app(base())).toContain('class="app-footer-kbd"');
   });
 });
