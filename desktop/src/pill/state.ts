@@ -36,6 +36,7 @@ import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
 import { REST_CAPSULE } from "./characterFit";
+import { BUBBLE_MAX_H_PX, BUBBLE_MAX_WIDTH_PX } from "./bubble";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
 export type MeetingMode = "none" | "recording" | "after";
@@ -111,9 +112,13 @@ export const CLOCK_REACH_PT = 12;
 export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
-/** The speech bubble's reserved row (12 px bold + 5 px padding + border). */
-export const BUBBLE_W = 200;
-export const BUBBLE_H = 26;
+/**
+ * The speech bubble's reserved row. yap-1106-yappy-states-and-motion: the
+ * bubble clamps to TWO lines (bubble.ts), so the row holds two — a 2-line
+ * bubble grows upward inside its own row and never over the hint above it.
+ */
+export const BUBBLE_W = BUBBLE_MAX_WIDTH_PX;
+export const BUBBLE_H = BUBBLE_MAX_H_PX;
 /** The bubble's tail + air between it and the capsule (YappyPill: y0 - 10). */
 export const BUBBLE_LIFT = 10;
 /** `.phase-strip` max-width (SIDE_DOCK_TEXT_PX) and its 11px/1.25 line. */

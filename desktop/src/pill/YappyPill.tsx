@@ -48,6 +48,10 @@ import { capsuleCentre, currentPillLayout } from "./state";
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
+// yap-1106-yappy-states-and-motion — the phase transition table, and the
+// speech bubble's queue / placement / fixed copy.
+import { phaseTransition, publishPhaseTransition } from "./transitions";
+import { bubbleCentreX, createBubbleQueue, handsFreeExplainLine, type BubbleQueue } from "./bubble";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 // `speechSeconds` = the backend's energy-VAD speech time for the take (db.rs
@@ -160,6 +164,18 @@ export default function YappyPill(
   voiceRef.current = voiceNow;
   useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
+  // so the 2-line clamp's overflow never clips the bubble's tail.
+  const bubbleTextRef = useRef<HTMLSpanElement | null>(null);
+  // The draw loop reads the gate through this (hands-free pose), and the gate
+  // effect speaks through `sayRef` (the queue lives in the mount-once scene).
+  const gateRef = useRef<LivePhase>(gate);
+  gateRef.current = gate;
+  const sayRef = useRef<(t: string) => void>(() => {});
+  const prevGateRef = useRef<LivePhase>(gate);
+  // The last hands-free explanation, so a `listening` (re)entry that lands
+  // after the gate change keeps it on screen instead of blanking the bubble.
+  const handsFreeLineRef = useRef<string>("");
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
   // hit-box is published from the draw loop below, not from a DOM rect.
@@ -283,7 +299,7 @@ export default function YappyPill(
     // when the time of day or the capsule's box changes
     let capGrad: CanvasGradient | null = null, capGradKey = "";
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean; handsFree: boolean }
 
     // the chick — front wing holds a pencil when noting / at the desk
     // FB-09 — the chick is drawn by sprites/art.ts so the snapshot test
@@ -382,7 +398,19 @@ export default function YappyPill(
       console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} recent=${takeMemory.recent.length}`);
       return picked.text;
     };
-    const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
+    // yap-1106-yappy-states-and-motion — ONE bubble at a time: a new line waits
+    // for the old one to leave (bubble.ts), timings from DURATION.
+    const bubbleText = bubbleTextRef.current ?? bubble;
+    const bubbleQ: BubbleQueue = createBubbleQueue(
+      {
+        setText: (t) => { bubbleText.textContent = t; },
+        setShown: (on) => { bubble.classList.toggle("show", on); },
+      },
+      { after: (ms, fn) => window.setTimeout(fn, ms), cancel: (id) => window.clearTimeout(id) },
+      { reduceMotion: reduce },
+    );
+    const say = (t: string) => bubbleQ.say(t);
+    sayRef.current = say;
 
     // PERM-C — a Record over the WHOLE phase union, so a variant added to
     // `LivePhase` without an accent here is a compile error, never a blank pill.
@@ -422,7 +450,7 @@ export default function YappyPill(
       phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
       if (p === "listening") {
-        moodT = 0; hop(1); say(""); resetLive(live);
+        moodT = 0; hop(1); say(gateRef.current === "listening-locked" ? handsFreeLineRef.current : ""); resetLive(live);
         if (isNewUser(takesSeen)) armGlance(live);
         takesSeen++; saveTakesSeen(takesSeen);
         afterLines = 0; takeOpen = true;
@@ -554,7 +582,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current, handsFree: gateRef.current === "listening-locked" });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       if (backingScale(devicePixelRatio) !== DPR) resize();   // moved to another display
@@ -617,10 +645,10 @@ export default function YappyPill(
         // yap-1106-one-pill — kept inside its own reserved row: never over the
         // character, the hint or the clock, and never outside the panel.
         const bb = lay.bubble;
-        bubble.style.left = (bw ? Math.max(bb.x + bw / 2, Math.min(bb.x + bb.w - bw / 2, cx)) : cx) + "px";
+        bubble.style.left = bubbleCentreX(cx, bw, bb, document.documentElement.dataset.dock) + "px";
         bubble.style.top = (bb.y + bb.h) + "px";
       } else {
-        bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
+        bubble.style.left = bubbleCentreX(cx, bw, { x: 4, w: W - 8 }, document.documentElement.dataset.dock) + "px";
         bubble.style.top = (y0 - 10) + "px";
       }
     }
@@ -668,12 +696,33 @@ export default function YappyPill(
       cancelAnimationFrame(raf); window.clearTimeout(tick);
       document.removeEventListener("visibilitychange", onVisibility);
       applyGateRef.current = () => {};
+      sayRef.current = () => {};
+      bubbleQ.dispose();
       ro.disconnect(); unsubs.forEach((u) => u());
     };
   }, []);
 
   // PERM-C — drive the canvas phase from the gate prop.
   useEffect(() => { applyGateRef.current(gate); }, [gate]);
+  // yap-1106-yappy-states-and-motion — every gate change runs ONE row of the
+  // transition table (published as --phase-dur/--phase-ease/--phase-delay on
+  // the stage), and entering hands-free says what hands-free means.
+  useEffect(() => {
+    const from = prevGateRef.current;
+    prevGateRef.current = gate;
+    if (from === gate) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const t = phaseTransition(from, gate, reduceMotion);
+    const stage = stageRef.current;
+    if (stage) publishPhaseTransition(stage, t);
+    console.info(`pill phase_transition from=${PHASE_ID[from]} to=${PHASE_ID[gate]} dur_ms=${t.durationMs} delay_ms=${t.delayMs} curve=${t.curve} reduce=${reduceMotion ? 1 : 0}`);
+    if (gate === "listening-locked") {
+      const line = handsFreeExplainLine(toneRef.current, chordLabel.trim() || DEFAULT_STOP_KEY);
+      handsFreeLineRef.current = line;
+      sayRef.current(line);
+      console.info(`pill hands_free_explain tone=${toneRef.current} chars=${line.length}`);
+    }
+  }, [gate, chordLabel]);
   // Y3-C — and the transcribing phase from the progress prop (float-main owns it).
   useEffect(() => { applyProgressRef.current(progress); }, [progress]);
 
@@ -735,7 +784,7 @@ export default function YappyPill(
       aria-label={phaseAccessibleName(gate, progress, chordLabel)}
     >
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
-      <div ref={bubbleRef} className="kami-bubble"></div>
+      <div ref={bubbleRef} className="kami-bubble"><span ref={bubbleTextRef} className="kami-bubble-text"></span></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
           Departure Mono, so neither costs the draw loop a repaint. Never a
