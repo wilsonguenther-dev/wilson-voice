@@ -1451,6 +1451,70 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 }
 .language-offer-actions .language-offer-add { background: var(--overlay-action); color: var(--overlay-text-on-action); }
 .language-offer-actions button:disabled { opacity: 0.6; cursor: default; }
+/* ── yap-fx-06 — meeting + dictation (pill/MeetingDictationCard.tsx) ──
+   Same surface as the language offer, because it is the same kind of thing: a
+   short sentence and two answers. The dot is the meeting's own colour
+   (--accent-meeting, the badge's rec-dot) so "this is about the meeting" reads
+   before the words do. It does not pulse: the badge already does, and a second
+   pulse would be noise. A failed stop gets the urgent text colour and stays. */
+.meeting-dictation-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.meeting-dictation {
+  box-sizing: border-box;
+  padding: 7px 9px 7px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: var(--overlay-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.meeting-dictation-line {
+  margin: 0;
+  font-weight: 600;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  text-wrap: pretty;
+}
+.meeting-dictation-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--accent-meeting));
+  transform: translateY(-1px);
+}
+.meeting-dictation.stop-failed .meeting-dictation-line { color: var(--overlay-text-urgent); }
+.meeting-dictation-actions { display: flex; gap: 6px; margin-top: 6px; }
+.meeting-dictation-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.meeting-dictation-actions button.is-primary { background: var(--overlay-action); color: var(--overlay-text-on-action); }
+.meeting-dictation-actions button:focus-visible { outline: 2px solid var(--overlay-text); outline-offset: 1px; }
+.meeting-dictation-actions button:disabled { opacity: 0.6; cursor: default; }
+.meeting-dictation-chord {
+  font: inherit;
+  font-size: 10px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
 /* ── WF-06 — "Backtrack caught" toast (pill/BacktrackCaughtCard.tsx) ──
    Same surface as the language offer; it carries a receipt, so the label is
    quiet and the headline (what was dropped / kept) is the strong line. */
@@ -1698,6 +1762,7 @@ html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
 html[data-one-pill="true"] .language-offer-wrap,
+html[data-one-pill="true"] .meeting-dictation-wrap,
 html[data-one-pill="true"][data-dock] .nudge-row {
   left: var(--card-x);
   top: calc(var(--card-y) + var(--card-stack-y, 0px));

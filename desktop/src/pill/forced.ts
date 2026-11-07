@@ -197,6 +197,25 @@ export interface MatrixOfferRow extends MatrixPhase {
 }
 
 /**
+ * yap-fx-06 — the meeting + dictation card's three matrix rows: an idle pill
+ * with `?meetingNotice=cancelled|ask|stop-failed` drawn over it (see
+ * `forcedMeetingNotice` in meetingDictation.ts). `offer` is empty: the
+ * language-offer detector does not apply to this card.
+ */
+export function matrixMeetingDictationScenes(): MatrixOfferRow[] {
+  const v = phaseVisual("idle");
+  return (["cancelled", "ask", "stop-failed"] as const).map((kind) => ({
+    phase: "idle" as const,
+    id: `meeting-dictation-${kind}`,
+    phaseId: PHASE_ID.idle,
+    query: `meetingNotice=${kind}`,
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  }));
+}
+
+/**
  * WF-06 — the "Backtrack caught" toast scene (`float.html?phase=idle&backtrack=1`,
  * the sample in `backtrackCaught.ts`). `offer` is empty: the matrix detector's
  * language-offer check does not apply to this card.

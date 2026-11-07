@@ -36,6 +36,7 @@ import {
   type MeetingStatus,
 } from "./meeting";
 import { callAudioChip } from "../meetings/callAudio";
+import { stopMeetingFromPill } from "./MeetingDictationCard";
 
 interface MeetingPillState {
   status: MeetingStatus;
@@ -163,7 +164,10 @@ export default function MeetingBadge({
         aria-label={`Stop meeting — recording for ${elapsedLabel(status)}`}
         onClick={(e) => {
           e.stopPropagation();
-          invoke("stop_meeting").catch(() => {});
+          // yap-fx-06 — the one-click Stop, always in the pill while a meeting
+          // records (dictating or not). A failure is never swallowed: it
+          // opens the stop-failed card (Try again / Quit Yap).
+          void stopMeetingFromPill("badge");
         }}
       >
         <svg viewBox="0 0 24 24" aria-hidden>

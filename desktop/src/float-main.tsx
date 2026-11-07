@@ -22,6 +22,8 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import MeetingDictationCard from "./pill/MeetingDictationCard";
+import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
@@ -86,6 +88,7 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixMeetingDictationScenes,
   matrixStyleChipScene,
   matrixRailScene,
   matrixLicenseScenes,
@@ -246,6 +249,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // yap-fx-06 — Esc during a meeting, the hands-free question, stop failed.
+    ...matrixMeetingDictationScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
@@ -655,6 +660,9 @@ function Float() {
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* yap-fx-06 — "Dictation cancelled — meeting still recording. Stop meeting?",
+          the once-per-meeting hands-free question, and a Stop that failed. */}
+      <MeetingDictationCard forced={FORCED ? forcedMeetingNotice(window.location.search) : null} />
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}

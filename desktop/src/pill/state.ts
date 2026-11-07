@@ -137,7 +137,14 @@ export const CARD_W = 284;
  * `pillLayout` as `card`; float.css places each one in that row. A card left
  * off this list is neither measured nor placed, so it is drawn over Yappy.
  */
-export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row"] as const;
+export const CARD_CLASSES = [
+  "copy-card",
+  "meeting-offer-wrap",
+  "language-offer-wrap",
+  "nudge-row",
+  // yap-fx-06 — "Dictation cancelled — meeting still recording" and friends.
+  "meeting-dictation-wrap",
+] as const;
 export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
 /** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
 export const CARD_STACK_VAR = "--card-stack-y";
