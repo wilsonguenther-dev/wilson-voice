@@ -931,9 +931,11 @@ impl TranscriptionManager {
         loop {
             let other = {
                 let mut slot = self.inner.engine.lock();
-                match slot.as_ref() {
-                    Some(e) if e.model_id != model_id => slot.take(),
-                    _ => None,
+                let differs = slot.as_ref().map_or(false, |e| e.model_id != model_id);
+                if differs {
+                    slot.take()
+                } else {
+                    None
                 }
             };
             if let Some(old) = other {
