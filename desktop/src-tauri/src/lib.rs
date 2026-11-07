@@ -2833,10 +2833,12 @@ fn await_in_flight_take(state: &AppState, wait: Duration) -> bool {
 const HUD_FPS: u64 = 20;
 const HUD_FRAME: std::time::Duration = std::time::Duration::from_millis(1_000 / HUD_FPS);
 
-/// SP-11 — how often the level thread re-reads whether the main window is
-/// shown. The visibility read is a main-thread round trip, so it runs at 2 Hz,
-/// not at HUD cadence.
-const LEVEL_MAIN_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
+/// SP-11 — every how many HUD frames the level thread re-reads whether the
+/// main window is shown (10 x 50 ms = 2 Hz). The visibility read is a
+/// main-thread round trip, so it never runs at HUD cadence. A frame count, not
+/// a second sub-second timer: the level thread keeps its one HUD_FRAME wait
+/// (the YV81 timer census in tests/long_take_budget.rs stays unchanged).
+const LEVEL_MAIN_RECHECK_FRAMES: u32 = 10;
 
 /// SP-11 — the windows one `audio_level` frame goes to. The float pill always
 /// gets it; the main window (the Home habitat) only while it is visible, so a
@@ -3187,13 +3189,14 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
                 // WF-10 — redraw the pill when the take moves to another mic.
                 let mut mic_switch_seen = record::mic_switch_seq();
                 // SP-11 — the main window's copy rides a cached visibility
-                // read, refreshed every LEVEL_MAIN_RECHECK.
+                // read, refreshed every LEVEL_MAIN_RECHECK_FRAMES frames.
                 let mut main_visible = main_window_shown(&app_lv);
-                let mut main_checked = std::time::Instant::now();
+                let mut frames_since_check: u32 = 0;
                 loop {
-                    if main_checked.elapsed() >= LEVEL_MAIN_RECHECK {
+                    frames_since_check += 1;
+                    if frames_since_check >= LEVEL_MAIN_RECHECK_FRAMES {
                         main_visible = main_window_shown(&app_lv);
-                        main_checked = std::time::Instant::now();
+                        frames_since_check = 0;
                     }
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     emit_audio_level(&app_lv, v, main_visible);
@@ -14426,7 +14429,7 @@ mod tests {
             super::audio_level_targets(true).to_vec(),
             vec!["float", "main"]
         );
-        assert!(super::LEVEL_MAIN_RECHECK > super::HUD_FRAME);
+        assert!(super::LEVEL_MAIN_RECHECK_FRAMES > 1);
     }
 
     /// yap-fx-07 — an orphaned capture spill a mid-session abort left in the
