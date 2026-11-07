@@ -54,10 +54,13 @@ describe("Dictionary walk row D1: no engine jargon above the form", () => {
 });
 
 describe("Dictionary walk row D2: one add action on an empty dictionary", () => {
-  it("renders the empty marker and exactly one button, the form's Add", () => {
+  it("renders the empty marker and exactly one add-a-word button, the form's Add (plus the separate suggested-words action)", () => {
     const html = render(<Dictionary />, base());
     expect(html).toContain('data-empty-state="dictionary"');
-    expect(buttons(html)).toEqual(["Add"]);
+    // yap-1106-vocab-bias: "Add suggested words" is a bulk action for everyone, not a
+    // second way to add one word, so the D2 rule (one add action) still holds.
+    expect(buttons(html)).toEqual(["Add", "Add suggested words"]);
+    expect(buttons(html).filter((b) => b === "Add")).toHaveLength(1);
     expect(html).not.toContain("Add a word");
   });
 });
@@ -96,7 +99,7 @@ describe("Dictionary layout: controls first, contained list, pinned footer", () 
   });
   it("the add row stays one line at every width (overrides the narrow-width stack)", () => {
     const html = render(<Dictionary />, base());
-    expect(html).toMatch(/class="dict-add" style="grid-template-columns:minmax\(0, 1fr\) minmax\(0, 1fr\) auto"/);
+    expect(html).toMatch(/class="dict-add" style="grid-template-columns:minmax\(0, 1fr\) minmax\(0, 1fr\) auto auto"/);
   });
   it("filterDictionary matches the word or its spelling, case-insensitively", () => {
     expect(filterDictionary(words, "").length).toBe(2);
