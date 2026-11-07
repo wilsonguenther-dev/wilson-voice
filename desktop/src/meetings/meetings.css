@@ -192,6 +192,12 @@
 .live-track li:last-child { opacity: 1; }
 .live-transcript-wait { opacity: 0.7; margin-top: 4px; }
 
+/* yap-1106 · "Notes written in the cloud" / "on this Mac" under the notes heading. */
+.meeting-notes-route {
+  margin: 0 0 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
 /* yap-1106 — the export menu: a trigger and a small list beneath it. The list
    row's actions are absolutely positioned, so the menu opens downward from
    its trigger and stays above the next row. */
