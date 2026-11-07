@@ -4,8 +4,10 @@
  * PNGs of the round-two Home at 900 and 1400 px window heights, plus the
  * structural checks the item's acceptance names:
  *
- *   - the room's scale is a whole number (3, 4 or 5) and its stage is exactly
- *     128 x scale CSS px tall, filling the main column's width;
+ *   - the room's scale is a whole number (2, 3 or 4) and its stage is exactly
+ *     160 x scale CSS px tall, filling the main column's width;
+ *   - yap-1106-fb-24: the wooden pixel frame is on all four sides, the brass
+ *     pegs at the corners and the 28 px plate centred, nothing clipped;
  *   - the window never scrolls; only .content does (overscroll contained);
  *   - scrolling .content to the end moves neither the sidebar nor the footer;
  *   - Home ends: at most 5 recent rows, then the "See all" row; no
@@ -65,9 +67,29 @@ const MEASURE = String.raw`(async () => {
   const side = q(".sidebar"), foot = q("[data-app-footer]");
   if (!house || !stage || !content || !side || !foot) return { bad: ["missing shell parts"] };
   const scale = Number(house.dataset.roomScale);
-  if (![3, 4, 5].includes(scale)) bad.push("room scale " + house.dataset.roomScale);
+  // homeLayout: ROOM 320 x 160, whole-number scales 4 / 3 / 2 (the layered studio).
+  if (![2, 3, 4].includes(scale)) bad.push("room scale " + house.dataset.roomScale);
   const sr = stage.getBoundingClientRect();
-  if (Math.abs(sr.height - 128 * scale) > 0.5) bad.push("stage height " + sr.height + " != " + 128 * scale);
+  if (Math.abs(sr.height - 160 * scale) > 0.5) bad.push("stage height " + sr.height + " != " + 160 * scale);
+  // yap-1106-fb-24 — the wooden pixel frame, sampled from the canvas backing store:
+  // the room is gridded "contain" at an integer cell, centred; each art px is one
+  // cell x cell square. Frame visible on all four sides, plate centred, nothing clipped.
+  const g2 = stage.getContext("2d");
+  const cell = Math.max(1, Math.min(Math.floor(stage.width / 320), Math.floor(stage.height / 160)));
+  const ox = Math.floor((stage.width - 320 * cell) / 2), oy = Math.floor((stage.height - 160 * cell) / 2);
+  if (ox < 0 || oy < 0) bad.push("room clipped ox=" + ox + " oy=" + oy);
+  const art = (x, y) => {
+    const d = g2.getImageData(ox + x * cell + (cell >> 1), oy + y * cell + (cell >> 1), 1, 1).data;
+    return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+  };
+  const want = [
+    [40, 0, "#3a2418", "top edge"], [0, 80, "#3a2418", "left edge"], [40, 159, "#2a1a10", "bottom edge"], [319, 80, "#2a1a10", "right edge"],
+    [3, 3, "#e8c86a", "top-left peg"], [317, 3, "#e8c86a", "top-right peg"], [3, 157, "#e8c86a", "bottom-left peg"], [317, 157, "#e8c86a", "bottom-right peg"],
+    [146, 155, "#f0d27a", "plate left"], [173, 155, "#f0d27a", "plate right"],
+  ];
+  if (g2) for (const [x, y, c, what] of want) { const got = art(x, y); if (got !== c) bad.push("frame " + what + " " + got + " != " + c); }
+  else bad.push("no 2d stage");
+  if (g2 && (art(145, 155) === "#f0d27a" || art(174, 155) === "#f0d27a")) bad.push("plate not 28 px");
   const frame = q(".yh-frame").getBoundingClientRect();
   const col = content.getBoundingClientRect();
   if (frame.width < col.width - 60) bad.push("room not full width " + frame.width + " of " + col.width);

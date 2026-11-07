@@ -58,7 +58,10 @@ function placeCapsule(phase: LivePhase, meeting: MeetingMode, dock: FitDock, siz
     const cap = { x: PANEL_MARGIN, y: PANEL_MARGIN, w: s.w, h: s.h };
     return { cap, panel: { w: s.w + 2 * PANEL_MARGIN, h: s.h + 2 * PANEL_MARGIN } };
   }
-  const layout = pillLayout({ phase, meeting, dock: dock === "top" ? "bottom" : dock });
+  // yap-1106-pill-vertical-dock-world — on a left / right dock Yappy's layout
+  // box is the tall shell (vdock.ts, proven by vdock.test.ts); the horizontal
+  // capsule is checked here inside the horizontal layout's panel.
+  const layout = pillLayout({ phase, meeting, dock: "bottom" });
   const c = capsuleCentre(layout, size.w);
   const y = c.y - size.h / 2;
   const cap = { x: c.x - size.w / 2, y: dock === "top" ? layout.panel.h - (y + size.h) : y, w: size.w, h: size.h };
@@ -118,6 +121,9 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
     const failures: string[] = [];
     let cases = 0;
     for (const name of PILL_CHARACTERS) for (const phase of ALL_LIVE_PHASES) for (const dock of FIT_DOCKS) for (const meeting of MEETINGS) {
+      // yap-1107-one-pill-during-meeting — a resting recording meeting draws the
+      // meeting scene AS the pill: no sky capsule is painted, so there is none to fit.
+      if (meeting === "recording" && RESTING_PHASES.has(phase)) continue;
       const tiers = RESTING_PHASES.has(phase) ? [1] : [...OPEN_TIERS];
       for (const tier of tiers) for (const dpr of DPRS) {
         const size = capsuleSize(phase, tier);

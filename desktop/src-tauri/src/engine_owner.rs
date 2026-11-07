@@ -833,10 +833,12 @@ impl HelperEngine {
         let started = Instant::now();
         publish(EngineHealth::Busy, "job_started", "decode");
         running.store(id, Ordering::Release);
-        let sent = send_line(
-            &process.stdin,
-            &AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed),
-        );
+        // yap-1106-sp-04 — a meeting/recovery lease runs this on a thread in
+        // the background band; the helper decodes that request there too.
+        let mut request =
+            AsrRequest::transcribe(id, &path.to_string_lossy(), language, bias_prompt, timed);
+        request.background = crate::asr_protocol::current_thread_background();
+        let sent = send_line(&process.stdin, &request);
         // Err((message, what happens to the helper)).
         let outcome: Result<AsrResponse, (String, AfterFailure)> = match sent {
             Err(e) => Err((e, AfterFailure::Kill)),
@@ -2715,6 +2717,14 @@ mod engine_owner_tests {
                     }
                     samples += 1;
                     std::thread::sleep(Duration::from_millis(2));
+                }
+                // One last look after the decode returned: on a loaded CI
+                // runner the 2 ms sleep can overshoot the whole window between
+                // the kill and `stop`, so the loop may never have seen the
+                // stuck helper gone. Observed here is still observed AFTER the
+                // kill, so the deadline bounds below stay honest.
+                if first_gone_at.is_none() && !mine(&before).contains(&first) {
+                    first_gone_at = Some(Instant::now());
                 }
                 (max_helpers, max_live, samples, first_gone_at)
             })

@@ -43,7 +43,8 @@ describe("pill/state — one pill, one layout", () => {
   it("no_slot_overlaps_the_character_or_another_slot", () => {
     every((l) => {
       const slots = [l.bubble, l.hint, l.clock, l.progress].filter((b): b is NonNullable<typeof b> => b !== null);
-      for (const s of slots) expect(boxesOverlap(s, l.char)).toBe(false);
+      // A resting meeting draws the scene AS the character: that clock is the pill.
+      for (const s of slots) if (!(l.sceneCharacter && s === l.clock)) expect(boxesOverlap(s, l.char)).toBe(false);
       for (let i = 0; i < slots.length; i++) for (let j = i + 1; j < slots.length; j++) {
         expect(boxesOverlap(slots[i], slots[j])).toBe(false);
       }
@@ -66,40 +67,55 @@ describe("pill/state — one pill, one layout", () => {
       const boxes = [l.char, l.bubble, l.hint, ...(l.clock ? [l.clock] : []), ...(l.progress ? [l.progress] : [])];
       expect(l.card).toBeNull();
       const u = unionBox(boxes);
-      expect(u.x).toBeCloseTo(PANEL_MARGIN, 5);
+      // yap-1106-pill-vertical-dock-world — a side dock is flush to the screen
+      // edge: no margin on that side, PANEL_MARGIN on the inner side.
+      const side = l.dock !== "bottom";
+      expect(u.x).toBeCloseTo(l.dock === "left" ? 0 : PANEL_MARGIN, 5);
       expect(u.y).toBeCloseTo(PANEL_MARGIN, 5);
-      expect(l.panel.w).toBe(Math.ceil(u.w + 2 * PANEL_MARGIN));
+      expect(l.panel.w).toBe(Math.ceil(u.w + (side ? 1 : 2) * PANEL_MARGIN));
       expect(l.panel.h).toBe(Math.ceil(u.h + 2 * PANEL_MARGIN));
     });
   });
 
   it("bottom_dock_puts_the_clock_in_yappys_trailing_slot_not_under_him", () => {
-    const l = pillLayout({ phase: "idle", meeting: "recording", dock: "bottom" });
+    const l = pillLayout({ phase: "listening", meeting: "recording", dock: "bottom" });
     expect(l.clock!.x).toBeGreaterThanOrEqual(l.char.x + l.char.w);
     // vertically centred on him: a slot of the pill, never a second capsule below it
     expect(l.clock!.y + l.clock!.h / 2).toBeCloseTo(l.char.y + l.char.h / 2, 5);
     expect(l.clock!.y).toBeLessThan(l.char.y + l.char.h);
   });
 
-  it("side_docks_keep_the_clock_and_hint_flush_to_yappys_edge", () => {
+  it("side_docks_put_the_tall_shell_flush_and_every_slot_inward", () => {
+    // yap-1106-pill-vertical-dock-world — the shell touches the screen edge
+    // (no margin on that side) and the clock, hint and bubble open inward.
     for (const phase of ["idle", "listening-locked"] as const) {
       const left = pillLayout({ phase, meeting: "recording", dock: "left" });
-      expect(left.char.x).toBe(PANEL_MARGIN);
-      expect(left.clock!.x).toBe(left.char.x);
-      expect(left.hint.x).toBe(left.char.x);
+      expect(left.char.x).toBe(0);
+      expect(left.char.w).toBeLessThanOrEqual(64);
+      for (const b of [left.clock!, left.hint, left.bubble]) expect(b.x).toBeGreaterThanOrEqual(left.char.x + left.char.w);
+      expect(layoutProblems(left)).toEqual([]);
       const right = pillLayout({ phase, meeting: "recording", dock: "right" });
-      const edge = right.panel.w - PANEL_MARGIN;
-      expect(right.char.x + right.char.w).toBeCloseTo(edge, 5);
-      expect(right.clock!.x + right.clock!.w).toBeCloseTo(edge, 5);
-      expect(right.hint.x + right.hint.w).toBeCloseTo(edge, 5);
+      expect(right.char.x + right.char.w).toBe(right.panel.w);
+      expect(right.char.w).toBeLessThanOrEqual(64);
+      for (const b of [right.clock!, right.hint, right.bubble]) expect(b.x + b.w).toBeLessThanOrEqual(right.char.x);
+      expect(layoutProblems(right)).toEqual([]);
     }
   });
 
   it("the_hands_free_hint_is_never_drawn_over_yappys_face", () => {
     for (const dock of BAR_DOCKS) {
       const l = pillLayout({ phase: "listening-locked", meeting: "recording", dock });
-      expect(l.hint.y + l.hint.h).toBeLessThanOrEqual(l.char.y);
-      expect(l.bubble.y + l.bubble.h).toBeLessThanOrEqual(l.char.y);
+      if (dock === "bottom") {
+        expect(l.hint.y + l.hint.h).toBeLessThanOrEqual(l.char.y);
+        expect(l.bubble.y + l.bubble.h).toBeLessThanOrEqual(l.char.y);
+      } else {
+        // a side dock: beside the tall shell, on the side that faces the screen
+        for (const b of [l.hint, l.bubble]) {
+          expect(boxesOverlap(b, l.char)).toBe(false);
+          if (dock === "left") expect(b.x).toBeGreaterThanOrEqual(l.char.x + l.char.w);
+          else expect(b.x + b.w).toBeLessThanOrEqual(l.char.x);
+        }
+      }
     }
   });
 
@@ -117,7 +133,9 @@ describe("pill/state — one pill, one layout", () => {
     for (const dock of BAR_DOCKS) {
       const l = pillLayout({ phase: "transcribing", meeting: "recording", dock });
       expect(l.progress).not.toBeNull();
-      expect(l.progress!.y).toBeGreaterThanOrEqual(l.char.y + l.char.h);
+      // under him at the bottom dock; beside the tall shell, inward, on a side dock
+      if (dock === "bottom") expect(l.progress!.y).toBeGreaterThanOrEqual(l.char.y + l.char.h);
+      else expect(boxesOverlap(l.progress!, l.char)).toBe(false);
       expect(pillLayout({ phase: "listening", meeting: "none", dock }).progress).toBeNull();
     }
   });

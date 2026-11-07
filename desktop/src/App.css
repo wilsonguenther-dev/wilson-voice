@@ -274,12 +274,35 @@ body:has(.float-pill),
   letter-spacing: -0.02em;
 }
 
+/* yap-1107-sidebar-version-line-fits — the brand text column may shrink to
+   the rail (a flex item floors at its min-content width otherwise, which is
+   the whole nowrap version line, and pushed test-build versions past the
+   sidebar's right edge). Test builds only: the shipped one-line tag keeps
+   its original layout pixel for pixel (acceptance 3). */
+.brand-text:has(> .brand-tag-build) {
+  min-width: 0;
+}
+
 .brand-tag {
   font-family: var(--mono);
   white-space: nowrap;
-  font-size: 0.62rem;
   font-size: 0.72rem;
   color: var(--muted);
+}
+
+/* Test builds only (a version with a suffix): "v0.9.4-loop3.8" on its own
+   line, then "local · private". Each line clips to the column; only the
+   version can ever be long enough to need the ellipsis. Single class on
+   purpose, so the narrow strip's `.brand-tag { display: none }` still wins. */
+.brand-tag-build {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-tag-build > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav {
@@ -293,6 +316,10 @@ body:has(.float-pill),
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* yap-1107-sidebar-version-line-fits — label and count never touch, and a
+     long label clips inside the rail instead of shoving the count out. */
+  gap: 8px;
+  min-width: 0;
   text-align: left;
   border: none;
   background: transparent;
@@ -300,6 +327,17 @@ body:has(.float-pill),
   border-radius: 10px;
   color: var(--muted);
   font-weight: 550;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-item .count {
+  flex: none;
 }
 
 .nav-item.active {
@@ -373,6 +411,18 @@ button.banner {
   display: block;
   font-size: 0.8rem;
   opacity: 0.85;
+}
+
+/* yap-1107-secure-input-own-field-quiet — Yap's OWN masked key field holds
+   Secure Input while it has focus. The user caused it and blurring the field
+   ends it, so this is deliberately NOT a `.banner`: no tint, no border, no
+   red, muted text, one line. */
+.secure-input-quiet {
+  margin: 0 24px 8px;
+  padding: 4px 14px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* YV44 — an update is available. Informational + consent-based: it carries its
@@ -506,6 +556,8 @@ code {
 
 .dictate-side {
   width: 100%;
+  min-width: 0;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1630,6 +1682,15 @@ button.star.on {
   color: var(--muted);
 }
 
+/* yap-1106-chatter-setting — "Yappy talks": the take count that drives the
+   quieting sits right after its one plain sentence, set apart by weight only. */
+.chatter-explain .chatter-count {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* yap-1106-curse-setting — the Badass-only curse toggle sits under the voice
    cards, one step below them. */
 .curse-setting {
@@ -2157,6 +2218,17 @@ button.star.on {
   flex: 1 0 100%;
 }
 
+/* yap-1107-sidebar-version-line-fits — an error line or a long model name
+   wraps inside the rail instead of running past it. */
+.sidebar-foot .model-ribbon {
+  min-width: 0;
+}
+
+.sidebar-foot .model-ribbon-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* In the narrow one-row strip (see the H5 block) the ribbon has a full-width
    row of its own, so it goes back to one line: track, text, Retry. This sits
    AFTER the sidebar-width rules above so it wins at equal specificity. */
@@ -2301,42 +2373,29 @@ button.star.on {
 }
 .yappy-house .yh-frame {
   position: relative;
-  /* A column narrower than the 3x room (576 px) crops the room's sides
-     evenly instead of drawing it at a fraction. */
+  /* yap-1106-studio-room — the wooden frame is drawn INSIDE the picture (the
+     approved home.html section 5 frame, at the room's whole-number scale), so
+     this box adds no wood, padding or rounded mat of its own. A column narrower
+     than the 2x studio (640 px) crops the sides evenly, never a fraction. */
   display: flex;
   justify-content: center;
   overflow: hidden;
-  background: var(--retro-wood);
-  border-radius: 20px;
-  padding: 12px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.3) inset,
-    0 -3px 0 var(--retro-wood-deep) inset,
-    var(--elevation-house);
-}
-.yappy-house .yh-frame::after {
-  content: "";
-  position: absolute;
-  inset: 12px;
-  border-radius: 10px;
-  box-shadow: 0 0 0 3px var(--retro-wood-deep) inset;
-  pointer-events: none;
+  padding: 0;
 }
 .yappy-house .yh-stage {
   display: block;
   flex: none;
   /* yap-1106-home-full-width-room — full column width; the HEIGHT is set
-     inline by YappyHouse to 128 x the whole-number scale (5x / 4x / 3x), so the
-     art is drawn at exactly that many CSS px per art px with the side margin in
-     the room's own wall shade. Never a fraction, never letterboxed vertically.
+     inline by YappyHouse to 160 x the whole-number scale (4x / 3x / 2x), so the
+     studio is drawn at exactly that many CSS px per art px, centred, with the
+     page showing beside it. Never a fraction, never letterboxed vertically.
      object-fit is READ by YappyHouse (contain = the whole room). */
   width: 100%;
-  min-width: 576px;
+  min-width: 640px;
   object-fit: contain;
-  border-radius: 8px;
   /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
-  background: var(--retro-lcd-backdrop);
+  background: transparent;
 }
 /* The room's label: Yappy's live mood, or the meeting clock while one records. */
 .yappy-house .yh-label {
@@ -2348,18 +2407,6 @@ button.star.on {
 .yappy-house .yh-meeting {
   color: hsl(var(--accent-meeting));
   font-variant-numeric: tabular-nums;
-}
-@media (prefers-color-scheme: dark) {
-  .yappy-house .yh-frame {
-    background: var(--retro-wood-shadow);
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.14) inset,
-      0 -3px 0 var(--retro-wood-darkest) inset,
-      var(--elevation-house);
-  }
-  .yappy-house .yh-frame::after {
-    box-shadow: 0 0 0 3px var(--retro-wood-darkest) inset;
-  }
 }
 
 /* ── YP3 · Licensing — the chip, the License tab, the purchase sheet ──────────
@@ -3954,4 +4001,95 @@ button.primary.big {
   .news-chips button.chip {
     transition: none;
   }
+}
+
+/* yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced. */
+.news-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.news-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.news-advanced > summary h3 {
+  display: inline;
+}
+.news-advanced > summary::after {
+  content: " +";
+  color: var(--muted);
+}
+.news-advanced[open] > summary::after {
+  content: " −";
+}
+.news-quote-key {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.news-quote-key h4 {
+  margin: 0;
+}
+.news-quote-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.news-quote-providers legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+.news-quote-field {
+  display: grid;
+  gap: var(--space-1);
+}
+.news-quote-field input {
+  font-family: var(--font-mono);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+}
+.news-quote-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* yap-1106-news-refresh-setting — Settings → Yappy News → "How often": four
+   plain radio rows, the floor/quiet sentence, then the last refresh time with
+   "Refresh now" beside it. Native radios: arrow keys move, no motion. */
+.news-cadence {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.news-cadence legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+.news-cadence legend h3 {
+  margin: 0;
+}
+.news-cadence-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.news-cadence-option input:disabled + span {
+  opacity: 0.6;
+}
+.news-cadence-last {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.news-cadence-last p {
+  margin: 0;
 }

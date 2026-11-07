@@ -29,8 +29,23 @@
 //!   minute; its docs page is script-rendered and was not re-read here, so the
 //!   free-tier terms must be confirmed before launch. We call each ticker at
 //!   most once per 30 min (the design's "quote check every 30 min"), 12 per
-//!   refresh, 60 an hour, and every quote is marked delayed. With no key the
-//!   quote source is skipped with `error=no_key` and makes no request.
+//!   refresh, 60 an hour, and every quote is marked delayed.
+//! * **Alpha Vantage** (yap-1106-fb-14-news-quote-key) — `www.alphavantage.co/query?function=GLOBAL_QUOTE`.
+//!   Its API takes the key only as the `apikey` query parameter, so that URL
+//!   carries the key — it goes to `www.alphavantage.co` and nowhere else, and
+//!   no feed URL is ever logged. Free plan: 25 calls a day, so Yap sends at
+//!   most ONE quote call an hour (24 a day), each ticker at most every 30 min.
+//!
+//! ## Quote tiers (yap-1106-fb-14-news-quote-key)
+//!
+//! Nothing needs a key. With no key ([`QuoteFeed::Free`]) the built-in free
+//! sources serve tickers: each ticker becomes a Google News headline search
+//! (`"<TICKER> stock"`) inside the same Google limits, and the quote source
+//! sends no request (`news quotes tier=free`). With the user's own key
+//! (Settings → Yappy News → Advanced, stored in the Keychain by
+//! [`super::quote_key`]) prices come from that provider at that provider's
+//! limit, never more than once per ticker per 30 min. The key travels only to
+//! the provider host ([`QuoteFeed::host`]); `QuoteFeed`'s `Debug` redacts it.
 //!
 //! A 429 from any source backs that source off for an hour.
 //!
@@ -136,6 +151,9 @@ pub enum FeedError {
     TooLarge,
     BadBody,
     NoKey,
+    // yap-1106-fb-14-news-quote-key: the provider refused the user's key
+    // (401/403, or Alpha Vantage's "Error Message" body).
+    BadKey,
     Client(String),
 }
 
@@ -150,6 +168,7 @@ impl FeedError {
             FeedError::TooLarge => "too_large",
             FeedError::BadBody => "bad_body",
             FeedError::NoKey => "no_key",
+            FeedError::BadKey => "bad_key",
             FeedError::Client(_) => "client",
         }
     }
@@ -165,7 +184,11 @@ impl FeedError {
             }
             FeedError::TooLarge => "the news feed sent more than we read".into(),
             FeedError::BadBody => "the news feed sent something we could not read".into(),
-            FeedError::NoKey => "stock quotes need a quote key in Settings".into(),
+            FeedError::NoKey => "stock prices need a quote key in Settings".into(),
+            FeedError::BadKey => {
+                "the quote provider did not accept your key; check it in Settings → Yappy News → Advanced"
+                    .into()
+            }
             FeedError::Client(_) => "the network is not available to Yap".into(),
         }
     }
@@ -311,7 +334,18 @@ impl RateLimiter {
 
     /// May `source` be asked for `query` at `now_ms`?
     pub fn check(&self, source: Source, query: &str, now_ms: i64) -> Result<(), Throttle> {
-        let lim = source.limits();
+        self.check_with(source, source.limits(), query, now_ms)
+    }
+
+    /// [`Self::check`] against explicit limits — the quote source's limits
+    /// depend on the provider ([`QuoteFeed::limits`]).
+    pub fn check_with(
+        &self,
+        source: Source,
+        lim: Limits,
+        query: &str,
+        now_ms: i64,
+    ) -> Result<(), Throttle> {
         if self
             .backoff_until
             .get(&source)
@@ -333,6 +367,11 @@ impl RateLimiter {
             return Err(Throttle::HourCap);
         }
         Ok(())
+    }
+
+    /// When `query` was last sent to `source`, if ever.
+    pub fn last_sent(&self, source: Source, query: &str) -> Option<i64> {
+        self.last.get(&(source, query.to_string())).copied()
     }
 
     /// Record a request that was sent (whatever it answered).
@@ -366,6 +405,10 @@ pub struct Story {
     /// Hacker News points and comments.
     pub points: Option<i64>,
     pub comments: Option<i64>,
+    /// yap-1106-news-explain — the item's description as one line of plain
+    /// text ([`snippet_from_html`]); the explain step checks Yappy's line
+    /// against it. Hacker News has none.
+    pub snippet: Option<String>,
 }
 
 /// One stock quote. Always marked delayed (design rule: "Markets show
@@ -442,6 +485,144 @@ pub fn quote_url(symbol: &str) -> Option<String> {
     Url::parse_with_params("https://finnhub.io/api/v1/quote", &[("symbol", symbol)])
         .ok()
         .map(|u| u.to_string())
+}
+
+/// The only host a Finnhub key is ever sent to.
+pub const FINNHUB_HOST: &str = "finnhub.io";
+/// The only host an Alpha Vantage key is ever sent to.
+pub const ALPHA_VANTAGE_HOST: &str = "www.alphavantage.co";
+
+/// Alpha Vantage `GLOBAL_QUOTE` URL. The key rides in `apikey` (the API has no
+/// header option); this URL goes to [`ALPHA_VANTAGE_HOST`] only, never a log.
+pub fn alpha_vantage_quote_url(symbol: &str, key: &str) -> Option<String> {
+    Url::parse_with_params(
+        "https://www.alphavantage.co/query",
+        &[
+            ("function", "GLOBAL_QUOTE"),
+            ("symbol", symbol),
+            ("apikey", key),
+        ],
+    )
+    .ok()
+    .map(|u| u.to_string())
+}
+
+/// yap-1106-fb-14-news-quote-key — which quote feed a refresh uses.
+///
+/// `Free` is the default and needs no key: tickers become Google News headline
+/// searches and no price request is made. The keyed variants hold the user's
+/// own key; `Debug` prints `<redacted>`, so a `{:?}` can never log it.
+#[derive(Clone, PartialEq, Eq)]
+pub enum QuoteFeed {
+    Free,
+    Finnhub(String),
+    AlphaVantage(String),
+}
+
+impl std::fmt::Debug for QuoteFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuoteFeed::Free => f.write_str("Free"),
+            QuoteFeed::Finnhub(_) => f.write_str("Finnhub(<redacted>)"),
+            QuoteFeed::AlphaVantage(_) => f.write_str("AlphaVantage(<redacted>)"),
+        }
+    }
+}
+
+impl QuoteFeed {
+    /// The pre-fb-14 call shape: a Finnhub key if one is given, else free.
+    pub fn finnhub_or_free(key: Option<&str>) -> Self {
+        match key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => QuoteFeed::Finnhub(k.to_string()),
+            None => QuoteFeed::Free,
+        }
+    }
+
+    /// The `tier=` value of the telemetry line.
+    pub fn tier(&self) -> &'static str {
+        match self {
+            QuoteFeed::Free => "free",
+            QuoteFeed::Finnhub(_) => "finnhub",
+            QuoteFeed::AlphaVantage(_) => "alpha_vantage",
+        }
+    }
+
+    /// The one host the key may travel to; `None` for the free tier.
+    pub fn host(&self) -> Option<&'static str> {
+        match self {
+            QuoteFeed::Free => None,
+            QuoteFeed::Finnhub(_) => Some(FINNHUB_HOST),
+            QuoteFeed::AlphaVantage(_) => Some(ALPHA_VANTAGE_HOST),
+        }
+    }
+
+    /// The provider's limit, never faster than one call per ticker per 30 min.
+    pub fn limits(&self) -> Limits {
+        match self {
+            QuoteFeed::Free | QuoteFeed::Finnhub(_) => Source::Quotes.limits(),
+            // 25 calls a day on the free plan: one an hour is 24 a day.
+            QuoteFeed::AlphaVantage(_) => Limits {
+                timeout: Duration::from_secs(6),
+                per_query_ms: THIRTY_MIN_MS,
+                per_hour: 1,
+                per_refresh: 1,
+            },
+        }
+    }
+
+    /// URL and headers for one ticker; `None` on the free tier (no request).
+    pub fn request(&self, symbol: &str) -> Option<(String, Vec<(&'static str, String)>)> {
+        match self {
+            QuoteFeed::Free => None,
+            QuoteFeed::Finnhub(key) => {
+                quote_url(symbol).map(|u| (u, vec![("X-Finnhub-Token", key.clone())]))
+            }
+            QuoteFeed::AlphaVantage(key) => {
+                alpha_vantage_quote_url(symbol, key).map(|u| (u, Vec::new()))
+            }
+        }
+    }
+
+    /// Parse the provider's answer for one ticker.
+    pub fn parse(&self, body: &str, symbol: &str) -> Result<Option<Quote>, FeedError> {
+        match self {
+            QuoteFeed::AlphaVantage(_) => parse_alpha_vantage_quote(body, symbol),
+            _ => parse_quote(body, symbol),
+        }
+    }
+}
+
+/// yap-1106-news-explain — a feed item's description as plain text: tags
+/// stripped, entities decoded, one line, at most
+/// [`super::explain::MAX_SNIPPET_CHARS`] characters. `None` when it is empty
+/// or only the headline again.
+pub fn snippet_from_html(html: &str, title: &str) -> Option<String> {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = decode_entities(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text: String = text
+        .chars()
+        .take(super::explain::MAX_SNIPPET_CHARS)
+        .collect();
+    if text.is_empty() || text.eq_ignore_ascii_case(title.trim()) {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// Decode the XML/HTML entities a feed uses.
@@ -554,10 +735,15 @@ pub fn parse_google_rss(body: &str, topic: &str, max: usize) -> Vec<Story> {
         let published_ms = tag_text(block, "pubDate")
             .and_then(|(_, d)| chrono::DateTime::parse_from_rfc2822(&d).ok())
             .map(|d| d.timestamp_millis());
-        let outlets = tag_text(block, "description")
-            .map(|(_, d)| d.matches("<li>").count())
+        let description = tag_text(block, "description").map(|(_, d)| d);
+        let outlets = description
+            .as_deref()
+            .map(|d| d.matches("<li>").count())
             .unwrap_or(0)
             .max(1);
+        let snippet = description
+            .as_deref()
+            .and_then(|d| snippet_from_html(d, &title));
         out.push(Story {
             source: Source::GoogleNews,
             topic: topic.to_string(),
@@ -568,6 +754,7 @@ pub fn parse_google_rss(body: &str, topic: &str, max: usize) -> Vec<Story> {
             published_ms,
             points: None,
             comments: None,
+            snippet,
         });
     }
     out
@@ -613,6 +800,7 @@ pub fn parse_hn(body: &str, topic: &str, max: usize) -> Result<Vec<Story>, FeedE
                 published_ms: h.created_at_i.map(|s| s * 1000),
                 points: h.points,
                 comments: h.num_comments,
+                snippet: None,
             })
         })
         .take(max)
@@ -652,9 +840,51 @@ pub fn parse_quote(body: &str, symbol: &str) -> Result<Option<Quote>, FeedError>
     }))
 }
 
+/// Parse an Alpha Vantage `GLOBAL_QUOTE` answer. An unknown symbol answers
+/// `{"Global Quote": {}}`: `Ok(None)`. Its over-limit answers are 200s with a
+/// `Note` or `Information` field: [`FeedError::RateLimited`]. A refused key
+/// answers `Error Message`: [`FeedError::BadKey`]. Never echoes the body.
+pub fn parse_alpha_vantage_quote(body: &str, symbol: &str) -> Result<Option<Quote>, FeedError> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| FeedError::BadBody)?;
+    if v.get("Note").is_some() || v.get("Information").is_some() {
+        return Err(FeedError::RateLimited);
+    }
+    if v.get("Error Message").is_some() {
+        return Err(FeedError::BadKey);
+    }
+    let g = v
+        .get("Global Quote")
+        .and_then(|g| g.as_object())
+        .ok_or(FeedError::BadBody)?;
+    let num = |k: &str| {
+        g.get(k)
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok())
+            .filter(|n| n.is_finite())
+    };
+    let Some(price) = num("05. price").filter(|p| *p > 0.0) else {
+        return Ok(None);
+    };
+    let prev_close = num("08. previous close").unwrap_or(0.0);
+    let change_pct = match num("10. change percent") {
+        Some(p) => p,
+        None if prev_close > 0.0 => (price - prev_close) / prev_close * 100.0,
+        None => 0.0,
+    };
+    Ok(Some(Quote {
+        symbol: symbol.to_string(),
+        price,
+        change_pct,
+        prev_close,
+        as_of_ms: None,
+        delayed: true,
+    }))
+}
+
 /// Running totals for one source in one refresh.
 struct Tally {
     source: Source,
+    limits: Limits,
     started: Instant,
     count: usize,
     requests: usize,
@@ -664,8 +894,13 @@ struct Tally {
 
 impl Tally {
     fn new(source: Source) -> Self {
+        Self::with_limits(source, source.limits())
+    }
+
+    fn with_limits(source: Source, limits: Limits) -> Self {
         Self {
             source,
+            limits,
             started: Instant::now(),
             count: 0,
             requests: 0,
@@ -708,17 +943,18 @@ fn fetch_one(
     now_ms: i64,
 ) -> Option<String> {
     let source = tally.source;
-    if tally.requests >= source.limits().per_refresh {
+    let limits = tally.limits;
+    if tally.requests >= limits.per_refresh {
         tally.throttled += 1;
         return None;
     }
-    if limiter.check(source, query, now_ms).is_err() {
+    if limiter.check_with(source, limits, query, now_ms).is_err() {
         tally.throttled += 1;
         return None;
     }
     limiter.note(source, query, now_ms);
     tally.requests += 1;
-    match http.get(source, url, headers, source.limits().timeout) {
+    match http.get(source, url, headers, limits.timeout) {
         Ok(body) => Some(body),
         Err(e) => {
             if e == FeedError::RateLimited {
@@ -731,13 +967,32 @@ fn fetch_one(
 }
 
 /// Fetch every source the prefs ask for. Makes NO request when [`gate`]
-/// refuses. `quote_key` is the user's quote-feed key, if any.
+/// refuses. `quote_key` is a Finnhub key, if any (see [`refresh_with`]).
 pub fn refresh(
     kv: &dyn SettingsKv,
     http: &dyn FeedHttp,
     limiter: &mut RateLimiter,
     now_ms: i64,
     quote_key: Option<&str>,
+) -> Result<FetchReport, Closed> {
+    refresh_with(
+        kv,
+        http,
+        limiter,
+        now_ms,
+        &QuoteFeed::finnhub_or_free(quote_key),
+    )
+}
+
+/// yap-1106-fb-14-news-quote-key — [`refresh`] with an explicit quote feed:
+/// the free tier (no key, tickers as headline searches) or the user's own
+/// provider key (prices at that provider's limit, key sent to its host only).
+pub fn refresh_with(
+    kv: &dyn SettingsKv,
+    http: &dyn FeedHttp,
+    limiter: &mut RateLimiter,
+    now_ms: i64,
+    quote: &QuoteFeed,
 ) -> Result<FetchReport, Closed> {
     let prefs = match gate(kv) {
         Ok(p) => p,
@@ -757,6 +1012,15 @@ pub fn refresh(
         .filter_map(|t| google_query(t).map(|q| (t.clone(), q.to_string())))
         .collect();
     searches.extend(prefs.custom.iter().map(|c| (c.clone(), c.clone())));
+    // Free tier: no key, so each ticker is a headline search on a free source.
+    if *quote == QuoteFeed::Free {
+        searches.extend(
+            prefs
+                .tickers
+                .iter()
+                .map(|t| (t.clone(), format!("{t} stock"))),
+        );
+    }
     for (topic, words) in &searches {
         let Some(url) = google_news_url(words) else {
             continue;
@@ -790,32 +1054,42 @@ pub fn refresh(
         }
     }
 
-    // Quotes: one call per ticker, only with a key.
-    let mut q = Tally::new(Source::Quotes);
+    // Quotes: one call per ticker, only with the user's own key.
+    let mut q = Tally::with_limits(Source::Quotes, quote.limits());
     if !prefs.tickers.is_empty() {
-        match quote_key.map(str::trim).filter(|k| !k.is_empty()) {
-            None => q.error = Some(FeedError::NoKey),
-            Some(key) => {
-                for sym in &prefs.tickers {
-                    let Some(url) = quote_url(sym) else {
-                        continue;
-                    };
-                    let headers = [("X-Finnhub-Token", key)];
-                    if let Some(body) =
-                        fetch_one(http, limiter, &mut q, sym, &url, &headers, now_ms)
-                    {
-                        match parse_quote(&body, sym) {
-                            Ok(Some(quote)) => {
-                                q.count += 1;
-                                report.quotes.push(quote);
-                            }
-                            Ok(None) => {}
-                            Err(e) => q.error = Some(e),
+        // Least recently fetched first, so a provider allowing one call an
+        // hour (Alpha Vantage) still walks every ticker in turn.
+        let mut order: Vec<&String> = prefs.tickers.iter().collect();
+        order.sort_by_key(|t| limiter.last_sent(Source::Quotes, t).unwrap_or(i64::MIN));
+        for sym in order.into_iter().filter(|_| quote.host().is_some()) {
+            let Some((url, headers)) = quote.request(sym) else {
+                continue;
+            };
+            let hdrs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            if let Some(body) = fetch_one(http, limiter, &mut q, sym, &url, &hdrs, now_ms) {
+                match quote.parse(&body, sym) {
+                    Ok(Some(found)) => {
+                        q.count += 1;
+                        report.quotes.push(found);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        if e == FeedError::RateLimited {
+                            limiter.back_off(Source::Quotes, now_ms);
                         }
+                        q.error = Some(e);
                     }
                 }
             }
         }
+        if matches!(q.error, Some(FeedError::Status { code: 401 | 403 })) {
+            q.error = Some(FeedError::BadKey);
+        }
+        log::info!(
+            "news quotes tier={} tickers={}",
+            quote.tier(),
+            prefs.tickers.len()
+        );
     }
 
     for t in [g, h, q] {
@@ -834,6 +1108,67 @@ pub fn refresh(
     Ok(report)
 }
 
+/// yap-1107-news-honours-cloud-key — set (to the attempt time, ms) the first
+/// time the gate opens and the connect refresh is started.
+pub const FIRST_REFRESH_KEY: &str = "news_first_refresh_at_ms";
+
+/// Is the connect refresh still owed? The gate is open (cloud on, switch on,
+/// one topic) and Yap has never refreshed nor started the connect refresh.
+pub fn first_refresh_due(kv: &dyn SettingsKv) -> bool {
+    gate(kv).is_ok()
+        && kv.kv_get(FIRST_REFRESH_KEY).is_none()
+        && kv.kv_get(news_prefs::LAST_REFRESH_KEY).is_none()
+}
+
+/// yap-1107-news-honours-cloud-key — the connect transition: the first time
+/// the gate opens (a cloud key saved, or the mode moved to the cloud, with a
+/// topic set) run exactly one refresh. `None` = nothing owed (gate closed, or
+/// the connect refresh already ran or started). The marker is written BEFORE
+/// the fetch, so a second read of the view (a re-render, a second event)
+/// never fetches again; a marker write failure fetches nothing (logged) rather
+/// than risk a fetch on every read.
+pub fn refresh_on_connect(
+    kv: &dyn SettingsKv,
+    http: &dyn FeedHttp,
+    limiter: &mut RateLimiter,
+    now_ms: i64,
+    quote: &QuoteFeed,
+) -> Option<Result<FetchReport, Closed>> {
+    if !first_refresh_due(kv) {
+        return None;
+    }
+    if let Err(e) = kv.kv_set(FIRST_REFRESH_KEY, &now_ms.to_string()) {
+        log::warn!("news first_refresh_failed reason=marker error=\"{e}\"");
+        return None;
+    }
+    log::info!("news first_refresh started=true");
+    let started = std::time::Instant::now();
+    let r = refresh_with(kv, http, limiter, now_ms, quote);
+    match &r {
+        Ok(rep) => log::info!(
+            "news first_refresh done requests={} stories={} ms={}",
+            rep.requests,
+            rep.stories.len(),
+            started.elapsed().as_millis()
+        ),
+        Err(why) => log::info!("news first_refresh skipped reason={}", why.tag()),
+    }
+    Some(r)
+}
+
+/// [`refresh_on_connect`] over the real network with the shared limiter.
+/// Blocking, like [`refresh_now`].
+pub fn refresh_on_connect_now(
+    kv: &dyn SettingsKv,
+    quote: &QuoteFeed,
+) -> Option<Result<FetchReport, Closed>> {
+    if !first_refresh_due(kv) {
+        return None;
+    }
+    let mut limiter = shared_limiter().lock().unwrap_or_else(|p| p.into_inner());
+    refresh_on_connect(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote)
+}
+
 /// The process's one limiter, so every caller shares the same budget.
 pub fn shared_limiter() -> &'static Mutex<RateLimiter> {
     static LIMITER: OnceLock<Mutex<RateLimiter>> = OnceLock::new();
@@ -845,6 +1180,13 @@ pub fn shared_limiter() -> &'static Mutex<RateLimiter> {
 pub fn refresh_now(kv: &dyn SettingsKv, quote_key: Option<&str>) -> Result<FetchReport, Closed> {
     let mut limiter = shared_limiter().lock().unwrap_or_else(|p| p.into_inner());
     refresh(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote_key)
+}
+
+/// [`refresh_with`] over the real network with the shared limiter. The app
+/// passes `quote_key::feed(kv, keychain)`. Blocking, like [`refresh_now`].
+pub fn refresh_now_with(kv: &dyn SettingsKv, quote: &QuoteFeed) -> Result<FetchReport, Closed> {
+    let mut limiter = shared_limiter().lock().unwrap_or_else(|p| p.into_inner());
+    refresh_with(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote)
 }
 
 #[cfg(test)]
@@ -1036,6 +1378,84 @@ mod tests {
         );
     }
 
+    /// yap-1107-news-honours-cloud-key — the byom route as `save_cloud_key`
+    /// leaves it: a CloudKey provider row, no notes/polish pick, and `mode`.
+    fn connect_cloud_key(kv: &MemKv, mode: crate::cloud_route::CloudMode) {
+        let s = ProviderSettings {
+            providers: vec![ProviderConfig::bundled(), ProviderConfig::cloud_key()],
+            notes_provider: String::new(),
+            polish_provider: String::new(),
+        };
+        model_providers::save(kv, &s).expect("save providers");
+        crate::cloud_route::CloudMode::save(kv, mode).expect("save mode");
+    }
+
+    #[test]
+    fn saved_cloud_key_opens_the_gate_and_refreshes_once_on_connect() {
+        use crate::cloud_route::CloudMode;
+        let kv = MemKv::default();
+        set_prefs(&kv, true, &["tech"], &[], &[]);
+        let http = FakeHttp {
+            google: Some(Ok(RSS.into())),
+            ..Default::default()
+        };
+        let mut lim = RateLimiter::new();
+        // Before the key: closed, nothing owed, nothing fetched.
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 1_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 0);
+
+        // The key is saved (save_cloud_key turns the mode to cloud_when_online).
+        connect_cloud_key(&kv, CloudMode::CloudWhenOnline);
+        assert!(gate(&kv).is_ok(), "a saved cloud key opens the gate");
+        assert!(first_refresh_due(&kv));
+        let r = refresh_on_connect(&kv, &http, &mut lim, 2_000, &QuoteFeed::Free)
+            .expect("the connect refresh is owed")
+            .expect("gate open");
+        assert_eq!(r.requests, 1);
+        assert_eq!(http.count(), 1);
+        assert_eq!(
+            kv.kv_get(FIRST_REFRESH_KEY).as_deref(),
+            Some("2000"),
+            "the connect refresh is stamped"
+        );
+
+        // A second read of the view, or a second event: no second fetch.
+        assert!(!first_refresh_due(&kv));
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 3_000_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 1, "the connect refresh runs exactly once");
+
+        // Always on this Mac closes the gate again: nothing is fetched.
+        CloudMode::save(&kv, CloudMode::AlwaysLocal).unwrap();
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        assert_eq!(
+            refresh(&kv, &http, &mut lim, 4_000_000, None),
+            Err(Closed::CloudOff)
+        );
+        assert_eq!(http.count(), 1);
+    }
+
+    #[test]
+    fn saved_cloud_key_cloud_only_opens_and_removed_key_closes() {
+        use crate::cloud_route::CloudMode;
+        let kv = MemKv::default();
+        set_prefs(&kv, true, &["tech"], &[], &[]);
+        connect_cloud_key(&kv, CloudMode::CloudOnly);
+        assert!(gate(&kv).is_ok());
+        // The key removed: save_cloud_key deletes the provider row.
+        let s = ProviderSettings {
+            providers: vec![ProviderConfig::bundled()],
+            notes_provider: String::new(),
+            polish_provider: String::new(),
+        };
+        model_providers::save(&kv, &s).expect("save providers");
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        let http = FakeHttp::default();
+        let mut lim = RateLimiter::new();
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 1_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 0, "no key, no request");
+    }
+
     // ---- the three sources ----
 
     #[test]
@@ -1093,22 +1513,169 @@ mod tests {
         assert!(r.outcomes.iter().all(|o| o.error.is_none()));
     }
 
+    // ---- yap-1106-fb-14-news-quote-key: free tier and the user's own key ----
+
+    const AV_QUOTE: &str = r#"{"Global Quote":{"01. symbol":"NVDA","02. open":"118.0000","05. price":"120.5000","07. latest trading day":"2026-11-06","08. previous close":"116.9000","09. change":"3.6000","10. change percent":"3.0796%"}}"#;
+
     #[test]
-    fn quotes_without_a_key_make_no_request() {
+    fn without_a_key_tickers_use_the_free_tier() {
         let kv = MemKv::default();
         connect_cloud(&kv);
         set_prefs(&kv, true, &[], &["NVDA"], &[]);
-        let http = FakeHttp::default();
+        let http = FakeHttp {
+            google: Some(Ok(RSS.into())),
+            ..Default::default()
+        };
         let mut lim = RateLimiter::new();
-        let r = refresh(&kv, &http, &mut lim, 1_000_000, None).unwrap();
-        assert_eq!(http.count(), 0);
+        let r = refresh_with(&kv, &http, &mut lim, 1_000_000, &QuoteFeed::Free).unwrap();
+        assert_eq!(
+            http.count_for(Source::Quotes),
+            0,
+            "no key, no price request"
+        );
+        assert_eq!(http.count_for(Source::GoogleNews), 1);
+        assert!(http.calls.borrow()[0].1.contains("q=NVDA+stock"));
+        assert!(r.stories.iter().all(|s| s.topic == "NVDA"));
         let q = r
             .outcomes
             .iter()
             .find(|o| o.source == Source::Quotes)
             .unwrap();
-        assert_eq!(q.error.as_deref(), Some("no_key"));
-        assert!(kv.kv_get(news_prefs::LAST_REFRESH_KEY).is_none());
+        assert_eq!(q.error, None, "nothing needs a key to work");
+        assert_eq!(q.requests, 0);
+        // The old call shape with no key is the same free tier.
+        assert_eq!(QuoteFeed::finnhub_or_free(None), QuoteFeed::Free);
+        assert_eq!(QuoteFeed::finnhub_or_free(Some("  ")), QuoteFeed::Free);
+    }
+
+    #[test]
+    fn alpha_vantage_key_fetches_prices_at_its_limit() {
+        let kv = MemKv::default();
+        connect_cloud(&kv);
+        set_prefs(&kv, true, &[], &["NVDA", "AAPL"], &[]);
+        let http = FakeHttp {
+            quote: Some(Ok(AV_QUOTE.into())),
+            ..Default::default()
+        };
+        let feed = QuoteFeed::AlphaVantage("AVKEY12345".into());
+        let mut lim = RateLimiter::new();
+        let t0 = 10 * HOUR_MS;
+        let r = refresh_with(&kv, &http, &mut lim, t0, &feed).unwrap();
+        // 25 calls a day: one quote call per refresh, one an hour.
+        assert_eq!(http.count_for(Source::Quotes), 1);
+        assert_eq!(
+            http.count_for(Source::GoogleNews),
+            0,
+            "keyed: no ticker headline search"
+        );
+        assert_eq!(r.quotes.len(), 1);
+        assert!((r.quotes[0].price - 120.5).abs() < 1e-9);
+        assert!((r.quotes[0].change_pct - 3.0796).abs() < 1e-9);
+        assert!(r.quotes[0].delayed);
+        refresh_with(&kv, &http, &mut lim, t0 + 40 * 60 * 1000, &feed).unwrap();
+        assert_eq!(http.count_for(Source::Quotes), 1, "hour cap holds");
+        refresh_with(&kv, &http, &mut lim, t0 + HOUR_MS + 1, &feed).unwrap();
+        assert_eq!(http.count_for(Source::Quotes), 2);
+        let calls = http.calls.borrow();
+        assert!(calls[0].1.contains("symbol=NVDA"));
+        assert!(
+            calls[1].1.contains("symbol=AAPL"),
+            "the next ticker gets the next call"
+        );
+    }
+
+    #[test]
+    fn every_quote_feed_waits_at_least_thirty_minutes_per_ticker() {
+        for f in [
+            QuoteFeed::Free,
+            QuoteFeed::Finnhub("k".into()),
+            QuoteFeed::AlphaVantage("k".into()),
+        ] {
+            let l = f.limits();
+            assert!(l.per_query_ms >= THIRTY_MIN_MS, "{f:?}");
+            assert!(l.per_hour > 0 && l.per_refresh > 0 && l.per_refresh <= l.per_hour);
+        }
+        // Alpha Vantage's free plan is 25 a day: 24 hourly calls fit.
+        assert!(QuoteFeed::AlphaVantage("k".into()).limits().per_hour * 24 <= 25);
+    }
+
+    #[test]
+    fn quote_key_is_sent_only_to_the_provider_host_and_never_printed() {
+        const KEY: &str = "YAPQUOTESENTINEL0123";
+        for feed in [
+            QuoteFeed::Finnhub(KEY.into()),
+            QuoteFeed::AlphaVantage(KEY.into()),
+        ] {
+            let kv = MemKv::default();
+            connect_cloud(&kv);
+            set_prefs(&kv, true, &["tech", "developer"], &["NVDA"], &["rust"]);
+            let http = FakeHttp {
+                google: Some(Ok(RSS.into())),
+                hn: Some(Ok(HN.into())),
+                quote: Some(Err(FeedError::Status { code: 401 })),
+                ..Default::default()
+            };
+            let mut lim = RateLimiter::new();
+            let r = refresh_with(&kv, &http, &mut lim, 10 * HOUR_MS, &feed).unwrap();
+            let calls = http.calls.borrow();
+            let mut carried = 0;
+            for (source, url, headers, _) in calls.iter() {
+                let in_url = url.contains(KEY);
+                let in_headers = headers
+                    .iter()
+                    .any(|(k, v)| k.contains(KEY) || v.contains(KEY));
+                if in_url || in_headers {
+                    carried += 1;
+                    assert_eq!(*source, Source::Quotes);
+                    let host = Url::parse(url).unwrap().host_str().unwrap().to_string();
+                    assert_eq!(Some(host.as_str()), feed.host(), "{feed:?}");
+                } else {
+                    assert_ne!(*source, Source::Quotes, "a quote call without the key");
+                }
+            }
+            assert_eq!(carried, 1, "non-vacuous: the key really travelled");
+            // A refused key is one plain sentence that never repeats the key.
+            let q = r
+                .outcomes
+                .iter()
+                .find(|o| o.source == Source::Quotes)
+                .unwrap();
+            assert_eq!(q.error.as_deref(), Some("bad_key"));
+            assert!(!FeedError::BadKey.plain().contains(KEY));
+            // Nothing returned to the webview or printed by Debug carries it.
+            assert!(!serde_json::to_string(&r).unwrap().contains(KEY));
+            assert!(!format!("{feed:?}").contains(KEY));
+            assert!(!format!("{r:?}").contains(KEY));
+        }
+    }
+
+    #[test]
+    fn parses_alpha_vantage_answers() {
+        let q = parse_alpha_vantage_quote(AV_QUOTE, "NVDA")
+            .unwrap()
+            .unwrap();
+        assert_eq!(q.symbol, "NVDA");
+        assert!((q.prev_close - 116.9).abs() < 1e-9);
+        assert_eq!(
+            parse_alpha_vantage_quote(r#"{"Global Quote":{}}"#, "ZZZZ").unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_alpha_vantage_quote(r#"{"Information":"25 requests per day"}"#, "NVDA"),
+            Err(FeedError::RateLimited)
+        );
+        assert_eq!(
+            parse_alpha_vantage_quote(r#"{"Note":"slow down"}"#, "NVDA"),
+            Err(FeedError::RateLimited)
+        );
+        assert_eq!(
+            parse_alpha_vantage_quote(r#"{"Error Message":"apikey is invalid"}"#, "NVDA"),
+            Err(FeedError::BadKey)
+        );
+        assert_eq!(
+            parse_alpha_vantage_quote("not json", "NVDA"),
+            Err(FeedError::BadBody)
+        );
     }
 
     #[test]

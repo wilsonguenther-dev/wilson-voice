@@ -136,6 +136,53 @@ pub const DECODE_TIMEOUT_SAFETY: f64 = 4.0;
 /// non-finite `recent_rtf` means "not measured yet" ([`UNMEASURED_RTF`]); a
 /// non-positive or non-finite `audio_seconds` gets the floor.
 pub fn adaptive_decode_timeout(audio_seconds: f64, recent_rtf: f64) -> Duration {
+    scaled_decode_timeout(
+        audio_seconds,
+        recent_rtf,
+        DECODE_TIMEOUT_FLOOR,
+        DECODE_TIMEOUT_CAP,
+    )
+}
+
+// ─────────────── yap-1106-sp-01 — the per-WINDOW timeout ───────────────
+//
+// Every dictation take over 35 s now decodes in 25–35 s windows (plus the 2 s
+// overlap), and each window gets its OWN bound from the same formula as
+// [`adaptive_decode_timeout`] — one formula, two clamp ranges, never two
+// formulas (SP-01 absorbs yap-fx-04). The window range is tighter because a
+// window is never wider than ~37 s: a wedged window surfaces in at most a
+// minute and costs one window, not the take.
+
+/// No window is given less than this (Metal warm-up + helper IPC).
+pub const WINDOW_TIMEOUT_FLOOR: Duration = Duration::from_secs(10);
+/// No window is given more than this, however slow the Mac.
+pub const WINDOW_TIMEOUT_CAP: Duration = Duration::from_secs(60);
+/// The smallest multiplier on audio length the formula ever uses:
+/// `max(recent_rtf × DECODE_TIMEOUT_SAFETY, MIN_TIMEOUT_MULTIPLIER)`, so a
+/// freak-fast measured RTF cannot shrink a long decode's bound to nothing.
+pub const MIN_TIMEOUT_MULTIPLIER: f64 = 0.1;
+
+/// The timeout for ONE window of `window_seconds` at `recent_rtf`:
+/// `clamp(window × max(rtf × 4, 0.1), 10 s, 60 s)`. Unmeasured / non-finite
+/// RTF plans with [`UNMEASURED_RTF`], exactly like [`adaptive_decode_timeout`].
+pub fn window_decode_timeout(window_seconds: f64, recent_rtf: f64) -> Duration {
+    scaled_decode_timeout(
+        window_seconds,
+        recent_rtf,
+        WINDOW_TIMEOUT_FLOOR,
+        WINDOW_TIMEOUT_CAP,
+    )
+}
+
+/// THE one decode-timeout formula: `audio × max(rtf × DECODE_TIMEOUT_SAFETY,
+/// MIN_TIMEOUT_MULTIPLIER)`, clamped to `floor..=cap`. Both the whole-decode
+/// bound and the per-window bound are this function with different clamps.
+fn scaled_decode_timeout(
+    audio_seconds: f64,
+    recent_rtf: f64,
+    floor: Duration,
+    cap: Duration,
+) -> Duration {
     let audio = if audio_seconds.is_finite() && audio_seconds > 0.0 {
         audio_seconds
     } else {
@@ -146,10 +193,8 @@ pub fn adaptive_decode_timeout(audio_seconds: f64, recent_rtf: f64) -> Duration 
     } else {
         UNMEASURED_RTF
     };
-    let secs = (audio * rtf * DECODE_TIMEOUT_SAFETY).clamp(
-        DECODE_TIMEOUT_FLOOR.as_secs_f64(),
-        DECODE_TIMEOUT_CAP.as_secs_f64(),
-    );
+    let multiplier = (rtf * DECODE_TIMEOUT_SAFETY).max(MIN_TIMEOUT_MULTIPLIER);
+    let secs = (audio * multiplier).clamp(floor.as_secs_f64(), cap.as_secs_f64());
     Duration::from_secs_f64(secs)
 }
 
@@ -543,6 +588,35 @@ mod tests {
         );
         assert_eq!(adaptive_decode_timeout(f64::NAN, 0.5), DECODE_TIMEOUT_FLOOR);
         assert_eq!(adaptive_decode_timeout(-3.0, 0.5), DECODE_TIMEOUT_FLOOR);
+    }
+
+    /// yap-1106-sp-01 — the per-window bound is
+    /// `clamp(window × max(rtf × 4, 0.1), 10 s, 60 s)`, from the SAME formula
+    /// as the whole-decode bound (one formula, two clamp ranges).
+    #[test]
+    fn window_decode_timeout_is_window_times_max_rtf4_or_tenth_between_10_and_60() {
+        use super::{
+            window_decode_timeout, MIN_TIMEOUT_MULTIPLIER, WINDOW_TIMEOUT_CAP, WINDOW_TIMEOUT_FLOOR,
+        };
+        assert_eq!(WINDOW_TIMEOUT_FLOOR, Duration::from_secs(10));
+        assert_eq!(WINDOW_TIMEOUT_CAP, Duration::from_secs(60));
+        assert_eq!(MIN_TIMEOUT_MULTIPLIER, 0.1);
+        // Fast Mac: 30 s × 0.2 = 6 s -> the 10 s floor.
+        assert_eq!(window_decode_timeout(30.0, 0.05), WINDOW_TIMEOUT_FLOOR);
+        // In range: 30 s × (0.25 × 4) = 30 s.
+        assert_eq!(window_decode_timeout(30.0, 0.25), Duration::from_secs(30));
+        // Slow Mac at RTF 0.9: 35 s × 3.6 = 126 s -> the 60 s cap.
+        assert_eq!(window_decode_timeout(35.0, 0.9), WINDOW_TIMEOUT_CAP);
+        // The 0.1 multiplier floor: rtf 0.01 × 4 = 0.04 < 0.1, so 150 s × 0.1.
+        assert_eq!(window_decode_timeout(150.0, 0.01), Duration::from_secs(15));
+        // Unmeasured / degenerate RTF plans pessimistically (UNMEASURED_RTF).
+        assert_eq!(window_decode_timeout(35.0, 0.0), WINDOW_TIMEOUT_CAP);
+        assert_eq!(window_decode_timeout(35.0, f64::NAN), WINDOW_TIMEOUT_CAP);
+        assert_eq!(window_decode_timeout(f64::NAN, 0.5), WINDOW_TIMEOUT_FLOOR);
+        // A full-width default window (35 s + 2 s overlap) at RTF 0.9 decodes
+        // in 33.3 s, inside its bound — the RTF-0.9 acceptance case.
+        let widest = 37.0;
+        assert!(widest * 0.9 < window_decode_timeout(widest, 0.9).as_secs_f64());
     }
 
     #[test]

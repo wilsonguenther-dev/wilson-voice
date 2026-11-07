@@ -4,8 +4,8 @@ import {
   canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
   summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
-import NotesView from "../meetings/NotesView";
-import ExportMenu, { type ExportAction } from "../meetings/ExportMenu";
+import NotesView, { StreamingNotes } from "../meetings/NotesView";
+import ExportMenu, { FloatingMenu, exportItems, type ExportAction } from "../meetings/ExportMenu";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
 import LiveTranscript from "../meetings/LiveTranscript";
@@ -13,6 +13,16 @@ import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
 import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meetings/callAudio";
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
+import WhoIsTalking from "../meetings/WhoIsTalking";
+import {
+  applyLabelRows,
+  clusterLabel,
+  withSpeakerNames,
+  type CorrectionApplied,
+  type CorrectionUndone,
+  type LabelRow,
+  type SpeakerCorrection,
+} from "../meetings/transcript";
 import {
   NO_FILTER, defaultTab, detailPeople, duePendingDeletes, filterActive, filterMeetings, groupMeetings, isNarrow,
   listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, schedulePendingDelete, shortId,
@@ -63,6 +73,9 @@ export default function Meetings() {
   const [filter, setFilter] = useState<MeetingFilter>(NO_FILTER);
   const [tab, setTab] = useState<DetailTab>("transcript");
   const [selected, setSelected] = useState<string | null>(null);
+  // yap-1107-meetings-row-actions-no-overlay — the row's right-click menu
+  // (Export ×3 + Delete), opened at the pointer; one at a time.
+  const [rowMenu, setRowMenu] = useState<{ id: string; title: string; x: number; y: number } | null>(null);
   const [pending, setPending] = useState<PendingDelete[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [narrow, setNarrow] = useState(() => (typeof window === "undefined" ? false : isNarrow(window.innerWidth)));
@@ -187,6 +200,15 @@ export default function Meetings() {
   function openRow(id: string) {
     setSelected(id);
     void openMeetingDetail(id);
+  }
+  function openRowMenu(e: { preventDefault: () => void; clientX: number; clientY: number; currentTarget: Element }, id: string, title: string) {
+    e.preventDefault();
+    // The keyboard context-menu key reports 0,0: anchor to the row instead.
+    const r = e.currentTarget.getBoundingClientRect();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    setSelected(id);
+    setRowMenu({ id, title, x: keyboard ? r.left + 24 : e.clientX, y: keyboard ? r.top + r.height / 2 : e.clientY });
+    logUi("row_menu", { id: shortId(id), keyboard });
   }
   function closeDetail() {
     if (!openMeeting) return;
@@ -465,6 +487,50 @@ export default function Meetings() {
       : openMeeting.meeting.state === "complete"
         ? "model"
         : null;
+
+  // yap-1106-auto-label-and-correct — a speaker chip's correction: the backend
+  // decides which whole turns move and locks them; the lines change in place,
+  // and the returned function is the 10 s Undo (which asks the lock).
+  const mergeLabelRows = (meetingId: string, rows: LabelRow[]) =>
+    setOpenMeeting((m) =>
+      m && m.meeting.id === meetingId
+        ? {
+            ...m,
+            segments: applyLabelRows(m.segments, rows),
+            echoSegments: m.echoSegments ? applyLabelRows(m.echoSegments, rows) : m.echoSegments,
+          }
+        : m,
+    );
+  const correctSpeakers = async (
+    meetingId: string,
+    correction: SpeakerCorrection,
+  ): Promise<(() => Promise<void>) | null> => {
+    try {
+      const applied = await invoke<CorrectionApplied>("correct_meeting_speakers", {
+        meetingId,
+        correction,
+      });
+      mergeLabelRows(meetingId, applied.rows);
+      return async () => {
+        try {
+          const undone = await invoke<CorrectionUndone>("undo_speaker_correction", {
+            meetingId,
+            undo: applied.undo,
+          });
+          mergeLabelRows(meetingId, undone.rows);
+          const kept = undone.skippedChanged.length;
+          if (kept > 0) {
+            toast(`Undone. ${kept} ${kept === 1 ? "line keeps" : "lines keep"} a later correction.`);
+          }
+        } catch (e) {
+          toast(`Couldn't undo that: ${String(e)}`);
+        }
+      };
+    } catch (e) {
+      toast(`Couldn't change the speaker: ${String(e)}`);
+      return null;
+    }
+  };
   return (
     <div className="meetings-view" data-meetings-pane={paneMode}>
       {/* yap-notetaker-onboard — the Set up Notetaker card. */}
@@ -547,6 +613,8 @@ export default function Meetings() {
                       const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
                       const isOpen = openId === m.id;
                       const isSelected = selected === m.id;
+                      const hasStatusActions =
+                        actions.includes("retry") || actions.includes("cancel-notes") || actions.includes("notes");
                       return (
                         <li
                           key={m.id}
@@ -554,6 +622,7 @@ export default function Meetings() {
                           data-meeting-id={m.id}
                           data-meeting-state={m.state}
                           aria-current={isOpen ? "true" : undefined}
+                          onContextMenu={(e) => openRowMenu(e, m.id, m.title)}
                         >
                           <button type="button" className="meeting-row-main" title={m.title} onClick={() => openRow(m.id)}>
                             <span className="meeting-row-head">
@@ -586,31 +655,30 @@ export default function Meetings() {
                             ) : null}
                             <PeopleChips people={listPeople(m)} />
                           </button>
-                          <div className="actions">
-                            {actions.includes("retry") && (
-                              <button onClick={() => void retryMeeting(m.id)}>Retry</button>
-                            )}
-                            {actions.includes("cancel-notes") && (
-                              <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
-                                Cancel notes
-                              </button>
-                            )}
-                            {actions.includes("notes") && (
-                              <button onClick={() => void notesAction(retryNotes, m.id)}>
-                                {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
-                                  ? "Retry notes"
-                                  : retryNotesLabel(progress[m.id])}
-                              </button>
-                            )}
-                            <ExportMenu meetingId={m.id} disabled={meetingBusy} onAction={onExportAction} />
-                            <button
-                              className="ghost danger"
-                              disabled={meetingBusy}
-                              onClick={() => requestDelete(m.id, m.title)}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {/* yap-1107-meetings-row-actions-no-overlay — the row keeps no
+                              hover bar: Export and Delete live in the detail header, on
+                              ⌫ for the selected row, and in the right-click menu. Only
+                              status buttons stay, in a column that is laid out in every
+                              state (hover changes colour, never layout). */}
+                          {hasStatusActions && (
+                            <div className="meeting-row-status" data-meeting-row-status>
+                              {actions.includes("retry") && (
+                                <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                              )}
+                              {actions.includes("cancel-notes") && (
+                                <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
+                                  Cancel notes
+                                </button>
+                              )}
+                              {actions.includes("notes") && (
+                                <button onClick={() => void notesAction(retryNotes, m.id)}>
+                                  {actions.includes("retry") && retryNotesLabel(progress[m.id]) === "Retry"
+                                    ? "Retry notes"
+                                    : retryNotesLabel(progress[m.id])}
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </li>
                       );
                     })}
@@ -636,6 +704,25 @@ export default function Meetings() {
             <article className="meeting-detail" aria-label={openMeeting.meeting.title}>
               {/* §9 — the "Who's talking?" strip sits at the top of the detail. */}
               <WhoIsTalkingStrip unnamed={unnamedVoices(detailPeopleRows)} onOpenPeople={() => setTab("people")} />
+              {/* yap-1106-who-is-this — "Who was this?" cards, only after the meeting. */}
+              <WhoIsTalking
+                meetingId={openMeeting.meeting.id}
+                title={openMeeting.meeting.title}
+                labelFor={(track, cluster) =>
+                  clusterLabel(openMeeting.segments, openMeeting.meeting.kind, track, cluster)
+                }
+                audioOnDisk={openMeeting.audioOnDisk}
+                retentionDays={insights?.meetings?.audioRetentionDays ?? 7}
+                recording={Boolean(meetingStatus.recording && meetingStatus.id === openMeeting.meeting.id)}
+                onNames={(names) =>
+                  setOpenMeeting((m) =>
+                    m && m.meeting.id === openMeeting.meeting.id
+                      ? { ...m, segments: withSpeakerNames(m.segments, names) }
+                      : m,
+                  )
+                }
+                toast={toast}
+              />
               <header className="meeting-detail-head">
                 <div className="meeting-detail-bar">
                   {narrow ? (
@@ -734,24 +821,26 @@ export default function Meetings() {
                   (openMeeting.meeting.summary ? (
                     <NotesView markdown={openMeeting.meeting.summary} meetingId={openMeeting.meeting.id} />
                   ) : (
-                    <div className="empty" data-empty-state="meetings:notes">
-                      <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
-                      <p>Notes are written on this Mac once the transcript is ready.</p>
-                      <div className="actions">
-                        {notesTabAction === "notes" ? (
-                          <button
-                            className="primary"
-                            onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
-                          >
-                            {retryNotesLabel(progress[openMeeting.meeting.id])}
-                          </button>
-                        ) : notesTabAction === "model" ? (
-                          <button type="button" className="ghost" onClick={openModelSettings}>
-                            Add a notes model
-                          </button>
-                        ) : null}
+                    <StreamingNotes meetingId={openMeeting.meeting.id}>
+                      <div className="empty" data-empty-state="meetings:notes">
+                        <h3>{notesLabel(progress[openMeeting.meeting.id]) ?? "No notes yet"}</h3>
+                        <p>Notes are written on this Mac once the transcript is ready.</p>
+                        <div className="actions">
+                          {notesTabAction === "notes" ? (
+                            <button
+                              className="primary"
+                              onClick={() => void notesAction(retryNotes, openMeeting.meeting.id)}
+                            >
+                              {retryNotesLabel(progress[openMeeting.meeting.id])}
+                            </button>
+                          ) : notesTabAction === "model" ? (
+                            <button type="button" className="ghost" onClick={openModelSettings}>
+                              Add a notes model
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
+                    </StreamingNotes>
                   ))}
                 {tab === "transcript" &&
                   (openMeeting.segments.length === 0 ? (
@@ -784,6 +873,7 @@ export default function Meetings() {
                       segments={openMeeting.segments}
                       hidden={openMeeting.echoSegments}
                       kind={openMeeting.meeting.kind}
+                      onCorrect={(c) => correctSpeakers(openMeeting.meeting.id, c)}
                     />
                   ))}
                 {tab === "people" && <PeopleTab people={detailPeopleRows} />}
@@ -792,6 +882,27 @@ export default function Meetings() {
           )}
         </section>
       </div>
+      {rowMenu && (
+        <FloatingMenu
+          key={rowMenu.id + ":" + rowMenu.x + ":" + rowMenu.y}
+          anchor={() => ({ left: rowMenu.x, right: rowMenu.x, top: rowMenu.y, bottom: rowMenu.y })}
+          align="start"
+          label={`Actions for ${rowMenu.title}`}
+          name="row"
+          meetingId={rowMenu.id}
+          items={[
+            ...exportItems(rowMenu.id, onExportAction, meetingBusy),
+            {
+              key: "delete",
+              label: "Delete meeting",
+              danger: true,
+              disabled: meetingBusy,
+              onSelect: () => requestDelete(rowMenu.id, rowMenu.title),
+            },
+          ]}
+          onClose={() => setRowMenu(null)}
+        />
+      )}
       <UndoDeleteBar pending={pending} now={now} onUndo={undoDelete} />
     </div>
   );

@@ -1161,6 +1161,42 @@ mod tests {
         assert_eq!(s, BindingStatus::Paused);
     }
 
+    /// yap-1107-secure-input-own-field-quiet — Yap's OWN key field holding
+    /// Secure Input never renders "Blocked by" anywhere in the table (it would
+    /// read "Blocked by wilson-voice"); another app's hold still does.
+    #[test]
+    fn own_pid_secure_input_hold_never_renders_blocked_by() {
+        use crate::secure_input::{classify_holder, own_pid, Holder};
+        let me = own_pid();
+        let own = classify_holder(Some(me), Some("wilson-voice"), me);
+        assert_eq!(own, Holder::Own);
+        let st = own.engaged_status();
+        for stored in [FnTapStatus::Delivering, FnTapStatus::ArmedNoDelivery] {
+            let fn_tap =
+                crate::hotkeys::effective_fn_tap(&stored, st.blocked, st.culprit.as_deref());
+            assert!(!matches!(fn_tap, FnTapStatus::SecureInput(_)), "{fn_tap:?}");
+            let rows = binding_table(&inputs(fn_tap, CarbonStatus::Registered));
+            for r in &rows {
+                let chip = r.status.chip();
+                assert!(!chip.contains("Blocked by"), "{:?}: {chip}", r.action);
+                assert!(!chip.contains("wilson-voice"), "{:?}: {chip}", r.action);
+            }
+        }
+
+        // Control: another app's hold keeps the loud chip, naming that app.
+        let other = classify_holder(Some(431), Some("1Password"), me).engaged_status();
+        let fn_tap = crate::hotkeys::effective_fn_tap(
+            &FnTapStatus::Delivering,
+            other.blocked,
+            other.culprit.as_deref(),
+        );
+        let rows = binding_table(&inputs(fn_tap, CarbonStatus::Registered));
+        assert_eq!(
+            hold(&rows).status.chip(),
+            "Blocked by 1Password (Secure Input)"
+        );
+    }
+
     /// fix-249 BLOCKING 1 — the whole fn decision table, one row per case, and
     /// the hold row's live key / fallback for each. Accessibility is varied on
     /// every row and must never change the answer.

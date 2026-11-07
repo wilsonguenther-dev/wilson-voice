@@ -134,6 +134,12 @@ pub struct SecureInputStatus {
     /// Best-effort holder, e.g. `"Terminal (pid 431)"`. `None` whenever macOS
     /// does not expose one — which is common, and never invalidates `blocked`.
     pub culprit: Option<String>,
+    /// yap-1107-secure-input-own-field-quiet — Secure Input is held by YAP
+    /// ITSELF (WebKit turns it on while the masked cloud key field has focus).
+    /// `blocked` stays false, so the red banner, the tray and the pill stay
+    /// quiet; the main window shows only the one neutral
+    /// [`OWN_FIELD_MESSAGE`] line, gone on the release edge (field blurred).
+    pub own_field: bool,
 }
 
 impl SecureInputStatus {
@@ -150,6 +156,87 @@ impl SecureInputStatus {
              Until then use the menu-bar Start Dictation item, which is unaffected."
         )
     }
+}
+
+/// The one quiet line the main window shows while Yap's OWN key field holds
+/// Secure Input. Neutral, never red, no detail paragraph: the user caused it
+/// by focusing the field, and blurring the field ends it.
+/// The frontend renders its own copy (SecureInputBanner.tsx); this constant is
+/// the parity anchor the tests pin, so it is unused in a non-test build.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const OWN_FIELD_MESSAGE: &str = "Shortcut paused while the key field is focused";
+
+/// Who holds Secure Input, decided once on the engaged edge by
+/// [`classify_holder`] from the IORegistry pid + its process name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Holder {
+    /// Yap's own process (its masked key field has focus). Quiet line only.
+    Own,
+    /// `loginwindow` — the lock screen (yap24-PILL3). Logged, never shown.
+    LockScreen,
+    /// Another app, as the culprit string `"Name (pid N)"`. Loud banner.
+    Other(String),
+    /// macOS did not expose a usable holder. Loud banner, unnamed.
+    Unknown,
+}
+
+/// Pure classifier for the engaged edge. `own_pid` is
+/// `std::process::id()`; a pid match wins over any name, so a renamed Yap
+/// bundle (Yap Test, wilson-voice) is still recognised as itself.
+pub fn classify_holder(pid: Option<i32>, name: Option<&str>, own_pid: i32) -> Holder {
+    if pid == Some(own_pid) {
+        return Holder::Own;
+    }
+    match (pid, name.map(str::trim).filter(|n| !n.is_empty())) {
+        (_, Some(n)) if !reportable_holder(Some(n)) => Holder::LockScreen,
+        (Some(p), Some(n)) => Holder::Other(format!("{} (pid {p})", holder_app(n))),
+        (None, Some(n)) => Holder::Other(n.to_string()),
+        (_, None) => Holder::Unknown,
+    }
+}
+
+impl Holder {
+    /// Is this hold shown LOUD (red banner, tray, pill, hotkey table)?
+    pub fn reported(&self) -> bool {
+        matches!(self, Self::Other(_) | Self::Unknown)
+    }
+
+    /// The `owner=` value of the one engaged log line.
+    pub fn log_owner(&self) -> &'static str {
+        match self {
+            Self::Own => "self",
+            Self::LockScreen => IGNORED_HOLDER,
+            Self::Other(_) => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The snapshot the UI renders for an ENGAGED hold by this holder.
+    pub fn engaged_status(&self) -> SecureInputStatus {
+        match self {
+            Self::Own => SecureInputStatus {
+                blocked: false,
+                culprit: None,
+                own_field: true,
+            },
+            Self::LockScreen => SecureInputStatus::default(),
+            Self::Other(c) => SecureInputStatus {
+                blocked: true,
+                culprit: Some(c.clone()),
+                own_field: false,
+            },
+            Self::Unknown => SecureInputStatus {
+                blocked: true,
+                culprit: None,
+                own_field: false,
+            },
+        }
+    }
+}
+
+/// This process's pid in the `kCGSSessionSecureInputPID` type.
+pub fn own_pid() -> i32 {
+    i32::try_from(std::process::id()).unwrap_or(-1)
 }
 
 /// yap24-PILL3 — the holder macOS reports at the LOCK SCREEN. Wilson's logs
@@ -196,21 +283,26 @@ mod sys {
     /// absent (the holder already quit) or the responsible parent rather than
     /// the literal window — so this is only ever decoration on a status that is
     /// already true without it. Shells out, so it runs on the engaged EDGE only,
-    /// never on every poll.
-    pub fn culprit() -> Option<String> {
-        let out = Command::new("ioreg")
-            .args(["-l", "-w", "0"])
-            .output()
-            .ok()?;
+    /// never on every poll. Returns the raw (pid, binary name) pair; the pid is
+    /// kept so [`super::classify_holder`] can recognise Yap's own process.
+    pub fn holder() -> (Option<i32>, Option<String>) {
+        let Some(out) = Command::new("ioreg").args(["-l", "-w", "0"]).output().ok() else {
+            return (None, None);
+        };
         let text = String::from_utf8_lossy(&out.stdout);
-        let pid: i32 = text
+        let pid: Option<i32> = text
             .lines()
-            .find_map(|l| l.split("\"kCGSSessionSecureInputPID\"=").nth(1))?
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .ok()?;
+            .find_map(|l| l.split("\"kCGSSessionSecureInputPID\"=").nth(1))
+            .and_then(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            });
+        let Some(pid) = pid else {
+            return (None, None);
+        };
         // `ps -o comm=` prints the full executable path; show the binary name.
         let name = Command::new("ps")
             .args(["-o", "comm=", "-p", &pid.to_string()])
@@ -221,8 +313,8 @@ mod sys {
                 let trimmed = raw.trim();
                 (!trimmed.is_empty())
                     .then(|| trimmed.rsplit('/').next().unwrap_or(trimmed).to_string())
-            })?;
-        Some(format!("{name} (pid {pid})"))
+            });
+        (Some(pid), name)
     }
 }
 
@@ -231,8 +323,8 @@ mod sys {
     pub fn is_enabled() -> bool {
         false
     }
-    pub fn culprit() -> Option<String> {
-        None
+    pub fn holder() -> (Option<i32>, Option<String>) {
+        (None, None)
     }
 }
 
@@ -277,42 +369,45 @@ where
                 // for the flag the UI renders.
                 let status = match transition {
                     Transition::Engaged => {
-                        let culprit = sys::culprit();
-                        if !reportable_holder(culprit.as_deref()) {
+                        let (pid, name) = sys::holder();
+                        let holder = classify_holder(pid, name.as_deref(), own_pid());
+                        match &holder {
+                            // yap-1107-secure-input-own-field-quiet: Yap's own
+                            // masked key field. Once per hold (the watchdog
+                            // stays Blocked until a released sample).
+                            Holder::Own => log::info!(
+                                "secure_input engaged owner={} reported=quiet",
+                                holder.log_owner()
+                            ),
                             // yap24-PILL3: the lock screen. Logged once per hold,
                             // never shown; the watchdog stays Blocked, so this
                             // does not re-fire until a released sample clears it.
-                            log::info!(
+                            Holder::LockScreen => log::info!(
                                 "secure_input engaged owner={IGNORED_HOLDER} reported=false \
                                  reason=lock_screen"
-                            );
-                            SecureInputStatus {
-                                blocked: false,
-                                culprit: None,
-                            }
-                        } else {
-                            match &culprit {
-                                Some(c) => log::warn!(
-                                    "Secure Input ENABLED by {c} — the fn PTT event tap is blind; \
-                                     fn / fn⌃ cannot start a take until it is released"
-                                ),
-                                None => log::warn!(
-                                    "Secure Input ENABLED (holder not exposed by macOS) — the fn \
-                                     PTT event tap is blind; fn / fn⌃ cannot start a take until \
-                                     it is released"
-                                ),
-                            }
-                            SecureInputStatus {
-                                blocked: watchdog.blocked(),
-                                culprit,
-                            }
+                            ),
+                            Holder::Other(c) => log::warn!(
+                                "Secure Input ENABLED by {c} — the fn PTT event tap is blind; \
+                                 fn / fn⌃ cannot start a take until it is released"
+                            ),
+                            Holder::Unknown => log::warn!(
+                                "Secure Input ENABLED (holder not exposed by macOS) — the fn \
+                                 PTT event tap is blind; fn / fn⌃ cannot start a take until \
+                                 it is released"
+                            ),
                         }
+                        let mut status = holder.engaged_status();
+                        // The machine stays the single source of truth for the
+                        // loud flag: only a reported holder can raise it.
+                        status.blocked = holder.reported() && watchdog.blocked();
+                        status
                     }
                     Transition::Cleared => {
                         log::info!("Secure Input released — fn PTT event tap sees keys again");
                         SecureInputStatus {
                             blocked: watchdog.blocked(),
                             culprit: None,
+                            own_field: false,
                         }
                     }
                 };
@@ -331,9 +426,68 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        holder_app, reportable_holder, SecureInputStatus, Transition, Watchdog, BLOCKED_MESSAGE,
-        POLL_INTERVAL, SUSTAIN_SAMPLES,
+        classify_holder, holder_app, own_pid, reportable_holder, Holder, SecureInputStatus,
+        Transition, Watchdog, BLOCKED_MESSAGE, OWN_FIELD_MESSAGE, POLL_INTERVAL, SUSTAIN_SAMPLES,
     };
+
+    /// yap-1107-secure-input-own-field-quiet — Yap's own key field (pid ==
+    /// this process) is Own: never the loud banner, only the quiet flag.
+    #[test]
+    fn own_pid_hold_is_quiet_and_never_blocked() {
+        let me = own_pid();
+        let h = classify_holder(Some(me), Some("wilson-voice"), me);
+        assert_eq!(h, Holder::Own);
+        assert!(!h.reported());
+        assert_eq!(h.log_owner(), "self");
+        let st = h.engaged_status();
+        assert!(!st.blocked, "own field must not raise the red banner");
+        assert!(st.own_field, "own field sets the quiet flag");
+        assert_eq!(st.culprit, None, "never names wilson-voice as a culprit");
+        // A pid match wins over any name (Yap Test, renamed bundles).
+        assert_eq!(classify_holder(Some(77), Some("Yap Test"), 77), Holder::Own);
+        assert_eq!(classify_holder(Some(77), None, 77), Holder::Own);
+        assert_eq!(
+            OWN_FIELD_MESSAGE,
+            "Shortcut paused while the key field is focused"
+        );
+    }
+
+    /// Another app's hold stays LOUD exactly as before, and names that app.
+    #[test]
+    fn another_pid_hold_is_blocked_and_names_the_app() {
+        let h = classify_holder(Some(431), Some("Terminal"), 99);
+        assert_eq!(h, Holder::Other("Terminal (pid 431)".into()));
+        assert!(h.reported());
+        let st = h.engaged_status();
+        assert!(st.blocked);
+        assert!(!st.own_field);
+        assert_eq!(st.culprit.as_deref(), Some("Terminal (pid 431)"));
+        assert!(st
+            .detail()
+            .starts_with("Terminal (pid 431) has Secure Input on"));
+    }
+
+    /// loginwindow (lock screen) is never reported; no holder at all is.
+    #[test]
+    fn lock_screen_is_quiet_and_unknown_is_reported() {
+        let ls = classify_holder(Some(152), Some("loginwindow"), 99);
+        assert_eq!(ls, Holder::LockScreen);
+        assert!(!ls.reported());
+        let st = ls.engaged_status();
+        assert!(!st.blocked && !st.own_field && st.culprit.is_none());
+
+        for unknown in [
+            classify_holder(None, None, 99),
+            classify_holder(Some(5), None, 99),
+            classify_holder(Some(5), Some("  "), 99),
+        ] {
+            assert_eq!(unknown, Holder::Unknown);
+            assert!(unknown.reported());
+            let st = unknown.engaged_status();
+            assert!(st.blocked && !st.own_field && st.culprit.is_none());
+            assert!(st.detail().starts_with("Another app has Secure Input on"));
+        }
+    }
 
     /// yap24-PILL3 — the lock screen's hold is never shown; every other
     /// holder, and an unknown one, is.
@@ -450,6 +604,7 @@ mod tests {
         let known = SecureInputStatus {
             blocked: true,
             culprit: Some("Terminal (pid 431)".into()),
+            own_field: false,
         };
         let detail = known.detail();
         assert!(
@@ -461,6 +616,7 @@ mod tests {
         let unknown = SecureInputStatus {
             blocked: true,
             culprit: None,
+            own_field: false,
         };
         assert!(
             unknown

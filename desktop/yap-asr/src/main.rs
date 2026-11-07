@@ -157,7 +157,13 @@ fn worker_loop(
         };
         let response = match req.kind.as_str() {
             KIND_LOAD => handle_load(&req, &mut engine, &cancel),
-            KIND_TRANSCRIBE => handle_transcribe(&req, engine.as_mut()),
+            KIND_TRANSCRIBE => {
+                // yap-1106-sp-04 — meeting and recovery chunks decode in the
+                // Darwin background band; a dictation request puts this
+                // thread straight back in the foreground.
+                asr_protocol::set_current_thread_background(req.background);
+                handle_transcribe(&req, engine.as_mut())
+            }
             KIND_SHUTDOWN => {
                 let freed = u32::from(engine.is_some());
                 if let Ok(mut slot) = cancel.lock() {

@@ -221,6 +221,9 @@ pub enum ProviderError {
     Timeout { secs: u64 },
     KeyRejected,
     ModelNotFound { model: String },
+    // fix-l3b3-2 — a 404 from the cloud kind. Carries no model id: the
+    // cloud model's id is a vendor name and must never reach the UI.
+    CloudModelNotFound,
     RateLimited,
     Server { code: u16 },
     Http { code: u16 },
@@ -244,6 +247,9 @@ impl ProviderError {
             ProviderError::Timeout { secs } => format!("timed out — no answer within {secs} s"),
             ProviderError::KeyRejected => "the key was rejected (401)".into(),
             ProviderError::ModelNotFound { model } => format!("model {model} not found (404)"),
+            ProviderError::CloudModelNotFound => {
+                "the cloud did not recognise the model this key is set to use (404)".into()
+            }
             ProviderError::RateLimited => "rate limited (429) — try again shortly".into(),
             ProviderError::Server { code } => format!("server error ({code})"),
             ProviderError::Http { code } => format!("the server answered {code}"),
@@ -272,7 +278,9 @@ impl ProviderError {
             ProviderError::Unreachable { .. } => "unreachable",
             ProviderError::Timeout { .. } => "timeout",
             ProviderError::KeyRejected => "key_rejected",
-            ProviderError::ModelNotFound { .. } => "model_not_found",
+            ProviderError::ModelNotFound { .. } | ProviderError::CloudModelNotFound => {
+                "model_not_found"
+            }
             ProviderError::RateLimited => "rate_limited",
             ProviderError::Server { .. } => "server_error",
             ProviderError::Http { .. } => "http_status",
@@ -291,13 +299,15 @@ impl ProviderError {
     }
 
     /// yap-1106 — map a cloud-route failure (Test connection on the cloud kind).
-    pub fn from_cloud(e: crate::cloud_route::CloudError, model: &str) -> Self {
+    ///
+    /// fix-l3b3-2: `_model` is deliberately never put in the error — the cloud
+    /// model id is a vendor name, and `plain()` lands on Settings → Model
+    /// providers. A 404 keeps the `model_not_found` log tag.
+    pub fn from_cloud(e: crate::cloud_route::CloudError, _model: &str) -> Self {
         use crate::cloud_route::CloudError as C;
         match e {
             C::Status { code: 401, .. } | C::Status { code: 403, .. } => ProviderError::KeyRejected,
-            C::Status { code: 404, .. } => ProviderError::ModelNotFound {
-                model: model.to_string(),
-            },
+            C::Status { code: 404, .. } => ProviderError::CloudModelNotFound,
             C::Status { code: 429, .. } => ProviderError::RateLimited,
             C::Status { code, .. } if (500..600).contains(&code) => ProviderError::Server { code },
             C::Status { code, .. } => ProviderError::Http { code },
@@ -886,6 +896,29 @@ fn view_of(p: &ProviderConfig, keys: &dyn SecretStore) -> ProviderView {
     }
 }
 
+/// fix-l3b3-1 — where the cloud route sends text, if it is on.
+///
+/// `cloud_run` (lib.rs) sends every dictation (polish) and every meeting
+/// transcript (notes) to the saved "Cloud model (your key)" provider whenever
+/// [`crate::cloud_route::CloudMode::wants_cloud`] and a key exists — WITHOUT
+/// that provider being the notes/polish pick. So the "Leaves this Mac"
+/// accounting must count the route too, or Settings and the meeting consent
+/// notice say "nothing leaves" while text does. `Some(host)` = the route is
+/// on and has a key; `None` = always on this Mac, or no key. A provider whose
+/// address is this Mac (and runs no Ollama cloud model) does not leave.
+/// "Cloud when online" counts as leaving even while offline: the label must
+/// never under-claim.
+pub fn cloud_route_leaves(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> Option<String> {
+    if !crate::cloud_route::CloudMode::load(kv).wants_cloud() {
+        return None;
+    }
+    let (cfg, _key) = cloud_key_provider(kv, keys)?;
+    match leaves_this_mac(&cfg) {
+        Leaves::Yes { host } => Some(host),
+        Leaves::No => None,
+    }
+}
+
 /// The view Settings renders.
 pub fn list_view(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> ProvidersView {
     let s = load(kv);
@@ -894,6 +927,25 @@ pub fn list_view(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> ProvidersView {
         if let Leaves::Yes { host } = leaves_this_mac(&s.for_task(task)) {
             active_leaves.push(ActiveLeave { task, host });
         }
+    }
+    // The cloud route sends both tasks to its provider regardless of the
+    // picks; one entry per task (a task already leaving keeps its pick's host).
+    if let Some(host) = cloud_route_leaves(kv, keys) {
+        let mut added = 0usize;
+        for task in [Task::Notes, Task::Polish] {
+            if !active_leaves.iter().any(|a| a.task == task) {
+                active_leaves.push(ActiveLeave {
+                    task,
+                    host: host.clone(),
+                });
+                added += 1;
+            }
+        }
+        log::debug!("model_providers cloud_route_leaves tasks_added={added}");
+        active_leaves.sort_by_key(|a| match a.task {
+            Task::Notes => 0u8,
+            Task::Polish => 1u8,
+        });
     }
     ProvidersView {
         providers: s.providers.iter().map(|p| view_of(p, keys)).collect(),
@@ -1041,4 +1093,159 @@ pub fn run_test(
         }),
     );
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud_route::{CloudError, CloudMode, CLEANUP_MODEL, MODE_KEY, NOTES_MODEL_BEST};
+    use crate::keychain::{MemoryKeychain, PRODUCTION_SERVICE};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemKv(Mutex<HashMap<String, String>>);
+    impl SettingsKv for MemKv {
+        fn kv_get(&self, key: &str) -> Option<String> {
+            self.0.lock().unwrap().get(key).cloned()
+        }
+        fn kv_set(&self, key: &str, value: &str) -> Result<(), String> {
+            self.0.lock().unwrap().insert(key.into(), value.into());
+            Ok(())
+        }
+    }
+
+    fn with_cloud_key(key: Option<&str>) -> (MemKv, MemoryKeychain) {
+        let kv = MemKv::default();
+        let keys = MemoryKeychain::new(PRODUCTION_SERVICE);
+        upsert_provider(&kv, &keys, ProviderConfig::cloud_key(), key).expect("save cloud key");
+        (kv, keys)
+    }
+
+    fn host() -> String {
+        ProviderConfig::cloud_key().host().expect("cloud key host")
+    }
+
+    #[test]
+    fn model_providers_cloud_route_on_with_a_key_leaves_for_notes_and_polish() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        CloudMode::save(&kv, CloudMode::CloudWhenOnline).unwrap();
+        // Neither pick names the cloud provider: the route alone sends text.
+        assert_eq!(load(&kv).notes_provider, "");
+        assert_eq!(cloud_route_leaves(&kv, &keys), Some(host()));
+        let v = list_view(&kv, &keys);
+        assert_eq!(
+            v.active_leaves,
+            vec![
+                ActiveLeave {
+                    task: Task::Notes,
+                    host: host(),
+                },
+                ActiveLeave {
+                    task: Task::Polish,
+                    host: host(),
+                },
+            ]
+        );
+        assert!(!serde_json::to_string(&v).unwrap().contains("sk-UNIT"));
+    }
+
+    #[test]
+    fn model_providers_cloud_route_always_local_leaves_nothing() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        CloudMode::save(&kv, CloudMode::AlwaysLocal).unwrap();
+        assert_eq!(cloud_route_leaves(&kv, &keys), None);
+        assert!(list_view(&kv, &keys).active_leaves.is_empty());
+    }
+
+    #[test]
+    fn model_providers_cloud_route_without_a_key_leaves_nothing() {
+        let (kv, keys) = with_cloud_key(None);
+        kv.kv_set(MODE_KEY, CloudMode::CloudOnly.as_str()).unwrap();
+        assert_eq!(cloud_route_leaves(&kv, &keys), None);
+        assert!(list_view(&kv, &keys).active_leaves.is_empty());
+    }
+
+    #[test]
+    fn model_providers_cloud_route_does_not_duplicate_a_task_already_leaving() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        set_task_provider(&kv, Task::Notes, crate::cloud_client::DEFAULT_PROVIDER_ID).unwrap();
+        CloudMode::save(&kv, CloudMode::CloudOnly).unwrap();
+        let v = list_view(&kv, &keys);
+        assert_eq!(v.active_leaves.len(), 2, "{:?}", v.active_leaves);
+        assert_eq!(v.active_leaves[0].task, Task::Notes);
+        assert_eq!(v.active_leaves[1].task, Task::Polish);
+    }
+
+    /// The words vendorStrings.test.ts bans from user-visible text.
+    const VENDOR_WORDS: &[&str] = &[
+        "anthropic",
+        "claude",
+        "openai",
+        "open ai",
+        "chatgpt",
+        "gpt",
+        "sonnet",
+        "opus",
+        "haiku",
+        "gemini",
+        "mistral",
+        "llama",
+        "ollama",
+        "openrouter",
+        "groq",
+        "deepseek",
+        "qwen",
+    ];
+
+    fn assert_vendor_free(text: &str) {
+        let lower = text.to_lowercase();
+        for w in VENDOR_WORDS {
+            assert!(!lower.contains(w), "{text:?} names a vendor/model ({w})");
+        }
+        assert!(
+            !text.contains(CLEANUP_MODEL),
+            "{text:?} carries the cloud model id"
+        );
+        assert!(
+            !text.contains(NOTES_MODEL_BEST),
+            "{text:?} carries the cloud model id"
+        );
+    }
+
+    #[test]
+    fn from_cloud_404_plain_names_no_vendor_or_model() {
+        let e = ProviderError::from_cloud(
+            CloudError::Status {
+                code: 404,
+                retry_after: None,
+            },
+            CLEANUP_MODEL,
+        );
+        assert_eq!(e, ProviderError::CloudModelNotFound);
+        assert_eq!(e.tag(), "model_not_found");
+        let plain = e.plain();
+        assert!(plain.contains("(404)"), "{plain:?}");
+        assert_vendor_free(&plain);
+    }
+
+    #[test]
+    fn from_cloud_404_hides_any_model_id_it_is_given() {
+        let e = ProviderError::from_cloud(
+            CloudError::Status {
+                code: 404,
+                retry_after: None,
+            },
+            NOTES_MODEL_BEST,
+        );
+        assert_vendor_free(&e.plain());
+    }
+
+    #[test]
+    fn from_http_404_still_names_the_users_own_model() {
+        // A custom endpoint's model string is the user's own — it stays.
+        let e = ProviderError::from_http(HttpError::Status { code: 404 }, "my-local-model");
+        assert_eq!(e.tag(), "model_not_found");
+        assert!(e.plain().contains("my-local-model"));
+    }
 }

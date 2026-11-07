@@ -167,6 +167,12 @@ export interface AppSettings {
    */
   companionTone?: string;
   /**
+   * yap-1106-chatter-setting (backend `yappy_talks`, default "less"): "Yappy
+   * talks" — always | less (quieter from the 50th take) | milestones. Read
+   * live by YappyPill and NudgeRow through float-main (`pill/chatter.ts`).
+   */
+  yappyTalks?: string;
+  /**
    * yap-1106-curse-setting (backend `companion_curse`, default false): the
    * Badass voice may swear about one finished-take line in four. Offered only
    * under Badass; ignored by every other voice and in any meeting state.
@@ -395,6 +401,13 @@ export interface AppStatus {
   secureInputBlocked: boolean;
   /** Holder + workaround line for the banner; null unless blocked. */
   secureInputDetail: string | null;
+  /**
+   * yap-1107-secure-input-own-field-quiet — Secure Input is held by Yap's OWN
+   * masked key field (WebKit turns it on while that field has focus). Never
+   * true together with `secureInputBlocked`; renders one quiet neutral line,
+   * never the red banner. Optional: older builds omit it.
+   */
+  secureInputOwnField?: boolean;
   /**
    * YV80 — the speech engine is loading right now. With the lazy default that
    * happens on the first take of a session, so `message` reads "Preparing your
@@ -677,6 +690,10 @@ export interface MeetingSegment {
   /** 0 = mic ("You"), 1 = system audio ("Call"). Absent = mic, per the column's
    *  `DEFAULT 0`: every row written before migration 3 really was the mic. */
   track?: number | null;
+  /** yap-1106-who-is-this — the saved voice's name for this line, merged in after "Who was this?". */
+  speakerName?: string | null;
+  /** yap-1106-auto-label-and-correct — the line's speaker cluster (null = unattributed). */
+  clusterIndex?: number | null;
 }
 
 /** YV125 — one choice on the start-of-meeting kind picker. Mirrors

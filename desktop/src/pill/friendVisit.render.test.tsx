@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import { FriendVisit, INSIGHTS_COMMAND, pillTakeTracker } from "./FriendVisit";
+import { FriendVisit, INSIGHTS_COMMAND, pillTakeTracker, startPillTakes } from "./FriendVisit";
 import { matrixFriendVisitScene } from "./forced";
 import {
   EMPTY_LEDGER,
@@ -84,8 +84,10 @@ describe("friend visits — the pill reads the real take count on mount", () => 
     insightsReturn(() => 3000);
     // The old local counter says 0 takes; it must not drive the ladder.
     vi.stubGlobal("localStorage", { getItem: vi.fn(() => "0"), setItem: vi.fn() });
-    const t = pillTakeTracker();
-    expect(await t.seed()).toBe("insights");
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    // What the mount effect runs (startPillTakes), so this is the first mount.
+    const { tracker: t, ready } = startPillTakes();
+    expect(await ready).toBe("insights");
     expect(invoke).toHaveBeenCalledWith(INSIGHTS_COMMAND);
     expect(t.takes()).toBe(3000);
     const ctx: VisitContext = { ...calm, takesSoFar: t.takes() };
@@ -108,6 +110,22 @@ describe("friend visits — the pill reads the real take count on mount", () => 
     expect(why(decideVisit("milestone", { ...calm, takesSoFar: t.takes() }, EMPTY_LEDGER, MORNING))).toBe("shown");
     real = 101;
     expect(await t.transcript()).toBe(false);
+  });
+
+  it("mount logs exactly one takes_source line, with no counts in it", async () => {
+    insightsReturn(() => 3000);
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn() });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await startPillTakes().ready;
+    const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("takes_source"));
+    expect(lines).toEqual(["pill friend_visit takes_source=insights"]);
+    expect(lines[0]).not.toMatch(/\d/);
+
+    info.mockClear();
+    invoke.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await startPillTakes().ready).toBe("fallback");
+    expect(info.mock.calls.map((c) => String(c[0]))).toContain("pill friend_visit takes_source=fallback");
   });
 
   it("the local counter is only the fallback, with a warn line, when get_insights fails", async () => {

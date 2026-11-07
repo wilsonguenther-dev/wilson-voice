@@ -48,12 +48,14 @@ import {
   visitLogLine,
   visitRemainingMs,
   type TakeTracker,
+  type TakesSource,
   type Visit,
   type VisitContext,
   type VisitLedger,
   type VisitorId,
 } from "./friendVisits";
 import { prefersReducedMotion } from "./motion";
+import { DEFAULT_CHATTER_MODE, type ChatterMode } from "./chatter";
 import { drawFriendFrame, friendManifest, pickFrame } from "../sprites/friends";
 import { FRIENDS } from "../sprites/art";
 import { crispPlan, domBuffer, paintCrisp } from "../sprites/crisp";
@@ -97,6 +99,24 @@ export function pillTakeTracker(): TakeTracker {
   return takeTracker(() => invoke<unknown>(INSIGHTS_COMMAND), loadTakes);
 }
 
+/**
+ * What the pill does on mount: seed the take count from the real total and log
+ * ONE line naming where it came from (`takes_source=insights|fallback`, no
+ * counts). The local counter is refreshed so a later failed read starts near
+ * the truth.
+ */
+export function startPillTakes(tracker: TakeTracker = pillTakeTracker()): {
+  tracker: TakeTracker;
+  ready: Promise<TakesSource>;
+} {
+  const ready = tracker.seed().then((source) => {
+    console.info(`pill friend_visit takes_source=${source}`);
+    saveTakes(tracker.takes());
+    return source;
+  });
+  return { tracker, ready };
+}
+
 /** Paint one frame of `id` into `canvas` at a whole-number scale. */
 function paintVisitor(canvas: HTMLCanvasElement, id: VisitorId, tMs: number, reduced: boolean): void {
   const dpr = window.devicePixelRatio;
@@ -136,9 +156,11 @@ export interface FriendVisitProps {
   occupant: string;
   /** DEV / matrix only: a visitor pinned on screen (`?friend=`). */
   forced?: VisitorId | null;
+  /** yap-1106-chatter-setting — "Yappy talks"; omitted, it is "less over time". */
+  chatter?: ChatterMode;
 }
 
-export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, forced = null }: FriendVisitProps) {
+export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, forced = null, chatter = DEFAULT_CHATTER_MODE }: FriendVisitProps) {
   const [visit, setVisit] = useState<Visit | null>(null);
   const [quiet, setQuiet] = useState({ screenSharing: false, doNotDisturb: false });
   /** A call app is live (offering / chip / recording) — as quiet as a meeting. */
@@ -148,21 +170,16 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const ledgerRef = useRef<VisitLedger>(EMPTY_LEDGER);
   const takesRef = useRef<TakeTracker | null>(null);
   const visitRef = useRef<Visit | null>(null);
-  const ctxRef = useRef({ meetingQuiet, occupant, quiet });
+  const ctxRef = useRef({ meetingQuiet, occupant, quiet, chatter });
   // Synced first, so every effect below (and every listener) reads this render.
   useEffect(() => {
-    ctxRef.current = { meetingQuiet, occupant, quiet };
-  }, [meetingQuiet, occupant, quiet]);
+    ctxRef.current = { meetingQuiet, occupant, quiet, chatter };
+  }, [meetingQuiet, occupant, quiet, chatter]);
 
   useEffect(() => {
     ledgerRef.current = loadLedger();
     if (forced) return;
-    const tracker = pillTakeTracker();
-    takesRef.current = tracker;
-    void tracker.seed().then((source) => {
-      console.info(`pill friend_visit takes_source=${source}`);
-      saveTakes(tracker.takes());
-    });
+    takesRef.current = startPillTakes().tracker;
   }, [forced]);
 
   const raise = useCallback((event: string, cloudConnected = false) => {
@@ -174,6 +191,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       takesSoFar: takesRef.current?.takes() ?? 0,
       occupant: c.occupant,
       cloudConnected,
+      chatter: c.chatter,
     };
     const d = decideVisit(event, ctx, ledgerRef.current, Date.now(), visitRef.current);
     console.info(visitLogLine(event, d));

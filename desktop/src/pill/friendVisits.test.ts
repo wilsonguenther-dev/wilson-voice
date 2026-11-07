@@ -26,6 +26,7 @@ import {
   parseLedger,
   parseQuietState,
   quietReason,
+  quietingTakes,
   recordVisit,
   serializeLedger,
   takeTracker,
@@ -238,6 +239,43 @@ describe("friend visits — the approved quiet rules", () => {
     expect(reason(at("word-added", ctx, r.ledger).d)).toBe("daily-cap");
   });
 
+  // yap-1106-chatter-setting — the 50-take quieting is the "less over time"
+  // setting; "always" switches it off and "only milestones" keeps friends home.
+  it("Yappy talks: always — past 200 takes friends still visit at the first-day rate", () => {
+    const ctx: VisitContext = { ...calm, takesSoFar: QUIETEST_AFTER_TAKES, chatter: "always" };
+    expect(quietingTakes(ctx)).toBe(0);
+    let l = EMPTY_LEDGER;
+    for (const e of ["backtrack-caught", "word-added", "battery-low", "meeting-notes-ready", "news-ready"]) {
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      const r = at(e, ctx, l);
+      expect(reason(r.d)).toBe("shown");
+      expect(shown(r.d).untilMs - shown(r.d).startMs).toBe(VISIT_MAX_MS);
+      l = r.ledger;
+    }
+    expect(l.count).toBe(5);
+  });
+
+  it("Yappy talks: less over time (and omitted) — the 50-take ladder applies", () => {
+    const less: VisitContext = { ...calm, takesSoFar: QUIETER_AFTER_TAKES, chatter: "less" };
+    expect(quietingTakes(less)).toBe(QUIETER_AFTER_TAKES);
+    expect(quietingTakes({ ...calm, takesSoFar: QUIETER_AFTER_TAKES })).toBe(QUIETER_AFTER_TAKES);
+    const r = at("backtrack-caught", less, EMPTY_LEDGER);
+    expect(shown(r.d).untilMs - shown(r.d).startMs).toBe(VISIT_QUIETER_MS);
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(reason(at("word-added", less, r.ledger).d)).toBe("too-soon");
+  });
+
+  it("Yappy talks: only milestones — friends stay home, the milestone visit still comes", () => {
+    const ctx: VisitContext = { ...calm, takesSoFar: 5, occupant: "tidy", chatter: "milestones" };
+    for (const e of ["backtrack-caught", "word-added", "battery-low", "meeting-notes-ready", "news-ready"]) {
+      expect(reason(at(e, ctx, EMPTY_LEDGER).d)).toBe("chatter-milestones");
+    }
+    expect(reason(at("milestone", { ...ctx, takesSoFar: 100 }, EMPTY_LEDGER).d)).toBe("shown");
+    expect(visitLogLine("word-added", decideVisit("word-added", ctx, EMPTY_LEDGER, Date.now()))).toBe(
+      "pill friend_visit skipped event=word-added reason=chatter-milestones",
+    );
+  });
+
   it("the ledger survives a relaunch and a malformed row is an empty ledger", () => {
     const r = at("backtrack-caught", calm, EMPTY_LEDGER);
     const back = parseLedger(serializeLedger(r.ledger));
@@ -350,21 +388,40 @@ describe("friend visits — the real take count", () => {
     expect(t.takes()).toBe(101);
   });
 
-  it("a re-read that races the save still counts the take, and never repeats the milestone", async () => {
-    const t = takeTracker(() => Promise.resolve(insights(99)), () => 0, vi.fn());
+  it("a transcript that adds no take (a retry merged into a saved entry) neither counts nor fires", async () => {
+    let real = 99;
+    const t = takeTracker(() => Promise.resolve(insights(real)), () => 0, vi.fn());
     await t.seed();
-    expect(await t.transcript()).toBe(true); // read still says 99: counted as 100
+    // The retry emitted `transcript` but the history still holds 99: no guess-ahead.
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(99);
+    real = 100;
+    expect(await t.transcript()).toBe(true);
+    // A re-read of the same total never repeats the milestone.
+    expect(await t.transcript()).toBe(false);
     expect(t.takes()).toBe(100);
-    expect(await t.transcript()).toBe(false); // read still 99: 101, no repeat
-    expect(t.takes()).toBe(101);
   });
 
-  it("a transcript that lands before the seed resolves counts on top of the real total", async () => {
+  it("a total that dips (history deleted) and climbs back past 100 does not repeat the milestone", async () => {
+    let real = 150;
+    const t = takeTracker(() => Promise.resolve(insights(real)), () => 0, vi.fn());
+    await t.seed();
+    real = 90;
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(90);
+    real = 100;
+    expect(await t.transcript()).toBe(false);
+    expect(t.takes()).toBe(100);
+    real = 1000;
+    expect(await t.transcript()).toBe(true); // 1000 is a new edge
+  });
+
+  it("a transcript that lands before the seed resolves settles on the real total", async () => {
     let resolve: (v: unknown) => void = () => {};
     let calls = 0;
     const read = () => {
       calls += 1;
-      return calls === 1 ? new Promise<unknown>((r) => { resolve = r; }) : Promise.resolve(insights(3000));
+      return calls === 1 ? new Promise<unknown>((r) => { resolve = r; }) : Promise.resolve(insights(3001));
     };
     const t = takeTracker(read, () => 0, vi.fn());
     const seeded = t.seed();

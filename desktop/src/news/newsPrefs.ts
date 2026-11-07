@@ -6,6 +6,7 @@
 // Settings → Yappy News. Everything here is pure so it is testable without a
 // webview; the three surfaces share `NewsInterests` for the picker itself.
 import { invoke } from "@tauri-apps/api/core";
+import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 /** Where a save or dismiss came from (the backend logs it, nothing else). */
 export type NewsSource = "onboarding" | "home" | "settings";
@@ -29,6 +30,51 @@ export interface NewsView extends NewsPrefs {
   homeCardDue: boolean;
   cloudConnectedAtMs: number | null;
   lastRefreshMs: number | null;
+  /** yap-1106-news-refresh-setting — `news_prefs::Cadence`. Missing = the default. */
+  refreshCadence?: NewsCadence;
+}
+
+/** yap-1106-news-refresh-setting — Settings → Yappy News → "How often". */
+export type NewsCadence = "twice_a_day" | "every_few_hours" | "on_home_open" | "on_tap";
+
+/** The approved default. */
+export const DEFAULT_CADENCE: NewsCadence = "twice_a_day";
+
+/** The 30-minute floor `news::schedule` holds for every choice. */
+export const REFRESH_FLOOR_MS = 30 * 60_000;
+
+/** The choices, in the order they show. Ids match `news_prefs::Cadence`. */
+export const CADENCE_OPTIONS: ReadonlyArray<{ id: NewsCadence; label: string; hint: string }> = [
+  { id: "twice_a_day", label: "Twice a day", hint: "After 6 AM and after 4 PM. Tickers every 30 minutes while Home is open." },
+  { id: "every_few_hours", label: "Every few hours", hint: "About every three hours, tickers included." },
+  { id: "on_home_open", label: "Only when I open Home", hint: "Nothing in the background." },
+  { id: "on_tap", label: "Only when I tap refresh", hint: "Nothing runs until you ask." },
+];
+
+/** The saved choice, or the default for an older backend. */
+export function cadenceOf(v: NewsView | null): NewsCadence {
+  const c = v?.refreshCadence;
+  return CADENCE_OPTIONS.some((o) => o.id === c) ? (c as NewsCadence) : DEFAULT_CADENCE;
+}
+
+/** What asked for a refresh — `news::schedule::Trigger`. */
+export type NewsTrigger = "timer" | "home_opened" | "home_tick" | "tap";
+
+/** `news::RefreshOutcome` (stories/quotes kept loose; Home owns their shape). */
+export interface NewsRefreshOutcome {
+  ran: boolean;
+  skipped: string | null;
+  message: string | null;
+  stories: unknown[];
+  quotes: unknown[];
+  view: NewsView;
+}
+
+/** When a tap may refresh again (the floor), or null when it may now. */
+export function nextTapAllowedAt(lastRefreshMs: number | null, now: number = Date.now()): number | null {
+  if (lastRefreshMs == null || lastRefreshMs <= 0) return null;
+  const at = lastRefreshMs + REFRESH_FLOOR_MS;
+  return at > now ? at : null;
 }
 
 /** The chips, in the order they show. Ids match `news_prefs::TOPIC_CHIPS`. */
@@ -164,6 +210,163 @@ export function saveNews(prefs: NewsPrefs, source: NewsSource): Promise<NewsView
   return invoke<NewsView>("set_news_prefs", { prefs, source });
 }
 
+export function saveCadence(cadence: NewsCadence): Promise<NewsView> {
+  return invoke<NewsView>("set_news_cadence", { cadence });
+}
+
+export function refreshNews(trigger: NewsTrigger): Promise<NewsRefreshOutcome> {
+  return invoke<NewsRefreshOutcome>("news_refresh", { trigger });
+}
+
 export function dismissNews(source: NewsSource): Promise<NewsView> {
   return invoke<NewsView>("dismiss_news_offer", { source });
+}
+
+// ── yap-1107-news-honours-cloud-key — the connect transition ──
+// Saving a cloud key (or moving the mode to the cloud) in Settings → Advanced
+// fires `yap:cloud-route-changed` on window (CloudRoute.tsx). A mounted News
+// view re-reads on it, so it flips on without a restart or a remount; each
+// read also lets the backend start the one connect refresh when it is owed.
+
+/**
+ * Re-read the News view every time the cloud route changes. Returns the
+ * unsubscribe. `target` and `load` are injectable for tests. A failed re-read
+ * keeps the last view (logged once per failure; the next event tries again).
+ */
+export function watchCloudRoute(
+  onView: (v: NewsView) => void,
+  target: EventTarget = window,
+  load: () => Promise<NewsView> = loadNews,
+): () => void {
+  let live = true;
+  const reread = () => {
+    load()
+      .then((v) => {
+        if (live) onView(v);
+      })
+      .catch((e) => console.warn("news reread_failed trigger=cloud_route", e));
+  };
+  target.addEventListener(CLOUD_ROUTE_CHANGED_EVENT, reread);
+  return () => {
+    live = false;
+    target.removeEventListener(CLOUD_ROUTE_CHANGED_EVENT, reread);
+  };
+}
+
+/** The Advanced block that holds "Cloud model (your key)" (CloudRoute.tsx). */
+export const CLOUD_ROUTE_SELECTOR = '[data-block="cloud-route"]';
+
+/**
+ * "Connect it in Advanced": after the tab switch, bring the cloud-key block
+ * into view and focus its heading. That block renders after an async read, so
+ * this waits up to `frames` animation frames for it. Resolves whether it was
+ * found (false = the tab is open, the block never came; nothing else breaks).
+ */
+export function revealCloudRoute(doc: Document = document, frames = 60): Promise<boolean> {
+  return new Promise((resolve) => {
+    let left = frames;
+    const tick = () => {
+      const block = doc.querySelector<HTMLElement>(CLOUD_ROUTE_SELECTOR);
+      if (block) {
+        const reduce = doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        block.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+        const heading = block.querySelector<HTMLElement>("h3");
+        if (heading) {
+          heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
+        resolve(true);
+        return;
+      }
+      if (--left <= 0) {
+        console.warn("news connect_reveal_failed reason=not_rendered");
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+
+// ── yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced ──
+// An optional own key for the quote feed (Finnhub or Alpha Vantage). It lives
+// only in the Keychain; the backend returns "saved" plus the last four
+// characters, never the key. With no key the free tier applies.
+
+export type QuoteProvider = "finnhub" | "alpha_vantage";
+export type QuoteTier = "free" | QuoteProvider;
+
+/** `news::quote_key::ProviderInfo`. */
+export interface QuoteProviderInfo {
+  id: QuoteProvider;
+  label: string;
+  host: string;
+  refreshLine: string;
+}
+
+/** `news::quote_key::QuoteKeyView`. */
+export interface QuoteKeyView {
+  provider: QuoteProvider | null;
+  saved: boolean;
+  hint: string;
+  tier: QuoteTier;
+  leavesLabel: string;
+  providers: QuoteProviderInfo[];
+  error: string | null;
+}
+
+/** The label beside the key field (the backend sends the same words). */
+export const QUOTE_KEY_LEAVES_LABEL = "Leaves this Mac: only to that provider";
+
+/** One sentence: what the next refresh does for tickers. */
+export function quoteTierLine(v: QuoteKeyView): string {
+  const p = v.providers.find((x) => x.id === v.tier);
+  if (v.tier === "free" || !p) {
+    return "Free sources: your tickers show as headlines from the public news feeds. No key needed.";
+  }
+  const ending = v.hint ? ` (key ending ${v.hint})` : "";
+  return `Prices from ${p.label}${ending}. ${p.refreshLine}`;
+}
+
+/** The provider the form starts on: the saved one, else the first. */
+export function initialQuoteProvider(v: QuoteKeyView): QuoteProvider {
+  return v.provider ?? v.providers[0]?.id ?? "finnhub";
+}
+
+export function loadQuoteKey(): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("get_news_quote_key");
+}
+
+export function saveQuoteKey(provider: QuoteProvider, key: string): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("set_news_quote_key", { provider, key });
+}
+
+export function clearQuoteKey(): Promise<QuoteKeyView> {
+  return invoke<QuoteKeyView>("clear_news_quote_key");
+}
+
+/** yap-1106-news-explain — one story as the card shows it: Yappy's line, or the headline alone (`explained: false`). */
+export interface ExplainedLine {
+  urlKey: string;
+  url: string;
+  headline: string;
+  line: string;
+  explained: boolean;
+}
+
+/** The top 3 explained, plus why any line is the headline alone (`fallback`). */
+export interface NewsExplained {
+  lines: ExplainedLine[];
+  voice: "bestFriend" | "badass" | "professional" | "rose";
+  fallback: string;
+  sent: number;
+  unsupported: number;
+  advice: number;
+  ms: number;
+}
+
+/** One line each for the top 3 cached stories in Yappy's voice; `voice` is the stored `companionTone`. */
+export function explainTopNews(voice: string): Promise<NewsExplained> {
+  return invoke<NewsExplained>("news_explain_top", { voice });
 }

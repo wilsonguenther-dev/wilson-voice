@@ -84,3 +84,18 @@ Each redraw is one `drawImage` of it. Nothing in the sky moves, so the frame pol
 `<html data-sky>` names the sky on screen; dev and matrix builds can pin it with
 `float.html?sky=dawn|day|dusk|night`, and `scripts/pill-matrix.mjs --sky <time|all>`
 photographs every phase x dock under it (default `day`).
+
+## One pill during a meeting (yap-1107-one-pill-during-meeting)
+
+A meeting is ONE surface, never a recording capsule beside Yappy. `pillLayout`
+(`state.ts`) returns `shell` (the union of Yappy and the clock, flush, no gap) and
+`sceneCharacter`. At rest during a recording the meeting scene (`MeetingWorld`: sun
+clock, Hoot at the tape, Yappy in headphones) IS the pill and the canvas draws no
+sky capsule; dictating mid-meeting, Yappy's capsule opens and the clock shrinks to
+a small stack next to stop (`MeetingBadge` `meeting-stacked`); after stop the badge
+is the right-hand segment of the same shell. float.css paints the one
+`.meeting-shell` behind both. `meetingSurfaceProblems()` and the pill matrix's
+`meeting-second-surface` finding guard it.
+On a side dock (the vertical-dock world) Yappy keeps his <= 64 px tab/room and the
+clock is the inner-side segment flush to it, level with him; `meetingShellBox()` joins
+it to the strip of the room beside it, so the shell never sits behind the bubble.

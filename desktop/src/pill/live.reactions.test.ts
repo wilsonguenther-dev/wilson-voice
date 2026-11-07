@@ -234,7 +234,8 @@ describe("after release: workLine chatter is capped at 2 lines", () => {
     // the only workLine call is inside afterLine(), which checks the cap first
     const calls = src.match(/workLine\(chatTone/g) ?? [];
     expect(calls).toHaveLength(1);
-    expect(src).toMatch(/if \(!chatty\(chatTone, words\) \|\| !afterTakeLineAllowed\(afterLines\)\) return "";/);
+    // yap-1106-chatter-setting adds the "Yappy talks" policy gate after the cap
+    expect(src).toMatch(/if \(!chatty\(chatTone, words\) \|\| !afterTakeLineAllowed\(afterLines\)( \|\| !allowAfterLine\(policy, afterLines\))?\) return "";/);
     expect(src).toMatch(/phase === "thinking" && chatty\(chatTone, words\) && afterTakeLineAllowed\(afterLines\)/);
     // and every take logs its live.lines tally
     expect(src).toMatch(/console\.info\(liveLinesLog\(/);

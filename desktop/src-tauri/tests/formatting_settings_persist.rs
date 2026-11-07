@@ -56,8 +56,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
 // yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
+// yap-1106-chatter-setting: +1 (yappy_talks).
 // yap-1106-curse-setting: +1 (companion_curse).
-const APP_SETTINGS_FIELD_COUNT: usize = 50;
+const APP_SETTINGS_FIELD_COUNT: usize = 51;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -180,6 +181,8 @@ fn fully_populated() -> AppSettings {
         }],
         // WF-16 — non-default: the screen-share hide switched off.
         hide_from_capture_in_meetings: false,
+        // yap-1106-chatter-setting — non-default: only milestones.
+        yappy_talks: "milestones".into(),
     }
 }
 
@@ -470,4 +473,39 @@ fn quiet_mode_never_stores_an_unmutable_category() {
     );
     assert!(sanitize_muted_pill_categories(&["error".to_string()]).is_empty());
     assert!(AppSettings::default().muted_pill_categories.is_empty());
+}
+
+/// yap-1106-chatter-setting — "Yappy talks" defaults to "less over time",
+/// round-trips on the camelCase wire key, and a store missing it (every store
+/// written before this item) loads as "less".
+#[test]
+fn yappy_talks_defaults_to_less_and_round_trips() {
+    use wilson_voice_lib::{sanitize_yappy_talks, YAPPY_TALKS_MODES};
+
+    assert_eq!(AppSettings::default().yappy_talks, "less");
+    for mode in YAPPY_TALKS_MODES {
+        assert_eq!(sanitize_yappy_talks(mode), mode, "{mode} is a real mode");
+        let s = AppSettings {
+            yappy_talks: mode.to_string(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(
+            json.contains(&format!("\"yappyTalks\":\"{mode}\"")),
+            "{json}"
+        );
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.yappy_talks, mode);
+    }
+    for junk in ["", "never", "LESS", "sometimes"] {
+        assert_eq!(
+            sanitize_yappy_talks(junk),
+            "less",
+            "{junk:?} falls back to the default"
+        );
+    }
+    let mut old = serde_json::to_value(AppSettings::default()).expect("to value");
+    old.as_object_mut().expect("object").remove("yappyTalks");
+    let loaded: AppSettings = serde_json::from_value(old).expect("old store loads");
+    assert_eq!(loaded.yappy_talks, "less");
 }

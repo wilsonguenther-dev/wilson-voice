@@ -55,10 +55,13 @@ use serde::{Deserialize, Serialize};
 /// 11 = yap-1106-voiceprints' `speaker_profiles` / `speaker_samples` tables
 ///      and `meeting_segments.speaker_profile_id` / `speaker_name`
 ///      ([`crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES`]).
+/// 12 = yap-1106-who-is-this' `meeting_cluster_voices` (each diarized
+///      cluster's voice and what the person decided about it)
+///      ([`crate::speaker_profiles::MIGRATION_12_CLUSTER_VOICES`]).
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -1095,6 +1098,11 @@ pub struct TranscriptLine {
     /// plain track label in [`TranscriptLine::speaker`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_rank: Option<usize>,
+    /// yap-1106-auto-label-and-correct — the name a saved voice or a person's
+    /// correction gave this line (`meeting_segments.speaker_name`). Wins over
+    /// "Speaker N", exactly as `speakerName` does in `meetings/transcript.ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_name: Option<String>,
 }
 
 impl TranscriptLine {
@@ -1102,6 +1110,11 @@ impl TranscriptLine {
     /// "Call · Speaker 2" on a clustered call track, else the plain
     /// [`TranscriptLine::speaker`] ("You", "Call", "Speaker").
     pub fn label(&self) -> String {
+        if let Some(name) = self.speaker_name.as_deref().map(str::trim) {
+            if !name.is_empty() {
+                return one_line(name);
+            }
+        }
         match self.cluster_rank {
             None => self.speaker.to_string(),
             Some(rank) if self.track == MIC_TRACK => cluster_speaker_label(rank),
@@ -1203,6 +1216,7 @@ pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<
                 cluster_rank: seg
                     .cluster_index
                     .and_then(|c| ranks.get(&(seg.track, c)).copied()),
+                speaker_name: None,
             })
         })
         .collect();
@@ -1247,6 +1261,41 @@ pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<
 /// this is where the meeting and its segments have to meet: a renderer handed
 /// only segments cannot know whether the microphone may be called "Me".
 pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String {
+    render_markdown_named(meeting, segments, &[])
+}
+
+/// yap-1106-auto-label-and-correct — [`render_transcript`] with the names saved
+/// voices and corrections gave (`Database::meeting_speaker_names`: `(segment
+/// id, name)` pairs) applied, so the export and the notes say "Alex" where the
+/// screen does.
+pub fn render_transcript_named(
+    segments: &[MeetingSegment],
+    kind: MeetingKind,
+    names: &[(String, String)],
+) -> Vec<TranscriptLine> {
+    let mut lines = render_transcript(segments, kind);
+    if !names.is_empty() {
+        let by_id: std::collections::HashMap<&str, &str> = names
+            .iter()
+            .map(|(id, name)| (id.as_str(), name.as_str()))
+            .collect();
+        for line in &mut lines {
+            line.speaker_name = by_id
+                .get(line.segment_id.as_str())
+                .map(|n| n.trim())
+                .filter(|n| !n.is_empty())
+                .map(str::to_string);
+        }
+    }
+    lines
+}
+
+/// [`render_markdown`] with corrected names (see [`render_transcript_named`]).
+pub fn render_markdown_named(
+    meeting: &Meeting,
+    segments: &[MeetingSegment],
+    names: &[(String, String)],
+) -> String {
     let mut out = String::with_capacity(256 + segments.len() * 64);
     out.push_str(&format!("# {}\n\n", one_line(&meeting.title)));
     out.push_str(&format!(
@@ -1281,7 +1330,7 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
         out.push_str("_No transcript segments._\n");
         return out;
     }
-    for line in render_transcript(segments, meeting.kind()) {
+    for line in render_transcript_named(segments, meeting.kind(), names) {
         out.push_str(&format!(
             "**[{}] {}:** {}\n\n",
             line.offset,
@@ -1402,6 +1451,42 @@ mod tests {
             track: MIC_TRACK,
             cluster_index: None,
         }
+    }
+
+    /// yap-1106-auto-label-and-correct — the export reflects the corrections:
+    /// a corrected line exports under its new name, an uncorrected one keeps
+    /// its plain label, and a blank name never blanks the label.
+    #[test]
+    fn the_export_reflects_speaker_corrections() {
+        let m = meeting();
+        let mut a = seg(0.0, "first line");
+        a.id = "a".into();
+        let mut b = seg(5.0, "second line");
+        b.id = "b".into();
+        let mut c = seg(9.0, "third line");
+        c.id = "c".into();
+        let names = vec![
+            ("a".to_string(), "Alex".to_string()),
+            ("c".to_string(), "   ".to_string()),
+        ];
+        let segments = [a, b, c];
+        let md = render_markdown_named(&m, &segments, &names);
+        assert!(md.contains("] Alex:** first line"), "{md}");
+        let plain = render_markdown(&m, &segments);
+        let plain_b = plain
+            .lines()
+            .find(|l| l.contains("second line"))
+            .expect("second line exported");
+        assert!(md.contains(plain_b), "an uncorrected line keeps its label");
+        let plain_c = plain
+            .lines()
+            .find(|l| l.contains("third line"))
+            .expect("third line exported");
+        assert!(md.contains(plain_c), "a blank name never blanks the label");
+        // Renaming again (the correction's new answer) is what the next export says.
+        let renamed = vec![("a".to_string(), "Jordan".to_string())];
+        let md2 = render_markdown_named(&m, &segments, &renamed);
+        assert!(md2.contains("] Jordan:** first line") && !md2.contains("Alex"));
     }
 
     #[test]

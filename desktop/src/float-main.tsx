@@ -8,7 +8,7 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
@@ -25,9 +25,14 @@ import {
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
+import { DEFAULT_CHATTER_MODE, parseChatterMode, type ChatterMode } from "./pill/chatter";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LaunchWalk from "./pill/LaunchWalkScene";
+import { forcedLaunchWalk } from "./pill/launchWalk";
+import WarmupEngine from "./pill/WarmupEngine";
+import { forcedWarmup } from "./pill/warmup";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import MeetingDictationCard from "./pill/MeetingDictationCard";
 import { forcedMeetingNotice } from "./pill/meetingDictation";
@@ -44,7 +49,7 @@ import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
 import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
-  errorSentence,
+  takeErrorLine,
   phaseCopy,
   blindFromStatus,
   blindLine,
@@ -129,6 +134,8 @@ interface Settings {
   pillStyle?: string;
   pillPosition?: string;
   companionTone?: string;
+  /** yap-1106-chatter-setting — "Yappy talks": always | less | milestones (backend `yappy_talks`). */
+  yappyTalks?: string;
   /** yap-1106-curse-setting — the Badass curse toggle (backend `companion_curse`, off by default). */
   companionCurse?: boolean;
   /**
@@ -382,6 +389,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // yap-1106-chatter-setting — "Yappy talks", read live off the settings payload like the tone.
+  const [chatter, setChatter] = useState<ChatterMode>(DEFAULT_CHATTER_MODE);
   const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
@@ -604,6 +613,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setChatter(parseChatterMode(s?.yappyTalks));
       setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
@@ -654,7 +664,10 @@ function Float() {
   // stop it is a property of the meeting pipeline, not of whichever capsule is
   // drawn (Y5-K owner decision: the shell owns phases, a character only owns
   // art). Ranked ONCE against the take: a dictation on screen outranks the
-  // post-stop badge, so `meetingAfter` is null while one is.
+  // post-stop badge, so `meetingAfter` is null while one is — except the 2.4 s
+  // "Saved" stop beat (fix-b8-1), which keeps its clock box mid-take: it is
+  // `meetingAfter` kind "saved", so `meetingMode` is "after" and the layout
+  // reserves the slot instead of clipping the beat to 0x0.
   const meeting = useMeetingPill();
   const meetingAfter = meetingAfterView(meeting.phase, phase);
   const dismissMeeting = meeting.dismiss;
@@ -669,6 +682,12 @@ function Float() {
     // The same handle `data-phase` gives a screenshot or a browser test.
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
+  // yap-1106-launch-walk — a headless capture can pin the walk (`?walk=40`).
+  const forcedWalk = FORCED ? forcedLaunchWalk(window.location.search) : null;
+  // yap-1106-pill-warmup-engine — the compact warm-up pill paints the same
+  // load signal whenever the walk is not on screen (`?warm=` pins it headless).
+  const forcedWarm = FORCED ? forcedWarmup(window.location.search) : null;
+  const [walkVisible, setWalkVisible] = useState(false);
   const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
   // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
   // Badass only, and never in a meeting state (recording, or its after-view on
@@ -743,7 +762,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} curse={curseOn} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -771,7 +790,7 @@ function Float() {
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
   const line = railError
-    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+    ?? (phase === "error" ? takeErrorLine(lastErrorCode, errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
@@ -780,15 +799,36 @@ function Float() {
       <PanelFrameSync layout={target} />
       <div className="bar" {...bar}>
         {pill}
+        {/* yap-1106-launch-walk — Yappy walks to work while the engine loads
+            (drawn from the backend's load percentage). A take during the walk
+            still records: the walk only turns into a run. A matrix scene and a
+            meeting keep their own world. */}
+        <LaunchWalk
+          recording={isListening(phase)}
+          forced={forcedWalk}
+          suppressed={(Boolean(FORCED) && !forcedWalk) || meeting.status.recording || meetingAfter !== null}
+          onVisibleChange={setWalkVisible}
+        />
+        {/* yap-1106-pill-warmup-engine — Yappy starts a little engine in the
+            compact pill (72 x 24 window + fill bar): the first-launch download
+            and every load after the launch walk. fn still records during it. */}
+        <WarmupEngine
+          recording={isListening(phase)}
+          forced={forcedWarm}
+          suppressed={walkVisible || (Boolean(FORCED) && !forcedWarm) || meeting.status.recording || meetingAfter !== null}
+        />
       </div>
       {/* yap-1106-friend-visits — a friend visits for its own event only: at
           most 4 s, once a day each, never during a meeting, a screen share or
           Do Not Disturb, and less often after 50 takes (pill/friendVisits.ts). */}
       <FriendVisit
-        meetingRecording={meeting.status.recording}
+        /* fix-b8-1 — the 2.4 s "Saved" stop beat is still the meeting's
+           moment: no visitor walks over Hoot's tape hand-over. */
+        meetingRecording={meeting.status.recording || meeting.phase.kind === "saved"}
         meetingNotesReady={meeting.phase.kind === "notes-ready"}
         occupant={character.id}
         forced={FORCED ? forcedFriendVisit(window.location.search) : null}
+        chatter={chatter}
       />
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
@@ -810,7 +850,7 @@ function Float() {
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} chatter={chatter} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
@@ -931,6 +971,7 @@ function useCardOnScreen(): number | null {
  */
 function PanelFrameSync({ layout }: { layout: PillLayout }) {
   const [shown, setShown] = useState<PillLayout>(layout);
+  const lastSurfaceRef = useRef<string>("");
   useEffect(() => {
     if (shown.key === layout.key) return;
     const delay = shrinkDelay(shown, layout);
@@ -945,6 +986,15 @@ function PanelFrameSync({ layout }: { layout: PillLayout }) {
     const de = document.documentElement;
     de.dataset.onePill = shown.legacy ? "false" : "true";
     de.dataset.pillMeeting = shown.meeting;
+    // yap-1107-one-pill-during-meeting — the ONE meeting shell (float.css draws
+    // it behind Yappy and the clock), and whether the scene is the character.
+    de.dataset.meetingShell = !shown.legacy && shown.shell ? "true" : "false";
+    de.dataset.sceneCharacter = !shown.legacy && shown.sceneCharacter ? "true" : "false";
+    const surface = shown.legacy ? "legacy" : shown.sceneCharacter ? "scene" : shown.shell ? "shell" : "none";
+    if (surface !== lastSurfaceRef.current) {
+      console.info(`pill meeting_surface mode=${surface} meeting=${shown.meeting} dock=${shown.dock}`);
+      lastSurfaceRef.current = surface;
+    }
     const vars = layoutVars(shown);
     for (const [k, v] of Object.entries(vars)) {
       if (shown.legacy) de.style.removeProperty(k);
