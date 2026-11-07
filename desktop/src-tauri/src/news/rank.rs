@@ -11,8 +11,8 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use reqwest::Url;
 use serde::Serialize;
+use tauri::Url; // the url crate's type, re-exported; parsing only, no network client
 
 use super::feeds::{google_query, Story};
 use crate::news_prefs::NewsPrefs;
