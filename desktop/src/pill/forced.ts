@@ -215,6 +215,25 @@ export function matrixBacktrackCaughtScene(): MatrixOfferRow {
 }
 
 /**
+ * WF-05 — the "Polished — Reveal" toast and its opened card over an idle pill
+ * (`float.html?phase=idle&polish=toast|card`, see `forcedPolishReveal` in
+ * polishReveal.ts). `offer` is empty: the language-offer detector does not
+ * apply to this card.
+ */
+export function matrixPolishRevealScenes(): MatrixOfferRow[] {
+  const v = phaseVisual("idle");
+  return (["toast", "card"] as const).map((view) => ({
+    phase: "idle",
+    id: `polish-reveal-${view}`,
+    phaseId: PHASE_ID.idle,
+    query: `polish=${view}`,
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  }));
+}
+
+/**
  * yap-wf-02-the-pill-shrinks-to — WF-02's drag blob (`float.html?phase=idle&drag=blob`,
  * see `forcedDragScene` in drag.ts): the pill mid-drag, collapsed to Yappy's
  * face with the three drop zones up. `drag` is what `<html data-pill-drag>`

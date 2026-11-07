@@ -2602,6 +2602,62 @@ impl Database {
         Ok(written)
     }
 
+    /// yap-1106-diarize-wire — split ONE stored row at speaker switches.
+    ///
+    /// `pieces` are `(start, end, text, cluster_index)` in time order, built
+    /// from whole ASR words by `meeting_asr::build_speaker_turns` (so no word
+    /// is split and no time is interpolated). The original row becomes the
+    /// first piece; each further piece is a new row that copies the original's
+    /// confidence, created_at, track and echo flag. One transaction, and
+    /// `meeting_id` is in every WHERE clause. Returns the number of rows the
+    /// split produced. Fewer than two pieces is a no-op.
+    pub fn split_segment_by_speaker(
+        &self,
+        meeting_id: &str,
+        segment_id: &str,
+        pieces: &[(f64, f64, String, Option<i64>)],
+    ) -> Result<usize, String> {
+        if pieces.len() < 2 {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for (start, end, text, cluster) in &pieces[1..] {
+            let n = tx
+                .execute(
+                    "INSERT INTO meeting_segments
+                     (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
+                      track, cluster_index, suppressed_as_echo)
+                     SELECT ?1, meeting_id, ?2, ?3, ?4, confidence, created_at, track, ?5,
+                            suppressed_as_echo
+                     FROM meeting_segments WHERE meeting_id = ?6 AND id = ?7",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        start,
+                        end,
+                        text,
+                        cluster,
+                        meeting_id,
+                        segment_id
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            if n != 1 {
+                return Err(format!("no segment {segment_id} in meeting {meeting_id}"));
+            }
+        }
+        let (start, end, text, cluster) = &pieces[0];
+        tx.execute(
+            "UPDATE meeting_segments
+             SET start_seconds = ?1, end_seconds = ?2, text = ?3, cluster_index = ?4
+             WHERE meeting_id = ?5 AND id = ?6",
+            params![start, end, text, cluster, meeting_id, segment_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(pieces.len())
+    }
+
     /// Meetings newest-first. A non-empty `query` searches segment text through
     /// FTS5 **and** the title **and** the stored notes (summary, decisions,
     /// action items — yap-notetaker-notes), so "yesterday's standup" is findable both by what

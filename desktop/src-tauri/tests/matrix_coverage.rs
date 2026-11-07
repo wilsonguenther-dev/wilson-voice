@@ -346,8 +346,8 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         checked += 1;
     }
     assert_eq!(
-        checked, 7,
-        "rows 5b, 16b, 17b, 3, 7, 8 and 13 are the policies NOBODY owns; if that set changed, the \
+        checked, 6,
+        "rows 5b, 16b, 17b, 3, 8 and 13 are the policies NOBODY owns; if that set changed, the \
          change is a claim about what the app now does and belongs in the table's tests too. \
          (Row 14 is policy-only as well, but it names an open PR as the owner of its wiring and \
          asserts its own call site's absence in its own test — this tripwire is for the rows with \
@@ -361,7 +361,10 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
          publish. Row 16 LEFT it with Y1-B the same way rows 1 and 2 did: `power.rs` registered \
          the sleep/wake observer, the row was promoted to `Test`, and its test now drives \
          `SleepWakeObserver`. Its resume offer has no UI, so fix-239 split it out as 16b, \
-         which is unowned and joins the set."
+         which is unowned and joins the set. Row 7 LEFT it with yap-1106-diarize-wire: \
+         `meeting_diarize::diarize_meeting` runs the sidecar on every finished meeting and \
+         calls `diarize_sidecar_degrade` on a failure, so the row is `Test` and its test drives \
+         a crashing stub sidecar through that shipping call."
     );
 }
 

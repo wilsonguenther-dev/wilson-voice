@@ -24,6 +24,8 @@ import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import PolishRevealCard from "./pill/PolishRevealCard";
+import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
 import SilentMicRow from "./pill/SilentMicRow";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
@@ -53,7 +55,6 @@ import {
   advanceLive,
   createLiveState,
   CANCELLED_SETTLE_MS,
-  GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
   parseMutedCategories,
@@ -63,6 +64,10 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import {
+  GATE_HOLD_IDLE, gateHovered, gateSettleDueIn, onGateHover, reduceGateHold,
+  type GateHold,
+} from "./pill/gateClick";
 import { curseAllowed, curseBlock, voiceFor } from "./pill/voices";
 import { useCallRecordingView } from "./pill/CallOffer";
 import { isLiveCall } from "./pill/callOfferModel";
@@ -90,6 +95,7 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixPolishRevealScenes,
   matrixStyleChipScene,
   matrixSilentMicScene,
   matrixRailScene,
@@ -255,6 +261,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // WF-05 — "Polished — Reveal": the toast, then the opened diff card.
+    ...matrixPolishRevealScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
     // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
@@ -388,15 +396,44 @@ function Float() {
     // permanent noise. Fire-and-forget like Y3-D's cancel timer: `gate_settled`
     // only ever moves the phase it owns, so a press that has already moved the
     // pill on is left alone.
+    //
+    // yap-1106-pill-trial-clickable — the refusal is now the BUY button, so it
+    // holds GATE_HOLD_MS (6 s) and for as long as the pointer rests on it, then
+    // settles a short grace after the pointer leaves. The policy is pure
+    // (pill/gateClick.ts); this effect only owns the one timer.
+    let hold: GateHold = reduceGateHold(GATE_HOLD_IDLE, { type: "hover", on: gateHovered(), at: performance.now() });
+    let settleTimer: number | null = null;
+    const armSettle = () => {
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      const due = gateSettleDueIn(hold, performance.now());
+      if (due === null || dead) return;
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        const again = gateSettleDueIn(hold, performance.now());
+        if (again === null) return;
+        if (again > 0) { armSettle(); return; }
+        hold = reduceGateHold(hold, { type: "settled" });
+        setGate((p) => reduceGatePhase(p, { type: "gate_settled" }));
+      }, due);
+    };
+    unsubs.push(onGateHover((on) => {
+      hold = reduceGateHold(hold, { type: "hover", on, at: performance.now() });
+      armSettle();
+    }));
     listen<LicenseStatus>("license_required", (e) => {
       setLicense(e.payload);
       setGate((p) => reduceGatePhase(p, { type: "license_required" }));
-      setTimeout(
-        () => setGate((p) => reduceGatePhase(p, { type: "gate_settled" })),
-        GATED_SETTLE_MS,
-      );
+      hold = reduceGateHold(hold, { type: "shown", at: performance.now() });
+      armSettle();
     }).then(push);
-    return () => { dead = true; unsubs.forEach((u) => u()); };
+    return () => {
+      dead = true;
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      unsubs.forEach((u) => u());
+    };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -721,6 +758,11 @@ function Float() {
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
+      {/* WF-05 — "Polished — Reveal" (Reveal → diff with Use original / Keep). Muted with Tips. */}
+      <PolishRevealCard
+        forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it

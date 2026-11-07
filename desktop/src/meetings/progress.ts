@@ -56,6 +56,11 @@ export function notesLabel(progress: MeetingProgressEvent | undefined): string |
   }
 }
 
+/** yap-1106-diarize-wire — mirrors `meeting_diarize::FINDING_SPEAKERS_STATE`. */
+export const FINDING_SPEAKERS_STATE = "finding_speakers";
+/** The stage a row shows while the speaker pass runs (after the transcript, before notes). */
+export const FINDING_SPEAKERS_LABEL = "Finding speakers";
+
 /** The one line a row shows for its pipeline state. */
 export function meetingStateLabel(
   state: string,
@@ -63,6 +68,7 @@ export function meetingStateLabel(
   hasSummary: boolean,
 ): string {
   const notes = notesLabel(progress);
+  const findingSpeakers = progress?.state === FINDING_SPEAKERS_STATE;
   switch (state) {
     case "recording":
       return "Recording";
@@ -73,6 +79,7 @@ export function meetingStateLabel(
     case "summarizing":
       return "Writing notes";
     case "complete":
+      if (findingSpeakers) return `Transcript ready · ${FINDING_SPEAKERS_LABEL}`;
       if (notes && notes !== "Writing notes" && !(hasSummary && progress?.state === "notes_ready")) {
         return `Transcript ready · ${notes}`;
       }
@@ -81,6 +88,7 @@ export function meetingStateLabel(
       // #250 round 3 (B1): no job known → no promise of notes that may never come.
       return "Transcript ready";
     case "partial":
+      if (findingSpeakers) return `Partly transcribed · ${FINDING_SPEAKERS_LABEL}`;
       return notes && progress?.state !== "notes_ready" ? `Partly transcribed · ${notes}` : "Partly transcribed";
     case "waiting_for_model":
       return "Waiting for a speech model";

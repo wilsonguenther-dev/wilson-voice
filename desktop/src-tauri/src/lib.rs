@@ -68,6 +68,11 @@ pub mod focus;
 pub mod formatting_options;
 /// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
 mod pill_click;
+
+/// yap-1106-pill-trial-clickable — the `yapvoice://license/activate` link back
+/// from the purchase page (strict, pure parser).
+mod deep_link;
+
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -86,6 +91,7 @@ mod latency;
 // (`tests/meeting_*.rs`) and because the eval harness (`tests/meeting_eval.rs`)
 // must score the SHIPPED chunk geometry and the SHIPPED merge, not a copy.
 pub mod meeting_asr;
+pub mod meeting_diarize;
 pub mod meeting_pipeline;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
@@ -968,6 +974,10 @@ struct AppState {
     /// `stop_and_transcribe` and cleared by `cancel_recording`, so it can never
     /// leak into a later, ordinary take.
     command_selection: PLMutex<Option<String>>,
+    /// yap-1106-paste-target-defect: the frontmost app at KEY-DOWN (NSWorkspace,
+    /// no AX). Only a fallback for a release read that is unreadable or names
+    /// Yap itself (`focus::resolve_paste_target`); taken by the stop edge.
+    press_target: PLMutex<Option<focus::AppIdentity>>,
     recorder: PLMutex<Option<record::ActiveRecording>>,
     /// System-output state captured when we muted the Mac for a take (YV28).
     /// `Some` only while a recording has the output muted; restored + cleared on
@@ -3089,6 +3099,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     // than in the worker: the worker starts after the hold ends, and a cancel
     // fired in the gap between press and release must still be honoured.
     state.take_cancelled.store(false, Ordering::SeqCst);
+    // yap-1106-paste-target-defect: the key-down frontmost app, kept only as a
+    // fallback — the paste target is the app in front at RELEASE.
+    *state.press_target.lock() = focus::frontmost_identity_workspace();
     // ...and so does the manager-side latch that Y3-B's chunk loop reads, so
     // the two are armed together and never drift apart.
     state.transcription.begin_user_take();
@@ -3574,6 +3587,36 @@ pub fn backtrack_caught_payload(
     }))
 }
 
+/// WF-05 — "Polished — Reveal": the polish stage (on this Mac or in the cloud)
+/// rewrote the take that just landed. Payload: [`polish_reveal_payload`].
+pub const POLISH_REVEAL_EVENT: &str = "polish_reveal";
+
+/// WF-05 — the [`POLISH_REVEAL_EVENT`] payload, or `None` when the toast must
+/// not show: the polish changed fewer than
+/// [`dictation::POLISH_REVEAL_MIN_WORDS`] words once punctuation and capitals
+/// are ignored, or there is no raw take that differs from what was pasted, so
+/// "Use original" would have nothing to paste back. `text` is what was pasted,
+/// `raw` the take as dictated, `stages` the take's `stages_that_ran`.
+pub fn polish_reveal_payload(
+    id: &str,
+    polish_changed_words: usize,
+    text: &str,
+    raw: Option<&str>,
+    stages: Option<&str>,
+) -> Option<serde_json::Value> {
+    if !dictation::polish_reveal_worthy(polish_changed_words) {
+        return None;
+    }
+    let raw = dictation::undo_ai_edit_text(text, raw)?;
+    Some(serde_json::json!({
+        "id": id,
+        "raw": raw,
+        "text": text,
+        "stages": stages,
+        "changedWords": polish_changed_words,
+    }))
+}
+
 /// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
 /// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
 /// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
@@ -3908,15 +3951,26 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // with the non-activating panel key, the frontmost app is still the one
     // BEHIND it, so this — not `source_bundle_id` — is where the take goes.
     let scratchpad_note = scratchpad::dictation_note();
-    let (capture_stop, (source_app, source_bundle_id, cursor_context)) = record::end_at_stop_edge(
+    let press_target = state.press_target.lock().take();
+    let (capture_stop, (paste_target_app, cursor_context)) = record::end_at_stop_edge(
         move || record::end_capture(active),
         || {
             // Capture focused app *before* we steal focus with notifications / main window.
-            let app_name = focus::frontmost_app_name();
+            // yap-1106-paste-target-defect: ONE live read at the stop edge —
+            // bundle id and name of the same process — so the history row
+            // (`source_app`) and the paste guard (`source_bundle_id`) always
+            // name the same app, the app in front at RELEASE, never Yap's own
+            // float panel. The key-down read is only a fallback.
+            let release = focus::frontmost_identity();
+            let target = focus::resolve_paste_target(
+                press_target.as_ref(),
+                release.as_ref(),
+                focus::own_bundle_id().as_deref(),
+            );
             // yap-format-structure: the paste target's bundle id picks the list
             // syntax (Markdown / plain bullets / off). Captured with
             // `source_app`, before Yap can take focus.
-            let bundle_id = focus::frontmost_bundle_id();
+            let bundle_id = target.bundle_id.clone();
             // YV50 + PERM-F context awareness, read while the user's app is still
             // the focused one: the text before the caret, the selection, the text
             // after the caret (each cut to its `focus::*_CHAR_LIMIT` budget) and,
@@ -3926,8 +3980,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // below — never logged, stored, or emitted (see the
             // `cursor_context_is_never_logged_or_persisted` test).
             let ax_context = focus::read_ax_context(bundle_id.as_deref());
-            (app_name, bundle_id, ax_context)
+            (target, ax_context)
         },
+    );
+    let source_app = paste_target_app.name.clone();
+    let source_bundle_id = paste_target_app.bundle_id.clone();
+    let target_captured_at = paste_target_app.captured_at;
+    log::info!(
+        "paste target captured app={} captured_at={}",
+        source_bundle_id.as_deref().unwrap_or("unknown"),
+        target_captured_at.as_str()
     );
 
     *state.busy.lock() = true;
@@ -3970,6 +4032,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // (and how many it applied), carried out of the take closure so the
         // Dictated arm can raise the pill's "Backtrack caught" toast.
         let mut backtrack_caught: Option<(dictation::BacktrackCorrection, usize)> = None;
+        // WF-05 — how many words the polish stage changed (a count, never text),
+        // carried out the same way for the "Polished — Reveal" toast.
+        let mut polish_changed_words: usize = 0;
         let result = (|| -> Result<TakeOutcome, take_error::TakeError> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
@@ -4297,11 +4362,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 let outcome = if command == command_mode::Command::Delete {
                     paste::delete_selection(&app2, source_bundle_id.as_deref())
                 } else {
-                    paste::insert_dictated_take(
+                    paste::insert_dictated_take_at(
                         &app2,
                         &result.text,
                         true,
                         source_bundle_id.as_deref(),
+                        target_captured_at,
                     )
                 };
                 if !outcome.pasted {
@@ -4531,6 +4597,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 want,
                 paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
                 Some(&take_stages),
+                target_captured_at,
             );
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
@@ -4612,6 +4679,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 .backtrack
                 .clone()
                 .map(|c| (c, formatting_trace.backtrack_corrections));
+            polish_changed_words = formatting_trace.polish_changed_words;
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
@@ -4658,6 +4726,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // WF-06 — "Dropped '2', kept '3'" with Undo. Only for a real
                 // spoken self-correction (filler-only cleanup never sets it),
                 // and only when there IS a raw take to paste back.
+                let mut backtrack_toast = false;
                 if let Some(payload) = backtrack_caught_payload(
                     &entry.id,
                     backtrack_caught.as_ref().map(|(c, _)| c),
@@ -4670,6 +4739,23 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                         backtrack_caught.as_ref().map_or(0, |(_, n)| *n)
                     );
                     let _ = app2.emit(BACKTRACK_CAUGHT_EVENT, payload);
+                    backtrack_toast = true;
+                }
+                // WF-05 — "Polished — Reveal". One toast per take: the
+                // backtrack receipt already offers the same raw-take Undo, so
+                // it wins when both apply.
+                if !backtrack_toast {
+                    if let Some(payload) = polish_reveal_payload(
+                        &entry.id,
+                        polish_changed_words,
+                        &entry.text,
+                        entry.raw_text.as_deref(),
+                        entry.stages_that_ran.as_deref(),
+                    ) {
+                        // Counts only — never the take's words.
+                        log::info!("dictation polish_reveal changed_words={polish_changed_words}");
+                        let _ = app2.emit(POLISH_REVEAL_EVENT, payload);
+                    }
                 }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 // Y8-C — one earcon for the landed take: achievement when it
@@ -7941,8 +8027,14 @@ fn retry_decode_bounded(
             Ok(_) => "ok".to_string(),
             Err(e) => format!("error:{}", e.replace('\n', " ")),
         };
+        // yap-1106-retry-replay-regression — the window counts say whether a
+        // long clip (45b1e41d, 214 s) took the windowed path; 0/0 on an error.
+        let (windows, windows_failed) = match result {
+            Ok(out) => (out.chunks, out.chunks_failed),
+            Err(_) => (0, 0),
+        };
         log::info!(
-            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} wall_ms={} engine_loads_during={}",
+            "retry_dictation id={id} clip_s={clip_secs:.1} result={outcome} windows={windows} windows_failed={windows_failed} wall_ms={} engine_loads_during={}",
             started.elapsed().as_millis(),
             manager.engine_loads().saturating_sub(loads_before)
         );
@@ -8444,6 +8536,73 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
             log::warn!("undo ai edit failed: {}", o.message);
         }
     });
+}
+
+/// WF-05 "Use original" — swap the polished take back to the words as
+/// dictated, through the Undo AI Edit paste (the explicit re-paste into the
+/// frontmost field, which is still the take's field: the pill never takes
+/// focus and a new take clears the card). Refused unless `id` is still the
+/// newest take ([`dictation::use_original_for_take`]), so an old card can never
+/// paste stale words into whatever field has focus now.
+#[tauri::command]
+async fn use_original_take(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let newest = match state.db.list_transcripts(1, None) {
+        Ok(entries) => entries.into_iter().next(),
+        Err(err) => {
+            log::warn!("dictation polish_reveal_use_original failed=db_read: {err}");
+            return Err("Couldn’t read that take. Try Use original again.".into());
+        }
+    };
+    let Some(newest) = newest else {
+        log::info!("dictation polish_reveal_use_original refused=history_empty");
+        return Err("That take is gone from History.".into());
+    };
+    let raw = match dictation::use_original_for_take(
+        &id,
+        &newest.id,
+        &newest.text,
+        newest.raw_text.as_deref(),
+    ) {
+        Ok(raw) => raw.to_string(),
+        Err(why) => {
+            log::info!("dictation polish_reveal_use_original refused={}", why.tag());
+            return Err(match why {
+                dictation::UseOriginalRefusal::NotNewest => {
+                    "A newer take landed. Use History to paste this one.".into()
+                }
+                dictation::UseOriginalRefusal::NothingToUndo => {
+                    "This take has no original to paste.".into()
+                }
+            });
+        }
+    };
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Explicit re-paste, exactly like Undo AI Edit: the frontmost app is
+        // the intended target, so the YV21 source-app guard does not apply.
+        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
+        log::info!(
+            "dictation polish_reveal_use_original pasted={} copied={} ms={}",
+            o.pasted,
+            o.copied,
+            started.elapsed().as_millis()
+        );
+        if o.copied {
+            Ok(o.message)
+        } else {
+            log::warn!(
+                "dictation polish_reveal_use_original failed=paste: {}",
+                o.message
+            );
+            Err("Couldn’t paste the original. Try Use original again.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("paste task join failed: {e}"))?
 }
 
 /// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to
@@ -9118,7 +9277,7 @@ fn cloud_notes(
     let lines = meetings::render_transcript(segments, kind);
     let transcript: String = lines
         .iter()
-        .map(|l| format!("[{}] {}: {}\n", l.offset, l.speaker, l.text))
+        .map(|l| format!("[{}] {}: {}\n", l.offset, l.label(), l.text))
         .collect();
     if transcript.trim().is_empty() {
         return None;
@@ -11984,6 +12143,100 @@ fn open_purchase_page() -> Result<(), String> {
     }
 }
 
+/// yap-1106-pill-trial-clickable — a click on the "Trial ended" pill (the
+/// whole capsule, its chip, or the resting nub's lock).
+///
+/// Takes a SURFACE and a TARGET NAME, never a URL: `target="purchase_page"`
+/// delegates to [`open_purchase_page`], whose destination is the compile-time
+/// `license::PURCHASE_PAGE_URL`; `target="license_tab"` (a paying customer
+/// whose stored key is in trouble, Y2-F) raises Settings → License instead.
+/// Unknown values are clamped, so the webview cannot widen what this does.
+/// One `pill gate.click` line per click (telemetry: `gate.click`).
+#[tauri::command]
+fn pill_gate_click(app: AppHandle, surface: String, target: String) -> Result<(), String> {
+    let surface = match surface.as_str() {
+        "pill" | "chip" | "nub" => surface.as_str(),
+        _ => "other",
+    };
+    let target = match target.as_str() {
+        "license_tab" => "license_tab",
+        _ => "purchase_page",
+    };
+    log::info!(
+        "pill gate.click surface={surface} target={target} purchase_open={}",
+        license::PURCHASE_OPEN
+    );
+    if target == "license_tab" {
+        present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
+        let _ = app.emit("navigate", "settings");
+        let _ = app.emit("settings-tab", "license");
+        return Ok(());
+    }
+    let opened = open_purchase_page();
+    if opened.is_err() {
+        // The browser would not open: land on the in-app purchase sheet, which
+        // shows the page address, so the click still goes somewhere useful.
+        log::warn!("pill gate.click failure=open surface={surface} fallback=purchase_sheet");
+        reveal_purchase_prompt(app);
+    }
+    opened
+}
+
+/// yap-1106-pill-trial-clickable — every URL macOS hands the app
+/// (`RunEvent::Opened`). Only `yapvoice://license/activate?key=DCL-…` does
+/// anything: the key goes through the SAME `LicenseClient::activate` a paste
+/// does, on a blocking thread; success emits `license` (every surface
+/// re-renders) and `yappy-hop`. A refusal is logged with its reason and
+/// nothing else happens; the key is never logged.
+fn handle_deep_links(app: &AppHandle, urls: Vec<String>) {
+    for raw in urls {
+        let key = match deep_link::parse(&raw) {
+            Ok(deep_link::DeepLink::Activate { key }) => key,
+            Err(refusal) => {
+                log::warn!("license deep_link refused reason={}", refusal.as_str());
+                continue;
+            }
+        };
+        let Some(client) = app.try_state::<Arc<license_client::LicenseClient>>() else {
+            log::warn!("license deep_link activate failure=no_client");
+            continue;
+        };
+        let client = client.inner().clone();
+        let app = app.clone();
+        log::info!("license deep_link activate start");
+        tauri::async_runtime::spawn(async move {
+            let started = std::time::Instant::now();
+            let joined = tauri::async_runtime::spawn_blocking(move || client.activate(&key)).await;
+            let ms = started.elapsed().as_millis();
+            match joined {
+                Ok(Ok(status)) => {
+                    log::info!("license deep_link activate ok ms={ms}");
+                    let _ = app.emit("license", &status);
+                    let _ = app.emit(deep_link::YAPPY_HOP_EVENT, ());
+                }
+                Ok(Err(e)) => {
+                    log::warn!("license deep_link activate failure={} ms={ms}", e.code);
+                    // One sentence + one action: the key can still be pasted.
+                    notify(
+                        &app,
+                        "Yap could not activate your license",
+                        format!(
+                            "{} Open Settings, then License, to paste your key.",
+                            e.message
+                        ),
+                    );
+                    present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
+                    let _ = app.emit("navigate", "settings");
+                    let _ = app.emit("settings-tab", "license");
+                }
+                Err(_) => {
+                    log::warn!("license deep_link activate failure=join ms={ms}");
+                }
+            }
+        });
+    }
+}
+
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
 ///
@@ -12847,6 +13100,7 @@ pub fn run() {
         hands_free_by_chord: PLMutex::new(false),
         session_cap_warned: PLMutex::new(false),
         command_selection: PLMutex::new(None),
+        press_target: PLMutex::new(None),
         recorder: PLMutex::new(None),
         saved_audio: PLMutex::new(None),
         db,
@@ -12975,6 +13229,7 @@ pub fn run() {
             }),
             // B3: hand the meeting to the notes worker and return at once — the
             // next queued meeting transcribes while this one's notes are made.
+            diarize: crate::meeting_diarize::DiarizeBackend::Shipped,
             after_transcript: Some(Arc::new(move |id: &str| {
                 // review-opus2 A6: the hook honours the upgrade ledger and a
                 // persisted cancel, exactly as the launch resume does.
@@ -13309,6 +13564,7 @@ pub fn run() {
             copy_entry,
             paste_entry,
             set_take_feedback,
+            use_original_take,
             open_data_dir,
             open_logs_dir,
             list_crash_events,
@@ -13371,6 +13627,7 @@ pub fn run() {
             license_status,
             activate_license,
             deactivate_license,
+            pill_gate_click,
             open_purchase_page,
             reveal_purchase_prompt
         ])
@@ -14340,6 +14597,15 @@ pub fn run() {
         .build(context)
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| match event {
+            // yap-1106-pill-trial-clickable — `yapvoice://license/activate`
+            // from the purchase page. The arm only dispatches.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                handle_deep_links(
+                    app_handle,
+                    urls.iter().map(|u| u.as_str().to_string()).collect(),
+                );
+            }
             // yap-lifecycle — a Dock click / Finder double-click / `open -a
             // Yap` on a running Yap. The arm only dispatches; the decision is
             // lifecycle::activation_action (which deliberately ignores
@@ -15900,6 +16166,7 @@ mod tests {
             hands_free_by_chord: super::PLMutex::new(false),
             session_cap_warned: super::PLMutex::new(false),
             command_selection: super::PLMutex::new(None),
+            press_target: super::PLMutex::new(None),
             recorder: super::PLMutex::new(None),
             saved_audio: super::PLMutex::new(None),
             db,
@@ -17955,6 +18222,67 @@ mod retry_engine_tests {
         assert_eq!(m.engine_loads(), 1);
         live_take.join().unwrap().unwrap();
     }
+
+    /// yap-1106-retry-replay-regression — "Retry all" over today's three kept
+    /// clips (45b1e41d 214 s, b1d90963, 882c587d), one at a time as
+    /// `runRetryAll` drives them, on a fake engine: every clip comes back with
+    /// text inside its own deadline, each retry loads nothing (the acceptance
+    /// is engine_loads_during <= 1; a warm engine makes it 0), and the whole
+    /// run holds ONE engine. The real-audio replay is `retry_replay` (ignored,
+    /// private clips). Only the 214 s length is pinned here; the other two
+    /// get the deadline floor, the strictest clock a retry runs under.
+    #[test]
+    fn retry_all_over_todays_three_kept_clips_returns_text_each_on_one_engine() {
+        // The 214 s take gets the cap, not 229 s: a retry never waits longer.
+        assert_eq!(retry_deadline(214.0), Duration::from_secs(180));
+        let (m, path, _dir) = manager(
+            || {
+                Box::new(SlowEngine {
+                    decode: Duration::from_millis(20),
+                })
+            },
+            Duration::from_secs(10),
+        );
+        m.load("fake", &path).unwrap();
+        assert_eq!(m.engine_loads(), 1);
+        for (id, clip_secs) in [("45b1e41d", 214.0), ("b1d90963", 0.0), ("882c587d", 0.0)] {
+            let deadline = retry_deadline(clip_secs);
+            let decode_mgr = m.clone();
+            let loads_before = m.engine_loads();
+            let mut phases = Vec::new();
+            let started = Instant::now();
+            let out = retry_decode_bounded(
+                &m,
+                id,
+                clip_secs,
+                deadline,
+                &mut |p| phases.push(p),
+                move || {
+                    decode_mgr
+                        .transcribe(vec![0.01; 16_000], None, None)
+                        .map(|text| transcription::AsrOutput {
+                            text,
+                            ..recovered_only_output()
+                        })
+                },
+            )
+            .unwrap_or_else(|e| panic!("{id}: retry failed: {e}"));
+            let wall = started.elapsed();
+            assert!(!out.text.trim().is_empty(), "{id}: empty transcript");
+            assert!(wall < deadline, "{id}: {wall:?} over {deadline:?}");
+            assert!(
+                m.engine_loads().saturating_sub(loads_before) <= 1,
+                "{id}: a retry loaded a second engine"
+            );
+            assert_eq!(phases, vec![RetryPhase::Decoding], "{id}: never queued");
+            assert!(!m.is_busy(), "{id}: the engine is back in its slot");
+        }
+        assert_eq!(
+            m.engine_loads(),
+            1,
+            "one engine for the whole Retry-all run"
+        );
+    }
 }
 
 /// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
@@ -18010,20 +18338,41 @@ mod retry_ui_contract_tests {
 /// green. The model is read from the same directory (`<file>` of the default
 /// catalog model) or from `YAP_RETRY_REPLAY_MODEL`.
 ///
-///   D="$(mktemp -d)"; cp <the two wavs> "$D/"; cp <models>/<default>.gguf "$D/"
+/// yap-1106-retry-replay-regression adds the guard for the three clips kept
+/// later that day — 45b1e41d (214 s, the take that needs SP-01 windowing),
+/// b1d90963 and 882c587d — replayed the way "Retry all" runs them: one at a
+/// time, in order, on ONE manager. Each must come back with text inside its
+/// own deadline and load the engine at most once; a clip longer than
+/// [`transcription::DICTATION_CHUNK_THRESHOLD_SECONDS`] must take the
+/// windowed path (that check arms itself the day SP-01 drops the threshold
+/// to 35 s). The clips are never committed: copy them, run, delete the copy.
+///
+///   D="$(mktemp -d)"; cp <the kept wavs> "$D/"; cp <models>/<default>.gguf "$D/"
 ///   YAP_RETRY_REPLAY_DIR="$D" YAP_DATA_DIR="$(mktemp -d)/yap-state" \
 ///     cargo test --features custom-protocol retry_replay -- --ignored --nocapture
+///   rm -rf "$D"
 #[cfg(test)]
 mod retry_replay {
     use super::*;
     use std::time::Instant;
 
-    #[test]
-    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
-    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+    /// Today's kept clips, by the id prefix their `<uuid>.wav` names start
+    /// with, in the order the Retry-all list shows them.
+    const TODAYS_KEPT_CLIPS: [&str; 3] = ["45b1e41d", "b1d90963", "882c587d"];
+
+    /// What every replay needs: the copied clips' directory and the model.
+    struct Replay {
+        dir: PathBuf,
+        model_id: String,
+        model_path: PathBuf,
+        prefs: languages::LanguagePrefs,
+    }
+
+    /// `None` (and a note on stderr) when `YAP_RETRY_REPLAY_DIR` is unset.
+    fn replay_setup() -> Option<Replay> {
         let Ok(dir) = std::env::var("YAP_RETRY_REPLAY_DIR") else {
             eprintln!("YAP_RETRY_REPLAY_DIR unset — skipping");
-            return;
+            return None;
         };
         let dir = PathBuf::from(dir);
         // The engine's own log lines (loads, window timeouts, the
@@ -18041,64 +18390,145 @@ mod retry_replay {
             "model missing at {}",
             model_path.display()
         );
-        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&dir)
+        Some(Replay {
+            dir,
+            model_id,
+            model_path,
+            prefs: AppSettings::default().language_prefs(),
+        })
+    }
+
+    /// Every `.wav` in the replay directory, sorted by name.
+    fn wavs_in(dir: &Path) -> Vec<PathBuf> {
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|x| x == "wav"))
             .collect();
         wavs.sort();
         assert!(!wavs.is_empty(), "no .wav in {}", dir.display());
+        wavs
+    }
 
+    /// One clip through the real retry engine stage, as one Retry press.
+    struct ClipRun {
+        clip_secs: f64,
+        out: transcription::AsrOutput,
+    }
+
+    /// Retry one clip on `manager` and hold it to the per-clip guard: text,
+    /// inside the clip's own deadline, at most one engine load meanwhile.
+    fn replay_clip(
+        r: &Replay,
+        manager: &transcription::TranscriptionManager,
+        wav: &Path,
+    ) -> ClipRun {
+        let name = wav.file_name().unwrap().to_string_lossy().to_string();
+        let samples = record::read_wav_16k_mono(wav).unwrap();
+        let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
+        let deadline = retry_deadline(clip_secs);
+        let (m, id, path, p) = (
+            manager.clone(),
+            r.model_id.clone(),
+            r.model_path.clone(),
+            r.prefs.clone(),
+        );
+        let mut phases = Vec::new();
+        let loads_before = manager.engine_loads();
+        let started = Instant::now();
+        let out = retry_decode_bounded(
+            manager,
+            &name,
+            clip_secs,
+            deadline,
+            &mut |ph| phases.push(ph),
+            move || {
+                transcribe_native(
+                    &m,
+                    &id,
+                    &path,
+                    samples,
+                    &p,
+                    None,
+                    &mut transcribe_progress::NoObserver,
+                )
+            },
+        );
+        let wall = started.elapsed();
+        let loads_during = manager.engine_loads().saturating_sub(loads_before);
+        let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
+        let words = out.text.split_whitespace().count();
+        println!(
+            "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} engine_loads_during={loads_during} loads={} phases={phases:?}",
+            deadline.as_secs_f64(),
+            out.chunks,
+            out.chunks_failed,
+            wall.as_millis(),
+            manager.engine_loads()
+        );
+        assert!(words > 0, "{name}: empty transcript");
+        assert!(
+            wall < deadline,
+            "{name}: {wall:?} over the deadline {deadline:?}"
+        );
+        assert!(
+            loads_during <= 1,
+            "{name}: a retry loaded a second engine (engine_loads_during={loads_during})"
+        );
+        ClipRun { clip_secs, out }
+    }
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with Wilson's two kept clips and the model"]
+    fn retry_replay_of_the_two_kept_clips_yields_a_transcript_each() {
+        let Some(r) = replay_setup() else {
+            return;
+        };
         let manager = transcription::TranscriptionManager::new();
-        let prefs = AppSettings::default().language_prefs();
-        for wav in wavs {
-            let name = wav.file_name().unwrap().to_string_lossy().to_string();
-            let samples = record::read_wav_16k_mono(&wav).unwrap();
-            let clip_secs = samples.len() as f64 / record::TARGET_RATE as f64;
-            let deadline = retry_deadline(clip_secs);
-            let (m, id, path, p) = (
-                manager.clone(),
-                model_id.clone(),
-                model_path.clone(),
-                prefs.clone(),
-            );
-            let mut phases = Vec::new();
-            let started = Instant::now();
-            let out = retry_decode_bounded(
-                &manager,
-                &name,
-                clip_secs,
-                deadline,
-                &mut |ph| phases.push(ph),
-                move || {
-                    transcribe_native(
-                        &m,
-                        &id,
-                        &path,
-                        samples,
-                        &p,
-                        None,
-                        &mut transcribe_progress::NoObserver,
-                    )
-                },
-            );
-            let wall = started.elapsed();
-            let out = out.unwrap_or_else(|e| panic!("{name}: retry failed: {e}"));
-            let words = out.text.split_whitespace().count();
-            println!(
-                "retry_replay clip={name} clip_s={clip_secs:.1} deadline_s={:.0} words={words} windows={} failed={} wall_ms={} loads={} phases={phases:?}",
-                deadline.as_secs_f64(),
-                out.chunks,
-                out.chunks_failed,
-                wall.as_millis(),
-                manager.engine_loads()
-            );
-            assert!(words > 0, "{name}: empty transcript");
-            assert!(
-                wall < deadline,
-                "{name}: {wall:?} over the deadline {deadline:?}"
-            );
+        for wav in wavs_in(&r.dir) {
+            replay_clip(&r, &manager, &wav);
         }
         assert_eq!(manager.engine_loads(), 1, "one engine for both clips");
+    }
+
+    #[test]
+    #[ignore = "needs YAP_RETRY_REPLAY_DIR with today's three kept clips and the model"]
+    fn retry_replay_of_todays_three_kept_clips_returns_text_each_on_one_engine() {
+        let Some(r) = replay_setup() else {
+            return;
+        };
+        let wavs = wavs_in(&r.dir);
+        let picked: Vec<PathBuf> = TODAYS_KEPT_CLIPS
+            .iter()
+            .map(|id| {
+                wavs.iter()
+                    .find(|p| {
+                        p.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with(id))
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| panic!("kept clip {id} is not in YAP_RETRY_REPLAY_DIR"))
+            })
+            .collect();
+        // "Retry all": one clip at a time, each awaited before the next, on
+        // the one manager dictation uses.
+        let manager = transcription::TranscriptionManager::new();
+        for (id, wav) in TODAYS_KEPT_CLIPS.iter().zip(&picked) {
+            let run = replay_clip(&r, &manager, wav);
+            if run.clip_secs > transcription::DICTATION_CHUNK_THRESHOLD_SECONDS {
+                assert!(
+                    run.out.chunks > 1,
+                    "{id}: a {:.0} s clip is over the {:.0} s window threshold but decoded in {} window(s)",
+                    run.clip_secs,
+                    transcription::DICTATION_CHUNK_THRESHOLD_SECONDS,
+                    run.out.chunks
+                );
+            }
+        }
+        assert_eq!(
+            manager.engine_loads(),
+            1,
+            "one engine for the whole Retry-all run"
+        );
     }
 }
