@@ -101,3 +101,71 @@ fn privacy_names_drivia_consulting_activation_and_monthly_refresh() {
         "privacy.html must say the token is refreshed about once a month"
     );
 }
+
+/// Every file under `dir` (recursively), skipping build output and deps.
+fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "node_modules" || name == "target" || name == "dist-app" || name.starts_with('.')
+        {
+            continue;
+        }
+        if path.is_dir() {
+            walk(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// SCOPE RULE — every purchase link is the drivia.consulting flow
+/// (https://drivia.consulting/yap), never the retired Stripe Payment Link.
+#[test]
+fn no_old_stripe_payment_link_in_desktop_or_site() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = crate_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .expect("src-tauri sits two levels under the repo root")
+        .to_path_buf();
+    // Built from parts so this file does not match itself.
+    let needle = ["buy", ".stripe", ".com"].concat();
+    let mut files = Vec::new();
+    for root in [
+        "desktop/src",
+        "desktop/src-tauri/src",
+        "desktop/src-tauri/tests",
+        "site",
+    ] {
+        walk(&repo.join(root), &mut files);
+    }
+    // POSITIVE CONTROL — the walk really found the site pages.
+    assert!(
+        files.iter().any(|p| p.ends_with("site/dist/index.html")),
+        "walk did not reach site/dist/index.html ({} files)",
+        files.len()
+    );
+    let mut hits = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue; // binary asset
+        };
+        if text.contains(&needle) {
+            hits.push(path.display().to_string());
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "the old Stripe Payment Link is still referenced; use https://drivia.consulting/yap: {hits:?}"
+    );
+    // And the site's buy button is the new flow.
+    assert!(
+        site_page("index.html").contains("https://drivia.consulting/yap"),
+        "index.html's buy button must point at https://drivia.consulting/yap"
+    );
+}
