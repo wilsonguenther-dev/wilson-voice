@@ -605,7 +605,7 @@ export default function Meetings() {
                                   {stateLabel}
                                 </span>
                               ) : (
-                                <span className={`meeting-state ${m.state}`} title={m.error ?? undefined}>
+                                <span className={`meeting-state ${m.state}`} title={m.error ?? stateLabel}>
                                   {stateLabel}
                                 </span>
                               )}

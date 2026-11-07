@@ -103,8 +103,15 @@
   border-style: solid;
   white-space: nowrap;
 }
+/* The state chip ends the line and is the one piece that may ellipsise (a
+   long "Transcript ready · Finding speakers"); its full text is its tooltip. */
 .meeting-row-chips .meeting-state {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Chips past the fold stay measurable but out of flow and unseen. */
 .people-chips .person-chip.is-overflow {
