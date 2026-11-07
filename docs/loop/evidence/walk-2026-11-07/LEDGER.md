@@ -12,7 +12,9 @@ Item: yap-1107-walk-dictation-scratchpad-meeting. Code line numbers below are on
 
 Note: Wilson walked **0.9.4-loop3.11** (main d4ad0d71) at 14:33Z. The copy installed now reads **0.9.4-loop3.7**, which is older. Before the walk, the walker must reinstall the current build (or confirm which build is installed), or the results describe an old app.
 
-## Status: NOT WALKED (blocked for a code-only seat)
+## Status: NOT WALKED (blocked for a code-only seat; dispatched to a code-only seat twice)
+
+The second dispatch (coder B2, 2026-11-07T22:52Z) hit the same wall: this item cannot be done by any seat that may not drive the installed app. Route it to a walk seat with permission to launch Yap Test, send keystrokes, run `screencapture` and `say`, or to Wilson. Re-dispatching it to a code-only coder will bounce it a third time.
 
 This ledger was written by code-only coder B2. That seat's hard guardrails forbid what the walk needs: launching or driving any copy of Yap, GUI keystrokes, `screencapture` of the Yap window, `say` through the speakers, and running vite/npm for the headless UI shim. So no step below was walked. There are no PASS/FAIL verdicts and no screenshots, and nothing was invented to fill them. The walk has to run in a seat that may drive the installed app (the integrator or a walk seat). Use the step table as the script and fill in the Time / Happened / Verdict / Screenshot / Log columns.
 
@@ -42,6 +44,8 @@ Existing items checked so these are not duplicates: yap-1106-paste-target-defect
 ## New items (acceptance 3)
 
 No add-walk-2026-11-07.json was written because there are no observed FAIL rows. H1 and H2 become items only after the walk confirms them, one item per FAIL row.
+
+Correction (second code-only dispatch): ~/code/wilson-voice-loop/loop3/add-walk-2026-11-07.json does exist on disk. An earlier seat wrote it at 2026-11-07T14:53Z with one item, `yap-1107-walk-dictate-into-yap-window`, which is H1 + H2 derived from code, not from a walk. It is not in ITEMS-2026-11-07-loop3.json yet. The orchestrator can add it as a code item now (the cause is confirmed in code on b2877116, which is still origin/main), or hold it until a walk seat confirms the symptom.
 
 ## Cleanup (acceptance 4)
 
