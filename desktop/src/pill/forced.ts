@@ -296,3 +296,22 @@ export function matrixRailScene(): MatrixOfferRow {
     label: v.label,
   };
 }
+
+/**
+ * yap-1106-friend-visits — a friend visiting a resting pill
+ * (`float.html?phase=idle&friend=tidy`, see `forcedFriendVisit` in
+ * friendVisits.ts). Tidy, because her event (Backtrack caught) is the one a
+ * new user meets first. The matrix photographs it at every dock.
+ */
+export function matrixFriendVisitScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "friend-visit",
+    phaseId: PHASE_ID.idle,
+    query: "friend=tidy",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+  };
+}

@@ -207,7 +207,8 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   }, [visit, silent]);
 
   // Paint while on screen, and only then.
-  const who: VisitorId | null = forced ?? (visit && !silent ? visit.friend : null);
+  // A pinned matrix visitor obeys the quiet rule too, so the meeting photo proves it.
+  const who: VisitorId | null = silent ? null : forced ?? (visit ? visit.friend : null);
   useEffect(() => {
     const cv = canvasRef.current;
     if (!who || !cv) return undefined;

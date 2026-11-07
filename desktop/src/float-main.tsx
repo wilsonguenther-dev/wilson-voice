@@ -91,8 +91,11 @@ import {
   matrixLicenseScenes,
   matrixPhases,
   matrixDragBlobScene,
+  matrixFriendVisitScene,
   type ForcedPill,
 } from "./pill/forced";
+import { FriendVisit } from "./pill/FriendVisit";
+import { forcedFriendVisit } from "./pill/friendVisits";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -252,6 +255,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixRailScene(),
     // WF-02 — the pill mid-drag: the blob plus its three drop zones.
     matrixDragBlobScene(),
+    // yap-1106-friend-visits — Tidy visiting a resting pill.
+    matrixFriendVisitScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -650,6 +655,15 @@ function Float() {
       <div className="bar" {...bar}>
         {pill}
       </div>
+      {/* yap-1106-friend-visits — a friend visits for its own event only: at
+          most 4 s, once a day each, never during a meeting, a screen share or
+          Do Not Disturb, and less often after 50 takes (pill/friendVisits.ts). */}
+      <FriendVisit
+        meetingRecording={meeting.status.recording}
+        meetingNotesReady={meeting.phase.kind === "notes-ready"}
+        occupant={character.id}
+        forced={FORCED ? forcedFriendVisit(window.location.search) : null}
+      />
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
