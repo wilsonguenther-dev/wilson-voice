@@ -212,6 +212,13 @@ export interface ChickPose {
   look: "down" | "fwd"; glasses: boolean; pencil: boolean;
   /** Y2-B — tufts folded flat once the trial is out (app-only pose). */
   droop: boolean;
+  /**
+   * yap-1106-yappy-states-and-motion — a HANDS-FREE take: wings folded across
+   * his belly (no hands needed). A POSE, not an
+   * animation, so it holds under reduce motion too. Optional: every existing
+   * caller and snapshot draws exactly as before.
+   */
+  handsFree?: boolean;
 }
 
 /** The art box `drawChick` is snapshot-tested in: feet at (20, 30) on 40x34,
@@ -237,8 +244,14 @@ export function drawChick(o: PixelCtx, cx: number, feetY: number, A: ChickPose):
   if (A.droop) { rct(cx - 3 + sw, cy - ry, 2, 1, C.sprout); rct(cx + 1 + sw, cy - ry - 1, 2, 1, C.sprout); }
   else { rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout); }
   const wy = cy + 1 - A.flap;
-  ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
-  if (A.pencil) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
+  if (A.handsFree) {
+    // both wings folded over the belly, tips meeting under the beak
+    ell(cx - 4, cy + 8, 4, 2, C.outline); ell(cx - 4, cy + 8, 3, 1, C.body);
+    ell(cx + 4, cy + 8, 4, 2, C.outline); ell(cx + 4, cy + 8, 3, 1, C.body);
+  } else {
+    ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
+  }
+  if (A.pencil && !A.handsFree) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
   const ex = 5, ey = cy + 1;
   for (const s of [-1, 1]) { const eXc = cx + s * ex;
     if (A.mood > .55) { rct(eXc - 2, ey - 1, 1, 1, C.eye); rct(eXc - 1, ey - 2, 1, 1, C.eye); rct(eXc, ey - 2, 1, 1, C.eye); rct(eXc + 1, ey - 1, 1, 1, C.eye); }
