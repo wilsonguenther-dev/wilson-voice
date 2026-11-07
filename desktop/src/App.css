@@ -1074,7 +1074,7 @@ code {
   align-items: center;
   gap: 16px;
   /* yap-1107-parity-home — the approved .appfoot: 40 px tall, 0 24 px,
-     its own paper (#f3f2ee), 12 px ink-3. */
+     its own paper (--home-foot-bg), 12 px ink-3. */
   box-sizing: border-box;
   height: 40px;
   padding: 0 24px;
@@ -2701,7 +2701,7 @@ button.star.on {
      yap-1106-home-full-width-room: no size cap — the room fills the main
      column at a whole-number scale (YappyHouse / homeLayout.roomBox). */
   /* yap-1107-parity-home — the approved .room.lay: the studio sits on wood
-     (#3a2418), 3 px corners, and bleeds 20 px past the column padding on both
+     (--home-room-wood), 3 px corners, and bleeds 20 px past the column padding on both
      sides so it is edge to edge; the 16 px .home-view gap spaces it. */
   margin: 0 calc(-1 * var(--home-room-bleed));
   border-radius: 3px;
