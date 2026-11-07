@@ -952,6 +952,32 @@ pub fn decide(ctx: &RouteContext<'_>, now: Instant) -> Decision {
     Decision::cloud()
 }
 
+/// DO 13 (resource governor §20): "is a cloud polish on AND usable right
+/// now?" — the `cloud_available` input of `resource_governor::polish_plan`,
+/// which sends light and minimal budgets to the cloud when this is true.
+/// The same checks as [`decide`] in the same order, but read-only: it never
+/// takes the breaker's one half-open probe (only a real request may), so
+/// asking it never changes where the next take goes.
+pub fn cloud_available(ctx: &RouteContext<'_>, now: Instant) -> bool {
+    if !ctx.mode.wants_cloud() || !ctx.has_key {
+        return false;
+    }
+    match ctx.probe.path() {
+        PathStatus::Unsatisfied => return false,
+        PathStatus::Constrained if ctx.job == Job::Notes && !ctx.constrained_notes_allowed => {
+            return false
+        }
+        _ => {}
+    }
+    if Ledger::load(ctx.kv, ctx.today).cap_reached(daily_cap(ctx.kv)) {
+        return false;
+    }
+    ctx.breaker
+        .lock()
+        .map(|b| b.state(now) != BreakerState::Open)
+        .unwrap_or(false)
+}
+
 /// Run `job` on the cloud when [`decide`] says so, with ONE retry per
 /// [`retry_delay`], and on any failure run the SAME job locally. `cloud` is
 /// called with the budget and the attempt number; `accept` validates the
@@ -1451,6 +1477,56 @@ mod tests {
             b.record_failure(now);
         }
         assert_eq!(decide(&on, now), Decision::local(Reason::Breaker));
+    }
+
+    #[test]
+    fn cloud_available_previews_decide_without_taking_the_probe() {
+        let kv = Kv::default();
+        let breaker = Mutex::new(CircuitBreaker::new());
+        let on = RouteContext {
+            mode: CloudMode::CloudWhenOnline,
+            has_key: true,
+            probe: &AssumeOnline,
+            breaker: &breaker,
+            kv: &kv,
+            today: day("2026-11-06"),
+            job: Job::Polish,
+            model: CLEANUP_MODEL,
+            budget: budget_for(Job::Polish),
+            constrained_notes_allowed: false,
+        };
+        let now = Instant::now();
+        assert!(cloud_available(&on, now));
+        let local = RouteContext {
+            mode: CloudMode::AlwaysLocal,
+            ..on
+        };
+        assert!(!cloud_available(&local, now), "the user's setting wins");
+        let nokey = RouteContext {
+            has_key: false,
+            ..on
+        };
+        assert!(!cloud_available(&nokey, now));
+        let off = FixedPath(PathStatus::Unsatisfied);
+        let offline = RouteContext { probe: &off, ..on };
+        assert!(!cloud_available(&offline, now), "offline: no cloud");
+        {
+            let mut b = breaker.lock().unwrap();
+            b.record_failure(now);
+            b.record_failure(now);
+            b.record_failure(now);
+        }
+        assert!(!cloud_available(&on, now), "an open breaker: no cloud");
+        // Half-open: available, and asking twice never spends the one probe.
+        let later = now + BREAKER_OPEN_FOR;
+        assert!(cloud_available(&on, later));
+        assert!(cloud_available(&on, later));
+        assert_eq!(
+            decide(&on, later),
+            Decision::cloud(),
+            "the probe is still there"
+        );
+        assert_eq!(decide(&on, later), Decision::local(Reason::Breaker));
     }
 
     #[test]

@@ -160,7 +160,13 @@ impl CloudKeyClient {
     /// The request body for `job` (checked against the reference: thinking is
     /// turned down for the latency-bound cleanup jobs, left adaptive for
     /// notes).
-    pub fn body(model: &str, job: Job, system: &str, user: &str, max_tokens: u32) -> serde_json::Value {
+    pub fn body(
+        model: &str,
+        job: Job,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": model,
             "max_tokens": max_tokens,
@@ -324,7 +330,11 @@ mod tests {
         assert!(n.get("thinking").is_none());
         assert_eq!(model_for(Job::Notes, true), NOTES_MODEL_BEST);
         assert_eq!(model_for(Job::Notes, false), CLEANUP_MODEL);
-        let c = CloudKeyClient::new("", "k".into(), http_client::build_client(CLIENT_TIMEOUT).unwrap());
+        let c = CloudKeyClient::new(
+            "",
+            "k".into(),
+            http_client::build_client(CLIENT_TIMEOUT).unwrap(),
+        );
         assert_eq!(c.endpoint(), format!("{DEFAULT_BASE_URL}/v1/messages"));
     }
 }

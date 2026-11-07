@@ -277,7 +277,11 @@ pub async fn post_stream(
     let parsed = Url::parse(url).map_err(|_| CloudError::Protocol)?;
     let host = host_label(url).unwrap_or_else(|| "the server".into());
     let started = Instant::now();
-    log::info!("http_client stream start host={host} ttft_ms={} total_ms={}", ttft.as_millis(), total.as_millis());
+    log::info!(
+        "http_client stream start host={host} ttft_ms={} total_ms={}",
+        ttft.as_millis(),
+        total.as_millis()
+    );
     let mut req = client.inner.post(parsed.clone()).json(body);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -285,7 +289,10 @@ pub async fn post_stream(
     let sent = tokio::time::timeout(ttft, req.send()).await;
     let resp = match sent {
         Err(_) => {
-            log::warn!("http_client stream ttft_exceeded host={host} ms={}", started.elapsed().as_millis());
+            log::warn!(
+                "http_client stream ttft_exceeded host={host} ms={}",
+                started.elapsed().as_millis()
+            );
             return Err(CloudError::Ttft);
         }
         Ok(Err(e)) => {
@@ -296,14 +303,21 @@ pub async fn post_stream(
             } else {
                 CloudError::ConnectionReset
             };
-            log::warn!("http_client stream failed host={host} error={} ms={}", err.tag(), started.elapsed().as_millis());
+            log::warn!(
+                "http_client stream failed host={host} error={} ms={}",
+                err.tag(),
+                started.elapsed().as_millis()
+            );
             return Err(err);
         }
         Ok(Ok(r)) => r,
     };
     let status = resp.status();
     if status.is_redirection() {
-        log::warn!("http_client stream redirect_refused host={host} status={}", status.as_u16());
+        log::warn!(
+            "http_client stream redirect_refused host={host} status={}",
+            status.as_u16()
+        );
         return Err(CloudError::Status {
             code: status.as_u16(),
             retry_after: None,
@@ -338,16 +352,31 @@ pub async fn post_stream(
             total.saturating_sub(elapsed)
         };
         if wait.is_zero() {
-            return Err(if ttft_ms.is_none() { CloudError::Ttft } else { CloudError::Total });
+            return Err(if ttft_ms.is_none() {
+                CloudError::Ttft
+            } else {
+                CloudError::Total
+            });
         }
         match tokio::time::timeout(wait, resp.chunk()).await {
             Err(_) => {
-                let err = if ttft_ms.is_none() { CloudError::Ttft } else { CloudError::Total };
-                log::warn!("http_client stream {} host={host} ms={}", err.tag(), started.elapsed().as_millis());
+                let err = if ttft_ms.is_none() {
+                    CloudError::Ttft
+                } else {
+                    CloudError::Total
+                };
+                log::warn!(
+                    "http_client stream {} host={host} ms={}",
+                    err.tag(),
+                    started.elapsed().as_millis()
+                );
                 return Err(err);
             }
             Ok(Err(_)) => {
-                log::warn!("http_client stream reset host={host} ms={}", started.elapsed().as_millis());
+                log::warn!(
+                    "http_client stream reset host={host} ms={}",
+                    started.elapsed().as_millis()
+                );
                 return Err(CloudError::ConnectionReset);
             }
             Ok(Ok(None)) => break,

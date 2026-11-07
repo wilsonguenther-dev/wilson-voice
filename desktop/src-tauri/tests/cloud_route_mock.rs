@@ -103,7 +103,8 @@ fn mock(script: Vec<Scripted>) -> (u16, Arc<Mutex<Vec<String>>>) {
                 .unwrap()
                 .push(String::from_utf8_lossy(&buf).to_string());
             let Some(answer) = script.next() else {
-                let _ = s.write_all(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
+                let _ =
+                    s.write_all(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
                 continue;
             };
             let mut head = format!("HTTP/1.1 {}\r\nConnection: close\r\n", answer.status);
@@ -164,7 +165,12 @@ impl Harness {
         }
     }
 
-    fn ctx<'a>(&'a self, mode: CloudMode, probe: &'a dyn OnlineProbe, job: Job) -> RouteContext<'a> {
+    fn ctx<'a>(
+        &'a self,
+        mode: CloudMode,
+        probe: &'a dyn OnlineProbe,
+        job: Job,
+    ) -> RouteContext<'a> {
         RouteContext {
             mode,
             has_key: true,
@@ -201,12 +207,9 @@ impl Harness {
                 &mut sink,
             )
         };
-        run_routed(
-            ctx,
-            &mut cloud,
-            &|t| Some(t.to_string()),
-            &mut || "local".to_string(),
-        )
+        run_routed(ctx, &mut cloud, &|t| Some(t.to_string()), &mut || {
+            "local".to_string()
+        })
     }
 
     fn requests(&self) -> usize {
@@ -216,10 +219,16 @@ impl Harness {
 
 #[test]
 fn stream_ok_is_the_cloud_route_and_the_ledger_counts_it() {
-    let h = Harness::new("cloud-ok", vec![sse_ok(&["The meeting is on ", "Tuesday."])]);
+    let h = Harness::new(
+        "cloud-ok",
+        vec![sse_ok(&["The meeting is on ", "Tuesday."])],
+    );
     let r = h.run(&h.ctx(CloudMode::CloudWhenOnline, &AssumeOnline, Job::Polish));
     assert_eq!(r.value, "The meeting is on Tuesday.");
-    assert_eq!((r.route, r.reason, r.fallback), (Route::Cloud, Reason::Online, Fallback::None));
+    assert_eq!(
+        (r.route, r.reason, r.fallback),
+        (Route::Cloud, Reason::Online, Fallback::None)
+    );
     assert_eq!((r.tokens_in, r.tokens_out), (30, 7));
     assert!(r.ttft_ms <= 400, "ttft_ms={}", r.ttft_ms);
     assert!(r.cost_usd > 0.0);
@@ -227,7 +236,10 @@ fn stream_ok_is_the_cloud_route_and_the_ledger_counts_it() {
     let ledger = Ledger::load(&h.db, today());
     assert_eq!(ledger.day_calls, 1);
     assert_eq!(ledger.day_tokens_out, 7);
-    assert_eq!(h.breaker.lock().unwrap().state(Instant::now()), BreakerState::Closed);
+    assert_eq!(
+        h.breaker.lock().unwrap().state(Instant::now()),
+        BreakerState::Closed
+    );
     let req = h.seen.lock().unwrap()[0].clone();
     assert!(req.contains("x-api-key: mock-key-never-real"));
     assert!(req.contains("anthropic-version: 2026-10-21"));
@@ -240,9 +252,16 @@ fn slow_first_token_falls_back_to_local_and_keeps_the_take() {
     let h = Harness::new("cloud-slow", vec![slow]);
     let r = h.run(&h.ctx(CloudMode::CloudWhenOnline, &AssumeOnline, Job::Polish));
     assert_eq!(r.value, "local");
-    assert_eq!((r.route, r.reason, r.fallback), (Route::Local, Reason::Timeout, Fallback::Timeout));
+    assert_eq!(
+        (r.route, r.reason, r.fallback),
+        (Route::Local, Reason::Timeout, Fallback::Timeout)
+    );
     assert_eq!(h.requests(), 1, "a timeout is never retried");
-    assert_eq!(Ledger::load(&h.db, today()).day_calls, 0, "nothing was billed");
+    assert_eq!(
+        Ledger::load(&h.db, today()).day_calls,
+        0,
+        "nothing was billed"
+    );
 }
 
 #[test]
@@ -270,7 +289,10 @@ fn a_429_whose_retry_succeeds_is_still_the_cloud_route() {
         vec![
             Scripted {
                 status: "429 Too Many Requests",
-                headers: vec!["Retry-After: 1".into(), "Content-Type: application/json".into()],
+                headers: vec![
+                    "Retry-After: 1".into(),
+                    "Content-Type: application/json".into(),
+                ],
                 pieces: vec![(Duration::ZERO, "{}".into())],
             },
             sse_ok(&["Second try."]),
@@ -296,7 +318,10 @@ fn a_401_is_not_retried_goes_local_and_flags_the_key() {
     assert_eq!(r.value, "local");
     assert_eq!(r.attempts, 1);
     assert_eq!(h.requests(), 1, "no retry on an auth error");
-    assert!(key_needs_attention(&h.db), "Settings shows 'Cloud key needs attention'");
+    assert!(
+        key_needs_attention(&h.db),
+        "Settings shows 'Cloud key needs attention'"
+    );
     // The next successful cloud call clears the flag.
 }
 
@@ -326,7 +351,10 @@ fn the_breaker_opens_after_three_failures_and_half_opens_with_one_probe() {
     let r = h.run(&ctx);
     assert_eq!((r.route, r.reason), (Route::Local, Reason::Breaker));
     assert_eq!(h.requests(), 6, "an open breaker makes no request");
-    assert_eq!(decide(&ctx, Instant::now()), Decision::local(Reason::Breaker));
+    assert_eq!(
+        decide(&ctx, Instant::now()),
+        Decision::local(Reason::Breaker)
+    );
     // Half-open after the window: exactly one probe, and it succeeds.
     {
         let mut b = h.breaker.lock().unwrap();
@@ -341,7 +369,10 @@ fn the_breaker_opens_after_three_failures_and_half_opens_with_one_probe() {
     assert_eq!(r.value, "probe ok");
     assert_eq!(r.route, Route::Cloud);
     assert_eq!(h.requests(), 7);
-    assert_eq!(h.breaker.lock().unwrap().state(Instant::now()), BreakerState::Closed);
+    assert_eq!(
+        h.breaker.lock().unwrap().state(Instant::now()),
+        BreakerState::Closed
+    );
 }
 
 #[test]
@@ -355,8 +386,20 @@ fn offline_makes_no_request() {
     assert_eq!(*h.cloud_calls.lock().unwrap(), 0);
     // A constrained path still allows cleanup, but holds notes back by default.
     let slow = FixedPath(PathStatus::Constrained);
-    assert_eq!(decide(&h.ctx(CloudMode::CloudWhenOnline, &slow, Job::Notes), Instant::now()), Decision::local(Reason::Constrained));
-    assert_eq!(decide(&h.ctx(CloudMode::CloudWhenOnline, &slow, Job::Polish), Instant::now()), Decision::cloud());
+    assert_eq!(
+        decide(
+            &h.ctx(CloudMode::CloudWhenOnline, &slow, Job::Notes),
+            Instant::now()
+        ),
+        Decision::local(Reason::Constrained)
+    );
+    assert_eq!(
+        decide(
+            &h.ctx(CloudMode::CloudWhenOnline, &slow, Job::Polish),
+            Instant::now()
+        ),
+        Decision::cloud()
+    );
 }
 
 #[test]
@@ -389,7 +432,10 @@ fn the_daily_cap_routes_locally_and_holds_across_a_restart() {
     };
     assert_eq!(decide(&ctx2, Instant::now()), Decision::local(Reason::Cap));
     // Tomorrow it is back.
-    let ctx3 = RouteContext { today: today().succ_opt().unwrap(), ..ctx2 };
+    let ctx3 = RouteContext {
+        today: today().succ_opt().unwrap(),
+        ..ctx2
+    };
     assert_eq!(decide(&ctx3, Instant::now()), Decision::cloud());
     assert_eq!(budget_for(Job::Notes).total, Duration::from_secs(90));
 }
@@ -405,6 +451,14 @@ fn always_on_this_mac_makes_zero_network_calls() {
     // Give a stray connection every chance to show up.
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(h.requests(), 0, "Always on this Mac reached the network");
-    assert_eq!(*h.cloud_calls.lock().unwrap(), 0, "the cloud closure was never even called");
-    assert_eq!(CloudMode::load(&h.db), CloudMode::AlwaysLocal, "the default for a new user");
+    assert_eq!(
+        *h.cloud_calls.lock().unwrap(),
+        0,
+        "the cloud closure was never even called"
+    );
+    assert_eq!(
+        CloudMode::load(&h.db),
+        CloudMode::AlwaysLocal,
+        "the default for a new user"
+    );
 }
