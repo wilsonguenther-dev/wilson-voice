@@ -4,7 +4,7 @@
  * takes its data and its callbacks, so `MeetingsPanes.test.tsx` renders them
  * with renderToStaticMarkup. The decisions live in `meetingsLayout.ts`.
  */
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { KindChoice } from "../appTypes";
 import {
   DETAIL_TABS,
@@ -19,6 +19,94 @@ import {
   type PendingDelete,
   type PersonRow,
 } from "./meetingsLayout";
+
+// ─── List pane: the title tooltip, only when the title is cut ────────────────
+
+/**
+ * yap-1107-meetings-row-no-stale-tooltip — Wilson (2026-11-07 12:47Z): a native
+ * "Meeting 12:19 PM" tooltip floated over the NEXT row, from `title={m.title}`
+ * on the whole row button. A tooltip that repeats text already on screen is
+ * noise, and on a 60 px hit area it anchors wherever the pointer entered. So
+ * the row carries no title attribute at all; the title SPAN gets one only
+ * while the CSS ellipsis actually cuts it (scrollWidth > clientWidth). The
+ * button's accessible name is its text content, which is always the full
+ * title, so VoiceOver loses nothing either way.
+ */
+export const ROW_TITLE_SELECTOR = ".meeting-row-title";
+
+/** The full title when the box cuts it, else null (no tooltip). Pure. */
+export function truncatedTitle(text: string | null | undefined, scrollWidth: number, clientWidth: number): string | null {
+  const full = (text ?? "").trim();
+  if (!full) return null;
+  if (!Number.isFinite(scrollWidth) || !Number.isFinite(clientWidth) || clientWidth <= 0) return null;
+  return scrollWidth > clientWidth ? full : null;
+}
+
+/** Sets or clears ONE title span's tooltip from its measured box. Returns true when it is cut. */
+export function syncTitleTooltip(el: HTMLElement): boolean {
+  const full = truncatedTitle(el.textContent, el.scrollWidth, el.clientWidth);
+  if (full) {
+    if (el.getAttribute("title") !== full) el.setAttribute("title", full);
+  } else if (el.hasAttribute("title")) {
+    el.removeAttribute("title");
+  }
+  return full !== null;
+}
+
+/**
+ * A callback ref for the list container: ONE ResizeObserver for the whole
+ * list, observing every row's title span (no per-row observers, no polling).
+ * It re-syncs on mount, on any title box resize (window / pane resize), when
+ * the web font lands, and whenever `key` changes (rows or titles changed:
+ * a longer title in an already-cut box does not resize it). `onCount` hears
+ * (cut, total) only when the cut count changes — one telemetry line, never a
+ * stream. React does not own the span's title attribute (the JSX never sets
+ * one), so a re-render never fights this.
+ */
+export function useTruncatedTitles(
+  key: string,
+  onCount?: (truncated: number, total: number) => void,
+): (root: HTMLElement | null) => void | (() => void) {
+  const report = useRef(onCount);
+  report.current = onCount;
+  const last = useRef(-1);
+  return useCallback(
+    (root: HTMLElement | null) => {
+      if (!root) return;
+      const titles = () => Array.from(root.querySelectorAll<HTMLElement>(ROW_TITLE_SELECTOR));
+      const tally = () => {
+        const all = titles();
+        const cut = all.filter((el) => el.hasAttribute("title")).length;
+        if (cut !== last.current) {
+          last.current = cut;
+          report.current?.(cut, all.length);
+        }
+      };
+      const syncAll = () => {
+        for (const el of titles()) syncTitleTooltip(el);
+        tally();
+      };
+      syncAll();
+      let alive = true;
+      void document.fonts?.ready.then(() => alive && syncAll()).catch(() => undefined);
+      if (typeof ResizeObserver === "undefined") {
+        return () => {
+          alive = false;
+        };
+      }
+      const ro = new ResizeObserver((entries) => {
+        for (const e of entries) syncTitleTooltip(e.target as HTMLElement);
+        tally();
+      });
+      for (const el of titles()) ro.observe(el);
+      return () => {
+        alive = false;
+        ro.disconnect();
+      };
+    },
+    [key],
+  );
+}
 
 // ─── List pane: filters ──────────────────────────────────────────────────────
 
@@ -113,7 +201,8 @@ export function moreChipLabel(hidden: readonly string[]): string {
 /**
  * yap-1107-meetings-row-chips-baseline — a list row's ONE chip line: the first
  * `shown` people as chips, the rest folded into a "+N" chip whose accessible
- * label (and tooltip) names them. Chips past `shown` stay in the DOM out of
+ * label names them (no title tooltip: yap-1107-meetings-row-no-stale-tooltip
+ * keeps every title attribute off the row except an ellipsised title). Chips past `shown` stay in the DOM out of
  * flow and invisible (`is-overflow`) so `FitPeopleChips` can measure them on
  * the next resize; the "+N" chip is always rendered for the same reason.
  * Pure markup: `MeetingsPanes.test.tsx` renders it with renderToStaticMarkup.
@@ -139,7 +228,6 @@ export function PeopleChipLine({ people, shown }: { people: readonly string[]; s
         role={hidden.length > 0 ? "img" : undefined}
         aria-label={hidden.length > 0 ? moreChipLabel(hidden) : undefined}
         aria-hidden={hidden.length > 0 ? undefined : true}
-        title={hidden.length > 0 ? hidden.join(", ") : undefined}
       >
         {`+${Math.max(1, hidden.length)}`}
       </span>
