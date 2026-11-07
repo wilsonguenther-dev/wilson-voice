@@ -2529,6 +2529,13 @@ impl Database {
         let profiles = tx
             .execute("DELETE FROM speaker_profiles", [])
             .map_err(|e| e.to_string())?;
+        // yap-1106-who-is-this — a meeting's kept cluster voices are
+        // voiceprints too: "Forget all voices" forgets them.
+        tx.execute(
+            "UPDATE meeting_cluster_voices SET embedding = NULL, embedder_digest = NULL, profile_id = NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM settings_kv WHERE key = ?1",
             params![speaker_profiles::ENROLL_ME_SETTING],
@@ -3773,6 +3780,12 @@ impl Database {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM meeting_segments WHERE meeting_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        // yap-1106-who-is-this — the meeting's cluster voices go with it.
+        tx.execute(
+            "DELETE FROM meeting_cluster_voices WHERE meeting_id = ?1",
             params![id],
         )
         .map_err(|e| e.to_string())?;
