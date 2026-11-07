@@ -994,14 +994,9 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
 }
 /* yap-1106-pill-trial-clickable — the refusal IS the Buy button. Hover (or
    keyboard focus) swaps the label to "Buy a license" and lifts the border. */
-.kami-blocked.gated.is-hover,
-.kami-blocked.gated:focus-visible {
+.kami-blocked.gated.is-hover {
   border-color: rgba(251, 191, 36, 0.6);
   color: rgba(255, 255, 255, 0.96);
-}
-.kami-blocked.gated:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.8);
-  outline-offset: 2px;
 }
 /* The resting nub's small lock, once the refusal has settled: the ended chip,
    made pressable. Same place, same amber, one lock glyph. */
@@ -1023,10 +1018,6 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   stroke-linejoin: round;
 }
 .kami-gate-lock:hover { color: rgba(251, 191, 36, 1); }
-.kami-gate-lock:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.8);
-  outline-offset: 1px;
-}
 /* A license arrived by deep link from the site: Yappy hops once. The canvas
    moves as one compositor layer; the duration is DURATION.yappyHop. */
 .kami-hop .kami-canvas {

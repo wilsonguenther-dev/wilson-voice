@@ -279,9 +279,14 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
     expect(house).toMatch(/grid\.offsetX, grid\.offsetY, grid\.drawW, grid\.drawH/);
   });
 
-  it("App.css: the short-window cover rule this module honours is still there", () => {
+  it("App.css: the short-window cover strip is retired; the full-width room stays at a whole-number scale", () => {
+    // yap-1106-home-full-width-room (approved Home page, 2026-11-06) replaced the
+    // 112 px cover-cropped strip with the full-width room at 5x/4x/3x
+    // (home/homeLayout.ts roomScale). The grid still READS object-fit (the test
+    // above), so a cover rule could return without code changes; today none crops it.
     const css = readSibling("../App.css");
-    expect(css).toMatch(/@media \(max-height: 800px\)[\s\S]*?\.yappy-house \.yh-stage \{\s*max-height: 112px;\s*object-fit: cover;\s*object-position: 50% 70%;/);
+    expect(css).not.toMatch(/\.yappy-house \.yh-stage \{[^}]*object-fit: cover/);
+    expect(css).not.toMatch(/\.yappy-house \.yh-stage \{[^}]*max-height: 112px/);
   });
 
   it("YappyPill hands its scene buffer to sceneBlit (the src clamp needs it)", () => {

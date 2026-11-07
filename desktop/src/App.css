@@ -838,11 +838,6 @@ button.link {
 button.link:hover {
   text-decoration: underline;
 }
-button.link:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-  border-radius: 3px;
-}
 
 /* ── yap-1106-home-full-width-room — Home, round two ──────────────────────
    Room (full width), one quiet stats line, the latest take beside Needs
@@ -945,10 +940,6 @@ button.link:focus-visible {
 }
 .recent-row:hover {
   background: var(--bg-elev);
-}
-.recent-row:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: -2px;
 }
 .recent-when,
 .recent-words {
