@@ -592,8 +592,8 @@ body,
   width: 7px;
   height: 7px;
   background:
-    linear-gradient(90deg, transparent 3px, #1e2025 3px, #1e2025 4px, transparent 4px),
-    linear-gradient(0deg, transparent 3px, #1e2025 3px, #1e2025 4px, transparent 4px);
+    linear-gradient(90deg, transparent 3px, var(--meeting-reel-ink) 3px, var(--meeting-reel-ink) 4px, transparent 4px),
+    linear-gradient(0deg, transparent 3px, var(--meeting-reel-ink) 3px, var(--meeting-reel-ink) 4px, transparent 4px);
 }
 .meeting-reel.turning {
   animation: meeting-reel-turn calc(var(--rec-pulse, 1.6s) * 0.75) steps(4, end) infinite;
@@ -612,7 +612,7 @@ body,
     Menlo,
     monospace;
   font-variant-numeric: tabular-nums;
-  color: #fffdf5;
+  color: var(--meeting-scene-ink);
   text-shadow: 0 1px 0 rgba(42, 45, 53, 0.85);
   white-space: nowrap;
   pointer-events: none;
