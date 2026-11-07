@@ -22,10 +22,13 @@
 //! No network identifier lives here: the HTTP streaming is `cloud_client.rs`
 //! over `http_client.rs`, and a test drives this module with closures.
 //!
-//! Offline detection: the shipped probe is [`AssumeOnline`] guarded by the
-//! breaker (an unreachable host fails fast and opens the breaker). A real
-//! `NWPathMonitor` probe needs a Network.framework binding this crate does
-//! not carry yet; [`OnlineProbe`] is the seam it plugs into.
+//! Offline detection: the shipped probe is [`NwPathProbe`], an
+//! `NWPathMonitor` (Network.framework's public C API) started once per process.
+//! An unsatisfied path routes locally with NO attempt; an expensive or
+//! constrained path (hotspot, Low Data Mode) is [`PathStatus::Constrained`].
+//! Until the monitor's first answer (and off macOS) the probe says online, and
+//! the breaker catches an unreachable host. [`OnlineProbe`] is the seam tests
+//! drive with [`FixedPath`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -183,8 +186,8 @@ pub trait OnlineProbe: Send + Sync {
     fn path(&self) -> PathStatus;
 }
 
-/// The shipped probe until an `NWPathMonitor` binding exists: assume online
-/// and let the breaker catch an unreachable host.
+/// Assume online and let the breaker catch an unreachable host (the probe the
+/// routing tests use when the path is not the subject).
 pub struct AssumeOnline;
 impl OnlineProbe for AssumeOnline {
     fn path(&self) -> PathStatus {
@@ -197,6 +200,160 @@ pub struct FixedPath(pub PathStatus);
 impl OnlineProbe for FixedPath {
     fn path(&self) -> PathStatus {
         self.0
+    }
+}
+
+// Network.framework `nw_path_status_t` values (Network/path.h).
+const NW_STATUS_INVALID: i32 = 0;
+const NW_STATUS_SATISFIED: i32 = 1;
+const NW_STATUS_UNSATISFIED: i32 = 2;
+const NW_STATUS_SATISFIABLE: i32 = 3;
+
+/// Map one `NWPath` answer onto [`PathStatus`]. `None` = no answer yet
+/// (`invalid`), which the probe treats as online. `satisfiable` (e.g. a VPN on
+/// demand that connects on first use) is an attempt worth making.
+pub fn path_status_from_nw(status: i32, expensive: bool, constrained: bool) -> Option<PathStatus> {
+    match status {
+        NW_STATUS_SATISFIED | NW_STATUS_SATISFIABLE => Some(if expensive || constrained {
+            PathStatus::Constrained
+        } else {
+            PathStatus::Satisfied
+        }),
+        NW_STATUS_UNSATISFIED => Some(PathStatus::Unsatisfied),
+        NW_STATUS_INVALID => None,
+        _ => None,
+    }
+}
+
+const PATH_UNKNOWN: u8 = 0;
+const PATH_SATISFIED: u8 = 1;
+const PATH_UNSATISFIED: u8 = 2;
+const PATH_CONSTRAINED: u8 = 3;
+
+/// The last path the monitor reported (written on its serial queue).
+static NW_PATH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(PATH_UNKNOWN);
+static NW_MONITOR_START: std::sync::Once = std::sync::Once::new();
+
+fn path_to_u8(p: Option<PathStatus>) -> u8 {
+    match p {
+        None => PATH_UNKNOWN,
+        Some(PathStatus::Satisfied) => PATH_SATISFIED,
+        Some(PathStatus::Unsatisfied) => PATH_UNSATISFIED,
+        Some(PathStatus::Constrained) => PATH_CONSTRAINED,
+    }
+}
+
+fn path_from_u8(v: u8) -> PathStatus {
+    match v {
+        PATH_UNSATISFIED => PathStatus::Unsatisfied,
+        PATH_CONSTRAINED => PathStatus::Constrained,
+        // Unknown (no answer yet) and satisfied both mean: try the cloud.
+        _ => PathStatus::Satisfied,
+    }
+}
+
+fn path_tag(p: PathStatus) -> &'static str {
+    match p {
+        PathStatus::Satisfied => "satisfied",
+        PathStatus::Unsatisfied => "unsatisfied",
+        PathStatus::Constrained => "constrained",
+    }
+}
+
+/// Record one monitor answer; logs `byom path status=…` only on a change.
+fn note_nw_path(p: Option<PathStatus>) {
+    let next = path_to_u8(p);
+    let prev = NW_PATH.swap(next, std::sync::atomic::Ordering::Relaxed);
+    if prev != next {
+        let tag = p.map(path_tag).unwrap_or("unknown");
+        log::info!("byom path status={tag}");
+    }
+}
+
+/// Start the process-wide `NWPathMonitor` (idempotent). Called at app start so
+/// the first take already has an answer; [`NwPathProbe`] also calls it.
+pub fn start_path_monitor() {
+    NW_MONITOR_START.call_once(|| {
+        #[cfg(target_os = "macos")]
+        nw::start();
+    });
+}
+
+/// The shipped probe: the latest `NWPathMonitor` answer.
+pub struct NwPathProbe;
+impl OnlineProbe for NwPathProbe {
+    fn path(&self) -> PathStatus {
+        start_path_monitor();
+        path_from_u8(NW_PATH.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod nw {
+    use block2::{Block, RcBlock};
+    use std::ffi::{c_char, c_void};
+
+    #[link(name = "Network", kind = "framework")]
+    extern "C" {
+        fn nw_path_monitor_create() -> *mut c_void;
+        fn nw_path_monitor_set_update_handler(
+            monitor: *mut c_void,
+            update_handler: &Block<dyn Fn(*mut c_void)>,
+        );
+        fn nw_path_monitor_set_queue(monitor: *mut c_void, queue: *mut c_void);
+        fn nw_path_monitor_start(monitor: *mut c_void);
+        fn nw_path_get_status(path: *mut c_void) -> i32;
+        fn nw_path_is_expensive(path: *mut c_void) -> bool;
+        fn nw_path_is_constrained(path: *mut c_void) -> bool;
+    }
+
+    // libdispatch is part of libSystem, linked into every macOS binary.
+    extern "C" {
+        fn dispatch_queue_create(label: *const c_char, attr: *mut c_void) -> *mut c_void;
+    }
+
+    /// The update handler: one `nw_path_t` per change, on the serial queue.
+    fn on_path(path: *mut c_void) {
+        if path.is_null() {
+            super::note_nw_path(None);
+            return;
+        }
+        // SAFETY: `path` is the live `nw_path_t` the monitor hands its
+        // handler; it is only read for the duration of this call.
+        let (status, expensive, constrained) = unsafe {
+            (
+                nw_path_get_status(path),
+                nw_path_is_expensive(path),
+                nw_path_is_constrained(path),
+            )
+        };
+        super::note_nw_path(super::path_status_from_nw(status, expensive, constrained));
+    }
+
+    pub(super) fn start() {
+        let handler = RcBlock::new(|path: *mut c_void| on_path(path));
+        // SAFETY: public Network.framework / libdispatch C API. The monitor and
+        // its serial queue live for the whole process (never cancelled or
+        // released); the monitor copies the handler block, and our reference
+        // is leaked on purpose so it can never be freed early. A null attr is
+        // DISPATCH_QUEUE_SERIAL, so answers arrive in order.
+        unsafe {
+            let monitor = nw_path_monitor_create();
+            if monitor.is_null() {
+                log::warn!("byom path monitor=unavailable");
+                return;
+            }
+            let queue = dispatch_queue_create(c"app.yap.byom.path".as_ptr(), std::ptr::null_mut());
+            if queue.is_null() {
+                log::warn!("byom path monitor=no_queue");
+                return;
+            }
+            nw_path_monitor_set_update_handler(monitor, &handler);
+            nw_path_monitor_set_queue(monitor, queue);
+            nw_path_monitor_start(monitor);
+        }
+        std::mem::forget(handler);
+        log::info!("byom path monitor=started");
     }
 }
 
@@ -266,10 +423,10 @@ impl Reason {
             (Route::Local, Reason::Timeout) => "The cloud was slow — finished on this Mac",
             (Route::Local, Reason::Cap) => CAP_REACHED_LINE,
             (Route::Local, Reason::User) => "Always on this Mac (your setting)",
-            (Route::Local, Reason::Error) => "The cloud answered with an error — finished on this Mac",
-            (Route::Local, Reason::Constrained) => {
-                "Low-data connection — notes stay on this Mac"
+            (Route::Local, Reason::Error) => {
+                "The cloud answered with an error — finished on this Mac"
             }
+            (Route::Local, Reason::Constrained) => "Low-data connection — notes stay on this Mac",
             (Route::Local, Reason::NoKey) => "No cloud key yet — written on this Mac",
             (Route::Local, Reason::Online) => "Written on this Mac",
         }
@@ -494,7 +651,13 @@ impl Ledger {
     }
 
     /// Add one call's tokens; returns its cost in USD.
-    pub fn record(&mut self, today: NaiveDate, model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
+    pub fn record(
+        &mut self,
+        today: NaiveDate,
+        model: &str,
+        tokens_in: u64,
+        tokens_out: u64,
+    ) -> f64 {
         self.roll(today);
         let cost = cost_usd(model, tokens_in, tokens_out);
         self.day_tokens_in += tokens_in;
@@ -586,7 +749,9 @@ pub enum CloudError {
         retry_after: Option<Duration>,
     },
     /// 529 / `overloaded_error`.
-    Overloaded { retry_after: Option<Duration> },
+    Overloaded {
+        retry_after: Option<Duration>,
+    },
     ConnectionReset,
     Unreachable,
     /// No first token inside the budget.
@@ -833,10 +998,18 @@ pub fn run_routed<R>(
                     }
                     let cap = daily_cap(ctx.kv);
                     if ledger.cap_reached(cap) {
-                        log::warn!("byom cap_reached day={} cost_usd={:.4} cap_usd={cap:.2}", ledger.day, ledger.day_cost_usd);
+                        log::warn!(
+                            "byom cap_reached day={} cost_usd={:.4} cap_usd={cap:.2}",
+                            ledger.day,
+                            ledger.day_cost_usd
+                        );
                         crate::diagnostics::set_state("byom.cap", "reached");
                     } else if ledger.warn_reached(cap) {
-                        log::info!("byom cap_warn day={} fraction={:.2}", ledger.day, ledger.day_fraction(cap));
+                        log::info!(
+                            "byom cap_warn day={} fraction={:.2}",
+                            ledger.day,
+                            ledger.day_fraction(cap)
+                        );
                         crate::diagnostics::set_state("byom.cap", "warn");
                     } else {
                         crate::diagnostics::set_state("byom.cap", "ok");
@@ -879,7 +1052,9 @@ pub fn run_routed<R>(
                         out.fallback = Fallback::Error;
                         break;
                     }
-                    if let Some(wait) = retry_delay(&err, attempt, elapsed, ctx.budget, jitter_now()) {
+                    if let Some(wait) =
+                        retry_delay(&err, attempt, elapsed, ctx.budget, jitter_now())
+                    {
                         log::info!(
                             "byom retry job={} after_ms={} error={}",
                             ctx.job.as_str(),
@@ -985,6 +1160,50 @@ impl RouteChip {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn nw_path_answers_map_onto_the_route_paths() {
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_SATISFIED, false, false),
+            Some(PathStatus::Satisfied)
+        );
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_SATISFIABLE, false, false),
+            Some(PathStatus::Satisfied)
+        );
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_UNSATISFIED, false, false),
+            Some(PathStatus::Unsatisfied)
+        );
+        // A hotspot (expensive) or Low Data Mode (constrained) path.
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_SATISFIED, true, false),
+            Some(PathStatus::Constrained)
+        );
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_SATISFIED, false, true),
+            Some(PathStatus::Constrained)
+        );
+        // Offline wins over expensive: no attempt at all.
+        assert_eq!(
+            path_status_from_nw(NW_STATUS_UNSATISFIED, true, true),
+            Some(PathStatus::Unsatisfied)
+        );
+        assert_eq!(path_status_from_nw(NW_STATUS_INVALID, false, false), None);
+        assert_eq!(path_status_from_nw(42, false, false), None);
+    }
+
+    #[test]
+    fn the_probe_reads_unknown_as_online_and_round_trips_each_path() {
+        assert_eq!(path_from_u8(PATH_UNKNOWN), PathStatus::Satisfied);
+        for p in [
+            PathStatus::Satisfied,
+            PathStatus::Unsatisfied,
+            PathStatus::Constrained,
+        ] {
+            assert_eq!(path_from_u8(path_to_u8(Some(p))), p);
+        }
+    }
     use std::sync::Mutex as StdMutex;
 
     #[derive(Default)]
@@ -1037,13 +1256,23 @@ mod tests {
                 code,
                 retry_after: None,
             };
-            assert!(retry_delay(&e, 0, Duration::ZERO, b, 0.0).is_none(), "{code}");
+            assert!(
+                retry_delay(&e, 0, Duration::ZERO, b, 0.0).is_none(),
+                "{code}"
+            );
             assert!(e.needs_key_attention(), "{code}");
         }
         assert!(retry_delay(&CloudError::Ttft, 0, Duration::ZERO, b, 0.0).is_none());
         assert!(retry_delay(&CloudError::ConnectionReset, 0, Duration::ZERO, b, 0.0).is_some());
-        assert!(retry_delay(&CloudError::Overloaded { retry_after: None }, 0, Duration::ZERO, b, 1.0)
-            == Some(Duration::from_millis(750)));
+        assert!(
+            retry_delay(
+                &CloudError::Overloaded { retry_after: None },
+                0,
+                Duration::ZERO,
+                b,
+                1.0
+            ) == Some(Duration::from_millis(750))
+        );
         // retry-after inside the budget is honoured; outside it, no retry.
         let ra = CloudError::Status {
             code: 503,
@@ -1098,7 +1327,10 @@ mod tests {
         b.record_failure(t0 + Duration::from_secs(1));
         // The third failure lands after the first two aged out.
         b.record_failure(t0 + BREAKER_WINDOW + Duration::from_secs(5));
-        assert_eq!(b.state(t0 + BREAKER_WINDOW + Duration::from_secs(6)), BreakerState::Closed);
+        assert_eq!(
+            b.state(t0 + BREAKER_WINDOW + Duration::from_secs(6)),
+            BreakerState::Closed
+        );
     }
 
     #[test]
@@ -1255,7 +1487,10 @@ mod tests {
             &mut || "local".to_string(),
         );
         assert_eq!(r.value, "Polished.");
-        assert_eq!((r.route, r.reason, r.fallback), (Route::Cloud, Reason::Online, Fallback::None));
+        assert_eq!(
+            (r.route, r.reason, r.fallback),
+            (Route::Cloud, Reason::Online, Fallback::None)
+        );
         assert!(r.cost_usd > 0.0);
         assert_eq!(calls, 1);
         // Timeout → local, fallback=timeout, breaker counts it.
@@ -1266,7 +1501,10 @@ mod tests {
             &mut || "local".to_string(),
         );
         assert_eq!(r.value, "local");
-        assert_eq!((r.route, r.reason, r.fallback), (Route::Local, Reason::Timeout, Fallback::Timeout));
+        assert_eq!(
+            (r.route, r.reason, r.fallback),
+            (Route::Local, Reason::Timeout, Fallback::Timeout)
+        );
         // 401 → no retry, key flagged, local.
         let mut calls = 0;
         let r = run_routed(

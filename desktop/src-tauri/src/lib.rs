@@ -8803,7 +8803,7 @@ fn cloud_run<R>(
     let ctx = cloud_route::RouteContext {
         mode,
         has_key: provider.is_some(),
-        probe: &cloud_route::AssumeOnline,
+        probe: &cloud_route::NwPathProbe,
         breaker: cloud_breaker(),
         kv: db,
         today: cloud_today(),
@@ -8967,6 +8967,11 @@ fn set_cloud_mode(
         log::error!("byom mode_save_failed error={e}");
         "The mode could not be saved — try again.".to_string()
     })?;
+    // The path monitor is local (no traffic); start it the moment a cloud mode
+    // is picked so the very next take already knows whether it is offline.
+    if mode.wants_cloud() {
+        cloud_route::start_path_monitor();
+    }
     Ok(cloud_route_view_for(&app, &state.db))
 }
 
@@ -9041,6 +9046,7 @@ fn save_cloud_key(
             log::warn!("byom mode_autoselect_failed error={e}");
         }
     }
+    cloud_route::start_path_monitor();
     if let Ok(mut b) = cloud_breaker().lock() {
         b.record_success();
     }
