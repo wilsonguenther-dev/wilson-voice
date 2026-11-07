@@ -43,9 +43,8 @@ import {
   STILL_T,
   STUDIO_H,
   STUDIO_W,
-  drawFrame,
-  drawLights,
-  drawTint,
+  composeStudio,
+  createFrameCache,
   onAirLit,
   parallaxOffsets,
   parallaxTarget,
@@ -189,6 +188,16 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
     const og = out.getContext("2d");
     if (!og) return;
     og.imageSmoothingEnabled = false;
+    // yap-1106-fb-24 — the wooden pixel frame is painted ONCE into its own
+    // offscreen buffer; every redraw blits it at (0, 0), so it never moves with
+    // the parallax and costs one drawImage, not a repaint.
+    const frameCache = createFrameCache(() => {
+      const surface = mk(W, H);
+      const ctx = surface.getContext("2d");
+      if (!ctx) throw new Error("frame_ctx_unavailable");
+      ctx.imageSmoothingEnabled = false;
+      return { surface, ctx };
+    });
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let grid: PixelGrid = pixelGrid({ w: W, h: H }, { w: W, h: H }, 1);
@@ -236,13 +245,10 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
           o.translate(PAD, 0);
           LAYERS[i](o, s, t);
         });
-        og!.setTransform(1, 0, 0, 1, 0, 0);
-        og!.clearRect(0, 0, W, H);
         og!.imageSmoothingEnabled = false;
-        layers.forEach((c, i) => og!.drawImage(c, -PAD + offs[i], 0));
-        drawTint(og!, s);
-        drawLights(og!, s, t, offs[0], offs[1]);
-        drawFrame(og!);
+        const firstFrame = frameCache.stats.renders === 0;
+        composeStudio<HTMLCanvasElement>(og!, layers, frameCache.get(), offs, s, t);
+        if (firstFrame) console.info(`home studio_frame_cached w=${W} h=${H} cell=${grid.cell}`);
         stage!.dataset.onAir = onAirLit(s) ? "on" : "off";
         // A display with a different backing scale re-grids here: no resize event fires for that.
         if (backingScale(devicePixelRatio) !== grid.dpr) regrid();
@@ -385,6 +391,8 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
       if (raf) cancelAnimationFrame(raf);
       if (timer) clearTimeout(timer);
       unsubs.forEach((u) => u());
+      // One counter: the frame should read renders=1 for the whole mount.
+      console.info(`home studio_frame_stats renders=${frameCache.stats.renders} hits=${frameCache.stats.hits}`);
     };
   }, []);
 
