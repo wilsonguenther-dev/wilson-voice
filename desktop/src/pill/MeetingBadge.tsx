@@ -18,7 +18,9 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, type CSSProperties } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from "react";
+import MeetingWorld from "./MeetingWorld";
+import { SAVED_LABEL, stopBeatUntil } from "./meetingScene";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -112,16 +114,56 @@ export default function MeetingBadge({
   status,
   after = null,
   onOpen,
+  dictating = false,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
   after?: MeetingAfterView | null;
   onOpen?: (id: string) => void;
+  /**
+   * yap-1106-pill-rec-headphones-hoot-tape — a dictation take is live during
+   * the meeting: Yappy takes the notepad, the tape keeps running.
+   */
+  dictating?: boolean;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
   const callApp = badgeCallLabel(useCallRecordingView());
+  // yap-1106-pill-rec-headphones-hoot-tape — the stop beat. Recording → not
+  // recording: Hoot hands over the tape and the pill reads "Saved" for
+  // SAVED_HOLD_MS, then the NT7 road (Transcribing → Notes ready) takes over.
+  // One setTimeout per stop, never an interval.
+  const wasRecording = useRef(status.recording);
+  const lastElapsed = useRef(status.elapsedSeconds);
+  const [savedUntil, setSavedUntil] = useState<number | null>(null);
+  useEffect(() => {
+    const until = stopBeatUntil(wasRecording.current, status.recording, Date.now());
+    wasRecording.current = status.recording;
+    if (status.recording) {
+      setSavedUntil(null);
+      return;
+    }
+    if (until === null) return;
+    console.info(`pill meeting_saved elapsed_s=${Math.floor(lastElapsed.current)}`);
+    setSavedUntil(until);
+  }, [status.recording]);
+  useEffect(() => {
+    if (status.recording && Number.isFinite(status.elapsedSeconds)) lastElapsed.current = status.elapsedSeconds;
+  }, [status.recording, status.elapsedSeconds]);
+  useEffect(() => {
+    if (savedUntil === null) return;
+    const t = window.setTimeout(() => setSavedUntil(null), Math.max(0, savedUntil - Date.now()));
+    return () => clearTimeout(t);
+  }, [savedUntil]);
   if (!status.recording) {
+    if (savedUntil !== null) {
+      return (
+        <div className="meeting-badge meeting-saved" data-pill-slot="clock" data-meeting-phase="saved" role="status" aria-label="Meeting saved">
+          <MeetingWorld elapsedS={lastElapsed.current} handover />
+          <span className="meeting-saved-label">{SAVED_LABEL}</span>
+        </div>
+      );
+    }
     if (!after) return null;
     return <MeetingAfter view={after} onOpen={onOpen} />;
   }
@@ -135,8 +177,10 @@ export default function MeetingBadge({
   const callAudio = callAudioChip(status);
   return (
     <div className="meeting-badge" data-pill-slot="clock" role="status" aria-live="off">
-      <span className="rec-dot" aria-hidden />
-      <span className="rec-time">{elapsedLabel(status)}</span>
+      {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
+          right ear cup of Yappy's headphones is the recording light, and the
+          elapsed time sits under the sun inside the scene. */}
+      <MeetingWorld elapsedS={status.elapsedSeconds} dictating={dictating} />
       {callApp && (
         <span className="rec-app" data-call-app title={`Recording ${callApp} call`}>
           {callApp}

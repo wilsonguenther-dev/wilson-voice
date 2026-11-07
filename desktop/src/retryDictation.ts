@@ -23,8 +23,21 @@ export const RETRY_DEADLINE_MAX_S = 180;
  * wedged (the hang this item exists for).
  */
 export const RETRY_WATCHDOG_GRACE_MS = 15_000;
+/**
+ * The backend's `RETRY_DEADLINE_ERROR` (lib.rs), verbatim: the retry ran past
+ * its deadline and the decode was left running unobserved on the ONE engine.
+ * Pinned both ways — a vitest reads lib.rs, a cargo test reads this file — so
+ * a reword on either side fails a test instead of silently turning a wedged
+ * engine into "try the next clip" (fix-b5-2).
+ */
+export const RETRY_DEADLINE_ERROR = "Couldn't transcribe this clip — Try again";
+/**
+ * The backend's `RETRY_ENGINE_BUSY_ERROR` (lib.rs), verbatim: the retry queued
+ * behind a live dictation and never got the engine. Pinned like the above.
+ */
+export const RETRY_ENGINE_BUSY_ERROR = "The speech engine stayed busy with a live dictation — Try again";
 /** The one sentence a retry that ran out of time shows. The clip stays kept. */
-export const RETRY_DEADLINE_MESSAGE = "Couldn't transcribe this clip — Try again";
+export const RETRY_DEADLINE_MESSAGE = RETRY_DEADLINE_ERROR;
 /** The button while the retry waits for a live dictation to let go of the engine. */
 export const RETRY_QUEUED_LABEL = "Waiting for the speech engine…";
 /** The backend's `retry-dictation` event: where the retry is, and its deadline. */
@@ -63,6 +76,11 @@ export interface RetryWatchdog {
   clear(): void;
   /** True once `onExpire` has fired. */
   readonly expired: boolean;
+  /**
+   * Resolves the moment the watchdog fires (right after `onExpire`); never
+   * resolves if it is cleared first. What `raceRetryWatchdog` races against.
+   */
+  readonly whenExpired: Promise<void>;
 }
 
 /**
@@ -74,6 +92,10 @@ export interface RetryWatchdog {
 export function createRetryWatchdog(onExpire: () => void): RetryWatchdog {
   let handle: ReturnType<typeof setTimeout> | null = null;
   let expired = false;
+  let fire!: () => void; // set synchronously by the Promise executor below
+  const whenExpired = new Promise<void>((resolve) => {
+    fire = resolve;
+  });
   const clear = () => {
     if (handle !== null) clearTimeout(handle);
     handle = null;
@@ -85,14 +107,47 @@ export function createRetryWatchdog(onExpire: () => void): RetryWatchdog {
       handle = setTimeout(() => {
         handle = null;
         expired = true;
-        onExpire();
+        try {
+          onExpire();
+        } finally {
+          fire();
+        }
       }, ms);
     },
     clear,
     get expired() {
       return expired;
     },
+    whenExpired,
   };
+}
+
+/** How a retry's command ended against its watchdog. */
+export type RetryRace<T> =
+  | { kind: "answered"; value: T }
+  | { kind: "errored"; error: unknown }
+  /** The watchdog fired first; the command is still out and may answer late. */
+  | { kind: "expired" };
+
+/**
+ * fix-b5-2 — race a retry's command against its watchdog. A backend that never
+ * answers (the hang the watchdog exists for) must still END the retry, or a
+ * Retry-all run awaiting it would read "Retrying k of N…" forever with every
+ * row's Retry disabled. The command is not cancelled: the caller keeps `work`
+ * and applies a late answer quietly.
+ */
+export function raceRetryWatchdog<T>(
+  work: Promise<T>,
+  watchdog: Pick<RetryWatchdog, "whenExpired">,
+): Promise<RetryRace<T>> {
+  return new Promise<RetryRace<T>>((resolve) => {
+    // First to settle wins; a later resolve() is a no-op.
+    void work.then(
+      (value) => resolve({ kind: "answered", value }),
+      (error: unknown) => resolve({ kind: "errored", error }),
+    );
+    void watchdog.whenExpired.then(() => resolve({ kind: "expired" }));
+  });
 }
 
 // ── yap-fx-07 — "Retry all" ────────────────────────────────────────────────
@@ -115,9 +170,17 @@ export type RetryOutcome =
  */
 export const ENGINE_STUCK_PREFIX = "The speech engine is still busy";
 
-/** Does a retry's error say the ENGINE is unhealthy (as opposed to this clip)? */
+/**
+ * Does a retry's error say the ENGINE is unhealthy (as opposed to this clip)?
+ * Yes for ENGINE_STUCK, for a retry that ran out of time (the decode is still
+ * running on the one engine — RetryOutcome's "a retry ran out of time"), for a
+ * retry that never got the engine from a live dictation, and for a fired
+ * watchdog. Anything else is this clip's own failure.
+ */
 export function isEngineUnhealthy(message: string, watchdogExpired = false): boolean {
-  return watchdogExpired || message.startsWith(ENGINE_STUCK_PREFIX);
+  if (watchdogExpired) return true;
+  const m = message.trim();
+  return m.startsWith(ENGINE_STUCK_PREFIX) || m === RETRY_DEADLINE_ERROR || m === RETRY_ENGINE_BUSY_ERROR;
 }
 
 export interface RetryAllResult {

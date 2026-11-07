@@ -247,7 +247,10 @@ describe("Y5-I dock geometry — the shell's table", () => {
   });
 
   it("the_capsule_is_never_rotated_and_no_other_rule_sizes_the_box", () => {
-    expect(FLOAT_CSS).not.toMatch(/transform:\s*rotate/);
+    // The meeting scene's tape reels (yap-1106-pill-rec-headphones-hoot-tape) turn
+    // a quarter at a time: they are content inside the scene, not the capsule, so
+    // their one keyframe block is the only rotate the sheet may hold.
+    expect(FLOAT_CSS.replace(/@keyframes meeting-reel-turn\s*\{\s*to\s*\{[^{}]*\}\s*\}/, "")).not.toMatch(/transform:\s*rotate/);
     for (const r of RULES) {
       for (const s of r.selectors) {
         if (!/\.pill\b/.test(s) || /\.pill\b\S*\s+\S/.test(s)) continue; // descendants are content, not the box
