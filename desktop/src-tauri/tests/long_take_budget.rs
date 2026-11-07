@@ -94,6 +94,8 @@ const PRESS_TO_CAPTURE_SPILL_OVERHEAD_MS: u128 = 25;
 /// legitimately costs something (per-window model priming, the overlap region
 /// decoded twice), and 60% of a single-window decode is the most that is worth
 /// paying for a take that can be shown progressing.
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 const CHUNK_DECODE_WALL_PER_AUDIO_SECOND_RATIO_CEILING: f64 = 1.60;
 
 /// `progress_events_per_minute_of_audio` — a CEILING, not a target. 60/min is
@@ -159,6 +161,8 @@ fn manifest(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
+// yap-1106-engine-owner: only the `in-process-asr` tests read this.
+#[cfg_attr(not(feature = "in-process-asr"), allow(dead_code))]
 fn skip(reason: &str) {
     println!("long_take_budget SKIPPED — {reason}");
 }
