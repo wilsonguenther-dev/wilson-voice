@@ -597,6 +597,13 @@ export interface MeetingStats {
   lastMeetingAt?: string | null;
   meetingsWithAudio: number;
   audioRetentionDays: number;
+  /**
+   * yap-1106-insights-redesign — talk time per named person, longest first.
+   * Filled once speaker profiles exist (yap-1106-voiceprints); absent on a
+   * backend that does not name speakers, which the Insights meetings section
+   * shows as "not yet", never as "nobody".
+   */
+  topPeople?: { name: string; seconds: number; meetings: number }[] | null;
 }
 
 /** YV94 — one recorded meeting. Mirrors the `meetings` row. */

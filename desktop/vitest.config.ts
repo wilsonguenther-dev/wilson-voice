@@ -75,6 +75,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-call-1 — the call offer's copy, surface and countdown rules.
   "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "views/settings/browserCalls.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-insights-redesign — headline numbers, the insight sentence, chart states, keyboard steps.
+  "views/insightsModel.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

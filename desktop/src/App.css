@@ -3590,3 +3590,171 @@ button.primary.big {
 .hotkey-extras-warning {
   color: var(--warn-ink);
 }
+
+/* ── Insights redesign (yap-1106-insights-redesign) ─────────────────────────
+   Reading order: three headline numbers and one sentence, then the charts,
+   then meetings. Every chart frame keeps its final height in every state
+   (loading, empty, error, ready) so nothing jumps. Single-series charts use
+   one data hue, solid, no gradient; labels stay in text ink. */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.insights-lead {
+  margin-bottom: 20px;
+}
+
+.insights-headline {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.insights-number {
+  padding: 18px 16px;
+}
+
+.insights-number .stat-n {
+  font-size: 2rem;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.insights-number .stat-l {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.insights-sentence {
+  margin: 14px 2px 0;
+  font-size: 1.02rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  max-width: 62ch;
+}
+
+.insights-sentence.chart-skeleton {
+  height: 1.2em;
+  max-width: 40ch;
+}
+
+.insights-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chart-frame h3,
+.chart-frame .chart-title {
+  margin: 0 0 10px;
+}
+
+.chart-frame .chart-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chart-frame.nested {
+  margin: 14px 0;
+}
+
+.chart-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.chart-body .chart-empty {
+  margin: auto 0;
+  color: var(--text-muted);
+}
+
+.chart-skeleton {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  animation: yap-skeleton 1.6s ease-in-out infinite;
+}
+
+.chart-error {
+  margin: auto 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-primary);
+}
+
+.chart-error p {
+  margin: 0;
+}
+
+.chart-points {
+  position: relative;
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.chart-points:focus-visible {
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+.insights .bar-fill {
+  background: var(--accent-data);
+}
+
+.insights .bar-row.is-active .bar-label,
+.insights .bar-row.is-active .bar-n {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.insights .bar-row.is-active .bar-fill {
+  background: var(--accent-data-ink);
+}
+
+.chart-mark.is-active {
+  stroke: var(--accent-data-ink);
+  stroke-width: 2;
+}
+
+.insights-meetings {
+  margin-top: 16px;
+}
+
+.insights-meetings .chart-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.speed-setup {
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .insights-headline {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-skeleton {
+    animation: none;
+    opacity: 0.6;
+  }
+}
