@@ -1297,6 +1297,7 @@ mod microphone_menu_tests {
             id: id.into(),
             name: name.into(),
             is_system_default: default,
+            is_virtual: false,
         }
     }
 
