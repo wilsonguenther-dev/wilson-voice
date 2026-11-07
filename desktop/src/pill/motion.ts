@@ -127,6 +127,21 @@ export const DURATION = {
   gateHoverGrace: 1200,
   /** One Yappy hop when a license arrives by deep link from the site. */
   yappyHop: 720,
+  // ── yap-1106-yappy-states-and-motion: the approved transition sheet ───────
+  // (design-2026-11-06/pill.html §03 "Transitions, written out"). The phase
+  // transition TABLE that combines these lives in transitions.ts.
+  /** Resting → talking: the shell grows on the snap spring (≈ 240 ms). */
+  grow: 240,
+  /** Resting → asleep: eyes close, shell fades to 72 percent. */
+  sleepFade: 600,
+  /** A failed take: one shake, three times 3 px, then still. */
+  shake: 240,
+  /** The speech bubble fading up into view. */
+  bubbleIn: 160,
+  /** The speech bubble leaving (fades only). A new line waits for this. */
+  bubbleOut: 120,
+  /** Reduce motion: every change becomes one short crossfade. */
+  reducedCrossfade: 100,
 } as const;
 
 /**
@@ -147,6 +162,15 @@ export const HOVER = {
 export const EASE_STATE_CHANGE = "cubic-bezier(0.05, 0.6, 0.4, 0.95)";
 
 /** `transition` shorthand for one property morphing between phases. */
+/** The bubble's ease-out (fade up 4 px, 96 → 100 percent). */
+export const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
+/** The snap spring (600 / 35) as a CSS curve: ≈ 4 percent overshoot. */
+export const EASE_SNAP = "cubic-bezier(0.34, 1.32, 0.64, 1)";
+/** The softer settle spring (300 / 28), for drops into a dock. */
+export const EASE_SETTLE = "cubic-bezier(0.22, 1.18, 0.36, 1)";
+/** The failed-take shake is linear: three even 3 px swings. */
+export const EASE_LINEAR = "linear";
+
 export const morphTransition = (property: string): string =>
   `${property} ${DURATION.phaseMorph}ms ${EASE_STATE_CHANGE}`;
 
@@ -416,4 +440,8 @@ export function applyMotionVars(root: HTMLElement): void {
   root.style.setProperty("--dur-collapse", `${DURATION.collapse}ms`);
   root.style.setProperty("--dur-hop", `${DURATION.yappyHop}ms`);
   root.style.setProperty("--ease-state", EASE_STATE_CHANGE);
+  // yap-1106-yappy-states-and-motion — the speech bubble's own enter/exit.
+  root.style.setProperty("--dur-bubble-in", `${DURATION.bubbleIn}ms`);
+  root.style.setProperty("--dur-bubble-out", `${DURATION.bubbleOut}ms`);
+  root.style.setProperty("--ease-out", EASE_OUT);
 }
