@@ -8,16 +8,14 @@
  * layer and the CSS that consumes it, so a later edit cannot drift a colour
  * back without a red test; the pixel side is scripts/parity-sheet.mjs --check.
  */
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import FLOAT_CSS from "../float.css?raw";
 import TOKENS_CSS from "../tokens.css?raw";
 import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
+import MANIFEST_SRC from "../../../docs/loop/evidence/parity-pill.manifest.json?raw";
 
 interface ManifestState { id: string; section: string; app: { selector: string } }
-const MANIFEST = JSON.parse(
-  readFileSync(new URL("../../../docs/loop/evidence/parity-pill.manifest.json", import.meta.url), "utf8") as string,
-) as { states: ManifestState[] };
+const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[] };
 
 /** The value of a custom property in tokens.css (first declaration, the light/base block). */
 function token(name: string): string {
