@@ -931,7 +931,7 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=rail&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&rail=open&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
         "capture": "rail__yappy__bottom__none.png"
       },
@@ -979,7 +979,7 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=drag-blob&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&drag=blob&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
         "capture": "drag-blob__yappy__bottom__none.png"
       },
@@ -1443,7 +1443,7 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=backtrack-caught&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&backtrack=1&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
         "capture": "backtrack-caught__yappy__bottom__none.png"
       },
@@ -1556,16 +1556,18 @@
   },
   "knownConflicts": [
     {
-      "state": "resting",
-      "artifact": "72 x 28 nub showing only Yappy's eyes (pill.html Resting, PK.pill h 28)",
-      "build": "REST_CAPSULE, at most 56 tall (characterFit REST_MAX_H)",
-      "why": "the item prompt says the idle pill is 56 px tall with Yappy at full sprite scale, and yap-1106-fb-10 enlarged it because the 22-28 px nub cropped heads; needs Wilson's call before the resting row can pass the 3 percent rule"
-    },
-    {
       "state": "hands-free, long-take, meeting-dictating, writing-it-up, polishing, pasting, pasted, docked-side",
       "artifact": ".ypill measures the whole shell including the right segment (lock, fn key, stop, word count)",
       "build": ".yappy-capsule-box measures the drawn capsule only; the segments are DOM slots beside it",
       "why": "the rows' width compares different boxes until the slot row has its own measured twin; the integrator's sheet shows the delta per row"
+    }
+  ],
+  "resolvedConflicts": [
+    {
+      "state": "resting, asleep, hover-tray",
+      "artifact": "72 x 28 nub (pill.html PK.pill h 28, win 64 x 20; 'Shell grows from 72 x 28 to 228 x 52')",
+      "build": "REST_CAPSULE = ARTIFACT_REST_SHELL 72 x 28 (characterFit.ts); on 2x every pill character sits whole in it at one device px per art px; below 2x Yappy's camera uses 'head' framing (sprout, eyes, beak in view, feet leave the nub)",
+      "why": "batch-7 bounce: the item text said 56 tall, the senior standard says build the artifact when they conflict. Cost, for Wilson: at rest on Retina Yappy draws at 0.5 CSS px per art px (whole, crisp, but half his open scale), because no larger whole cell fits a 26 px clip; the artifact itself shows a face close-up there, which fb-10 removed after 'the heads cropped'."
     }
   ]
 }

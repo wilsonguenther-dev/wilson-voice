@@ -17,6 +17,7 @@ import {
   placeCharacter, placeSprite, restCapsuleFor, stadiumContains, type FitBox, type FitDock,
   ARTIFACT_SPRITE_SCALE, ARTIFACT_TOLERANCE, MAX_LIFT, chickBoxFor, cssPerArtPx, liftBudget, pillFit, scaleEvent,
   ARTIFACT_OPEN_SHELL, ARTIFACT_REST_H, CHICK_DESK_SHIFT, REST_MAX_H,
+  ARTIFACT_REST_SHELL, restFramingEvent,
 } from "./characterFit";
 import { ALL_LIVE_PHASES, type LivePhase } from "./live";
 import { CHARACTER_OPEN, CHARACTER_REST, PANEL_MARGIN, RESTING_PHASES, capsuleCentre, pillLayout, type MeetingMode } from "./state";
@@ -135,6 +136,17 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
         if (cap.x < -0.5 || cap.y < -0.5 || cap.x + cap.w > panel.w + 0.5 || cap.y + cap.h > panel.h + 0.5) failures.push(`${name} ${phase} ${dock} capsule outside the panel`);
         const p = placeCharacter(name, dock, cap, dpr);
         cases++;
+        // yap-1107-parity-pill — the resting capsule is the approved 72 x 28 nub.
+        // On 2x everyone is whole in it (checked below like every other state);
+        // below 2x no whole cell fits its 26 px clip, so Yappy's camera keeps his
+        // head in view ("head" framing) and the whole-box rule is the 2x one.
+        if (RESTING_PHASES.has(phase) && dpr < 2) {
+          if (name === "yappy" && dock !== "side-tall") {
+            const c = pillCamera(cap, dpr);
+            if (c.framing !== "head" || c.char.y < c.stadium.y) failures.push(`${name} ${phase} ${dock} dpr=${dpr} head not in view framing=${c.framing}`);
+          }
+          continue;
+        }
         if (!p.fits || !stadiumContains(p.stadium, p.char) || p.cell < 1) {
           failures.push(`${name} ${phase} ${dock} ${meeting} tier=${tier} dpr=${dpr} route=${p.route} char=${JSON.stringify(p.char)} stadium=${JSON.stringify(p.stadium)}`);
         }
@@ -150,7 +162,11 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
       for (const dock of ["bottom", "left", "right"] as const) {
         const { cap } = placeCapsule("listening", "none", dock, size);
         const c = pillCamera(cap, dpr);
-        expect(c.fits, `tier=${tier} dpr=${dpr} t=${i / 20} ${dock} ${JSON.stringify(c.char)} in ${JSON.stringify(c.stadium)}`).toBe(true);
+        // yap-1107-parity-pill — from the 72 x 28 nub below 2x the first frames
+        // keep his head in view until a whole cell fits; on 2x every frame is whole.
+        const ok = c.fits || (dpr < 2 && c.framing === "head" && c.char.y >= c.stadium.y);
+        expect(ok, `tier=${tier} dpr=${dpr} t=${i / 20} ${dock} ${c.framing} ${JSON.stringify(c.char)} in ${JSON.stringify(c.stadium)}`).toBe(true);
+        if (dpr === 2) expect(c.framing).toBe("whole");
         // the world still covers the clip (never letterboxed) and is blitted at a whole cell
         expect(Number.isInteger(c.blit.cell)).toBe(true);
         expect(c.blit.dst.w).toBeGreaterThanOrEqual(c.blit.clip.w);
@@ -160,8 +176,11 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
   });
 
   it("yappy_camera_reads_only_the_scene_buffer and centres him, not his face", () => {
+    // yap-1107-parity-pill: on the 72 x 28 nub he is centred whole on 2x (below
+    // 2x the head framing applies: idle_and_sleepy_on_the_72_x_28_nub).
     const { cap } = placeCapsule("idle", "none", "bottom", capsuleSize("idle", 1));
-    const c = pillCamera(cap, 1);
+    const c = pillCamera(cap, 2);
+    expect(c.framing).toBe("whole");
     expect(c.blit.src.x).toBeGreaterThanOrEqual(0);
     expect(c.blit.src.y).toBeGreaterThanOrEqual(0);
     expect(c.blit.src.x + c.blit.src.w).toBeLessThanOrEqual(PILL_SCENE.w);
@@ -173,17 +192,24 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
     expect(c.char.y).toBeGreaterThanOrEqual(c.stadium.y);
   });
 
-  it("rest_capsule_holds_the_largest_character_at_1x", () => {
+  it("rest_capsule_is_the_artifact_nub_and_holds_every_character_at_2x", () => {
+    // yap-1107-parity-pill (batch-7 bounce fix): pill.html draws the resting,
+    // asleep and hover-tray shell as PK.pill({ h: 28, win: { w: 64, h: 20 } }) = 72 x 28.
+    expect({ w: REST_CAPSULE.w, h: REST_CAPSULE.h }).toEqual({ w: 72, h: 28 });
+    expect({ w: ARTIFACT_REST_SHELL.w, h: ARTIFACT_REST_SHELL.h }).toEqual({ w: 72, h: 28 });
     expect(CHARACTER_REST.w).toBe(REST_CAPSULE.w);
     expect(CHARACTER_REST.h).toBe(REST_CAPSULE.h);
     expect(REST_CAPSULE.w).toBeGreaterThanOrEqual(REST_MIN_W);
     expect(REST_CAPSULE.w).toBeLessThanOrEqual(CHARACTER_OPEN.w);
     expect(REST_CAPSULE.h).toBeLessThanOrEqual(CHARACTER_OPEN.h);
     for (const name of PILL_CHARACTERS) {
-      expect(placeSprite({ x: 0, y: 0, w: REST_CAPSULE.w, h: REST_CAPSULE.h }, characterArt(name), 1).fits, name).toBe(true);
+      const p = placeSprite({ x: 0, y: 0, w: REST_CAPSULE.w, h: REST_CAPSULE.h }, characterArt(name), 2);
+      expect(p.fits, name).toBe(true);
+      expect(p.cell, name).toBe(1);
     }
-    // the old 72 x 22 pill could not hold a whole character: the crop was structural
-    expect(placeSprite({ x: 0, y: 0, w: 72, h: 22 }, characterArt("yappy"), 1).fits).toBe(false);
+    // below 2x no whole cell holds a character in the nub's 26 px clip
+    expect(placeSprite({ x: 0, y: 0, w: REST_CAPSULE.w, h: REST_CAPSULE.h }, characterArt("yappy"), 1).fits).toBe(false);
+    expect(restCapsuleFor(PILL_CHARACTERS.map(characterArt)).h).toBeLessThanOrEqual(REST_MAX_H);
     expect(restCapsuleFor([{ w: 10, h: 10 }])).toEqual(restCapsuleFor([{ w: 10, h: 10 }]));
   });
 });
@@ -282,7 +308,10 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
   });
 
   it("retina_never_halves_the_sprite: 2x draws at least the 1x size, and never past the artifact's", () => {
-    for (const phase of [...OPEN_PHASES, "idle", "sleepy"] as const) for (const tier of OPEN_TIERS) {
+    // yap-1107-parity-pill: the resting 72 x 28 nub is the one exception (no
+    // whole cell above one device px fits its 26 px clip on 2x; see
+    // idle_and_sleepy_on_the_72_x_28_nub); every open state keeps the rule.
+    for (const phase of OPEN_PHASES) for (const tier of OPEN_TIERS) {
       const size = capsuleSize(phase, tier);
       const one = pillCamera({ x: 0, y: 0, ...size }, 1), two = pillCamera({ x: 0, y: 0, ...size }, 2);
       expect(cssPerArtPx(two.blit, 2), `${phase} tier=${tier}`).toBeGreaterThanOrEqual(cssPerArtPx(one.blit, 1));
@@ -301,7 +330,11 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
     // yap-1107-parity-pill: the parity rule is 3 percent (batch 5 bounced 54 and 60)
     expect(Math.abs(OPEN_CAPSULE.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h).toBeLessThanOrEqual(0.03);
     expect(OPEN_CAPSULE.h).not.toBe(54);
-    expect(Math.abs(REST_CAPSULE.h - ARTIFACT_REST_H) / ARTIFACT_REST_H).toBeLessThanOrEqual(0.05);
+    // yap-1107-parity-pill (batch-7 bounce fix): the resting nub is the page's 72 x 28 exactly (0 percent)
+    expect(REST_CAPSULE.w).toBe(ARTIFACT_REST_SHELL.w);
+    expect(REST_CAPSULE.h).toBe(ARTIFACT_REST_SHELL.h);
+    expect(ARTIFACT_REST_H).toBe(28);
+    expect(REST_CAPSULE.h).not.toBe(56);
     expect(REST_CAPSULE.h).toBeLessThanOrEqual(REST_MAX_H);
     // the batch-10 bounce: 80 x 59 resting and 236 x 60 open were both outside the 5 percent
     expect(REST_CAPSULE.h).not.toBe(59);
@@ -319,17 +352,30 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
     expect(done.fits).toBe(true);
   });
 
-  it("idle_and_sleepy_stay_whole_and_never_shrink_below_1x: the resting capsule draws him at one CSS px per art px or more", () => {
+  it("idle_and_sleepy_on_the_72_x_28_nub: whole at one device px per art px on 2x, head kept in view below 2x", () => {
     for (const phase of ["idle", "sleepy"] as const) for (const dpr of DPRS) {
       const c = pillCamera({ x: 0, y: 0, ...capsuleSize(phase, 1) }, dpr);
-      expect(c.fits, `${phase} dpr=${dpr}`).toBe(true);
-      // macOS backing scales are whole (1x, 2x): there the resting pill is at
-      // least one CSS px per art px. At a fractional 1.5 no whole cell above 1
-      // fits a 56 px shell (nor the previous 59 px one): it keeps cell 1, as
-      // before this item, never less (integrator, loop3 batch 3).
-      if (Number.isInteger(dpr)) expect(cssPerArtPx(c.blit, dpr), `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
-      else expect(c.blit.cell, `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+      expect(Number.isInteger(c.blit.cell), `${phase} dpr=${dpr}`).toBe(true);
+      expect(c.blit.cell, `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+      expect(c.blit.dst.w).toBeGreaterThanOrEqual(c.blit.clip.w);
+      expect(c.blit.dst.h).toBeGreaterThanOrEqual(c.blit.clip.h);
+      if (dpr === 2) {
+        expect(c.framing, `${phase} dpr=2`).toBe("whole");
+        expect(c.fits, `${phase} dpr=2`).toBe(true);
+        expect(c.blit.cell).toBe(1);
+      } else {
+        // the top of his box (sprout, eyes, beak) is inside the stadium; only his feet leave the nub
+        expect(c.framing, `${phase} dpr=${dpr}`).toBe("head");
+        expect(c.char.y, `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(c.stadium.y);
+        expect(c.char.x).toBeGreaterThanOrEqual(c.stadium.x);
+        expect(c.char.x + c.char.w).toBeLessThanOrEqual(c.stadium.x + c.stadium.w);
+      }
     }
+  });
+
+  it("restFramingEvent is one structured line with numbers and enums only", () => {
+    expect(restFramingEvent("head", { w: 72, h: 28 }, 1)).toBe("pill camera-framing framing=head capW=72 capH=28 dpr=1");
+    expect(restFramingEvent("whole", { w: 228.4, h: 52.6 }, 2)).toBe("pill camera-framing framing=whole capW=228 capH=53 dpr=2");
   });
 
   it("rest_capsule_cap_falls_back_when_nothing_that_short_fits", () => {

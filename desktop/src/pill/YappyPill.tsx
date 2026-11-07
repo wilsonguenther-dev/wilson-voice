@@ -894,7 +894,7 @@ export default function YappyPill(
       if (sd && sideLay && sideLay.dock === sd) { sky.current(performance.now()); drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
-      // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
+      // yap-1107-parity-pill — the resting capsule is the approved 72 x 28 nub (characterFit REST_CAPSULE): whole on 2x, head kept in view below.
       // yap-1107-parity-pill — a prop tier widens the open capsule, never heightens
       // it: the approved page keeps every open shell 52 tall (built at 53).
       const openCap = openCapsuleFor(tierOpen);
