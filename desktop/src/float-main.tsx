@@ -260,6 +260,30 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   }
 }
 
+/**
+ * WF-04 — right-click (or Ctrl-click, which WebKit reports as the same
+ * `contextmenu` event) on the pill pops Yap's native pill menu: Hide for 1
+ * hour, the three docks, Microphone, Languages, Open Scratchpad, Open Yap.
+ * The rows are decided in Rust from the menu bar's own item table
+ * (`tray_menu::pill_context_menu`), so nothing about them lives here. A text
+ * field inside a card keeps the system's Cut / Copy / Paste menu.
+ */
+function wantsPillMenu(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (!el) return true;
+  return !el.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+}
+
+window.addEventListener("contextmenu", (e) => {
+  if (!wantsPillMenu(e.target)) return;
+  e.preventDefault();
+  invoke("pill_context_menu").catch((err: unknown) => {
+    // Rust already logged the cause; the pill has no toast surface, and the
+    // menu bar icon carries every row of this menu.
+    console.warn("pill context_menu failed", err);
+  });
+});
+
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {

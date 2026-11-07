@@ -81,6 +81,12 @@ pub enum TrayCommand {
     /// ([`restart_click`]): while a take, a polish or a meeting runs the click
     /// arms a deferred restart instead, and a second click cancels it.
     RestartToUpdate,
+    /// WF-04 — "Dock at Bottom / on Left / on Right" in the pill's right-click
+    /// menu. Writes the same `AppSettings::pill_position` the Settings picker
+    /// and a drag write ([`PillDock::as_settings`]).
+    DockPill(PillDock),
+    /// WF-04 — "Open Scratchpad" in the pill's right-click menu.
+    OpenScratchpad,
     /// `app.exit(0)` — reaches `RunEvent::Exit` and its one bounded teardown
     /// (`lifecycle::quit_plan`), which drains the ASR engine, waits for the
     /// in-flight take and finalizes a live meeting. Never `process::exit`.
@@ -114,6 +120,8 @@ impl TrayCommand {
             TrayCommand::PickLanguage(_) => "pick_language",
             TrayCommand::OpenLanguageSettings => "open_language_settings",
             TrayCommand::RestartToUpdate => "restart_to_update",
+            TrayCommand::DockPill(_) => "dock_pill",
+            TrayCommand::OpenScratchpad => "open_scratchpad",
             TrayCommand::Quit => "quit",
         }
     }
@@ -121,7 +129,7 @@ impl TrayCommand {
 
 /// Every [`TrayCommand::name`]. The test walks this to prove no command is
 /// unreachable from the menu.
-pub const COMMAND_NAMES: [&str; 23] = [
+pub const COMMAND_NAMES: [&str; 25] = [
     "toggle_dictation",
     "paste_last_transcript",
     "copy_last_transcript",
@@ -144,6 +152,8 @@ pub const COMMAND_NAMES: [&str; 23] = [
     "pick_language",
     "open_language_settings",
     "restart_to_update",
+    "dock_pill",
+    "open_scratchpad",
     "quit",
 ];
 
@@ -445,9 +455,14 @@ pub const INSERTED_ITEMS: [&str; 9] = [
     ID_UPDATE_READY,
 ];
 
-/// The row for `id`, if the menu has one.
+/// The row for `id`, if the menu bar or the pill's right-click menu (WF-04,
+/// [`PILL_ONLY_ITEMS`]) has one. ONE lookup for both menus, so a click on
+/// either resolves through the same [`command_for`].
 pub fn item(id: &str) -> Option<&'static TrayItem> {
-    TRAY_ITEMS.iter().find(|i| i.id == id)
+    TRAY_ITEMS
+        .iter()
+        .find(|i| i.id == id)
+        .or_else(|| PILL_ONLY_ITEMS.iter().find(|i| i.id == id))
 }
 
 /// The label an item is built with. Panics on an id that is not in the table —
@@ -629,6 +644,199 @@ pub fn pill_menu_state(show_floating_pill: bool, hidden: bool) -> PillMenuState 
         hide_enabled: show_floating_pill && !hidden,
         show_now_enabled: hidden,
     }
+}
+
+// ─── WF-04 — the pill's right-click menu ────────────────────────────────────
+//
+// Right-click (or Ctrl-click) on the pill pops a native menu: Hide for 1 hour,
+// Dock bottom / left / right, Microphone ▸, Languages ▸, Open Scratchpad, Open
+// Yap. It is NOT a second table: every row is an id looked up through
+// [`item`], so the rows the pill shares with the menu bar (hide, Microphone,
+// Languages, Open Yap) carry the menu bar's label and dispatch through the
+// same [`command_for`] — the labels cannot drift. Only the rows the menu bar
+// has no use for (the three docks, Open Scratchpad) live in
+// [`PILL_ONLY_ITEMS`], in the same `TrayItem` shape.
+
+/// The three docks the pill can sit on — the same three `float_pill`
+/// `PillPosition` knows and the Settings picker offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillDock {
+    Bottom,
+    Left,
+    Right,
+}
+
+impl PillDock {
+    pub const ALL: [PillDock; 3] = [PillDock::Bottom, PillDock::Left, PillDock::Right];
+
+    /// The exact `AppSettings::pill_position` string
+    /// (`float_pill::PillPosition::as_settings`).
+    pub fn as_settings(self) -> &'static str {
+        match self {
+            PillDock::Bottom => "bottom",
+            PillDock::Left => "left",
+            PillDock::Right => "right",
+        }
+    }
+
+    /// Parse a stored `pill_position`; anything unknown is the default,
+    /// bottom (`float_pill::PillPosition::from_settings`).
+    pub fn from_settings(s: &str) -> Self {
+        match s {
+            "left" => PillDock::Left,
+            "right" => PillDock::Right,
+            _ => PillDock::Bottom,
+        }
+    }
+
+    /// The pill-menu row that docks here.
+    pub fn menu_id(self) -> &'static str {
+        match self {
+            PillDock::Bottom => ID_PILL_DOCK_BOTTOM,
+            PillDock::Left => ID_PILL_DOCK_LEFT,
+            PillDock::Right => ID_PILL_DOCK_RIGHT,
+        }
+    }
+}
+
+pub const ID_PILL_DOCK_BOTTOM: &str = "pill_dock_bottom";
+pub const ID_PILL_DOCK_LEFT: &str = "pill_dock_left";
+pub const ID_PILL_DOCK_RIGHT: &str = "pill_dock_right";
+pub const ID_OPEN_SCRATCHPAD: &str = "open_scratchpad";
+
+/// The rows only the pill's right-click menu shows. Looked up by [`item`] and
+/// dispatched by [`command_for`] exactly like [`TRAY_ITEMS`].
+pub const PILL_ONLY_ITEMS: [TrayItem; 4] = [
+    TrayItem {
+        id: ID_PILL_DOCK_BOTTOM,
+        label: "Dock at Bottom",
+        kind: ItemKind::Action(TrayCommand::DockPill(PillDock::Bottom)),
+    },
+    TrayItem {
+        id: ID_PILL_DOCK_LEFT,
+        label: "Dock on Left",
+        kind: ItemKind::Action(TrayCommand::DockPill(PillDock::Left)),
+    },
+    TrayItem {
+        id: ID_PILL_DOCK_RIGHT,
+        label: "Dock on Right",
+        kind: ItemKind::Action(TrayCommand::DockPill(PillDock::Right)),
+    },
+    TrayItem {
+        id: ID_OPEN_SCRATCHPAD,
+        label: "Open Scratchpad",
+        kind: ItemKind::Action(TrayCommand::OpenScratchpad),
+    },
+];
+
+/// The pill's right-click menu, top to bottom. `lib.rs::pill_context_menu`
+/// builds the native menu from [`pill_context_menu`], which walks THIS.
+pub const PILL_MENU_LAYOUT: [Slot; 11] = [
+    Slot::Item(ID_HIDE_PILL),
+    Slot::Separator,
+    Slot::Item(ID_PILL_DOCK_BOTTOM),
+    Slot::Item(ID_PILL_DOCK_LEFT),
+    Slot::Item(ID_PILL_DOCK_RIGHT),
+    Slot::Separator,
+    Slot::Item(ID_MICROPHONE),
+    Slot::Item(ID_LANGUAGES),
+    Slot::Separator,
+    Slot::Item(ID_OPEN_SCRATCHPAD),
+    Slot::Item(ID_SHOW),
+];
+
+/// One row of the pill's right-click menu as `lib.rs` draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillMenuRow {
+    /// A plain item: the id and label are the registry's own.
+    Action {
+        id: &'static str,
+        label: &'static str,
+        enabled: bool,
+    },
+    /// A dock row, checked on the dock the pill has now.
+    Dock {
+        id: &'static str,
+        label: &'static str,
+        checked: bool,
+    },
+    /// The Microphone submenu, drawn from [`MIC_SHOWN`] (the menu bar's rows).
+    Microphone {
+        label: &'static str,
+    },
+    /// The Languages submenu, drawn from [`LANG_SHOWN`] (the menu bar's rows).
+    Languages {
+        label: &'static str,
+    },
+    Separator,
+}
+
+/// What the pill menu is decided from — the same live state `sync_tray`
+/// reads, gathered by `lib.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PillMenuInputs {
+    /// `AppSettings::show_floating_pill`.
+    pub show_floating_pill: bool,
+    /// A [`PillHide`] is running.
+    pub hidden: bool,
+    /// What Yap is doing (`lib.rs::update_activity`).
+    pub activity: Activity,
+    /// The dock the pill has now (`AppSettings::pill_position`).
+    pub dock: PillDock,
+}
+
+/// A take (the microphone open, a take being transcribed or polished) or a
+/// meeting is running — the pill must stay where the user can see it.
+pub fn take_or_meeting_running(a: Activity) -> bool {
+    a.dictating || a.take_in_flight || a.polishing || a.meeting
+}
+
+/// "Hide Pill for 1 Hour" on the PILL: the menu bar's rule
+/// ([`pill_menu_state`]) and, on top, greyed while a take or a meeting runs —
+/// a live microphone is never hidden from the surface the user is looking at.
+pub fn pill_hide_enabled(inputs: PillMenuInputs) -> bool {
+    pill_menu_state(inputs.show_floating_pill, inputs.hidden).hide_enabled
+        && !take_or_meeting_running(inputs.activity)
+}
+
+/// THE decision for the pill's right-click menu: [`PILL_MENU_LAYOUT`] with
+/// each id resolved through [`item`] — labels are never written twice.
+pub fn pill_context_menu(inputs: PillMenuInputs) -> Vec<PillMenuRow> {
+    PILL_MENU_LAYOUT
+        .iter()
+        .map(|slot| match *slot {
+            Slot::Separator => PillMenuRow::Separator,
+            Slot::Item(id) => {
+                let row = item(id).unwrap_or_else(|| panic!("tray_menu: pill menu names {id:?}"));
+                match row.kind {
+                    ItemKind::MicrophoneSubmenu => PillMenuRow::Microphone { label: row.label },
+                    ItemKind::LanguageSubmenu => PillMenuRow::Languages { label: row.label },
+                    ItemKind::Action(TrayCommand::DockPill(dock)) => PillMenuRow::Dock {
+                        id: row.id,
+                        label: row.label,
+                        checked: dock == inputs.dock,
+                    },
+                    ItemKind::Action(TrayCommand::HidePillForAnHour) => PillMenuRow::Action {
+                        id: row.id,
+                        label: row.label,
+                        enabled: pill_hide_enabled(inputs),
+                    },
+                    ItemKind::Action(_) => PillMenuRow::Action {
+                        id: row.id,
+                        label: row.label,
+                        enabled: true,
+                    },
+                    ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => {
+                        PillMenuRow::Action {
+                            id: row.id,
+                            label: row.label,
+                            enabled: false,
+                        }
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 // ─── The meeting item (yap-1106) ─────────────────────────────────────────────
@@ -1016,6 +1224,13 @@ impl MicLatch {
         *self.lock() = shown;
     }
 
+    /// The whole submenu last drawn — the pill's right-click menu (WF-04)
+    /// draws its Microphone submenu from THIS, so a pick there resolves
+    /// against exactly the rows it showed.
+    pub fn snapshot(&self) -> Option<MicMenu> {
+        self.lock().clone()
+    }
+
     pub fn row(&self, index: usize) -> Option<MicRow> {
         self.lock()
             .as_ref()
@@ -1164,6 +1379,12 @@ impl LanguageLatch {
 
     pub fn set(&self, shown: Option<LanguageMenu>) {
         *self.shown.lock().unwrap_or_else(|p| p.into_inner()) = shown;
+    }
+
+    /// The whole submenu last drawn — the pill's right-click menu (WF-04)
+    /// draws its Languages submenu from THIS (see [`MicLatch::snapshot`]).
+    pub fn snapshot(&self) -> Option<LanguageMenu> {
+        self.shown.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn row(&self, index: usize) -> Option<LanguageRow> {
