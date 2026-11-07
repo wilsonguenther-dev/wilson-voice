@@ -1307,6 +1307,8 @@ describe("WF-17 pill message categories", () => {
     "copy-card",
     "meeting-offer",
     "backtrack-caught",
+    // WF-05: the "Polished — Reveal" toast is a tip, so the Tips switch mutes it.
+    "polish-reveal",
   ];
 
   it("every_pill_message_has_a_category: a message with none fails here", () => {

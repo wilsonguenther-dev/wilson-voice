@@ -64,6 +64,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
   "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-wf-05 — the "Polished — Reveal" payload check, copy and route words.
+  "pill/polishReveal.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -87,6 +89,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-1106-insights-redesign — headline numbers, the insight sentence, chart states, keyboard steps.
   "views/insightsModel.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
+  // yap-1106-pill-trial-clickable — gated-pill copy, settle timing, nub lock.
+  "pill/gateClick.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

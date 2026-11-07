@@ -1032,6 +1032,86 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   line-height: 1;
   color: rgba(251, 191, 36, 0.9);
 }
+/* yap-1106-pill-trial-clickable — the refusal IS the Buy button. Hover (or
+   keyboard focus, which sets is-hover) swaps the label to "Buy a license" and
+   lifts the border; the focus ring is the global one in a11y/focus.css. */
+.kami-blocked.gated.is-hover {
+  border-color: rgba(251, 191, 36, 0.6);
+  color: rgba(255, 255, 255, 0.96);
+}
+/* pill.html §13, measured: the chip is the 32 px pill with "Trial ended" on the
+   left and a 24 px "Get Yap" button (.cbtn: 9 px sides, radius 8, 500 12px) on
+   the right. Hover fills the button (--pill-gate-cta-surface-hover) and lifts the pill; a dark
+   tooltip sits 8 px under it; a press sinks it to 97 percent. */
+.kami-blocked.gated {
+  padding: 3px 3px 3px 10px;
+}
+.kami-blocked.gated.is-hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35), 0 6px 16px rgba(0, 0, 0, 0.28);
+}
+.kami-blocked.gated.is-pressed {
+  transform: scale(0.97);
+}
+.kami-gate-cta {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--pill-gate-cta-surface);
+  color: var(--pill-gate-cta-text);
+  font: 500 12px/24px ui-sans-serif, -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+}
+.kami-gate-cta.is-filled {
+  background: var(--pill-gate-cta-surface-hover);
+}
+.kami-gate-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: var(--pill-gate-tooltip-surface);
+  color: var(--pill-gate-tooltip-text);
+  font: 500 11px/1.2 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* The resting nub's small lock, once the refusal has settled: the ended chip,
+   made pressable. Same place, same amber, one lock glyph. */
+.kami-license.kami-gate-lock {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 0;
+  padding: 2px 5px;
+  font: inherit;
+  -webkit-app-region: no-drag;
+}
+.kami-gate-lock svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kami-gate-lock:hover { color: rgba(251, 191, 36, 1); }
+/* A license arrived by deep link from the site: Yappy hops once. The canvas
+   moves as one compositor layer; the duration is DURATION.yappyHop. */
+.kami-hop .kami-canvas {
+  animation: kami-hop var(--dur-hop, 720ms) var(--ease-state, ease-out) 1;
+}
+@keyframes kami-hop {
+  0%   { transform: translateY(0); }
+  35%  { transform: translateY(-9px); }
+  60%  { transform: translateY(0); }
+  78%  { transform: translateY(-3px); }
+  100% { transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kami-hop .kami-canvas { animation: none; }
+}
 
 /* ── Y3-C — real progress through a chunked decode ────────────────────────
  *
@@ -1663,6 +1743,73 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 /* Y5-J — focus ring for .backtrack-caught-actions buttons: drawn once, globally, by src/a11y/focus.css. */
 .backtrack-caught-actions .backtrack-caught-undo { background: var(--overlay-action); color: var(--overlay-text-on-action); }
 .backtrack-caught-actions button:disabled { opacity: 0.6; cursor: default; }
+/* ── WF-05 — "Polished — Reveal" (pill/PolishRevealCard.tsx) ──
+   The toast is the Backtrack caught surface at one line: a quiet label and
+   Reveal. Reveal grows it into the diff card (the shared DiffView, restyled
+   for the dark pill surface) with Use original as the primary answer. */
+.polish-reveal-wrap {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 21;
+  pointer-events: auto;
+}
+.polish-reveal {
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: var(--overlay-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.polish-reveal p { margin: 0; }
+.polish-reveal-toast { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.polish-reveal-label { font-weight: 600; }
+.polish-reveal-title { font-size: 11px; opacity: 0.72; }
+.polish-reveal-error { margin-top: 4px; font-size: 11px; color: var(--overlay-text-urgent); }
+.polish-reveal-actions { display: flex; gap: 6px; }
+.polish-reveal-card .polish-reveal-actions { margin-top: 6px; }
+.polish-reveal-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+}
+/* Focus ring for .polish-reveal-actions buttons: drawn once, globally, by src/a11y/focus.css. */
+.polish-reveal-actions .polish-reveal-open,
+.polish-reveal-actions .polish-reveal-original { background: var(--overlay-action); color: var(--overlay-text-on-action); }
+.polish-reveal-actions button:disabled { opacity: 0.6; cursor: default; }
+.polish-reveal .diff-view { margin-top: 5px; }
+.polish-reveal .diff-summary,
+.polish-reveal .diff-stages,
+.polish-reveal .diff-route { font-size: 11px; opacity: 0.72; }
+.polish-reveal .diff-body {
+  margin: 4px 0;
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.polish-reveal .diff-added { background: var(--overlay-diff-added); border-radius: 3px; }
+.polish-reveal .diff-removed { background: var(--overlay-diff-removed); border-radius: 3px; text-decoration: line-through; opacity: 0.8; }
+.polish-reveal .diff-route-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.polish-reveal .diff-actions:empty { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .polish-reveal-wrap { animation: polish-reveal-in 140ms ease-out; }
+  @keyframes polish-reveal-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+}
 /* ── Y8-B — FLOW-BAR SLOTS (pill/slots.tsx) ──
  * The bar's affordances sit along its LENGTH axis. `data-bar-axis` on the
  * capsule says which way that runs (a column only for a strip phase at a side
@@ -1943,7 +2090,8 @@ html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
 html[data-one-pill="true"] .language-offer-wrap,
-html[data-one-pill="true"][data-dock] .nudge-row {
+html[data-one-pill="true"][data-dock] .nudge-row,
+html[data-one-pill="true"] .polish-reveal-wrap {
   left: var(--card-x);
   top: calc(var(--card-y) + var(--card-stack-y, 0px));
   right: auto;

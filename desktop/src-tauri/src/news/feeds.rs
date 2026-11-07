@@ -866,10 +866,13 @@ mod tests {
         }
     }
 
+    /// One recorded request: source, URL, headers, timeout.
+    type Call = (Source, String, Vec<(String, String)>, Duration);
+
     /// Counts every request; answers from canned bodies per source.
     #[derive(Default)]
     struct FakeHttp {
-        calls: RefCell<Vec<(Source, String, Vec<(String, String)>, Duration)>>,
+        calls: RefCell<Vec<Call>>,
         google: Option<Result<String, FeedError>>,
         hn: Option<Result<String, FeedError>>,
         quote: Option<Result<String, FeedError>>,
