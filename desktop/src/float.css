@@ -1717,6 +1717,44 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
 .pill-route[data-tone="cloud"] { color: rgba(147, 197, 253, 0.95); background: rgba(96, 165, 250, 0.16); }
 .pill-route[data-tone="limit"] { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
 
+/* ── yap-1106-resource-governor — the "going easy" chip ──
+   One dot, one short clause, one optional action. Same family as the
+   meeting badge; the dot is static (no pulse: a saving-battery chip that
+   animates would be the joke). */
+.governor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--pill-fg, rgba(255, 255, 255, 0.86));
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+.governor-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--accent-busy));
+  flex: none;
+}
+.governor-chip.minimal .governor-dot { background: hsl(var(--accent-meeting)); }
+.governor-run {
+  margin-left: 2px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.governor-run:disabled { opacity: 0.5; cursor: default; }
 /* ── yap-1106-one-pill — every DOM slot from the ONE layout ─────────────────
  * float-main writes the layout (pill/state.ts `layoutVars`) onto <html> as
  * custom properties and sets data-one-pill. Under it the hint, the bubble, the

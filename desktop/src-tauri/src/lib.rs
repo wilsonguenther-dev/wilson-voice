@@ -143,6 +143,7 @@ pub mod call_signals;
 /// yap-call-2 — Chromium-family browser calls told apart by the front tab's AX window title.
 pub mod call_titles;
 pub mod meeting_energy;
+pub mod resource_governor;
 // yap-audit — the ONE definition of "this text is an echo of that text" (word
 // trigram containment). Public because the eval harness
 // (`tests/support/eval_metrics.rs`) and the notes echo-owner guard share it.
@@ -695,6 +696,11 @@ pub struct AppSettings {
     /// so the store is written in a stable order.
     #[serde(default)]
     pub structure_app_overrides: std::collections::BTreeMap<String, String>,
+    /// yap-1106-resource-governor — "Pause heavy work on battery below N%".
+    /// Meeting ASR, notes and diarization wait for wall power under it;
+    /// dictation never does. 1..=99, default 20.
+    #[serde(default = "default_pause_below")]
+    pub pause_heavy_work_below_percent: u8,
     /// WF-17 — quiet mode: the pill-message categories the user switched off
     /// in Settings › Notifications. Only `tip`, `news` and `milestone` can be
     /// stored ([`sanitize_muted_pill_categories`]): errors, permission problems
@@ -762,6 +768,10 @@ fn default_polish_deadline_ms() -> u64 {
 fn default_signature_mode() -> String {
     "off".into()
 }
+fn default_pause_below() -> u8 {
+    resource_governor::DEFAULT_PAUSE_BELOW_PERCENT
+}
+
 fn default_true() -> bool {
     true
 }
@@ -833,6 +843,7 @@ impl Default for AppSettings {
             legacy_json_migrated: false,
             structure_enabled: true,
             structure_app_overrides: std::collections::BTreeMap::new(),
+            pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
             hide_from_capture_in_meetings: true,
         }
@@ -9607,8 +9618,13 @@ impl summary_jobs::NotesBackend for AppNotes {
     /// yap24-NT4 R4 — the notes sidecar never starts next to a live decode:
     /// not while a meeting is being transcribed, not while a dictation wants
     /// the engine, and not when the app is already too big to add ~1.4 GB.
-    fn defer_reason(&self) -> Option<String> {
+    fn defer_reason(&self, id: &str) -> Option<String> {
         use meeting_asr::EngineDemand;
+        // yap-1106-resource-governor: a starved Mac holds the notes sidecar
+        // (one INFO line per reason change comes from `wait_for_idle`).
+        if let Some(r) = resource_governor::heavy_work_deferred(&format!("notes:{id}")) {
+            return Some(format!("governor {r}"));
+        }
         if meeting_pipeline::transcribing_now() {
             return Some("transcription_running".to_string());
         }
@@ -10843,6 +10859,42 @@ fn meeting_detect_settings(state: State<'_, Arc<AppState>>) -> meeting_detect::D
 /// Settings › Meetings. "Use my calendar" can be turned OFF here, and back ON
 /// only once calendar access is already granted — this command never asks
 /// for it (the setup card's Connect calendar is the one place that does).
+/// yap-1106-resource-governor — the pill chip and Settings read this.
+#[tauri::command]
+fn governor_status() -> resource_governor::GovernorView {
+    resource_governor::view_now()
+}
+
+/// "Pause heavy work on battery below N%". Persisted, applied at once.
+#[tauri::command]
+fn set_governor_pause_below(
+    state: State<'_, Arc<AppState>>,
+    percent: u8,
+) -> Result<resource_governor::GovernorView, String> {
+    let percent = resource_governor::clamp_pause_below(percent);
+    let snapshot = {
+        let mut s = state.settings.lock();
+        s.pause_heavy_work_below_percent = percent;
+        s.clone()
+    };
+    persist_settings(&snapshot).map_err(|e| {
+        log::warn!("governor pause_below save failure reason={e}");
+        "Yap could not save that setting. Try again.".to_string()
+    })?;
+    Ok(resource_governor::installed()
+        .map(|g| g.set_pause_below(percent))
+        .unwrap_or_else(resource_governor::view_now))
+}
+
+/// "Run anyway" for one deferred job (a meeting id, `notes:<id>`, `diarize`).
+#[tauri::command]
+fn governor_run_anyway(job: String) -> resource_governor::GovernorView {
+    if let Some(g) = resource_governor::installed() {
+        g.run_anyway(&job);
+    }
+    resource_governor::view_now()
+}
+
 #[tauri::command]
 fn set_meeting_detect_settings(
     state: State<'_, Arc<AppState>>,
@@ -12913,6 +12965,10 @@ pub fn run() {
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
+            // yap-1106-resource-governor
+            governor_status,
+            set_governor_pause_below,
+            governor_run_anyway,
             hotkey_bindings,
             cancel_meeting_summary,
             retry_meeting_summary,
@@ -13152,6 +13208,32 @@ pub fn run() {
                 meeting_control::SessionEngine::new(state.db.clone()),
             ));
             let _ = MEETING_APP.set(app.handle().clone());
+            // yap-1106-resource-governor — the live budget every heavy consumer
+            // asks before it loads a model. Installed before the meeting
+            // pipeline's first job can run (its worker waits QUEUE_START_DELAY).
+            {
+                let pause_below = state.settings.lock().pause_heavy_work_below_percent;
+                let governor = Arc::new(resource_governor::Governor::new(
+                    resource_governor::SystemResourceProbe {
+                        energy: Arc::new(meeting_control::SystemProbe),
+                    },
+                    pause_below,
+                ));
+                let emit_handle = app.handle().clone();
+                governor.set_emitter(move |view| {
+                    // FX-03: constrained = dictation keeps exactly one engine.
+                    // The emitter fires on every transition, off the UI thread.
+                    if resource_governor::keeps_one_engine(view.level) {
+                        polish::unload_sidecar_for_governor(view.level.as_str());
+                    }
+                    if let Err(e) = emit_handle.emit(resource_governor::GOVERNOR_EVENT, view) {
+                        log::warn!("governor emit failure reason={e}");
+                    }
+                });
+                if resource_governor::install(governor) {
+                    resource_governor::start_background(Arc::new(|| false));
+                }
+            }
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),
                 meeting_status_sink(app.handle().clone()),
