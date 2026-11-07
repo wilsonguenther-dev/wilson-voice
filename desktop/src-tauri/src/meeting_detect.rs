@@ -395,10 +395,15 @@ fn evaluate_upcoming(db: &Database, s: &DetectSettings) {
     let offset = local.offset().local_minus_utc();
     let started = std::time::Instant::now();
     let events = sys::events_between(now - IN_PROGRESS_SECS, local_day_end(now, offset));
-    crate::diagnostics::record_duration(
+    // SP-11 — this read runs on every watcher wake (each mic change plus the
+    // 30 s backstop), so its duration line is written only when it was slow;
+    // the stat is kept on every read.
+    let read_ms = started.elapsed().as_millis() as u64;
+    crate::diagnostics::record_duration_quiet(
         "meeting_detect",
         "upcoming_read_ms",
-        started.elapsed().as_millis() as u64,
+        read_ms,
+        crate::call_signals::snapshot_duration_due(read_ms, false),
     );
     publish_upcoming(Some(UpcomingSnapshot {
         meetings: upcoming_today(&events, now, local_day_end(now, offset)),
@@ -655,7 +660,7 @@ fn evaluate_calls(
         return;
     }
     #[cfg(target_os = "macos")]
-    let snapshot = {
+    let (snapshot, snapshot_ms) = {
         call_signals::sys::sync_listeners();
         let started = std::time::Instant::now();
         let snap = call_signals::sys::snapshot(
@@ -664,25 +669,31 @@ fn evaluate_calls(
             false,
             calendar,
         );
-        crate::diagnostics::record_duration(
-            "call_signals",
-            "snapshot_ms",
-            started.elapsed().as_millis() as u64,
-        );
-        snap
+        (snap, Some(started.elapsed().as_millis() as u64))
     };
     #[cfg(not(target_os = "macos"))]
-    let snapshot: Result<call_signals::CallSnapshot, String> = {
+    let (snapshot, snapshot_ms): (Result<call_signals::CallSnapshot, String>, Option<u64>) = {
         let _ = calendar;
-        Err("call detection is macOS-only".to_string())
+        (Err("call detection is macOS-only".to_string()), None)
     };
-    let snap = match snapshot {
-        Ok(snap) => {
-            calls.last_error = None;
-            snap
+    // SP-11 — the duration stat is kept on every snapshot; its log line is
+    // written only when the snapshot was slow or its result changed.
+    let record_ms = |changed: bool| {
+        if let Some(ms) = snapshot_ms {
+            crate::diagnostics::record_duration_quiet(
+                "call_signals",
+                "snapshot_ms",
+                ms,
+                call_signals::snapshot_duration_due(ms, changed),
+            );
         }
+    };
+    let (snap, recovered) = match snapshot {
+        Ok(snap) => (snap, calls.last_error.take().is_some()),
         Err(e) => {
-            if calls.last_error.as_deref() != Some(e.as_str()) {
+            let changed = calls.last_error.as_deref() != Some(e.as_str());
+            record_ms(changed);
+            if changed {
                 log::warn!("call_signals snapshot_failed error={e:?}");
                 calls.last_error = Some(e);
             }
@@ -696,6 +707,7 @@ fn evaluate_calls(
     let logged = candidate
         .as_ref()
         .map(|c| (c.bundle_id.clone(), c.offers()));
+    record_ms(recovered || logged != calls.last_logged);
     if logged != calls.last_logged {
         match &candidate {
             Some(c) => log::info!(

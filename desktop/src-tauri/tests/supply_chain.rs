@@ -25,6 +25,16 @@ const DIARIZE_CARGO_TOML: &str = include_str!("../../yap-diarize/Cargo.toml");
 /// The workspace lockfile — the file that decides which code actually links,
 /// as opposed to which ranges the manifests would accept (YV100).
 const CARGO_LOCK: &str = include_str!("../../Cargo.lock");
+/// yap-1106-engine-owner — the speech helper's manifest and the workspace.
+const ASR_CARGO_TOML: &str = include_str!("../../yap-asr/Cargo.toml");
+const WORKSPACE_CARGO_TOML: &str = include_str!("../../Cargo.toml");
+const TRANSCRIPTION_RS: &str = include_str!("../src/transcription.rs");
+// yap-1106-engine-owner (f): the files that build a shipped app, so a stray
+// `--features in-process-asr` in any of them is caught.
+const CI_YML: &str = include_str!("../../../.github/workflows/ci.yml");
+const RELEASE_YML: &str = include_str!("../../../.github/workflows/release.yml");
+const PACKAGE_JSON: &str = include_str!("../../package.json");
+const ASR_ENGINE_RS: &str = include_str!("../src/asr_engine.rs");
 /// The analyzer chain's research doc (ENGINEERING MUSTS (b)). Its `pins` block
 /// is the one written record of which diarization crates and model bytes were
 /// chosen; the test below makes it the same numbers as the manifests and the
@@ -961,6 +971,138 @@ fn aec3_is_pinned_exactly_and_adds_one_crate() {
     for banned in ["webrtc-audio-processing", "webrtc-audio-processing-sys"] {
         assert!(!app.contains(banned), "{banned} is a second native C library and is rejected");
     }
+}
+
+/// yap-1106-engine-owner: the speech model lives in the `yap-asr` helper.
+///
+/// The helper is a workspace member, is bundled as an `externalBin`, links the
+/// SAME `transcribe-cpp` version as the app with the Metal backend on macOS,
+/// and the app's production loader goes through `engine_owner::load_engine`
+/// (the one construction site) rather than loading a model in process.
+#[test]
+fn asr_helper_is_bundled_and_owns_the_speech_model() {
+    assert!(
+        WORKSPACE_CARGO_TOML.contains("\"yap-asr\""),
+        "yap-asr must be a workspace member"
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let external: Vec<&str> = config["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        external.contains(&"binaries/yap-asr"),
+        "yap-asr must be bundled as a sidecar, got {external:?}"
+    );
+    let helper_lines: Vec<&str> = ASR_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("transcribe-cpp"))
+        .collect();
+    assert!(
+        helper_lines.iter().any(|l| l.contains("\"metal\"")),
+        "yap-asr must build transcribe-cpp with the metal backend: {helper_lines:?}"
+    );
+    let app_version = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("transcribe-cpp"))
+        .and_then(|l| l.split("version = \"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .expect("the app names a transcribe-cpp version");
+    for line in &helper_lines {
+        assert!(
+            line.contains(&format!("version = \"{app_version}\"")),
+            "yap-asr must link the same transcribe-cpp as the app ({app_version}): {line}"
+        );
+    }
+    assert!(
+        !ASR_CARGO_TOML.contains("llama-cpp") && !ASR_CARGO_TOML.contains("sherpa-onnx"),
+        "yap-asr must not share a link line with another vendored ggml/onnxruntime"
+    );
+    assert!(
+        CARGO_LOCK.contains("name = \"yap-asr\""),
+        "Cargo.lock must carry the yap-asr package"
+    );
+    assert!(
+        TRANSCRIPTION_RS.contains("engine_owner::load_engine"),
+        "TranscriptionManager's production loader must go through the engine owner"
+    );
+}
+
+/// yap-1106-engine-owner (f): the app binary no longer links the speech model.
+///
+/// `transcribe-cpp` is an OPTIONAL dependency of the app in every table,
+/// reachable only through the `in-process-asr` feature; that feature is not in
+/// `default` and no build that ships (ci.yml's release build, release.yml, the
+/// npm scripts) turns it on. Every native call in `asr_engine.rs` is behind the
+/// feature, so a default build has nothing that could reach ggml/Metal. The
+/// helper (`yap-asr`) is the one binary that links it, non-optionally.
+#[test]
+fn app_binary_does_not_link_the_speech_model() {
+    let app_lines: Vec<&str> = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("transcribe-cpp"))
+        .collect();
+    assert!(
+        !app_lines.is_empty(),
+        "the app still names transcribe-cpp (as optional)"
+    );
+    for line in &app_lines {
+        assert!(
+            line.contains("optional = true"),
+            "the app must not link transcribe-cpp unconditionally: {line}"
+        );
+    }
+    assert!(
+        CARGO_TOML.contains("in-process-asr = [\"dep:transcribe-cpp\"]"),
+        "the in-process engine is reachable only through the in-process-asr feature"
+    );
+    let default_line = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("default = ["))
+        .expect("the app declares its default features");
+    assert!(
+        !default_line.contains("in-process-asr"),
+        "in-process-asr must never be a default feature: {default_line}"
+    );
+    for (name, text) in [
+        ("ci.yml", CI_YML),
+        ("release.yml", RELEASE_YML),
+        ("package.json", PACKAGE_JSON),
+    ] {
+        assert!(
+            !text.contains("in-process-asr"),
+            "{name} must not build the app with the in-process speech engine"
+        );
+    }
+    // asr_engine.rs reaches the native crate only through its one
+    // `use transcribe_cpp::{…}` import (plus `init_backends`, gated with it);
+    // that import must sit behind the feature.
+    let import_at = ASR_ENGINE_RS
+        .find("use transcribe_cpp::{")
+        .expect("asr_engine imports transcribe_cpp");
+    let before = &ASR_ENGINE_RS[..import_at];
+    assert!(
+        before
+            .trim_end()
+            .ends_with("#[cfg(feature = \"in-process-asr\")]"),
+        "asr_engine.rs must import transcribe_cpp only under in-process-asr"
+    );
+    let helper_lines: Vec<&str> = ASR_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("transcribe-cpp"))
+        .collect();
+    assert!(
+        !helper_lines.is_empty() && helper_lines.iter().all(|l| !l.contains("optional")),
+        "the yap-asr helper is the binary that links the speech model: {helper_lines:?}"
+    );
 }
 
 /// The fenced `pins` block under `## Pinned versions` in ANALYZER-RESEARCH.md,

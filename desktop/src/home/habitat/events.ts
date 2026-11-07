@@ -36,7 +36,14 @@ export function subscribeHabitat(on: (ev: HabitatEvent) => void): () => void {
     .catch(() => undefined);
   keep(listen<StatusPayload>("status", (e) => on(eventForStatus(e.payload))));
   keep(listen<boolean>("recording", (e) => (e.payload ? on({ kind: "take-start" }) : undefined)));
-  keep(listen<number>("audio_level", (e) => on({ kind: "level", value: typeof e.payload === "number" ? e.payload : 0 })));
+  // SP-11: the backend aims the mic level at the float window and sends the
+  // main window a copy only while it is visible, so this listener takes the
+  // "main" copy alone (an untargeted listener would also receive the float's).
+  keep(
+    listen<number>("audio_level", (e) => on({ kind: "level", value: typeof e.payload === "number" ? e.payload : 0 }), {
+      target: "main",
+    }),
+  );
   // `transcript` is emitted after the text was inserted: the paste LANDED.
   keep(listen("transcript", () => on({ kind: "paste" })));
   keep(

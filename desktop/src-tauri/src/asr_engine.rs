@@ -9,15 +9,22 @@
 //! `initial_prompt` — fed from the auto-learning dictionary.
 #![allow(dead_code)]
 
+#[cfg(feature = "in-process-asr")]
 use std::path::Path;
+#[cfg(feature = "in-process-asr")]
 use std::sync::Once;
 
 use serde::{Deserialize, Serialize};
+// yap-1106-engine-owner: the native engine is compiled in only with
+// `--features in-process-asr`; the shipped app links none of it (the `yap-asr`
+// helper does). Everything else in this module is plain data and stays.
+#[cfg(feature = "in-process-asr")]
 use transcribe_cpp::{
     Backend, CancelToken, Model, ModelOptions, RunExtension, RunOptions, Session, TimestampKind,
     WhisperRunOptions,
 };
 
+#[cfg(feature = "in-process-asr")]
 static BACKEND_INIT: Once = Once::new();
 
 /// Hard ceiling on the decode prompt, in tokens (YV47).
@@ -81,6 +88,7 @@ pub fn build_bias_prompt(terms: &[String]) -> Option<String> {
 /// native/ggml diagnostics into the `log` facade and register compute backend
 /// modules. In our static build (macOS Metal) `init_backends_default` is a
 /// harmless no-op, but it must still run before the first model load.
+#[cfg(feature = "in-process-asr")]
 pub fn init_backends() {
     BACKEND_INIT.call_once(|| {
         transcribe_cpp::init_logging();
@@ -92,6 +100,7 @@ pub fn init_backends() {
 
 /// A loaded GGUF model ready to transcribe. Holds the live `Session`, which
 /// keeps its `Model` alive for the engine's lifetime.
+#[cfg(feature = "in-process-asr")]
 pub struct AsrEngine {
     session: Session,
     /// Y10-A — the language the model detected on the most recent run, or
@@ -114,6 +123,7 @@ pub struct AsrEngine {
     cancel: CancelToken,
 }
 
+#[cfg(feature = "in-process-asr")]
 impl AsrEngine {
     /// Whether this model accepts an `initial_prompt` bias (YV47).
     fn accepts_initial_prompt(&self) -> bool {
@@ -123,6 +133,7 @@ impl AsrEngine {
 
 /// A clone of this engine's cancel token (YV70) — cheap, shares one flag, and
 /// can be held while the engine itself is leased out to a transcription thread.
+#[cfg(feature = "in-process-asr")]
 pub fn cancel_token(engine: &AsrEngine) -> CancelToken {
     engine.cancel.clone()
 }
@@ -139,6 +150,7 @@ pub fn cancel_token(engine: &AsrEngine) -> CancelToken {
 /// Called by the lease with the engine exclusively in hand, immediately before
 /// it is published as in-flight, so a cancel from that instant on is honoured
 /// and one from a previous run cannot abort this one.
+#[cfg(feature = "in-process-asr")]
 pub fn reset_cancel(engine: &AsrEngine) {
     engine.cancel.reset();
 }
@@ -149,6 +161,7 @@ pub fn reset_cancel(engine: &AsrEngine) {
 /// Apple Silicon) with CPU fallback, and `gpu_device: 0` is transcribe-cpp's
 /// "auto / first match" sentinel — so a load never fails outright on a machine
 /// without a GPU backend.
+#[cfg(feature = "in-process-asr")]
 pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
     init_backends();
     let options = ModelOptions {
@@ -192,6 +205,7 @@ pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
 /// `bias_prompt` is the YV47 dictionary bias — starred + usage-ranked terms as
 /// assembled by [`build_bias_prompt`]. It rides the Whisper run extension's
 /// `initial_prompt` and is dropped for models that cannot take one.
+#[cfg(feature = "in-process-asr")]
 pub fn transcribe(
     engine: &mut AsrEngine,
     samples_16k_mono: &[f32],
@@ -221,11 +235,13 @@ pub fn transcribe(
 }
 
 /// Y10-A — the language the last run detected (see `AsrEngine::last_language`).
+#[cfg(feature = "in-process-asr")]
 pub fn last_detected_language(engine: &AsrEngine) -> Option<String> {
     engine.last_language.clone()
 }
 
 /// Y10-A — the probed language capabilities, in the shape the picker uses.
+#[cfg(feature = "in-process-asr")]
 pub fn language_support(engine: &AsrEngine) -> crate::languages::LanguageSupport {
     crate::languages::LanguageSupport::from_capabilities(&capabilities(engine))
 }
@@ -291,6 +307,7 @@ impl TimedKind {
         !matches!(self, TimedKind::None)
     }
 
+    #[cfg(feature = "in-process-asr")]
     fn from_native(kind: TimestampKind) -> TimedKind {
         match kind {
             TimestampKind::Segment => TimedKind::Segment,
@@ -340,6 +357,7 @@ impl TimedTranscript {
     }
 }
 
+#[cfg(feature = "in-process-asr")]
 fn span(t0_ms: i64, t1_ms: i64, text: &str) -> TimedSpan {
     TimedSpan {
         start_seconds: t0_ms as f64 / 1000.0,
@@ -355,6 +373,7 @@ fn span(t0_ms: i64, t1_ms: i64, text: &str) -> TimedSpan {
 /// or the extra allocation. Nothing about this call changes the decode itself;
 /// it asks for `TimestampKind::Auto` ("richest this family supports") and keeps
 /// what comes back instead of throwing it away at `.map(|t| t.text)`.
+#[cfg(feature = "in-process-asr")]
 pub fn transcribe_timed(
     engine: &mut AsrEngine,
     samples_16k_mono: &[f32],
@@ -415,6 +434,7 @@ pub struct ModelCapabilities {
 }
 
 /// Read the loaded model's capabilities. Cheap — GGUF metadata, no decode.
+#[cfg(feature = "in-process-asr")]
 pub fn capabilities(engine: &AsrEngine) -> ModelCapabilities {
     let model = engine.session.model();
     let caps = model.capabilities();
@@ -499,6 +519,7 @@ mod tests {
     /// `Auto` is what a decode is ASKED for, never what it comes back with — a
     /// result still tagged Auto means the native side resolved nothing, which
     /// the merge must read as "no usable times" and not as "some times".
+    #[cfg(feature = "in-process-asr")]
     #[test]
     fn auto_timestamps_are_not_mistaken_for_real_ones() {
         assert_eq!(TimedKind::from_native(TimestampKind::Auto), TimedKind::None);
