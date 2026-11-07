@@ -413,3 +413,40 @@ fn centroid_blobs_round_trip_and_the_webview_never_sees_a_voiceprint() {
     assert_eq!(json["displayName"], "Alex");
     assert_eq!(speaker_profiles::LEAVES_THIS_MAC, "Leaves this Mac: No");
 }
+
+/// The approved design's "This wasn't John": the voiceprint drops what it
+/// learned in that meeting, and an emptied profile matches nothing (and is not
+/// mistaken for a stale model).
+#[test]
+fn unlearning_a_meeting_rebuilds_the_centroid_from_what_remains() {
+    let dir = temp_dir("voiceprint-unlearn");
+    let db = open_db(&dir);
+    let m1 = seed_meeting(&db, &dir, "Monday", &["a"]);
+    let m2 = seed_meeting(&db, &dir, "Tuesday", &["b"]);
+    let p = db
+        .create_speaker_profile("John", false, DIGEST, &axis(0), 2.0, Some(m1.as_str()))
+        .unwrap();
+    db.add_speaker_sample(p.id, DIGEST, &axis(1), 2.0, Some(m2.as_str()))
+        .unwrap();
+
+    let after = db.unlearn_meeting_from_profile(p.id, &m2).unwrap();
+    assert_eq!(after.n_samples, 1);
+    assert!(cosine_similarity(&after.centroid, &axis(0)).get() > 0.9999);
+
+    let empty = db.unlearn_meeting_from_profile(p.id, &m1).unwrap();
+    assert_eq!(empty.n_samples, 0);
+    let m = db
+        .match_speaker_voice(&axis(0), DIGEST, MatchBands::provisional())
+        .unwrap();
+    assert_eq!(m, VoiceMatch::Unknown { best: None }, "{m:?}");
+
+    // Taught again, it matches again.
+    db.add_speaker_sample(p.id, DIGEST, &axis(0), 2.0, None)
+        .unwrap();
+    let m = db
+        .match_speaker_voice(&axis(0), DIGEST, MatchBands::provisional())
+        .unwrap();
+    assert_eq!(m.outcome(), "auto", "{m:?}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(&dir);
+}
