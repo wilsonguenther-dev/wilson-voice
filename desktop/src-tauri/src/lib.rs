@@ -3140,7 +3140,10 @@ impl stream_decode::WindowDecoder for EngineWindowDecoder {
     /// uncommitted words runs only at a full governor; the pill hides live
     /// words at any other level, so a guess then would be wasted work.
     fn tentative_allowed(&self) -> bool {
-        matches!(resource_governor::level_now(), resource_governor::Level::Full)
+        matches!(
+            resource_governor::level_now(),
+            resource_governor::Level::Full
+        )
     }
 }
 
