@@ -335,4 +335,30 @@ describe("yap-1106-diarize-wire — speaker labels from cluster_index", () => {
     const lines = orderedTranscript([clustered("u", 0, 1, MIC_TRACK, null, "plain")], "in_person");
     expect(lines[0].speaker).toBe(UNCLUSTERED_SPEAKER_LABEL);
   });
+
+  it("a clustered mic row on a virtual call is still You and never takes a speaker rank", () => {
+    const lines = orderedTranscript(
+      [
+        clustered("m", 0, 3, MIC_TRACK, 4, "me, clustered by mistake"),
+        clustered("x", 3, 5, SYSTEM_TRACK, 0, "remote"),
+      ],
+      "virtual",
+    );
+    expect(lines.map((l) => l.speaker)).toEqual(["You", "Call · Speaker 1"]);
+  });
+
+  it("equal talk time ranks the earlier speaker first, then the lower cluster id; a row with no end counts zero", () => {
+    const noEnd = (id: string, startSeconds: number, clusterIndex: number): TranscriptSegment => ({
+      id,
+      startSeconds,
+      track: MIC_TRACK,
+      clusterIndex,
+      text: id,
+    });
+    // Clusters 7 and 2 both start at 0 with no end time: the lower id wins.
+    // Cluster 9 has equal (zero) talk but starts later: it ranks last.
+    const lines = orderedTranscript([noEnd("late", 4, 9), noEnd("seven", 0, 7), noEnd("two", 0, 2)], "in_person");
+    const bySegment = Object.fromEntries(lines.map((l) => [l.segment.id, l.speaker]));
+    expect(bySegment).toEqual({ two: "Speaker 1", seven: "Speaker 2", late: "Speaker 3" });
+  });
 });
