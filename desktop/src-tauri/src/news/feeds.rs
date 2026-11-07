@@ -405,6 +405,10 @@ pub struct Story {
     /// Hacker News points and comments.
     pub points: Option<i64>,
     pub comments: Option<i64>,
+    /// yap-1106-news-explain — the item's description as one line of plain
+    /// text ([`snippet_from_html`]); the explain step checks Yappy's line
+    /// against it. Hacker News has none.
+    pub snippet: Option<String>,
 }
 
 /// One stock quote. Always marked delayed (design rule: "Markets show
@@ -588,6 +592,39 @@ impl QuoteFeed {
     }
 }
 
+/// yap-1106-news-explain — a feed item's description as plain text: tags
+/// stripped, entities decoded, one line, at most
+/// [`super::explain::MAX_SNIPPET_CHARS`] characters. `None` when it is empty
+/// or only the headline again.
+pub fn snippet_from_html(html: &str, title: &str) -> Option<String> {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = decode_entities(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text: String = text
+        .chars()
+        .take(super::explain::MAX_SNIPPET_CHARS)
+        .collect();
+    if text.is_empty() || text.eq_ignore_ascii_case(title.trim()) {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// Decode the XML/HTML entities a feed uses.
 pub fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -698,10 +735,15 @@ pub fn parse_google_rss(body: &str, topic: &str, max: usize) -> Vec<Story> {
         let published_ms = tag_text(block, "pubDate")
             .and_then(|(_, d)| chrono::DateTime::parse_from_rfc2822(&d).ok())
             .map(|d| d.timestamp_millis());
-        let outlets = tag_text(block, "description")
-            .map(|(_, d)| d.matches("<li>").count())
+        let description = tag_text(block, "description").map(|(_, d)| d);
+        let outlets = description
+            .as_deref()
+            .map(|d| d.matches("<li>").count())
             .unwrap_or(0)
             .max(1);
+        let snippet = description
+            .as_deref()
+            .and_then(|d| snippet_from_html(d, &title));
         out.push(Story {
             source: Source::GoogleNews,
             topic: topic.to_string(),
@@ -712,6 +754,7 @@ pub fn parse_google_rss(body: &str, topic: &str, max: usize) -> Vec<Story> {
             published_ms,
             points: None,
             comments: None,
+            snippet,
         });
     }
     out
@@ -757,6 +800,7 @@ pub fn parse_hn(body: &str, topic: &str, max: usize) -> Result<Vec<Story>, FeedE
                 published_ms: h.created_at_i.map(|s| s * 1000),
                 points: h.points,
                 comments: h.num_comments,
+                snippet: None,
             })
         })
         .take(max)

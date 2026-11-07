@@ -59,7 +59,7 @@ import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
-import { capsuleCentre, currentPillLayout, type PillLayout } from "./state";
+import { capsuleCentre, currentPillLayout, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
 // yap-1106-pill-vertical-dock-world — on a side dock the pill is a tall room
 // (or a 30 x 40 resting tab), flush to the edge and never wider than 64 px.
 import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDock, vdockCropWarning, vdockFrame, type SideDock } from "./vdock";
@@ -369,6 +369,15 @@ export default function YappyPill(
     // A settled scene has PARKED its rAF (YV81); wake it so the pose is painted.
     wakeRef.current();
   }, [droop]);
+  // yap-1107-one-pill-during-meeting — a meeting PARKS this loop after one calm
+  // frame, so a layout that lands after the park (the scene becoming the pill,
+  // the shell growing around a take) would leave a stale capsule painted beside
+  // the scene. Every applied layout wakes the loop for one repaint; it re-parks.
+  useEffect(() => {
+    const onLayout = () => wakeRef.current();
+    window.addEventListener(PILL_LAYOUT_EVENT, onLayout);
+    return () => window.removeEventListener(PILL_LAYOUT_EVENT, onLayout);
+  }, []);
   useEffect(() => {
     const recording = meeting.recording === true;
     const was = meetingRef.current;
@@ -830,6 +839,13 @@ export default function YappyPill(
       // YV65 — the capsule IS the grab handle: publish exactly where it was just
       // drawn (canvas coords are logical points here — the DPR lives in the
       // context transform) so the panel only takes the cursor over the pill.
+      // yap-1107-one-pill-during-meeting — a resting meeting: the meeting scene
+      // (MeetingBadge → MeetingWorld) IS the pill, Yappy in headphones included,
+      // so this canvas draws no second capsule and no second Yappy beside it.
+      // The hitbox is the scene's box, so drag and hover still land on the pill.
+      if (lay && lay.sceneCharacter) {
+        reportPillHitbox(lay.char.x, lay.char.y, lay.char.w, lay.char.h);
+      } else {
       reportPillHitbox(x0, y0, capW, capH);
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
@@ -860,6 +876,7 @@ export default function YappyPill(
       ctx.restore();
       ctx.restore();
       ctx.lineWidth = 1; ctx.strokeStyle = openV > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)"; rr(x0 + .5, y0 + .5, capW - 1, capH - 1, capH / 2); ctx.stroke();
+      }
 
       // speech bubble above the capsule — centred on it, but kept inside the
       // window so a docked (edge-hugging) capsule doesn't push it off-screen.
@@ -1102,6 +1119,10 @@ export default function YappyPill(
           })()}
         </div>
       ) : null}
+      {/* yap-1107-one-pill-during-meeting — the ONE meeting shell behind Yappy and
+          the clock (layout.shell, float.css .meeting-shell): one device, never a
+          second capsule beside the pill. Hidden without a meeting. */}
+      <div className="meeting-shell" data-meeting-shell aria-hidden />
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
       {/* YV95 — the recording state is a DOM overlay, not a canvas layer, so
           the pulse is a compositor animation and the clock is text the backend

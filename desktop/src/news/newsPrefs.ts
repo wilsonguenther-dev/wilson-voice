@@ -29,6 +29,51 @@ export interface NewsView extends NewsPrefs {
   homeCardDue: boolean;
   cloudConnectedAtMs: number | null;
   lastRefreshMs: number | null;
+  /** yap-1106-news-refresh-setting — `news_prefs::Cadence`. Missing = the default. */
+  refreshCadence?: NewsCadence;
+}
+
+/** yap-1106-news-refresh-setting — Settings → Yappy News → "How often". */
+export type NewsCadence = "twice_a_day" | "every_few_hours" | "on_home_open" | "on_tap";
+
+/** The approved default. */
+export const DEFAULT_CADENCE: NewsCadence = "twice_a_day";
+
+/** The 30-minute floor `news::schedule` holds for every choice. */
+export const REFRESH_FLOOR_MS = 30 * 60_000;
+
+/** The choices, in the order they show. Ids match `news_prefs::Cadence`. */
+export const CADENCE_OPTIONS: ReadonlyArray<{ id: NewsCadence; label: string; hint: string }> = [
+  { id: "twice_a_day", label: "Twice a day", hint: "After 6 AM and after 4 PM. Tickers every 30 minutes while Home is open." },
+  { id: "every_few_hours", label: "Every few hours", hint: "About every three hours, tickers included." },
+  { id: "on_home_open", label: "Only when I open Home", hint: "Nothing in the background." },
+  { id: "on_tap", label: "Only when I tap refresh", hint: "Nothing runs until you ask." },
+];
+
+/** The saved choice, or the default for an older backend. */
+export function cadenceOf(v: NewsView | null): NewsCadence {
+  const c = v?.refreshCadence;
+  return CADENCE_OPTIONS.some((o) => o.id === c) ? (c as NewsCadence) : DEFAULT_CADENCE;
+}
+
+/** What asked for a refresh — `news::schedule::Trigger`. */
+export type NewsTrigger = "timer" | "home_opened" | "home_tick" | "tap";
+
+/** `news::RefreshOutcome` (stories/quotes kept loose; Home owns their shape). */
+export interface NewsRefreshOutcome {
+  ran: boolean;
+  skipped: string | null;
+  message: string | null;
+  stories: unknown[];
+  quotes: unknown[];
+  view: NewsView;
+}
+
+/** When a tap may refresh again (the floor), or null when it may now. */
+export function nextTapAllowedAt(lastRefreshMs: number | null, now: number = Date.now()): number | null {
+  if (lastRefreshMs == null || lastRefreshMs <= 0) return null;
+  const at = lastRefreshMs + REFRESH_FLOOR_MS;
+  return at > now ? at : null;
 }
 
 /** The chips, in the order they show. Ids match `news_prefs::TOPIC_CHIPS`. */
@@ -164,6 +209,14 @@ export function saveNews(prefs: NewsPrefs, source: NewsSource): Promise<NewsView
   return invoke<NewsView>("set_news_prefs", { prefs, source });
 }
 
+export function saveCadence(cadence: NewsCadence): Promise<NewsView> {
+  return invoke<NewsView>("set_news_cadence", { cadence });
+}
+
+export function refreshNews(trigger: NewsTrigger): Promise<NewsRefreshOutcome> {
+  return invoke<NewsRefreshOutcome>("news_refresh", { trigger });
+}
+
 export function dismissNews(source: NewsSource): Promise<NewsView> {
   return invoke<NewsView>("dismiss_news_offer", { source });
 }
@@ -223,4 +276,29 @@ export function saveQuoteKey(provider: QuoteProvider, key: string): Promise<Quot
 
 export function clearQuoteKey(): Promise<QuoteKeyView> {
   return invoke<QuoteKeyView>("clear_news_quote_key");
+}
+
+/** yap-1106-news-explain — one story as the card shows it: Yappy's line, or the headline alone (`explained: false`). */
+export interface ExplainedLine {
+  urlKey: string;
+  url: string;
+  headline: string;
+  line: string;
+  explained: boolean;
+}
+
+/** The top 3 explained, plus why any line is the headline alone (`fallback`). */
+export interface NewsExplained {
+  lines: ExplainedLine[];
+  voice: "bestFriend" | "badass" | "professional" | "rose";
+  fallback: string;
+  sent: number;
+  unsupported: number;
+  advice: number;
+  ms: number;
+}
+
+/** One line each for the top 3 cached stories in Yappy's voice; `voice` is the stored `companionTone`. */
+export function explainTopNews(voice: string): Promise<NewsExplained> {
+  return invoke<NewsExplained>("news_explain_top", { voice });
 }
