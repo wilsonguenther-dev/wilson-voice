@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type EngineLoadProgress, type LoadStage, parseLoadProgress } from "./launchWalk";
+import { HOLD_PCT, launchWalkModel, type EngineLoadProgress, type LoadStage, parseLoadProgress } from "./launchWalk";
 import {
   BELL_SHOW_MS,
   ENGINE_ART_STAGE,
@@ -19,8 +19,9 @@ import {
 } from "./warmup";
 
 const STEP: Record<LoadStage, number> = { starting: 0, reading: 1, waiting: 2, testing: 3, ready: 4, failed: 2 };
-const prog = (pct: number, stage: LoadStage, step: number | undefined = STEP[stage]): EngineLoadProgress =>
-  ({ pct, stage, modelId: "m", elapsedMs: 0, ...(step === undefined ? {} : { step }) });
+/** `step: null` = an older backend that sends no step (an explicit undefined would take the default). */
+const prog = (pct: number, stage: LoadStage, step: number | null = STEP[stage]): EngineLoadProgress =>
+  ({ pct, stage, modelId: "m", elapsedMs: 0, ...(step === null ? {} : { step }) });
 const base = (o: Partial<WarmInput> = {}): WarmInput => ({
   download: null, load: null, stepAgeMs: 0, sinceReadyMs: null, recording: false, reduceMotion: false, tMs: 0, ...o,
 });
@@ -116,7 +117,7 @@ describe("yap-1106-pill-warmup-engine — beats from the load signal", () => {
     expect(loadBar(prog(95, "testing"))).toBeCloseTo(66.7, 1);
     expect(loadBar(prog(100, "ready"))).toBe(100);
     // An older backend without `step` derives the same steps from the stage.
-    expect(loadStep(prog(95, "testing", undefined))).toBe(3);
+    expect(loadStep(prog(95, "testing", null))).toBe(3);
     // A stray step 4 on a non-ready stage is never trusted as ready.
     expect(loadStep(prog(95, "waiting", 4))).toBe(3);
   });
@@ -187,6 +188,28 @@ describe("yap-1106-pill-warmup-engine — beats from the load signal", () => {
     expect(warmupStillKey(a)).toBe(warmupStillKey(b));
     const c = warmupModel(base({ load: prog(95, "waiting"), reduceMotion: true }));
     expect(warmupStillKey(c)).not.toBe(warmupStillKey(a));
+  });
+
+  it("the launch walk waits at the door through the first test pass (one signal, two renderers)", () => {
+    const walk = launchWalkModel({
+      progress: prog(HOLD_PCT, "testing"), sinceChangeMs: 0, sinceReadyMs: null, readyFromPct: HOLD_PCT,
+      warmHopMs: null, recording: false, reduceMotion: false, tMs: 0,
+    });
+    expect(walk.mode).toBe("wait");
+    expect(walk.pct).toBeLessThan(100);
+  });
+
+  it("speaks plain words for every visible mode, nothing when hidden", () => {
+    expect(warmupAriaLabel(warmupModel(base()))).toBe("");
+    expect(warmupAriaLabel(warmupModel(base({ load: prog(100, "ready"), sinceReadyMs: 1 })))).toBe("Ready");
+    expect(warmupAriaLabel(warmupModel(base({ load: prog(95, "testing") })))).toBe("Almost, 67 percent");
+    expect(warmupModel(base({ load: prog(0, "starting") })).label).toBe("Waking up");
+    expect(warmupModel(base({ download: 30, stepAgeMs: SWEAT_MS + 1 })).label).toBe("First start takes longer");
+    expect(warmupModel(base({ download: 30, recording: true })).notepad).toBe(true);
+    expect(warmupModel(base({ load: prog(95, "failed", null) })).step).toBe(3);
+    expect(downloadPct({ downloaded: "x", total: 5 })).toBeNull();
+    expect(forcedWarmup("?warm=dl:x")).toBeNull();
+    expect(forcedWarmup("?warm=30:reading")?.load?.stage).toBe("reading");
   });
 
   it("the window is the approved 72 x 24", () => {

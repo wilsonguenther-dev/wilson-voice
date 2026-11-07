@@ -3531,15 +3531,17 @@ mod tests {
 
     // ---- yap-1106-pill-warmup-engine: the three-step load signal ----
 
-    /// A slowed fake loader: the steps arrive in order 0 → 1 → 2 → 3 → 4, never
+    /// A fake loader: the steps arrive in order 0 → 1 → 2 → 3 → 4, never
     /// skip back, and step 4 (ready, the bell) is only ever sent after the
     /// loader returned and its first pass ran.
     #[test]
     fn warmup_three_step_signal_is_ordered_and_ready_comes_last() {
         let returned = Arc::new(AtomicBool::new(false));
         let flag = returned.clone();
+        // No sleep: the order is what is under test (and a new sub-second
+        // literal would need a long_take_budget row); the slowed-loader timing
+        // case is launch_walk_slowed_fake_loader_never_reports_ready_before_ready.
         let loader: EngineLoader = Arc::new(move |_path: &Path| {
-            std::thread::sleep(Duration::from_millis(120));
             flag.store(true, Ordering::SeqCst);
             Ok(Box::new(StubEngine {
                 text: "steps".to_string(),
