@@ -76,6 +76,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
+  // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
+  "pill/voices.ts": { lines: 96, branches: 85, functions: 94, statements: 96 },
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },
   "polishOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -91,6 +93,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // FB-09 — floors set by the batch-2 integrator from the measured run. crisp.ts's gap is domBuffer/paintSprite, the DOM-only app path.
   "sprites/art.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "sprites/crisp.ts": { lines: 74, branches: 50, functions: 50, statements: 74 },
+  // yap-1106-friends-art-hd — re-measured by the batch-6 integrator (100 on every axis).
+  "sprites/friends.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "sprites/raster.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },

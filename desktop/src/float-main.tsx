@@ -1,6 +1,6 @@
 /**
  * Float entry — picks the pill style from settings and renders it.
- *   any registered character id (pill/characters/registry.ts); unknown → classic
+ *   any registered character id (pill/characters/registry.ts); unknown or retired → yappy
  * Live-switches when settings are saved (backend emits "settings").
  *
  * YV53: the same settings carry the dock edge (bottom | left | right). The
@@ -15,7 +15,7 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
-import { resolveCharacter } from "./pill/characters/registry";
+import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
@@ -27,6 +27,8 @@ import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
+import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
+import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
   errorSentence,
@@ -59,6 +61,7 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -87,6 +90,7 @@ import {
   matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
+  matrixDragBlobScene,
   type ForcedPill,
 } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
@@ -246,14 +250,20 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixStyleChipScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
     matrixRailScene(),
+    // WF-02 — the pill mid-drag: the blob plus its three drop zones.
+    matrixDragBlobScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+  if (forcedDragScene(window.location.search)) {
+    const root = document.documentElement;
+    applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
+  }
 }
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
-  const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
+  const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
   // the capsule inside keeps its identity, so it never remounts.
@@ -479,7 +489,7 @@ function Float() {
     // The dock edge rides on <html> (not React state) — it only drives CSS
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
-      setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
+      setStyle(FORCED?.style ?? (s?.pillStyle || FALLBACK_CHARACTER));
       const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
       document.documentElement.dataset.dock = d;
       setDock(d);
@@ -588,7 +598,7 @@ function Float() {
     railOpen: FORCED?.rail ? true : undefined,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
-  // unknown id falls back to classic. The shell never branches on an id: a
+  // unknown or retired id falls back to yappy. The shell never branches on an id: a
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
@@ -602,7 +612,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />

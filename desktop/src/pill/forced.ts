@@ -33,7 +33,12 @@ import {
 } from "./live";
 import { type LicenseStatus } from "../license/status";
 
-export const PILL_STYLES = ["classic", "yappy"] as const;
+/**
+ * yap-1106-retire-classic-pill — Classic is retired, so the matrix no longer
+ * forces it: `?pill=classic` is an unknown style (null) and the page falls back
+ * to settings, exactly like a stale setting falls back to Yappy.
+ */
+export const PILL_STYLES = ["yappy"] as const;
 export type PillStyle = (typeof PILL_STYLES)[number];
 export const PILL_DOCKS = ["bottom", "left", "right"] as const;
 export type PillDock = (typeof PILL_DOCKS)[number];
@@ -70,7 +75,7 @@ export interface ForcedPill {
 
 /**
  * yap24-PILL1 — license SCENES the matrix photographs on an idle pill, so a
- * PILL item's license treatment is looked at in 3 docks x 2 characters like any
+ * PILL item's license treatment is looked at in 3 docks x every character like any
  * phase: `float.html?phase=idle&license=trial-quiet`. Each scene is a payload
  * the backend could really send, with checkout closed (`PURCHASE_OPEN`).
  * `trial-quiet` uses day 14 because "14d" is the widest numeral the policy
@@ -204,6 +209,31 @@ export function matrixBacktrackCaughtScene(): MatrixOfferRow {
     phaseId: PHASE_ID.idle,
     query: "backtrack=1",
     offer: "",
+    tone: v.tone,
+    label: v.label,
+  };
+}
+
+/**
+ * yap-wf-02-the-pill-shrinks-to — WF-02's drag blob (`float.html?phase=idle&drag=blob`,
+ * see `forcedDragScene` in drag.ts): the pill mid-drag, collapsed to Yappy's
+ * face with the three drop zones up. `drag` is what `<html data-pill-drag>`
+ * must carry, so a blob that silently failed to apply is a finding, not a
+ * photo of a resting pill. Photographed at every dock like any other row.
+ */
+export interface MatrixDragRow extends MatrixOfferRow {
+  drag: "blob";
+}
+
+export function matrixDragBlobScene(): MatrixDragRow {
+  const v = phaseVisual("idle");
+  return {
+    phase: "idle",
+    id: "drag-blob",
+    phaseId: PHASE_ID.idle,
+    query: "drag=blob",
+    offer: "",
+    drag: "blob",
     tone: v.tone,
     label: v.label,
   };

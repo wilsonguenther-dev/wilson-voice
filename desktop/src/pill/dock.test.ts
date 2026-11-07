@@ -254,6 +254,14 @@ describe("Y5-I dock geometry — the shell's table", () => {
         const own = ["width", "height", "min-width", "max-width", "min-height", "max-height"]
           .filter((k) => r.decls[k] !== undefined);
         if (own.length === 0) continue;
+        // WF-02 (yap-wf-02-the-pill-shrinks-to) — the one sanctioned exception:
+        // while it is DRAGGED the box collapses to the 28 pt blob (drag.ts
+        // BLOB_PT), sized only by --blob-d, and it is back on the tokens the
+        // moment the drag ends. Nothing else may use it.
+        if (s === 'html[data-pill-drag="blob"] .pill') {
+          for (const k of own) expect(r.decls[k], `${s} ${k}`).toMatch(/^(var\(--blob-d\)|0)$/);
+          continue;
+        }
         // Only the base and the row override may size the bar, and only with the tokens.
         expect([".pill", '[data-bar-position="bottom"] .pill', '[data-bar-orientation="banner"] .pill'], s).toContain(s);
         for (const k of own) expect(r.decls[k], `${s} ${k}`).toMatch(/^var\(--flow-bar-(length|thickness)\)$/);

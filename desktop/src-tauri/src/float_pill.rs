@@ -74,6 +74,16 @@ static DRAG_ORIGIN_Y: AtomicI32 = AtomicI32::new(0);
 /// Monitor scale factor at drag start, ×1000 — the webview reports its deltas
 /// in logical points and the panel is positioned in physical px.
 static DRAG_SCALE_M: AtomicI32 = AtomicI32::new(1000);
+/// WF-02 — wall-clock ms at drag start, for the one duration the drag logs.
+static DRAG_T0_MS: AtomicU64 = AtomicU64::new(0);
+/// WF-02 — was Esc down at the last check? Latched at drag start and updated by
+/// the hover watch, so only a FRESH Esc press mid-drag cancels (an Esc already
+/// held when the press began is not the user changing their mind).
+static ESC_DOWN: AtomicBool = AtomicBool::new(false);
+/// WF-02 — backend → pill webview: the hover watch saw Esc mid-drag and put the
+/// panel back on its dock. pill/drag.ts `PILL_DRAG_CANCEL_EVENT` is the same
+/// string; the webview's gesture catches up so the release is inert.
+pub const PILL_DRAG_CANCEL_EVENT: &str = "pill-drag-cancel";
 /// The VISIBLE capsule's rect inside the float window, in logical points,
 /// reported by the pill webview (`pill_set_hitbox`). Width 0 → nothing is
 /// grabbable yet, so the panel stays fully click-through.
@@ -1180,7 +1190,13 @@ pub fn drag_start(app: &AppHandle) {
         (w.scale_factor().unwrap_or(1.0) * 1000.0).round() as i32,
         Ordering::SeqCst,
     );
+    DRAG_T0_MS.store(now_ms(), Ordering::SeqCst);
+    ESC_DOWN.store(esc_key_down(), Ordering::SeqCst);
     DRAGGING.store(true, Ordering::SeqCst);
+    log::info!(
+        "pill drag event=start dock={}",
+        PillPosition::from_u8(POSITION.load(Ordering::SeqCst)).as_settings()
+    );
 }
 
 /// Move the panel live. `dx`/`dy` are the cursor's total travel since
@@ -1209,17 +1225,123 @@ pub fn drag_end(app: &AppHandle, release: (f64, f64), snap: bool) -> Option<Pill
     if !DRAGGING.swap(false, Ordering::SeqCst) {
         return None;
     }
-    let pos = snap
-        .then(|| {
-            app.get_webview_window("float")
-                .and_then(|w| monitor_frame(&w))
-                .map(|frame| snap_position(release, frame))
-        })
-        .flatten()
-        .unwrap_or_else(|| PillPosition::from_u8(POSITION.load(Ordering::SeqCst)));
+    let home = PillPosition::from_u8(POSITION.load(Ordering::SeqCst));
+    let frame = if snap {
+        app.get_webview_window("float")
+            .and_then(|w| monitor_frame(&w))
+    } else {
+        None
+    };
+    let pos = drag_end_dock(snap, release, frame, home);
     set_position(pos);
     reposition(app);
+    log::info!(
+        "pill drag event=end snap={snap} from={} dock={} ms={}",
+        home.as_settings(),
+        pos.as_settings(),
+        drag_elapsed_ms()
+    );
     Some(pos)
+}
+
+/// Pure (WF-02): the dock a drag ends on. A release that SNAPS lands on the
+/// dock under the cursor; anything else — a plain click, an Esc mid-drag
+/// (pill/drag.ts sends `snap: false`), or a monitor that could not be read —
+/// goes HOME to the dock the pill had, whatever point it was released at.
+pub fn drag_end_dock(
+    snap: bool,
+    release: (f64, f64),
+    screen_frame: Option<(f64, f64, f64, f64)>,
+    home: PillPosition,
+) -> PillPosition {
+    match (snap, screen_frame) {
+        (true, Some(frame)) => snap_position(release, frame),
+        _ => home,
+    }
+}
+
+/// WF-02 — Esc mid-drag: put the panel back where the press found it and
+/// re-park it on the dock it already had. Nothing is persisted (the setting
+/// never changed). Returns that dock, or `None` when no drag was live (the
+/// webview's own `pill_drag_end` got there first). Main thread.
+pub fn drag_cancel(app: &AppHandle) -> Option<PillPosition> {
+    if !DRAGGING.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    let home = PillPosition::from_u8(POSITION.load(Ordering::SeqCst));
+    if let Some(w) = app.get_webview_window("float") {
+        let x = DRAG_ORIGIN_X.load(Ordering::SeqCst);
+        let y = DRAG_ORIGIN_Y.load(Ordering::SeqCst);
+        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+    }
+    reposition(app);
+    log::info!(
+        "pill drag event=cancel reason=esc dock={} ms={}",
+        home.as_settings(),
+        drag_elapsed_ms()
+    );
+    if let Err(e) = app.emit(PILL_DRAG_CANCEL_EVENT, ()) {
+        log::warn!("pill drag event=cancel_emit_failed error={e}");
+    }
+    Some(home)
+}
+
+/// Pure (WF-02): does this Esc reading cancel the drag? Only a FRESH press
+/// (up at the last check, down now) while a drag is live.
+pub fn esc_cancels_drag(dragging: bool, esc_was_down: bool, esc_down: bool) -> bool {
+    dragging && esc_down && !esc_was_down
+}
+
+/// The hover watch's per-slice Esc check (WF-02). The float panel is a
+/// non-activating NSPanel, so the webview may never be key and never see the
+/// keydown; the backend reads the key state instead, only while a drag is live.
+fn poll_drag_escape(app: &AppHandle) -> bool {
+    if !DRAGGING.load(Ordering::SeqCst) {
+        return false;
+    }
+    let now = esc_key_down();
+    let was = ESC_DOWN.swap(now, Ordering::SeqCst);
+    if !esc_cancels_drag(true, was, now) {
+        return false;
+    }
+    let a = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        let _ = drag_cancel(&a);
+    }) {
+        log::warn!("pill drag event=cancel_dispatch_failed error={e}");
+    }
+    true
+}
+
+/// Is Escape down right now (macOS virtual key 0x35), from the combined session
+/// state — a read of the key table, no event tap and no main thread.
+#[cfg(target_os = "macos")]
+fn esc_key_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
+    }
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const KVK_ESCAPE: u16 = 0x35;
+    // SAFETY: a pure read of the window server's key state; both arguments are
+    // plain integers and the call has no preconditions.
+    unsafe { CGEventSourceKeyState(COMBINED_SESSION_STATE, KVK_ESCAPE) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn esc_key_down() -> bool {
+    false
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn drag_elapsed_ms() -> u64 {
+    now_ms().saturating_sub(DRAG_T0_MS.load(Ordering::SeqCst))
 }
 
 /// YV65 — make the panel cursor-interactive ONLY while the pointer is over the
@@ -1266,6 +1388,12 @@ pub fn start_hover_watch(app: AppHandle) {
                 } else {
                     PROXIMITY_SLICE_MS
                 }));
+                // WF-02 — Esc mid-drag puts the pill back. Checked every slice
+                // (30 ms) and only while a drag is live, so it costs nothing at
+                // rest and never waits on a slow meeting tick.
+                if poll_drag_escape(&app) {
+                    break;
+                }
                 let near = cursor_on_capsule_cheap();
                 let was = CURSOR_NEAR.swap(near, Ordering::Relaxed);
                 if should_wake_early(was, near) {
@@ -1578,6 +1706,70 @@ mod tests {
         }
         // Any unexpected byte reads as the default.
         assert_eq!(PillPosition::from_u8(9), PillPosition::Bottom);
+    }
+}
+
+#[cfg(test)]
+mod wf02_drag_tests {
+    use super::*;
+
+    /// A 1440x900-point primary monitor at the global origin.
+    const FRAME: (f64, f64, f64, f64) = (0.0, 0.0, 1440.0, 900.0);
+
+    #[test]
+    fn esc_restore_never_reads_the_release_point() {
+        // pill/drag.ts sends `snap: false` on Esc: wherever the blob was
+        // dragged to, the pill goes home to the dock it had.
+        for home in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            assert_eq!(drag_end_dock(false, (4.0, 450.0), Some(FRAME), home), home);
+            assert_eq!(
+                drag_end_dock(false, (1436.0, 450.0), Some(FRAME), home),
+                home
+            );
+            assert_eq!(drag_end_dock(false, (720.0, 880.0), None, home), home);
+        }
+    }
+
+    #[test]
+    fn a_snapping_release_lands_on_the_dock_under_the_cursor() {
+        let home = PillPosition::Bottom;
+        assert_eq!(
+            drag_end_dock(true, (30.0, 450.0), Some(FRAME), home),
+            PillPosition::Left
+        );
+        assert_eq!(
+            drag_end_dock(true, (1420.0, 450.0), Some(FRAME), home),
+            PillPosition::Right
+        );
+        assert_eq!(
+            drag_end_dock(true, (720.0, 880.0), Some(FRAME), PillPosition::Left),
+            PillPosition::Bottom
+        );
+        // No readable monitor: never guess a dock, stay home.
+        assert_eq!(
+            drag_end_dock(true, (30.0, 450.0), None, PillPosition::Right),
+            PillPosition::Right
+        );
+    }
+
+    #[test]
+    fn only_a_fresh_esc_press_mid_drag_cancels() {
+        assert!(esc_cancels_drag(true, false, true));
+        // Held since before the press, or still held from the last check.
+        assert!(!esc_cancels_drag(true, true, true));
+        // Released, or no drag at all.
+        assert!(!esc_cancels_drag(true, false, false));
+        assert!(!esc_cancels_drag(false, false, true));
+    }
+
+    #[test]
+    fn the_cancel_event_name_matches_the_webview() {
+        // pill/drag.ts PILL_DRAG_CANCEL_EVENT
+        assert_eq!(PILL_DRAG_CANCEL_EVENT, "pill-drag-cancel");
     }
 }
 
