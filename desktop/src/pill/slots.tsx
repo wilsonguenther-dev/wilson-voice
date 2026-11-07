@@ -278,9 +278,12 @@ export function railFailed(action: string, err: unknown, sentence: string): void
 }
 
 /** The Scratchpad window (DB-D) — the rail's Scratchpad, and Note when no meeting runs. */
-async function openScratchpad(dock: BarDock): Promise<void> {
-  railLog("scratchpad_open", { dock });
-  await invoke("open_scratchpad").catch((e) => {
+async function openScratchpad(dock: BarDock, noteId?: string): Promise<void> {
+  railLog("scratchpad_open", { dock, note: noteId != null });
+  // fix-b5-1 — with a note id the window lands ON that note (its own tab,
+  // active, caret after the seed); without one it keeps the last active note.
+  const opened = noteId != null ? invoke("open_scratchpad", { noteId }) : invoke("open_scratchpad");
+  await opened.catch((e) => {
     railFailed("scratchpad", e, "Scratchpad didn't open here, so it opened in Yap.");
     openMain("scratchpad");
   });
@@ -377,14 +380,24 @@ export function meetingNoteTitle(clock: string | null | undefined, title?: strin
 async function takeNote(ctx: SlotCtx): Promise<void> {
   if (!ctx.meetingRecording) { await openScratchpad(ctx.dock); return; }
   const at = (ctx.meetingClock ?? "").trim() || "0:00";
+  const t0 = Date.now();
+  let noteId: string;
   try {
-    await invoke("save_note_draft", { id: null, title: meetingNoteTitle(at, ctx.meetingTitle), content: `[${at}] ` });
-    railLog("meeting_note", { dock: ctx.dock });
+    const made = await invoke<{ id?: unknown } | null>("save_note_draft", {
+      id: null,
+      title: meetingNoteTitle(at, ctx.meetingTitle),
+      content: `[${at}] `,
+    });
+    if (!made || typeof made.id !== "string" || made.id === "") throw new Error("save_note_draft returned no id");
+    noteId = made.id;
   } catch (e) {
     railFailed("meeting_note", e, "Note didn't save — open the Scratchpad and type it there.");
     return;
   }
-  await openScratchpad(ctx.dock);
+  // One line, no note text: the dock and how long the save took.
+  railLog("meeting_note", { dock: ctx.dock, ms: Date.now() - t0 });
+  // fix-b5-1 — open the Scratchpad ON the note just made, not the last one used.
+  await openScratchpad(ctx.dock, noteId);
 }
 
 /**
