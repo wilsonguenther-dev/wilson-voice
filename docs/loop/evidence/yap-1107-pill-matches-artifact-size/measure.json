@@ -1,0 +1,26 @@
+{
+  "item": "yap-1107-pill-matches-artifact-size",
+  "measuredAt": "2026-11-07T05:19Z",
+  "method": "Read from source, no compile and no capture (coders may not build the frontend). Artifact = design-2026-11-06/pill.html STATES[].neu + assets/pill-kit.js pill() (4 px shell padding) + assets/yappy.js worldWindow/blitWorld (buffer 176x44, open view = 0.8 x 176 art px wide). App = origin/main a1f6995 desktop/src/pill/characterFit.ts + YappyPill.tsx.",
+  "artifact": {
+    "resting":   { "shell": [72, 28],  "window": [64, 20],  "view": "26 art px wide, face close-up", "cssPerArtPx": 2.46, "note": "28 logical = 56 device px at 2x (the acceptance's 56)" },
+    "listening": { "shell": [228, 52], "window": [220, 44], "view": [140.8, 28.2], "cssPerArtPx": 1.5625 },
+    "hands-free":{ "shell": [null, 52], "window": [196, 44], "cssPerArtPx": 1.392 },
+    "long-take": { "shell": [216, 52], "window": [208, 44], "cssPerArtPx": 1.477 },
+    "writing-polishing-pasting-done": { "shell": [null, 52], "window": [196, 44], "cssPerArtPx": 1.392, "note": "plus a right segment; shell width = 204 + segment" },
+    "compact":   { "shell": [null, 32], "window": [44, 24], "states": ["meeting recording", "warming up (model-loading)", "nothing heard (empty)", "cancelled", "failed (error)", "microphone blocked"] },
+    "crop": "listening view rows 7.9-36.1 of the 44-row buffer; chick tufts start at row 5 (feetY 30 - 25), so the artifact cuts about 3 art px off Yappy's tufts at rest pose and more mid-hop"
+  },
+  "app_a1f6995": {
+    "openCapsule": [236, 60], "tiers": [1, 1.05, 1.16], "restCapsule": "restCapsuleFor(): smallest stadium holding every pill character whole at 1 CSS px per art px, both orientations (>= 72 wide, about 55 tall)",
+    "camera": "pillCamera: cell = largest whole device px per art px that fits chickBox (46 x 43 art px incl. hop 6 / squash 4 slack) in the stadium",
+    "cssPerArtPx": { "1x": 1.0, "2x": 1.0 },
+    "compactStates": "none: every non-resting phase opens to the same 236 x 60 capsule"
+  },
+  "gap": {
+    "sprite": "Yappy is drawn at 1.0 CSS px per art px in every open state on 1x and 2x; the artifact draws him at 1.39-1.56. On screen he is 64% (listening) to 72% (done) of the approved size: this is the shrunken look.",
+    "shell": "The open capsule (236 x 60) is already larger than the artifact shell (228 x 52); the resting capsule (about 55 tall) is taller than the artifact nub (28). The capsule is not what is small; the sprite inside it is.",
+    "retina": "On 2x the camera can pick cell 2 at most (stadium 110 device px after guards / 43 art px), i.e. the same 1 CSS px per art px as 1x; cell 3 (1.5 CSS px, within 4% of the artifact) needs a 69+ CSS px tall capsule for the full hop envelope."
+  },
+  "conflict": "Matching the artifact exactly (52 px shell AND 1.56 CSS px per art px) means cropping Yappy's tufts and the top of a hop, which yap-1106-fb-10 (Wilson 2026-11-06 ~17:00Z: 'it looks like the heads cropped') forbids and characterFit.test.ts pins for 17 states x 5 docks. Needs one decision: (A) artifact exact, allow tuft/hop crop and drop the fb-10 open-state pin; (B) keep whole character, grow the open capsule to about 236 x 70 so 2x draws cell 3 (1x stays 1.0); (C) keep whole character at artifact shell size by clamping the pill hop to 1 art px and squash to 0 so the envelope is about 34 art px tall (cell 3 fits a 60 px capsule on 2x)."
+}
