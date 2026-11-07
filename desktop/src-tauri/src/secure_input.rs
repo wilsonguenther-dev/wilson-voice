@@ -161,6 +161,9 @@ impl SecureInputStatus {
 /// The one quiet line the main window shows while Yap's OWN key field holds
 /// Secure Input. Neutral, never red, no detail paragraph: the user caused it
 /// by focusing the field, and blurring the field ends it.
+/// The frontend renders its own copy (SecureInputBanner.tsx); this constant is
+/// the parity anchor the tests pin, so it is unused in a non-test build.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const OWN_FIELD_MESSAGE: &str = "Shortcut paused while the key field is focused";
 
 /// Who holds Secure Input, decided once on the engaged edge by
