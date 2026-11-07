@@ -93,6 +93,10 @@ describe("landOn (the note the window was opened for)", () => {
   it("an_opened_note_missing_from_the_list_falls_back", () => {
     expect(landOn(["a"], "a", [A], "gone")).toEqual({ tabs: ["a"], active: "a" });
   });
+
+  it("an_empty_list_leaves_no_tabs_and_nothing_active", () => {
+    expect(landOn(["a"], "a", [], "a")).toEqual({ tabs: [], active: null });
+  });
 });
 
 describe("openedCaret", () => {
