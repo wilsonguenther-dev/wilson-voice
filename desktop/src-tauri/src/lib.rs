@@ -3372,9 +3372,18 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     // the pill settles to idle rather than painting a failure (the item's "the
     // pill shows a cancelled state that settles to idle — not an error").
     *state.last_error.lock() = None;
+    // yap-fx-06 — say whether a meeting is still recording, so the pill can
+    // tell the user Esc ended only the dictation and offer to stop the meeting.
+    let meeting_live = meeting_still_recording(state);
+    log::info!("dictation cancelled stage=recording meeting_still_recording={meeting_live}");
     let _ = app.emit(
         TAKE_CANCELLED_EVENT,
-        serde_json::json!({ "message": CANCELLED_TAKE_MESSAGE, "failed": recoverable }),
+        serde_json::json!({
+            "message": CANCELLED_TAKE_MESSAGE,
+            "failed": recoverable,
+            "meetingStillRecording": meeting_live,
+            "meetingNotice": cancel_meeting_notice(meeting_live),
+        }),
     );
     // The terminal marker every waiting view already listens for (YV79), so a
     // spinner clears on the cancel instead of running to its watchdog.
@@ -3575,6 +3584,109 @@ pub const TAKE_FAILED_EVENT: &str = "take_failed";
 /// parked recovery row (or null) so History can offer "transcribe it after all"
 /// on exactly this take.
 pub const TAKE_CANCELLED_EVENT: &str = "take_cancelled";
+
+/// yap-fx-06 — what the pill says when Esc (or the pill's Cancel) ends a
+/// dictation while a meeting keeps recording. Esc only ever cancels the take
+/// (see [`cancel_take`]: the engine is shared, the meeting is untouched), and
+/// before this the pill settled to idle in silence, so a user who pressed Esc
+/// "to stop Yap" had no idea a meeting was still going, nor how to stop it.
+/// The pill renders this with a Stop button and the ⌃⌘M chord.
+pub const MEETING_STILL_RECORDING_NOTICE: &str =
+    "Dictation cancelled — meeting still recording. Stop meeting?";
+
+/// yap-fx-06 — the notice a cancel carries on [`TAKE_CANCELLED_EVENT`]:
+/// `Some` only while a meeting is still recording, so a cancel with no
+/// meeting stays exactly as quiet as Y3-D made it.
+pub(crate) fn cancel_meeting_notice(meeting_recording: bool) -> Option<&'static str> {
+    meeting_recording.then_some(MEETING_STILL_RECORDING_NOTICE)
+}
+
+/// yap-fx-06 — is a meeting recording right now? Read at cancel time, from
+/// the controller itself, so the toast never claims a meeting that ended.
+fn meeting_still_recording(state: &AppState) -> bool {
+    state.meeting().is_some_and(|c| c.is_recording())
+}
+
+/// yap-fx-06 — the pill's one-time question when hands-free dictation starts
+/// while a meeting is recording: "Dictate and keep the meeting recording?"
+/// Payload: `{ meetingId, title, elapsedLabel }`. The take is already live
+/// (every hands-free start is a user press, and an fn double-tap has started
+/// recording before Yap knows it is hands-free), so the question never holds
+/// audio hostage: "Both" keeps going, "Just the meeting" cancels the take
+/// through the ordinary cancel path (its clip parked, as Y3-D keeps it).
+pub const HANDS_FREE_MEETING_ASK_EVENT: &str = "hands_free_meeting_ask";
+
+/// The meeting id the hands-free question was last asked for. Asked ONCE per
+/// meeting: the second hands-free take of the same meeting goes straight
+/// through, and a new meeting asks again.
+static HANDS_FREE_MEETING_ASKED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// yap-fx-06 — pure: should the hands-free question be shown? Only while a
+/// meeting is recording (`meeting_id` is `Some`) and only if it has not been
+/// asked for THIS meeting.
+pub(crate) fn hands_free_meeting_ask_due(meeting_id: Option<&str>, asked: Option<&str>) -> bool {
+    match meeting_id {
+        Some(id) => asked != Some(id),
+        None => false,
+    }
+}
+
+/// Ask the hands-free question if it is due. Called right after every
+/// hands-free start: the chord (⌃⌘H), the fn double-tap and a pill click.
+fn ask_hands_free_during_meeting(app: &AppHandle, state: &AppState, source: &'static str) {
+    let Some(status) = state.meeting().map(|c| c.status()) else {
+        return;
+    };
+    if !status.recording {
+        return;
+    }
+    let mut asked = HANDS_FREE_MEETING_ASKED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if !hands_free_meeting_ask_due(status.id.as_deref(), asked.as_deref()) {
+        log::info!("hands_free meeting_ask skipped reason=already_asked source={source}");
+        return;
+    }
+    *asked = status.id.clone();
+    drop(asked);
+    log::info!("hands_free meeting_ask shown source={source}");
+    float_pill::show_for_recording(app);
+    let _ = app.emit(
+        HANDS_FREE_MEETING_ASK_EVENT,
+        serde_json::json!({
+            "meetingId": status.id,
+            "title": status.title,
+            "elapsedLabel": status.elapsed_label,
+        }),
+    );
+}
+
+/// yap-fx-06 — the answer to [`HANDS_FREE_MEETING_ASK_EVENT`]. `both` keeps
+/// the take and the meeting; `false` ("Just the meeting") cancels ONLY the
+/// take, through [`cancel_take`], exactly like Esc. Returns whether a take was
+/// cancelled.
+#[tauri::command]
+fn hands_free_meeting_respond(app: AppHandle, state: State<'_, Arc<AppState>>, both: bool) -> bool {
+    log::info!(
+        "hands_free meeting_ask answered choice={}",
+        if both { "both" } else { "meeting_only" }
+    );
+    if both {
+        return false;
+    }
+    cancel_take(&app, &state)
+}
+
+/// yap-fx-06 — the pill's last-resort way out when Stop meeting fails: the
+/// SAME quit as Cmd-Q and the tray's "Quit Yap". `app.exit(0)` reaches
+/// `RunEvent::Exit`, whose teardown stops and finalizes a live meeting
+/// (`stop_if_running`), so even a meeting Stop could not end is saved on the
+/// way out. Never `std::process::exit`. Force quit is never the only exit.
+#[tauri::command]
+fn pill_quit_yap(app: AppHandle) {
+    log::info!("pill quit_yap clicked reason=meeting_stop_failed");
+    app.exit(0);
+}
 
 /// PERM-D — the `code` on [`TAKE_FAILED_EVENT`] for an all-zero buffer.
 pub const SILENT_CAPTURE_CODE: &str = "silent_capture";
@@ -4765,11 +4877,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 let recoverable = pending.take().and_then(|(mut clip, speech_seconds, src)| {
                     keep_cancelled_take(&db, &recovery_dir(), &mut clip, speech_seconds, src)
                 });
+                // yap-fx-06 — the same meeting notice the recording-stage
+                // cancel carries: a decode cancelled by Esc during a meeting
+                // must say the meeting is still going too.
+                let meeting_live = meeting_still_recording(&state2);
+                log::info!(
+                    "dictation cancelled stage=decode meeting_still_recording={meeting_live}"
+                );
                 let _ = app2.emit(
                     TAKE_CANCELLED_EVENT,
                     serde_json::json!({
                         "message": CANCELLED_TAKE_MESSAGE,
                         "failed": recoverable,
+                        "meetingStillRecording": meeting_live,
+                        "meetingNotice": cancel_meeting_notice(meeting_live),
                     }),
                 );
                 // YV79 terminal marker, so any spinner clears on the cancel.
@@ -6467,6 +6588,7 @@ fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
             *state.hands_free.lock() = true;
             *state.hands_free_by_chord.lock() = false;
             log::info!("pill click action=start hands_free=true");
+            ask_hands_free_during_meeting(&app, state, "pill_click");
         } else {
             log::warn!("pill click action=start_failed reason=take_did_not_start");
         }
@@ -11141,9 +11263,17 @@ fn stop_meeting(
 ) -> Result<meeting_control::MeetingStatus, String> {
     let controller = state.meeting().ok_or("Yap is still starting up")?;
     if !controller.is_recording() {
+        log::info!("meeting stop_command result=already_stopped");
         return Ok(controller.status());
     }
-    controller.stop("user stopped")?;
+    // yap-fx-06 — the pill's Stop (badge and the Esc toast) lands here; the
+    // failure is returned to the pill, which shows it with Try again and
+    // Quit Yap (quit finalizes the recording), never a silent no-op.
+    if let Err(e) = controller.stop("user stopped") {
+        log::warn!("meeting stop_command result=error");
+        return Err(e);
+    }
+    log::info!("meeting stop_command result=stopped");
     if !*state.recording.lock() {
         float_pill::after_recording(&app, idle_pill_on(&state));
     }
@@ -11678,6 +11808,7 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                         emit_status(&h, &st);
                         float_pill::show_for_recording(&h);
                         log::info!("hands-free ON source=fn_double_tap");
+                        ask_hands_free_during_meeting(&h, &st, "fn_double_tap");
                     }
                     ptt_macos::PttEvent::HandsFreeOff => {
                         *st.hands_free.lock() = false;
@@ -11780,6 +11911,7 @@ fn toggle_hands_free(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin)
             *state.hands_free.lock() = true;
             *state.hands_free_by_chord.lock() = true;
             log::info!("hands-free ON source=chord origin={origin:?}");
+            ask_hands_free_during_meeting(app, state, "chord");
         } else {
             log::warn!("hands-free toggle failed reason=take_did_not_start origin={origin:?}");
         }
@@ -13194,6 +13326,9 @@ pub fn run() {
             dismiss_notes_backlog,
             // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
             cancel_transcription,
+            // yap-fx-06 — the pill's "Dictate during this meeting?" answer.
+            hands_free_meeting_respond,
+            pill_quit_yap,
             user_display_name,
             // Y8-D — the pill's coaching nudges read and write their ledger.
             nudge_ledger,
@@ -18241,5 +18376,74 @@ mod retry_replay {
             1,
             "one engine for the whole Retry-all run"
         );
+    }
+}
+
+#[cfg(test)]
+mod fx06_meeting_dictation_tests {
+    use super::*;
+
+    /// yap-fx-06 — a cancel during a meeting carries the exact toast line; a
+    /// cancel with no meeting carries nothing, so Y3-D's quiet idle is kept.
+    #[test]
+    fn esc_during_a_meeting_names_the_meeting_and_offers_stop() {
+        assert_eq!(
+            cancel_meeting_notice(true),
+            Some("Dictation cancelled — meeting still recording. Stop meeting?")
+        );
+        assert_eq!(cancel_meeting_notice(false), None);
+    }
+
+    /// yap-fx-06 — Esc cancels ONLY the dictation: the one cancel body never
+    /// reaches the meeting controller (no stop, no toggle), so a running
+    /// meeting survives every Esc.
+    #[test]
+    fn esc_cancel_never_touches_the_meeting() {
+        let src = include_str!("lib.rs");
+        let start = src
+            .find("fn cancel_take(app: &AppHandle, state: &Arc<AppState>) -> bool {")
+            .expect("cancel_take exists");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("cancel_take ends");
+        let body = &body[..end];
+        for forbidden in [
+            "meeting()",
+            "stop_meeting",
+            "toggle_meeting",
+            "stop_if_running",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "cancel_take must not touch the meeting ({forbidden})"
+            );
+        }
+    }
+
+    /// yap-fx-06 — the hands-free question is asked once per meeting: never
+    /// without a meeting, once for a new meeting, not again for the same
+    /// meeting, and again for the next meeting.
+    #[test]
+    fn hands_free_during_a_meeting_asks_once_per_meeting() {
+        assert!(!hands_free_meeting_ask_due(None, None));
+        assert!(!hands_free_meeting_ask_due(None, Some("m1")));
+        assert!(hands_free_meeting_ask_due(Some("m1"), None));
+        assert!(!hands_free_meeting_ask_due(Some("m1"), Some("m1")));
+        assert!(hands_free_meeting_ask_due(Some("m2"), Some("m1")));
+    }
+
+    /// yap-fx-06 — the pill's answer and its last-resort quit are registered
+    /// commands, and every hands-free start path asks the question.
+    #[test]
+    fn the_pill_commands_and_ask_sites_are_wired() {
+        let src = include_str!("lib.rs");
+        assert!(src.contains("            hands_free_meeting_respond,\n"));
+        assert!(src.contains("            pill_quit_yap,\n"));
+        for site in [
+            "ask_hands_free_during_meeting(app, state, \"chord\")",
+            "ask_hands_free_during_meeting(&h, &st, \"fn_double_tap\")",
+            "ask_hands_free_during_meeting(&app, state, \"pill_click\")",
+        ] {
+            assert!(src.contains(site), "missing ask site: {site}");
+        }
     }
 }

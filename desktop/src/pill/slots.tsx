@@ -43,6 +43,7 @@ import { Mic, MicOff, NotebookPen, Settings2, Square, StickyNote, Users, X } fro
 import { barAxis, barTokens, shellBarPhase, type BarDock } from "./dock";
 import { isListening, type LivePhase, type TranscribeProgress } from "./live";
 import { parseMeetingPopover, popoverEntries, type KindChoice, type PopoverEntry } from "./meetingPopover";
+import { MEETING_STOP_FAILED_EVENT } from "./meetingDictation";
 
 export type SlotId =
   | "dictate"
@@ -360,7 +361,12 @@ async function stopMeeting(dock: BarDock): Promise<void> {
   const t0 = Date.now();
   await invoke("stop_meeting")
     .then(() => railLog("meeting_stop", { dock, ms: Date.now() - t0 }))
-    .catch((e) => railFailed("meeting_stop", e, "Meeting didn't stop — use Stop in the menu bar."));
+    .catch((e) => {
+      railFailed("meeting_stop", e, "Meeting didn't stop — use Stop in the menu bar.");
+      // yap-fx-06 — the rail's Stop failing opens the same stop-failed card as
+      // the badge's (Try again / Quit Yap), so force quit is never the only way out.
+      window.dispatchEvent(new CustomEvent(MEETING_STOP_FAILED_EVENT));
+    });
 }
 
 /** "Meeting note · 12:34" — the note's timestamp is the meeting's own clock. */
