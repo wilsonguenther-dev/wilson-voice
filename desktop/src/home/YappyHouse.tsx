@@ -1,61 +1,156 @@
 /**
- * YappyHouse — the living-habitat companion for the Home screen.
+ * YappyHouse — Home's room, now YAPPY'S STUDIO (yap-1106-studio-room + FB-08).
  *
- * A pixel "dollhouse": the chick Yappy lives a day inside a cosy cutaway room —
- * sleeps in a nest, wakes, potters about, works at a typewriter desk, waters a
- * plant — while a day → dusk → night → dawn window rolls by. Rendered on a low-res
- * offscreen canvas (192×128) and upscaled NEAREST-NEIGHBOUR onto a display canvas
- * for crisp pixels.
+ * The room is the approved layered side view (decisions.studio_style =
+ * layered; companions.html section 3 "C · Layered side view", home.html
+ * section 5): a 320 x 160 buffer in three depth layers (back wall, friends at
+ * their stations, Yappy's desk in front) that shift 1, 3 and 6 whole pixels
+ * with the pointer, inside a wooden pixel frame drawn in the buffer. The
+ * drawing and every station rule live in ./studio/studio.ts; this component
+ * owns the canvas, the clock, the events and the redraw budget.
  *
- * This is a faithful port of docs/prototypes/yappy-house.html (the design SSOT) —
- * SAME room / furniture / Yappy sprite / lighting engine. What changed for the app:
  *   (1) Yappy is driven by the REAL Tauri app events the pill already uses —
- *       "recording" / "status" (busy) / "transcript" / "audio_level" — NOT demo
- *       buttons. Recording → hurries to the desk and works; busy → thinking; a
- *       transcript landing → a brief happy reaction, then back to the ambient life.
- *   (2) The sky phase follows the REAL system clock (new Date().getHours()).
- *   (3) The stat strip shows only REAL numbers passed in (words today / streak).
- *   (4) prefers-reduced-motion renders a single calm frame with no loop.
+ *       "recording" / "status" (busy) / "transcript" / "audio_level" — through
+ *       the habitat director: he types at his desk while you dictate.
+ *       SP-11: "audio_level" reaches this window only while it is visible.
+ *   (2) The sky follows the REAL system clock (the SKY keyframes below, the
+ *       same table the pill sky reads).
+ *   (3) Every station reads real app state (props from Home): Hoot's ON AIR
+ *       light = a meeting recording, Tidy's counter = today's fixes, Gulp's jar
+ *       = Dictionary size, Shelly = battery level and charging, Ember's
+ *       fireflies = streak days at night (max 7).
+ *   (4) Budget (FB-08): idle redraw at most once a minute (studio.redrawPlan);
+ *       prefers-reduced-motion renders ONE still frame with no loop, repainted
+ *       only when the state it shows changes.
+ *   (5) yap-1106-home-full-width-room: the room is a whole-number scale
+ *       (homeLayout.roomBox) of the main column.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ROOM_H, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
 import { toChatTone, type ChatTone } from "../pill/live";
 import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
 import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
 import { subscribeHabitat } from "./habitat/events";
 // yap24-UI1 — the integer pixel grid (shared with the pill): the room is drawn at
-// the largest WHOLE number of device px per art px that fits the stage, centred
-// on a whole device px, with the leftover margin painted in the scene colour.
+// the largest WHOLE number of device px per art px that fits the stage.
 import { backingScale, parseObjectPosition, pixelGrid, type PixelGrid } from "../pill/pixelGrid";
+import {
+  EMPTY_STUDIO_INPUTS,
+  IDLE_REDRAW_MS,
+  LAYERS,
+  LIVE_FRAME_MS,
+  PAD,
+  STILL_T,
+  STUDIO_H,
+  STUDIO_W,
+  drawFrame,
+  drawLights,
+  drawTint,
+  onAirLit,
+  parallaxOffsets,
+  parallaxTarget,
+  redrawPlan,
+  studioAriaLabel,
+  yappyPose,
+  type RedrawMode,
+  type StudioInputs,
+  type StudioSky,
+  type StudioState,
+} from "./studio/studio";
 
 interface YappyHouseProps {
-  /** Words dictated today — from the real Insights rollup. Omitted → tile hidden. */
-  wordsToday?: number;
-  /** Current day streak — from the real Insights rollup. Omitted → tile hidden. */
-  streakDays?: number;
   /**
    * Companion tone (YV27): friendly | rude | rose — flavours Yappy's live mood
    * label. Read from settings (passed by App), never a hardcoded constant.
    */
   companionTone?: string;
+  /**
+   * The running meeting (shell meetingStatus, pushed by the backend's 1 Hz
+   * `meeting` event). While it records, Hoot's ON AIR light is lit, he wears
+   * his headphones at the mic, and the label reads "Recording meeting · mm:ss".
+   */
+  meeting?: { recording: boolean; elapsedSeconds: number } | null;
+  /** yap-1106-studio-room — the stations' real app state (Home computes it). */
+  studio?: Partial<StudioInputs> | null;
 }
 
-// YV27 / Y5-K — the mood words are Yappy's own copy (pill/characters/yappy).
-
-// Real system clock → sky phase. Prototype keyframes: 0 dawn · .25 day · .5 dusk
-// · .75 night (wraps). Map local time so dawn≈6am, noon≈day, 6pm≈dusk, midnight≈night.
-function phaseFromClock(): number {
-  return skyPhase(new Date());
+// ---- the real-clock sky -----------------------------------------------------
+// phase: 0 dawn · .25 day · .5 dusk · .75 night (wraps). The pill sky
+// (pill/sky.ts ROOM_SKY) is pinned to these exact pairs by its test.
+const SKY = [
+  { at: 0.0, top: "#f6a6a0", bot: "#ffd9a0", amb: "#ffb28a", ambA: 0.16, lamp: 0.15, stars: 0 }, // dawn
+  { at: 0.25, top: "#7ec8ff", bot: "#cdeeff", amb: "#fff2d8", ambA: 0.0, lamp: 0.0, stars: 0 }, // day
+  { at: 0.5, top: "#ff9d6b", bot: "#ffd27a", amb: "#ff8a4a", ambA: 0.22, lamp: 0.45, stars: 0 }, // dusk
+  { at: 0.75, top: "#171a3d", bot: "#2c3060", amb: "#1a2050", ambA: 0.42, lamp: 0.85, stars: 1 }, // night
+];
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const hex = (h: string): [number, number, number] => {
+  const s = h.replace("#", "");
+  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+};
+const mix = (h1: string, h2: string, t: number) => {
+  const a = hex(h1),
+    b = hex(h2);
+  const c = (i: number) => Math.round(lerp(a[i], b[i], t)).toString(16).padStart(2, "0");
+  return `#${c(0)}${c(1)}${c(2)}`;
+};
+/** The sky at a phase, blended between the two nearest keyframes. */
+function skyAt(phase: number): StudioSky {
+  const p = ((phase % 1) + 1) % 1;
+  const seg = p * 4,
+    i = Math.floor(seg) % 4,
+    f = seg - Math.floor(seg);
+  const a = SKY[i],
+    b = SKY[(i + 1) % 4];
+  return { top: mix(a.top, b.top, f), bot: mix(a.bot, b.bot, f), amb: mix(a.amb, b.amb, f), ambA: lerp(a.ambA, b.ambA, f) };
 }
 
-export default function YappyHouse({
-  wordsToday,
-  streakDays,
-  companionTone,
-}: YappyHouseProps) {
+function inputsOf(studio: Partial<StudioInputs> | null | undefined): StudioInputs {
+  return { ...EMPTY_STUDIO_INPUTS, ...(studio ?? {}) };
+}
+
+export default function YappyHouse({ companionTone, meeting, studio }: YappyHouseProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  // Set by the mount effect: redraw now (a state change), whatever the mode.
+  const wakeRef = useRef<(() => void) | null>(null);
+  // The room's whole-number scale for the column it sits in (4x / 3x / 2x).
+  const [scale, setScale] = useState<RoomScale>(3);
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    let last: RoomScale | null = null;
+    const measure = () => {
+      const cs = getComputedStyle(el);
+      const inner = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      const next = roomBox(inner).scale;
+      if (next !== last) {
+        if (last !== null) console.info(`home room_scale from=${last} to=${next}`);
+        last = next;
+        setScale(next);
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Read inside the mount-once loop, so a prop change never restarts it.
+  const meetingRef = useRef<boolean>(!!meeting?.recording);
+  useEffect(() => {
+    meetingRef.current = !!meeting?.recording;
+    wakeRef.current?.();
+  }, [meeting?.recording]);
+  const inputs = inputsOf(studio);
+  const inputsRef = useRef<StudioInputs>(inputs);
+  useEffect(() => {
+    inputsRef.current = inputs;
+    wakeRef.current?.();
+    // Primitive deps: Home rebuilds the object each render; only a real change redraws.
+  }, [inputs.fixesToday, inputs.dictionarySize, inputs.battery?.percent, inputs.battery?.charging, inputs.streakDays, inputs.newsReady]);
   const moodRef = useRef<HTMLSpanElement | null>(null);
-  // YV27 — keep the live tone in a ref so the mood label (set inside the
-  // mount-once render effect) reads the current tone without re-running the loop.
+  // YV27 — the live tone in a ref so the mood label reads it without re-running the loop.
   const toneRef = useRef<ChatTone>(toChatTone(companionTone));
   useEffect(() => {
     toneRef.current = toChatTone(companionTone);
@@ -68,678 +163,179 @@ export default function YappyHouse({
     if (!dctx) return;
     dctx.imageSmoothingEnabled = false;
 
-    // Low-res world; upscaled with nearest-neighbour by an INTEGER cell (see
-    // `regrid` below) so every art pixel is a whole block of device pixels.
-    const W = 192,
-      H = 128;
-    const os = document.createElement("canvas");
-    os.width = W;
-    os.height = H;
-    const g = os.getContext("2d");
-    if (!g) return;
-    g.imageSmoothingEnabled = false;
-
-    const reduce = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-
-    // ---- pixel palette -----------------------------------------------------
-    const C = {
-      wallHi: "#f7e4ac",
-      wall: "#eccf92",
-      wallSh: "#d8b476",
-      wallDk: "#c39a5f",
-      floorHi: "#bd8151",
-      floor: "#a5673f",
-      floorSh: "#8a5334",
-      floorDk: "#6f3f27",
-      yolkHi: "#ffe483",
-      yolk: "#ffcf3f",
-      yolkSh: "#efa72c",
-      yolkDk: "#d3871d",
-      carrot: "#ff7a3c",
-      carrotDk: "#e85f24",
-      cheek: "#ff9d6a",
-      rose: "#ff6b8a",
-      eye: "#2b2118",
-      eyeHi: "#fff6e6",
-      wood: "#8a5a36",
-      woodHi: "#a5704a",
-      woodDk: "#5f3c22",
-      leaf: "#5fb35a",
-      leafHi: "#7fd06f",
-      leafDk: "#3f8f45",
-      pot: "#c96f43",
-      potHi: "#e08a5c",
-      metal: "#7d8c96",
-      metalHi: "#9fb0ba",
-      metalDk: "#586771",
-      paper: "#fff6e6",
-      paperSh: "#e7d9be",
-      straw: "#c9a45c",
-      strawDk: "#a17c3c",
-      rug: "#4c9aa6",
-      rugHi: "#69b6c1",
-      rugDk: "#37727c",
-      lampPole: "#6b5238",
-      shade: "#ffcf6b",
-      shadeHi: "#ffe6a6",
-      steam: "#fff",
-      coffee: "#6b4326",
-      cup: "#f1eabe",
-      beakHi: "#ffb06a",
-      eyeShine: "#ffffff",
-      bedFrame: "#7a4b2e",
-      bedFrameHi: "#9a6540",
-      bedFrameDk: "#553019",
-      quilt: "#e0857a",
-      quiltHi: "#f2a89b",
-      quiltDk: "#b8615a",
-      pillow: "#fbf3e2",
-      pillowSh: "#e4d6bb",
-      chair: "#7a4b2e",
-      chairHi: "#9a6540",
-      chairDk: "#553019",
-      floorGrain: "#96592f",
-      floorGrainDk: "#7c4a28",
+    // The studio buffer; upscaled nearest-neighbour by an INTEGER cell (regrid).
+    const W = STUDIO_W,
+      H = STUDIO_H;
+    const mk = (w: number, h: number) => {
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      return c;
     };
+    // Three depth layers, each PAD wider on both sides so a shift never shows an edge.
+    const layers = [0, 1, 2].map(() => mk(W + PAD * 2, H));
+    const out = mk(W, H);
+    const og = out.getContext("2d");
+    if (!og) return;
+    og.imageSmoothingEnabled = false;
 
-    // The leftover margin around the integer-scaled room is the room's own
-    // shadowed wall, never a stretch of the art.
-    const SCENE_MARGIN = C.wallDk;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let grid: PixelGrid = pixelGrid({ w: W, h: H }, { w: W, h: H }, 1);
-
-    // ---- helpers -----------------------------------------------------------
-    const px = (x: number, y: number, w: number, h: number, col: string) => {
-      g.fillStyle = col;
-      g.fillRect(x | 0, y | 0, w | 0, h | 0);
-    };
-    const dot = (x: number, y: number, col: string) => {
-      g.fillStyle = col;
-      g.fillRect(x | 0, y | 0, 1, 1);
-    };
-    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-    const hex = (h: string): [number, number, number] => {
-      h = h.replace("#", "");
-      return [
-        parseInt(h.slice(0, 2), 16),
-        parseInt(h.slice(2, 4), 16),
-        parseInt(h.slice(4, 6), 16),
-      ];
-    };
-    const mix = (h1: string, h2: string, t: number) => {
-      const a = hex(h1),
-        b = hex(h2);
-      return `rgb(${Math.round(lerp(a[0], b[0], t))},${Math.round(
-        lerp(a[1], b[1], t),
-      )},${Math.round(lerp(a[2], b[2], t))})`;
-    };
-    // 2x2 ordered dither between two colours by threshold t (0..1)
-    const BAYER = [
-      [0, 2],
-      [3, 1],
-    ];
-    const ditherBand = (
-      x: number,
-      y: number,
-      w: number,
-      h: number,
-      cA: string,
-      cB: string,
-      t: number,
-    ) => {
-      for (let j = 0; j < h; j++)
-        for (let i = 0; i < w; i++) {
-          const th = (BAYER[j & 1][i & 1] + 0.5) / 4;
-          dot(x + i, y + j, t > th ? cB : cA);
-        }
-    };
-
-    // ---- day/night keyframes -----------------------------------------------
-    // phase: 0 dawn · .25 day · .5 dusk · .75 night (wraps)
-    interface SkyState {
-      top: string;
-      bot: string;
-      amb: string;
-      ambA: number;
-      lamp: number;
-      stars: number;
-    }
-    const SKY = [
-      { at: 0.0, top: "#f6a6a0", bot: "#ffd9a0", amb: "#ffb28a", ambA: 0.16, lamp: 0.15, stars: 0 }, // dawn
-      { at: 0.25, top: "#7ec8ff", bot: "#cdeeff", amb: "#fff2d8", ambA: 0.0, lamp: 0.0, stars: 0 }, // day
-      { at: 0.5, top: "#ff9d6b", bot: "#ffd27a", amb: "#ff8a4a", ambA: 0.22, lamp: 0.45, stars: 0 }, // dusk
-      { at: 0.75, top: "#171a3d", bot: "#2c3060", amb: "#1a2050", ambA: 0.42, lamp: 0.85, stars: 1 }, // night
-    ];
-    const skyAt = (p: number): SkyState => {
-      p = ((p % 1) + 1) % 1;
-      const seg = p * 4,
-        i = Math.floor(seg) % 4,
-        f = seg - Math.floor(seg);
-      const a = SKY[i],
-        b = SKY[(i + 1) % 4];
-      return {
-        top: mix(a.top, b.top, f),
-        bot: mix(a.bot, b.bot, f),
-        amb: mix(a.amb, b.amb, f),
-        ambA: lerp(a.ambA, b.ambA, f),
-        lamp: lerp(a.lamp, b.lamp, f),
-        stars: lerp(a.stars, b.stars, f),
-      };
-    };
-
-    // ---- static scene geometry ---------------------------------------------
-    const FLOOR_Y = 100; // top of the floor
-    const FEET_Y = 99; // where Yappy's feet rest
-    const WIN = { x: 26, y: 24, w: 46, h: 40 }; // window on the back wall
-    const STAR = Array.from({ length: 26 }, (_, i) => ({
-      x: WIN.x + 2 + ((i * 37) % (WIN.w - 4)),
-      y: WIN.y + 2 + ((i * 53) % (WIN.h - 14)),
-      tw: (i * 0.7) % 1,
-    }));
-    const DUST = Array.from({ length: 14 }, (_, i) => ({
-      o: (i * 0.61) % 1,
-      s: 0.3 + (i % 3) * 0.12,
-    }));
-
-    interface LampInfo {
-      lampX: number;
-      lampY: number;
-    }
-
-    // ---- scene drawing -----------------------------------------------------
-    function drawWindow(sky: SkyState, t: number) {
-      // sky gradient via 3 dithered bands
-      const x = WIN.x,
-        y = WIN.y,
-        w = WIN.w,
-        h = WIN.h;
-      px(x, y, w, h, sky.top);
-      ditherBand(
-        x,
-        y + Math.floor(h * 0.33),
-        w,
-        Math.ceil(h * 0.34),
-        sky.top,
-        sky.bot,
-        0.5,
-      );
-      px(x, y + Math.floor(h * 0.66), w, h - Math.floor(h * 0.66), sky.bot);
-      // stars at night
-      if (sky.stars > 0.05) {
-        for (const s of STAR) {
-          const tw = 0.5 + 0.5 * Math.sin(t * 2 + s.tw * 6.28);
-          if (tw * sky.stars > 0.35) dot(s.x, s.y, "#fff7e0");
-        }
-        // moon
-        px(x + w - 14, y + 6, 7, 7, "#f6f0cf");
-        px(x + w - 13, y + 7, 5, 5, "#fffbe6");
-        px(x + w - 9, y + 6, 3, 4, sky.top); // crescent bite
-      } else if (sky.lamp < 0.2) {
-        // daytime clouds + an occasional bird
-        const cx = x + 6 + ((t * 3) % (w + 14)) - 7;
-        px(cx, y + 8, 9, 3, "#ffffff");
-        px(cx + 3, y + 6, 7, 3, "#ffffff");
-        const bx = x + ((t * 9) % (w + 20)) - 10,
-          by = y + 14 + Math.sin(t * 2) * 2;
-        if (bx > x + 2 && bx < x + w - 4) {
-          dot(bx, by | 0, "#3a3a44");
-          dot(bx + 1, (by | 0) - 1, "#3a3a44");
-          dot(bx + 2, by | 0, "#3a3a44");
-        }
-      }
-      // sun at day/dawn/dusk
-      if (sky.stars < 0.4 && sky.lamp < 0.6) {
-        px(x + 8, y + 7, 6, 6, "#fff2b0");
-        px(x + 9, y + 8, 4, 4, "#ffe27a");
-      }
-      // window frame + mullions
-      const fr = C.wood;
-      for (let i = -1; i <= w; i++) {
-        dot(x + i, y - 1, C.woodDk);
-        dot(x + i, y + h, C.woodDk);
-      }
-      px(x - 2, y - 2, w + 4, 2, fr);
-      px(x - 2, y + h, w + 4, 2, fr);
-      px(x - 2, y - 2, 2, h + 4, fr);
-      px(x + w, y - 2, 2, h + 4, fr);
-      px(x + (w >> 1) - 1, y, 2, h, fr); // vertical mullion
-      px(x, y + (h >> 1) - 1, w, 2, fr); // horizontal mullion
-      // sill
-      px(x - 4, y + h + 1, w + 8, 3, C.woodHi);
-      px(x - 4, y + h + 4, w + 8, 1, C.woodDk);
-    }
-
-    function drawRoom(sky: SkyState, t: number): LampInfo {
-      // wall
-      px(0, 0, W, FLOOR_Y, C.wall);
-      // subtle wall shading: lighter toward the window, ambient-occlusion corners
-      for (let i = 0; i < 26; i++) {
-        const a = 1 - i / 26;
-        g!.globalAlpha = 0.5 * a;
-        px(0, 0, W, 1 + (i % 2), C.wallDk);
-      }
-      g!.globalAlpha = 1;
-      px(0, 0, 4, FLOOR_Y, C.wallDk);
-      px(W - 4, 0, 4, FLOOR_Y, C.wallSh);
-      // baseboard
-      px(0, FLOOR_Y - 3, W, 3, C.wallSh);
-      // floor — wide planks with seams + wood grain
-      px(0, FLOOR_Y, W, H - FLOOR_Y, C.floor);
-      px(0, FLOOR_Y, W, 1, C.floorHi);
-      px(0, FLOOR_Y + 1, W, 1, C.floorSh);
-      for (let sx = 0; sx < W; sx += 18)
-        px(sx, FLOOR_Y + 2, 1, H - FLOOR_Y - 2, C.floorDk); // plank seams
-      for (let gy = FLOOR_Y + 4; gy < H; gy += 3)
-        for (let gx = (gy * 5) % 11; gx < W; gx += 17)
-          px(gx, gy, 7, 1, C.floorGrain); // grain streaks
-      // rug — bordered with a diamond weave
-      const rx = 50,
-        rw = 92,
-        ry = H - 15;
-      px(rx, ry, rw, 14, C.rugDk);
-      px(rx + 1, ry + 1, rw - 2, 12, C.rug);
-      px(rx + 1, ry + 1, rw - 2, 1, C.rugHi);
-      px(rx + 2, ry + 2, rw - 4, 1, C.rug);
-      for (let dp = rx + 8; dp < rx + rw - 6; dp += 13) {
-        dot(dp + 1, ry + 5, C.rugHi);
-        px(dp, ry + 6, 3, 3, C.rugHi);
-        dot(dp + 1, ry + 9, C.rugHi);
-      }
-
-      drawWindow(sky, t);
-
-      // framed picture on the wall (a tiny landscape)
-      px(96, 16, 20, 14, C.wood);
-      px(98, 18, 16, 10, "#bfe0d0");
-      px(98, 24, 16, 4, C.leafDk);
-      px(102, 20, 4, 4, "#ffe27a");
-
-      // wall shelf with two books
-      px(120, 30, 22, 2, C.wood);
-      px(123, 24, 3, 6, "#c65b6b");
-      px(127, 25, 3, 5, "#4c9aa6");
-      px(131, 24, 3, 6, "#e0a24a");
-
-      // --- plant (station: water) ---
-      px(80, 88, 10, 12, C.pot);
-      px(80, 88, 10, 2, C.potHi);
-      px(80, 98, 10, 2, C.floorDk);
-      const sway = Math.sin(t * 1.3) * 1;
-      px(84, 78, 2, 12, C.leafDk);
-      px(80 + sway, 74, 6, 6, C.leaf);
-      px(80 + sway, 74, 3, 3, C.leafHi);
-      px(86 + sway, 78, 6, 5, C.leaf);
-      px(86 + sway, 78, 3, 2, C.leafHi);
-      px(82 - sway, 80, 5, 5, C.leaf);
-
-      // --- bed (station: sleep), bottom-left ---
-      const bx = 8,
-        bby = 85;
-      px(bx - 2, bby + 1, 4, 15, C.bedFrame);
-      px(bx - 2, bby + 1, 4, 1, C.bedFrameHi); // headboard
-      px(bx + 32, bby + 6, 4, 10, C.bedFrame);
-      px(bx + 32, bby + 6, 4, 1, C.bedFrameHi); // footboard
-      px(bx, bby + 13, 34, 3, C.bedFrameDk); // frame base
-      px(bx + 1, bby + 6, 32, 7, C.quilt);
-      px(bx + 1, bby + 6, 32, 1, C.quiltHi);
-      px(bx + 1, bby + 12, 32, 1, C.quiltDk); // quilt
-      for (let q = bx + 4; q < bx + 32; q += 6) {
-        dot(q, bby + 8, C.quiltHi);
-        dot(q + 2, bby + 10, C.quiltDk);
-      } // stitching
-      px(bx + 2, bby + 2, 12, 5, C.pillow);
-      px(bx + 2, bby + 2, 12, 1, "#fff");
-      px(bx + 2, bby + 6, 12, 1, C.pillowSh); // pillow
-
-      // --- desk + typewriter (station: work), right ---
-      const dx = 126,
-        dy = 76;
-      px(dx, dy + 14, 4, 10, C.woodDk);
-      px(dx + 40, dy + 14, 4, 10, C.woodDk); // legs
-      px(dx - 2, dy + 8, 48, 6, C.wood);
-      px(dx - 2, dy + 8, 48, 2, C.woodHi); // top
-      // paper tray + a stack of filed pages
-      px(dx + 30, dy + 2, 12, 6, C.paper);
-      px(dx + 30, dy + 2, 12, 1, "#fff");
-      px(dx + 30, dy + 7, 12, 1, C.paperSh);
-      // typewriter
-      const tw = dx + 4;
-      px(tw, dy - 2, 20, 10, C.metal);
-      px(tw, dy - 2, 20, 2, C.metalHi);
-      px(tw, dy + 8, 20, 2, C.metalDk);
-      px(tw + 3, dy + 3, 14, 3, C.metalDk); // keys row
-      for (let k = 0; k < 6; k++) dot(tw + 4 + k * 2, dy + 4, C.metalHi);
-      px(tw + 5, dy - 6, 10, 5, C.paper);
-      px(tw + 5, dy - 6, 10, 1, "#fff"); // sheet in the roller
-      // coffee cup on the desk
-      px(dx + 34, dy + 3, 5, 5, C.cup);
-      px(dx + 34, dy + 3, 5, 1, "#fff");
-      px(dx + 39, dy + 4, 2, 2, C.cup);
-      // desk chair (Yappy perches here to work)
-      const chx = dx - 6;
-      px(chx - 2, dy + 2, 3, 13, C.chair);
-      px(chx - 2, dy + 2, 3, 1, C.chairHi); // backrest
-      px(chx - 4, dy + 12, 11, 3, C.chair);
-      px(chx - 4, dy + 12, 11, 1, C.chairHi); // seat
-      px(chx - 3, dy + 15, 2, 8, C.chairDk);
-      px(chx + 4, dy + 15, 2, 8, C.chairDk); // legs
-
-      // --- filing cabinet, far right ---
-      px(168, 70, 20, 30, C.metal);
-      px(168, 70, 20, 2, C.metalHi);
-      px(168, 98, 20, 2, C.metalDk);
-      px(170, 74, 16, 7, C.metalDk);
-      px(176, 77, 4, 2, C.metalHi);
-      px(170, 84, 16, 7, C.metalDk);
-      px(176, 87, 4, 2, C.metalHi);
-
-      // --- floor lamp, between desk & cabinet ---
-      px(160, 60, 2, 40, C.lampPole);
-      // shade drawn later within lighting so its glow reads
-      return { lampX: 161, lampY: 58 };
-    }
-
-    function drawLampShade(sky: SkyState) {
-      const on = sky.lamp;
-      const base = on > 0.3 ? C.shadeHi : C.shade;
-      px(156, 52, 12, 8, base);
-      px(156, 52, 12, 2, "#fff2c8");
-      px(157, 60, 10, 1, "#caa04a");
-    }
-
-    // ---- Yappy -------------------------------------------------------------
-    // pose: sleep|idle|walk|work|water|look|sip|happy ; face: -1 left / 1 right
-    // Ported verbatim from the SSOT (docs/prototypes/yappy-house.html): a detailed
-    // front-facing chick (default) plus a side-profile WORK pose and a curled SLEEP
-    // pose. `face` is retained for call-site compatibility but the SSOT art is
-    // orientation-fixed, so it is unused here.
-    function drawYappy(
-      x: number,
-      feetY: number,
-      pose: string,
-      t: number,
-      _face: number,
-    ) {
-      x = Math.round(x);
-      const y = Math.round(feetY);
-      const breathe = Math.sin(t * 2.2) * 0.6;
-      const blink = Math.sin(t * 0.7) * 0.5 + 0.5 > 0.93;
-
-      // ===== SLEEP: curled on the bed, head tucked =====
-      if (pose === "sleep") {
-        const cx = x,
-          cy = y - 9; // resting on the mattress
-        const rows = [4, 7, 9, 9, 8, 6];
-        for (let r = 0; r < rows.length; r++) {
-          const hw = rows[r];
-          px(cx - hw, cy - 5 + r, hw * 2, 1, C.yolk);
-          dot(cx - hw, cy - 5 + r, C.yolkDk);
-          dot(cx + hw - 1, cy - 5 + r, C.yolkDk);
-        }
-        px(cx - 7, cy - 5, 15, 1, C.yolkHi); // back light
-        px(cx - 5, cy, 11, 1, C.yolkSh); // under shade
-        px(cx - 5, cy - 4, 6, 3, C.yolkSh); // folded wing
-        px(cx + 3, cy - 3, 5, 4, C.yolk);
-        px(cx + 3, cy - 3, 5, 1, C.yolkHi); // tucked head
-        px(cx + 4, cy - 1, 3, 1, C.eye); // closed eye
-        px(cx + 7, cy - 1, 2, 2, C.carrot); // resting beak
-        const zt = (t * 0.7) % 3;
-        if (zt > 0.3) dot(cx + 9, cy - 6, "#cfe0f7");
-        if (zt > 1.1) px(cx + 11, cy - 9, 2, 1, "#bcd4f2");
-        if (zt > 1.9) px(cx + 13, cy - 12, 2, 1, "#a9c6ee");
-        return;
-      }
-
-      // ===== WORK: side profile on the chair, beak + wings at the keys =====
-      if (pose === "work") {
-        const bob = Math.abs(Math.sin(t * 7)) * 1;
-        const by = Math.round(y - 15 - bob);
-        const rows = [3, 5, 6, 7, 7, 7, 7, 6, 6, 5, 4];
-        for (let r = 0; r < rows.length; r++) {
-          const hw = rows[r];
-          px(x - hw + 1, by + r, hw * 2, 1, C.yolk);
-          dot(x - hw + 1, by + r, C.yolkDk);
-          dot(x + hw, by + r, C.yolkDk);
-        }
-        px(x - 5, by, 12, 1, C.yolkHi);
-        px(x - 4, by + 9, 10, 1, C.yolkSh);
-        px(x - 8, by + 3, 3, 4, C.yolkSh);
-        px(x - 9, by + 4, 2, 2, C.yolkDk); // tail (back)
-        px(x + 3, by - 2, 5, 5, C.yolk);
-        px(x + 3, by - 2, 5, 1, C.yolkHi); // head to desk
-        px(x, by - 4, 2, 3, C.yolkHi); // tuft
-        if (blink) px(x + 5, by, 2, 1, C.eye);
-        else {
-          px(x + 5, by - 1, 2, 2, C.eye);
-          dot(x + 6, by - 1, C.eyeShine);
-        }
-        px(x + 7, by, 3, 2, C.carrot);
-        px(x + 7, by + 1, 3, 1, C.carrotDk); // beak to keys
-        const tap = Math.sin(t * 16) > 0 ? 0 : 1;
-        px(x + 3, by + 6 + tap, 4, 2, C.yolkSh);
-        dot(x + 3, by + 6 + tap, C.yolkDk); // wing tapping
-        if (((t * 3) | 0) % 2 === 0) px(x + 9, by - 5, 3, 3, C.paper); // focus spark
-        return;
-      }
-
-      // ===== FRONT-FACING chick: idle / look / walk / water / sip / happy =====
-      const hop = pose === "walk" ? Math.abs(Math.sin(t * 9)) * 2 : 0;
-      const by = Math.round(y - 18 - breathe - hop);
-      const step = pose === "walk" ? Math.sin(t * 9) : 0;
-      px(x - 4, y - 2 + (step > 0 ? -1 : 0), 3, 2, C.carrot);
-      dot(x - 4, y - 1, C.carrotDk);
-      dot(x - 2, y - 1, C.carrotDk);
-      px(x + 2, y - 2 + (step < 0 ? -1 : 0), 3, 2, C.carrot);
-      dot(x + 2, y - 1, C.carrotDk);
-      dot(x + 4, y - 1, C.carrotDk);
-      const BODY = [3, 5, 6, 7, 7, 7, 7, 7, 7, 7, 6, 6, 5, 4, 3];
-      for (let r = 0; r < BODY.length; r++) {
-        const hw = BODY[r];
-        px(x - hw, by + r, hw * 2, 1, C.yolk);
-        dot(x - hw, by + r, C.yolkDk);
-        dot(x + hw - 1, by + r, C.yolkDk);
-      }
-      px(x - 6, by + 1, 3, 4, C.yolkHi);
-      px(x - 7, by + 5, 2, 4, C.yolkHi); // upper-left light
-      px(x + 3, by + 8, 4, 5, C.yolkSh);
-      px(x - 6, by + 12, 12, 2, C.yolkSh); // lower-right + belly shade
-      px(x - 1, by - 3, 2, 3, C.yolk);
-      dot(x - 3, by - 1, C.yolkSh);
-      dot(x + 2, by - 1, C.yolkHi);
-      dot(x - 1, by - 4, C.yolkHi); // tuft
-      const flap =
-        pose === "happy" ? Math.abs(Math.sin(t * 10)) * 3 : Math.sin(t * 2) * 0.6;
-      px(x - 8, by + 5 - (flap < 0 ? flap : 0), 2, 5, C.yolkSh);
-      dot(x - 8, by + 5, C.yolkDk);
-      px(x + 6, by + 5 - (pose === "happy" ? flap : 0), 2, 5, C.yolkSh);
-      dot(x + 7, by + 5, C.yolkDk);
-      const eyY = by + 5;
-      if (blink) {
-        px(x - 4, eyY + 1, 3, 1, C.eye);
-        px(x + 1, eyY + 1, 3, 1, C.eye);
-      } else {
-        px(x - 4, eyY, 3, 3, C.eye);
-        px(x + 1, eyY, 3, 3, C.eye);
-        dot(x - 3, eyY, C.eyeShine);
-        dot(x + 2, eyY, C.eyeShine);
-      }
-      px(x - 1, by + 9, 2, 2, C.carrot);
-      dot(x - 1, by + 10, C.carrotDk);
-      dot(x, by + 10, C.carrotDk);
-      dot(x - 1, by + 9, C.beakHi); // beak
-      dot(x - 5, by + 8, C.cheek);
-      dot(x + 4, by + 8, C.cheek); // cheeks
-
-      if (pose === "water") {
-        px(x + 7, by + 4, 4, 3, C.metal);
-        px(x + 7, by + 4, 4, 1, C.metalHi);
-        px(x + 11, by + 5, 2, 1, C.metalDk);
-        if (((t * 4) | 0) % 2 === 0) {
-          dot(x + 12, by + 8, "#9fd6e6");
-          dot(x + 12, by + 11, "#9fd6e6");
-        }
-      }
-      if (pose === "sip") {
-        px(x + 6, by + 7, 4, 4, C.cup);
-        px(x + 6, by + 7, 4, 1, "#fff");
-        if (((t * 2) | 0) % 2 === 0) dot(x + 7, by + 4, "#fff");
-      }
-      if (pose === "happy") {
-        const hy = Math.round(by - 4 - Math.sin(t * 6) * 2);
-        px(x - 9, hy, 2, 2, C.rose);
-        px(x + 8, hy + 1, 2, 2, "#ff9db0");
-        dot(x - 1, by + 11, C.carrotDk);
-      }
-    }
-
-    // ---- lighting passes ---------------------------------------------------
-    // `energy` (0..1) brightens the daytime window beam while Yappy is at work.
-    function lighting(sky: SkyState, lamp: LampInfo, t: number, energy: number) {
-      // ambient tint (multiply-ish darken/tone)
-      if (sky.ambA > 0.001) {
-        g!.globalCompositeOperation = "multiply";
-        g!.globalAlpha = sky.ambA;
-        g!.fillStyle = sky.amb;
-        g!.fillRect(0, 0, W, H);
-        g!.globalAlpha = 1;
-        g!.globalCompositeOperation = "source-over";
-      }
-      // daytime window light-beam onto the floor
-      if (sky.lamp < 0.5) {
-        const strength = (1 - sky.lamp) * 0.5 * (1 + energy * 0.6);
-        g!.globalCompositeOperation = "lighter";
-        for (let i = 0; i < 22; i++) {
-          const yy = WIN.y + WIN.h + i * 3;
-          const spread = 6 + i * 1.6;
-          g!.globalAlpha = strength * (1 - i / 24) * 0.5;
-          g!.fillStyle = "#fff3c8";
-          g!.fillRect(WIN.x + 6 + i * 0.7, yy, WIN.w - 4 + spread, 3);
-        }
-        g!.globalAlpha = 1;
-        g!.globalCompositeOperation = "source-over";
-        // dust motes drifting in the beam
-        for (const d of DUST) {
-          const p = (d.o + t * 0.03) % 1;
-          const yy = WIN.y + WIN.h + p * (FLOOR_Y - (WIN.y + WIN.h));
-          const xx = WIN.x + 10 + p * 20 + Math.sin(t + d.o * 6) * 3;
-          g!.globalAlpha = strength * 0.9 * (0.4 + 0.6 * Math.sin(p * 3.14));
-          dot(xx | 0, yy | 0, "#fff7d8");
-        }
-        g!.globalAlpha = 1;
-      }
-      // lamp warm pool at dusk/night
-      if (lamp.lampX && sky.lamp > 0.15) {
-        const cx = lamp.lampX,
-          cy = lamp.lampY + 6,
-          r = 34;
-        const flick = 1 + Math.sin(t * 11) * 0.03 + Math.sin(t * 23) * 0.02;
-        const rg = g!.createRadialGradient(cx, cy, 2, cx, cy, r * flick);
-        rg.addColorStop(0, `rgba(255,214,140,${0.55 * sky.lamp})`);
-        rg.addColorStop(0.5, `rgba(255,190,110,${0.28 * sky.lamp})`);
-        rg.addColorStop(1, "rgba(255,190,110,0)");
-        g!.globalCompositeOperation = "lighter";
-        g!.fillStyle = rg;
-        g!.beginPath();
-        g!.arc(cx, cy, r * flick, 0, 6.29);
-        g!.fill();
-        g!.globalCompositeOperation = "source-over";
-      }
-      // vignette
-      const vg = g!.createRadialGradient(W / 2, H / 2 - 6, 40, W / 2, H / 2, 120);
-      vg.addColorStop(0, "rgba(0,0,0,0)");
-      vg.addColorStop(1, "rgba(20,10,30,0.34)");
-      g!.fillStyle = vg;
-      g!.fillRect(0, 0, W, H);
-    }
-
-    // ---- Yappy's daily director (Y5-K: home/habitat/habitat.ts) ----------
-    // Routines on the real clock, intent pathing, event-driven reactions.
     const state = createDirector();
+    const t0 = performance.now();
+    const par = { px: 0, target: 0 };
+    let tGlobal = 0,
+      last = 0,
+      lastDraw = 0,
+      raf = 0,
+      timer = 0,
+      draws = 0,
+      drawFailed = false,
+      mode: RedrawMode | null = null;
 
-    // ---- live mood label (real state, not fabricated) ----------------------
+    function snapshot(): StudioState {
+      const phase = skyPhase(new Date());
+      return {
+        ...inputsRef.current,
+        phase,
+        sky: skyAt(phase),
+        meetingRecording: meetingRef.current,
+        yappy: yappyPose(state),
+      };
+    }
+
     function setMood() {
       const el = moodRef.current;
       if (!el) return;
-      const key = moodOf(state);
-      // Tone read live from the ref — never a hardcoded label (YV27).
-      const m = YAPPY_HABITAT_MOODS[toneRef.current][key];
+      const m = YAPPY_HABITAT_MOODS[toneRef.current][moodOf(state)];
       if (el.textContent !== m) el.textContent = m;
     }
 
-    // ---- REAL app events → the director (pushed, never polled) ------------
-    // A synchronous cleanup can run before the subscription lands (StrictMode
-    // double-mount + Home-tab remounts); `dead` drops any late event.
-    let dead = false;
-    const unsubs: Array<() => void> = [
-      subscribeHabitat((ev) => {
-        if (!dead) reactTo(state, ev, Date.now());
-      }),
-    ];
+    function render() {
+      try {
+        const s = snapshot();
+        const t = reduce ? STILL_T : tGlobal;
+        const offs = parallaxOffsets(reduce ? 0 : par.px);
+        layers.forEach((c, i) => {
+          const o = c.getContext("2d");
+          if (!o) return;
+          o.setTransform(1, 0, 0, 1, 0, 0);
+          o.clearRect(0, 0, c.width, c.height);
+          o.imageSmoothingEnabled = false;
+          o.translate(PAD, 0);
+          LAYERS[i](o, s, t);
+        });
+        og!.setTransform(1, 0, 0, 1, 0, 0);
+        og!.clearRect(0, 0, W, H);
+        og!.imageSmoothingEnabled = false;
+        layers.forEach((c, i) => og!.drawImage(c, -PAD + offs[i], 0));
+        drawTint(og!, s);
+        drawLights(og!, s, t, offs[0], offs[1]);
+        drawFrame(og!);
+        stage!.dataset.onAir = onAirLit(s) ? "on" : "off";
+        // A display with a different backing scale re-grids here: no resize event fires for that.
+        if (backingScale(devicePixelRatio) !== grid.dpr) regrid();
+        dctx!.clearRect(0, 0, grid.backingW, grid.backingH);
+        dctx!.drawImage(out, 0, 0, W, H, grid.offsetX, grid.offsetY, grid.drawW, grid.drawH);
+        draws++;
+      } catch (e) {
+        if (!drawFailed) {
+          drawFailed = true;
+          console.warn(`home studio_draw_failed err=${e instanceof Error ? e.name : "unknown"}`);
+        }
+      }
+    }
 
-    // ---- main loop ---------------------------------------------------------
-    let last = 0,
-      tGlobal = 0,
-      raf = 0,
-      lastDraw = 0;
-    // While idle (no active dictation + silent mic) throttle the redraw to ~18fps
-    // instead of 60 — the ambient pottering/breathing stays perceptible but this
-    // always-on panel stops burning a full-rate rAF. Active states run full-rate.
-    const IDLE_FRAME_MS = 55;
-
-    function render(phase: number) {
-      const sky = skyAt(phase);
-      g!.clearRect(0, 0, W, H);
-      const lamp = drawRoom(sky, tGlobal);
-      // shadow under Yappy
-      g!.globalAlpha = 0.18;
-      px(state.x - 6, FEET_Y - 1, 12, 2, "#20140a");
-      g!.globalAlpha = 1;
-      drawYappy(
-        state.x,
-        FEET_Y,
-        reduce ? "sleep" : state.activity,
-        tGlobal,
-        state.face,
-      );
-      drawLampShade(sky);
-      lighting(sky, lamp, tGlobal, state.activity === "work" ? state.energy : 0);
-      // blit upscaled (nearest-neighbour) on the integer grid. A display with a
-      // different backing scale re-grids here: no resize event fires for that.
-      if (backingScale(devicePixelRatio) !== grid.dpr) regrid();
-      dctx!.fillStyle = SCENE_MARGIN;
-      dctx!.fillRect(0, 0, grid.backingW, grid.backingH);
-      dctx!.drawImage(os, 0, 0, W, H, grid.offsetX, grid.offsetY, grid.drawW, grid.drawH);
+    // ---- the redraw budget: ONE rule (studio.redrawPlan) -------------------
+    const reacting = () => state.reaction === "cheer" || state.appState === "done";
+    const settling = () => Math.abs(par.target - par.px) > 0.01;
+    function schedule() {
+      const p = redrawPlan({
+        reduceMotion: reduce,
+        appState: state.appState,
+        reacting: reacting(),
+        parallaxSettling: settling(),
+        meetingRecording: meetingRef.current,
+      });
+      if (p.mode !== mode) {
+        console.info(`home studio_mode from=${mode ?? "none"} to=${p.mode} draws=${draws}`);
+        mode = p.mode;
+        draws = 0;
+      }
+      if (p.mode === "still") return;
+      if (p.mode === "live") raf = requestAnimationFrame(frame);
+      else
+        timer = window.setTimeout(() => {
+          timer = 0;
+          raf = requestAnimationFrame(frame);
+        }, p.delayMs ?? IDLE_REDRAW_MS);
     }
 
     function frame(ms: number) {
-      // idle throttle: skip this frame's redraw (but keep the rAF alive) until the
-      // ~18fps budget elapses, whenever no dictation is active and the mic is quiet.
-      const idleNow = state.appState === "idle" && state.energy < 0.02;
-      if (idleNow && lastDraw && ms - lastDraw < IDLE_FRAME_MS) {
+      raf = 0;
+      if (mode === "live" && lastDraw && ms - lastDraw < LIVE_FRAME_MS) {
         raf = requestAnimationFrame(frame);
         return;
       }
       const dt = last ? Math.min(0.05, (ms - last) / 1000) : 0.016;
       last = ms;
       lastDraw = ms;
-      tGlobal += dt;
-      const phase = phaseFromClock();
-
+      tGlobal = (ms - t0) / 1000;
       stepDirector(state, dt, new Date());
+      par.px += (par.target - par.px) * 0.2;
+      if (!settling()) par.px = par.target;
       setMood();
-      render(phase);
-      raf = requestAnimationFrame(frame);
+      render();
+      schedule();
     }
 
+    // A state change: redraw now (an idle or meeting wait is cut short).
+    function wake() {
+      if (reduce) {
+        setMood();
+        render();
+        return;
+      }
+      if (timer) {
+        clearTimeout(timer);
+        timer = 0;
+      }
+      if (!raf) raf = requestAnimationFrame(frame);
+    }
+    wakeRef.current = wake;
+
+    // ---- REAL app events → the director (pushed, never polled) ------------
+    // A synchronous cleanup can run before the subscription lands; `dead` drops late events.
+    let dead = false;
+    const unsubs: Array<() => void> = [
+      subscribeHabitat((ev) => {
+        if (dead) return;
+        const before = `${state.appState}|${state.reaction}`;
+        reactTo(state, ev, Date.now());
+        // Only a change of what Yappy is doing wakes an idle room; mic level
+        // ticks ride the live loop that is already running.
+        if (`${state.appState}|${state.reaction}` !== before) wake();
+      }),
+    ];
+
+    // ---- the pointer: layers shift 1, 3, 6 whole pixels (never in reduce motion)
+    const onMove = (e: MouseEvent) => {
+      if (reduce) return;
+      const r = stage!.getBoundingClientRect();
+      par.target = parallaxTarget(e.clientX, r.left, r.width);
+      wake();
+    };
+    const onLeave = () => {
+      if (reduce) return;
+      par.target = 0;
+      wake();
+    };
+    stage.addEventListener("mousemove", onMove);
+    stage.addEventListener("mouseleave", onLeave);
+
     // yap24-UI1 — size the backing store to the stage's device box and pick the
-    // cell. Resizing a canvas resets its context state, so smoothing is turned
-    // back off every time. Reduced motion has no loop, so it repaints here.
-    // The CSS object-fit / object-position on .yh-stage are READ here, not left to
-    // the compositor (the backing store matches the box, so CSS fitting is inert):
-    // the default rule is contain (whole room, wall-coloured margin); main's
-    // short-window rule (@media max-height 800px: a 112 px band, cover, 50% 70%)
-    // crops the room on the same integer grid instead of shrinking it to a stamp.
+    // cell. Resizing a canvas clears it and resets its context, so every regrid
+    // repaints. object-fit / object-position on .yh-stage are READ here.
     function regrid() {
       const r = stage!.getBoundingClientRect();
       const cs = getComputedStyle(stage!);
@@ -754,67 +350,73 @@ export default function YappyHouse({
     regrid();
     const ro = new ResizeObserver(() => {
       regrid();
-      if (reduce) render(phaseFromClock());
+      render();
     });
     ro.observe(stage);
 
+    console.info(`home studio_mount reduce_motion=${reduce}`);
     if (reduce) {
-      // one calm frame: Yappy asleep in the nest, sky from the real clock
-      state.x = 26;
-      state.activity = "sleep";
-      render(phaseFromClock());
+      // ONE still frame: the real clock's sky, every station's real state.
+      setMood();
+      render();
+      schedule();
     } else {
       raf = requestAnimationFrame(frame);
     }
 
     return () => {
       dead = true;
+      wakeRef.current = null;
       ro.disconnect();
+      stage.removeEventListener("mousemove", onMove);
+      stage.removeEventListener("mouseleave", onLeave);
       if (raf) cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
       unsubs.forEach((u) => u());
     };
   }, []);
 
-  const showWords = typeof wordsToday === "number";
-  const showStreak = typeof streakDays === "number";
+  const meetingLabel = meetingRoomLabel(meeting);
+  const phase = skyPhase(new Date());
+  const aria = studioAriaLabel({
+    ...inputs,
+    phase,
+    sky: skyAt(phase),
+    meetingRecording: !!meeting?.recording,
+    yappy: "rest",
+  });
 
   return (
-    <div className="yappy-house">
-      <span className="yh-tag">home · live</span>
-      <div className="yh-frame">
+    <div className="yappy-house" data-room-scale={scale}>
+      <div className="yh-frame" ref={frameRef}>
         <canvas
           ref={canvasRef}
           className="yh-stage"
-          width={192}
-          height={128}
+          width={STUDIO_W}
+          height={STUDIO_H}
+          data-on-air={meeting?.recording ? "on" : "off"}
+          // Full column width, the room's height at the whole-number scale:
+          // YappyHouse grids the art at exactly `scale` CSS px per art px.
+          style={{ height: `${ROOM_H * scale}px` }}
           role="img"
-          aria-label="A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
+          aria-label={aria}
         />
       </div>
-      <div className="yh-stats">
-        {showWords && (
-          <div className="yh-stat">
-            <span className="yh-k">Words today</span>
-            <span className="yh-v">{Math.max(0, Math.round(wordsToday!))}</span>
-          </div>
-        )}
-        {showStreak && (
-          <div className="yh-stat">
-            <span className="yh-k">Day streak</span>
-            <span className="yh-v">
-              {Math.max(0, Math.round(streakDays!))}{" "}
-              <small>{streakDays === 1 ? "day" : "days"}</small>
-            </span>
-          </div>
-        )}
-        <div className="yh-stat">
-          <span className="yh-k">Mood</span>
-          {/* live Mood is announced to assistive tech as Yappy's state changes */}
-          <span className="yh-v" ref={moodRef} aria-live="polite">
-            content
+      <p className="yh-label" data-room-label={meetingLabel ? "recording" : "mood"}>
+        {meetingLabel ? (
+          <span className="yh-meeting" aria-live="off">
+            {meetingLabel}
           </span>
-        </div>
-      </div>
+        ) : (
+          <>
+            Yappy ·{" "}
+            {/* live mood is announced to assistive tech as Yappy's state changes */}
+            <span ref={moodRef} aria-live="polite">
+              content
+            </span>
+          </>
+        )}
+      </p>
     </div>
   );
 }

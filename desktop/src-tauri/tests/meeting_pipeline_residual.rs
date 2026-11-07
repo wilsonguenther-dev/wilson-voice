@@ -27,6 +27,7 @@ use wilson_voice_lib::meeting_pipeline::{
     PipelineDeps, CRASH_LOOP_MESSAGE, MAX_UNPROGRESSED_ATTEMPTS, QUEUE_START_DELAY,
     WAITING_FOR_MODEL_MESSAGE,
 };
+use wilson_voice_lib::meeting_pipeline::{quit_marker_path, WorkerJoin};
 use wilson_voice_lib::meetings::{MeetingState, NewMeetingSegment};
 use wilson_voice_lib::transcription::TranscriptionManager;
 
@@ -129,6 +130,7 @@ fn deps(db: Arc<Database>, dir: &Path, asr: Factory) -> PipelineDeps {
         demand: Arc::new(NoDemand),
         quit: Arc::new(|| false),
         sink: Arc::new(|_: &MeetingProgressEvent| {}),
+        diarize: wilson_voice_lib::meeting_diarize::DiarizeBackend::Off,
         after_transcript: None,
         config: small_windows(),
         start_delay: Duration::ZERO,
@@ -783,4 +785,104 @@ fn a_whole_capture_that_waited_ends_complete_without_the_waiting_sentence() {
     let (s, err) = state_of(&db, &id);
     assert_eq!(s, "complete");
     assert_eq!(err, None);
+}
+
+// ── yap-1106-quit-during-asr-crash: a quit mid-meeting is re-queued ─────────
+
+/// The quit stops and JOINS the worker before the queued meeting starts, marks
+/// it interrupted, and leaves the row `transcribing`. The next launch's
+/// reconcile (no live job) re-queues it as `interrupted_by_quit`, consumes the
+/// markers — a quit is not a crash — and the job then reaches `complete`.
+#[test]
+fn a_meeting_interrupted_by_quit_is_requeued_at_reconcile_and_completes() {
+    let dir = temp_dir("q1106-requeue");
+    let db = Arc::new(open_db(&dir));
+    let (id, _) = stopped_meeting(&db, &dir, "quit mid-meeting");
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    // Launch 1: the worker is still in its start delay when the user quits.
+    let mut d = deps(
+        Arc::clone(&db),
+        &dir,
+        stub_factory(Arc::clone(&calls), "stub"),
+    );
+    d.start_delay = Duration::from_secs(30);
+    let pipeline = meeting_pipeline::spawn(d);
+    pipeline.enqueue(&id);
+    let started = Instant::now();
+    assert_eq!(
+        pipeline.stop_and_join(Duration::from_secs(5)),
+        WorkerJoin::Joined
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the stop cuts the start delay short"
+    );
+    assert!(!pipeline.worker_alive(), "the worker thread is gone");
+    assert_eq!(
+        pipeline.stop_and_join(Duration::from_millis(10)),
+        WorkerJoin::NotRunning,
+        "a second join has nothing to join"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no window decoded after the quit"
+    );
+    assert_eq!(state_of(&db, &id).0, "transcribing");
+    assert!(quit_marker_path(&dir, &id).exists(), "the quit is recorded");
+    // A forced `_exit` never reaches the worker's own clear of the attempt
+    // marker — simulate the one it would leave behind.
+    std::fs::write(
+        attempt_marker_path(&dir, &id),
+        serde_json::to_vec(&AttemptMarker {
+            unprogressed_crashes: MAX_UNPROGRESSED_ATTEMPTS - 1,
+            progress_at_start: 0.0,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Launch 2: reconcile finds the row with no live job and re-queues it.
+    let mut relaunch = Vec::new();
+    let seen = Mutex::new(&mut relaunch);
+    let out = reconcile_stranded_meetings(&db, &dir, &|m| seen.lock().unwrap().push(m.to_string()));
+    assert_eq!(
+        relaunch,
+        vec![id.clone()],
+        "the interrupted meeting is re-queued"
+    );
+    assert_eq!(
+        out,
+        vec![(
+            id.clone(),
+            "transcribing".to_string(),
+            "transcribing".to_string()
+        )]
+    );
+    assert!(
+        !quit_marker_path(&dir, &id).exists(),
+        "the quit marker is consumed"
+    );
+    assert!(
+        read_attempt_marker(&dir, &id).is_none(),
+        "a quit never counts toward the crash-loop guard"
+    );
+
+    // The re-queued job runs to an end state — never parked in `transcribing`.
+    let pipeline = meeting_pipeline::spawn(deps(
+        Arc::clone(&db),
+        &dir,
+        stub_factory(Arc::clone(&calls), "stub"),
+    ));
+    pipeline.enqueue(&id);
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(state_of(&db, &id).0, "complete");
+    assert!(calls.load(Ordering::SeqCst) > 0);
+    assert!(!quit_marker_path(&dir, &id).exists());
+    assert_eq!(
+        pipeline.stop_and_join(Duration::from_secs(5)),
+        WorkerJoin::Joined
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -55,7 +55,10 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
 // WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
-const APP_SETTINGS_FIELD_COUNT: usize = 48;
+// yap-1106-resource-governor: +1 (pause_heavy_work_below_percent).
+// yap-1106-chatter-setting: +1 (yappy_talks).
+// yap-1106-curse-setting: +1 (companion_curse).
+const APP_SETTINGS_FIELD_COUNT: usize = 51;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -122,6 +125,8 @@ fn fully_populated() -> AppSettings {
         pill_style: "yappy".into(),
         pill_position: "right".into(),
         companion_tone: "rude".into(),
+        // yap-1106-curse-setting — non-default: the Badass curse toggle on.
+        companion_curse: true,
         dictation_mode: "email".into(),
         cleanup_level: "high".into(),
         // Y4-A — both non-default (the shipped values are `false`), so the
@@ -156,6 +161,9 @@ fn fully_populated() -> AppSettings {
             "com.apple.mail".to_string(),
             "markdown".to_string(),
         )]),
+        // yap-1106-resource-governor — a non-default value, so the round-trip
+        // proves the field is written and read, not defaulted.
+        pause_heavy_work_below_percent: 35,
         // WF-17 — non-default: two of the three quiet-mode switches off.
         muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
         // WF-19 — non-default: side button 4 as click-to-toggle hands-free.
@@ -173,6 +181,8 @@ fn fully_populated() -> AppSettings {
         }],
         // WF-16 — non-default: the screen-share hide switched off.
         hide_from_capture_in_meetings: false,
+        // yap-1106-chatter-setting — non-default: only milestones.
+        yappy_talks: "milestones".into(),
     }
 }
 
@@ -279,6 +289,10 @@ fn every_app_settings_field_round_trips() {
     assert_eq!(read_back.cleanup_level, "high");
     assert_eq!(read_back.signature_mode, "auto");
     assert_eq!(read_back.snippet_scope, "utterance");
+    assert!(
+        read_back.companion_curse,
+        "the Badass curse toggle (companion_curse) must survive a relaunch"
+    );
 }
 
 /// A second write must not lose the first one's fields either — the bug also
@@ -369,6 +383,11 @@ fn old_blob_migrates_without_resetting_carried_fields() {
     assert_eq!(loaded.calibration_sample, None);
     assert_eq!(loaded.command_binding, defaults.command_binding);
     assert_eq!(loaded.pill_position, defaults.pill_position);
+    // yap-1106-curse-setting — a store from before the toggle never swears.
+    assert!(
+        !loaded.companion_curse,
+        "curse mode is OFF for an old store"
+    );
 
     // (c) The migration stamped the current version and rewrote the file once,
     //     so a relaunch is a no-op rather than a second migration.
@@ -454,4 +473,39 @@ fn quiet_mode_never_stores_an_unmutable_category() {
     );
     assert!(sanitize_muted_pill_categories(&["error".to_string()]).is_empty());
     assert!(AppSettings::default().muted_pill_categories.is_empty());
+}
+
+/// yap-1106-chatter-setting — "Yappy talks" defaults to "less over time",
+/// round-trips on the camelCase wire key, and a store missing it (every store
+/// written before this item) loads as "less".
+#[test]
+fn yappy_talks_defaults_to_less_and_round_trips() {
+    use wilson_voice_lib::{sanitize_yappy_talks, YAPPY_TALKS_MODES};
+
+    assert_eq!(AppSettings::default().yappy_talks, "less");
+    for mode in YAPPY_TALKS_MODES {
+        assert_eq!(sanitize_yappy_talks(mode), mode, "{mode} is a real mode");
+        let s = AppSettings {
+            yappy_talks: mode.to_string(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(
+            json.contains(&format!("\"yappyTalks\":\"{mode}\"")),
+            "{json}"
+        );
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.yappy_talks, mode);
+    }
+    for junk in ["", "never", "LESS", "sometimes"] {
+        assert_eq!(
+            sanitize_yappy_talks(junk),
+            "less",
+            "{junk:?} falls back to the default"
+        );
+    }
+    let mut old = serde_json::to_value(AppSettings::default()).expect("to value");
+    old.as_object_mut().expect("object").remove("yappyTalks");
+    let loaded: AppSettings = serde_json::from_value(old).expect("old store loads");
+    assert_eq!(loaded.yappy_talks, "less");
 }

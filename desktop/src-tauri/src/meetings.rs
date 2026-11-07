@@ -52,10 +52,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// 10 = yap-call-1's `detected_app` / `detected_via` on `meetings`
 ///      ([`MIGRATION_10_DETECTED_CALL`]).
+/// 11 = yap-1106-voiceprints' `speaker_profiles` / `speaker_samples` tables
+///      and `meeting_segments.speaker_profile_id` / `speaker_name`
+///      ([`crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES`]).
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -1086,6 +1089,71 @@ pub struct TranscriptLine {
     pub start_seconds: f64,
     /// Whitespace-collapsed to exactly one line (see [`one_line`]).
     pub text: String,
+    /// yap-1106-diarize-wire — the 1-based rank of this line's speaker cluster
+    /// on its track (most talk time first), when the diarization pass
+    /// attributed it and the track is one that is clustered. `None` keeps the
+    /// plain track label in [`TranscriptLine::speaker`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_rank: Option<usize>,
+}
+
+impl TranscriptLine {
+    /// What a person reads: "Speaker 2" on a clustered mic track,
+    /// "Call · Speaker 2" on a clustered call track, else the plain
+    /// [`TranscriptLine::speaker`] ("You", "Call", "Speaker").
+    pub fn label(&self) -> String {
+        match self.cluster_rank {
+            None => self.speaker.to_string(),
+            Some(rank) if self.track == MIC_TRACK => cluster_speaker_label(rank),
+            Some(rank) => format!("{SYSTEM_SPEAKER_LABEL} · {}", cluster_speaker_label(rank)),
+        }
+    }
+}
+
+/// yap-1106-diarize-wire — rank each (track, cluster) by talk time, most
+/// first (ties: earliest start, then the cluster id), 1-based per track. Only
+/// rendered rows on a CLUSTERED track count: the mic of a virtual call is
+/// "You" by mechanism and never ranked. Mirrors `clusterRanks` in
+/// `meetings/transcript.ts`.
+pub fn cluster_ranks(
+    segments: &[MeetingSegment],
+    target: DiarizationTarget,
+) -> std::collections::BTreeMap<(i64, i64), usize> {
+    let mut talk: std::collections::BTreeMap<(i64, i64), (f64, f64)> = Default::default();
+    for seg in segments {
+        let Some(cluster) = seg.cluster_index else {
+            continue;
+        };
+        if one_line(&seg.text).is_empty()
+            || (seg.track == MIC_TRACK && target == DiarizationTarget::MicIsMe)
+        {
+            continue;
+        }
+        let entry = talk
+            .entry((seg.track, cluster))
+            .or_insert((0.0, f64::INFINITY));
+        entry.0 += (seg.end_seconds - seg.start_seconds).max(0.0);
+        entry.1 = entry.1.min(seg.start_seconds);
+    }
+    let mut ordered: Vec<((i64, i64), (f64, f64))> = talk.into_iter().collect();
+    ordered.sort_by(|(ka, (sa, fa)), (kb, (sb, fb))| {
+        ka.0.cmp(&kb.0)
+            .then(sb.total_cmp(sa))
+            .then(fa.total_cmp(fb))
+            .then(ka.1.cmp(&kb.1))
+    });
+    let mut ranks = std::collections::BTreeMap::new();
+    let mut last_track: Option<i64> = None;
+    let mut rank = 0usize;
+    for ((track, cluster), _) in ordered {
+        if last_track != Some(track) {
+            last_track = Some(track);
+            rank = 0;
+        }
+        rank += 1;
+        ranks.insert((track, cluster), rank);
+    }
+    ranks
 }
 
 /// Order a meeting's segments into the single interleaved transcript the UI and
@@ -1117,6 +1185,7 @@ pub struct TranscriptLine {
 /// here so the gutter and the labels cannot disagree.
 pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<TranscriptLine> {
     let target = diarization_target(kind, is_two_track(segments));
+    let ranks = cluster_ranks(segments, target);
     let mut lines: Vec<TranscriptLine> = segments
         .iter()
         .filter_map(|seg| {
@@ -1131,6 +1200,9 @@ pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<
                 offset: format_offset(seg.start_seconds),
                 start_seconds: seg.start_seconds,
                 text,
+                cluster_rank: seg
+                    .cluster_index
+                    .and_then(|c| ranks.get(&(seg.track, c)).copied()),
             })
         })
         .collect();
@@ -1212,7 +1284,9 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
     for line in render_transcript(segments, meeting.kind()) {
         out.push_str(&format!(
             "**[{}] {}:** {}\n\n",
-            line.offset, line.speaker, line.text
+            line.offset,
+            line.label(),
+            line.text
         ));
     }
     out

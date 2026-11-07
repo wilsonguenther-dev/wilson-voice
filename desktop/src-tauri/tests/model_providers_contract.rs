@@ -7,18 +7,22 @@
 //!   CI), account = id + host, a host change deletes the key, and the service
 //!   name follows the bundle id;
 //! * Bundled is always present and cannot be deleted; unwired kinds are hidden.
+//! * fix-l3b3-1 — the cloud route (key + a cloud mode) counts as leaving this
+//!   Mac for notes AND polish even though neither pick names its provider;
+//!   Always on this Mac, or no key, leaves nothing.
 
 mod support;
 
 use support::{open_db, temp_dir};
 use wilson_voice_lib::channel::Channel;
+use wilson_voice_lib::cloud_route::CloudMode;
 use wilson_voice_lib::keychain::{
     account_for, key_hint, service_for, MemoryKeychain, SecretStore, PRODUCTION_SERVICE,
 };
 use wilson_voice_lib::model_providers::{
-    delete_provider, leaves_this_mac, list_view, load, set_task_provider, upsert_provider,
-    ProviderConfig, ProviderError, ProviderKind, Task, BUNDLED_ID, DEFAULT_CONTEXT_TOKENS,
-    PROVIDERS_KEY,
+    cloud_route_leaves, delete_provider, leaves_this_mac, list_view, load, set_task_provider,
+    upsert_provider, ActiveLeave, ProviderConfig, ProviderError, ProviderKind, Task, BUNDLED_ID,
+    DEFAULT_CONTEXT_TOKENS, PROVIDERS_KEY,
 };
 
 fn oa(id: &str, base_url: &str, model: &str) -> ProviderConfig {
@@ -231,7 +235,7 @@ fn bundled_is_always_present_and_cannot_be_deleted() {
     assert!(!ProviderKind::OpenAiCompatible.is_wired());
     assert_eq!(
         list_view(&db, &keys).wired_kinds,
-        vec![ProviderKind::Bundled]
+        vec![ProviderKind::Bundled, ProviderKind::CloudKey]
     );
 }
 
@@ -254,4 +258,72 @@ fn deleting_a_provider_deletes_its_key_and_resets_the_picks() {
     let s = load(&db);
     assert_eq!(s.polish_provider, "");
     assert_eq!(s.for_task(Task::Polish).id, BUNDLED_ID);
+}
+
+// ── fix-l3b3-1 — the cloud route's "Leaves this Mac" accounting ─────────────
+
+const CLOUD_KEY: &str = "sk-CLOUDROUTE-0123456789abcdefLMNO";
+
+/// The cloud-key provider saved through the REAL settings_kv, as Settings →
+/// Cloud route saves it, with (or without) a key in the fake Keychain.
+fn cloud_route_db(tag: &str, key: Option<&str>) -> (std::path::PathBuf, MemoryKeychain) {
+    let dir = temp_dir(tag);
+    let db = open_db(&dir);
+    let keys = MemoryKeychain::new(PRODUCTION_SERVICE);
+    upsert_provider(&db, &keys, ProviderConfig::cloud_key(), key).expect("save cloud key");
+    (dir, keys)
+}
+
+fn cloud_host() -> String {
+    ProviderConfig::cloud_key().host().expect("cloud key host")
+}
+
+#[test]
+fn cloud_route_with_a_key_and_cloud_when_online_leaves_for_notes_and_polish() {
+    let (dir, keys) = cloud_route_db("byom-route-on", Some(CLOUD_KEY));
+    let db = open_db(&dir);
+    CloudMode::save(&db, CloudMode::CloudWhenOnline).unwrap();
+    let s = load(&db);
+    assert_eq!(s.notes_provider, "", "the route is not a pick");
+    assert_eq!(s.polish_provider, "", "the route is not a pick");
+    assert_eq!(cloud_route_leaves(&db, &keys), Some(cloud_host()));
+    let view = list_view(&db, &keys);
+    assert_eq!(
+        view.active_leaves,
+        vec![
+            ActiveLeave {
+                task: Task::Notes,
+                host: cloud_host(),
+            },
+            ActiveLeave {
+                task: Task::Polish,
+                host: cloud_host(),
+            },
+        ]
+    );
+    let json = serde_json::to_string(&view).unwrap();
+    assert!(
+        json.contains("\"activeLeaves\":[{\"task\":\"notes\""),
+        "{json}"
+    );
+    assert!(!json.contains(CLOUD_KEY), "the view never holds the key");
+}
+
+#[test]
+fn cloud_route_with_a_key_but_always_local_leaves_nothing() {
+    let (dir, keys) = cloud_route_db("byom-route-local", Some(CLOUD_KEY));
+    let db = open_db(&dir);
+    CloudMode::save(&db, CloudMode::AlwaysLocal).unwrap();
+    assert_eq!(cloud_route_leaves(&db, &keys), None);
+    assert!(list_view(&db, &keys).active_leaves.is_empty());
+}
+
+#[test]
+fn cloud_route_mode_on_without_a_key_leaves_nothing() {
+    let (dir, keys) = cloud_route_db("byom-route-nokey", None);
+    let db = open_db(&dir);
+    CloudMode::save(&db, CloudMode::CloudWhenOnline).unwrap();
+    assert!(keys.accounts().is_empty(), "no key was saved");
+    assert_eq!(cloud_route_leaves(&db, &keys), None);
+    assert!(list_view(&db, &keys).active_leaves.is_empty());
 }

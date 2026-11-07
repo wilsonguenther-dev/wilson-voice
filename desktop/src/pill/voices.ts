@@ -13,6 +13,11 @@
  * "professional". The phase/nudge copy elsewhere is keyed by `ChatTone`
  * (live.ts) and reads Professional as friendly through `toChatTone`.
  *
+ * fix-b6-1-done-line-no-false-paste: some approved lines say the text was
+ * pasted or inserted (`PASTE_CLAIMS`). When the take's paste was not confirmed
+ * (paste.rs showed the Copy card), the picker skips them, so Yappy never says
+ * "Pasted at cursor." next to a card saying it did not paste.
+ *
  * Pure + deterministic: no I/O, no clock, no randomness. Callers pass the
  * nonce, the memory and the day.
  */
@@ -129,6 +134,22 @@ export const CURSE_EVERY = 4;
 const STRONGEST = /\bfuck/i;
 export const isStrongest = (line: string): boolean => STRONGEST.test(line);
 
+/**
+ * fix-b6-1-done-line-no-false-paste — the approved take lines that claim the
+ * text was pasted or inserted (template form, as in `VOICES`). They stay in the
+ * copy, but are only said when the take's paste was not contradicted.
+ */
+export const PASTE_CLAIMS: ReadonlySet<string> = new Set([
+  "boom. pasted.",
+  "Inserted, {w} words.",
+  "Short take, pasted.",
+  "Pasted at cursor.",
+  "Pasted. Undo with ⌘Z.",
+  "Full draft inserted.",
+]);
+/** Does this line (template or filled) say the text was pasted or inserted? */
+export const claimsPaste = (line: string): boolean => PASTE_CLAIMS.has(line) || PASTE_CLAIMS.has(line.replace(/\d+/g, "{w}"));
+
 /** What the picker remembers across takes (persisted by the caller). */
 export interface TakeLineMemory {
   /** The last `RECENT_TAKES` lines said, oldest first (unfilled templates). */
@@ -142,10 +163,69 @@ export const EMPTY_MEMORY: TakeLineMemory = { recent: [], strongDay: null };
 export interface PickOpts {
   /** Rotates choices; pass something that changes per take (e.g. a take count). */
   nonce?: number;
-  /** Curse mode. Only Badass honours it; off by default. */
+  /**
+   * Curse mode. Only Badass honours it; off by default. Callers pass the
+   * result of `curseAllowed` (setting + voice + meeting / screen-share state),
+   * never the raw setting.
+   */
   curse?: boolean;
   /** Today as YYYY-MM-DD, for the once-a-day strongest word. */
   today?: string;
+  /**
+   * Did the take's text land? Defaults to true. False (the Copy card was shown,
+   * or the paste was not confirmed) skips every `PASTE_CLAIMS` line, with the
+   * same fallback order and the same 20-take memory.
+   */
+  pasted?: boolean;
+  /**
+   * yap-1106-curse-setting — a random source in [0, 1). When given, curse
+   * mode swaps a line in with probability 1 / CURSE_EVERY per take (and picks
+   * the curse line with it); omitted, the nonce decides (every 4th take).
+   * Tests pass `seededRandom(seed)`; the pill passes `Math.random`.
+   */
+  rand?: () => number;
+}
+
+/** Why curse mode is not active right now (`null` = it is). Logged, never shown. */
+export type CurseBlock = "off" | "voice" | "in_meeting" | "screen_shared";
+
+export interface CurseGate {
+  /** Settings → Yappy's voice → the curse toggle (`companionCurse`, off by default). */
+  enabled: boolean;
+  voice: VoiceId;
+  /** A meeting records, or its after-view (notes ready / failed) is on screen. */
+  meeting: boolean;
+  /** The screen is being shared or captured, when the shell knows it. */
+  screenShared: boolean;
+}
+
+/**
+ * yap-1106-curse-setting — the one rule for whether Yappy may swear: the toggle
+ * is on, the voice is Badass (never Professional, Best friend or Rose), and
+ * nobody else can be watching (no meeting state, no screen share).
+ */
+export function curseBlock(g: CurseGate): CurseBlock | null {
+  if (!g.enabled) return "off";
+  if (g.voice !== "badass") return "voice";
+  if (g.meeting) return "in_meeting";
+  if (g.screenShared) return "screen_shared";
+  return null;
+}
+export const curseAllowed = (g: CurseGate): boolean => curseBlock(g) === null;
+
+/**
+ * A small seeded random source in [0, 1) (mulberry32), so a test can replay
+ * the exact sequence of takes. Same seed, same sequence.
+ */
+export function seededRandom(seed: number): () => number {
+  let a = Math.floor(Number.isFinite(seed) ? seed : 0) >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 export interface PickedLine {
@@ -189,14 +269,25 @@ export function pickTakeLine(words: number, voice: VoiceId, memory: TakeLineMemo
   const nonce = opts.nonce ?? 0;
   const band = takeBand(words);
   const recent = new Set(memory.recent.slice(-RECENT_TAKES));
-  const fresh = (l: string) => !recent.has(l);
+  const pasted = opts.pasted !== false;
+  // A line is sayable when it is not recent and, if the paste did not land,
+  // does not claim it did.
+  const sayable = (l: string) => pasted || !PASTE_CLAIMS.has(l);
+  const fresh = (l: string) => !recent.has(l) && sayable(l);
 
   // Curse mode: Badass only, about 1 take in 4, strongest word once a day.
-  if (voice === "badass" && opts.curse && v.curse && v.curse.length && mod(nonce, CURSE_EVERY) === 0) {
+  // With `rand`, the draw happens on every take (so the sequence is replayable
+  // from the seed); without it, every CURSE_EVERY-th nonce.
+  const roll = opts.rand ? opts.rand() : -1;
+  const swap = opts.rand ? roll < 1 / CURSE_EVERY : mod(nonce, CURSE_EVERY) === 0;
+  if (voice === "badass" && opts.curse && v.curse && v.curse.length && swap) {
     const strongUsed = opts.today != null && memory.strongDay === opts.today;
     const pool = v.curse.filter((l) => fresh(l) && !(strongUsed && isStrongest(l)));
     if (pool.length) {
-      const key = pool[mod(Math.floor(nonce / CURSE_EVERY), pool.length)];
+      const idx = opts.rand
+        ? Math.min(pool.length - 1, Math.floor((roll * CURSE_EVERY) * pool.length))
+        : mod(Math.floor(nonce / CURSE_EVERY), pool.length);
+      const key = pool[Math.max(0, idx)];
       return { text: fillLine(key, words), key, band, source: "curse" };
     }
   }
@@ -209,9 +300,10 @@ export function pickTakeLine(words: number, voice: VoiceId, memory: TakeLineMemo
       return { text: fillLine(key, words), key, band, source: i === 0 ? "band" : "neighbor" };
     }
   }
-  // Unreachable while every voice has more take lines than RECENT_TAKES; kept
-  // so a future trimmed voice degrades to a repeat instead of silence.
-  const all = TAKE_BANDS.flatMap((b) => v.take[b]);
+  // Unreachable while every voice has more take lines than RECENT_TAKES (plus
+  // its paste claims); kept so a future trimmed voice degrades to a repeat
+  // instead of silence, and still never to a false paste claim.
+  const all = TAKE_BANDS.flatMap((b) => v.take[b].filter(sayable));
   const key = all[mod(nonce, all.length)] ?? "";
   return { text: fillLine(key, words), key, band, source: "any" };
 }
@@ -221,6 +313,45 @@ export function rememberTakeLine(memory: TakeLineMemory, picked: Pick<PickedLine
   const recent = [...memory.recent, picked.key].slice(-RECENT_TAKES);
   const strongDay = today != null && isStrongest(picked.key) ? today : memory.strongDay;
   return { recent, strongDay };
+}
+
+/**
+ * fix-b6-1-done-line-no-false-paste — what YappyPill hears about a take's
+ * paste: `listening` starts a take, `insert-copy-card` (copyCardModel.ts
+ * INSERT_COPY_CARD_EVENT) and the `paste_not_confirmed` take stage (live.ts)
+ * mean the text did not land by itself, `paste_confirmed` changes nothing.
+ */
+export type TakePasteSignal = "listening" | "insert-copy-card" | "paste_not_confirmed" | "paste_confirmed";
+
+/**
+ * Has the current take shown the Copy card (or reported a paste it could not
+ * confirm)? Folded per signal; a new take (`listening`) clears it. Once set it
+ * stays set for the take: a card on screen is the take's answer.
+ */
+export function noteTakeSignal(copyCardShown: boolean, signal: TakePasteSignal): boolean {
+  if (signal === "listening") return false;
+  if (signal === "insert-copy-card" || signal === "paste_not_confirmed") return true;
+  return copyCardShown;
+}
+
+/** One finished take's line: the pick, the memory after it, and its log line. */
+export interface DoneLine {
+  picked: PickedLine;
+  memory: TakeLineMemory;
+  /** `pill voice_line ...` — counts and ids only, never transcript text. */
+  log: string;
+}
+
+/**
+ * The whole done-line step YappyPill runs on `done`: pick (honouring
+ * `opts.pasted`), remember, and the structured log line with `pasted=<bool>`.
+ */
+export function takeDoneLine(words: number, voice: VoiceId, memory: TakeLineMemory, opts: PickOpts = {}): DoneLine {
+  const pasted = opts.pasted !== false;
+  const picked = pickTakeLine(words, voice, memory, { ...opts, pasted });
+  const next = rememberTakeLine(memory, picked, opts.today);
+  const log = `pill voice_line voice=${voice} band=${picked.band} source=${picked.source} curse=${opts.curse === true} recent=${next.recent.length} pasted=${pasted}`;
+  return { picked, memory: next, log };
 }
 
 /** Parse persisted memory; anything malformed reads as empty. */

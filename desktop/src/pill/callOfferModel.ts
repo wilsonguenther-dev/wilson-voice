@@ -48,6 +48,15 @@ export function isCallOfferView(v: unknown): v is CallOfferView {
   );
 }
 
+/**
+ * yap-1106-curse-setting — a call the detector sees is live in every phase but
+ * idle (offered, chip, recording, or asking to stop). Curse mode treats a live
+ * call as "the screen may be shared" and stays quiet.
+ */
+export function isLiveCall(view: CallOfferView | null): boolean {
+  return view !== null && view.phase !== "idle";
+}
+
 /** What the window draws. `elapsedMs` is how long THIS offer has been up
  * locally, so the chip appears at 10 s even before the backend's answer. */
 export type CallSurface = "offer" | "chip" | "ended" | null;

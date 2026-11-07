@@ -30,6 +30,7 @@
 // only `../license/status` (both pure, neither imports this file), so this adds
 // a leaf dependency and no cycle.
 import { GATED_HEADLINE } from "./license";
+import { DURATION } from "./motion";
 import type { MilestoneId, NudgeId } from "./nudge";
 // yap-1106-voice-modes — the voices table is a leaf (imports nothing from here).
 import { duringLines, type VoiceId } from "./voices";
@@ -776,7 +777,9 @@ export const CANCELLED_SETTLE_MS = 1400;
  * is: the SYSTEM notification stays rate-limited, and this cheap in-place signal
  * answers every single press.
  */
-export const GATED_SETTLE_MS = 2500;
+// yap-1106-pill-trial-clickable — the refusal became the Buy button, so it
+// now holds 6 s (`DURATION.gateHold`, longer while hovered: pill/gateClick.ts).
+export const GATED_SETTLE_MS: number = DURATION.gateHold;
 
 /**
  * Y2-C — which phase wins when more than one is true at once, most urgent
@@ -1726,7 +1729,9 @@ export type PillMessageId =
   /** The detected-meeting offer (it has its own switch in Settings › Meetings). */
   | "meeting-offer"
   /** WF-06 — "Backtrack caught": a spoken self-correction was applied; Undo pastes the raw take. */
-  | "backtrack-caught";
+  | "backtrack-caught"
+  /** WF-05 — "Polished — Reveal": the polish stage rewrote the take; Reveal shows the diff. */
+  | "polish-reveal";
 
 /** THE table. One category per pill message; nothing shows without a row. */
 export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
@@ -1756,6 +1761,10 @@ export const PILL_MESSAGES: Record<PillMessageId, PillCategory> = {
   // WF-06 — a receipt that Yap changed the take, with its Undo. Not a tip:
   // muting tips must never hide a change made to what the user said.
   "backtrack-caught": "status",
+  // WF-05 — an after-take offer to look at the polish, so it is a TIP: the
+  // Tips switch in Settings › Notifications mutes it. The edit itself stays
+  // undoable from History and Undo AI Edit, so muting hides no change.
+  "polish-reveal": "tip",
   "nudge:no-text-field": "tip",
   "nudge:code-editor": "tip",
   "nudge:meetings": "news",

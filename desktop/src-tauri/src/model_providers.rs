@@ -67,6 +67,10 @@ pub enum ProviderKind {
     Bundled,
     /// Any server speaking the OpenAI chat-completions API.
     OpenAiCompatible,
+    /// yap-1106-byom-cloud-fast-path — "Cloud model (your key)": the native
+    /// Messages-API client in `cloud_client.rs`, streaming, with the route
+    /// policy in `cloud_route.rs`. The UI never names the vendor.
+    CloudKey,
 }
 
 impl ProviderKind {
@@ -74,11 +78,15 @@ impl ProviderKind {
     /// that is not, and saving one is refused — no "coming soon" placeholder,
     /// never a fake success. OpenAI-compatible is wired by yap-byom-1.
     pub fn is_wired(self) -> bool {
-        matches!(self, ProviderKind::Bundled)
+        matches!(self, ProviderKind::Bundled | ProviderKind::CloudKey)
     }
 
-    pub fn all() -> [ProviderKind; 2] {
-        [ProviderKind::Bundled, ProviderKind::OpenAiCompatible]
+    pub fn all() -> [ProviderKind; 3] {
+        [
+            ProviderKind::Bundled,
+            ProviderKind::OpenAiCompatible,
+            ProviderKind::CloudKey,
+        ]
     }
 }
 
@@ -120,10 +128,28 @@ impl ProviderConfig {
         }
     }
 
+    /// yap-1106-byom-cloud-fast-path — the "Cloud model (your key)" provider
+    /// as Settings creates it when a key is entered (address and model can be
+    /// edited; both default to the hosted endpoint).
+    pub fn cloud_key() -> Self {
+        Self {
+            id: crate::cloud_client::DEFAULT_PROVIDER_ID.into(),
+            kind: ProviderKind::CloudKey,
+            label: crate::cloud_route::CLOUD_LABEL.into(),
+            base_url: crate::cloud_client::DEFAULT_BASE_URL.into(),
+            model: crate::cloud_route::CLEANUP_MODEL.into(),
+            context_tokens: 200_000,
+            timeout_s: crate::cloud_client::CLIENT_TIMEOUT.as_secs() as u32,
+        }
+    }
+
     /// The host this provider's key is bound to (`None` for Bundled).
     pub fn host(&self) -> Option<String> {
         match self.kind {
             ProviderKind::Bundled => None,
+            ProviderKind::CloudKey if self.base_url.trim().is_empty() => {
+                http_client::host_of(crate::cloud_client::DEFAULT_BASE_URL)
+            }
             _ => http_client::host_of(&self.base_url),
         }
     }
@@ -261,6 +287,29 @@ impl ProviderError {
             ProviderError::Invalid(_) => "invalid",
             ProviderError::Keychain(_) => "keychain",
             ProviderError::Storage(_) => "storage",
+        }
+    }
+
+    /// yap-1106 — map a cloud-route failure (Test connection on the cloud kind).
+    pub fn from_cloud(e: crate::cloud_route::CloudError, model: &str) -> Self {
+        use crate::cloud_route::CloudError as C;
+        match e {
+            C::Status { code: 401, .. } | C::Status { code: 403, .. } => ProviderError::KeyRejected,
+            C::Status { code: 404, .. } => ProviderError::ModelNotFound {
+                model: model.to_string(),
+            },
+            C::Status { code: 429, .. } => ProviderError::RateLimited,
+            C::Status { code, .. } if (500..600).contains(&code) => ProviderError::Server { code },
+            C::Status { code, .. } => ProviderError::Http { code },
+            C::Overloaded { .. } => ProviderError::Server { code: 529 },
+            C::ConnectionReset | C::Unreachable => ProviderError::Unreachable {
+                host: "the cloud model".into(),
+            },
+            C::Ttft | C::Total => ProviderError::Timeout {
+                secs: TEST_TIMEOUT.as_secs(),
+            },
+            C::Protocol | C::Rejected => ProviderError::BadResponse,
+            C::Cancelled => ProviderError::Cancelled,
         }
     }
 
@@ -420,6 +469,87 @@ impl ChatProvider for OpenAiCompatibleProvider {
     }
 }
 
+/// yap-1106 — the "Cloud model (your key)" provider behind [`ChatProvider`]
+/// (Test connection). The pipelines use `cloud_client::CloudKeyClient`
+/// through `cloud_route::run_routed` directly, with per-job budgets.
+pub struct CloudKeyProvider {
+    cfg: ProviderConfig,
+    client: crate::cloud_client::CloudKeyClient,
+}
+
+impl CloudKeyProvider {
+    pub fn new(cfg: ProviderConfig, key: String, client: http_client::HttpClient) -> Self {
+        let inner = crate::cloud_client::CloudKeyClient::new(&cfg.base_url, key, client);
+        Self { cfg, client: inner }
+    }
+}
+
+impl ChatProvider for CloudKeyProvider {
+    fn complete(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        cancel: &CancelToken,
+    ) -> Result<String, ProviderError> {
+        let budget = crate::cloud_route::Budget {
+            ttft: TEST_TIMEOUT,
+            total: TEST_TIMEOUT,
+        };
+        let model = if self.cfg.model.trim().is_empty() {
+            crate::cloud_route::CLEANUP_MODEL
+        } else {
+            self.cfg.model.trim()
+        };
+        let mut sink = |_: &str| {};
+        self.client
+            .complete_streaming(
+                model,
+                crate::cloud_route::Job::Format,
+                system,
+                user,
+                max_tokens,
+                budget,
+                cancel,
+                &mut sink,
+            )
+            .map(|r| r.text)
+            .map_err(|e| ProviderError::from_cloud(e, model))
+    }
+
+    fn leaves_this_mac(&self) -> bool {
+        leaves_this_mac(&self.cfg).is_yes()
+    }
+}
+
+/// yap-1106 — the saved cloud-key provider and its key, when both exist.
+/// `None` means the route has no key (the pill says "No cloud key yet").
+pub fn cloud_key_provider(
+    kv: &dyn SettingsKv,
+    keys: &dyn SecretStore,
+) -> Option<(ProviderConfig, String)> {
+    let s = load(kv);
+    let cfg = s
+        .providers
+        .iter()
+        .find(|p| p.kind == ProviderKind::CloudKey)
+        .cloned()?;
+    let host = cfg.host()?;
+    let key = keys
+        .get(&keychain::account_for(&cfg.id, &host))
+        .unwrap_or_else(|e| {
+            log::warn!(
+                "model_providers cloud_key_read_failed id={} error={e}",
+                cfg.id
+            );
+            None
+        })?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    Some((cfg, key))
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 /// The two rows of `settings_kv` this module reads and writes.
@@ -554,6 +684,29 @@ pub fn upsert_provider(
             "a provider id is lowercase letters, digits, - or _".into(),
         ));
     }
+    let cfg = if cfg.kind == ProviderKind::CloudKey {
+        let d = ProviderConfig::cloud_key();
+        ProviderConfig {
+            label: if cfg.label.trim().is_empty() {
+                d.label
+            } else {
+                cfg.label
+            },
+            base_url: if cfg.base_url.trim().is_empty() {
+                d.base_url
+            } else {
+                cfg.base_url
+            },
+            model: if cfg.model.trim().is_empty() {
+                d.model
+            } else {
+                cfg.model
+            },
+            ..cfg
+        }
+    } else {
+        cfg
+    };
     if cfg.label.trim().is_empty() {
         return Err(ProviderError::Invalid("give the provider a name".into()));
     }
@@ -733,6 +886,29 @@ fn view_of(p: &ProviderConfig, keys: &dyn SecretStore) -> ProviderView {
     }
 }
 
+/// fix-l3b3-1 — where the cloud route sends text, if it is on.
+///
+/// `cloud_run` (lib.rs) sends every dictation (polish) and every meeting
+/// transcript (notes) to the saved "Cloud model (your key)" provider whenever
+/// [`crate::cloud_route::CloudMode::wants_cloud`] and a key exists — WITHOUT
+/// that provider being the notes/polish pick. So the "Leaves this Mac"
+/// accounting must count the route too, or Settings and the meeting consent
+/// notice say "nothing leaves" while text does. `Some(host)` = the route is
+/// on and has a key; `None` = always on this Mac, or no key. A provider whose
+/// address is this Mac (and runs no Ollama cloud model) does not leave.
+/// "Cloud when online" counts as leaving even while offline: the label must
+/// never under-claim.
+pub fn cloud_route_leaves(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> Option<String> {
+    if !crate::cloud_route::CloudMode::load(kv).wants_cloud() {
+        return None;
+    }
+    let (cfg, _key) = cloud_key_provider(kv, keys)?;
+    match leaves_this_mac(&cfg) {
+        Leaves::Yes { host } => Some(host),
+        Leaves::No => None,
+    }
+}
+
 /// The view Settings renders.
 pub fn list_view(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> ProvidersView {
     let s = load(kv);
@@ -741,6 +917,25 @@ pub fn list_view(kv: &dyn SettingsKv, keys: &dyn SecretStore) -> ProvidersView {
         if let Leaves::Yes { host } = leaves_this_mac(&s.for_task(task)) {
             active_leaves.push(ActiveLeave { task, host });
         }
+    }
+    // The cloud route sends both tasks to its provider regardless of the
+    // picks; one entry per task (a task already leaving keeps its pick's host).
+    if let Some(host) = cloud_route_leaves(kv, keys) {
+        let mut added = 0usize;
+        for task in [Task::Notes, Task::Polish] {
+            if !active_leaves.iter().any(|a| a.task == task) {
+                active_leaves.push(ActiveLeave {
+                    task,
+                    host: host.clone(),
+                });
+                added += 1;
+            }
+        }
+        log::debug!("model_providers cloud_route_leaves tasks_added={added}");
+        active_leaves.sort_by_key(|a| match a.task {
+            Task::Notes => 0u8,
+            Task::Polish => 1u8,
+        });
     }
     ProvidersView {
         providers: s.providers.iter().map(|p| view_of(p, keys)).collect(),
@@ -807,6 +1002,26 @@ pub fn run_test(
                 hint,
             )
         }
+        ProviderKind::CloudKey => {
+            let host = host.clone().ok_or_else(|| {
+                ProviderError::Invalid("the address must be an http(s) URL".into())
+            })?;
+            let key = keys
+                .get(&keychain::account_for(&cfg.id, &host))
+                .map_err(ProviderError::Keychain)?;
+            let hint = key.as_deref().map(keychain::key_hint).unwrap_or_default();
+            let client = clients
+                .client_for(&cfg.id, TEST_TIMEOUT)
+                .map_err(|e| ProviderError::from_http(e, &cfg.model))?;
+            (
+                Box::new(CloudKeyProvider::new(
+                    cfg.clone(),
+                    key.unwrap_or_default(),
+                    client,
+                )),
+                hint,
+            )
+        }
     };
     emit(
         TEST_EVENT,
@@ -868,4 +1083,87 @@ pub fn run_test(
         }),
     );
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud_route::{CloudMode, MODE_KEY};
+    use crate::keychain::{MemoryKeychain, PRODUCTION_SERVICE};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemKv(Mutex<HashMap<String, String>>);
+    impl SettingsKv for MemKv {
+        fn kv_get(&self, key: &str) -> Option<String> {
+            self.0.lock().unwrap().get(key).cloned()
+        }
+        fn kv_set(&self, key: &str, value: &str) -> Result<(), String> {
+            self.0.lock().unwrap().insert(key.into(), value.into());
+            Ok(())
+        }
+    }
+
+    fn with_cloud_key(key: Option<&str>) -> (MemKv, MemoryKeychain) {
+        let kv = MemKv::default();
+        let keys = MemoryKeychain::new(PRODUCTION_SERVICE);
+        upsert_provider(&kv, &keys, ProviderConfig::cloud_key(), key).expect("save cloud key");
+        (kv, keys)
+    }
+
+    fn host() -> String {
+        ProviderConfig::cloud_key().host().expect("cloud key host")
+    }
+
+    #[test]
+    fn model_providers_cloud_route_on_with_a_key_leaves_for_notes_and_polish() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        CloudMode::save(&kv, CloudMode::CloudWhenOnline).unwrap();
+        // Neither pick names the cloud provider: the route alone sends text.
+        assert_eq!(load(&kv).notes_provider, "");
+        assert_eq!(cloud_route_leaves(&kv, &keys), Some(host()));
+        let v = list_view(&kv, &keys);
+        assert_eq!(
+            v.active_leaves,
+            vec![
+                ActiveLeave {
+                    task: Task::Notes,
+                    host: host(),
+                },
+                ActiveLeave {
+                    task: Task::Polish,
+                    host: host(),
+                },
+            ]
+        );
+        assert!(!serde_json::to_string(&v).unwrap().contains("sk-UNIT"));
+    }
+
+    #[test]
+    fn model_providers_cloud_route_always_local_leaves_nothing() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        CloudMode::save(&kv, CloudMode::AlwaysLocal).unwrap();
+        assert_eq!(cloud_route_leaves(&kv, &keys), None);
+        assert!(list_view(&kv, &keys).active_leaves.is_empty());
+    }
+
+    #[test]
+    fn model_providers_cloud_route_without_a_key_leaves_nothing() {
+        let (kv, keys) = with_cloud_key(None);
+        kv.kv_set(MODE_KEY, CloudMode::CloudOnly.as_str()).unwrap();
+        assert_eq!(cloud_route_leaves(&kv, &keys), None);
+        assert!(list_view(&kv, &keys).active_leaves.is_empty());
+    }
+
+    #[test]
+    fn model_providers_cloud_route_does_not_duplicate_a_task_already_leaving() {
+        let (kv, keys) = with_cloud_key(Some("sk-UNIT-0123456789abcdefWXYZ"));
+        set_task_provider(&kv, Task::Notes, crate::cloud_client::DEFAULT_PROVIDER_ID).unwrap();
+        CloudMode::save(&kv, CloudMode::CloudOnly).unwrap();
+        let v = list_view(&kv, &keys);
+        assert_eq!(v.active_leaves.len(), 2, "{:?}", v.active_leaves);
+        assert_eq!(v.active_leaves[0].task, Task::Notes);
+        assert_eq!(v.active_leaves[1].task, Task::Polish);
+    }
 }

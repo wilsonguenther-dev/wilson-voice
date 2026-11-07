@@ -279,9 +279,23 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
     expect(house).toMatch(/grid\.offsetX, grid\.offsetY, grid\.drawW, grid\.drawH/);
   });
 
-  it("App.css: the short-window cover rule this module honours is still there", () => {
-    const css = readSibling("../App.css");
-    expect(css).toMatch(/@media \(max-height: 800px\)[\s\S]*?\.yappy-house \.yh-stage \{\s*max-height: 112px;\s*object-fit: cover;\s*object-position: 50% 70%;/);
+  it("App.css: the room is never a cropped strip — it is the whole room at a whole-number scale", () => {
+    // yap-1106-home-full-width-room (Home round two, approved 2026-11-06 17:08Z)
+    // retired main's short-window cover rule (a 112 px band that cropped the
+    // room): the room fills the column at 5x / 4x / 3x on every window height,
+    // and only the main column scrolls. YappyHouse sets the stage height inline
+    // from homeLayout's ROOM_H x the whole-number scale and still READS
+    // object-fit, so a future cover rule would be honoured on whole device px.
+    const css = readSibling("../App.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).not.toMatch(/\.yappy-house \.yh-stage \{[^}]*max-height: 112px/);
+    expect(css).toMatch(/\.yappy-house \.yh-stage \{[^}]*object-fit: contain;/);
+    expect(house).toMatch(/style=\{\{ height: `\$\{ROOM_H \* scale\}px` \}\}/);
+    // contain at a whole-number cell: the 5x room in a 1000 px column is 5 CSS px per art px
+    for (const dpr of DPRS) {
+      const g = pixelGrid({ w: 1000, h: 128 * 5 }, { w: 192, h: 128 }, dpr);
+      expect(g.cell).toBe(5 * dpr);
+      expectWholeGrid(g, 192, 128);
+    }
   });
 
   it("YappyPill hands its scene buffer to sceneBlit (the src clamp needs it)", () => {

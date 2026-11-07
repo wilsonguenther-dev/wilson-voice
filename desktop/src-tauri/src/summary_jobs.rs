@@ -203,7 +203,7 @@ pub trait NotesBackend: Send + Sync {
     /// is being transcribed, a dictation wants the engine, or the app is
     /// already above the memory ceiling), or `None` to run it. A deferred job
     /// is retried on the next idle tick and is never failed for waiting.
-    fn defer_reason(&self) -> Option<String> {
+    fn defer_reason(&self, _id: &str) -> Option<String> {
         None
     }
 
@@ -589,11 +589,14 @@ fn wait_for_idle(inner: &Arc<Inner>, id: &str, token: &CancelToken) -> Result<()
     let started = Instant::now();
     let mut last: Option<String> = None;
     let mut ticks = 0u64;
-    while let Some(why) = inner.backend.defer_reason() {
+    while let Some(why) = inner.backend.defer_reason(id) {
         if token.is_cancelled() {
             return Err(NotesError::Cancelled);
         }
-        if started.elapsed() >= NOTES_MAX_DEFERRAL {
+        // yap-1106-resource-governor: a power hold is not a stuck machine —
+        // the cap exists for an RSS figure that never drops, not for a flat
+        // battery. The governor releases the job itself when power is back.
+        if started.elapsed() >= NOTES_MAX_DEFERRAL && !why.starts_with("governor") {
             log::warn!(
                 "summary defer_cap meeting={id} reason={why} waited_ms={} — running anyway",
                 started.elapsed().as_millis()
@@ -1311,7 +1314,7 @@ mod tests {
             assert_eq!(self.busy_ticks.load(Ordering::SeqCst), 0, "summarized while ASR was busy");
             self.inner.summarize(id, c)
         }
-        fn defer_reason(&self) -> Option<String> {
+        fn defer_reason(&self, _id: &str) -> Option<String> {
             let left = self.busy_ticks.load(Ordering::SeqCst);
             if left == 0 {
                 return None;

@@ -213,7 +213,7 @@ fn jit_entitlements_are_absent_from_the_app() {
 /// This test asserts the files, not the shipped DMG.
 #[test]
 fn sidecars_have_their_own_minimal_entitlements() {
-    for sidecar in ["yap-polish", "yap-diarize"] {
+    for sidecar in ["yap-polish", "yap-diarize", "yap-asr", "yap-engine-ane"] {
         let path = src_tauri()
             .join("entitlements")
             .join(format!("{sidecar}.plist"));
@@ -282,7 +282,9 @@ fn rebuild_app_bundles_both_sidecars_before_signing() {
             .find(needle)
             .unwrap_or_else(|| panic!("rebuild_app.sh is missing `{needle}`"))
     };
-    let sidecar_list = pos("SIDECARS=(yap-polish yap-diarize)");
+    // SP-10: sign-local.sh signs (and refuses a bundle without) the Neural
+    // Engine helper too, so rebuild_app.sh must stage and copy it in.
+    let sidecar_list = pos("SIDECARS=(yap-polish yap-diarize yap-asr yap-engine-ane)");
     let staged_check = pos(r#"[[ -x "$SRC/binaries/$s-$TRIPLE" ]]"#);
     let destructive_rm = pos(r#"rm -rf "$HOME/Desktop/Wilson Voice.app""#);
     let copy_in = pos(r#"cp -f "$SRC/binaries/$s-$TRIPLE" "$APP_SRC/Contents/MacOS/$s""#);
