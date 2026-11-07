@@ -263,12 +263,15 @@ describe("yap-1107-parity-home — Home matches the approved page's measured rul
   it("recent rows are 110 px | 1fr | 70 px and the search reads the approved words", () => {
     expect(rule(".recent-row")).toMatch(/grid-template-columns:\s*110px minmax\(0, 1fr\) 70px/);
     expect(rule(".recent-row")).toMatch(/padding:\s*9px 4px/);
-    expect(rule(".home-search input[type=\"search\"]")).toMatch(/height:\s*36px/);
+    expect(rule(".home-view .home-search input[type=\"search\"]")).toMatch(/height:\s*36px/);
     const html = home(base({ history: [take(0)] }));
-    expect(html).toContain("Search everything you&#x27;ve said\"");
+    // The hint is TEXT in the box, as on the approved .search; it goes once you type.
+    expect(html).toContain('<span class="home-search-hint" aria-hidden="true">Search everything you&#x27;ve said</span>');
+    expect(home(base({ history: [take(0)], query: "pills" }))).not.toContain("home-search-hint");
   });
   it("the footer is the approved 40 px strip", () => {
     expect(rule(".app-footer")).toMatch(/height:\s*40px/);
     expect(rule(".app-footer")).toMatch(/background:\s*var\(--home-foot-bg\)/);
+    expect(app(base())).toContain('class="app-footer-kbd"');
   });
 });

@@ -26,7 +26,7 @@
  *       (homeLayout.roomBox) of the main column.
  */
 import { useEffect, useRef, useState } from "react";
-import { ROOM_H, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
+import { ROOM_H, ROOM_W, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
 import { toChatTone, type ChatTone } from "../pill/live";
 import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
 import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
@@ -421,7 +421,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
           data-on-air={meeting?.recording ? "on" : "off"}
           // Full column width, the room's height at the whole-number scale:
           // YappyHouse grids the art at exactly `scale` CSS px per art px.
-          style={{ height: `${ROOM_H * scale}px` }}
+          style={{ width: `${ROOM_W * scale}px`, height: `${ROOM_H * scale}px` }}
           role="img"
           aria-label={aria}
         />

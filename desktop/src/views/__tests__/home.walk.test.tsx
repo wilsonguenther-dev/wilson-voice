@@ -120,7 +120,7 @@ describe("Home walk rows (yap-uiux-2026-10-16)", () => {
     const html = home(base());
     expect(html).not.toContain("FTS5");
     // yap-1107-parity-home: the approved page's words, without the ellipsis.
-    expect(html).toContain("Search everything you&#x27;ve said\"");
+    expect(html).toContain("Search everything you&#x27;ve said</span>");
   });
 
   it("H6: an empty bridge message never leaves an unlabeled status chip", () => {

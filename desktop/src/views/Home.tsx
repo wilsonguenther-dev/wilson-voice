@@ -329,10 +329,14 @@ export default function Home() {
         <input
           type="search"
           aria-label="Search your dictations"
-          placeholder="Search everything you've said"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {query ? null : (
+          <span className="home-search-hint" aria-hidden="true">
+            Search everything you&apos;ve said
+          </span>
+        )}
       </div>
 
       {permsGate ? null : history.length === 0 ? (

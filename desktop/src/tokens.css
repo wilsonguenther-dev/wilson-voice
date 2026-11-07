@@ -356,6 +356,8 @@
   --home-btn-dark-ink: #ffffff;
   --home-foot-bg: #f3f2ee; /* .appfoot */
   --home-ok: #2f8f5b; /* --ok: the footer engine dot */
+  --home-kbd-ink: #eceae4; /* review.css .kbd (--on-shell), as approved in the footer */
+  --home-kbd-line: rgba(255, 255, 255, 0.22);
   --home-room-wood: #3a2418; /* .room.lay: the wood behind the 3x studio */
   --home-room-label-bg: rgba(29, 28, 26, 0.72); /* .room .label */
   --home-room-label-ink: #f2efe6;

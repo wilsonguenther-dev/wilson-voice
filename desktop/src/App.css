@@ -1106,6 +1106,18 @@ code {
   display: inline-flex;
   gap: 16px;
 }
+.app-footer-kbd {
+  display: inline-block;
+  padding: 3px 5px 2px;
+  border: 1px solid var(--home-kbd-line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--home-kbd-ink);
+}
 .app-footer-links button.link,
 .app-footer-links a {
   color: var(--home-ink-2);
@@ -1136,8 +1148,12 @@ button.link:hover {
   display: grid;
   gap: var(--home-gap);
   align-content: start;
-  padding-top: 12px;
   color: var(--home-ink);
+  /* review.css body: 15px/1.55 — the rows' heights come from this. */
+  line-height: 1.55;
+}
+.content:has(> .home-view) {
+  padding-top: 20px;
 }
 .home-view > * {
   min-width: 0;
@@ -1195,7 +1211,7 @@ button.link:hover {
   box-shadow: none;
 }
 /* .panel h4 */
-.home-panel-h {
+.home-view .home-panel-h {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1303,10 +1319,11 @@ button.link:hover {
   margin-top: 4px;
 }
 /* .search: 36 px, sheet, 13 px ink-3 hint. */
-.home-search {
+.home-view .home-search {
+  position: relative;
   margin: 0;
 }
-.home-search input[type="search"] {
+.home-view .home-search input[type="search"] {
   width: 100%;
   height: 36px;
   padding: 0 12px;
@@ -1317,8 +1334,18 @@ button.link:hover {
   font-size: 13px;
   color: var(--home-ink);
 }
-.home-search input[type="search"]::placeholder {
+/* The approved .search is a box holding its hint as TEXT (13 px ink-3); the
+   hint sits over the empty input and goes away as soon as you type. */
+.home-search-hint {
+  position: absolute;
+  left: 13px;
+  top: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
   color: var(--home-ink-3);
+  pointer-events: none;
 }
 /* .hist .r: 110 px | 1fr | 70 px, 9 px 4 px rows, 13 px. */
 .recent-takes {
@@ -2700,8 +2727,10 @@ button.star.on {
      studio is drawn at exactly that many CSS px per art px, centred, with the
      page showing beside it. Never a fraction, never letterboxed vertically.
      object-fit is READ by YappyHouse (contain = the whole room). */
-  width: 100%;
-  min-width: 640px;
+  /* yap-1107-parity-home — the canvas is EXACTLY the room at its scale (the
+     width is set inline with the height: 960 x 480 at 3x, 640 x 320 at 2x),
+     centred on the wood, so its box is the artifact's #layRoom box. */
+  width: auto;
   object-fit: contain;
   /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
