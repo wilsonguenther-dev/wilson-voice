@@ -795,6 +795,7 @@ function Float() {
         meetingNotesReady={meeting.phase.kind === "notes-ready"}
         occupant={character.id}
         forced={FORCED ? forcedFriendVisit(window.location.search) : null}
+        chatter={chatter}
       />
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
