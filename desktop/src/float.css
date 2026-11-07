@@ -2010,7 +2010,8 @@ html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(
 html[data-one-pill="true"] .copy-card,
 html[data-one-pill="true"] .meeting-offer-wrap,
 html[data-one-pill="true"] .language-offer-wrap,
-html[data-one-pill="true"][data-dock] .nudge-row {
+html[data-one-pill="true"][data-dock] .nudge-row,
+html[data-one-pill="true"] .polish-reveal-wrap {
   left: var(--card-x);
   top: calc(var(--card-y) + var(--card-stack-y, 0px));
   right: auto;
