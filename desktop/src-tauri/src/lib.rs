@@ -7945,9 +7945,21 @@ fn delete_scratch(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
 
 // --- DB-D Scratchpad window ---
 
+/// fix-b5-1 — `note_id`: the note to land on (the pill's meeting note);
+/// `None` keeps the plain open on whatever note was last active.
 #[tauri::command]
-fn open_scratchpad(app: AppHandle) -> Result<(), String> {
-    scratchpad::open(&app)
+fn open_scratchpad(app: AppHandle, note_id: Option<String>) -> Result<(), String> {
+    match note_id.filter(|id| !id.is_empty()) {
+        Some(id) => scratchpad::open_note(&app, id),
+        None => scratchpad::open(&app),
+    }
+}
+
+/// fix-b5-1 — the Scratchpad webview asks, on load and on every show, which
+/// note it was opened for (taken once; `None` = keep the active note).
+#[tauri::command]
+fn scratchpad_take_open_note() -> Option<String> {
+    scratchpad::take_open_note()
 }
 
 #[tauri::command]
@@ -12588,6 +12600,7 @@ pub fn run() {
             delete_snippet,
             list_scratch,
             open_scratchpad,
+            scratchpad_take_open_note,
             hide_scratchpad,
             scratchpad_focus,
             copy_note_transient,
