@@ -274,7 +274,7 @@ export default function YappyPill(
       const w = A.world;
       // yap-1106-pill-sky — the whole backdrop in ONE blit (no drifting clouds:
       // nothing in the sky moves between time-of-day changes).
-      blitSky(octx, sky, performance.now(), Math.max(0.8, w));
+      blitSky<HTMLCanvasElement>(octx, sky, performance.now(), Math.max(0.8, w));
       const cx = FX - (A.prop === "desk" ? 6 : 0), feet = GY;
       // notepad slides in from the side when noting
       if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
