@@ -3849,3 +3849,64 @@ button.primary.big {
     transition: none;
   }
 }
+
+/* yap-1106-fb-14-news-quote-key — Settings → Yappy News → Advanced. */
+.news-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.news-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.news-advanced > summary h3 {
+  display: inline;
+}
+.news-advanced > summary::after {
+  content: " +";
+  color: var(--muted);
+}
+.news-advanced[open] > summary::after {
+  content: " −";
+}
+.news-advanced > summary:focus-visible {
+  outline: 2px solid var(--border);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.news-quote-key {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.news-quote-key h4 {
+  margin: 0;
+}
+.news-quote-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.news-quote-providers legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+.news-quote-field {
+  display: grid;
+  gap: var(--space-1);
+}
+.news-quote-field input {
+  font-family: var(--font-mono);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+}
+.news-quote-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
