@@ -150,7 +150,7 @@ export function insightSentence(
   }
   const m = insights.meetings;
   if (m && m.totalMeetings > 0) {
-    return `You have recorded ${m.totalMeetings} ${m.totalMeetings === 1 ? "meeting" : "meetings"} with Yap so far.`;
+    return `You have recorded ${m.totalMeetings} meeting${m.totalMeetings === 1 ? "" : "s"} with Yap so far.`;
   }
   return null;
 }

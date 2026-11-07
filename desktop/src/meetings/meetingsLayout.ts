@@ -13,7 +13,7 @@
  * People here are what the tracks prove — "You" is the microphone of a call
  * meeting, "Call" is the call's audio, "Speaker" is a voice nobody has named.
  */
-import type { Meeting, MeetingDetail } from "../appTypes";
+import type { Meeting } from "../appTypes";
 import {
   diarizationTarget,
   orderedTranscript,
@@ -211,7 +211,7 @@ export const DETAIL_TABS: { id: DetailTab; label: string; keys: string }[] = [
 ];
 
 /** Notes when there are notes to read, otherwise the transcript. */
-export function defaultTab(detail: Pick<MeetingDetail, "meeting">): DetailTab {
+export function defaultTab(detail: { meeting: Meeting }): DetailTab {
   return detail.meeting.summary && detail.meeting.summary.trim() ? "notes" : "transcript";
 }
 

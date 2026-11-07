@@ -339,7 +339,7 @@ function InsightsBody({ loading }: { loading: boolean }) {
                   ? "People show up here once Yap knows who is talking in your meetings."
                   : "No named speakers yet. Name a speaker in a meeting and they show up here."
               }
-              labels={(people ?? []).map((p) => `${p.name}, ${formatMinutes(p.seconds / 60)} across ${p.meetings} ${p.meetings === 1 ? "meeting" : "meetings"}`)}
+              labels={(people ?? []).map((p) => `${p.name}, ${formatMinutes(p.seconds / 60)} across ${p.meetings} meeting${p.meetings === 1 ? "" : "s"}`)}
               minHeight={96}
               nested
             >
