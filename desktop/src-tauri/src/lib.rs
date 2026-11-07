@@ -73,9 +73,11 @@ pub mod focus;
 pub mod formatting_options;
 /// yap-wf-01-click-the-pill-to — the click-to-dictate paste-target guard.
 mod pill_click;
+
 /// yap-1106-pill-trial-clickable — the `yapvoice://license/activate` link back
 /// from the purchase page (strict, pure parser).
 mod deep_link;
+
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -12228,7 +12230,10 @@ fn handle_deep_links(app: &AppHandle, urls: Vec<String>) {
                     notify(
                         &app,
                         "Yap could not activate your license",
-                        format!("{} Open Settings, then License, to paste your key.", e.message),
+                        format!(
+                            "{} Open Settings, then License, to paste your key.",
+                            e.message
+                        ),
                     );
                     present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
                     let _ = app.emit("navigate", "settings");
