@@ -295,6 +295,11 @@ teardown-order test (a stub engine waiting in 2 ms steps inside `#[cfg(test)] mo
 gains `20:1`, a fake engine's 20 ms decode in yap-1106-retry-replay-regression's `#[cfg(test)]`
 replay tests. No production wakeup was added to either file.
 
+Row change (2026-11-07, loop3 batch 9, yap-fx-04-adaptive-decode-timeout): transcription.rs
+`50:4 -> 50:5` is a 50 ms manager ceiling handed to `effective_decode_timeout` inside
+`#[cfg(test)] mod tests` to prove a ceiling below the floor wins. It is a value under test, never
+slept on. No production wakeup was added.
+
 Row change (2026-11-06, yap-wf-10-mic-fallback-order-and): record.rs gains `250:1`. It is
 `ARMED_TICK`, the capture worker's tick while a take (or a meeting) is in flight, so a mic that
 disappears mid-take is noticed within a quarter second and the take carries on on the next ranked

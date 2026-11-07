@@ -925,7 +925,10 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // retry re-checks `is_busy` on the single engine until the live take
             // hands it back, bounded by the clip-scaled retry deadline. Background
             // work waiting on a live take, not a take waiting on a chunk (docs/BUDGETS.md).
-            (50, 4),
+            // yap-fx-04-adaptive-decode-timeout — 50:4->5: a 50 ms manager
+            // ceiling passed to `effective_decode_timeout` in `#[cfg(test)] mod
+            // tests` (a value under test, never slept on).
+            (50, 5),
             (80, 1),
             (120, 1),
             (150, 1),
