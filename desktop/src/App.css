@@ -844,6 +844,40 @@ code {
   padding: 8px 24px 24px;
 }
 
+/* yap-1107-settings-banner-no-overlay — Wilson (Yap Test 0.9.4-loop3.11,
+   2026-11-07 14:33Z) saw the Secure Input banner sitting on the Settings >
+   Advanced "Model providers" header. The banners were loose flex items of
+   .main (flex column, above) with the default flex-shrink:1, sharing the
+   column with .content (flex:1, min-height:0, overflow:auto); nothing gave the
+   banner stack a row of its own, and only measurement can say which engine
+   rule then let a banner and the view share pixels (scripts/
+   settings-banner-shots.mjs prints it). Now every app-level banner sits in ONE
+   wrapper that is its own row: flex:none, so it always keeps its full height
+   and .content alone shrinks and scrolls. No position:absolute/fixed/sticky
+   anywhere in it — a banner pushes the view down, it never covers it. The
+   wrapper has no padding/border/gap, so with no banner it is 0 px tall and
+   every banner keeps its own margin (0 24px 8px) exactly as before. */
+.main-head,
+.main-banners {
+  flex: none;
+}
+
+.main-banners {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.main-banners > * {
+  flex: none;
+}
+
+/* A scrolled-to section header (keyboard, scrollIntoView) lands at the
+   content's own top padding, below the banner row, never under its edge. */
+.content {
+  scroll-padding-top: 8px;
+}
+
 /* yap-1106-home-contained-scroll-footer — the footer under every view. It is
    a sibling of .content inside .main, so it never scrolls away. */
 .app-footer {
