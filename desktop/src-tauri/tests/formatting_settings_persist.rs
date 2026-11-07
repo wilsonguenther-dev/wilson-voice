@@ -59,7 +59,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // yap-1106-chatter-setting: +1 (yappy_talks).
 // yap-1106-curse-setting: +1 (companion_curse).
 // yap-1106-fb-22a: +1 (ask_whos_talking_live).
-const APP_SETTINGS_FIELD_COUNT: usize = 52;
+// yap-1107-reveal-stays-until-read: +1 (keep_polish_reveal_open).
+const APP_SETTINGS_FIELD_COUNT: usize = 53;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -186,6 +187,8 @@ fn fully_populated() -> AppSettings {
         ask_whos_talking_live: true,
         // yap-1106-chatter-setting — non-default: only milestones.
         yappy_talks: "milestones".into(),
+        // yap-1107-reveal-stays-until-read — non-default: the reveal stays open.
+        keep_polish_reveal_open: true,
     }
 }
 
@@ -299,6 +302,10 @@ fn every_app_settings_field_round_trips() {
     assert!(
         read_back.ask_whos_talking_live,
         "the live \"Who's talking?\" setting (ask_whos_talking_live) must survive a relaunch"
+    );
+    assert!(
+        read_back.keep_polish_reveal_open,
+        "\"Keep the reveal open until I close it\" (keep_polish_reveal_open) must survive a relaunch"
     );
 }
 
