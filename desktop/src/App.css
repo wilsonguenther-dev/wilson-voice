@@ -1638,12 +1638,6 @@ button.star.on {
   color: var(--muted);
 }
 
-/* yap-1106-curse-setting — the Badass-only curse toggle sits under the voice
-   cards, one step below them. */
-.curse-setting {
-  margin-top: var(--space-4);
-}
-
 /* WF-10 — Settings › Audio › Microphone: the fallback order. */
 .mic-order {
   margin-top: var(--space-4);

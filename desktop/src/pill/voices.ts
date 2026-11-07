@@ -142,63 +142,10 @@ export const EMPTY_MEMORY: TakeLineMemory = { recent: [], strongDay: null };
 export interface PickOpts {
   /** Rotates choices; pass something that changes per take (e.g. a take count). */
   nonce?: number;
-  /**
-   * Curse mode. Only Badass honours it; off by default. Callers pass the
-   * result of `curseAllowed` (setting + voice + meeting / screen-share state),
-   * never the raw setting.
-   */
+  /** Curse mode. Only Badass honours it; off by default. */
   curse?: boolean;
   /** Today as YYYY-MM-DD, for the once-a-day strongest word. */
   today?: string;
-  /**
-   * yap-1106-curse-setting — a random source in [0, 1). When given, curse
-   * mode swaps a line in with probability 1 / CURSE_EVERY per take (and picks
-   * the curse line with it); omitted, the nonce decides (every 4th take).
-   * Tests pass `seededRandom(seed)`; the pill passes `Math.random`.
-   */
-  rand?: () => number;
-}
-
-/** Why curse mode is not active right now (`null` = it is). Logged, never shown. */
-export type CurseBlock = "off" | "voice" | "meeting" | "screen_shared";
-
-export interface CurseGate {
-  /** Settings → Yappy's voice → the curse toggle (`companionCurse`, off by default). */
-  enabled: boolean;
-  voice: VoiceId;
-  /** A meeting records, or its after-view (notes ready / failed) is on screen. */
-  meeting: boolean;
-  /** The screen is being shared or captured, when the shell knows it. */
-  screenShared: boolean;
-}
-
-/**
- * yap-1106-curse-setting — the one rule for whether Yappy may swear: the toggle
- * is on, the voice is Badass (never Professional, Best friend or Rose), and
- * nobody else can be watching (no meeting state, no screen share).
- */
-export function curseBlock(g: CurseGate): CurseBlock | null {
-  if (!g.enabled) return "off";
-  if (g.voice !== "badass") return "voice";
-  if (g.meeting) return "meeting";
-  if (g.screenShared) return "screen_shared";
-  return null;
-}
-export const curseAllowed = (g: CurseGate): boolean => curseBlock(g) === null;
-
-/**
- * A small seeded random source in [0, 1) (mulberry32), so a test can replay
- * the exact sequence of takes. Same seed, same sequence.
- */
-export function seededRandom(seed: number): () => number {
-  let a = Math.floor(Number.isFinite(seed) ? seed : 0) >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 export interface PickedLine {
@@ -245,18 +192,11 @@ export function pickTakeLine(words: number, voice: VoiceId, memory: TakeLineMemo
   const fresh = (l: string) => !recent.has(l);
 
   // Curse mode: Badass only, about 1 take in 4, strongest word once a day.
-  // With `rand`, the draw happens on every take (so the sequence is replayable
-  // from the seed); without it, every CURSE_EVERY-th nonce.
-  const roll = opts.rand ? opts.rand() : -1;
-  const swap = opts.rand ? roll < 1 / CURSE_EVERY : mod(nonce, CURSE_EVERY) === 0;
-  if (voice === "badass" && opts.curse && v.curse && v.curse.length && swap) {
+  if (voice === "badass" && opts.curse && v.curse && v.curse.length && mod(nonce, CURSE_EVERY) === 0) {
     const strongUsed = opts.today != null && memory.strongDay === opts.today;
     const pool = v.curse.filter((l) => fresh(l) && !(strongUsed && isStrongest(l)));
     if (pool.length) {
-      const idx = opts.rand
-        ? Math.min(pool.length - 1, Math.floor((roll * CURSE_EVERY) * pool.length))
-        : mod(Math.floor(nonce / CURSE_EVERY), pool.length);
-      const key = pool[Math.max(0, idx)];
+      const key = pool[mod(Math.floor(nonce / CURSE_EVERY), pool.length)];
       return { text: fillLine(key, words), key, band, source: "curse" };
     }
   }
