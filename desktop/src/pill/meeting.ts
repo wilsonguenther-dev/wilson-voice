@@ -451,8 +451,9 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
         return next === prev.next ? prev : { ...prev, next };
       }
       if (prev.kind !== "processing" || prev.step !== "summarizing") return prev;
+      const writingId = prev.id;
       const jobs = Array.isArray(input.jobs) ? input.jobs : [];
-      const job = jobs.find((j) => j && j.id === prev.id);
+      const job = jobs.find((j) => j && j.id === writingId);
       // No job in the store: nothing is writing these notes (the worker
       // restarted, or it never had them) — the pill rests.
       if (!job || typeof job.phase !== "string") return MEETING_PILL_IDLE;
