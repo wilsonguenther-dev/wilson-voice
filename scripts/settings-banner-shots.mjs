@@ -99,7 +99,24 @@ const SCENARIOS = [
 function fixtures(statusPatch) {
   const base = JSON.parse(readFileSync(join(ROOT, "scripts", "smoke-fixtures.json"), "utf8"));
   delete base._README;
-  return { ...base, get_status: { ...base.get_status, modelReady: true, ...statusPatch } };
+  return {
+    ...base,
+    get_status: { ...base.get_status, modelReady: true, ...statusPatch },
+    // Settings > Advanced mounts ModelProviders, which needs a ProvidersView
+    // object; the shim's generic list_* answer ([]) would crash the view.
+    list_model_providers: base.list_model_providers ?? {
+      providers: [
+        {
+          id: "bundled", kind: "bundled", label: "Bundled", baseUrl: "", model: "", contextTokens: 0, timeoutS: 0,
+          leaves: false, leavesLabel: "no", leavesHost: null, keySaved: false, keyHint: "", deletable: false,
+        },
+      ],
+      notesProvider: "",
+      polishProvider: "",
+      wiredKinds: ["bundled"],
+      activeLeaves: [],
+    },
+  };
 }
 
 /* ── page-side measurement ────────────────────────────────────────────── */
@@ -130,12 +147,19 @@ const MEASURE = String.raw`(() => {
     });
   const hr = R(h3);
   const at = document.elementFromPoint((hr.l + hr.r) / 2, (hr.t + hr.b) / 2);
+  // The header nearest the top of the scroller: at scrollTop 0 the Advanced
+  // panel is taller than the 773 px viewport, so "Model providers" sits below
+  // the fold and the header directly under the banner is the first h3.
+  const leadEl = [...content.querySelectorAll("h3")].find((h) => vis(h));
+  const lr = leadEl ? R(leadEl) : null;
+  const leadAt = lr && document.elementFromPoint((lr.l + lr.r) / 2, (lr.t + lr.b) / 2);
   const wcs = wrap && getComputedStyle(wrap);
   const mcs = getComputedStyle(document.querySelector(".main"));
   return {
     ready: true,
     h3: hr,
     h3Hit: !!at && (at === h3 || h3.contains(at)),
+    lead: lr ? { rect: lr, text: leadEl.textContent.trim().slice(0, 40), hit: !!leadAt && (leadAt === leadEl || leadEl.contains(leadAt)) } : null,
     hitWhat: at ? at.tagName.toLowerCase() + (at.className ? "." + String(at.className).split(" ").join(".") : "") : null,
     content: { ...R(content), scrollTop: content.scrollTop, clientHeight: content.clientHeight },
     banners,
@@ -269,9 +293,21 @@ async function run() {
           if (b.position !== "static") fail(check, `${tag} ${b.cls} is position:${b.position}`);
           if (b.rect.h + 1 < b.scrollHeight) fail(check, `${tag} ${b.cls} squashed: height ${b.rect.h} < scrollHeight ${b.scrollHeight}`);
         }
-        if (!m.h3Hit) fail(check, `${tag} elementFromPoint at the h3 centre is ${m.hitWhat}, not the h3`);
-        if (m.h3.t < m.content.t - EPS || m.h3.b > m.content.b + EPS) {
-          fail(check, `${tag} the h3 ${JSON.stringify(m.h3)} is not fully inside .content ${JSON.stringify(m.content)}`);
+        // "header" state: the Model providers h3 sits just under the banner.
+        // "top" state: the first header in .content is the one under the banner.
+        const target = state === "header"
+          ? { name: "Model providers", rect: m.h3, hit: m.h3Hit }
+          : m.lead && { name: m.lead.text, rect: m.lead.rect, hit: m.lead.hit };
+        if (!target) fail(check, `${tag} no visible h3 in .content`);
+        else {
+          for (const b of m.banners) {
+            if (overlap(b.rect, target.rect)) fail(check, `${tag} ${b.cls} intersects the "${target.name}" h3`);
+          }
+          if (!target.hit) fail(check, `${tag} elementFromPoint at the "${target.name}" h3 centre is not the h3 (${m.hitWhat})`);
+          if (target.rect.t < m.content.t - EPS || target.rect.b > m.content.b + EPS) {
+            fail(check, `${tag} the "${target.name}" h3 ${JSON.stringify(target.rect)} is not fully inside .content ${JSON.stringify(m.content)}`);
+          }
+          console.log(`${check} ${tag} "${target.name}" h3 visible, hit, clear of every banner`);
         }
         if (!m.wrap) fail("W", `${tag} no [data-main-banners] row`);
         else if (m.wrap.position !== "static" || m.wrap.flexShrink !== "0") {
