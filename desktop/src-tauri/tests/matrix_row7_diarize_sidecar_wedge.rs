@@ -280,7 +280,7 @@ fn a_crashed_sidecar_leaves_the_meeting_complete_with_plain_labels() {
                 r#"printf '{"type":"ready","version":"stub"}\n'"#,
                 "\nread -r line\nexit 3\n"
             ));
-            Ok(command)
+            Ok::<std::process::Command, DiarizeError>(command)
         })
     };
     let pool = Arc::new(DiarizePool::new(crash, Duration::from_secs(10)));

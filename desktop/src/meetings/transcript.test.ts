@@ -296,3 +296,43 @@ describe("isTwoTrack", () => {
     ).toBe(true);
   });
 });
+
+describe("yap-1106-diarize-wire — speaker labels from cluster_index", () => {
+  const clustered = (
+    id: string,
+    startSeconds: number,
+    endSeconds: number,
+    track: number,
+    clusterIndex: number | null,
+    text: string,
+  ): TranscriptSegment => ({ id, startSeconds, endSeconds, track, clusterIndex, text });
+
+  it("an in-person meeting with two clusters renders Speaker 1 and Speaker 2, most talk first", () => {
+    const lines = orderedTranscript(
+      [
+        clustered("a", 0, 2, MIC_TRACK, 5, "short"),
+        clustered("b", 2, 12, MIC_TRACK, 3, "the long talker"),
+        clustered("c", 12, 13, MIC_TRACK, 5, "again"),
+      ],
+      "in_person",
+    );
+    expect(lines.map((l) => l.speaker)).toEqual(["Speaker 2", "Speaker 1", "Speaker 2"]);
+  });
+
+  it("a virtual call labels the call track per cluster and keeps the mic as You", () => {
+    const lines = orderedTranscript(
+      [
+        clustered("m", 0, 1, MIC_TRACK, null, "me"),
+        clustered("x", 1, 5, SYSTEM_TRACK, 0, "remote one"),
+        clustered("y", 5, 7, SYSTEM_TRACK, 1, "remote two"),
+      ],
+      "virtual",
+    );
+    expect(lines.map((l) => l.speaker)).toEqual(["You", "Call · Speaker 1", "Call · Speaker 2"]);
+  });
+
+  it("an unattributed row keeps today's plain label", () => {
+    const lines = orderedTranscript([clustered("u", 0, 1, MIC_TRACK, null, "plain")], "in_person");
+    expect(lines[0].speaker).toBe(UNCLUSTERED_SPEAKER_LABEL);
+  });
+});

@@ -347,7 +347,7 @@ fn run(
 ) -> DiarizeOutcome {
     let pool: &DiarizePool = match backend {
         DiarizeBackend::Off => return DiarizeOutcome::new(DiarizeResult::Skipped("off")),
-        DiarizeBackend::Pool(pool) => pool,
+        DiarizeBackend::Pool(pool) => pool.as_ref(),
         DiarizeBackend::Shipped => match shipped_pool() {
             Ok(pool) => pool,
             Err(result) => {
