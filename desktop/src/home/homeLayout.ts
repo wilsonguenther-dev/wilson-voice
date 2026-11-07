@@ -20,8 +20,12 @@
 export const ROOM_W = 320;
 export const ROOM_H = 160;
 
-/** The only scales the room is ever drawn at, largest first. */
-export const ROOM_SCALES = [4, 3, 2] as const;
+/** The only scales the room is ever drawn at, largest first.
+ * yap-1107-parity-home: the approved Home page (section 5, 2026-11-06) draws the
+ * layered studio at EXACTLY 3x (960 x 480) edge to edge in the main column, so
+ * 3x is the ceiling — a wide window shows more wood beside the room, never a
+ * 4x room. A column narrower than 960 px steps down to 2x (whole numbers only). */
+export const ROOM_SCALES = [3, 2] as const;
 export type RoomScale = (typeof ROOM_SCALES)[number];
 
 /**
@@ -73,6 +77,28 @@ export function statsLine(o: { wordsToday?: number | null; streakDays?: number |
   if (typeof o.wordsToday === "number") parts.push(`${fmt(o.wordsToday)} words today`);
   if (typeof o.streakDays === "number") parts.push(`${fmt(o.streakDays)} day streak`);
   if (typeof o.totalTakes === "number") parts.push(`${fmt(o.totalTakes)} ${o.totalTakes === 1 ? "take" : "takes"}`);
+  return parts;
+}
+
+/** One figure of the stats line: the number (bold, mono 20 px on the approved
+ * page) and its label ("words today"). */
+export interface StatPart {
+  key: "words" | "streak" | "takes";
+  value: string;
+  label: string;
+}
+
+/**
+ * yap-1107-parity-home — the stats line as the approved page draws it:
+ * `<b>2,632</b>words today  <b>17</b>day streak  <b>288</b>takes`. Same rule as
+ * statsLine: a value that has not loaded is left out, never shown as 0.
+ */
+export function statsParts(o: { wordsToday?: number | null; streakDays?: number | null; totalTakes?: number | null }): StatPart[] {
+  const parts: StatPart[] = [];
+  if (typeof o.wordsToday === "number") parts.push({ key: "words", value: fmt(o.wordsToday), label: "words today" });
+  if (typeof o.streakDays === "number") parts.push({ key: "streak", value: fmt(o.streakDays), label: "day streak" });
+  if (typeof o.totalTakes === "number")
+    parts.push({ key: "takes", value: fmt(o.totalTakes), label: o.totalTakes === 1 ? "take" : "takes" });
   return parts;
 }
 

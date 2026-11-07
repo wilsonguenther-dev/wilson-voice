@@ -1,0 +1,489 @@
+{
+  "item": "yap-1107-parity-home",
+  "approved": "~/Obsidian/Wilson-Brain/Projects/Yap/design-2026-11-06/home.html (s05 newest; s03, s04 approved earlier)",
+  "measuredWith": "node scripts/parity-crops.mjs --page home.html --width 1440 --height 900 (2x, frame 1200 ms), 2026-11-07",
+  "captures": "YAP_SMOKE_SCALE=2 YAP_SMOKE_VIEWS=home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json bash scripts/smoke-windowed.sh (980x700 + 720x520), plus YAP_SMOKE_W1=1188 YAP_SMOKE_H1=880 for the s05 states",
+  "frameMs": 1200,
+  "states": [
+    {
+      "id": "s05-room-3x",
+      "note": "s05: the layered studio (sideview.js) at exactly 3x, 960 x 480, no smoothing. Window 1188 = artifact main column (968) + the app sidebar (220).",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#layRoom"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".yappy-house .yh-stage",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 960,
+        "h": 480
+      },
+      "measured": {
+        "w": 960,
+        "h": 480,
+        "spriteScale": "3 CSS px per art px (backing 1920 x 960 at 2x)"
+      }
+    },
+    {
+      "id": "s05-room-frame",
+      "note": "s05: the room on wood, edge to edge (margin 0 -20px), the label on it at 26/24 with the green dot; the wooden pixel frame is drawn inside the canvas buffer.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .room.lay"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".yappy-house",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 960,
+        "h": 480,
+        "fontPx": [
+          12
+        ],
+        "colors": [
+          "#3a2418",
+          "#6fd08c",
+          "#f2efe6",
+          "#1d1c1ab8"
+        ]
+      },
+      "measured": {
+        "w": 960,
+        "h": 480,
+        "fontPx": [
+          12
+        ],
+        "label": {
+          "left": 26,
+          "top": 24,
+          "padding": "5 9",
+          "radius": 8,
+          "dot": 7
+        },
+        "colors": [
+          "#1d1c1ab8",
+          "#3a2418",
+          "#6fd08c",
+          "#f2efe6"
+        ]
+      }
+    },
+    {
+      "id": "s05-stats",
+      "note": "s05: the quiet stats line: bold mono 20 px numbers, 14 px ink-2 labels, 28 px apart, Insights as 12 px meta.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .stats"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".home-stats",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 920,
+        "fontPx": [
+          12,
+          14,
+          20
+        ],
+        "padding": {
+          "t": 2,
+          "r": 4,
+          "b": 2,
+          "l": 4
+        },
+        "gap": {
+          "row": 28,
+          "col": 28
+        },
+        "colors": [
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f"
+        ]
+      },
+      "measured": {
+        "w": 920,
+        "h": 30.69,
+        "fontPx": [
+          12,
+          14,
+          20
+        ],
+        "gap": 28,
+        "colors": [
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f"
+        ]
+      }
+    },
+    {
+      "id": "s05-last-take",
+      "note": "s05: the live last take panel (1.6fr), Copy dark, Open, Paste again.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .lower .panel:first-child"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".latest-take",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "fontPx": [
+          12,
+          14
+        ],
+        "padding": {
+          "t": 16,
+          "r": 16,
+          "b": 16,
+          "l": 16
+        }
+      },
+      "measured": {
+        "w": 556.3,
+        "h": 243.56,
+        "fontPx": [
+          12,
+          14
+        ],
+        "padding": 16,
+        "radius": 14,
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#8b877f",
+          "#fbfaf7",
+          "#ffffff"
+        ]
+      }
+    },
+    {
+      "id": "s05-needs-attention",
+      "note": "s05: Needs attention panel (1fr) beside the last take; hidden when empty (fixtures must carry failed takes).",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .lower .panel:nth-child(2)"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".needs-attention",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "padding": {
+          "t": 16,
+          "r": 16,
+          "b": 16,
+          "l": 16
+        }
+      },
+      "measured": {
+        "w": 347.7,
+        "h": 243.56,
+        "fontPx": [
+          12,
+          13,
+          14
+        ],
+        "padding": 16,
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f",
+          "#fbfaf7",
+          "#ffffff"
+        ]
+      }
+    },
+    {
+      "id": "s05-search",
+      "note": "s05: the search box, 36 px, hint as 13 px ink-3 text.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .search"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".home-search",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 920,
+        "h": 36,
+        "fontPx": [
+          13
+        ],
+        "colors": [
+          "#8b877f",
+          "#fbfaf7"
+        ]
+      },
+      "measured": {
+        "w": 920,
+        "h": 36,
+        "fontPx": [
+          13
+        ],
+        "padding": "0 12",
+        "colors": [
+          "#1b1b1b1c",
+          "#8b877f",
+          "#fbfaf7"
+        ]
+      }
+    },
+    {
+      "id": "s05-last-five",
+      "note": "s05: the last five takes, 110 px | 1fr | 70 px rows.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .hist"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".recent-takes",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 920,
+        "fontPx": [
+          12,
+          13
+        ]
+      },
+      "measured": {
+        "w": 920,
+        "h": 195.7,
+        "fontPx": [
+          12,
+          13
+        ],
+        "colors": [
+          "#1b1b1b1c",
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f"
+        ]
+      }
+    },
+    {
+      "id": "s03-end-row",
+      "note": "s03: Home ends: the dashed rule and \"See all\" — no list grows as you scroll.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .endrow"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".home-end",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 920,
+        "padding": {
+          "t": 12,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "fontPx": [
+          12,
+          13
+        ]
+      },
+      "measured": {
+        "w": 920,
+        "h": 37.14,
+        "fontPx": [
+          12,
+          13
+        ],
+        "colors": [
+          "#1b1b1b1c",
+          "#8b877f"
+        ]
+      }
+    },
+    {
+      "id": "s05-footer",
+      "note": "s05/s03: the footer, 40 px, never scrolls.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .appfoot"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".app-footer",
+        "width": 1188,
+        "height": 880,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-1188x880.png"
+      },
+      "expect": {
+        "w": 968,
+        "h": 40,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 0,
+          "r": 24,
+          "b": 0,
+          "l": 24
+        },
+        "gap": {
+          "row": 16,
+          "col": 16
+        }
+      },
+      "measured": {
+        "w": 968,
+        "h": 40,
+        "fontPx": [
+          11,
+          12
+        ],
+        "colors": [
+          "#1b1b1b1c",
+          "#2f8f5b",
+          "#56534d",
+          "#8b877f",
+          "#eceae4",
+          "#f3f2ee",
+          "#ffffff38"
+        ]
+      }
+    },
+    {
+      "id": "s04-room-980x700",
+      "note": "s04 room sizes at the default 980 x 700 window: the column (752 px with the bleed) steps down to 2x (640 x 320), whole numbers only; the label is unchanged and sits on the room.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .room.lay .label"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".yappy-house .yh-label",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-980x700.png"
+      },
+      "expect": {
+        "h": 25,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 5,
+          "r": 9,
+          "b": 5,
+          "l": 9
+        },
+        "gap": {
+          "row": 7,
+          "col": 7
+        }
+      },
+      "measured": {
+        "h": 25,
+        "fontPx": [
+          12
+        ],
+        "padding": "5 9",
+        "gap": 7,
+        "colors": [
+          "#1d1c1ab8",
+          "#6fd08c",
+          "#f2efe6"
+        ]
+      }
+    },
+    {
+      "id": "s04-room-720x520",
+      "note": "s04 room sizes at the minimum 720 x 520 window: the sidebar rails (56 px, RAIL_AUTO_BELOW_PX 900) so the column is 656 px with the bleed and the 2x room (640 x 320) fits uncropped.",
+      "artifact": {
+        "page": "home.html",
+        "selector": "#s05 .room.lay .label"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".yappy-house .yh-label",
+        "width": 720,
+        "height": 520,
+        "fixtures": "scripts/smoke-fixtures-daily.json",
+        "capture": "custom-home-720x520.png"
+      },
+      "expect": {
+        "h": 25,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 5,
+          "r": 9,
+          "b": 5,
+          "l": 9
+        },
+        "gap": {
+          "row": 7,
+          "col": 7
+        }
+      },
+      "measured": {
+        "h": 25,
+        "fontPx": [
+          12
+        ],
+        "padding": "5 9",
+        "gap": 7
+      }
+    }
+  ]
+}
