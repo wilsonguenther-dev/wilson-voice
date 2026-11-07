@@ -174,9 +174,6 @@
   --pill-chip-text: rgba(255, 255, 255, 0.86);
   --pill-chip-text-quiet: rgba(255, 255, 255, 0.56);
   --pill-chip-picked: #8fb4ff; /* the mode word while a 15-minute pick runs */
-  /* WF-13 — "I can't hear <mic>": a soft amber, advice not an error. */
-  --pill-silent-mic-text: rgba(253, 230, 138, 0.92);
-  --pill-silent-mic-button-hover: rgba(255, 255, 255, 0.28);
 
   /* The Copy card — the dark glass card the float window raises when dictation
      cannot be inserted (CopyCard.tsx). It sits over the user's screen like the

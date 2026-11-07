@@ -936,12 +936,6 @@ pub struct AppStatus {
     /// The pill builds "Hands-free — <chord_label> to stop" from it.
     #[serde(default)]
     pub chord_label: String,
-    /// WF-13 — "I can't hear <mic>": the live take's first 1.5 s was below the
-    /// silence floor (`record::SILENT_MIC_FLOOR`). The take keeps recording;
-    /// the pill shows this line with a Switch mic button. `None` when not
-    /// recording, when the mic is heard, or once sound arrives.
-    #[serde(default)]
-    pub silent_mic_warning: Option<String>,
 }
 
 struct AppState {
@@ -1613,17 +1607,6 @@ fn build_status(state: &AppState) -> AppStatus {
         Some(note) if recording && !*state.session_cap_warned.lock() => note,
         _ => message,
     };
-    // WF-13 — the take's mic records nothing: say so (WF-10's switch note and
-    // the ceiling notice outrank it; a mid-take switch clears it anyway).
-    let silent_mic_warning = record::silent_mic_warning().filter(|_| recording);
-    let message = match &silent_mic_warning {
-        Some(note)
-            if record::mid_take_mic_note().is_none() && !*state.session_cap_warned.lock() =>
-        {
-            note.clone()
-        }
-        _ => message,
-    };
     #[cfg(target_os = "macos")]
     let message = if still_recording {
         ptt_macos::still_recording_message(&chord_label)
@@ -1676,7 +1659,6 @@ fn build_status(state: &AppState) -> AppStatus {
         tap_health_message,
         still_recording,
         chord_label,
-        silent_mic_warning,
     }
 }
 
