@@ -627,10 +627,14 @@ pub const ROWS: &[MatrixRow] = &[
         // ever diarized. The decision below says what a meeting BECOMES when
         // the pool gives up; the day something calls it, this row is a `Test`
         // row and `matrix_coverage`'s tripwire says so out loud.
-        coverage: Coverage::PolicyOnly {
+        // yap-1106-diarize-wire PROMOTED this row: `meeting_diarize::diarize_meeting`
+        // runs the pool on every finished meeting (from `run_meeting_job`) and
+        // applies `diarize_sidecar_degrade` on any failure; the row's test
+        // drives a crashing stub sidecar through that shipping call.
+        coverage: Coverage::Test {
             test: "matrix_row7_diarize_sidecar_wedge.rs",
-            wiring_pr: None,
-            absent_call_site: "diarize_sidecar_degrade",
+            subject: "diarize_meeting",
+            subject_module: "meeting_diarize.rs",
         },
     },
     MatrixRow {
@@ -1643,7 +1647,7 @@ mod tests {
             .collect();
         assert_eq!(
             unwired,
-            vec!["5b", "16b", "17b", "3", "14", "7", "8", "13"],
+            vec!["5b", "16b", "17b", "3", "14", "8", "13"],
             "22-A's three unwired policies (row 16's finalize half left with Y1-B; its resume offer stays as 16b), the four YV105 rows whose mechanism \
              has merged and whose producer has not, and YV132's three yap23 \
              rows — whose mechanism (the sidecar pool, the model catalog) has \
@@ -1695,7 +1699,9 @@ mod tests {
         // Row 16 LEFT this set with Y1-B: `power::SleepWakeObserver` registers
         // the notifications and the meeting controller is subscribed to it.
         // Its resume offer stayed, as 16b (fix-239).
-        assert_eq!(unowned, vec!["5b", "16b", "17b", "3", "7", "8", "13"]);
+        // Row 7 LEFT it with yap-1106-diarize-wire: `meeting_diarize::diarize_meeting`
+        // runs on every finished meeting and calls `diarize_sidecar_degrade`.
+        assert_eq!(unowned, vec!["5b", "16b", "17b", "3", "8", "13"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1848,12 +1854,18 @@ mod tests {
     /// — the same device rows `5b`, 16 and `17b` have carried since YV99.
     #[test]
     fn the_three_yap23_rows_admit_that_no_meeting_is_ever_diarized() {
+        // yap-1106-diarize-wire wired row 7: a meeting IS diarized now, and its
+        // give-up path is the shipping `meeting_diarize::diarize_meeting`.
+        let row7 = ROWS.iter().find(|r| r.id == "7").expect("row 7");
+        assert_eq!(
+            row7.coverage,
+            Coverage::Test {
+                test: "matrix_row7_diarize_sidecar_wedge.rs",
+                subject: "diarize_meeting",
+                subject_module: "meeting_diarize.rs",
+            }
+        );
         for (id, test, call_site) in [
-            (
-                "7",
-                "matrix_row7_diarize_sidecar_wedge.rs",
-                "diarize_sidecar_degrade",
-            ),
             // Row 8's absent call site is the GATE, not the degrade. YV126
             // gave `cluster_sanity` a caller (`diarize::rank_and_floor` applies
             // it, which is how the table and the code stopped giving two

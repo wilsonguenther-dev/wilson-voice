@@ -160,3 +160,24 @@ model sherpa-onnx-pyannote-segmentation-3-0 revision c0f5026b16bf2cac9b5f9e6e2a3
 model wespeaker-en-voxceleb-campplus sha256 c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef
 model wespeaker-en-voxceleb-campplus revision c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec
 ```
+
+## 2026-11-07 — yap-1106-diarize-wire: the pass is wired (no new package)
+
+No crate or model changes: the Pick above is what runs. `meeting_diarize::diarize_meeting`
+(called from `meeting_pipeline::run_meeting_job` after the transcript is final and before
+notes) hands the right track to the vendored sidecar through `diarize::cluster_track`:
+the mic track for in-person and unknown meetings, the call track for a virtual meeting
+(its mic stays "You"). Rows are attributed from the ASR word times kept in the per-track
+resume ledger with `meeting_asr::build_speaker_turns` (section 2), and a row whose words
+belong to two speakers is split at the switch (`Database::split_segment_by_speaker`).
+
+Two caller-side numbers, both PROVISIONAL and both ported from the hedgehog analyzer's
+design (DIARIZE.md "Pipeline"; diarize.py `_cluster` and `_w_spk`), not measured on
+Yap's corpus yet — the PENDING measurements in the table above still decide them:
+
+- cosine DISTANCE cut `PROVISIONAL_CLUSTER_DISTANCE = 0.75` (env `YAP_EVAL_CLUSTER_DISTANCE`, evals only);
+- shortest turn worth an embedding `PROVISIONAL_SHORTEST_TURN = 1.5 s` (env `YAP_EVAL_MIN_TURN_MS`, evals only).
+
+Not ported in this item (later analyzer items own them): folding clusters under 1.6 s
+into the nearest centroid (`_merge_small`), single-window smoothing (`_mode_smooth`),
+enrolled voiceprints, the talk-time summary, and overlap flags.

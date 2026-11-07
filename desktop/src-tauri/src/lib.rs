@@ -86,6 +86,7 @@ mod latency;
 // (`tests/meeting_*.rs`) and because the eval harness (`tests/meeting_eval.rs`)
 // must score the SHIPPED chunk geometry and the SHIPPED merge, not a copy.
 pub mod meeting_asr;
+pub mod meeting_diarize;
 pub mod meeting_pipeline;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
@@ -9110,7 +9111,7 @@ fn cloud_notes(
     let lines = meetings::render_transcript(segments, kind);
     let transcript: String = lines
         .iter()
-        .map(|l| format!("[{}] {}: {}\n", l.offset, l.speaker, l.text))
+        .map(|l| format!("[{}] {}: {}\n", l.offset, l.label(), l.text))
         .collect();
     if transcript.trim().is_empty() {
         return None;
@@ -12967,6 +12968,7 @@ pub fn run() {
             }),
             // B3: hand the meeting to the notes worker and return at once — the
             // next queued meeting transcribes while this one's notes are made.
+            diarize: crate::meeting_diarize::DiarizeBackend::Shipped,
             after_transcript: Some(Arc::new(move |id: &str| {
                 // review-opus2 A6: the hook honours the upgrade ledger and a
                 // persisted cancel, exactly as the launch resume does.
