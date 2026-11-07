@@ -97,6 +97,44 @@ describe("ModelProviders", () => {
     expect(html).toContain("Notes go to openrouter.ai");
   });
 
+  it("counts the cloud route as leaving this Mac even when no pick names it (fix-l3b3-1)", () => {
+    const cloudKey: ProviderView = {
+      ...openrouter,
+      id: "cloud-key",
+      kind: "cloud_key",
+      label: "Cloud model (your key)",
+      baseUrl: "https://api.anthropic.com",
+      leavesLabel: "Yes — api.anthropic.com",
+      leavesHost: "api.anthropic.com",
+    };
+    const html = render({
+      providers: [bundled, cloudKey],
+      notesProvider: "",
+      polishProvider: "",
+      wiredKinds: ["bundled", "cloud_key"],
+      activeLeaves: [
+        { task: "notes", host: "api.anthropic.com" },
+        { task: "polish", host: "api.anthropic.com" },
+      ],
+    });
+    expect(html).not.toContain("Nothing leaves it");
+    expect(html).not.toContain("Nothing is uploaded");
+    expect(html).toContain("Notes go to api.anthropic.com");
+    expect(html).toContain("Polish goes to api.anthropic.com");
+    expect(html).toContain("that text leaves this Mac");
+  });
+
+  it("still says nothing leaves when the route is off and the picks are local", () => {
+    const html = render({
+      providers: [bundled],
+      notesProvider: "",
+      polishProvider: "",
+      wiredKinds: ["bundled", "cloud_key"],
+      activeLeaves: [],
+    });
+    expect(html).toContain("Nothing leaves it");
+  });
+
   it("shows a finished test's latency and reply, or its error sentence", () => {
     expect(
       testLine({ providerId: "b", ok: true, latencyMs: 812, reply: "OK", error: null, keyHint: "" }),

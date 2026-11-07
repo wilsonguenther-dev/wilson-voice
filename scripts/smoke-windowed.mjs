@@ -235,10 +235,26 @@ async function newPage(cdp, url) {
 }
 
 
+/* yap-1107-parity-kit — YAP_SMOKE_SCALE (default 1) is the deviceScaleFactor
+   every main-window capture is taken at. 2 = Retina, so a view's PNG can sit
+   next to a 2x design-artifact crop in scripts/parity-sheet.mjs. Unset or 1 =
+   the original 1x smoke, byte-for-byte unchanged. Layout (the detectors'
+   input) is in CSS px, so the scale never changes a finding. */
+function smokeScale(raw) {
+  if (raw === undefined || String(raw).trim() === "") return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 4) {
+    console.error("YAP_SMOKE_SCALE must be a number in (0, 4], got " + JSON.stringify(raw));
+    process.exit(2);
+  }
+  return n;
+}
+const SCALE = smokeScale(process.env.YAP_SMOKE_SCALE);
+
 async function setSize(cdp, sessionId, w, h) {
   await cdp.send(
     "Emulation.setDeviceMetricsOverride",
-    { width: w, height: h, deviceScaleFactor: 1, mobile: false },
+    { width: w, height: h, deviceScaleFactor: SCALE, mobile: false },
     sessionId
   );
 }
@@ -593,6 +609,7 @@ async function capture() {
     fixtures: FIXTURES_PATH,
     selected: SELECTED,
     sizes: SIZES.map((s) => s.w + "x" + s.h),
+    scale: SCALE,
     emptyStateAttr: EMPTY_STATE_ATTR,
     spinnerBudgetMs: SPINNER_BUDGET_MS,
     captures: views.length,
@@ -603,7 +620,7 @@ async function capture() {
   writeFileSync(join(SHOTS_ROOT, "LATEST"), run + "\n");
 
   console.log("");
-  console.log("run " + run + " — " + views.length + " captures, " + failed.length + " carrying findings");
+  console.log("run " + run + " — " + views.length + " captures" + (SCALE !== 1 ? " @" + SCALE + "x" : "") + ", " + failed.length + " carrying findings");
   console.log("shots + " + RESULT_FILE + ": " + outDir);
   return failed.length ? 1 : 0;
 }

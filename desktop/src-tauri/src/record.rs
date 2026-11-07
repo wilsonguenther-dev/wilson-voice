@@ -3875,6 +3875,8 @@ impl StreamDsp {
         }
         // SP-06: the flushed tail is part of the take — the analysis sees it too.
         self.feed_analysis(before);
+        // SP-05: …and so does the streaming decode.
+        self.feed_stream(before);
         // yap-audit-meeting-timings: while a meeting records, the number that
         // matters is the MEETING's — this take's counter is 0 whenever nobody
         // is dictating, which is what made a retune 30 minutes into a meeting
@@ -3960,6 +3962,9 @@ impl StreamDsp {
         // SP-06: …and through the release DSP + Silero, frame by frame, so the
         // take is analysed by the time the key comes up.
         self.feed_analysis(before);
+        // SP-05: …and into the streaming decode, so the take is mostly
+        // transcribed by the time the key comes up.
+        self.feed_stream(before);
         // …and Y3's drain: everything behind the working window goes to the
         // take's own WAV, so `out` stops growing with the length of the take.
         self.drain_to_spill(false);
@@ -4024,15 +4029,29 @@ impl StreamDsp {
         }
     }
 
+    /// SP-05 — hand the 16 kHz samples from `from` on to the take's streaming
+    /// decode (`stream_decode`), at the take's running AGC gain. A no-op when
+    /// no stream is armed (CLI, bench, tests).
+    fn feed_stream(&self, from: usize) {
+        if from >= self.out.len() {
+            return;
+        }
+        crate::stream_decode::feed(&self.out[from..], self.running_gain());
+    }
+
     /// Close the take: flush the resampler's tail and hand the buffers over.
     fn take(&mut self) -> CapturedAudio {
         let before_tail = self.out.len();
         self.resampler.finish(&mut self.out);
         let gain = self.running_gain();
         self.feed_analysis(before_tail);
+        self.feed_stream(before_tail);
         // SP-06: the analysis is only worth anything if it saw EVERY sample of
         // the take; anything else and the batch chain decides.
         let captured_total = self.spilled + self.out.len();
+        // SP-05: the stream must have seen exactly this many samples, or the
+        // release path decodes the whole take in batch.
+        crate::stream_decode::seal(captured_total);
         let analysis = match self.analysis.take() {
             Some(a) if a.fed() == captured_total => Some(a),
             Some(a) => {

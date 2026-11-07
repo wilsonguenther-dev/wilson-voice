@@ -24,6 +24,8 @@ import {
   MIC_TRACK,
   SYSTEM_TRACK,
   UNCLUSTERED_SPEAKER_LABEL,
+  clusterLabel,
+  withSpeakerNames,
   type MeetingKind,
   type TranscriptSegment,
 } from "./transcript";
@@ -360,5 +362,47 @@ describe("yap-1106-diarize-wire — speaker labels from cluster_index", () => {
     const lines = orderedTranscript([noEnd("late", 4, 9), noEnd("seven", 0, 7), noEnd("two", 0, 2)], "in_person");
     const bySegment = Object.fromEntries(lines.map((l) => [l.segment.id, l.speaker]));
     expect(bySegment).toEqual({ two: "Speaker 1", seven: "Speaker 2", late: "Speaker 3" });
+  });
+});
+
+describe("yap-1106-who-is-this — saved names win over Speaker N", () => {
+  const clustered = (
+    id: string,
+    startSeconds: number,
+    endSeconds: number,
+    track: number,
+    clusterIndex: number | null,
+    text: string,
+  ): TranscriptSegment => ({ id, startSeconds, endSeconds, track, clusterIndex, text });
+  const segs = [
+    clustered("a", 0, 2, MIC_TRACK, 5, "short"),
+    clustered("b", 2, 12, MIC_TRACK, 3, "the long talker"),
+    clustered("c", 12, 13, MIC_TRACK, 5, "again"),
+  ];
+
+  it("withSpeakerNames with no names copies the segments untouched", () => {
+    const out = withSpeakerNames(segs, []);
+    expect(out).toEqual(segs);
+    expect(out).not.toBe(segs);
+  });
+
+  it("a saved name relabels exactly the named lines, at once", () => {
+    const named = withSpeakerNames(segs, [
+      ["a", "Alex"],
+      ["c", "Alex"],
+    ]);
+    expect(named.map((s) => s.speakerName ?? null)).toEqual(["Alex", null, "Alex"]);
+    expect(orderedTranscript(named, "in_person").map((l) => l.speaker)).toEqual(["Alex", "Speaker 1", "Alex"]);
+  });
+
+  it("a blank saved name falls back to Speaker N", () => {
+    const named = withSpeakerNames(segs, [["a", "   "]]);
+    expect(orderedTranscript(named, "in_person")[0].speaker).toBe("Speaker 2");
+  });
+
+  it("clusterLabel is the Speaker N the cluster reads as in this meeting", () => {
+    expect(clusterLabel(segs, "in_person", MIC_TRACK, 3)).toBe("Speaker 1");
+    expect(clusterLabel(segs, "in_person", MIC_TRACK, 5)).toBe("Speaker 2");
+    expect(clusterLabel(segs, "in_person", MIC_TRACK, 9)).toBe(orderedTranscript([clustered("z", 0, 1, MIC_TRACK, null, "x")], "in_person")[0].speaker);
   });
 });
