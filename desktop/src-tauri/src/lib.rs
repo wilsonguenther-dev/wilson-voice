@@ -1991,6 +1991,23 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
         TrayCommand::PickLanguage(index) => {
             pick_language_from_tray(app, state, index);
         }
+        // WF-04 — "Dock at Bottom / on Left / on Right" from the pill's
+        // right-click menu: the same durable change as a drag.
+        TrayCommand::DockPill(dock) => {
+            dock_pill_from_menu(app, state, dock);
+        }
+        // WF-04 — "Open Scratchpad" from the pill's right-click menu.
+        TrayCommand::OpenScratchpad => match scratchpad::open(app) {
+            Ok(()) => log::info!("pill open_scratchpad ok"),
+            Err(e) => {
+                log::warn!("pill open_scratchpad failed error={e}");
+                notify(
+                    app,
+                    "Yap",
+                    "Yap could not open the scratchpad \u{2014} open it from Yap's window instead",
+                );
+            }
+        },
         // WF-14 — "Update ready — Restart to update". Never restarts out from
         // under a take, a polish or a meeting: busy, the click arms a deferred
         // restart (`sync_update_ready` fires it on the first quiet
@@ -2236,6 +2253,19 @@ fn place_language_submenu(
         })
         .map(|i| i + 1)
         .ok_or("tray: no hands-free item to anchor the languages submenu")?;
+    let submenu = language_submenu(app, plan)?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
+}
+
+/// WF-11 / WF-04 — the ONE builder of a "Languages" submenu from a plan: the
+/// menu bar places it (`place_language_submenu`) and the pill's right-click
+/// menu (`build_pill_menu`) appends it, so both show the same rows.
+fn language_submenu(
+    app: &AppHandle,
+    plan: &tray_menu::LanguageMenu,
+) -> Result<Submenu<Wry>, String> {
     let children = plan
         .rows
         .iter()
@@ -2257,17 +2287,14 @@ fn place_language_submenu(
         .collect();
     entries.push(&separator);
     entries.push(&settings_i);
-    let submenu = Submenu::with_id_and_items(
+    Submenu::with_id_and_items(
         app,
         tray_menu::ID_LANGUAGES,
         tray_menu::label(tray_menu::ID_LANGUAGES),
         true,
         &entries,
     )
-    .map_err(|e| format!("submenu: {e}"))?;
-    menu.insert(&submenu, at)
-        .map_err(|e| format!("submenu insert: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("submenu: {e}"))
 }
 
 /// WF-09 — the ONE place the Microphone submenu is mutated. MAIN THREAD only.
@@ -2321,6 +2348,16 @@ fn place_microphone_submenu(
         .position(|k| k.id().as_ref() == tray_menu::ID_HANDS_FREE)
         .map(|i| i + 1)
         .ok_or("tray: no hands-free item to anchor the microphone submenu")?;
+    let submenu = microphone_submenu(app, plan)?;
+    menu.insert(&submenu, at)
+        .map_err(|e| format!("submenu insert: {e}"))?;
+    Ok(())
+}
+
+/// WF-09 / WF-04 — the ONE builder of a "Microphone" submenu from a plan: the
+/// menu bar places it (`place_microphone_submenu`) and the pill's right-click
+/// menu (`build_pill_menu`) appends it, so both show the same rows.
+fn microphone_submenu(app: &AppHandle, plan: &tray_menu::MicMenu) -> Result<Submenu<Wry>, String> {
     let children = plan
         .rows
         .iter()
@@ -2336,7 +2373,7 @@ fn place_microphone_submenu(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("row item: {e}"))?;
-    let submenu = Submenu::with_id_and_items(
+    Submenu::with_id_and_items(
         app,
         tray_menu::ID_MICROPHONE,
         tray_menu::label(tray_menu::ID_MICROPHONE),
@@ -2346,10 +2383,7 @@ fn place_microphone_submenu(
             .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
             .collect::<Vec<_>>(),
     )
-    .map_err(|e| format!("submenu: {e}"))?;
-    menu.insert(&submenu, at)
-        .map_err(|e| format!("submenu insert: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("submenu: {e}"))
 }
 
 /// WF-07 — the ONE place the calendar rows of the menu are mutated. MAIN
@@ -6424,6 +6458,138 @@ fn pill_drag_end(
     let _ = app.emit("settings", &next);
     log::info!("pill dragged → {} dock", next.pill_position);
     Ok(())
+}
+
+/// WF-04 — the sentence the pill logs and returns when its right-click menu
+/// cannot open; the menu bar icon carries every row of it.
+const PILL_MENU_FAILED: &str =
+    "Yap could not open the pill menu \u{2014} use the Yap icon in the menu bar instead.";
+
+/// WF-04 — right-click (or Ctrl-click) on the pill pops a native menu, decided
+/// by `tray_menu::pill_context_menu` from the SAME item table as the menu bar
+/// (labels never drift) and dispatched by the tray's own `on_menu_event`
+/// through `tray_menu::command_for`. A sync command, so it runs on the main
+/// thread, where AppKit wants a popup.
+#[tauri::command]
+fn pill_context_menu(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    let (show_floating_pill, dock) = {
+        let s = state.settings.lock();
+        (
+            s.show_floating_pill,
+            tray_menu::PillDock::from_settings(&s.pill_position),
+        )
+    };
+    let inputs = tray_menu::PillMenuInputs {
+        show_floating_pill,
+        hidden: state.pill_hide.is_hidden(std::time::Instant::now()),
+        activity: update_activity(state.inner()),
+        dock,
+    };
+    let rows = tray_menu::pill_context_menu(inputs);
+    let menu = build_pill_menu(&app, &rows).map_err(|e| {
+        log::warn!("pill context_menu build_failed error={e}");
+        PILL_MENU_FAILED.to_string()
+    })?;
+    let Some(window) = app.get_webview_window("float") else {
+        log::warn!("pill context_menu failed reason=no_float_window");
+        return Err(PILL_MENU_FAILED.to_string());
+    };
+    log::info!(
+        "pill context_menu opened hide_enabled={} busy={} dock={} mic_rows={} lang_rows={} build_ms={}",
+        tray_menu::pill_hide_enabled(inputs),
+        tray_menu::take_or_meeting_running(inputs.activity),
+        dock.as_settings(),
+        tray_menu::MIC_SHOWN.snapshot().map(|m| m.rows.len()).unwrap_or(0),
+        tray_menu::LANG_SHOWN.snapshot().map(|m| m.rows.len()).unwrap_or(0),
+        t0.elapsed().as_millis()
+    );
+    window.popup_menu(&menu).map_err(|e| {
+        log::warn!("pill context_menu popup_failed error={e}");
+        PILL_MENU_FAILED.to_string()
+    })
+}
+
+/// WF-04 — the native menu for `tray_menu::pill_context_menu`'s rows. The
+/// Microphone and Languages submenus are built by the SAME builders the menu
+/// bar uses, from the rows the menu bar last drew (`MIC_SHOWN` /
+/// `LANG_SHOWN`), so a pick resolves against exactly what was shown. Before
+/// the device list or the language probe has landed the row is shown greyed.
+fn build_pill_menu(app: &AppHandle, rows: &[tray_menu::PillMenuRow]) -> Result<Menu<Wry>, String> {
+    use tray_menu::PillMenuRow;
+    let menu = Menu::new(app).map_err(|e| format!("menu: {e}"))?;
+    for row in rows {
+        let appended = match *row {
+            PillMenuRow::Separator => {
+                let sep =
+                    PredefinedMenuItem::separator(app).map_err(|e| format!("separator: {e}"))?;
+                menu.append(&sep)
+            }
+            PillMenuRow::Action { id, label, enabled } => {
+                let i = MenuItem::with_id(app, id, label, enabled, None::<&str>)
+                    .map_err(|e| format!("item {id}: {e}"))?;
+                menu.append(&i)
+            }
+            PillMenuRow::Dock { id, label, checked } => {
+                let i = CheckMenuItem::with_id(app, id, label, true, checked, None::<&str>)
+                    .map_err(|e| format!("dock {id}: {e}"))?;
+                menu.append(&i)
+            }
+            PillMenuRow::Microphone { label } => match tray_menu::MIC_SHOWN.snapshot() {
+                Some(plan) => menu.append(&microphone_submenu(app, &plan)?),
+                None => {
+                    let i = MenuItem::with_id(
+                        app,
+                        tray_menu::ID_MICROPHONE,
+                        label,
+                        false,
+                        None::<&str>,
+                    )
+                    .map_err(|e| format!("microphone: {e}"))?;
+                    menu.append(&i)
+                }
+            },
+            PillMenuRow::Languages { label } => match tray_menu::LANG_SHOWN.snapshot() {
+                Some(plan) => menu.append(&language_submenu(app, &plan)?),
+                None => {
+                    let i =
+                        MenuItem::with_id(app, tray_menu::ID_LANGUAGES, label, false, None::<&str>)
+                            .map_err(|e| format!("languages: {e}"))?;
+                    menu.append(&i)
+                }
+            },
+        };
+        appended.map_err(|e| format!("append: {e}"))?;
+    }
+    Ok(menu)
+}
+
+/// WF-04 — "Dock at Bottom / on Left / on Right" from the pill's menu: the
+/// SAME durable change a drag (`pill_drag_end`) and the Settings picker make —
+/// same setting, same store, same "settings" event, then the panel moves.
+fn dock_pill_from_menu(app: &AppHandle, state: &AppState, dock: tray_menu::PillDock) {
+    let to = dock.as_settings();
+    let (from, next) = {
+        let mut settings = state.settings.lock();
+        if settings.pill_position == to {
+            log::info!("pill dock_menu unchanged dock={to}");
+            return;
+        }
+        let from = std::mem::replace(&mut settings.pill_position, to.to_string());
+        (from, settings.clone())
+    };
+    float_pill::set_position(float_pill::PillPosition::from_settings(to));
+    float_pill::reposition(app);
+    if let Err(e) = persist_settings(&next) {
+        log::warn!("pill dock_menu persist_failed dock={to} error={e}");
+        notify(
+            app,
+            "Yap",
+            "Yap moved the pill but could not save it \u{2014} pick the dock again",
+        );
+    }
+    let _ = app.emit("settings", &next);
+    log::info!("pill dock_menu picked from={from} to={to}");
 }
 
 #[tauri::command]
@@ -12515,6 +12681,7 @@ pub fn run() {
             pill_click_toggle,
             pill_drag_move,
             pill_drag_end,
+            pill_context_menu,
             get_history,
             clear_history,
             delete_all_recordings,
