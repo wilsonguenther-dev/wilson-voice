@@ -5,8 +5,9 @@
  * only feeds it what the pill already knows and paints the answer:
  *
  *   events   `backtrack_caught` (Tidy), the meeting's notes turning ready
- *            (Hoot), the 100th / 1000th `transcript` (Yappy, when someone
- *            else sits in the pill) and `friend_event { event }` for the
+ *            (Hoot), Yappy's milestones — the 100th / 1000th `transcript`,
+ *            the longest take of the week, a new streak record (`noteTake`;
+ *            only when someone else sits in the pill) — and `friend_event { event }` for the
  *            owners whose backend signal lands separately (Gulp, Shelly,
  *            Cinder — Cinder's payload also says whether the cloud is on);
  *   quiet    the meeting recording (from the shell), a live call (the
@@ -32,16 +33,22 @@ import {
   PILL_QUIET_EVENT,
   PILL_QUIET_STATE,
   VISIT_MAX_MS,
+  EMPTY_TAKE_STATS,
   callLive,
   decideVisit,
-  milestoneReached,
+  milestoneLine,
+  noteTake,
   parseLedger,
+  parseTakeStats,
   parseQuietState,
   quietReason,
   recordVisit,
   serializeLedger,
+  serializeTakeStats,
+  takeSpeechSeconds,
   visitLogLine,
   visitRemainingMs,
+  type TakeStats,
   type Visit,
   type VisitContext,
   type VisitLedger,
@@ -55,6 +62,8 @@ import { crispPlan, domBuffer, paintCrisp } from "../sprites/crisp";
 
 const LEDGER_KEY = "yap.friends.visits";
 const TAKES_KEY = "yap.friends.takes";
+/** yap-1106-main-character-switch — Yappy's milestone counts (week, streak). */
+const TAKE_STATS_KEY = "yap.friends.takeStats";
 /** The visitor's CSS box (whole-number scale inside it, crisp.ts). */
 const BOX = { w: 28, h: 28 };
 /** Animation step while a visit is on screen (never runs between visits). */
@@ -77,6 +86,15 @@ function loadTakes(): number {
 function saveTakes(n: number): void {
   try { globalThis.localStorage?.setItem(TAKES_KEY, String(n)); }
   catch (e) { console.warn("pill friend_visit takes_save_failed", e instanceof Error ? e.name : "unknown"); }
+}
+
+function loadTakeStats(): TakeStats {
+  try { return parseTakeStats(globalThis.localStorage?.getItem(TAKE_STATS_KEY)); }
+  catch (e) { console.warn("pill friend_visit take_stats_load_failed", e instanceof Error ? e.name : "unknown"); return EMPTY_TAKE_STATS; }
+}
+function saveTakeStats(t: TakeStats): void {
+  try { globalThis.localStorage?.setItem(TAKE_STATS_KEY, serializeTakeStats(t)); }
+  catch (e) { console.warn("pill friend_visit take_stats_save_failed", e instanceof Error ? e.name : "unknown"); }
 }
 
 /** Paint one frame of `id` into `canvas` at a whole-number scale. */
@@ -131,6 +149,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ledgerRef = useRef<VisitLedger>(EMPTY_LEDGER);
   const takesRef = useRef(0);
+  const takeStatsRef = useRef<TakeStats>(EMPTY_TAKE_STATS);
   const visitRef = useRef<Visit | null>(null);
   const ctxRef = useRef({ meetingQuiet, occupant, quiet, chatter });
   // Synced first, so every effect below (and every listener) reads this render.
@@ -141,6 +160,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   useEffect(() => {
     ledgerRef.current = loadLedger();
     takesRef.current = loadTakes();
+    takeStatsRef.current = loadTakeStats();
   }, []);
 
   const raise = useCallback((event: string, cloudConnected = false) => {
@@ -199,10 +219,19 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
     invoke<unknown>(CALL_OFFER_STATE)
       .then((v) => { if (!dead) call(v); })
       .catch((e: unknown) => console.warn(`pill friend_visit call_state_failed reason=${e instanceof Error ? e.name : "unknown"}`));
-    listen<unknown>("transcript", () => {
+    listen<unknown>("transcript", (e) => {
       takesRef.current += 1;
       saveTakes(takesRef.current);
-      if (milestoneReached(takesRef.current)) raise("milestone");
+      // yap-1106-main-character-switch — Yappy's milestones: the 100th take,
+      // the longest take of the week, a new streak record. decideVisit keeps
+      // him in the studio when he is the one sitting in the pill.
+      const note = noteTake(takeStatsRef.current, takesRef.current, takeSpeechSeconds(e.payload), Date.now());
+      takeStatsRef.current = note.stats;
+      saveTakeStats(note.stats);
+      if (note.milestone) {
+        console.info(`pill yappy_milestone kind=${note.milestone} takes=${takesRef.current} streak=${note.stats.streak}`);
+        raise(note.milestone);
+      }
     }).then(push, fail("transcript"));
     return () => {
       dead = true;
@@ -250,7 +279,13 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
 
   if (!who) return null;
   return (
-    <div className="friend-visit" data-friend-visit={who} aria-hidden="true">
+    <div
+      className="friend-visit"
+      data-friend-visit={who}
+      data-visit-event={visit && !forced ? visit.event : undefined}
+      data-visit-line={visit && !forced ? milestoneLine(visit.event, takesRef.current) ?? undefined : undefined}
+      aria-hidden="true"
+    >
       <canvas ref={canvasRef} className="friend-visit-art" />
     </div>
   );

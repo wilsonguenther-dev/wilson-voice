@@ -38,7 +38,10 @@ describe("forcedPill (yap24-UI3, dev-only matrix handle)", () => {
   });
 
   it("forces only the styles that ship: Classic is retired (yap-1106-retire-classic-pill)", () => {
-    expect([...PILL_STYLES]).toEqual(["yappy"]);
+    expect([...PILL_STYLES]).toEqual(["yappy", "hoot", "tidy", "gulp", "shelly"]);
+    // yap-1106-main-character-switch — each pill character can be forced; a room-only friend cannot.
+    expect(forcedPill("?phase=listening&pill=hoot")).toMatchObject({ style: "hoot" });
+    expect(forcedPill("?phase=idle&pill=mochi")).toMatchObject({ style: null });
     expect(forcedPill("?phase=idle&pill=classic")).toMatchObject({ style: null });
     expect(forcedPill("?phase=idle&pill=yappy")).toMatchObject({ style: "yappy" });
   });
