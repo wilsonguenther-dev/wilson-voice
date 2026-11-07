@@ -3485,31 +3485,58 @@ mod cloud_parallel_tests {
     /// The hosted route's realistic latency, scaled down 10x so the test is
     /// quick: a map pass is ~0.6 s TTFT + ~400 tokens at 150 tokens/s, the
     /// reduce ~0.8 s + ~700 tokens. The 15 s budget scales to 1.5 s.
+    ///
+    /// The budget is checked against the plan (waves of map passes + one
+    /// reduce), which is deterministic. The wall clock only has to prove the
+    /// passes really overlapped: a loaded CI runner oversleeps by hundreds of
+    /// ms (run 42393504117 took 1.54 s against a 1.2 s plan), so a tight
+    /// wall-clock bound was a flake, not a regression signal.
     #[test]
     fn hosted_notes_for_an_hour_long_meeting_finish_inside_the_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const MAP_MS: u64 = (600 + 400 * 1000 / 150) / 10;
+        const REDUCE_MS: u64 = (800 + 700 * 1000 / 150) / 10;
         let lines = hour_of_lines();
         let n = plan_cloud_map_chunks(&lines, CLOUD_MAP_WORDS).len();
+        let max_in_flight = crate::cloud_route::MAX_IN_FLIGHT;
+        let waves = n.div_ceil(max_in_flight) as u64;
+        let planned = Duration::from_millis(waves * MAP_MS + REDUCE_MS);
+        assert!(
+            planned <= Duration::from_millis(1500),
+            "plan {planned:?} for {n} passes (x10 = real) must fit the budget"
+        );
+        let serial = Duration::from_millis(n as u64 * MAP_MS + REDUCE_MS);
+        let in_flight = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
         let started = Instant::now();
         let mut reduce_input = String::new();
         let out = cloud_notes_parallel(
             &lines,
             CLOUD_MAP_WORDS,
-            crate::cloud_route::MAX_IN_FLIGHT,
+            max_in_flight,
             &|i, _chunk| {
-                std::thread::sleep(Duration::from_millis((600 + 400 * 1000 / 150) / 10));
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(MAP_MS));
+                in_flight.fetch_sub(1, Ordering::SeqCst);
                 Some(format!("- point {i}"))
             },
             &mut |turn| {
                 reduce_input = turn.to_string();
-                std::thread::sleep(Duration::from_millis((800 + 700 * 1000 / 150) / 10));
+                std::thread::sleep(Duration::from_millis(REDUCE_MS));
                 Some("## Notes".to_string())
             },
         );
         let took = started.elapsed();
         assert_eq!(out.as_deref(), Some("## Notes"));
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            n.min(max_in_flight),
+            "map passes run {max_in_flight} at a time"
+        );
         assert!(
-            took <= Duration::from_millis(1500),
-            "took {took:?} (x10 = real)"
+            took < serial,
+            "took {took:?}, no faster than one pass at a time ({serial:?}); plan {planned:?}"
         );
         let last = format!("Notes for part {n} of {n}:\n- point {}", n - 1);
         assert!(reduce_input.contains("Notes for part 1 of"));
