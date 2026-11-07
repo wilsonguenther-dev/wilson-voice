@@ -442,7 +442,7 @@ mod tests {
         }
         assert_eq!(level_for(None), BASE_LEVEL);
         // The regression itself: the old code landed the pill at Floating (3).
-        assert!(BASE_LEVEL > 3);
+        const { assert!(BASE_LEVEL > 3) };
     }
 
     #[test]
@@ -455,7 +455,7 @@ mod tests {
     fn the_level_never_climbs_over_the_accessibility_overlays() {
         assert_eq!(level_for(Some(1499)), CAP_LEVEL);
         assert_eq!(level_for(Some(2_147_483_628)), CAP_LEVEL); // shielding level
-        assert!(CAP_LEVEL < 1500);
+        const { assert!(CAP_LEVEL < 1500) };
         set_wanted_level(i64::MAX);
         assert_eq!(wanted_level(), CAP_LEVEL);
         set_wanted_level(0);
