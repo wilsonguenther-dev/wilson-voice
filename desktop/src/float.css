@@ -1033,19 +1033,15 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   color: rgba(251, 191, 36, 0.9);
 }
 /* yap-1106-pill-trial-clickable — the refusal IS the Buy button. Hover (or
-   keyboard focus) swaps the label to "Buy a license" and lifts the border. */
-.kami-blocked.gated.is-hover,
-.kami-blocked.gated:focus-visible {
+   keyboard focus, which sets is-hover) swaps the label to "Buy a license" and
+   lifts the border; the focus ring is the global one in a11y/focus.css. */
+.kami-blocked.gated.is-hover {
   border-color: rgba(251, 191, 36, 0.6);
   color: rgba(255, 255, 255, 0.96);
 }
-.kami-blocked.gated:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.8);
-  outline-offset: 2px;
-}
 /* pill.html §13, measured: the chip is the 32 px pill with "Trial ended" on the
    left and a 24 px "Get Yap" button (.cbtn: 9 px sides, radius 8, 500 12px) on
-   the right. Hover fills the button (#ffd23f) and lifts the pill; a dark
+   the right. Hover fills the button (--pill-gate-cta-surface-hover) and lifts the pill; a dark
    tooltip sits 8 px under it; a press sinks it to 97 percent. */
 .kami-blocked.gated {
   padding: 3px 3px 3px 10px;
@@ -1101,10 +1097,6 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   stroke-linejoin: round;
 }
 .kami-gate-lock:hover { color: rgba(251, 191, 36, 1); }
-.kami-gate-lock:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.8);
-  outline-offset: 1px;
-}
 /* A license arrived by deep link from the site: Yappy hops once. The canvas
    moves as one compositor layer; the duration is DURATION.yappyHop. */
 .kami-hop .kami-canvas {
