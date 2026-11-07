@@ -1734,8 +1734,8 @@ mod tests {
     }
 
     /// The rows the shipping app actually performs, spelled out, because this
-    /// is the number every reader of the table is really asking for. Eleven cells
-    /// are `Test`, one is a manual repro, and the remaining eight are decisions
+    /// is the number every reader of the table is really asking for. Twelve cells
+    /// are `Test`, one is a manual repro, and the remaining seven are decisions
     /// nothing in the app can reach.
     ///
     /// Row 12 was the only one of YV105's five that made it into this list on
@@ -1759,7 +1759,9 @@ mod tests {
             wired,
             // Row 16 joined with Y1-B: `power::SleepWakeObserver` registers
             // will-sleep/did-wake and the meeting controller is subscribed.
-            vec!["4", "5", "6", "16", "17", "3a", "3b", "1", "2", "12", "12b"]
+            // Row 7 joined with yap-1106-diarize-wire: `meeting_pipeline` now
+            // calls the diarize pool, so a wedged sidecar has a real caller.
+            vec!["4", "5", "6", "16", "17", "3a", "3b", "1", "2", "12", "12b", "7"]
         );
 
         let manual: Vec<&str> = ROWS
