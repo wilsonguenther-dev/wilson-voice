@@ -934,6 +934,10 @@ struct AppState {
     /// `stop_and_transcribe` and cleared by `cancel_recording`, so it can never
     /// leak into a later, ordinary take.
     command_selection: PLMutex<Option<String>>,
+    /// yap-1106-paste-target-defect: the frontmost app at KEY-DOWN (NSWorkspace,
+    /// no AX). Only a fallback for a release read that is unreadable or names
+    /// Yap itself (`focus::resolve_paste_target`); taken by the stop edge.
+    press_target: PLMutex<Option<focus::AppIdentity>>,
     recorder: PLMutex<Option<record::ActiveRecording>>,
     /// System-output state captured when we muted the Mac for a take (YV28).
     /// `Some` only while a recording has the output muted; restored + cleared on
@@ -3008,6 +3012,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     // than in the worker: the worker starts after the hold ends, and a cancel
     // fired in the gap between press and release must still be honoured.
     state.take_cancelled.store(false, Ordering::SeqCst);
+    // yap-1106-paste-target-defect: the key-down frontmost app, kept only as a
+    // fallback — the paste target is the app in front at RELEASE.
+    *state.press_target.lock() = focus::frontmost_identity_workspace();
     // ...and so does the manager-side latch that Y3-B's chunk loop reads, so
     // the two are armed together and never drift apart.
     state.transcription.begin_user_take();
@@ -3819,15 +3826,26 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // with the non-activating panel key, the frontmost app is still the one
     // BEHIND it, so this — not `source_bundle_id` — is where the take goes.
     let scratchpad_note = scratchpad::dictation_note();
-    let (capture_stop, (source_app, source_bundle_id, cursor_context)) = record::end_at_stop_edge(
+    let press_target = state.press_target.lock().take();
+    let (capture_stop, (paste_target_app, cursor_context)) = record::end_at_stop_edge(
         move || record::end_capture(active),
         || {
             // Capture focused app *before* we steal focus with notifications / main window.
-            let app_name = focus::frontmost_app_name();
+            // yap-1106-paste-target-defect: ONE live read at the stop edge —
+            // bundle id and name of the same process — so the history row
+            // (`source_app`) and the paste guard (`source_bundle_id`) always
+            // name the same app, the app in front at RELEASE, never Yap's own
+            // float panel. The key-down read is only a fallback.
+            let release = focus::frontmost_identity();
+            let target = focus::resolve_paste_target(
+                press_target.as_ref(),
+                release.as_ref(),
+                focus::own_bundle_id().as_deref(),
+            );
             // yap-format-structure: the paste target's bundle id picks the list
             // syntax (Markdown / plain bullets / off). Captured with
             // `source_app`, before Yap can take focus.
-            let bundle_id = focus::frontmost_bundle_id();
+            let bundle_id = target.bundle_id.clone();
             // YV50 + PERM-F context awareness, read while the user's app is still
             // the focused one: the text before the caret, the selection, the text
             // after the caret (each cut to its `focus::*_CHAR_LIMIT` budget) and,
@@ -3837,8 +3855,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // below — never logged, stored, or emitted (see the
             // `cursor_context_is_never_logged_or_persisted` test).
             let ax_context = focus::read_ax_context(bundle_id.as_deref());
-            (app_name, bundle_id, ax_context)
+            (target, ax_context)
         },
+    );
+    let source_app = paste_target_app.name.clone();
+    let source_bundle_id = paste_target_app.bundle_id.clone();
+    let target_captured_at = paste_target_app.captured_at;
+    log::info!(
+        "paste target captured app={} captured_at={}",
+        source_bundle_id.as_deref().unwrap_or("unknown"),
+        target_captured_at.as_str()
     );
 
     *state.busy.lock() = true;
@@ -4208,11 +4234,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 let outcome = if command == command_mode::Command::Delete {
                     paste::delete_selection(&app2, source_bundle_id.as_deref())
                 } else {
-                    paste::insert_dictated_take(
+                    paste::insert_dictated_take_at(
                         &app2,
                         &result.text,
                         true,
                         source_bundle_id.as_deref(),
+                        target_captured_at,
                     )
                 };
                 if !outcome.pasted {
@@ -4420,6 +4447,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 want,
                 paste::take_target(scratchpad_note.as_deref(), source_bundle_id.as_deref()),
                 Some(&take_stages),
+                target_captured_at,
             );
             // Y8-D — the coaching engine's per-take fact. No text, no app name:
             // a focus bit, a coarse app family, and whether the text landed.
@@ -12143,6 +12171,7 @@ pub fn run() {
         hands_free_by_chord: PLMutex::new(false),
         session_cap_warned: PLMutex::new(false),
         command_selection: PLMutex::new(None),
+        press_target: PLMutex::new(None),
         recorder: PLMutex::new(None),
         saved_audio: PLMutex::new(None),
         db,
@@ -15139,6 +15168,7 @@ mod tests {
             hands_free_by_chord: super::PLMutex::new(false),
             session_cap_warned: super::PLMutex::new(false),
             command_selection: super::PLMutex::new(None),
+            press_target: super::PLMutex::new(None),
             recorder: super::PLMutex::new(None),
             saved_audio: super::PLMutex::new(None),
             db,

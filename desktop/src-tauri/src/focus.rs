@@ -63,6 +63,8 @@ pub(crate) mod ax {
             settable: *mut u8,
         ) -> i32;
         fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
+        /// yap-1106-paste-target-defect — the pid behind an AX element.
+        fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> i32;
     }
 
     const AX_OK: i32 = 0;
@@ -468,6 +470,35 @@ pub(crate) mod ax {
     }
 
     /// Frontmost application title via AX (no NSWorkspace dep).
+    /// yap-1106-paste-target-defect — the pid of the app Accessibility says has
+    /// focus RIGHT NOW. Asked of the accessibility server at call time, so it
+    /// cannot lag behind the way a cached `NSWorkspace.frontmostApplication`
+    /// can when the main run loop has not yet delivered the activation
+    /// notification. `None` on AX denial or an unreadable answer.
+    pub fn focused_app_pid() -> Option<i32> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let key = CFString::new("AXFocusedApplication");
+            let mut app: CFTypeRef = std::ptr::null_mut();
+            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut app);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || app.is_null() {
+                return None;
+            }
+            let mut pid: i32 = 0;
+            let got = AXUIElementGetPid(app as AXUIElementRef, &mut pid);
+            CFRelease(app);
+            if got == AX_OK && pid > 0 {
+                Some(pid)
+            } else {
+                None
+            }
+        }
+    }
+
     pub fn frontmost_app_name() -> Option<String> {
         unsafe {
             let system = AXUIElementCreateSystemWide();
@@ -740,6 +771,202 @@ pub fn frontmost_bundle_path() -> Option<String> {
         let url = app.bundleURL()?;
         let path = url.path()?;
         Some(path.to_string()).filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+// ── yap-1106-paste-target-defect — the paste target is the app in front at RELEASE ──
+//
+// Observed 2026-11-06: takes dictated in Chrome were logged (and guarded) as
+// Terminal. The target was two separate reads — an AX title for the history
+// row and a cached NSWorkspace bundle id for the guard — that could disagree
+// and could lag. Now ONE identity (bundle id + name of the same process) is
+// read live at the stop edge, Yap's own windows are never a target, and the
+// key-down read is only a fallback the paste-time guard still re-verifies.
+
+/// Bundle-id prefix every Yap build shares (release
+/// `com.wilsonguenther.wilson-voice`, test channel `….test`). A capture that
+/// names Yap itself — its float panel, its main window — is never a target.
+pub const YAP_BUNDLE_PREFIX: &str = "com.wilsonguenther.wilson-voice";
+
+/// Which edge of the take the paste target was read at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturedAt {
+    /// Key-down — used only when the release read was unreadable or was Yap.
+    Press,
+    /// The stop edge (key-up / hands-free stop) — the normal case.
+    Release,
+}
+
+impl CapturedAt {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapturedAt::Press => "press",
+            CapturedAt::Release => "release",
+        }
+    }
+}
+
+/// One read of "which app is in front": the bundle id and the display name
+/// of the SAME process, so the history row and the paste guard can never
+/// name two different apps.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppIdentity {
+    pub bundle_id: Option<String>,
+    pub name: Option<String>,
+}
+
+impl AppIdentity {
+    pub fn new(bundle_id: Option<&str>, name: Option<&str>) -> Self {
+        let clean = |s: Option<&str>| {
+            s.map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        AppIdentity {
+            bundle_id: clean(bundle_id),
+            name: clean(name),
+        }
+    }
+}
+
+/// The take's paste target: the bundle id the YV21 guard re-verifies at paste
+/// time, the name the history row records, and the edge it was read at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTarget {
+    pub bundle_id: Option<String>,
+    pub name: Option<String>,
+    pub captured_at: CapturedAt,
+}
+
+/// Is `bundle_id` Yap itself (any channel, or this running build)?
+pub fn is_own_app(bundle_id: Option<&str>, own_bundle_id: Option<&str>) -> bool {
+    let Some(b) = bundle_id.map(str::trim).filter(|b| !b.is_empty()) else {
+        return false;
+    };
+    if b.to_ascii_lowercase().starts_with(YAP_BUNDLE_PREFIX) {
+        return true;
+    }
+    own_bundle_id
+        .map(str::trim)
+        .is_some_and(|o| !o.is_empty() && o.eq_ignore_ascii_case(b))
+}
+
+fn usable_target<'a>(
+    id: Option<&'a AppIdentity>,
+    own_bundle_id: Option<&str>,
+) -> Option<&'a AppIdentity> {
+    id.filter(|i| {
+        i.bundle_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|b| !b.is_empty())
+            && !is_own_app(i.bundle_id.as_deref(), own_bundle_id)
+    })
+}
+
+/// THE paste-target rule. The app frontmost at RELEASE wins. The key-down
+/// read is used only when the release read is unreadable or names Yap's own
+/// window — and even then `paste::insert_traced` re-reads the frontmost app
+/// immediately before ⌘V, so a stale press capture can only ever HOLD a take,
+/// never type it into a different app. Nothing usable → no bundle id, and an
+/// unconfirmed target is never typed into.
+pub fn resolve_paste_target(
+    press: Option<&AppIdentity>,
+    release: Option<&AppIdentity>,
+    own_bundle_id: Option<&str>,
+) -> ResolvedTarget {
+    if let Some(r) = usable_target(release, own_bundle_id) {
+        return ResolvedTarget {
+            bundle_id: r.bundle_id.clone(),
+            name: r.name.clone(),
+            captured_at: CapturedAt::Release,
+        };
+    }
+    if let Some(p) = usable_target(press, own_bundle_id) {
+        return ResolvedTarget {
+            bundle_id: p.bundle_id.clone(),
+            name: p.name.clone(),
+            captured_at: CapturedAt::Press,
+        };
+    }
+    ResolvedTarget {
+        bundle_id: None,
+        name: release
+            .filter(|r| !is_own_app(r.bundle_id.as_deref(), own_bundle_id))
+            .and_then(|r| r.name.clone()),
+        captured_at: CapturedAt::Release,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn identity_of(app: &objc2_app_kit::NSRunningApplication) -> AppIdentity {
+    #[allow(unused_unsafe)]
+    let (bundle, name) = unsafe {
+        (
+            app.bundleIdentifier().map(|s| s.to_string()),
+            app.localizedName().map(|s| s.to_string()),
+        )
+    };
+    AppIdentity::new(bundle.as_deref(), name.as_deref())
+}
+
+/// The frontmost app from NSWorkspace alone: no Accessibility, no IPC to the
+/// user's app, safe on the take-start path (the key-down fallback).
+pub fn frontmost_identity_workspace() -> Option<AppIdentity> {
+    #[cfg(target_os = "macos")]
+    {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = workspace.frontmostApplication()?;
+        Some(identity_of(&app)).filter(|i| i.bundle_id.is_some())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// The frontmost app read LIVE: Accessibility's focused application (pid →
+/// NSRunningApplication) when AX is granted, else NSWorkspace. Used at the
+/// stop edge AND by the paste-time guard, so both sides of the YV21 compare
+/// come from the same source.
+pub fn frontmost_identity() -> Option<AppIdentity> {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::permissions::is_accessibility_trusted() {
+            if let Some(pid) = ax::focused_app_pid() {
+                #[allow(unused_unsafe)]
+                let app = unsafe {
+                    objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+                        pid,
+                    )
+                };
+                if let Some(app) = app {
+                    let id = identity_of(&app);
+                    if id.bundle_id.is_some() {
+                        return Some(id);
+                    }
+                }
+            }
+        }
+        frontmost_identity_workspace()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// This running build's own bundle id (for [`is_own_app`]).
+pub fn own_bundle_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        #[allow(unused_unsafe)]
+        let app = unsafe { objc2_app_kit::NSRunningApplication::currentApplication() };
+        identity_of(&app).bundle_id
     }
     #[cfg(not(target_os = "macos"))]
     {
