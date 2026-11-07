@@ -1869,6 +1869,28 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   background: rgba(255, 255, 255, 0.12);
 }
 .polish-reveal .diff-actions:empty { display: none; }
+/* yap-1107-polish-diff-readable — phrase runs, Before/After blocks and the
+   "Show as before/after" toggle. Same colour tokens as the runs above and the
+   card's own button surface; nothing new invented. */
+.polish-reveal .diff-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.polish-reveal .diff-pair-gap { margin-inline-start: 0.3em; }
+.polish-reveal .diff-layout-toggle {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: var(--overlay-text);
+  background: rgba(255, 255, 255, 0.12);
+}
+/* Focus ring for .diff-layout-toggle: drawn once, globally, by src/a11y/focus.css. */
+.polish-reveal .diff-layout-toggle[aria-pressed="true"] { background: rgba(255, 255, 255, 0.22); }
+.polish-reveal .diff-blocks { display: grid; gap: 4px; margin: 4px 0; max-height: 96px; overflow-y: auto; }
+.polish-reveal .diff-block-label { font-size: 11px; opacity: 0.72; }
+.polish-reveal .diff-block-text { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
 @media (prefers-reduced-motion: no-preference) {
   .polish-reveal-wrap { animation: polish-reveal-in 140ms ease-out; }
   @keyframes polish-reveal-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
