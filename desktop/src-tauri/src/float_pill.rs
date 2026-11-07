@@ -74,6 +74,16 @@ static DRAG_ORIGIN_Y: AtomicI32 = AtomicI32::new(0);
 /// Monitor scale factor at drag start, ×1000 — the webview reports its deltas
 /// in logical points and the panel is positioned in physical px.
 static DRAG_SCALE_M: AtomicI32 = AtomicI32::new(1000);
+/// WF-02 — wall-clock ms at drag start, for the one duration the drag logs.
+static DRAG_T0_MS: AtomicU64 = AtomicU64::new(0);
+/// WF-02 — was Esc down at the last check? Latched at drag start and updated by
+/// the hover watch, so only a FRESH Esc press mid-drag cancels (an Esc already
+/// held when the press began is not the user changing their mind).
+static ESC_DOWN: AtomicBool = AtomicBool::new(false);
+/// WF-02 — backend → pill webview: the hover watch saw Esc mid-drag and put the
+/// panel back on its dock. pill/drag.ts `PILL_DRAG_CANCEL_EVENT` is the same
+/// string; the webview's gesture catches up so the release is inert.
+pub const PILL_DRAG_CANCEL_EVENT: &str = "pill-drag-cancel";
 /// The VISIBLE capsule's rect inside the float window, in logical points,
 /// reported by the pill webview (`pill_set_hitbox`). Width 0 → nothing is
 /// grabbable yet, so the panel stays fully click-through.
@@ -252,9 +262,154 @@ pub fn pill_origin_on_visible_screen(
     Some(clamp_to_screen(origin, win, s))
 }
 
-/// The float window's size in logical points (the pill sits centred in it).
+/// The float window's size in logical points: the frame the pill webview last
+/// asked for (yap-1106-one-pill), or the historical 300x140 before it has.
 pub fn float_window_size_pt() -> (f64, f64) {
-    (PILL_W, PILL_H)
+    let f = panel_frame();
+    (f.w, f.h)
+}
+
+/// yap-1106-one-pill — the panel is sized to its content. The pill webview's
+/// one layout (desktop/src/pill/state.ts `pillLayout`) is the union of the
+/// character, the clock, the hint and the bubble plus a margin; it sends that
+/// size and the point the character sits at inside it (`anchor_*`), all in
+/// logical points. Nothing is drawn outside this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelFrame {
+    pub w: f64,
+    pub h: f64,
+    pub anchor_x: f64,
+    pub anchor_y: f64,
+}
+
+/// The smallest and largest frame a request may set (points). A request
+/// outside is clamped, never trusted: a bad layout must not make a panel that
+/// covers the screen or vanishes.
+pub const PANEL_MIN_PT: (f64, f64) = (40.0, 30.0);
+pub const PANEL_MAX_PT: (f64, f64) = (640.0, 400.0);
+
+impl PanelFrame {
+    /// The fixed panel every build before yap-1106-one-pill used, centred.
+    pub const LEGACY: PanelFrame = PanelFrame {
+        w: PILL_W,
+        h: PILL_H,
+        anchor_x: 150.0,
+        anchor_y: 70.0,
+    };
+
+    /// Pure: a webview request made safe. `None` for a non-finite number; the
+    /// size is clamped to [`PANEL_MIN_PT`]..[`PANEL_MAX_PT`] and the anchor
+    /// into the frame.
+    pub fn sanitize(w: f64, h: f64, anchor_x: f64, anchor_y: f64) -> Option<PanelFrame> {
+        if !(w.is_finite() && h.is_finite() && anchor_x.is_finite() && anchor_y.is_finite()) {
+            return None;
+        }
+        let w = w.round().clamp(PANEL_MIN_PT.0, PANEL_MAX_PT.0);
+        let h = h.round().clamp(PANEL_MIN_PT.1, PANEL_MAX_PT.1);
+        Some(PanelFrame {
+            w,
+            h,
+            anchor_x: anchor_x.clamp(0.0, w),
+            anchor_y: anchor_y.clamp(0.0, h),
+        })
+    }
+}
+
+static PANEL_FRAME: Mutex<PanelFrame> = Mutex::new(PanelFrame::LEGACY);
+
+/// The current panel frame (logical points).
+pub fn panel_frame() -> PanelFrame {
+    PANEL_FRAME.lock().map(|f| *f).unwrap_or(PanelFrame::LEGACY)
+}
+
+/// Store a new panel frame and, if it changed, resize the panel and re-park it
+/// by its anchor on the main thread. One log line per change.
+pub fn set_panel_frame(app: &AppHandle, w: f64, h: f64, anchor_x: f64, anchor_y: f64) {
+    let Some(next) = PanelFrame::sanitize(w, h, anchor_x, anchor_y) else {
+        log::warn!("pill panel_frame rejected reason=non_finite");
+        return;
+    };
+    let changed = match PANEL_FRAME.lock() {
+        Ok(mut cur) => {
+            let changed = *cur != next;
+            *cur = next;
+            changed
+        }
+        Err(_) => {
+            log::warn!("pill panel_frame rejected reason=lock_poisoned");
+            return;
+        }
+    };
+    if !changed {
+        return;
+    }
+    log::info!(
+        "pill panel_frame w={} h={} anchor={:.0}x{:.0} dock={:?}",
+        next.w,
+        next.h,
+        next.anchor_x,
+        next.anchor_y,
+        PillPosition::from_u8(POSITION.load(Ordering::SeqCst))
+    );
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        if let Some(win) = app2.get_webview_window("float") {
+            if let Err(e) = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: next.w,
+                height: next.h,
+            })) {
+                log::warn!("pill panel_frame resize_failed err={e}");
+            }
+        }
+        park_pill(&app2);
+    }) {
+        log::warn!("pill panel_frame dispatch_failed err={e}");
+    }
+}
+
+/// Pure (yap-1106-one-pill): the panel's top-left, in physical px, parked so
+/// the CHARACTER (at `anchor` inside the window, physical px) sits where the
+/// fixed panel used to centre it: the bottom dock centres him horizontally, a
+/// side dock centres him vertically, flush to that edge. So when the clock
+/// slot appears and the panel grows around him, Yappy does not move.
+fn panel_origin_anchored(
+    mon_pos: (i32, i32),
+    mon_size: (i32, i32),
+    win_size: (i32, i32),
+    anchor: (i32, i32),
+    margin: i32,
+    pos: PillPosition,
+) -> (i32, i32) {
+    let (mon_x, mon_y) = mon_pos;
+    let (mon_w, mon_h) = mon_size;
+    let (win_w, win_h) = win_size;
+    let (ax, ay) = anchor;
+    match pos {
+        PillPosition::Bottom => (mon_x + mon_w / 2 - ax, mon_y + mon_h - win_h - margin),
+        PillPosition::Left => (mon_x, mon_y + mon_h / 2 - ay),
+        PillPosition::Right => (mon_x + mon_w - win_w, mon_y + mon_h / 2 - ay),
+    }
+}
+
+/// Pure (yap-1106-one-pill): [`pill_origin_on_visible_screen`] for a panel
+/// frame with an anchor — picks a screen that exists, parks by the anchor and
+/// clamps the whole frame onto that screen.
+pub fn pill_origin_for_frame(
+    screens: &[ScreenRect],
+    primary: Option<ScreenRect>,
+    frame: PanelFrame,
+    margin_pt: f64,
+    pos: PillPosition,
+) -> Option<(i32, i32)> {
+    let s = pill_screen(screens, primary)?;
+    let win = ((frame.w * s.scale) as i32, (frame.h * s.scale) as i32);
+    let anchor = (
+        (frame.anchor_x * s.scale) as i32,
+        (frame.anchor_y * s.scale) as i32,
+    );
+    let margin = (margin_pt * s.scale) as i32;
+    let origin = panel_origin_anchored((s.x, s.y), (s.w, s.h), win, anchor, margin, pos);
+    Some(clamp_to_screen(origin, win, s))
 }
 
 /// Pure (Y6-D): does the pill come up at launch? Only once onboarding is done.
@@ -352,10 +507,12 @@ fn park_pill(app: &AppHandle) {
         .map(|m| rect(&m));
     // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
     // taller window) then floats ~50pt up with shadow room below it.
-    let Some((x, y)) = pill_origin_on_visible_screen(
+    // yap-1106-one-pill — parked by the character's anchor inside the frame
+    // the webview sized to its content (PanelFrame::LEGACY until it asks).
+    let Some((x, y)) = pill_origin_for_frame(
         &screens,
         primary,
-        float_window_size_pt(),
+        panel_frame(),
         14.0,
         PillPosition::from_u8(POSITION.load(Ordering::SeqCst)),
     ) else {
@@ -431,7 +588,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         );
         let mut builder = WebviewWindowBuilder::new(app, "float", url)
             .title("")
-            .inner_size(PILL_W, PILL_H)
+            .inner_size(float_window_size_pt().0, float_window_size_pt().1)
             .resizable(false)
             .decorations(false)
             .shadow(false) // no NSWindow shadow → only the pill's CSS shadow shows (kills the grey box)
@@ -446,7 +603,12 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             builder = builder.transparent(true);
         }
 
-        builder.build().map_err(|e| format!("float window: {e}"))?;
+        let win = builder.build().map_err(|e| format!("float window: {e}"))?;
+        // yap-call-1 / WF-16 — built through the one rule: outside a meeting
+        // the pill shows in a screen share; while a meeting records (and the
+        // "Hide Yap from screen sharing" setting is on) it is hidden, and
+        // `sync_capture_hidden` flips it back on stop.
+        crate::call_offer::apply_content_protection(&win);
     }
 
     // Convert / re-apply NSPanel HUD flags
@@ -538,6 +700,137 @@ pub fn set_meeting_recording(recording: bool) {
 
 pub fn meeting_recording() -> bool {
     MEETING_RECORDING.load(Ordering::SeqCst)
+}
+
+// ─── WF-16: hide Yap from screen sharing while a meeting records ─────────────
+//
+// A setting (`AppSettings::hide_from_capture_in_meetings`, on by default)
+// keeps the pill (with its meeting chip) and the Scratchpad out of screen
+// shares and screenshots while a meeting records; they come back in captures
+// the moment it stops. The call-offer window is ALWAYS hidden
+// (`call_offer::content_protected_for`). On macOS Tauri's content protection
+// sets the NSWindow `sharingType` to `.none` when on and restores `.readOnly`,
+// the default, when off. The only caller of the Tauri call stays
+// `call_offer::apply_content_protection`, which reads [`capture_hidden_for`].
+// No Screen Recording permission and no private API are involved.
+
+/// The windows WF-16 hides from capture while a meeting records: the pill
+/// panel (which also draws the meeting chip) and the Scratchpad.
+pub const MEETING_CAPTURE_HIDDEN_WINDOWS: [&str; 2] = ["float", crate::scratchpad::WINDOW_LABEL];
+
+/// WF-16 — mirror of the setting. Starts true, the setting's default, and is
+/// re-set from the stored settings at launch and on every save.
+static HIDE_FROM_CAPTURE_SETTING: AtomicBool = AtomicBool::new(true);
+
+/// WF-16 — the edge latch shared by every caller of [`sync_capture_hidden`].
+static CAPTURE_TOGGLE: Mutex<CaptureToggle> = Mutex::new(CaptureToggle::new());
+
+/// WF-16 — the pure decision: hide while a meeting records AND the setting is on.
+pub fn capture_hidden_wanted(setting_on: bool, meeting_recording: bool) -> bool {
+    setting_on && meeting_recording
+}
+
+/// WF-16 — the per-window rule. The call offer is always hidden; the pill and
+/// the Scratchpad only while `meeting_hidden` (see [`capture_hidden_wanted`]);
+/// every other window (main) is never hidden.
+pub fn capture_hidden_for(label: &str, meeting_hidden: bool) -> bool {
+    crate::call_offer::content_protected_for(label)
+        || (meeting_hidden && MEETING_CAPTURE_HIDDEN_WINDOWS.contains(&label))
+}
+
+/// WF-16 — the live answer: what a window built right now should get.
+pub fn capture_hidden_now() -> bool {
+    capture_hidden_wanted(
+        HIDE_FROM_CAPTURE_SETTING.load(Ordering::SeqCst),
+        meeting_recording(),
+    )
+}
+
+/// WF-16 — tell the toggle what the setting says (launch + `save_settings`).
+pub fn set_hide_from_capture(on: bool) {
+    HIDE_FROM_CAPTURE_SETTING.store(on, Ordering::SeqCst);
+}
+
+pub fn hide_from_capture() -> bool {
+    HIDE_FROM_CAPTURE_SETTING.load(Ordering::SeqCst)
+}
+
+/// WF-16 — the toggle function. Fed the setting and the meeting state on every
+/// meeting status tick (1 Hz while recording) and on every settings save, it
+/// returns `Some(hidden)` ONLY on an edge, so the windows are touched once on
+/// record start and once on stop, never 3,600 times an hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureToggle {
+    applied: Option<bool>,
+}
+
+impl CaptureToggle {
+    pub const fn new() -> Self {
+        Self { applied: None }
+    }
+
+    /// What the windows currently carry (`None` = never applied: every window
+    /// was built with the launch value from [`capture_hidden_now`]).
+    pub fn applied(&self) -> Option<bool> {
+        self.applied
+    }
+
+    pub fn step(&mut self, setting_on: bool, meeting_recording: bool) -> Option<bool> {
+        let want = capture_hidden_wanted(setting_on, meeting_recording);
+        // First observation while nothing is hidden: the windows were built
+        // with `false` already — record it without touching them.
+        if self.applied.is_none() && !want {
+            self.applied = Some(false);
+            return None;
+        }
+        if self.applied == Some(want) {
+            return None;
+        }
+        self.applied = Some(want);
+        Some(want)
+    }
+}
+
+impl Default for CaptureToggle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Why a capture edge happened, for the log line only.
+fn capture_reason(hidden: bool, setting_on: bool) -> &'static str {
+    match (hidden, setting_on) {
+        (true, _) => "meeting_start",
+        (false, false) => "setting_off",
+        (false, true) => "meeting_stop",
+    }
+}
+
+/// WF-16 — bring the pill and Scratchpad windows in line with the setting and
+/// the meeting state. Cheap when nothing changed (two atomics + a latch), so
+/// the meeting status sink calls it on every tick. A window that does not
+/// exist yet is skipped: it reads [`capture_hidden_now`] when it is built.
+pub fn sync_capture_hidden<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let setting_on = hide_from_capture();
+    let recording = meeting_recording();
+    let edge = match CAPTURE_TOGGLE.lock() {
+        Ok(mut t) => t.step(setting_on, recording),
+        Err(poisoned) => poisoned.into_inner().step(setting_on, recording),
+    };
+    let Some(hidden) = edge else {
+        return;
+    };
+    let mut windows = 0u32;
+    for label in MEETING_CAPTURE_HIDDEN_WINDOWS {
+        if let Some(w) = app.get_webview_window(label) {
+            crate::call_offer::apply_content_protection(&w);
+            windows += 1;
+        }
+    }
+    log::info!(
+        "float_pill capture_hidden hidden={hidden} reason={} windows={windows}",
+        capture_reason(hidden, setting_on)
+    );
 }
 
 /// YV95 — tell the pill a dictation take is (or is no longer) live. Called from
@@ -897,7 +1190,13 @@ pub fn drag_start(app: &AppHandle) {
         (w.scale_factor().unwrap_or(1.0) * 1000.0).round() as i32,
         Ordering::SeqCst,
     );
+    DRAG_T0_MS.store(now_ms(), Ordering::SeqCst);
+    ESC_DOWN.store(esc_key_down(), Ordering::SeqCst);
     DRAGGING.store(true, Ordering::SeqCst);
+    log::info!(
+        "pill drag event=start dock={}",
+        PillPosition::from_u8(POSITION.load(Ordering::SeqCst)).as_settings()
+    );
 }
 
 /// Move the panel live. `dx`/`dy` are the cursor's total travel since
@@ -926,17 +1225,123 @@ pub fn drag_end(app: &AppHandle, release: (f64, f64), snap: bool) -> Option<Pill
     if !DRAGGING.swap(false, Ordering::SeqCst) {
         return None;
     }
-    let pos = snap
-        .then(|| {
-            app.get_webview_window("float")
-                .and_then(|w| monitor_frame(&w))
-                .map(|frame| snap_position(release, frame))
-        })
-        .flatten()
-        .unwrap_or_else(|| PillPosition::from_u8(POSITION.load(Ordering::SeqCst)));
+    let home = PillPosition::from_u8(POSITION.load(Ordering::SeqCst));
+    let frame = if snap {
+        app.get_webview_window("float")
+            .and_then(|w| monitor_frame(&w))
+    } else {
+        None
+    };
+    let pos = drag_end_dock(snap, release, frame, home);
     set_position(pos);
     reposition(app);
+    log::info!(
+        "pill drag event=end snap={snap} from={} dock={} ms={}",
+        home.as_settings(),
+        pos.as_settings(),
+        drag_elapsed_ms()
+    );
     Some(pos)
+}
+
+/// Pure (WF-02): the dock a drag ends on. A release that SNAPS lands on the
+/// dock under the cursor; anything else — a plain click, an Esc mid-drag
+/// (pill/drag.ts sends `snap: false`), or a monitor that could not be read —
+/// goes HOME to the dock the pill had, whatever point it was released at.
+pub fn drag_end_dock(
+    snap: bool,
+    release: (f64, f64),
+    screen_frame: Option<(f64, f64, f64, f64)>,
+    home: PillPosition,
+) -> PillPosition {
+    match (snap, screen_frame) {
+        (true, Some(frame)) => snap_position(release, frame),
+        _ => home,
+    }
+}
+
+/// WF-02 — Esc mid-drag: put the panel back where the press found it and
+/// re-park it on the dock it already had. Nothing is persisted (the setting
+/// never changed). Returns that dock, or `None` when no drag was live (the
+/// webview's own `pill_drag_end` got there first). Main thread.
+pub fn drag_cancel(app: &AppHandle) -> Option<PillPosition> {
+    if !DRAGGING.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    let home = PillPosition::from_u8(POSITION.load(Ordering::SeqCst));
+    if let Some(w) = app.get_webview_window("float") {
+        let x = DRAG_ORIGIN_X.load(Ordering::SeqCst);
+        let y = DRAG_ORIGIN_Y.load(Ordering::SeqCst);
+        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+    }
+    reposition(app);
+    log::info!(
+        "pill drag event=cancel reason=esc dock={} ms={}",
+        home.as_settings(),
+        drag_elapsed_ms()
+    );
+    if let Err(e) = app.emit(PILL_DRAG_CANCEL_EVENT, ()) {
+        log::warn!("pill drag event=cancel_emit_failed error={e}");
+    }
+    Some(home)
+}
+
+/// Pure (WF-02): does this Esc reading cancel the drag? Only a FRESH press
+/// (up at the last check, down now) while a drag is live.
+pub fn esc_cancels_drag(dragging: bool, esc_was_down: bool, esc_down: bool) -> bool {
+    dragging && esc_down && !esc_was_down
+}
+
+/// The hover watch's per-slice Esc check (WF-02). The float panel is a
+/// non-activating NSPanel, so the webview may never be key and never see the
+/// keydown; the backend reads the key state instead, only while a drag is live.
+fn poll_drag_escape(app: &AppHandle) -> bool {
+    if !DRAGGING.load(Ordering::SeqCst) {
+        return false;
+    }
+    let now = esc_key_down();
+    let was = ESC_DOWN.swap(now, Ordering::SeqCst);
+    if !esc_cancels_drag(true, was, now) {
+        return false;
+    }
+    let a = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        let _ = drag_cancel(&a);
+    }) {
+        log::warn!("pill drag event=cancel_dispatch_failed error={e}");
+    }
+    true
+}
+
+/// Is Escape down right now (macOS virtual key 0x35), from the combined session
+/// state — a read of the key table, no event tap and no main thread.
+#[cfg(target_os = "macos")]
+fn esc_key_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
+    }
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const KVK_ESCAPE: u16 = 0x35;
+    // SAFETY: a pure read of the window server's key state; both arguments are
+    // plain integers and the call has no preconditions.
+    unsafe { CGEventSourceKeyState(COMBINED_SESSION_STATE, KVK_ESCAPE) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn esc_key_down() -> bool {
+    false
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn drag_elapsed_ms() -> u64 {
+    now_ms().saturating_sub(DRAG_T0_MS.load(Ordering::SeqCst))
 }
 
 /// YV65 — make the panel cursor-interactive ONLY while the pointer is over the
@@ -983,6 +1388,12 @@ pub fn start_hover_watch(app: AppHandle) {
                 } else {
                     PROXIMITY_SLICE_MS
                 }));
+                // WF-02 — Esc mid-drag puts the pill back. Checked every slice
+                // (30 ms) and only while a drag is live, so it costs nothing at
+                // rest and never waits on a slow meeting tick.
+                if poll_drag_escape(&app) {
+                    break;
+                }
                 let near = cursor_on_capsule_cheap();
                 let was = CURSOR_NEAR.swap(near, Ordering::Relaxed);
                 if should_wake_early(was, near) {
@@ -1295,5 +1706,162 @@ mod tests {
         }
         // Any unexpected byte reads as the default.
         assert_eq!(PillPosition::from_u8(9), PillPosition::Bottom);
+    }
+}
+
+#[cfg(test)]
+mod wf02_drag_tests {
+    use super::*;
+
+    /// A 1440x900-point primary monitor at the global origin.
+    const FRAME: (f64, f64, f64, f64) = (0.0, 0.0, 1440.0, 900.0);
+
+    #[test]
+    fn esc_restore_never_reads_the_release_point() {
+        // pill/drag.ts sends `snap: false` on Esc: wherever the blob was
+        // dragged to, the pill goes home to the dock it had.
+        for home in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            assert_eq!(drag_end_dock(false, (4.0, 450.0), Some(FRAME), home), home);
+            assert_eq!(
+                drag_end_dock(false, (1436.0, 450.0), Some(FRAME), home),
+                home
+            );
+            assert_eq!(drag_end_dock(false, (720.0, 880.0), None, home), home);
+        }
+    }
+
+    #[test]
+    fn a_snapping_release_lands_on_the_dock_under_the_cursor() {
+        let home = PillPosition::Bottom;
+        assert_eq!(
+            drag_end_dock(true, (30.0, 450.0), Some(FRAME), home),
+            PillPosition::Left
+        );
+        assert_eq!(
+            drag_end_dock(true, (1420.0, 450.0), Some(FRAME), home),
+            PillPosition::Right
+        );
+        assert_eq!(
+            drag_end_dock(true, (720.0, 880.0), Some(FRAME), PillPosition::Left),
+            PillPosition::Bottom
+        );
+        // No readable monitor: never guess a dock, stay home.
+        assert_eq!(
+            drag_end_dock(true, (30.0, 450.0), None, PillPosition::Right),
+            PillPosition::Right
+        );
+    }
+
+    #[test]
+    fn only_a_fresh_esc_press_mid_drag_cancels() {
+        assert!(esc_cancels_drag(true, false, true));
+        // Held since before the press, or still held from the last check.
+        assert!(!esc_cancels_drag(true, true, true));
+        // Released, or no drag at all.
+        assert!(!esc_cancels_drag(true, false, false));
+        assert!(!esc_cancels_drag(false, false, true));
+    }
+
+    #[test]
+    fn the_cancel_event_name_matches_the_webview() {
+        // pill/drag.ts PILL_DRAG_CANCEL_EVENT
+        assert_eq!(PILL_DRAG_CANCEL_EVENT, "pill-drag-cancel");
+    }
+}
+
+#[cfg(test)]
+mod one_pill_frame_tests {
+    use super::*;
+
+    const SCREEN: ScreenRect = ScreenRect {
+        x: 0,
+        y: 0,
+        w: 2880,
+        h: 1800,
+        scale: 2.0,
+    };
+
+    #[test]
+    fn legacy_frame_parks_exactly_where_the_fixed_panel_did() {
+        for pos in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            let old =
+                pill_origin_on_visible_screen(&[SCREEN], Some(SCREEN), (PILL_W, PILL_H), 14.0, pos);
+            let new = pill_origin_for_frame(&[SCREEN], Some(SCREEN), PanelFrame::LEGACY, 14.0, pos);
+            assert_eq!(old, new, "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn a_grown_frame_keeps_the_character_where_he_was() {
+        // The clock slot widens the frame to the right; the character's centre
+        // (the anchor) stays on the screen's centre line at the bottom dock.
+        let narrow = PanelFrame {
+            w: 212.0,
+            h: 140.0,
+            anchor_x: 106.0,
+            anchor_y: 110.0,
+        };
+        let wide = PanelFrame {
+            w: 352.0,
+            h: 140.0,
+            anchor_x: 106.0,
+            anchor_y: 110.0,
+        };
+        let a = pill_origin_for_frame(&[SCREEN], Some(SCREEN), narrow, 14.0, PillPosition::Bottom)
+            .unwrap();
+        let b = pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Bottom)
+            .unwrap();
+        assert_eq!(a.0 + 212, b.0 + 212, "the anchor's screen x must not move");
+        assert_eq!(a.0 + (106.0 * 2.0) as i32, SCREEN.w / 2);
+        // A side dock: flush to the edge, the character centred vertically.
+        let l =
+            pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Left).unwrap();
+        assert_eq!(l.0, 0);
+        assert_eq!(l.1 + (110.0 * 2.0) as i32, SCREEN.h / 2);
+        let r = pill_origin_for_frame(&[SCREEN], Some(SCREEN), wide, 14.0, PillPosition::Right)
+            .unwrap();
+        assert_eq!(r.0 + (352.0 * 2.0) as i32, SCREEN.w);
+    }
+
+    #[test]
+    fn a_frame_request_is_clamped_never_trusted() {
+        assert_eq!(PanelFrame::sanitize(f64::NAN, 10.0, 0.0, 0.0), None);
+        assert_eq!(PanelFrame::sanitize(10.0, f64::INFINITY, 0.0, 0.0), None);
+        let tiny = PanelFrame::sanitize(1.0, 1.0, 50.0, 50.0).unwrap();
+        assert_eq!((tiny.w, tiny.h), PANEL_MIN_PT);
+        assert!(tiny.anchor_x <= tiny.w && tiny.anchor_y <= tiny.h);
+        let huge = PanelFrame::sanitize(5000.0, 5000.0, -3.0, 9000.0).unwrap();
+        assert_eq!((huge.w, huge.h), PANEL_MAX_PT);
+        assert_eq!(huge.anchor_x, 0.0);
+        assert_eq!(huge.anchor_y, PANEL_MAX_PT.1);
+        let ok = PanelFrame::sanitize(290.4, 139.6, 100.0, 90.0).unwrap();
+        assert_eq!((ok.w, ok.h), (290.0, 140.0));
+    }
+
+    #[test]
+    fn the_frame_never_leaves_the_screen() {
+        let f = PanelFrame {
+            w: 400.0,
+            h: 200.0,
+            anchor_x: 390.0,
+            anchor_y: 5.0,
+        };
+        for pos in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            let (x, y) = pill_origin_for_frame(&[SCREEN], Some(SCREEN), f, 14.0, pos).unwrap();
+            assert!(x >= 0 && y >= 0, "{pos:?}");
+            assert!(x + 800 <= SCREEN.w && y + 400 <= SCREEN.h, "{pos:?}");
+        }
     }
 }

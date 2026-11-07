@@ -88,6 +88,9 @@ pub struct TitlePattern {
     pub name: String,
     /// Case-insensitive substrings of a window title.
     pub contains: Vec<String>,
+    /// yap-call-2: flipped only when a Wilson walk records a real title.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,19 +369,34 @@ pub fn score(
         let base = match app.kind {
             AppKind::Native => BASE_NATIVE,
             AppKind::SystemDaemon => BASE_DAEMON,
-            AppKind::Browser => match title_match(snap, app) {
-                Some(Some(pattern)) => {
-                    name = pattern.name.clone();
-                    BASE_BROWSER_TITLE
+            AppKind::Browser => {
+                // yap-call-2: Safari's WebKit.GPU (attributable only by a
+                // title) is DEFERRED with Firefox (docs/loop/DEFERRED.md) —
+                // it never produces an offer this release.
+                if app.helper_needs_title {
+                    continue;
                 }
-                // Safari's WebKit.GPU is attributable ONLY by a title match.
-                _ if app.helper_needs_title => continue,
-                None => BASE_BROWSER_AX_UNKNOWN,
-                Some(None) => {
-                    cap = BROWSER_NO_TITLE_CAP;
-                    BASE_BROWSER_AX_UNKNOWN
+                match title_match(snap, app) {
+                    Some(Some(pattern)) => {
+                        name = pattern.name.clone();
+                        BASE_BROWSER_TITLE
+                    }
+                    // AX unknown: "Browser call (site unknown)", offered only
+                    // with a calendar match (plan §3).
+                    None => {
+                        if !snap.calendar.is_some_and(|c| c.linked_event_in_window) {
+                            cap = BROWSER_NO_TITLE_CAP;
+                        }
+                        BASE_BROWSER_AX_UNKNOWN
+                    }
+                    // AX granted, the front tabs match no call site (a
+                    // YouTube tab, or the call sits in a background tab).
+                    Some(None) => {
+                        cap = BROWSER_NO_TITLE_CAP;
+                        BASE_BROWSER_AX_UNKNOWN
+                    }
                 }
-            },
+            }
         };
         let mut confidence = base;
         if snap
@@ -408,9 +426,27 @@ pub fn score(
     best
 }
 
+/// yap-call-1 — is `bundle_id`'s call still holding the microphone? Any
+/// process attributed to that catalog row (helpers included) whose
+/// `running_input` READ true. Read off the 1 s meeting tick for "Call ended".
+pub fn bundle_input_running(snap: &CallSnapshot, catalog: &CallCatalog, bundle_id: &str) -> bool {
+    snap.others().any(|p| {
+        p.running_input == Some(true)
+            && attribute(p, snap, catalog)
+                .is_some_and(|(app, _, _)| app.bundle_id.eq_ignore_ascii_case(bundle_id))
+    })
+}
+
 /// The offer text. The far side of FaceTime / Phone is NOT measured, so an
 /// unverified system-daemon row never claims it.
 pub fn offer_copy(candidate: &CallCandidate, catalog: &CallCatalog) -> String {
+    // yap-call-2: a browser call no title named (Accessibility off).
+    let site_unknown = catalog
+        .app(&candidate.bundle_id)
+        .is_some_and(|a| a.kind == AppKind::Browser && a.name == candidate.name);
+    if site_unknown {
+        return crate::call_titles::SITE_UNKNOWN_COPY.to_string();
+    }
     let your_side_only = catalog
         .app(&candidate.bundle_id)
         .is_some_and(|a| a.kind == AppKind::SystemDaemon && !a.verified);
@@ -459,7 +495,7 @@ pub fn observe_title(app: &CatalogApp, title: &str, raw: bool) -> TitleObs {
 /// The macOS adapters: read-only.
 #[cfg(target_os = "macos")]
 pub mod sys {
-    use super::{AxSource, CalendarHint, CallCatalog, CallSnapshot, RunningApp, TitleObs};
+    use super::{AxSource, CalendarHint, CallCatalog, CallSnapshot, RunningApp};
     use std::ffi::c_void;
     use std::sync::Mutex;
 
@@ -633,65 +669,6 @@ pub mod sys {
         })
     }
 
-    mod ax {
-        use core_foundation::array::CFArray;
-        use core_foundation::base::{CFRelease, CFType, CFTypeRef, TCFType};
-        use core_foundation::string::{CFString, CFStringRef};
-        use std::ffi::c_void;
-
-        type AXUIElementRef = *mut c_void;
-
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
-            fn AXUIElementCopyAttributeValue(
-                element: AXUIElementRef,
-                attribute: CFStringRef,
-                value: *mut CFTypeRef,
-            ) -> i32;
-            fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
-        }
-
-        fn copy(element: AXUIElementRef, name: &str) -> Option<CFTypeRef> {
-            let key = CFString::new(name);
-            let mut val: CFTypeRef = std::ptr::null_mut();
-            // SAFETY: a live AX element and a CFString key; +1 on success.
-            let err = unsafe {
-                AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &mut val)
-            };
-            (err == 0 && !val.is_null()).then_some(val)
-        }
-
-        /// Every window title of the app at `pid`. Read, matched by the
-        /// caller, and dropped.
-        pub fn window_titles(pid: i32) -> Vec<String> {
-            let mut out = Vec::new();
-            // SAFETY: AXUIElementCreateApplication returns +1 (or null).
-            let app = unsafe { AXUIElementCreateApplication(pid) };
-            if app.is_null() {
-                return out;
-            }
-            // SAFETY: a live element; a short timeout so a hung app never
-            // stalls the watcher.
-            unsafe { AXUIElementSetMessagingTimeout(app, 0.25) };
-            if let Some(windows) = copy(app, "AXWindows") {
-                // SAFETY: AXWindows is a CFArray of AXUIElement; create rule.
-                let windows: CFArray<CFType> =
-                    unsafe { CFArray::wrap_under_create_rule(windows as _) };
-                for w in windows.iter() {
-                    if let Some(title) = copy(w.as_CFTypeRef() as AXUIElementRef, "AXTitle") {
-                        // SAFETY: AXTitle is a CFString; create rule.
-                        let s = unsafe { CFString::wrap_under_create_rule(title as CFStringRef) };
-                        out.push(s.to_string());
-                    }
-                }
-            }
-            // SAFETY: balances the create above.
-            unsafe { CFRelease(app as CFTypeRef) };
-            out
-        }
-    }
-
     /// One snapshot. `None` below macOS 14.4 or when the process list cannot
     /// be read — no evidence, never "no call".
     pub fn snapshot(
@@ -706,31 +683,29 @@ pub mod sys {
         let procs = crate::syscapture::imp::process_audio_activity()
             .map_err(|status| format!("CoreAudio process list unreadable (status {status})"))?;
         let (running_apps, frontmost) = workspace(catalog);
-        let browser_titles = crate::perm_probe::accessibility_trusted().then(|| {
-            let mut titles: Vec<TitleObs> = Vec::new();
-            for running in &running_apps {
-                let Some(app) = catalog.app(&running.bundle_id) else {
-                    continue;
-                };
-                if app.kind != super::AppKind::Browser {
-                    continue;
-                }
-                for title in ax::window_titles(running.pid) {
-                    titles.push(super::observe_title(app, &title, raw_titles));
-                }
-            }
-            titles
-        });
-        Ok(CallSnapshot {
+        let mut snap = CallSnapshot {
             synthetic: false,
             own_pid: std::process::id() as i32,
             procs,
             running_apps,
             frontmost,
-            browser_titles,
+            browser_titles: None,
             ax_source,
             calendar,
-        })
+        };
+        // yap-call-2: titles are read ONLY from Chromium-family browsers the
+        // snapshot attributes a running mic input to, only when AX is
+        // already granted (never prompted), and reduced to
+        // `{ pattern_id, len }` inside call_titles.rs.
+        snap.browser_titles = crate::call_titles::read_titles(
+            &snap,
+            catalog,
+            crate::perm_probe::accessibility_trusted(),
+            raw_titles,
+            crate::call_titles::sys::window_titles,
+            |line| log::info!("{line}"),
+        );
+        Ok(snap)
     }
 }
 
@@ -817,7 +792,19 @@ mod tests {
         assert_eq!(c.bundle_id, "com.google.Chrome");
         assert_eq!(c.via, Via::HelperParent);
         assert_eq!(c.pid, 2000);
-        assert!(c.offers(), "AX unknown browser input offers at 60");
+        // yap-call-2: AX unknown is "site unknown" and offers ONLY with a
+        // calendar match.
+        assert!(!c.offers(), "AX unknown, no calendar: no offer");
+        let mut s = s;
+        s.calendar = Some(CalendarHint {
+            linked_event_in_window: true,
+        });
+        let c = score(&s, catalog(), &CallMemory::default()).expect("attributed");
+        assert!(c.offers(), "AX unknown + calendar match offers");
+        assert_eq!(
+            offer_copy(&c, catalog()),
+            crate::call_titles::SITE_UNKNOWN_COPY
+        );
     }
 
     #[test]

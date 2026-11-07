@@ -37,6 +37,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "buildChannel.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "diff.ts": { lines: 96, branches: 100, functions: 100, statements: 96 },
   "errors.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "retryDictation.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "home/habitat/habitat.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyRecorder.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "hotkeyStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -59,20 +60,48 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
+  // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
+  "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  // yap-1106-pill-rec-headphones-hoot-tape — the meeting scene: sun clock, glance, redraw key.
+  "pill/meetingScene.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
+  // yap-1106-pill-sky — the pill sky: the Home room's time of day, cached backdrop.
+  "pill/sky.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/meetingOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/meetingPopover.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
+  // yap-call-1 — the call offer's copy, surface and countdown rules.
+  "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
+  "views/settings/browserCalls.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
+  "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
+  // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
+  "pill/voices.ts": { lines: 96, branches: 85, functions: 94, statements: 96 },
   "pill/tone.ts": { lines: 100, branches: 94, functions: 100, statements: 96 },
   "polishOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "recoveryToast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "scratchpad/notesModel.ts": { lines: 100, branches: 96, functions: 100, statements: 96 },
+  "scratchpad/windowPrefs.ts": { lines: 95, branches: 90, functions: 100, statements: 95 },
+  "shortcutEditor.ts": { lines: 98, branches: 94, functions: 100, statements: 97 },
+  // WF-19 — floor set by the builder WITHOUT a run (no-compile rule); the
+  // integrator re-measures and may only raise it.
+  "mouseBinding.ts": { lines: 90, branches: 80, functions: 100, statements: 90 },
   "structureSettings.ts": { lines: 100, branches: 71, functions: 100, statements: 100 },
   "support/bundle.ts": { lines: 94, branches: 92, functions: 100, statements: 92 },
   "toast.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // FB-09 — floors set by the batch-2 integrator from the measured run. crisp.ts's gap is domBuffer/paintSprite, the DOM-only app path.
+  "sprites/art.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
+  "sprites/crisp.ts": { lines: 74, branches: 50, functions: 50, statements: 74 },
+  // yap-1106-friends-art-hd — re-measured by the batch-6 integrator (100 on every axis).
+  "sprites/friends.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "sprites/raster.ts": { lines: 100, branches: 98, functions: 100, statements: 99 },
   "viewState.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "voicePreferences.ts": { lines: 92, branches: 90, functions: 100, statements: 94 },
   "writingSamples.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

@@ -142,6 +142,10 @@
   --accent-busy: 38 92% 55%; /* amber — transcribing  */
   --accent-done: 152 69% 52%; /* green — done         */
   --accent-meeting: 0 84% 62%; /* red — recording, the one universal signal */
+  /* yap-1106-pill-rec-headphones-hoot-tape — the meeting scene's DOM overlays:
+     the tape reels' spokes and the elapsed time under the sun. */
+  --meeting-reel-ink: #1e2025;
+  --meeting-scene-ink: #fffdf5;
 
   /* ══════════════════════════════════════════════════════════════════
      ACTIVITY HEATMAP (YV55) — a warm amber climb out of the soil, so an
@@ -164,6 +168,12 @@
   --pill-text: #f5f5f7;
   --pill-bubble-surface: #20222e;
   --pill-bubble-text: #f7f1e6;
+  /* WF-20 — the per-app style chip under a listening pill (StyleChipButton.tsx). */
+  --pill-chip-surface: rgba(255, 255, 255, 0.12);
+  --pill-chip-surface-hover: rgba(255, 255, 255, 0.2);
+  --pill-chip-text: rgba(255, 255, 255, 0.86);
+  --pill-chip-text-quiet: rgba(255, 255, 255, 0.56);
+  --pill-chip-picked: #8fb4ff; /* the mode word while a 15-minute pick runs */
 
   /* The Copy card — the dark glass card the float window raises when dictation
      cannot be inserted (CopyCard.tsx). It sits over the user's screen like the

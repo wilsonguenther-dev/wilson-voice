@@ -1,6 +1,6 @@
 {
   "synthetic": true,
-  "note": "Safari: com.apple.WebKit.GPU running input AND a Safari window matched the meet pattern. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "note": "Safari: com.apple.WebKit.GPU running input AND a Safari window matched the meet pattern. Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot. yap-call-2: the Safari / WebKit.GPU path is DEFERRED (docs/loop/DEFERRED.md) — even with a title match it never offers this release.",
   "own_pid": 900,
   "procs": [
     {
@@ -35,9 +35,9 @@
   "ax_source": "yap",
   "calendar": null,
   "expect": {
-    "bundle_id": "com.apple.Safari",
-    "offer": true,
-    "via": "webkit_title",
-    "text": "Google Meet call — record it?"
+    "bundle_id": null,
+    "offer": false,
+    "via": null,
+    "text": null
   }
 }

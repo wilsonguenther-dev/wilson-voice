@@ -362,18 +362,15 @@ fn opening_the_scratchpad_does_not_steal_focus() {
     }
     assert!(OpenStep::ActivateApp.steals_focus() && OpenStep::PresentMainWindow.steals_focus());
 
-    // 2. The window is declared hidden and unfocused, so launch never shows it
-    //    or takes focus with it.
-    let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-    let win = conf["app"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["label"] == scratchpad::WINDOW_LABEL)
-        .expect("a `scratchpad` window in tauri.conf.json");
-    assert_eq!(win["url"], "scratchpad.html");
-    assert_eq!(win["visible"], false);
-    assert_eq!(win["focus"], false);
+    // 2. yap-1106-one-pill — the window is made on FIRST USE, hidden and
+    //    unfocused (scratchpad::ensure_window), so launch never shows it or
+    //    takes focus with it. See launch_opens_two_windows_and_the_scratchpad_lazily.
+    let sp_src = include_str!("../src/scratchpad.rs");
+    let ensure = &sp_src[sp_src.find("pub fn ensure_window").expect("ensure_window")..];
+    let ensure = &ensure[..ensure.find("\n}\n").unwrap()];
+    for want in ["\"scratchpad.html\"", ".visible(false)", ".focused(false)"] {
+        assert!(ensure.contains(want), "ensure_window lacks `{want}`");
+    }
 
     // 3. The chord is wired to the panel, not to the main window.
     let lib = include_str!("../src/lib.rs");
@@ -399,4 +396,164 @@ fn opening_the_scratchpad_does_not_steal_focus() {
         assert!(!body.contains(banned), "open_on_main calls `{banned}`");
     }
     assert!(body.contains("nonactivating_panel()"));
+}
+
+/// yap-1106-one-pill — two windows at launch (main + the one pill panel), the
+/// Scratchpad created lazily on first use, and the launch count logged as
+/// `windows open=<n>` so a live run shows it.
+#[test]
+fn launch_opens_two_windows_and_the_scratchpad_lazily() {
+    // Only the main window is declared; the pill panel is built in setup by
+    // float_pill::ensure_float. The Scratchpad is not declared at all.
+    let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let labels: Vec<&str> = conf["app"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["label"].as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["main"],
+        "launch declares only main: {labels:?}"
+    );
+    assert!(!labels.contains(&scratchpad::WINDOW_LABEL));
+
+    // The one launch-time builder besides main is the pill panel.
+    let pill = include_str!("../src/float_pill.rs");
+    assert!(pill.contains("WebviewWindowBuilder::new(app, \"float\""));
+
+    // The opener makes the window when it is missing, never errors on it.
+    let sp_src = include_str!("../src/scratchpad.rs");
+    let open = &sp_src[sp_src.find("pub fn open(").expect("open")..];
+    let open = &open[..open.find("\n}\n").unwrap()];
+    assert!(open.contains("ensure_window(app)?"), "{open}");
+    // ...and installs the close-hides / blur-drops-target handling with it.
+    let ensure = &sp_src[sp_src.find("pub fn ensure_window").unwrap()..];
+    let ensure = &ensure[..ensure.find("\n}\n").unwrap()];
+    assert!(ensure.contains("prevent_close()") && ensure.contains("set_focused_note(false, None)"));
+
+    // Launch logs the count, and no launch path touches the Scratchpad window.
+    let lib = include_str!("../src/lib.rs");
+    assert!(lib.contains("\"lifecycle launch windows open={} labels={} scratchpad_lazy={}\""));
+    assert!(!lib.contains("get_webview_window(scratchpad::WINDOW_LABEL)"));
+}
+
+// fix-b5-1 — the pill's Note opens the Scratchpad ON the note it made.
+#[test]
+fn the_opened_note_is_handed_to_the_window_once() {
+    scratchpad::request_open_note(Some("note-b".into()));
+    assert_eq!(scratchpad::take_open_note().as_deref(), Some("note-b"));
+    assert_eq!(scratchpad::take_open_note(), None, "taken once");
+    scratchpad::request_open_note(Some(String::new()));
+    assert_eq!(
+        scratchpad::take_open_note(),
+        None,
+        "an empty id is no request"
+    );
+    scratchpad::request_open_note(Some("note-c".into()));
+    scratchpad::request_open_note(None);
+    assert_eq!(scratchpad::take_open_note(), None, "None clears a request");
+
+    // The command carries the id to that open; no id keeps the plain open.
+    let lib = include_str!("../src/lib.rs");
+    let cmd = &lib[lib.find("fn open_scratchpad(").expect("open_scratchpad")..];
+    let cmd = &cmd[..cmd.find("\n}\n").unwrap()];
+    assert!(cmd.contains("note_id: Option<String>"), "{cmd}");
+    assert!(cmd.contains("scratchpad::open_note(&app, id)"), "{cmd}");
+    assert!(cmd.contains("scratchpad::open(&app)"), "{cmd}");
+    assert!(lib.contains("scratchpad_take_open_note,"), "registered");
+    // ...and logs no note id or text.
+    let sp = include_str!("../src/scratchpad.rs");
+    let open_note = &sp[sp.find("pub fn open_note(").expect("open_note")..];
+    let open_note = &open_note[..open_note.find("\n}\n").unwrap()];
+    assert!(!open_note.contains("note_id}") && !open_note.contains("{note_id"));
+}
+
+// --- WF-15 window controls: the expand/collapse frame math ---
+
+#[test]
+fn expand_fills_the_work_area_including_the_title_bar() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 50,
+        width: 3024,
+        height: 1800,
+    };
+    let f = scratchpad::fill_frame(work, (0, 56));
+    assert_eq!(
+        f,
+        scratchpad::Frame {
+            x: 0,
+            y: 50,
+            width: 3024,
+            height: 1744
+        }
+    );
+}
+
+#[test]
+fn expand_on_a_second_screen_keeps_its_origin() {
+    let work = scratchpad::Frame {
+        x: -1920,
+        y: -200,
+        width: 1920,
+        height: 1080,
+    };
+    let f = scratchpad::fill_frame(work, (0, 28));
+    assert_eq!((f.x, f.y), (-1920, -200));
+    assert_eq!((f.width, f.height), (1920, 1052));
+}
+
+#[test]
+fn collapse_returns_to_the_remembered_frame() {
+    let prior = scratchpad::Frame {
+        x: 300,
+        y: 200,
+        width: 1520,
+        height: 1040,
+    };
+    let fallback = scratchpad::Frame {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    };
+    assert_eq!(scratchpad::restore_frame(Some(prior), fallback), prior);
+}
+
+#[test]
+fn collapse_without_a_remembered_frame_centres_the_declared_default() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 50,
+        width: 3024,
+        height: 1800,
+    };
+    let f = scratchpad::centered_default(work, 2.0);
+    assert_eq!((f.width, f.height), (1520, 1040));
+    assert_eq!((f.x, f.y), (752, 430));
+    assert_eq!(scratchpad::restore_frame(None, f), f);
+}
+
+#[test]
+fn the_default_never_overflows_a_small_screen() {
+    let work = scratchpad::Frame {
+        x: 0,
+        y: 0,
+        width: 600,
+        height: 400,
+    };
+    let f = scratchpad::centered_default(work, 1.0);
+    assert_eq!(
+        f,
+        scratchpad::Frame {
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 400
+        }
+    );
+    let odd = scratchpad::centered_default(work, f64::NAN);
+    assert_eq!(odd, f, "a bad scale factor falls back to 1.0");
 }

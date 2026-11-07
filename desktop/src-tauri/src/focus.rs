@@ -35,7 +35,7 @@ pub const SELECTION_CHAR_LIMIT: usize = 500;
 const MAX_AX_PARENT_HOPS: usize = 32;
 
 #[cfg(target_os = "macos")]
-mod ax {
+pub(crate) mod ax {
     use core_foundation::base::{CFGetTypeID, CFRange, CFRelease, CFTypeRef, TCFType};
     use core_foundation::string::{CFString, CFStringRef};
     use std::ffi::c_void;
@@ -69,7 +69,7 @@ mod ax {
     /// `kAXValueTypeCFRange` — the AXValue wrapper AXSelectedTextRange uses.
     const AX_VALUE_CF_RANGE: u32 = 4;
 
-    fn attr_string(element: AXUIElementRef, name: &str) -> Option<String> {
+    pub(crate) fn attr_string(element: AXUIElementRef, name: &str) -> Option<String> {
         unsafe {
             let key = CFString::new(name);
             let mut val: CFTypeRef = std::ptr::null_mut();

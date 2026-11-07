@@ -33,9 +33,9 @@ import LanguageChip from "./LanguageChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { barBox, barDock, shellBarPhase, waveAxis } from "./dock";
-import { resolveCharacter } from "./characters/registry";
+import { shellBody } from "./characters/registry";
 import type { Character, CharacterFrame, CharacterPaint } from "./characters/types";
-import { FlowBarSlots, layoutSlots, slotById, tooltipSide, type SlotCtx } from "./slots";
+import { FlowBarSlots, layoutSlots, slotById, SlotTip, tooltipSide, type SlotCtx } from "./slots";
 
 /** Y8-B — the centre slot: the capsule's own mic/stop control is the Dictate slot. */
 const DICTATE = slotById("dictate");
@@ -53,9 +53,9 @@ interface AppStatus {
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = resolveCharacter(), tone = "friendly" }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, slots = null, character = shellBody(), tone = "friendly" }: {
     gate?: LivePhase;
-    /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: classic. */
+    /** Y5-K — the creature, resolved from `pill_style` ONCE by float-main. Absent: the shell's neutral body (`shellBody`). */
     character?: Character;
     /** Y5-K — the companion tone, decided by the shell (float-main) and handed down in the frame. */
     tone?: ChatTone;
@@ -102,6 +102,9 @@ export default function ClassicPill(
   // while hover-expanded. Measured for both the hover reducer and the hitbox.
   const hotElRef = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<HoverPhase>("collapsed");
+  // yap-1106-pill-notes-and-meeting / WF-03 — keyboard focus opens the rail
+  // exactly as hover does, so every rail button is reachable with Tab.
+  const [focusWithin, setFocusWithin] = useState(false);
   const hoverRef = useRef<HoverState>(initialHover());
   const prevBusy = useRef(false);
   const doneTimer = useRef<number | null>(null);
@@ -379,14 +382,21 @@ export default function ClassicPill(
   }, [blocked, gated, busy, transcribing, drag, openLicenseSurface]);
   // Y8-B — the bar's slots. The capsule owns WHERE they sit (lead · centre ·
   // trail along the length axis); `pill/slots.tsx` owns whether each is shown.
-  const slotCtx: SlotCtx = slots ?? {
-    phase: gate,
-    // No `document` under a server render (ClassicPill.mark.test): bottom dock.
-    dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
-    meetingOnScreen: meeting.recording || meetingAfter !== null,
-    progress,
-    listen: { estWords: 0, sec: 0 },
-    scratchpadOnBar: false,
+  const slotCtx: SlotCtx = {
+    ...(slots ?? {
+      phase: gate,
+      // No `document` under a server render (ClassicPill.mark.test): bottom dock.
+      dock: barDock(typeof document === "undefined" ? undefined : document.documentElement.dataset.dock),
+      meetingOnScreen: meeting.recording || meetingAfter !== null,
+      progress,
+      listen: { estWords: 0, sec: 0 },
+      scratchpadOnBar: false,
+      meetingRecording: meeting.recording,
+      stopKey: chordLabel,
+    }),
+    // The CAPSULE owns hover and focus, so it alone opens the rail (a forced
+    // matrix scene, `slots.railOpen`, holds it open without a pointer).
+    railOpen: !!slots?.railOpen || hover === "expanded" || focusWithin,
   };
   const barAxis = layoutSlots(slotCtx).axis;
   const tipSide = tooltipSide(slotCtx.dock);
@@ -405,9 +415,9 @@ export default function ClassicPill(
     reducedMotion: prefersReducedMotion(),
     chordLabel,
   };
-  // A character with nothing for a frame never blanks the pill: classic paints it.
+  // A character with nothing for a frame never blanks the pill: the shell's neutral body paints it.
   const paintOf = (f: CharacterFrame): CharacterPaint =>
-    character.render(f) ?? (resolveCharacter().render(f) as CharacterPaint);
+    character.render(f) ?? (shellBody().render(f) as CharacterPaint);
   const paint = paintOf(frame);
   const art = paint.art;
   // The take-landed flash is the shell's timer; the creature only draws `done`.
@@ -416,7 +426,7 @@ export default function ClassicPill(
   return (
     <div className="stage">
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
-      <div ref={hotElRef} className="pill-hot" data-hover={hover}>
+      <div ref={hotElRef} className="pill-hot" data-hover={slots?.railOpen ? "expanded" : hover}>
       <div
         ref={pillRef}
         className={cls}
@@ -434,13 +444,18 @@ export default function ClassicPill(
         style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
         title={blocked ? visual.label : gated ? GATED_TITLE : undefined}
         {...drag.handlers}
+        onFocus={() => setFocusWithin(true)}
+        onBlur={(e) => {
+          // Moving focus between the capsule and its own rail keeps it open.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false);
+        }}
         onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
-        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
             has no dead click region to hunt for. It lives INSIDE the capsule,
@@ -486,7 +501,11 @@ export default function ClassicPill(
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
         <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
-          <span className="slot-tip" data-tip-side={tipSide}>{DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}</span>
+          <SlotTip
+            text={DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}
+            keycap={DICTATE.keycap?.({ ...slotCtx, phase: live ? "listening" : slotCtx.phase }) ?? null}
+            side={tipSide}
+          />
         </button>
         {blocked ? (
           <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>

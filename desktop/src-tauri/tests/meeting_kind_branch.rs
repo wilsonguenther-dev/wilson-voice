@@ -277,6 +277,8 @@ fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
         wilson_voice_lib::transforms::MIGRATION_8_TRANSFORM_RUNS,
         // yap24-NT11: step 9 flags mic spans suppressed as speaker echo.
         meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
+        // yap-call-1: step 10 records the detected call app and how it was found.
+        meetings::MIGRATION_10_DETECTED_CALL,
     ];
     let mentions = ladder
         .iter()

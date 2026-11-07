@@ -8,6 +8,7 @@ import {
   FOUNDING_PRICE_LABEL,
   KEEP_FOREVER_LINE,
   PRICE_LABEL,
+  purchaseCopy,
   statusCopy,
   storedKeyProblem,
   TRIAL_WARN_DAYS,
@@ -31,7 +32,10 @@ export default function LicensePanel({
   onDeactivate,
 }: {
   status: LicenseStatus | null;
-  /** Opens Stripe's hosted checkout (Rust `open_purchase_page`). */
+  /**
+   * Opens the drivia.consulting Yap page (Rust `open_purchase_page`) — in both
+   * states; the page itself says "not open yet" while checkout is closed.
+   */
   onBuy: () => Promise<void> | void;
   /** Rejects with the backend's `{code, message}` when the key is refused. */
   onActivate: (key: string) => Promise<void>;
@@ -57,6 +61,9 @@ export default function LicensePanel({
   const copy = statusCopy(status);
   const days = daysLeft(status);
   const storedProblem = storedKeyProblem(status);
+  // yap-1106-lic-02 — the backend's switch, never re-derived here. An older
+  // payload with no `purchase_open` reads as closed.
+  const purchase = purchaseCopy(status.purchase_open === true);
 
   async function activate() {
     const key = draft.trim();
@@ -130,12 +137,9 @@ export default function LicensePanel({
       {status.state !== "licensed" && (
         <div className="panel license-buy">
           <div>
-            <h3>Buy Yap</h3>
+            <h3>{purchase.heading}</h3>
             <p>
-              <strong className="license-price">{PRICE_LABEL}</strong> once. Not a
-              subscription, not an account — one key, yours for good, and it activates
-              up to three Macs. Checkout opens at Stripe in your browser; the key comes
-              straight back by email.
+              <strong className="license-price">{PRICE_LABEL}</strong> {purchase.body}
             </p>
             {/* Founding copy only while the backend says the window is open
                 (`founding_open`, Rust `founding_valid`): never a promo nobody
@@ -147,8 +151,13 @@ export default function LicensePanel({
               </p>
             )}
           </div>
-          <button type="button" className="primary license-buy-btn" onClick={buy}>
-            Buy Yap — {PRICE_LABEL} once
+          <button
+            type="button"
+            className="primary license-buy-btn"
+            data-purchase-open={status.purchase_open === true ? "true" : "false"}
+            onClick={buy}
+          >
+            {purchase.button}
           </button>
         </div>
       )}
@@ -214,7 +223,7 @@ export default function LicensePanel({
           </p>
         )}
         <p className="license-lost">
-          Lost the email? Reply to your Stripe receipt and we will send the key again.
+          Lost the email? Reply to your purchase receipt and we will send the key again.
         </p>
       </div>
 

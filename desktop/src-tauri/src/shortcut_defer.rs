@@ -89,6 +89,20 @@ pub fn route(
             return on_press(job);
         }
     }
+    // WF-18 — an extra chord (an action's second … fourth shortcut) runs the
+    // same job as that action's primary.
+    if let Some(action) = crate::hotkey_table::alias_action(shortcut) {
+        let job = match action {
+            BindingAction::RecordMeeting => Some(ShortcutJob::MeetingToggle),
+            BindingAction::HandsFreeToggle => Some(ShortcutJob::HandsFreeToggle),
+            BindingAction::CopyLast => Some(ShortcutJob::CopyLast),
+            BindingAction::OpenScratchpad => Some(ShortcutJob::OpenScratchpad),
+            _ => None,
+        };
+        if let Some(job) = job {
+            return on_press(job);
+        }
+    }
     if shortcut == &shortcuts::PASTE_LAST.shortcut() {
         return on_press(ShortcutJob::PasteLast);
     }

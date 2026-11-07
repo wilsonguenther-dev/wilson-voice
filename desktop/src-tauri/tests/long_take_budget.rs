@@ -887,7 +887,20 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     let mut all = BTreeMap::new();
     all.insert(
         "src/record.rs",
-        BTreeMap::from([(1, 1), (2, 1), (5, 3), (10, 3), (60, 2), (300, 2), (500, 4)]),
+        BTreeMap::from([
+            (1, 1),
+            (2, 1),
+            (5, 3),
+            (10, 3),
+            (60, 2),
+            // yap-wf-10-mic-fallback-order-and — ARMED_TICK (250 ms): the capture
+            // worker's tick only while a take or meeting is in flight, so a mic
+            // that vanishes mid-take is noticed and the take carries on on the
+            // next ranked mic. The idle stream keeps IDLE_TICK (YV81).
+            (250, 1),
+            (300, 2),
+            (500, 4),
+        ]),
     );
     all.insert(
         "src/transcription.rs",
@@ -896,7 +909,11 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             (5, 2),
             (10, 2),
             (20, 2),
-            (50, 3),
+            // yap-1106-retry-failed-dictation — ENGINE_IDLE_POLL (50 ms): a queued
+            // retry re-checks `is_busy` on the single engine until the live take
+            // hands it back, bounded by the clip-scaled retry deadline. Background
+            // work waiting on a live take, not a take waiting on a chunk (docs/BUDGETS.md).
+            (50, 4),
             (80, 1),
             (120, 1),
             (150, 1),
@@ -908,12 +925,20 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     all.insert(
         "src/lib.rs",
         BTreeMap::from([
-            (5, 2),
-            (10, 1),
+            // yap-1106-retry-failed-dictation — every row that grew here
+            // (5:2->5, 10:1->2, 100:1->2, 200, 300:2, 350, 400:1->2) lives in
+            // `#[cfg(test)] mod retry_engine_tests`: fake-engine decode durations,
+            // test deadlines and 5/10 ms sleeps inside test-only wait loops. No
+            // production wakeup was added to lib.rs (docs/BUDGETS.md).
+            (5, 5),
+            (10, 2),
             (50, 1),
-            (100, 1),
+            (100, 2),
             (150, 2),
-            (400, 1),
+            (200, 1),
+            (300, 2),
+            (350, 1),
+            (400, 2),
             (500, 1),
             // yap-lifecycle — EXIT_DRAIN_TIMEOUT (900 ms) and EXIT_TAKE_TIMEOUT
             // (600 ms): one-shot quit deadlines, cut from 3 s each so the whole

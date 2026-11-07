@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "yap-call-0 — the call-app catalog, bundled with include_str! by call_signals.rs. Seeded from plan section 2.2(4). verified:false until a Wilson walk (scripts/call-walk.sh) records a non-synthetic fixture for the row; a browser row is verified only from a fixture whose ax_source is \"yap\". Helper patterns are case-insensitive bundle-id prefixes of the PROCESS that carries the audio, which is a helper, never the UI app (syscapture.rs, finding OS-5).",
+  "note": "yap-call-0 — the call-app catalog, bundled with include_str! by call_signals.rs. Seeded from plan section 2.2(4). verified:false until a Wilson walk (scripts/call-walk.sh) records a non-synthetic fixture for the row; a browser row is verified only from a fixture whose ax_source is \"yap\". yap-call-2: every title pattern carries verified:false until a Wilson walk records a real front-tab title; matching is case-insensitive substring on the FRONT tab title only; the Safari row is deferred (never offers) with Firefox. Helper patterns are case-insensitive bundle-id prefixes of the PROCESS that carries the audio, which is a helper, never the UI app (syscapture.rs, finding OS-5).",
   "apps": [
     { "bundle_id": "us.zoom.xos", "name": "Zoom", "kind": "native", "helpers": ["us.zoom."], "verified": false },
     { "bundle_id": "com.microsoft.teams2", "name": "Microsoft Teams", "kind": "native", "helpers": ["com.microsoft.teams2"], "verified": false },
@@ -13,32 +13,53 @@
     { "bundle_id": "Cisco-Systems.Spark", "name": "Webex", "kind": "native", "helpers": ["Cisco-Systems.Spark", "com.cisco.webex"], "verified": false },
     { "bundle_id": "com.google.Chrome", "name": "Google Chrome", "kind": "browser", "helpers": ["com.google.Chrome.helper"], "verified": false,
       "title_patterns": [
-        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
-        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
-        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] },
-        { "id": "webex_web", "name": "Webex", "contains": ["Webex"] }
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet", "meet.google.com"], "verified": false },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams", "teams.microsoft.com", "teams.live.com"], "verified": false },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom"], "verified": false },
+        { "id": "slack_huddle", "name": "Slack", "contains": ["Huddle"], "verified": false },
+        { "id": "discord_web", "name": "Discord", "contains": ["Discord"], "verified": false },
+        { "id": "whereby", "name": "Whereby", "contains": ["Whereby"], "verified": false },
+        { "id": "webex_web", "name": "Webex", "contains": ["Webex"], "verified": false },
+        { "id": "around", "name": "Around", "contains": ["Around |", "around.co"], "verified": false }
       ] },
     { "bundle_id": "com.microsoft.edgemac", "name": "Microsoft Edge", "kind": "browser", "helpers": ["com.microsoft.edgemac.helper"], "verified": false,
       "title_patterns": [
-        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
-        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
-        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] }
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet", "meet.google.com"], "verified": false },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams", "teams.microsoft.com", "teams.live.com"], "verified": false },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom"], "verified": false },
+        { "id": "slack_huddle", "name": "Slack", "contains": ["Huddle"], "verified": false },
+        { "id": "discord_web", "name": "Discord", "contains": ["Discord"], "verified": false },
+        { "id": "whereby", "name": "Whereby", "contains": ["Whereby"], "verified": false },
+        { "id": "webex_web", "name": "Webex", "contains": ["Webex"], "verified": false },
+        { "id": "around", "name": "Around", "contains": ["Around |", "around.co"], "verified": false }
       ] },
     { "bundle_id": "com.brave.Browser", "name": "Brave", "kind": "browser", "helpers": ["com.brave.Browser.helper"], "verified": false,
       "title_patterns": [
-        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
-        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] }
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet", "meet.google.com"], "verified": false },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams", "teams.microsoft.com", "teams.live.com"], "verified": false },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom"], "verified": false },
+        { "id": "slack_huddle", "name": "Slack", "contains": ["Huddle"], "verified": false },
+        { "id": "discord_web", "name": "Discord", "contains": ["Discord"], "verified": false },
+        { "id": "whereby", "name": "Whereby", "contains": ["Whereby"], "verified": false },
+        { "id": "webex_web", "name": "Webex", "contains": ["Webex"], "verified": false },
+        { "id": "around", "name": "Around", "contains": ["Around |", "around.co"], "verified": false }
       ] },
     { "bundle_id": "company.thebrowser.Browser", "name": "Arc", "kind": "browser", "helpers": ["company.thebrowser.browser.helper"], "verified": false,
       "title_patterns": [
-        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
-        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] }
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet", "meet.google.com"], "verified": false },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams", "teams.microsoft.com", "teams.live.com"], "verified": false },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom"], "verified": false },
+        { "id": "slack_huddle", "name": "Slack", "contains": ["Huddle"], "verified": false },
+        { "id": "discord_web", "name": "Discord", "contains": ["Discord"], "verified": false },
+        { "id": "whereby", "name": "Whereby", "contains": ["Whereby"], "verified": false },
+        { "id": "webex_web", "name": "Webex", "contains": ["Webex"], "verified": false },
+        { "id": "around", "name": "Around", "contains": ["Around |", "around.co"], "verified": false }
       ] },
     { "bundle_id": "com.apple.Safari", "name": "Safari", "kind": "browser", "helpers": ["com.apple.WebKit.GPU"], "helper_needs_title": true, "verified": false,
       "title_patterns": [
-        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"] },
-        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"] },
-        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"] }
+        { "id": "meet", "name": "Google Meet", "contains": ["Meet - ", "Meet – ", "Google Meet"], "verified": false },
+        { "id": "teams_web", "name": "Microsoft Teams", "contains": ["Microsoft Teams"], "verified": false },
+        { "id": "zoom_web", "name": "Zoom", "contains": ["Zoom Meeting", "Zoom Workplace"], "verified": false }
       ] }
   ]
 }

@@ -159,7 +159,8 @@ body {
   flex: 1;
   min-height: 0;
   resize: none;
-  font: 13.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+  /* WF-15 — the Aa / ⌘+ / ⌘− step, set on .sp from windowPrefs.FONT_PX. */
+  font: var(--sp-text-size, 13.5px) / 1.55 ui-monospace, "SF Mono", Menlo, monospace;
   color: inherit;
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -196,4 +197,114 @@ body {
   color: var(--text-muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* WF-15 — window controls: ⌘E rail toggle, Aa text size, Expand, and the
+   floating Copy. Colours and motion come from tokens.css only. */
+.sp.rail-hidden {
+  grid-template-columns: 1fr;
+}
+.sp-rail[hidden] {
+  display: none;
+}
+.sp-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.sp-bar .sp-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.sp-controls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sp-ctl {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, ease),
+    background-color var(--duration-fast, 120ms) var(--ease-standard, ease);
+}
+.sp-ctl:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border-color: var(--border);
+}
+.sp-ctl[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface-card);
+  border-color: var(--border);
+}
+.sp-ctl:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* The Aa glyph itself shows the step it is on. */
+.sp-aa {
+  font-weight: 600;
+  min-width: 34px;
+}
+.sp-aa[data-size="small"] {
+  font-size: 11px;
+}
+.sp-aa[data-size="large"] {
+  font-size: 14px;
+}
+.sp-editor {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.sp-editor .sp-text {
+  flex: 1;
+  /* Room so the last line never sits under the floating Copy. */
+  padding-bottom: 42px;
+}
+.sp-copy {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 12px;
+  box-shadow: var(--elevation-raised);
+  cursor: pointer;
+  transition: opacity var(--duration-fast, 120ms) var(--ease-standard, ease);
+}
+.sp-copy.done {
+  color: var(--accent-done, var(--accent));
+}
+/* An empty note has nothing to copy: the button steps out of the way. */
+.sp-copy:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+.sp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sp-ctl,
+  .sp-copy {
+    transition: none;
+  }
 }

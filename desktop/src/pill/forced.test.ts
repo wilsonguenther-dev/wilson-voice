@@ -5,6 +5,8 @@ import {
   LICENSE_SCENES,
   matrixLicenseScenes,
   matrixPhases,
+  matrixRailScene,
+  PILL_STYLES,
   resolvePhase,
   SAMPLE_PROGRESS,
   sceneLicense,
@@ -33,6 +35,12 @@ describe("forcedPill (yap24-UI3, dev-only matrix handle)", () => {
   it("carries pill and dock only when they are real values", () => {
     expect(forcedPill("?phase=done&pill=yappy&dock=right")).toMatchObject({ style: "yappy", dock: "right" });
     expect(forcedPill("?phase=done&pill=fancy&dock=top")).toMatchObject({ style: null, dock: null });
+  });
+
+  it("forces only the styles that ship: Classic is retired (yap-1106-retire-classic-pill)", () => {
+    expect([...PILL_STYLES]).toEqual(["yappy"]);
+    expect(forcedPill("?phase=idle&pill=classic")).toMatchObject({ style: null });
+    expect(forcedPill("?phase=idle&pill=yappy")).toMatchObject({ style: "yappy" });
   });
 
   it("seeds progress for transcribing only — the phase is never entered without it", () => {
@@ -83,5 +91,13 @@ describe("yap24-PILL1 — license scenes", () => {
       expect(r.label.length).toBeGreaterThan(0);
     }
     expect(rows.some((r) => r.id === "trial-quiet")).toBe(true);
+  });
+});
+
+describe("yap-1106-pill-notes-and-meeting / WF-03 — the rail scene", () => {
+  it("is an idle pill with the rail forced open", () => {
+    const row = matrixRailScene();
+    expect(row).toMatchObject({ phase: "idle", id: "rail", phaseId: PHASE_ID.idle, query: "rail=open", offer: "" });
+    expect(row.label.length).toBeGreaterThan(0);
   });
 });

@@ -95,7 +95,7 @@ describe("the Settings line", () => {
 });
 
 // yap-byom-0 — the notice's upload claim follows the model-provider choices.
-import { consentNotice, leaveLines } from "./consent";
+import { consentNotice, leaveLines, recordedLine } from "./consent";
 
 describe("consentNotice(activeLeaves) — yap-byom-0", () => {
   it("keeps 'Nothing is uploaded' while every choice stays on this Mac", () => {
@@ -121,5 +121,36 @@ describe("consentNotice(activeLeaves) — yap-byom-0", () => {
     expect(leaveLines([{ task: "polish", host: "api.groq.com" }])).toEqual([
       "Polish goes to api.groq.com",
     ]);
+  });
+});
+
+// yap-call-1 — the notice names what is recorded and never claims "Nothing is
+// uploaded" while a Leaves-this-Mac label is Yes.
+describe("consentNotice(activeLeaves, scope) — yap-call-1", () => {
+  it("empty -> 'Nothing is uploaded' present", () => {
+    expect(consentNotice([]).paragraphs[0]).toContain("Nothing is uploaded");
+  });
+
+  it('["openrouter.ai"] -> "Nothing is uploaded" absent and the host named', () => {
+    const n = consentNotice(["openrouter.ai"]);
+    expect(n.paragraphs.join(" ")).not.toContain("Nothing is uploaded");
+    expect(n.paragraphs[0]).toContain("Notes go to openrouter.ai");
+  });
+
+  it("names the call audio by default, never the microphone alone", () => {
+    const p = consentNotice([]).paragraphs[0];
+    expect(p).toContain("your microphone and the call audio playing on this Mac");
+    expect(p).not.toContain("Mac's microphone");
+  });
+
+  it("says 'your side only' for FaceTime / Phone", () => {
+    const p = consentNotice([], "your_side").paragraphs[0];
+    expect(p).toContain("your side only");
+    expect(p).not.toContain("call audio");
+    expect(recordedLine("your_side")).toContain("your side only");
+  });
+
+  it("the static CONSENT_NOTICE carries no upload claim of its own", () => {
+    expect(CONSENT_NOTICE.paragraphs[0]).not.toContain("Nothing is uploaded");
   });
 });

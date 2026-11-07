@@ -109,7 +109,8 @@ fn shipped_defaults_table() {
     assert!(d.show_floating_pill, "show_floating_pill default");
     // The pill's look on first launch. A different value ships a different
     // first impression than every screenshot and the onboarding art.
-    assert_eq!(d.pill_style, "classic", "pill_style default");
+    // yap-1106-retire-classic-pill: Classic is retired; Yappy is the pill.
+    assert_eq!(d.pill_style, "yappy", "pill_style default");
 
     // --- Audio ------------------------------------------------------------
     // False = raw mic into the ASR, so fan and keyboard noise reach the model

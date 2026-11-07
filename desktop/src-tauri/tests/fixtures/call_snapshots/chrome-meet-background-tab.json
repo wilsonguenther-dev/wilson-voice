@@ -1,0 +1,45 @@
+{
+  "synthetic": true,
+  "note": "yap-call-2 honest limit: Meet runs in a BACKGROUND tab, so the only Chrome window title Yap can read is the front tab (a docs page, no pattern). Mic held, Chrome frontmost, calendar match — still capped at 55: no offer. Hand-built (synthetic).",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 2001,
+      "parent_pid": 2000,
+      "bundle_id": "com.google.Chrome.helper",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 2000,
+      "bundle_id": "com.google.Chrome"
+    }
+  ],
+  "frontmost": "com.google.Chrome",
+  "browser_titles": [
+    {
+      "bundle_id": "com.google.Chrome",
+      "pattern_id": null,
+      "len": 27
+    }
+  ],
+  "ax_source": "yap",
+  "calendar": {
+    "linked_event_in_window": true
+  },
+  "expect": {
+    "bundle_id": "com.google.Chrome",
+    "offer": false,
+    "via": "helper_parent",
+    "text": null
+  }
+}
