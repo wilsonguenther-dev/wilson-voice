@@ -72,7 +72,7 @@ function take(seconds: number, level: (t: number) => number, tone: ChatTone = "f
   const state = createLiveState();
   const said: Array<{ t: number; line: string }> = [];
   let t = 0;
-  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null };
+  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null, glance: false };
   while (t < seconds) {
     t += FRAME;
     frame = advanceLive(state, FRAME, level(t), tone);
@@ -504,7 +504,10 @@ describe("transcribe progress (Y3-C)", () => {
     // running off it — a playful state, never a stated number.
     const s = createLiveState();
     let f: LiveFrame | null = null;
-    for (let t = 0; t < 30; t += FRAME) f = advanceLive(s, FRAME, 0.05, "friendly");
+    // The take opens on half a second of room tone: the floor is seeded from the
+    // FIRST frame (yap-1106-live-reactions-during-take), so a take that is loud
+    // from frame one would read that level as the room, not as speech.
+    for (let t = 0; t < 30; t += FRAME) f = advanceLive(s, FRAME, t < 0.5 ? 0 : 0.05, "friendly");
     expect(f!.estWords).toBeGreaterThan(0);
     expect(f!.tier).toBe(liveTierForWords(wordsFromVoiced(s.voicedT)));
     expect(f!.estWords).toBeCloseTo(wordsFromVoiced(s.voicedT), 6);

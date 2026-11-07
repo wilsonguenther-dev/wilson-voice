@@ -8,10 +8,13 @@ import {
   retryAllLabel,
   retryAllSummary,
   runRetryAll,
+  RETRY_DEADLINE_ERROR,
   RETRY_DEADLINE_MESSAGE,
+  RETRY_ENGINE_BUSY_ERROR,
   RETRY_QUEUED_LABEL,
   RETRY_WATCHDOG_GRACE_MS,
   createRetryWatchdog,
+  raceRetryWatchdog,
   retryButtonLabel,
   retryDeadlineMs,
 } from "./retryDictation";
@@ -231,5 +234,157 @@ describe("retryAllLabel / retryAllSummary", () => {
     expect(retryAllSummary({ ...base, recovered: 1, remaining: 2 })).toBe(
       "Recovered 1 clip. 2 still waiting — Retry all to continue",
     );
+  });
+});
+
+// ── fix-b5-2 — Retry all stops on a timed-out or busy engine ─────────────────
+
+/** A Rust `const NAME: &str = "…";` from lib.rs, its value verbatim (the line may wrap). */
+function rustConst(rs: string, name: string): string | null {
+  const m = new RegExp(`const ${name}: &str =\\s*"([^"]*)";`).exec(rs);
+  return m ? m[1] : null;
+}
+
+describe("fix-b5-2: the backend's retry errors are pinned", () => {
+  it("mirrors RETRY_DEADLINE_ERROR and RETRY_ENGINE_BUSY_ERROR from lib.rs verbatim", () => {
+    const rs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8") as string;
+    expect(rustConst(rs, "RETRY_DEADLINE_ERROR")).toBe(RETRY_DEADLINE_ERROR);
+    expect(rustConst(rs, "RETRY_ENGINE_BUSY_ERROR")).toBe(RETRY_ENGINE_BUSY_ERROR);
+    expect(RETRY_DEADLINE_MESSAGE).toBe(RETRY_DEADLINE_ERROR);
+  });
+  it("pins the literal sentences, so a TS-side reword fails here too", () => {
+    expect(RETRY_DEADLINE_ERROR).toBe("Couldn't transcribe this clip — Try again");
+    expect(RETRY_ENGINE_BUSY_ERROR).toBe("The speech engine stayed busy with a live dictation — Try again");
+    expect(ENGINE_STUCK_PREFIX).toBe("The speech engine is still busy");
+  });
+});
+
+describe("fix-b5-2: isEngineUnhealthy classes a timed-out or busy retry as the engine's", () => {
+  it("matches the deadline and engine-busy errors", () => {
+    expect(isEngineUnhealthy(RETRY_DEADLINE_ERROR)).toBe(true);
+    expect(isEngineUnhealthy(RETRY_ENGINE_BUSY_ERROR)).toBe(true);
+    expect(isEngineUnhealthy(` ${RETRY_ENGINE_BUSY_ERROR}\n`)).toBe(true);
+  });
+  it("still treats a clip's own failure as the clip's", () => {
+    expect(isEngineUnhealthy("Couldn't transcribe this clip — no speech found")).toBe(false);
+    expect(isEngineUnhealthy("That clip's audio is gone")).toBe(false);
+  });
+});
+
+/**
+ * The same shape appShell's retryFailed has: invoke raced against the watchdog,
+ * the error classed by isEngineUnhealthy. `answer` is what the backend does.
+ */
+function fakeRetryOne(answer: (id: string) => Promise<unknown>, watchdogMs: number, expiredIds: string[] = []) {
+  return async (id: string): Promise<RetryOutcome> => {
+    const watchdog = createRetryWatchdog(() => expiredIds.push(id));
+    watchdog.arm(watchdogMs);
+    try {
+      const raced = await raceRetryWatchdog(answer(id), watchdog);
+      if (raced.kind === "expired") return "engine-busy";
+      if (raced.kind === "errored") {
+        const message = raced.error instanceof Error ? raced.error.message : String(raced.error);
+        return isEngineUnhealthy(message, watchdog.expired) ? "engine-busy" : "failed";
+      }
+      return "recovered";
+    } finally {
+      watchdog.clear();
+    }
+  };
+}
+
+describe("fix-b5-2: runRetryAll stops on an unhealthy engine", () => {
+  it("stops on a RETRY_DEADLINE_ERROR on clip 1 of 3", async () => {
+    const seen: string[] = [];
+    const result = await runRetryAll(
+      ["a", "b", "c"],
+      fakeRetryOne(async (id) => {
+        seen.push(id);
+        throw RETRY_DEADLINE_ERROR; // Tauri rejects with the bare string
+      }, 60_000),
+    );
+    expect(seen).toEqual(["a"]);
+    expect(result).toEqual({ recovered: 0, failed: 0, remaining: 3, stoppedForEngine: true });
+    expect(retryAllSummary(result)).toBe(
+      "Nothing was recovered. The speech engine is busy — Retry all again in a minute",
+    );
+  });
+
+  it("stops on a RETRY_ENGINE_BUSY_ERROR on clip 1 of 3", async () => {
+    const seen: string[] = [];
+    const result = await runRetryAll(
+      ["a", "b", "c"],
+      fakeRetryOne(async (id) => {
+        seen.push(id);
+        throw new Error(RETRY_ENGINE_BUSY_ERROR);
+      }, 60_000),
+    );
+    expect(seen).toEqual(["a"]);
+    expect(result).toEqual({ recovered: 0, failed: 0, remaining: 3, stoppedForEngine: true });
+  });
+
+  it("still moves past a clip's own failure", async () => {
+    const result = await runRetryAll(
+      ["a", "b"],
+      fakeRetryOne(async (id) => {
+        if (id === "a") throw "No speech detected in that clip";
+        return {};
+      }, 60_000),
+    );
+    expect(result).toEqual({ recovered: 1, failed: 1, remaining: 0, stoppedForEngine: false });
+  });
+});
+
+describe("fix-b5-2: a retry whose backend never answers ends at the watchdog", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("raceRetryWatchdog resolves expired when the watchdog fires first", async () => {
+    const watchdog = createRetryWatchdog(() => {});
+    watchdog.arm(1000);
+    let raced: { kind: string } | null = null;
+    void raceRetryWatchdog(new Promise<never>(() => {}), watchdog).then((r) => {
+      raced = r;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(raced).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(raced).toEqual({ kind: "expired" });
+  });
+
+  it("raceRetryWatchdog takes the answer when it lands first, and a cleared watchdog never expires it", async () => {
+    const watchdog = createRetryWatchdog(() => {});
+    watchdog.arm(1000);
+    const raced = raceRetryWatchdog(Promise.resolve(7), watchdog);
+    await expect(raced).resolves.toEqual({ kind: "answered", value: 7 });
+    watchdog.clear();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(watchdog.expired).toBe(false);
+  });
+
+  it("ends the Retry-all run as engine-busy within the watchdog time", async () => {
+    const watchdogMs = retryDeadlineMs(82.3) + RETRY_WATCHDOG_GRACE_MS;
+    const seen: string[] = [];
+    const expiredIds: string[] = [];
+    let result: unknown = null;
+    void runRetryAll(
+      ["a", "b", "c"],
+      fakeRetryOne(
+        (id) => {
+          seen.push(id);
+          return new Promise<never>(() => {}); // the backend never answers
+        },
+        watchdogMs,
+        expiredIds,
+      ),
+    ).then((r) => {
+      result = r;
+    });
+    await vi.advanceTimersByTimeAsync(watchdogMs - 1);
+    expect(result).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(expiredIds).toEqual(["a"]);
+    expect(seen).toEqual(["a"]);
+    expect(result).toEqual({ recovered: 0, failed: 0, remaining: 3, stoppedForEngine: true });
   });
 });
