@@ -153,6 +153,8 @@ export default function Meetings() {
   useEffect(() => {
     const { due, waiting } = duePendingDeletes(pending, now);
     if (due.length === 0) return;
+    // The ref moves now, so a leave in the same tick cannot delete twice.
+    pendingRef.current = waiting;
     setPending(waiting);
     for (const p of due) void commitDelete(p);
   }, [now, pending]);

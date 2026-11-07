@@ -540,6 +540,17 @@
   color: var(--accent-on-inverse);
 }
 
+/* The same pulsing dot as the old recording bar: opacity only, compositor-run. */
+.recording-hero .rec-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: rec-pulse 2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sun { transition: none; }
+  .recording-hero .rec-dot { animation: none; }
 }
