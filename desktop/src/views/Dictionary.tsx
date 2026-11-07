@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { type DictEntry, type DictCandidate } from "../appTypes";
-import { useAppCtx } from "../appShell";
+import { raiseFriendEvent, useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 
@@ -81,6 +81,9 @@ export default function Dictionary() {
       setDictQuery("");
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term added");
+      // yap-1106-friend-visits — Gulp's event: a word went into the Dictionary.
+      // Raised through the shell; the pill applies the quiet rules.
+      raiseFriendEvent("word-added");
     } catch (e) {
       toastError(e);
     }

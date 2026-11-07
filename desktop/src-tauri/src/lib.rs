@@ -173,6 +173,8 @@ pub mod models;
 pub mod net;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
+/// yap-1106-friend-visits — Focus / Do Not Disturb (and screen share) quiet signal for pill friend visits.
+pub mod pill_quiet;
 pub mod live_transcript;
 /// Y8-D — coaching nudges: the per-take focus/app-family signal and the
 /// once-ever ledger the pill's pure nudge engine (`src/pill/nudge.ts`) reads.
@@ -9202,6 +9204,13 @@ fn list_model_providers(app: AppHandle, state: State<'_, Arc<AppState>>) -> mode
 
 /// yap-1106-news-prefs-onboarding — the one record behind the onboarding step,
 /// the one-time Home card and Settings → Yappy News.
+/// yap-1106-friend-visits — the pill's quiet state, for a pill that mounted
+/// after the last `pill_quiet` event.
+#[tauri::command]
+fn pill_quiet_state() -> pill_quiet::QuietState {
+    pill_quiet::current()
+}
+
 #[tauri::command]
 fn get_news_prefs(state: State<'_, Arc<AppState>>) -> news_prefs::NewsView {
     news_prefs::view(&*state.db, news_prefs::now_ms())
@@ -13637,6 +13646,8 @@ pub fn run() {
             // yap-1106-news-prefs-onboarding — Yappy News interests.
             get_news_prefs,
             set_news_prefs,
+            // yap-1106-friend-visits — quiet state for friend visits.
+            pill_quiet_state,
             dismiss_news_offer,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
@@ -14544,6 +14555,9 @@ pub fn run() {
             // appears for a dictation when the always-on setting is off, and the
             // watch is inert while the panel is hidden.
             float_pill::start_hover_watch(app.handle().clone());
+            // yap-1106-friend-visits — Focus / Do Not Disturb keeps friends
+            // away from the pill; 30 s poll, emits `pill_quiet` on a change.
+            pill_quiet::start_watch(app.handle().clone());
             // yap-notetaker-detect — event-driven + one 30 s timer; reads the
             // calendar only when "Use my calendar" is on AND access is granted.
             // WF-07 — the watcher hands the tray today's meetings (only when
