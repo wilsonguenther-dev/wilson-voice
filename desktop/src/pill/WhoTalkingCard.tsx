@@ -8,7 +8,9 @@
  *
  * It never takes focus: no auto-focus attribute, no focus call, nothing that activates
  * the pill — you click the field to type. One `setTimeout` to the next
- * deadline (20 s ignore, 2 s toast), never an interval.
+ * deadline (20 s from the last input or the card appearing, 2 s toast),
+ * never an interval. Typing, focusing the field and pressing on the card
+ * each restart the 20 s, so a name being typed is never thrown away.
  */
 import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -19,10 +21,10 @@ import { PILL_LAYOUT_EVENT } from "./state";
 import {
   WHO_ASK_EVENT,
   WHO_IDLE,
-  WHO_IGNORE_MS,
   parseLiveAsk,
   reduceWho,
   whoCardView,
+  whoIgnoreDueMs,
   type ForcedWho,
   type WhoContext,
   type WhoEffect,
@@ -143,7 +145,7 @@ export default function WhoTalkingCard({
   const card = held.state.card;
   useEffect(() => {
     if (card.kind === "hidden" || isForced) return;
-    const due = card.kind === "toast" ? card.untilMs : card.shownAtMs + WHO_IGNORE_MS;
+    const due = card.kind === "toast" ? card.untilMs : whoIgnoreDueMs(card);
     const t = setTimeout(
       () => dispatch({ type: "tick", ctx: ctxRef.current, nowMs: Date.now() }),
       Math.max(0, due - Date.now()),
@@ -197,6 +199,12 @@ export default function WhoTalkingCard({
   const view = whoCardView(card);
   if (!view || card.kind === "hidden") return null;
   const save = () => dispatch({ type: "save", name, nowMs: Date.now() });
+  // The user is answering: restart the 20 s. Counts only, never the text.
+  const touched = (how: "type" | "focus" | "press") => {
+    if (isForced) return;
+    if (how !== "type") console.info(`pill who_talking input how=${how} cluster=${card.cluster}`);
+    dispatch({ type: "input", nowMs: Date.now() });
+  };
   return (
     <div ref={wrapRef} className="who-card-wrap">
     <div
@@ -205,6 +213,7 @@ export default function WhoTalkingCard({
       data-takes-focus={String(view.takesFocus)}
       role="group"
       aria-label={view.title}
+      onPointerDown={() => touched("press")}
       onKeyDown={(e) => {
         if (e.key === "Escape") dispatch({ type: "skip", nowMs: Date.now() });
       }}
@@ -227,7 +236,11 @@ export default function WhoTalkingCard({
           placeholder="Type a name"
           maxLength={40}
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            setName(e.target.value);
+            touched("type");
+          }}
+          onFocus={() => touched("focus")}
           onKeyDown={(e) => {
             if (e.key === "Enter") save();
           }}

@@ -17,6 +17,7 @@ import {
   reduceWho,
   savedToast,
   whoCardView,
+  whoIgnoreDueMs,
   type LiveAsk,
   type WhoContext,
   type WhoInput,
@@ -128,6 +129,69 @@ describe("who's talking — live card", () => {
     expect(state.card.kind).toBe("hidden");
     expect(state.deferred).toEqual([2]);
     expect(effects).toEqual([{ kind: "skip", cluster: 2, reason: "timeout" }]);
+  });
+
+  it("typing at 18 s keeps the card past 20 s; it leaves 20 s after the last input", () => {
+    const typed = run([
+      { type: "ask", ask: fresh(2), ctx: ON, nowMs: 0 },
+      { type: "input", nowMs: 18_000 },
+      { type: "tick", ctx: ON, nowMs: 20_000 },
+      { type: "tick", ctx: ON, nowMs: 37_000 },
+    ]);
+    expect(typed.state.card.kind).toBe("ask");
+    expect(typed.effects).toEqual([]);
+    expect(typed.state.deferred).toEqual([]);
+    const gone = run([{ type: "tick", ctx: ON, nowMs: 38_000 }], typed.state);
+    expect(gone.state.card.kind).toBe("hidden");
+    expect(gone.state.deferred).toEqual([2]);
+    expect(gone.effects).toEqual([{ kind: "skip", cluster: 2, reason: "timeout" }]);
+  });
+
+  it("every keystroke restarts the 20 s, and the typed name still saves", () => {
+    const typing = run([
+      { type: "ask", ask: fresh(4), ctx: ON, nowMs: 0 },
+      { type: "input", nowMs: 15_000 },
+      { type: "input", nowMs: 30_000 },
+      { type: "tick", ctx: ON, nowMs: 49_999 },
+    ]);
+    expect(typing.state.card.kind).toBe("ask");
+    expect(typing.effects).toEqual([]);
+    const saved = run([{ type: "save", name: "Maya", nowMs: 49_999 }], typing.state);
+    expect(saved.effects).toEqual([{ kind: "name", cluster: 4, name: "Maya" }]);
+    const late = run([{ type: "tick", ctx: ON, nowMs: 50_000 }], typing.state);
+    expect(late.effects).toEqual([{ kind: "skip", cluster: 4, reason: "timeout" }]);
+  });
+
+  it("input keeps a 'Same person?' card too, and is ignored with no open question", () => {
+    const sameCard = run([
+      { type: "ask", ask: same(5, 0.6), ctx: ON, nowMs: 1_000 },
+      { type: "input", nowMs: 19_000 },
+      { type: "tick", ctx: ON, nowMs: 21_000 },
+    ]);
+    expect(sameCard.state.card.kind).toBe("same");
+    expect(sameCard.effects).toEqual([]);
+    expect(run([{ type: "tick", ctx: ON, nowMs: 39_000 }], sameCard.state).effects).toEqual([
+      { kind: "skip", cluster: 5, reason: "timeout" },
+    ]);
+    // No card, or only the toast: input changes nothing.
+    expect(reduceWho(WHO_IDLE, { type: "input", nowMs: 5 }).state).toBe(WHO_IDLE);
+    const asking = reduceWho(WHO_IDLE, { type: "ask", ask: fresh(6), ctx: ON, nowMs: 0 }).state;
+    const toast = reduceWho(asking, { type: "save", name: "Jo", nowMs: 1 }).state;
+    expect(reduceWho(toast, { type: "input", nowMs: 2 }).state).toBe(toast);
+    // An older (or repeated) input never moves the deadline back.
+    const touched = reduceWho(asking, { type: "input", nowMs: 10_000 }).state;
+    expect(reduceWho(touched, { type: "input", nowMs: 10_000 }).state).toBe(touched);
+    expect(reduceWho(touched, { type: "input", nowMs: 4_000 }).state).toBe(touched);
+  });
+
+  it("the deadline is 20 s after the later of shown and last input", () => {
+    expect(whoIgnoreDueMs({ shownAtMs: 1_000 })).toBe(1_000 + WHO_IGNORE_MS);
+    expect(whoIgnoreDueMs({ shownAtMs: 1_000, lastInputMs: 18_000 })).toBe(18_000 + WHO_IGNORE_MS);
+    expect(whoIgnoreDueMs({ shownAtMs: 5_000, lastInputMs: 2_000 })).toBe(5_000 + WHO_IGNORE_MS);
+    const src = readFileSync(new URL("./WhoTalkingCard.tsx", import.meta.url), "utf8") as string;
+    expect(src).toMatch(/whoIgnoreDueMs\(card\)/);
+    expect(src).not.toMatch(/shownAtMs \+ WHO_IGNORE_MS/);
+    expect(src).not.toMatch(/setInterval/);
   });
 
   it("under 70% like a known person asks 'Same person as John?'", () => {
