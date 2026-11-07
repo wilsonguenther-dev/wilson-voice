@@ -1,0 +1,274 @@
+Wispr Flow help-center text, fetched headless with curl on 2026-11-07 for yap-1107-wispr-flow-parity-sweep.
+Extracted article body only (HTML stripped). Line numbers here are what SHEET.md cites.
+
+=== https://docs.wisprflow.ai/articles/2612050838 (Customize keyboard and mouse shortcuts)
+Last updated 2 days ago Available on: Mac and Windows.
+Custom shortcuts are saved per device, do not sync between devices, and survive app updates.
+Choose the keys or mouse buttons you use for Push to talk, hands-free dictation and other Flow actions.
+Change or add a shortcut Note: While you are recording a shortcut, other fields are locked.
+Finish or cancel the recording before retrying.
+Click the Flow icon in the Mac menu bar or Windows system tray, then Shortcuts .
+Click a binding to replace it, + ( Add another ) to keep it, or Click to add a shortcut on an empty row.
+Press your combination; keyboard shortcuts save on release, mouse shortcuts on press, including any held keys.
+Check for Shortcut saved to confirm acceptance, then click Done .
+Recording a multi-key combination Hold the modifier (Opt, Cmd, Ctrl, Shift or Win) down for the whole recording.
+Press and release the second key.
+Release the modifier last.
+Recording ends as soon as a key is released, and a modifier on its own is an accepted binding, so releasing the modifier first can save just that modifier and still show Shortcut saved .
+Check the binding listed on the row; if it shows only the modifier, record it again in the order above.
+Adds, replacements and removals take effect immediately, with no separate Save, discard or undo.
+Each action supports up to four shortcuts and Cancel supports one; at four, + disappears.
+Other ways to open shortcuts From Flow’s sidebar, open Settings → General → Shortcuts , then click Change .
+On Mac, Wispr Flow → Settings (Command+,) also opens Settings.
+Help → Shortcuts in Flow’s sidebar or the Mac app menu opens the shortcut dialog directly.
+Cancel recording without changing a shortcut At Press key or mouse button , click X ( Cancel ), press Escape alone, or left- or right-click inside or outside the field.
+Each cancels silently without changing the binding, closing Settings, or activating the click’s target.
+Escape alone saves a binding only on the Cancel row, and Ctrl then Esc records Ctrl+Esc.
+Choose an accepted combination Rejection ends recording and leaves the previous binding unchanged; click the field or pencil again to retry.
+Only the first failing rule is shown, in the table’s order; {keys} represents the attempted combination.
+Message What to change This shortcut is not allowed: {keys} Avoid standalone letters, numbers, punctuation and reserved combinations.
+This shortcut is already in use Choose a combination unused elsewhere in Flow.
+Shortcut must include a modifier key or a valid mouse button Include Ctrl/Cmd/Opt/Shift/Fn on Mac, Ctrl/Alt/Shift/Win on Windows, or a supported mouse button.
+Shortcut must contain 3 or fewer keys Use at most three keys.
+Shortcut cannot contain both left and right version of the same key Use only one side of each modifier.
+Caps Lock alone is accepted only for Push to talk or Hands-free mode; it starts dictation instead of turning on all caps.
+Mac shortcut restrictions Reserved combinations include: Cmd+Backspace/Delete/Space; Cmd+Ctrl+F; Cmd+C/V/X/Z/A/F/G/H/M/N/O/P/R/S/T/W/Q/B/I/U.
+Cmd+Shift+Z/R/G/T/3/4/5/Q/F/Delete; Cmd+arrows; Cmd+Shift+arrows; Cmd+Tab; Cmd+comma; Cmd+=/-.
+Ctrl+A/E/K; Ctrl+arrows; Fn+F11/F12.
+Cmd+Opt with Space/Esc/D/P/F/Left/Right, and Opt+Backspace/Delete are not blocked as reserved; the other rules still apply.
+Windows shortcut restrictions Reserved combinations include: Standalone Ctrl (either side); Win+E/R/L/D/Tab/I/S/X/P/Up/Down/Q.
+Ctrl+C/V/X/Z/Y/R/A/F/G/O/S/P/N/T/W/K/B/I/U; Ctrl+Backspace/Delete/=/-; Ctrl+Home/End; Ctrl+Shift+Home/End.
+Home/End; Shift+Home/End; Shift+F3; F5; Ctrl+F5; F11; Alt+Tab/F4/Left/Right; Ctrl+Shift+R/T; Ctrl+Alt+Delete; Ctrl+Shift+Esc; Print Screen; Alt+Print Screen.
+Keyboard effects in other apps Keyboard combinations can still affect other apps.
+On Mac, Fn assigned alone prevents its usual system action, Escape is withheld from other apps only during dictation, and a Flow binding such as Ctrl+A+B can block another app’s Ctrl+A — on Windows it does not.
+On Mac, using a built-in Fn system shortcut — Fn with the arrow keys, Home, End, Page Up, Page Down, Backspace (forward delete) or F1–F12 — in the first second of a dictation cancels that dictation silently, with no notification.
+Other Fn combinations, such as Fn with a letter key, and all Windows shortcuts still show the cancellation notice.
+On Windows, Escape still reaches the focused app while cancelling Flow; other single-key shortcuts do not reach apps on press or release.
+Ctrl+Win prevents the Start/Search action while held; Win alone still works.
+Use a mouse button Use a supported Logitech MX model or a recognized mouse with more than three buttons.
+Apple Magic Mouse, trackpads, other mice with three or fewer buttons, and unrecognized devices do not qualify.
+Eligible Razer, SteelSeries, HyperX, Corsair, generic and Logitech G-series mice need no companion software.
+Middle Click, Mouse 4/5 and supported Aux Button bindings work alone or with modifiers; left and right click cannot be assigned.
+Windows records only middle click and Mouse 4/5 as mouse buttons; Mac also records Mouse 6–10.
+Release one mouse shortcut before pressing another, and release a mouse button before changing or removing its binding.
+Warning: Assigned mouse buttons do not reach other apps, even without the modifiers in their Flow combination.
+On Windows, quitting Flow while holding a mouse shortcut can let its release trigger the foreground app's action.
+Prepare Logitech MX side buttons On Mac, MX Master side buttons mapped to swipe gestures cannot support push-to-talk.
+Set the side button to No action or a keystroke in Logi Options+ .
+Record the button in Flow using the steps above.
+MX Master owners also have an in-app walkthrough.
+See Logi Options+ troubleshooting .
+Remove or reset shortcuts Click the trash icon ( Remove shortcut ) beside a binding to remove it without starting recording.
+Push to talk, Command Mode, Paste last transcript, Copy last transcript and Cancel must retain one binding: their last binding has no trash icon, so replace it with an accepted combination instead.
+Other editable rows can be emptied.
+An emptied Hands-free row stays empty across launches until you rebind it or reset; double-tapping Push to talk still starts hands-free dictation without a dedicated Hands-free binding.
+Warning: Reset to default replaces custom shortcuts with platform defaults without confirmation or undo.
+The “Reset to default” success message confirms the reset.
+If a saved shortcut does not work Hands-free overlaps Push to talk A changed shortcut set still saves when any Hands-free combination is contained in or identical to a Push-to-talk combination, and shows a five-second warning that your Hands-free mode shortcut is part of a Push-to-talk shortcut and may lead to conflicts.
+Reversed overlap or re-saving an unchanged set shows no warning.
+Replace the overlapping combination using the steps above.
+After saving a changed, non-overlapping combination, the warning no longer appears.
+A shortcut is ignored or delayed after a long hold Held modifiers for Push to talk, Hands-free and Command Mode — such as Ctrl+Win or Ctrl+Opt — are exempt from the long-hold delay, but not from automatic reset when dictation is inactive.
+Release all keys.
+Press the full combination again.
+If the shortcut responds, no restart is needed.
+Automatic recovery starts after Flow receives a key press and can take roughly 10–15 seconds, including for genuinely held keys when not dictating, and during startup or a restart stuck keys can require that full wait.
+Mouse buttons have no faster automatic recovery; repeat the steps after waiting.
+A delayed shortcut can still run, and this recovery does not cut active dictation short.
+Mac: Secure Keyboard Entry blocks shortcuts Another app’s Secure Keyboard Entry can block key-based shortcuts while modifier-only holds such as Fn keep working.
+Quit the responsible app, such as 1Password, then restart it.
+Test the shortcut again; if it responds, the block is cleared.
+If the responsible app has already closed but the block remains, a lock/unlock cycle or signing out releases it.
+See Secure Keyboard Entry troubleshooting .
+Mac: Granola interferes with Fn Granola can prevent Fn from working, separately from Secure Keyboard Entry.
+Open Granola → Settings → Voice Typing → Off .
+Test Fn again; if it still fails, contact support below.
+Windows: a keyboard utility intercepts keys A keyboard manufacturer’s utility can intercept shortcut keys.
+Warning: Disabling an extended-function keyboard device can remove media-key features.
+End the keyboard manufacturer's process in Task Manager, then test the shortcut again.
+Still stuck?
+If a saved shortcut still fails, open Help → Talk to support in Flow’s sidebar.
+Include your platform, keyboard or mouse model, exact combination, error message, and what you tried.
+
+=== https://docs.wisprflow.ai/articles/5002934560 (Flow Bar not appearing or disappearing)
+Last updated 5 days ago Available on: Mac and Windows use the Flow Bar; Android uses the Flow Bubble. iPhone dictation uses the Flow keyboard instead.
+If the Flow Bar or Flow Bubble is missing, won't respond or shows an error, test in a normal text field in another app.
+If it works there, check the app-specific restrictions below; if it fails everywhere, start with your platform's recovery steps.
+Restore the Flow Bar on Mac or Windows After each change, check for the bar and dictate a short phrase.
+If the bar appears and text inserts, stop.
+Check Flow's menu-bar icon (Mac) or system-tray icon (Windows), including hidden icons under ^ on Windows; its tooltip reads Wispr Flow .
+Open Flow: Windows—single-click its tray icon (right-click opens its menu); Mac—click its menu-bar icon, then choose Open Wispr Flow .
+If nothing happens immediately after launch, wait 10 seconds and try again.
+Enable Show Flow Bar at all times under Wispr Flow Settings → System → App settings .
+Enable Flow on Mac under System Settings → Privacy & Security → Accessibility and Microphone —both are required.
+A system update can change them, and the pane's location varies between macOS releases.
+Windows has no accessibility permission requirement.
+Test in a normal window in another app or browser, outside full-screen mode.
+Press your dictation shortcut on Windows if the bar remains missing; starting dictation can trigger recovery sooner.
+Relaunch Flow if the bar is still missing across apps, then check Show Flow Bar at all times again.
+Hidden or snoozed bar An off Show Flow Bar at all times switch means permanent hiding or an active snooze; Hidden for one hour identifies a snooze.
+Enabling the switch clears both immediately.
+Right-clicking the Flow Bar offers Hide for 1 hour .
+The notification's Undo ends only that snooze; permanent hiding requires the switch above.
+The notification appears at most twice per user and disappears after about six seconds—without it, use Settings to restore the bar.
+An active Notetaker meeting can keep the bar visible despite hiding or snoozing.
+Windows bar remains invisible Flow attempts automatic recovery after an update relaunch, sleep, lock/wake or full-screen gaming, so the bar may blink or disappear and return; recovery that would interrupt dictation waits until it ends.
+Repeatedly unsuccessful recovery can pause for up to an hour between attempts, and pressing your dictation shortcut brings the next attempt forward.
+A third-party window manager or security utility can interfere with overlays; change its relevant setting or contact your IT team.
+Check whether the Android bubble should be visible Focus a normal text field outside Flow with the on-screen keyboard open—even with an external keyboard.
+The bubble appears as the keyboard opens and hides as it starts closing.
+Setup must be complete for the signed-in account, with setup screens closed; the bubble then becomes available immediately, without reopening Flow.
+Returning accounts with completed setup need not repeat it, and neither switching accounts, repair controls nor Turn Back On bypasses incomplete setup.
+The bubble is intentionally hidden in certain banking, financial and payment apps, password fields (including custom fields marked as passwords), numeric fields and phone-number fields.
+Browser address bars, notification replies and some system text-entry dialogs can override the field exclusions—even password exclusions—but never the restricted-app exclusion.
+Use Android Home recovery cards All accounts need Display over other apps and Flow's enabled accessibility service; microphone access is required to dictate.
+Warning: Do not disable Display over other apps to silence Android's overlay notification.
+This removes the bubble and stops dictation through it until permission is restored.
+Note: Enable the main Use Wispr Flow accessibility service, not its separate shortcut.
+If setup shows Make sure this shortcut is turned off , disable the shortcut and enable the service.
+Open Flow's Home screen.
+Swipe horizontally through the top cards to find your recovery action, past any word-limit or personalization cards.
+Take the matching action below, then return to a normal text box with the keyboard open and dictate.
+If the bubble appears and inserts text, stop.
+Card Action Enable Flow bubble on screen Tap Go to Settings and allow Display over other apps ; Flow comes back automatically.
+Flow can't insert text Tap Go to Settings and enable Flow's accessibility service.
+Flow isn't responding Tap Restart Flow .
+Wispr Flow stopped Follow the matching button instructions below.
+We can't hear you Tap Allow Microphone and grant microphone access.
+Keep Wispr Flow running Tap Allow and complete the battery-optimization exemption.
+Flow Bubble Disabled Tap Turn Back On .
+Bubble is snoozed Tap End snooze now .
+Flow Bubble Disabled appears only when overlay, accessibility and microphone permissions are granted but the bubble is stopped; each missing permission gets its own card instead.
+Microphone permission Allow Microphone requests access in-app; if Android will no longer show its permission dialog, Flow opens its Android app settings instead—enable microphone access there.
+Granting access clears the card.
+Tapping or holding the bubble without microphone access also requests permission, during setup too.
+If Android cannot show the dialog, Flow shows Oops, something isn't right with We can't hear you ; tap Go to Settings to enable the microphone in Flow's Android settings.
+Tapping outside the sheet dismisses it without opening Settings.
+If you chose Ask every time and granted access for one session only, dictation keeps working until that grant ends; after it lapses, grant access again from the bubble or the card above.
+Accessibility restart or repair Flow isn't responding means accessibility is still allowed but is not responding, so Restart Flow reconnects it rather than opening permission settings.
+The prompt can take 60 seconds after a stuck start, or about 15 seconds after an update, and disappears when Flow recovers.
+Wait for reconnection or for an actionable repair control after 60 seconds.
+The retry icon restarts the connection; the warning triangle opens accessibility recovery, where you enable Flow's accessibility service.
+See Android accessibility recovery .
+Repair bubbles appear only with a focused text field, hide when focus leaves and wait behind active dictation.
+They clear on recovery.
+The Wispr Flow needs attention notification opens accessibility permission recovery; Flow isn't responding opens Home.
+With app notifications denied, Flow uses temporary on-screen messages instead, and blocking the Accessibility Status notification category can hide these alerts. “Wispr Flow stopped” replaces the restart card If this card appears while accessibility still shows On, Restart Flow cannot restore the connection.
+Follow the action shown: Tap Fix in Settings , or Open autostart settings if shown.
+Allow autostart first when requested on Xiaomi, Huawei or Transsion devices.
+Open Android's Accessibility settings for Wispr Flow.
+Turn Use Wispr Flow off, then back on.
+If the card instead offers Update app , install that update to restart Flow.
+The matching notification can offer the same recovery.
+If the Android bubble disappears again Battery management can stop Flow.
+Background reliability requires unrestricted or not-optimized battery use on every device, including Google/Pixel; setup's Skip continues without granting this, and you can grant it later.
+On Google/Pixel, use Settings → Apps → Wispr Flow → Battery → Unrestricted .
+On Xiaomi/Redmi/POCO, setup opens autostart first, then a separate Battery details screen after you return to Flow; select No restrictions there.
+Realme, Oppo, Vivo, Huawei, OnePlus and Transsion also use a two-screen battery flow—complete both screens.
+Other manufacturers also need the applicable autostart or Recent Apps locking steps in Android setup .
+Flow attempts automatic recovery from unexpected stops.
+If Android blocks a background restart, it retries when you open Flow; some background recovery waits for the screen to be on, power saving to be off and the battery not to be low.
+Reopen Flow if it did not recover on its own, then repeat the text-box test above.
+Signing out, switching the bubble off, or removing overlay permission stops the bubble intentionally, and automatic recovery does not undo those choices.
+Snooze and shaking Dragging a ready-to-dictate bubble to the bottom target snoozes it for 10 minutes.
+The target is unavailable during recording, processing, errors or accessibility repair, and typing does not end snooze.
+Besides the Home card action, shake twice in quick succession, in any direction—a single jolt does not work—with a text field and keyboard open for the bubble to return, showing Wispr Flow is back!
+Shaking is ignored while locked, restricted banking apps show a notice without ending snooze, and shaking restores only a snoozed bubble, not one hidden for another reason.
+Ending snooze returns the bubble to its default right-edge position, not its last dragged position.
+Restarting Flow after it stops during snooze clears the snooze rather than resuming its countdown.
+Accessibility repair also cancels snooze; resolve the repair before snoozing again.
+Small icon or dot instead of a full bubble In Settings → Flow Bubble Size , Shrink the bubble when not in use is off by default; Shrink to a dot and Shrink the bubble in search fields apply only when that main switch is on.
+The ready-to-dictate bubble then shrinks after five seconds, or immediately in search fields with that option enabled; browser address bars do not count as search fields.
+Recording, processing, errors and repair restore full size.
+Online, tapping a minimized bubble expands it and starts recording; holding expands it and starts hold-to-dictate; dragging moves it without expanding.
+See bubble size and shrinking controls .
+For visibility, adjust Flow Bubble Size or Flow Bubble Opacity in Settings.
+Reset on the size screen restores size only, not shrinking preferences.
+Recover from Android error states Gray bubble: reconnect to the internet before dictating.
+Tapping or holding offline shows No internet.
+Try again later. without recording; a minimized bubble still expands, then shrinks again according to its shrinking settings.
+Blocked taps: if Flow reports another app is covering it, pause screen dimmers or other overlays and try again.
+Rapid presses: wait at least half a second between taps or long presses; faster repeats are ignored.
+Session limit: if you see Session ended, 5-minute limit reached , start a new dictation; Flow warns one minute before that limit.
+During recording, processing, errors or repair, general tap and hold gestures are blocked; dragging and available action buttons still work.
+Releasing a hold to stop dictation is still accepted, even offline.
+Paste error Insertion failed, but your text was copied to the clipboard.
+Tap Paste on the bubble to insert it, or paste it manually.
+Tapping the Wispr icon dismisses the error without clearing the clipboard or starting another dictation; the error also dismisses after inactivity.
+Failed transcription Failed attempts are saved in Home history.
+The bubble's Retry makes one fresh attempt with the captured audio; without audio, it only returns the bubble to normal.
+While that attempt runs, you can't start a new dictation—pressing the bubble shows Still retrying your last dictation.
+Try again in a moment.
+The Wispr icon starts a new dictation instead.
+Warning: Delete sits beside Retry Transcript in More options .
+Deletion asks for confirmation, and deleted transcripts cannot be recovered.
+Open Flow's Home screen.
+Open the failed entry's More options (⋮) menu.
+Choose Retry Transcript .
+Retry Transcript is hidden until the attempt finishes, so the same recording can't be retried twice, and it appears only when recorded audio was saved; without audio, you can report or delete the entry.
+If Flow hears nothing in the recording, the entry is saved as an empty transcription; recordings that are too long to retry say so.
+After recovery, test dictation in a text box.
+If Flow requires a newer version, update from Google Play before testing again.
+Still stuck?
+Contact support if the bar or bubble remains missing across apps, or dictation still fails after the matching recovery steps.
+Include your platform, device model, apps tested, steps tried and any error messages you saw.
+On desktop, choose Talk to support from Flow's menu-bar menu (Mac) or right-click tray menu (Windows).
+
+=== https://docs.wisprflow.ai/articles/8841649969 (Shortcuts blocked by Secure Keyboard Entry)
+Last updated 7 days ago Available on: Mac If Fn+Space (hands-free) or Escape (cancel) stops responding while Fn hold-to-talk and typing still work, macOS Secure Event Input may be blocking Flow.
+Quick checks Test with your own shortcuts if you've changed the Mac defaults of Fn hold-to-talk, Fn+Space hands-free and Escape cancel.
+If onboarding found no Apple Fn key while your binding was Fn, Flow switched to Ctrl+Opt hold-to-talk, Ctrl+Opt+Space hands-free and Escape cancel; secure input blocks Ctrl+Opt+Space but not the Ctrl+Opt hold.
+Note: Finish onboarding before troubleshooting.
+During onboarding, dictation and hands-free work only on enabled setup pages, double-pressing Fn also works in the hands-free tutorial, and the Set-shortcut page registers keys without starting dictation.
+Accessibility access: Shortcuts and dictation require it.
+Enable Wispr Flow in System Settings → Privacy & Security → Accessibility, then retest; no relaunch is needed.
+Missing or revoked access triggers “Accessibility Permission Required” with “Flow needs accessibility access to work properly.” Its “Open Settings” action requests access from macOS.
+Just launched, woke or unlocked?
+Shortcuts can pause while Flow restores keyboard access; this recovers automatically, so retry your hands-free shortcut.
+If Flow stops retrying and shows a persistent failure notification, restart Flow and retest.
+Check the pattern: Test typing in a non-password field and Fn hold-to-talk.
+If both work but Fn+Space fails, continue below; if either also fails, include that detail when contacting support.
+A loading error can accompany failure of all shortcuts, and typing inside Flow does not confirm shortcuts work.
+How to fix it A focused password field can enable Secure Event Input.
+Password fields normally turn it off when focus moves away, but closing a window with the field still focused can leave it held, and Terminal and iTerm2 can keep it enabled in the background, so switching windows may not release it.
+Flow shows no on-screen alert for this block, and macOS can misidentify the responsible app, naming the frontmost app when a background app is the cause — test more than one suspect if needed.
+Stop when Fn+Space starts hands-free dictation; no Flow restart is needed once the block clears.
+Tip: With the default shortcuts, you can still hold Fn to dictate or double-press Fn within 500 ms for hands-free while blocked, because Fn is a modifier key.
+A third press within the same 500 ms cancels a just-started hands-free session; a quick second press of the hands-free shortcut also dismisses one, but only if that shortcut responds.
+Click a non-password field in the suspected app, or switch to another app.
+Test Fn+Space.
+If it still fails, continue.
+Uncheck Terminal → Secure Keyboard Entry if Terminal is running and the option is checked.
+Test Fn+Space again; disabling this setting does not guarantee other apps have released secure input.
+Close a suspected app's window, starting with password managers such as 1Password.
+Test Fn+Space.
+If it still fails, quit that app next.
+Quit the suspected app with Cmd+Q.
+Reopen Flow before testing if it was the app you quit.
+Test Fn+Space.
+If still blocked, repeat with another suspected app.
+If the app has quit but shortcuts remain blocked When the app holding secure input has already exited, macOS can retain a stale block.
+Quitting more apps cannot release it; a lock/unlock cycle or logging out clears it.
+Neither is a guaranteed fix while an app still holds secure input.
+Warning: Save your work before logging out.
+Lock your Mac with Ctrl+Cmd+Q or Apple menu → Lock Screen.
+Unlock your Mac.
+Test Fn+Space.
+If it starts hands-free dictation, stop; otherwise, continue.
+Log out using Apple menu → Log Out.
+Sign in to your Mac again.
+Test Fn+Space.
+If shortcuts still fail, contact support.
+Other causes Can Flow itself cause this?
+Flow can hold secure input if a password field was focused in one of its windows when that window closed without the field losing focus.
+The hold stays until Flow quits, so follow the quitting and reopening steps above with Flow as the suspected app.
+Restarting Flow does not clear another app's hold or a stale macOS block.
+If a key release was missed A missed key release can make shortcuts unresponsive independently of secure input.
+Flow clears keys that still appear held after more than 10 seconds, and when no dictation is running, retrying your configured shortcut can restore it sooner.
+During dictation, that timed clearing never affects keys in the active dictation shortcut.
+Still need help?
+Contact support if: You cannot identify which app is blocking shortcuts.
+Fn hold-to-talk also fails after checking Accessibility permission and finishing onboarding.
+Include your macOS version, Mac and keyboard model, apps open when the issue began, how long shortcuts have been blocked, and what you've tried.
+If this started after closing a Flow sign-in window, include your logs.
+
