@@ -1754,7 +1754,7 @@ html[data-one-pill="true"][data-meeting-shell="true"] .kami-stage .meeting-badge
 html[data-one-pill="true"][data-meeting-shell="true"]:is([data-dock="left"], [data-dock="right"]) .kami-stage .meeting-badge {
   border-radius: 0 0 14px 14px;
 }
-html[data-one-pill="true"][data-scene-character="true"] .kami-stage .meeting-badge {
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-badge {
   border-radius: 14px;
 }
 /* Dictating mid-meeting: the clock is a small stack next to stop. */

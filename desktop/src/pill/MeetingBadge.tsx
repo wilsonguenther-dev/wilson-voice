@@ -25,6 +25,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   elapsedLabel,
+  stackClockLabel,
   IDLE_MEETING,
   MEETING_EVENT,
   MEETING_PILL_IDLE,
@@ -107,14 +108,6 @@ export function useMeetingPill(): {
  */
 export function openMeetingNotes(id: string): Promise<void> {
   return invoke<void>("open_meeting_notes", { id });
-}
-
-/**
- * yap-1107-one-pill-during-meeting — the stacked clock's text: "00:03:37" reads
- * "03:37" under an hour (the artifact's "03:37"), the full label after it.
- */
-export function stackClockLabel(label: string): string {
-  return /^00:\d\d:\d\d$/.test(label) ? label.slice(3) : label;
 }
 
 export default function MeetingBadge({

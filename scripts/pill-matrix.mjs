@@ -340,7 +340,8 @@ function __pillDetect(want) {
     if (cardsOut.length) out.push({ id: "card-outside-panel", detail: cardsOut.join("; ") });
     const ov = [];
     for (let i = 0; i < painted.length; i++) for (let j = i + 1; j < painted.length; j++)
-      if (overlap(painted[i][1], painted[j][1])) ov.push(painted[i][0] + "/" + painted[j][0] + " " + box({ left: painted[j][1].x, top: painted[j][1].y, width: painted[j][1].w, height: painted[j][1].h }));
+      // yap-1107-one-pill-during-meeting — at rest the meeting scene IS the character box.
+      if (!(L.sceneCharacter && painted[i][0] === "character" && painted[j][0] === "clock") && overlap(painted[i][1], painted[j][1])) ov.push(painted[i][0] + "/" + painted[j][0] + " " + box({ left: painted[j][1].x, top: painted[j][1].y, width: painted[j][1].w, height: painted[j][1].h }));
     if (ov.length) out.push({ id: "one-pill-overlap", detail: ov.join("; ") });
     const off = painted.filter(([n, b, want]) => n !== "character" && (!want || !inside(b, want))).map(([n, b]) => n + " " + box({ left: b.x, top: b.y, width: b.w, height: b.h }));
     if (off.length) out.push({ id: "slot-off-layout", detail: off.join("; ") });
@@ -348,6 +349,15 @@ function __pillDetect(want) {
     // WF-02 — a dragged pill is the blob, Yappy's face and nothing else: the clock steps aside by design.
     if (want && want.meeting === "recording" && !clock && want.drag !== "blob") out.push({ id: "clock-detached", detail: "a meeting is recording but no clock slot is on screen" });
     if (clock && gap(clock[1], L.char) > REACH) out.push({ id: "clock-detached", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt from the character" });
+    /* yap-1107-one-pill-during-meeting — ONE surface during a meeting: the clock
+     * touches the character (a segment of the shell, never a capsule a gap away)
+     * and the one .meeting-shell is painted exactly over the layout's shell. */
+    if (clock && !(want && want.drag === "blob") && gap(clock[1], L.char) > 0.5) out.push({ id: "meeting-second-surface", detail: "clock " + gap(clock[1], L.char).toFixed(1) + "pt off the character: a second surface" });
+    if (L.shell && !(want && want.drag === "blob")) {
+      const shellEl = document.querySelector(".meeting-shell");
+      if (!shellEl || !shown(shellEl)) out.push({ id: "meeting-second-surface", detail: "a meeting is on screen but its one shell is not painted" });
+      else if (!inside(rectBox(shellEl), L.shell) || !inside(L.shell, rectBox(shellEl))) out.push({ id: "meeting-second-surface", detail: "shell painted at " + JSON.stringify(rectBox(shellEl)) + ", layout " + JSON.stringify(L.shell) });
+    }
     const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
     const uw = Math.max(...boxes.map((b) => b.x + b.w)) - ux, uh = Math.max(...boxes.map((b) => b.y + b.h)) - uy;

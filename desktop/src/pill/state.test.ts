@@ -43,7 +43,8 @@ describe("pill/state — one pill, one layout", () => {
   it("no_slot_overlaps_the_character_or_another_slot", () => {
     every((l) => {
       const slots = [l.bubble, l.hint, l.clock, l.progress].filter((b): b is NonNullable<typeof b> => b !== null);
-      for (const s of slots) expect(boxesOverlap(s, l.char)).toBe(false);
+      // A resting meeting draws the scene AS the character: that clock is the pill.
+      for (const s of slots) if (!(l.sceneCharacter && s === l.clock)) expect(boxesOverlap(s, l.char)).toBe(false);
       for (let i = 0; i < slots.length; i++) for (let j = i + 1; j < slots.length; j++) {
         expect(boxesOverlap(slots[i], slots[j])).toBe(false);
       }
@@ -74,7 +75,7 @@ describe("pill/state — one pill, one layout", () => {
   });
 
   it("bottom_dock_puts_the_clock_in_yappys_trailing_slot_not_under_him", () => {
-    const l = pillLayout({ phase: "idle", meeting: "recording", dock: "bottom" });
+    const l = pillLayout({ phase: "listening", meeting: "recording", dock: "bottom" });
     expect(l.clock!.x).toBeGreaterThanOrEqual(l.char.x + l.char.w);
     // vertically centred on him: a slot of the pill, never a second capsule below it
     expect(l.clock!.y + l.clock!.h / 2).toBeCloseTo(l.char.y + l.char.h / 2, 5);

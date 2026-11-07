@@ -118,6 +118,9 @@ describe("yap-1106-fb-10 no character is ever cropped in the pill", () => {
     const failures: string[] = [];
     let cases = 0;
     for (const name of PILL_CHARACTERS) for (const phase of ALL_LIVE_PHASES) for (const dock of FIT_DOCKS) for (const meeting of MEETINGS) {
+      // yap-1107-one-pill-during-meeting — a resting recording meeting draws the
+      // meeting scene AS the pill: no sky capsule is painted, so there is none to fit.
+      if (meeting === "recording" && RESTING_PHASES.has(phase)) continue;
       const tiers = RESTING_PHASES.has(phase) ? [1] : [...OPEN_TIERS];
       for (const tier of tiers) for (const dpr of DPRS) {
         const size = capsuleSize(phase, tier);

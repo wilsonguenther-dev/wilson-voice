@@ -126,6 +126,14 @@ export function elapsedLabel(status: MeetingStatus | null | undefined): string {
  * pill's button and the Meetings empty state cannot describe the same action
  * three different ways.
  */
+/**
+ * yap-1107-one-pill-during-meeting — the stacked clock's text: "00:03:37" reads
+ * "03:37" under an hour (the artifact's "03:37"), the full label after it.
+ */
+export function stackClockLabel(label: string): string {
+  return /^00:\d\d:\d\d$/.test(label) ? label.slice(3) : label;
+}
+
 export function recordLabel(status: MeetingStatus, app?: string | null): string {
   if (status.recording) return "Stop meeting";
   // yap-call-1 — the call offer's one-click chip: "Record Zoom call".
