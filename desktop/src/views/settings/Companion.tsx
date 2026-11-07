@@ -1,5 +1,9 @@
+import { useEffect, useState } from "react";
 import { useAppCtx } from "../../appShell";
 import { VOICE_OPTIONS, VOICES, voiceFor } from "../../pill/voices";
+import {
+  CHATTER_OPTIONS, chatterSentence, chatterStatus, parseChatterMode, parseTakeCount, takeCountLabel, TAKES_SEEN_KEY,
+} from "../../pill/chatter";
 
 /**
  * The pill styles a user can pick. yap-1106-retire-classic-pill: Classic is
@@ -20,11 +24,37 @@ export function curseToggleShown(companionTone?: string | null): boolean {
   return voiceFor(companionTone) === "badass";
 }
 
+/**
+ * yap-1106-chatter-setting — the pill's take count (the number that drives
+ * "less over time"), read from the localStorage the pill and Settings share.
+ * Kept current by the cross-window `storage` event and a re-read on focus.
+ * Storage failing reads as 0, never an error on screen.
+ */
+export function readTakesSeen(store: Pick<Storage, "getItem"> | undefined = globalThis.localStorage): number {
+  try { return parseTakeCount(store?.getItem(TAKES_SEEN_KEY)); }
+  catch (e) { console.warn("settings chatter takes_read_failed", e); return 0; }
+}
+
+function useTakesSeen(): number {
+  const [takes, setTakes] = useState(() => readTakesSeen());
+  useEffect(() => {
+    const refresh = () => setTakes(readTakesSeen());
+    const onStorage = (e: StorageEvent) => { if (e.key === null || e.key === TAKES_SEEN_KEY) refresh(); };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
+    return () => { window.removeEventListener("storage", onStorage); window.removeEventListener("focus", refresh); };
+  }, []);
+  return takes;
+}
+
 export default function Companion() {
   const {
     saveSettings, settings,
   } = useAppCtx();
+  const takes = useTakesSeen();
   if (!settings) return null;
+  const chatter = parseChatterMode(settings.yappyTalks);
+  const chatterNow = chatterStatus(chatter, takes);
   return (
                 <section className="settings-panel" data-settings-pane="companion">
                   <div className="panel" data-row>
@@ -126,6 +156,40 @@ export default function Companion() {
                         <p className="settings-hint">About one line in four, the strongest word at most once a day. Never during a meeting or a call.</p>
                       </div>
                     )}
+                  </div>
+                  <div className="panel" data-row data-chatter-row>
+                    <h3 id="yappy-talks-heading">Yappy talks</h3>
+                    {/* yap-1106-chatter-setting (FB-21) — the 50-take quieting is a
+                        visible, switchable setting now, explained in one line with the
+                        take count that drives it right beside it. */}
+                    <div className="profile-row" role="group" aria-labelledby="yappy-talks-heading" aria-describedby="yappy-talks-explain">
+                      {CHATTER_OPTIONS.map(([id, label, blurb]) => {
+                        const selected = chatter === id;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            aria-pressed={selected}
+                            data-chatter={id}
+                            className={selected ? "profile active" : "profile"}
+                            onClick={() => {
+                              if (selected) return;
+                              console.info(`settings chatter_set mode=${id} from=${chatter} takes=${takes}`);
+                              saveSettings({ ...settings, yappyTalks: id });
+                            }}
+                          >
+                            <strong>{label}</strong>
+                            <span>{blurb}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="settings-hint chatter-explain" id="yappy-talks-explain" data-chatter-sentence>
+                      {chatterSentence(chatter)}{" "}
+                      <span className="chatter-count" data-chatter-takes={takes}>
+                        {takeCountLabel(takes)}{chatterNow ? ` · ${chatterNow}` : ""}
+                      </span>
+                    </p>
                   </div>
                   <div className="panel" data-row>
                   <h3>Always on screen</h3>

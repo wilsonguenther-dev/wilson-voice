@@ -1453,6 +1453,15 @@ button.star.on {
   margin-top: var(--space-4);
 }
 
+/* yap-1106-chatter-setting — "Yappy talks": the take count that drives the
+   quieting sits right after its one plain sentence, set apart by weight only. */
+.chatter-explain .chatter-count {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* WF-10 — Settings › Audio › Microphone: the fallback order. */
 .mic-order {
   margin-top: var(--space-4);

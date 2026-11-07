@@ -16,6 +16,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { ALL_LIVE_PHASES, type ChatTone, type LivePhase, type PhaseArt, type TranscribeProgress } from "../live";
 import type { VoiceId } from "../voices";
+import type { ChatterMode } from "../chatter";
 import type { MeetingAfterView, MeetingStatus } from "../meeting";
 import type { PillLicense } from "../license";
 
@@ -76,6 +77,8 @@ export interface CharacterStageProps {
    * (`curseAllowed`: toggle on, Badass, no meeting / screen-share state).
    */
   curse?: boolean;
+  /** yap-1106-chatter-setting — "Yappy talks": always / less over time / only milestones. */
+  chatter?: ChatterMode;
   progress?: TranscribeProgress | null;
   meeting?: MeetingStatus;
   meetingAfter?: MeetingAfterView | null;
