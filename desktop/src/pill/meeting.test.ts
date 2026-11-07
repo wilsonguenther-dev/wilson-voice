@@ -35,6 +35,22 @@ import { MEETING_PROGRESS_EVENT as DECLARED_PROGRESS_EVENT } from "../meetings/p
 import { SAVED_HOLD_MS, SAVED_LABEL, SCENE_W } from "./meetingScene";
 import { MEETING_STOP_FAILED_EVENT } from "./meetingDictation";
 import { CLOCK_H, CLOCK_W, meetingMode, pillLayout } from "./state";
+import MeetingBadge from "./MeetingBadge";
+
+// fix-l3b1-2-stack-stop-uses-stop-failed-path — the stacked Stop's click runs
+// against a mocked invoke (the real one needs the Tauri runtime). Partial
+// mocks: every other export stays real, and nothing above calls invoke.
+const tauriMocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: tauriMocks.invoke,
+}));
+// The badge's only hook is the call-offer view; calling the component as a
+// plain function (node env, no DOM) needs it to be hook-free.
+vi.mock("./CallOffer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./CallOffer")>()),
+  useCallRecordingView: () => null,
+}));
 
 const recording = (over: Partial<MeetingStatus> = {}): MeetingStatus => ({
   recording: true,
@@ -509,5 +525,86 @@ describe("the Saved stop beat has a real slot (fix-b8-1-meeting-saved-beat-gets-
     expect(reduceMeetingPill(saved, { type: "status", status: recording({ id: "m2" }) })).toEqual({ kind: "recording", id: "m2" });
     expect(meetingPillHoldMs(saved)).toBeNull();
     expect(reduceMeetingPill(saved, { type: "dismiss", id: "m1" })).toBe(saved);
+  });
+});
+
+describe("the stacked Stop takes the stop-failed path (fix-l3b1-2-stack-stop-uses-stop-failed-path)", () => {
+  const T0 = 7_000_000;
+  type TreeNode = { props?: { className?: unknown; children?: unknown; onClick?: unknown } };
+  const findByClass = (node: unknown, cls: string): TreeNode | null => {
+    if (Array.isArray(node)) {
+      for (const n of node) {
+        const hit = findByClass(n, cls);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    if (!node || typeof node !== "object") return null;
+    const el = node as TreeNode;
+    if (el.props?.className === cls) return el;
+    return findByClass(el.props?.children, cls);
+  };
+
+  afterEach(() => {
+    tauriMocks.invoke.mockReset();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("a rejected stop_meeting from the stack dispatches yap:meeting-stop-failed exactly once", async () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    const heard: Event[] = [];
+    target.addEventListener(MEETING_STOP_FAILED_DOM_EVENT, (e) => heard.push(e));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    tauriMocks.invoke.mockRejectedValue(new Error("the recorder did not answer"));
+
+    const tree = MeetingBadge({ status: recording(), stacked: true });
+    const stopButton = findByClass(tree, "rec-stop");
+    expect(stopButton, "the stacked badge carries the one-click Stop").not.toBeNull();
+    let stopped = 0;
+    const onClick = stopButton!.props!.onClick as (e: { stopPropagation: () => void }) => void;
+    onClick({ stopPropagation: () => { stopped += 1; } });
+
+    await vi.waitFor(() => expect(heard).toHaveLength(1));
+    // Let every pending microtask and timer drain: still exactly one event.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(heard).toHaveLength(1);
+    expect(stopped).toBe(1);
+    expect(tauriMocks.invoke).toHaveBeenCalledTimes(1);
+    expect(tauriMocks.invoke).toHaveBeenCalledWith("stop_meeting");
+    // The helper's own telemetry line names the stack as the source, never the error text.
+    expect(warn).toHaveBeenCalledWith("pill meeting_stop clicked source=pill_stack result=error");
+  });
+
+  it("after a failed stack Stop, a status drop within SAVED_HOLD_MS gives the failed phase, never saved", async () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    tauriMocks.invoke.mockRejectedValue(new Error("the recorder did not answer"));
+    // The shell's useMeetingPill listener, mirrored: the window event becomes a stop_failed input.
+    let phase: MeetingPillPhase = reduceMeetingPill(MEETING_PILL_IDLE, { type: "status", status: recording() });
+    expect(phase.kind).toBe("recording");
+    target.addEventListener(MEETING_STOP_FAILED_DOM_EVENT, (e) => {
+      const detail = (e as CustomEvent).detail;
+      phase = reduceMeetingPill(phase, { type: "stop_failed", sentence: typeof detail === "string" ? detail : "", nowMs: T0 });
+    });
+
+    const onClick = findByClass(MeetingBadge({ status: recording(), stacked: true }), "rec-stop")!.props!
+      .onClick as (e: { stopPropagation: () => void }) => void;
+    onClick({ stopPropagation: () => {} });
+    await vi.waitFor(() => expect(phase.kind === "recording" && phase.stopFailed !== undefined).toBe(true));
+
+    for (const dropAt of [T0 + 1, T0 + SAVED_HOLD_MS - 1, T0 + SAVED_HOLD_MS]) {
+      const after = reduceMeetingPill(phase, {
+        type: "status",
+        status: { ...IDLE_MEETING, captureAvailable: true },
+        nowMs: dropAt,
+        lastElapsedS: 3725,
+      });
+      expect(after.kind, `status drop at +${dropAt - T0} ms`).toBe("failed");
+      expect(after.kind).not.toBe("saved");
+      expect(after).toEqual({ kind: "failed", id: "m1", sentence: MEETING_STOP_FAILED_FALLBACK });
+    }
   });
 });
