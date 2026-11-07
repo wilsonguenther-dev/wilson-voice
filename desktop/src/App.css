@@ -1630,6 +1630,15 @@ button.star.on {
   color: var(--muted);
 }
 
+/* yap-1106-chatter-setting — "Yappy talks": the take count that drives the
+   quieting sits right after its one plain sentence, set apart by weight only. */
+.chatter-explain .chatter-count {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* yap-1106-curse-setting — the Badass-only curse toggle sits under the voice
    cards, one step below them. */
 .curse-setting {

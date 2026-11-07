@@ -24,6 +24,7 @@ import {
   parseLedger,
   parseQuietState,
   quietReason,
+  quietingTakes,
   recordVisit,
   serializeLedger,
   visitDurationMs,
@@ -233,6 +234,43 @@ describe("friend visits — the approved quiet rules", () => {
     expect(reason(r.d)).toBe("shown");
     vi.advanceTimersByTime(5 * H);
     expect(reason(at("word-added", ctx, r.ledger).d)).toBe("daily-cap");
+  });
+
+  // yap-1106-chatter-setting — the 50-take quieting is the "less over time"
+  // setting; "always" switches it off and "only milestones" keeps friends home.
+  it("Yappy talks: always — past 200 takes friends still visit at the first-day rate", () => {
+    const ctx: VisitContext = { ...calm, takesSoFar: QUIETEST_AFTER_TAKES, chatter: "always" };
+    expect(quietingTakes(ctx)).toBe(0);
+    let l = EMPTY_LEDGER;
+    for (const e of ["backtrack-caught", "word-added", "battery-low", "meeting-notes-ready", "news-ready"]) {
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      const r = at(e, ctx, l);
+      expect(reason(r.d)).toBe("shown");
+      expect(shown(r.d).untilMs - shown(r.d).startMs).toBe(VISIT_MAX_MS);
+      l = r.ledger;
+    }
+    expect(l.count).toBe(5);
+  });
+
+  it("Yappy talks: less over time (and omitted) — the 50-take ladder applies", () => {
+    const less: VisitContext = { ...calm, takesSoFar: QUIETER_AFTER_TAKES, chatter: "less" };
+    expect(quietingTakes(less)).toBe(QUIETER_AFTER_TAKES);
+    expect(quietingTakes({ ...calm, takesSoFar: QUIETER_AFTER_TAKES })).toBe(QUIETER_AFTER_TAKES);
+    const r = at("backtrack-caught", less, EMPTY_LEDGER);
+    expect(shown(r.d).untilMs - shown(r.d).startMs).toBe(VISIT_QUIETER_MS);
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(reason(at("word-added", less, r.ledger).d)).toBe("too-soon");
+  });
+
+  it("Yappy talks: only milestones — friends stay home, the milestone visit still comes", () => {
+    const ctx: VisitContext = { ...calm, takesSoFar: 5, occupant: "tidy", chatter: "milestones" };
+    for (const e of ["backtrack-caught", "word-added", "battery-low", "meeting-notes-ready", "news-ready"]) {
+      expect(reason(at(e, ctx, EMPTY_LEDGER).d)).toBe("chatter-milestones");
+    }
+    expect(reason(at("milestone", { ...ctx, takesSoFar: 100 }, EMPTY_LEDGER).d)).toBe("shown");
+    expect(visitLogLine("word-added", decideVisit("word-added", ctx, EMPTY_LEDGER, Date.now()))).toBe(
+      "pill friend_visit skipped event=word-added reason=chatter-milestones",
+    );
   });
 
   it("the ledger survives a relaunch and a malformed row is an empty ledger", () => {

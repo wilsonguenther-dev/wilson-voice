@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { chatterPolicy, DEFAULT_CHATTER_MODE, type ChatterMode } from "./chatter";
 import {
   NUDGE_IDS,
   NUDGE_TTL_MS,
@@ -56,11 +57,14 @@ export default function NudgeRow({
   phase,
   tone,
   muted = NOTHING_MUTED,
+  chatter = DEFAULT_CHATTER_MODE,
 }: {
   phase: LivePhase;
   tone: ChatTone;
   /** WF-17 — categories muted in Settings › Notifications (float-main reads them). */
   muted?: ReadonlySet<string>;
+  /** yap-1106-chatter-setting — "Yappy talks"; first-time tips stop from the 50th take (or in "only milestones"). */
+  chatter?: ChatterMode;
 }) {
   const [ledger, setLedger] = useState<LedgerPayload | null>(null);
   const [active, setActive] = useState<Nudge | null>(null);
@@ -70,6 +74,8 @@ export default function NudgeRow({
   const history = useRef<Map<string, TipHistory>>(new Map());
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
+  const chatterRef = useRef(chatter);
+  chatterRef.current = chatter;
   const thisSession = useRef(0);
   const sessionTakes = useRef(0);
   const lastTake = useRef<TakeContextPayload | null>(null);
@@ -137,7 +143,11 @@ export default function NudgeRow({
       today,
       muted: mutedRef.current,
     };
-    const n = nextNudge(context, shown) ?? nextMilestone(context, shown);
+    // yap-1106-chatter-setting — tips are first-time explanations: they stop
+    // once the policy says so. Milestones still celebrate.
+    const tipsOn = chatterPolicy(chatterRef.current, context.takesSoFar + 1).firstTimeTips;
+    if (!tipsOn) console.info(`pill nudge tips_quiet mode=${chatterRef.current} takes=${context.takesSoFar}`);
+    const n = (tipsOn ? nextNudge(context, shown) : null) ?? nextMilestone(context, shown);
     if (!n) return;
     thisSession.current += 1;
     ever.current.add(n.id);
