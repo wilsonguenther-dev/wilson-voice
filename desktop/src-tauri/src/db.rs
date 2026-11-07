@@ -714,6 +714,9 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             // yap-1106-who-is-this — each diarized cluster's voice and the
             // person's answer to "Who was this?".
             12 => crate::speaker_profiles::MIGRATION_12_CLUSTER_VOICES,
+            // yap-1106-auto-label-and-correct — the per-line correction lock
+            // and the "this was NOT them" voice samples.
+            13 => crate::speaker_profiles::MIGRATION_13_SPEAKER_CORRECTIONS,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2901,9 +2904,20 @@ impl Database {
             .map_err(|e| e.to_string())?;
         let relabelled = tx
             .execute(
-                "UPDATE meeting_segments SET speaker_profile_id = ?1, speaker_name = ?2
+                "UPDATE meeting_segments SET speaker_profile_id = ?1, speaker_name = ?2,
+                        speaker_locked = ?6
                   WHERE meeting_id = ?3 AND track = ?4 AND cluster_index = ?5",
-                params![profile_id, display_name, meeting_id, track, cluster_index],
+                // yap-1106-auto-label-and-correct — naming from a card is a
+                // person's decision: lock the lines so auto-labelling never
+                // overwrites them and an older correction's undo skips them.
+                params![
+                    profile_id,
+                    display_name,
+                    meeting_id,
+                    track,
+                    cluster_index,
+                    Utc::now().timestamp_millis()
+                ],
             )
             .map_err(|e| e.to_string())?;
         let state = if matches!(target, NameTarget::Me) {
@@ -2978,6 +2992,520 @@ impl Database {
             state.as_str()
         );
         Ok(())
+    }
+
+    // ----- yap-1106-auto-label-and-correct ---------------------------------
+
+    /// Every line's speaker state in one meeting (`speaker_profiles::LabelRow`).
+    pub fn meeting_label_rows(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Vec<speaker_profiles::LabelRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::label_rows_on(&conn, meeting_id)
+    }
+
+    fn label_rows_on(
+        conn: &Connection,
+        meeting_id: &str,
+    ) -> Result<Vec<speaker_profiles::LabelRow>, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, track, cluster_index, speaker_profile_id, speaker_name, speaker_locked
+                   FROM meeting_segments WHERE meeting_id = ?1
+                  ORDER BY start_seconds, track, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![meeting_id], |r| {
+                Ok(speaker_profiles::LabelRow {
+                    segment_id: r.get(0)?,
+                    track: r.get(1)?,
+                    cluster_index: r.get(2)?,
+                    profile_id: r.get(3)?,
+                    speaker_name: r.get(4)?,
+                    locked: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    fn write_label_rows_on(
+        conn: &Connection,
+        meeting_id: &str,
+        rows: &[speaker_profiles::LabelRow],
+    ) -> Result<usize, String> {
+        let mut written = 0usize;
+        for r in rows {
+            written += conn
+                .execute(
+                    "UPDATE meeting_segments
+                        SET cluster_index = ?3, speaker_profile_id = ?4, speaker_name = ?5,
+                            speaker_locked = ?6
+                      WHERE id = ?1 AND meeting_id = ?2",
+                    params![
+                        r.segment_id,
+                        meeting_id,
+                        r.cluster_index,
+                        r.profile_id,
+                        r.speaker_name,
+                        r.locked
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(written)
+    }
+
+    /// The stored voice of one cluster, when the pass kept one.
+    fn cluster_voice_on(
+        conn: &Connection,
+        meeting_id: &str,
+        track: i64,
+        cluster_index: i64,
+    ) -> Result<Option<(String, Vec<f32>, f64)>, String> {
+        let stored: Option<(Option<String>, Option<Vec<u8>>, f64)> = conn
+            .query_row(
+                "SELECT embedder_digest, embedding, seconds FROM meeting_cluster_voices
+                  WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3",
+                params![meeting_id, track, cluster_index],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(match stored {
+            Some((Some(digest), Some(blob), seconds)) => speaker_profiles::decode_embedding(&blob)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|v| (digest, v, seconds)),
+            _ => None,
+        })
+    }
+
+    /// Find or create the profile a correction names. A new name with no
+    /// voice yet is a text-only profile (`comparable` skips it until a
+    /// sample lands), exactly as `name_meeting_cluster` makes one.
+    fn resolve_name_target_on(
+        conn: &Connection,
+        target: &NameTarget,
+    ) -> Result<speaker_profiles::ResolvedName, String> {
+        let found: Option<i64> = match target {
+            NameTarget::Profile { profile_id } => Some(
+                Self::speaker_profile_on(conn, *profile_id)?
+                    .ok_or_else(|| "That speaker no longer exists.".to_string())?
+                    .id,
+            ),
+            NameTarget::Me => conn
+                .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?,
+            NameTarget::NewName { name } => {
+                let clean = speaker_profiles::clean_display_name(name)?;
+                conn.query_row(
+                    "SELECT id FROM speaker_profiles
+                      WHERE display_name = ?1 COLLATE NOCASE AND is_me = 0
+                      ORDER BY id LIMIT 1",
+                    params![clean],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+            }
+        };
+        let profile_id = match found {
+            Some(id) => id,
+            None => {
+                let (name, is_me) = match target {
+                    NameTarget::NewName { name } => {
+                        (speaker_profiles::clean_display_name(name)?, false)
+                    }
+                    NameTarget::Me => (speaker_profiles::ME_DISPLAY_NAME.to_string(), true),
+                    NameTarget::Profile { .. } => {
+                        return Err("That speaker no longer exists.".into())
+                    }
+                };
+                let now = Utc::now().to_rfc3339();
+                let digest =
+                    speaker_profiles::pinned_embedder_digest().unwrap_or_else(|| "none".into());
+                conn.execute(
+                    "INSERT INTO speaker_profiles
+                       (display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4, ?5, 0, ?3)",
+                    params![
+                        name,
+                        is_me as i64,
+                        now,
+                        digest,
+                        speaker_profiles::encode_embedding(&[])
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.last_insert_rowid()
+            }
+        };
+        let display_name: String = conn
+            .query_row(
+                "SELECT display_name FROM speaker_profiles WHERE id = ?1",
+                params![profile_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(speaker_profiles::ResolvedName {
+            profile_id,
+            display_name,
+        })
+    }
+
+    /// Positive feed: the cluster's voice becomes a sample of `profile_id`
+    /// (skipped on a digest or dimension mismatch). Returns the sample id.
+    fn add_positive_sample_on(
+        conn: &Connection,
+        profile_id: i64,
+        meeting_id: &str,
+        voice: &(String, Vec<f32>, f64),
+    ) -> Result<Option<i64>, String> {
+        let (digest, embedding, seconds) = voice;
+        let Some(p) = Self::speaker_profile_on(conn, profile_id)? else {
+            return Ok(None);
+        };
+        let empty = p.n_samples == 0 || p.centroid.is_empty();
+        if !empty && (p.embedder_digest != *digest || p.centroid.len() != embedding.len()) {
+            log::warn!(
+                "speaker_profiles correction_sample_skipped id={profile_id} reason=digest_mismatch"
+            );
+            return Ok(None);
+        }
+        let centroid = if empty {
+            speaker_profiles::fold_into_centroid(&[], 0, embedding)?
+        } else {
+            speaker_profiles::fold_into_centroid(&p.centroid, p.n_samples, embedding)?
+        };
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                profile_id,
+                meeting_id,
+                speaker_profiles::encode_embedding(embedding),
+                seconds,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE speaker_profiles
+                SET centroid = ?2, n_samples = n_samples + 1, embedder_digest = ?3,
+                    updated_at = ?4, last_heard_at = ?4
+              WHERE id = ?1",
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                digest,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Some(id))
+    }
+
+    /// Negative feed: "this voice was NOT `profile_id`".
+    fn add_negative_sample_on(
+        conn: &Connection,
+        profile_id: i64,
+        meeting_id: &str,
+        voice: &(String, Vec<f32>, f64),
+    ) -> Result<i64, String> {
+        conn.execute(
+            "INSERT INTO speaker_negative_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                profile_id,
+                meeting_id,
+                speaker_profiles::encode_embedding(&voice.1),
+                voice.2,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// The "this was NOT them" samples of one profile.
+    fn negative_samples_on(conn: &Connection, profile_id: i64) -> Result<Vec<Vec<f32>>, String> {
+        let mut stmt = conn
+            .prepare("SELECT embedding FROM speaker_negative_samples WHERE profile_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let blobs = stmt
+            .query_map(params![profile_id], |r| r.get::<_, Vec<u8>>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(blobs
+            .iter()
+            .filter_map(|b| speaker_profiles::decode_embedding(b).ok())
+            .filter(|v| !v.is_empty())
+            .collect())
+    }
+
+    /// Rebuild a profile's centroid from the samples it still holds (after an
+    /// undo removed one): the normalised mean of the normalised samples.
+    fn recompute_centroid_on(conn: &Connection, profile_id: i64) -> Result<(), String> {
+        let mut stmt = conn
+            .prepare("SELECT embedding FROM speaker_samples WHERE profile_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let samples: Vec<Vec<f32>> = stmt
+            .query_map(params![profile_id], |r| r.get::<_, Vec<u8>>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|b| speaker_profiles::decode_embedding(b).ok())
+            .filter(|v| !v.is_empty())
+            .collect();
+        let dim = samples.first().map(|s| s.len()).unwrap_or(0);
+        let mut sum = vec![0.0f32; dim];
+        let mut n = 0i64;
+        for s in samples.iter().filter(|s| s.len() == dim) {
+            for (acc, x) in sum.iter_mut().zip(speaker_profiles::normalized(s)) {
+                *acc += x;
+            }
+            n += 1;
+        }
+        let centroid = if n == 0 {
+            Vec::new()
+        } else {
+            speaker_profiles::normalized(&sum)
+        };
+        conn.execute(
+            "UPDATE speaker_profiles SET centroid = ?2, n_samples = ?3, updated_at = ?4 WHERE id = ?1",
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                n,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Rename / This is someone else / Merge with… / Split this speaker.
+    ///
+    /// One transaction: the pure reducer (`speaker_profiles::apply_correction`)
+    /// decides which whole turns move; every moved line is stamped with this
+    /// correction's lock token. A correction that moves a WHOLE speaker feeds
+    /// the voiceprints: the cluster's kept voice becomes a positive sample of
+    /// the new name and a negative sample of the name it had before. A partial
+    /// move (some lines, or a split) has no voice of its own and feeds nothing.
+    pub fn correct_meeting_speakers(
+        &self,
+        meeting_id: &str,
+        correction: &speaker_profiles::SpeakerCorrection,
+    ) -> Result<speaker_profiles::CorrectionApplied, String> {
+        use speaker_profiles::SpeakerCorrection as C;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let rows = Self::label_rows_on(&tx, meeting_id)?;
+        let resolved = match correction.target() {
+            Some(t) => Some(Self::resolve_name_target_on(&tx, t)?),
+            None => None,
+        };
+        let now_ms = Utc::now().timestamp_millis();
+        let lock = rows
+            .iter()
+            .map(|r| r.locked + 1)
+            .max()
+            .unwrap_or(1)
+            .max(now_ms);
+        let written =
+            speaker_profiles::apply_correction(&rows, correction, resolved.as_ref(), lock)?;
+        let prior: Vec<speaker_profiles::LabelRow> = rows
+            .iter()
+            .filter(|r| written.iter().any(|w| w.segment_id == r.segment_id))
+            .cloned()
+            .collect();
+        // Which whole cluster's voice this correction speaks about, and who it is now.
+        let whole: Option<(i64, i64, Option<i64>)> = match correction {
+            C::Rename {
+                track,
+                cluster_index,
+                ..
+            } => Some((*track, *cluster_index, resolved.as_ref().map(|r| r.profile_id))),
+            C::SomeoneElse {
+                track, segment_ids, ..
+            } => speaker_profiles::whole_cluster_of(&rows, *track, segment_ids)
+                .map(|c| (*track, c, resolved.as_ref().map(|r| r.profile_id))),
+            C::Merge {
+                track, from_cluster, ..
+            } => Some((*track, *from_cluster, written.first().and_then(|w| w.profile_id))),
+            C::Split { .. } => None,
+        };
+        let mut positive_sample_ids = Vec::new();
+        let mut negative_sample_ids = Vec::new();
+        if let Some((track, cluster, new_profile)) = whole {
+            if let Some(voice) = Self::cluster_voice_on(&tx, meeting_id, track, cluster)? {
+                let mut old: Vec<i64> = prior.iter().filter_map(|r| r.profile_id).collect();
+                old.sort_unstable();
+                old.dedup();
+                for p in old.into_iter().filter(|p| Some(*p) != new_profile) {
+                    negative_sample_ids.push(Self::add_negative_sample_on(
+                        &tx, p, meeting_id, &voice,
+                    )?);
+                }
+                if let Some(p) = new_profile {
+                    if !prior.iter().all(|r| r.profile_id == Some(p)) {
+                        if let Some(id) = Self::add_positive_sample_on(&tx, p, meeting_id, &voice)? {
+                            positive_sample_ids.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        Self::write_label_rows_on(&tx, meeting_id, &written)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles correction kind={} meeting={meeting_id} lines={} positive={} negative={}",
+            correction.kind(),
+            written.len(),
+            positive_sample_ids.len(),
+            negative_sample_ids.len()
+        );
+        Ok(speaker_profiles::CorrectionApplied {
+            rows: written,
+            undo: speaker_profiles::CorrectionUndo {
+                lock,
+                prior,
+                positive_sample_ids,
+                negative_sample_ids,
+                expires_at_ms: now_ms + speaker_profiles::UNDO_WINDOW_SECONDS * 1000,
+            },
+        })
+    }
+
+    /// Undo a correction inside its window. Asks the LOCK (YV130): only lines
+    /// still carrying this correction's token are restored; a line a later
+    /// correction rewrote keeps that answer and is named in `skipped_changed`.
+    /// The samples the correction fed are removed and the centroids rebuilt.
+    pub fn undo_speaker_correction(
+        &self,
+        meeting_id: &str,
+        undo: &speaker_profiles::CorrectionUndo,
+    ) -> Result<speaker_profiles::CorrectionUndone, String> {
+        let now_ms = Utc::now().timestamp_millis();
+        if now_ms > undo.expires_at_ms + speaker_profiles::UNDO_GRACE_SECONDS * 1000 {
+            log::info!("speaker_profiles undo_correction_expired meeting={meeting_id}");
+            return Err("Too late to undo. Correct the speaker again instead.".into());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let current = Self::label_rows_on(&tx, meeting_id)?;
+        let (restore, skipped_changed) =
+            speaker_profiles::undo_plan(&current, &undo.prior, undo.lock);
+        Self::write_label_rows_on(&tx, meeting_id, &restore)?;
+        let mut touched: Vec<i64> = Vec::new();
+        for id in &undo.positive_sample_ids {
+            let profile: Option<i64> = tx
+                .query_row(
+                    "SELECT profile_id FROM speaker_samples WHERE id = ?1 AND meeting_id = ?2",
+                    params![id, meeting_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(p) = profile {
+                tx.execute("DELETE FROM speaker_samples WHERE id = ?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                touched.push(p);
+            }
+        }
+        for id in &undo.negative_sample_ids {
+            tx.execute(
+                "DELETE FROM speaker_negative_samples WHERE id = ?1 AND meeting_id = ?2",
+                params![id, meeting_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        for p in &touched {
+            Self::recompute_centroid_on(&tx, *p)?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles undo_correction meeting={meeting_id} restored={} skipped_changed={} samples_removed={}",
+            restore.len(),
+            skipped_changed.len(),
+            undo.positive_sample_ids.len() + undo.negative_sample_ids.len()
+        );
+        Ok(speaker_profiles::CorrectionUndone {
+            rows: restore,
+            skipped_changed,
+        })
+    }
+
+    /// Future meetings: every `auto`-band cluster no person has touched takes
+    /// the saved voice's name (`speaker_profiles::auto_label_plan`). A match a
+    /// "this was NOT them" sample sits closer to is not trusted. Locked lines
+    /// are never overwritten. Returns the number of lines labelled.
+    pub fn auto_label_meeting(&self, meeting_id: &str, bands: MatchBands) -> Result<usize, String> {
+        let voices = self.meeting_cluster_voices(meeting_id)?;
+        let profiles = self.list_speaker_profiles()?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let rows = Self::label_rows_on(&tx, meeting_id)?;
+        let mut matches = Vec::new();
+        let mut vetoed = 0usize;
+        for v in &voices {
+            let (Some(e), Some(d)) = (&v.embedding, &v.embedder_digest) else {
+                continue;
+            };
+            let m = speaker_profiles::match_voice(e, d, &profiles, bands);
+            if let VoiceMatch::Auto { profile_id, .. } = &m {
+                let centroid = profiles
+                    .iter()
+                    .find(|p| p.id == *profile_id)
+                    .map(|p| p.centroid.clone())
+                    .unwrap_or_default();
+                let negatives = Self::negative_samples_on(&tx, *profile_id)?;
+                if speaker_profiles::vetoed_by_negatives(e, &centroid, &negatives) {
+                    vetoed += 1;
+                    continue;
+                }
+            }
+            matches.push(((v.track, v.cluster_index), m));
+        }
+        let plan = speaker_profiles::auto_label_plan(&rows, &matches);
+        let mut labelled = 0usize;
+        let now = Utc::now().to_rfc3339();
+        for a in &plan {
+            labelled += tx
+                .execute(
+                    "UPDATE meeting_segments SET speaker_profile_id = ?4, speaker_name = ?5
+                      WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3
+                        AND speaker_locked = 0 AND speaker_name IS NULL",
+                    params![meeting_id, a.track, a.cluster_index, a.profile_id, a.display_name],
+                )
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE speaker_profiles SET last_heard_at = ?2 WHERE id = ?1",
+                params![a.profile_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles auto_label meeting={meeting_id} clusters={} named={} lines={labelled} vetoed={vetoed}",
+            voices.len(),
+            plan.len()
+        );
+        Ok(labelled)
     }
 
     /// The one-time "use my dictation audio to save my voice" answer.
@@ -3736,7 +4264,9 @@ impl Database {
             .get_meeting(id)?
             .ok_or_else(|| format!("no meeting {id}"))?;
         let segments = self.list_meeting_segments(id)?;
-        let md = meetings::render_markdown(&meeting, &segments);
+        // yap-1106-auto-label-and-correct — the export reads the corrected names.
+        let names = self.meeting_speaker_names(id)?;
+        let md = meetings::render_markdown_named(&meeting, &segments, &names);
         Ok((meeting, md))
     }
 
