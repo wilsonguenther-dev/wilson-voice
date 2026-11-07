@@ -3702,14 +3702,11 @@ button.primary.big {
   margin: 0;
 }
 
+/* The keyboard ring on a chart comes from src/a11y/focus.css
+   ([tabindex]:focus-visible), the one place it is declared. */
 .chart-points {
   position: relative;
   border-radius: var(--radius-sm);
-  outline: none;
-}
-
-.chart-points:focus-visible {
-  box-shadow: 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
 .insights .bar-fill {

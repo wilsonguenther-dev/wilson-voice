@@ -330,10 +330,6 @@
   cursor: pointer;
   border-radius: var(--radius-xs);
 }
-.meetings-list-pane .meeting-row-main:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
 .meetings-list-pane .meeting-row.open,
 .meetings-list-pane .meeting-row.selected {
   background: var(--accent-action-soft);
@@ -430,10 +426,6 @@
 .meeting-tab.selected {
   color: var(--text-primary);
   border-bottom-color: var(--accent-action);
-}
-.meeting-tab:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
 }
 .meeting-tab-count {
   margin-left: var(--space-1);

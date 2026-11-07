@@ -40,6 +40,7 @@ const ADAPTERS: Record<string, string> = {
   "diagnostics.ts": "Settings → Diagnostics reads diagnostics_snapshot and calls export_diagnostics over invoke()",
   "home/habitat/events.ts": "subscribes the habitat director to the backend's take, paste and model-download events",
   "formatting.ts": "useFormattingOptions loads and saves the formatting settings over invoke()",
+  "news/newsPrefs.ts": "the Yappy News picker's edits plus get_news_prefs / set_news_prefs / dismiss_news_offer over invoke() (its pure edits are covered by newsPrefs.test.ts)",
   "languageStore.ts": "binds the shared language store (languagePicker.ts createLanguageStore) to language_options, set_dictation_languages and the language events",
   "meetings/consentWatch.ts": "subscribes to the backend's meeting-consent event",
   "meetings/notetakerSetup.ts": "drives the notetaker setup commands",

@@ -65,7 +65,7 @@ describe("yap-1106 news prefs — the picker's edits", () => {
     expect(r.ok && r.prefs.tickers).toEqual(["AAPL"]);
     const bad = addTicker(EMPTY_PREFS, "no way");
     expect(bad.ok).toBe(false);
-    if (!bad.ok) expect(bad.error).toMatch(/doesn't look like a ticker\.$/);
+    if (!bad.ok) expect(bad.error).toMatch(/doesn't look like a ticker\. Use letters like NVDA or BRK\.B\.$/);
     const full = { ...EMPTY_PREFS, tickers: Array.from({ length: MAX_TICKERS }, (_, i) => `T${i}`) };
     expect(addTicker(full, "ZZ").ok).toBe(false);
     expect(removeTicker({ ...EMPTY_PREFS, tickers: ["AAPL", "NVDA"] }, "AAPL").tickers).toEqual(["NVDA"]);
