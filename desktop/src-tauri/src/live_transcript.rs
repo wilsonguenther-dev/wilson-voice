@@ -1974,4 +1974,78 @@ mod tests {
         assert!(st.roster().unwrap().clusters.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// yap-1106-fb-23 — "People: 2" on a mic-only meeting: once two voices
+    /// are known, a window that drifted (Sam on a phone mic, 60% like Sam) is
+    /// Sam, low confidence, and never "Someone new". On Auto the same windows
+    /// make a third speaker — the cap is what does the work.
+    #[test]
+    fn a_full_pool_assigns_a_drifting_window_to_the_nearest_speaker_and_never_says_someone_new() {
+        let profiles = vec![profile(1, "Alex", vec![1.0, 0.0, 0.0, 0.0])];
+        let maya = vec![0.0, 1.0, 0.0, 0.0];
+        let sam = vec![0.0, 0.0, 1.0, 0.0];
+        let sams_phone = {
+            let v = [0.0f32, 0.1, 0.6, 0.79];
+            let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter().map(|x| x / n).collect::<Vec<f32>>()
+        };
+        let run = |people: Option<u8>| -> (Vec<LiveVoice>, usize) {
+            let embedder = Fixture::new(vec![
+                Some(maya.clone()),
+                Some(sam.clone()),
+                Some(sams_phone.clone()),
+                Some(sams_phone.clone()),
+            ]);
+            let sp = LiveSpeakers {
+                embedder: &embedder,
+                profiles: &profiles,
+                digest: DIGEST,
+                bands: MatchBands::provisional(),
+            };
+            let mut st = LiveState::new(Vec::new()).with_roster(LiveRoster::new(
+                profiles.clone(),
+                MatchBands::provisional(),
+                false,
+            ));
+            st.set_people(people, 1);
+            let window = speech(6.0);
+            let voices: Vec<LiveVoice> = (0..4)
+                .map(|_| st.voice_for(&sp, 0, 1, &window, &|| false))
+                .collect();
+            assert_eq!(embedder.calls.get(), 4, "one embed per window, no more");
+            (voices, st.roster().unwrap().speakers())
+        };
+
+        let (capped, speakers) = run(Some(2));
+        assert_eq!(speakers, 2, "the pool never grows past the count");
+        for v in &capped[2..] {
+            assert_eq!(v.cluster, Some(1), "the drifted window is Sam's voice: {v:?}");
+            assert_ne!(v.name.as_deref(), Some(SOMEONE_NEW), "a full pool never says Someone new");
+            assert_eq!(v.name.as_deref(), Some("Speaker 2"));
+            assert!(
+                v.hint.as_deref().is_some_and(|h| h.contains("60%")),
+                "a guess carries its reason: {v:?}"
+            );
+        }
+
+        let (_, auto_speakers) = run(None);
+        assert_eq!(auto_speakers, 3, "on Auto the drift becomes a new voice");
+    }
+
+    #[test]
+    fn people_on_a_call_caps_the_call_side_at_count_minus_one() {
+        let mut st = LiveState::new(Vec::new()).with_roster(LiveRoster::new(
+            Vec::new(),
+            MatchBands::provisional(),
+            false,
+        ));
+        st.set_people(Some(4), 2);
+        assert_eq!(st.roster().unwrap().cap, Some(3), "You are the mic: 3 other voices");
+        st.set_people(Some(4), 1);
+        assert_eq!(st.roster().unwrap().cap, Some(4));
+        st.set_people(None, 2);
+        assert_eq!(st.roster().unwrap().cap, None, "Auto");
+        set_live_expected_speakers(Some(13));
+        assert_eq!(live_expected_speakers(), None, "out of range is Auto");
+    }
 }
