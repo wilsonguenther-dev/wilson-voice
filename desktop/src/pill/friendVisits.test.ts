@@ -40,7 +40,7 @@ const H = 60 * 60 * 1000;
 const MORNING = new Date(2026, 10, 6, 9, 0, 0).getTime();
 
 const calm: VisitContext = {
-  meeting: false,
+  meetingRecording: false,
   screenSharing: false,
   doNotDisturb: false,
   takesSoFar: 10,
@@ -151,13 +151,13 @@ describe("friend visits — the approved quiet rules", () => {
   });
 
   it("never during a meeting, screen sharing or Do Not Disturb", () => {
-    expect(reason(decideVisit("backtrack-caught", { ...calm, meeting: true }, EMPTY_LEDGER, Date.now()))).toBe("meeting");
+    expect(reason(decideVisit("backtrack-caught", { ...calm, meetingRecording: true }, EMPTY_LEDGER, Date.now()))).toBe("meeting-recording");
     expect(reason(decideVisit("backtrack-caught", { ...calm, screenSharing: true }, EMPTY_LEDGER, Date.now()))).toBe("screen-sharing");
     expect(reason(decideVisit("backtrack-caught", { ...calm, doNotDisturb: true }, EMPTY_LEDGER, Date.now()))).toBe("do-not-disturb");
     // Hoot does not visit during the meeting either (he is at the tape machine).
-    expect(reason(decideVisit("meeting-notes-ready", { ...calm, meeting: true }, EMPTY_LEDGER, Date.now()))).toBe("meeting");
-    expect(quietReason({ meeting: true, screenSharing: true, doNotDisturb: true })).toBe("meeting");
-    expect(quietReason({ meeting: false, screenSharing: false, doNotDisturb: false })).toBeNull();
+    expect(reason(decideVisit("meeting-notes-ready", { ...calm, meetingRecording: true }, EMPTY_LEDGER, Date.now()))).toBe("meeting-recording");
+    expect(quietReason({ meetingRecording: true, screenSharing: true, doNotDisturb: true })).toBe("meeting-recording");
+    expect(quietReason({ meetingRecording: false, screenSharing: false, doNotDisturb: false })).toBeNull();
     // A quiet event that was skipped does not use up the friend's day.
     const l = at("backtrack-caught", { ...calm, doNotDisturb: true }, EMPTY_LEDGER).ledger;
     expect(l).toEqual(EMPTY_LEDGER);
@@ -171,12 +171,12 @@ describe("friend visits — the approved quiet rules", () => {
     expect(callLive(null)).toBe(false);
     expect(callLive("recording")).toBe(false);
     expect(callLive({ phase: 3 })).toBe(false);
-    // The pill folds a live call into `meeting`, so a friend stays away.
-    const inCall = { ...calm, meeting: callLive({ phase: "chip" }) };
-    expect(reason(decideVisit("backtrack-caught", inCall, EMPTY_LEDGER, Date.now()))).toBe("meeting");
+    // The pill folds a live call into `meetingRecording`, so a friend stays away.
+    const inCall = { ...calm, meetingRecording: callLive({ phase: "chip" }) };
+    expect(reason(decideVisit("backtrack-caught", inCall, EMPTY_LEDGER, Date.now()))).toBe("meeting-recording");
     // When the call ends the friend may come (the fake clock moved on, the day was not used).
     vi.advanceTimersByTime(H);
-    const after = { ...calm, meeting: callLive({ phase: "end_prompt" }) };
+    const after = { ...calm, meetingRecording: callLive({ phase: "end_prompt" }) };
     expect(reason(decideVisit("backtrack-caught", after, EMPTY_LEDGER, Date.now()))).toBe("shown");
   });
 
@@ -184,7 +184,7 @@ describe("friend visits — the approved quiet rules", () => {
     const v = shown(decideVisit("backtrack-caught", calm, EMPTY_LEDGER, Date.now()));
     vi.advanceTimersByTime(500);
     expect(visitShowing(v, calm, Date.now())).toBe(true);
-    expect(visitShowing(v, { ...calm, meeting: true }, Date.now())).toBe(false);
+    expect(visitShowing(v, { ...calm, meetingRecording: true }, Date.now())).toBe(false);
     expect(visitShowing(v, { ...calm, screenSharing: true }, Date.now())).toBe(false);
     expect(visitShowing(v, { ...calm, doNotDisturb: true }, Date.now())).toBe(false);
     expect(visitShowing(null, calm, Date.now())).toBe(false);

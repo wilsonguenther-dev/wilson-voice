@@ -86,8 +86,8 @@ export const PILL_QUIET_EVENT = "pill_quiet";
 
 /** Everything the rules read. All of it is something the app already knows. */
 export interface VisitContext {
-  /** A meeting is recording. */
-  meeting: boolean;
+  /** A meeting is recording, or a call is live. */
+  meetingRecording: boolean;
   /** The screen is being shared or presented. */
   screenSharing: boolean;
   /** Do Not Disturb / a Focus is on. */
@@ -126,13 +126,16 @@ export type VisitSkip =
   | "not-own-event"
   | "occupant"
   | "cloud-off"
-  | "meeting"
+  | "meeting-recording"
   | "screen-sharing"
   | "do-not-disturb"
   | "visit-showing"
   | "already-today"
   | "daily-cap"
   | "too-soon";
+
+/** The three quiet states (a recording meeting or live call, a shared screen, Do Not Disturb). */
+export type QuietState = Pick<VisitContext, "meetingRecording" | "screenSharing" | "doNotDisturb">;
 
 export type VisitDecision = { show: true; visit: Visit } | { show: false; reason: VisitSkip };
 
@@ -148,8 +151,8 @@ export function dayKey(ms: number): string {
 const takes = (n: number) => (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
 
 /** The reason everyone is silent right now, or null. Meeting outranks the rest. */
-export function quietReason(ctx: Pick<VisitContext, "meeting" | "screenSharing" | "doNotDisturb">): VisitSkip | null {
-  if (ctx.meeting) return "meeting";
+export function quietReason(ctx: QuietState): VisitSkip | null {
+  if (ctx.meetingRecording) return "meeting-recording";
   if (ctx.screenSharing) return "screen-sharing";
   if (ctx.doNotDisturb) return "do-not-disturb";
   return null;
@@ -169,7 +172,7 @@ export function visitDurationMs(takesSoFar: number): number {
 }
 
 /** Is `visit` on screen at `nowMs`? A quiet state ends it at once. */
-export function visitShowing(visit: Visit | null, ctx: Pick<VisitContext, "meeting" | "screenSharing" | "doNotDisturb">, nowMs: number): boolean {
+export function visitShowing(visit: Visit | null, ctx: QuietState, nowMs: number): boolean {
   if (!visit) return false;
   if (quietReason(ctx)) return false;
   return nowMs >= visit.startMs && nowMs < visit.untilMs;

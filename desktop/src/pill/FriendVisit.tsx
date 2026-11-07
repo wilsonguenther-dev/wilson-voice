@@ -142,7 +142,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const raise = useCallback((event: string, cloudConnected = false) => {
     const c = ctxRef.current;
     const ctx: VisitContext = {
-      meeting: c.meetingQuiet,
+      meetingRecording: c.meetingQuiet,
       screenSharing: c.quiet.screenSharing,
       doNotDisturb: c.quiet.doNotDisturb,
       takesSoFar: takesRef.current,
@@ -211,7 +211,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
 
   // A meeting, a share or Do Not Disturb ends a visit at once; otherwise the
   // visit ends on its own clock (at most 4 s).
-  const silent = quietReason({ meeting: meetingQuiet, ...quiet }) !== null;
+  const silent = quietReason({ meetingRecording: meetingQuiet, ...quiet }) !== null;
   useEffect(() => {
     if (!visit) return undefined;
     const end = () => { visitRef.current = null; setVisit(null); };
