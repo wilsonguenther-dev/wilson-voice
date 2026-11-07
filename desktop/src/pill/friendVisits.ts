@@ -83,6 +83,8 @@ export const VISIT_GAP_QUIETER_MS = 2 * 60 * 60 * 1000;
 export const FRIEND_EVENT = "friend_event";
 /** `{ screenSharing?: boolean, doNotDisturb?: boolean }` — the quiet state. */
 export const PILL_QUIET_EVENT = "pill_quiet";
+/** The command a pill that mounted late asks once for the quiet state (pill_quiet.rs `current`). */
+export const PILL_QUIET_STATE = "pill_quiet_state";
 
 /** Everything the rules read. All of it is something the app already knows. */
 export interface VisitContext {

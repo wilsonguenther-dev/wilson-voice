@@ -30,6 +30,7 @@ import {
   EMPTY_LEDGER,
   FRIEND_EVENT,
   PILL_QUIET_EVENT,
+  PILL_QUIET_STATE,
   VISIT_MAX_MS,
   callLive,
   decideVisit,
@@ -178,6 +179,10 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       console.info(`pill friend_visit quiet screen_sharing=${q.screenSharing} dnd=${q.doNotDisturb}`);
       setQuiet(q);
     }).then(push, fail(PILL_QUIET_EVENT));
+    // A pill that mounted after the last change reads the quiet state once.
+    invoke<unknown>(PILL_QUIET_STATE)
+      .then((v) => { if (!dead) setQuiet(parseQuietState(v)); })
+      .catch((e: unknown) => console.warn(`pill friend_visit quiet_state_failed reason=${e instanceof Error ? e.name : "unknown"}`));
     const call = (view: unknown) => {
       const live = callLive(view);
       setInCall((was) => {

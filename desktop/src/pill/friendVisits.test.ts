@@ -7,6 +7,8 @@ import {
   CALL_LIVE_PHASES,
   EVENT_OWNER,
   FRIEND_EVENTS,
+  PILL_QUIET_EVENT,
+  PILL_QUIET_STATE,
   QUIETER_AFTER_TAKES,
   QUIETEST_AFTER_TAKES,
   ROOM_ONLY,
@@ -261,6 +263,13 @@ describe("friend visits — the approved quiet rules", () => {
     expect(parseQuietState({ screenSharing: true })).toEqual({ screenSharing: true, doNotDisturb: false });
     expect(parseQuietState({ doNotDisturb: true, screenSharing: "yes" })).toEqual({ screenSharing: false, doNotDisturb: true });
     expect(parseQuietState(null)).toEqual({ screenSharing: false, doNotDisturb: false });
+  });
+
+  it("the quiet event and command names match pill_quiet.rs, and its payload parses", () => {
+    expect(PILL_QUIET_EVENT).toBe("pill_quiet");
+    expect(PILL_QUIET_STATE).toBe("pill_quiet_state");
+    // QuietState serialises camelCase (pill_quiet.rs pill_quiet_payload_matches_the_pill_parser).
+    expect(parseQuietState({ screenSharing: false, doNotDisturb: true })).toEqual({ screenSharing: false, doNotDisturb: true });
   });
 
   it("one log line per decision, with no free text", () => {
