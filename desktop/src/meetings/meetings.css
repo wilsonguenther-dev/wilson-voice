@@ -2,7 +2,9 @@
    M2: one compact, fixed-height row per meeting — title + state chip, then
    one line of detail (the notes' first line, a transcribing meeting's
    progress, or the failure) — so a 700 px window shows the list, not three
-   cards. Actions surface on hover/focus like every other list in the app. */
+   cards. yap-1107-meetings-row-actions-no-overlay: the row has NO hover bar.
+   Export/Delete live in the detail header (and the right-click menu, and ⌫
+   on the selected row); hover and selection change colour, never layout. */
 
 .meetings-list {
   list-style: none;
@@ -47,17 +49,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  background: none;
-  border: 0;
-  padding: 0;
-  color: inherit;
-  font: inherit;
-  font-weight: 590;
-  text-align: left;
-  cursor: pointer;
-}
-.meeting-row-title:hover {
-  text-decoration: underline;
 }
 .meeting-row-head .meeting-state {
   flex: none;
@@ -107,40 +98,15 @@
   background: var(--warn-ink);
 }
 
-/* Hidden, the actions sit out of flow so the duration/date stays flush right.
-   Revealed (hover or keyboard focus), they take the date's place IN FLOW: the
-   date leaves and the text column shrinks and ellipsizes before the buttons.
-   Nothing is painted over anything, so the row never depends on a mask —
-   --bg-card is translucent, and a gradient mask let the date show through
-   behind the transparent ghost buttons (PR #246 review). */
-.meeting-row .actions {
-  position: absolute;
-  top: 50%;
-  right: 10px;
-  transform: translateY(-50%);
+/* Status buttons (Retry on a failed row, Cancel notes / Write notes while
+   notes are the row's state) are part of the row in EVERY state: a fixed
+   column beside the text, never over it, never toggled by hover. */
+.meeting-row-status {
   flex: none;
-  flex-wrap: nowrap;
-  gap: 6px;
-  opacity: 0;
-  /* Hidden actions must not swallow a click meant for the date/duration
-     column underneath; they take pointer events only once revealed. */
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-}
-.meeting-row:hover .actions,
-.meeting-row:focus-within .actions {
-  position: static;
-  transform: none;
-  margin-left: 12px;
-  opacity: 1;
-  pointer-events: auto;
-}
-.meeting-row:hover .meeting-row-when,
-.meeting-row:focus-within .meeting-row-when {
-  display: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .meeting-row .actions { transition: none; }
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-right: var(--space-3);
 }
 
 /* The needs-model state: a calm one-click row, not an error banner. */
@@ -198,40 +164,44 @@
   font-size: 12px;
   opacity: 0.7;
 }
-/* yap-1106 — the export menu: a trigger and a small list beneath it. The list
-   row's actions are absolutely positioned, so the menu opens downward from
-   its trigger and stays above the next row. */
+/* yap-1106 — the export menu: a trigger and a small list beneath it.
+   yap-1107-meetings-row-actions-no-overlay — the list (.floating-menu) is
+   portalled to <body> at position:fixed, placed from the trigger's rect by
+   placeMenu() so all of it is inside the viewport; no pane or row can clip it.
+   The row's right-click menu is the same element. */
 .export-menu {
-  position: relative;
   display: inline-block;
 }
-.export-menu-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 20;
+.floating-menu {
+  position: fixed;
+  z-index: 1000;
   min-width: 180px;
+  max-width: calc(100vw - var(--space-4));
   display: flex;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--elevation-raised);
 }
-.export-menu-list [role="menuitem"] {
+.floating-menu [role="menuitem"] {
   text-align: left;
   justify-content: flex-start;
   width: 100%;
   border: 0;
   background: transparent;
   padding: 6px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
 }
 /* Focus rings come from focus.css, once, globally (Y5-J). */
-.export-menu-list [role="menuitem"]:hover {
+.floating-menu [role="menuitem"]:hover:not(:disabled) {
   background: var(--accent-soft);
   color: var(--accent-ink);
+}
+.floating-menu [role="menuitem"].danger {
+  color: var(--danger-ink);
 }
 
 /* ─── yap-1106-meetings-redesign — two panes (YAP-UI-SPEC-2026-11 §3.3) ─────
@@ -311,24 +281,41 @@
   color: var(--text-muted);
 }
 
-/* In the list pane a row is a button (open) plus its revealed actions,
-   which wrap onto their own line instead of squeezing the title. */
+/* In the list pane a row is ONE button that fills the whole row (press
+   anywhere, not just the corner) plus, only when the meeting has one, its
+   status column. Nothing is revealed on hover, so nothing can cover the
+   title, the time or the chips, and the row height never changes. */
 .meetings-list-pane .meeting-row {
   height: auto;
   min-height: 64px;
-  flex-wrap: wrap;
-  padding: var(--space-2) var(--space-3);
+  flex-wrap: nowrap;
+  align-items: stretch;
+  padding: 0;
+  transition: background-color 0.12s ease;
 }
 .meetings-list-pane .meeting-row-main {
   appearance: none;
+  align-self: stretch;
+  justify-content: center;
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
-  padding: 0;
+  padding: var(--space-2) var(--space-3);
   cursor: pointer;
-  border-radius: var(--radius-xs);
+  border-radius: 0;
+}
+/* The row clips (overflow:hidden), so the button's focus ring sits inside it:
+ * the one global ring (a11y/focus.css) reads this offset. */
+.meetings-list-pane .meeting-row-main {
+  --focus-ring-offset: -2px;
+}
+.meetings-list-pane .meeting-row:hover {
+  background: color-mix(in srgb, var(--accent-action-soft) 55%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .meetings-list-pane .meeting-row { transition: none; }
 }
 .meetings-list-pane .meeting-row.open,
 .meetings-list-pane .meeting-row.selected {
@@ -336,16 +323,6 @@
 }
 .meetings-list-pane .meeting-row.selected {
   box-shadow: inset 3px 0 0 var(--accent-action);
-}
-.meetings-list-pane .meeting-row:hover .actions,
-.meetings-list-pane .meeting-row:focus-within .actions {
-  flex-basis: 100%;
-  margin: var(--space-2) 0 0;
-  flex-wrap: wrap;
-}
-.meetings-list-pane .meeting-row:hover .meeting-row-when,
-.meetings-list-pane .meeting-row:focus-within .meeting-row-when {
-  display: inline;
 }
 
 .people-chips {
