@@ -67,3 +67,20 @@ pill offers is therefore ALSO reachable without it:
 | Copy card — Dismiss | No equivalent needed: dismissing loses nothing, the take stays in history. |
 
 A new pill affordance adds a row here, or it is mouse-only.
+
+## The sky (yap-1106-pill-sky)
+
+The pill's sky is the Home room's time of day (`sky.ts`, option C of the 2026-11-06
+companions page): the room's clock (`skyPhase`) and the room's four keyframe colours
+(`home/YappyHouse.tsx` `SKY`), as six pixel bands with the sun, or the moon and a few
+stars at night, and grass to match. The pill snaps to the nearest keyframe instead of
+blending, because the mid-blends drop Yappy to about 2.5:1 against the sky at the
+22-px nub; the keyframes all clear 5:1 (`sky.test.ts`).
+
+Cost: the backdrop is painted once into a cached surface and repainted only when the
+time of day changes (at most four times a day; the clock is read at most every 30 s).
+Each redraw is one `drawImage` of it. Nothing in the sky moves, so the frame policy
+(`framePlan`) is unchanged and reduced motion and a meeting park lose nothing.
+`<html data-sky>` names the sky on screen; dev and matrix builds can pin it with
+`float.html?sky=dawn|day|dusk|night`, and `scripts/pill-matrix.mjs --sky <time|all>`
+photographs every phase x dock under it (default `day`).

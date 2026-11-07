@@ -82,6 +82,43 @@ export function pruneTabs(tabs: string[], notes: Pick<Note, "id">[]): string[] {
 }
 
 /**
+ * fix-b5-1 — which tabs are open and which note is active after a re-read of
+ * the list. `openId` is the note the window was opened FOR (the pill's
+ * timestamped meeting note): when it is in the list it gets a tab and becomes
+ * active, even over an active or pinned note. Without one, the active note is
+ * kept (or the list's first note when it was deleted). `list` is non-empty.
+ */
+export function landOn(
+  tabs: string[],
+  active: string | null,
+  list: Pick<Note, "id">[],
+  openId: string | null | undefined,
+): { tabs: string[]; active: string | null } {
+  if (list.length === 0) return { tabs: [], active: null };
+  const kept = pruneTabs(tabs, list);
+  if (openId && list.some((n) => n.id === openId)) {
+    return { tabs: openTab(kept, openId), active: openId };
+  }
+  const still = active && list.some((n) => n.id === active) ? active : list[0].id;
+  return { tabs: kept.length ? kept : [list[0].id], active: still };
+}
+
+/**
+ * fix-b5-1 — where the caret goes once the note the window was opened FOR is
+ * on screen: the END of its content (just after the "[12:34] " seed), so the
+ * next keystroke continues the timestamp line. `null` while that note is not
+ * the active one yet (nothing to place).
+ */
+export function openedCaret(
+  pending: string | null,
+  active: string | null,
+  content: string | undefined,
+): number | null {
+  if (!pending || pending !== active || content === undefined) return null;
+  return content.length;
+}
+
+/**
  * A finalize writes a version row, so it only runs when the note differs from
  * what was last finalized — blur / tab switch / close on an untouched note
  * write nothing.

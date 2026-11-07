@@ -1,6 +1,6 @@
 /**
  * YappyPill — the pixel-chick companion, as an actual PILL.
- * At rest the capsule is a SKY-BLUE pill zoomed onto Yappy's tiny face. When you
+ * At rest the capsule is a pill of SKY zoomed onto Yappy's tiny face. When you
  * dictate, a pull-back camera pans out so the pixel WORLD (sky + grass) fills the
  * ENTIRE capsule edge-to-edge — no black box-in-a-box. Longer prompts add props:
  * a paragraph → notepad + pencil in the wing; a few paragraphs → a desk + a pixel
@@ -23,8 +23,9 @@ import { noteTakeSignal, parseMemory, takeDoneLine, voiceFor, type TakeLineMemor
 // fix-b6-1-done-line-no-false-paste — the Copy card event, so the done line never claims a paste the card contradicts.
 import { INSERT_COPY_CARD_EVENT } from "./copyCardModel";
 import {
-  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
+  advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, TAKE_STAGE_EVENT, transcribeLine,
+  afterTakeLineAllowed, armGlance, GLANCE_LOOK_SEC, isNewUser, liveLinesLog, parseTakesSeen,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
   type TakeStageNotice, type TranscribeProgress,
 } from "./live";
@@ -45,9 +46,14 @@ import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPos
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout } from "./state";
+// yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
+// cached backdrop blitted once per redraw (pill/sky.ts).
+import { SkyBackdrop, blitSky, skyForced } from "./sky";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
-interface Transcript { wordCount: number; text: string }
+// `speechSeconds` = the backend's energy-VAD speech time for the take (db.rs
+// TranscriptEntry, camelCase) — what `live.lines` compares the estimate with.
+interface Transcript { wordCount: number; text: string; speechSeconds?: number }
 type Phase = LivePhase;
 type Prop = LiveProp;
 
@@ -67,6 +73,18 @@ function loadTakeMemory(): TakeLineMemory {
 function saveTakeMemory(m: TakeLineMemory): void {
   try { globalThis.localStorage?.setItem(TAKE_MEMORY_KEY, JSON.stringify(m)); }
   catch (e) { console.warn("pill voice_memory save_failed", e); }
+}
+// yap-1106-live-reactions-during-take — how many takes this pill has seen, so a
+// NEW user (isNewUser) gets the one listening glance. Storage failing costs
+// only the glance, never the take.
+const TAKES_SEEN_KEY = "yap.live.takesSeen";
+function loadTakesSeen(): number {
+  try { return parseTakesSeen(globalThis.localStorage?.getItem(TAKES_SEEN_KEY)); }
+  catch (e) { console.warn("pill live takes_seen load_failed", e); return 0; }
+}
+function saveTakesSeen(n: number): void {
+  try { globalThis.localStorage?.setItem(TAKES_SEEN_KEY, String(n)); }
+  catch (e) { console.warn("pill live takes_seen save_failed", e); }
 }
 const localDay = (): string => {
   const d = new Date();
@@ -241,14 +259,30 @@ export default function YappyPill(
     const PW = PILL_SCENE.w, PH = PILL_SCENE.h, GY = PILL_SCENE.groundY, FX = PILL_SCENE.faceX;   // grass starts at GY
     const os = document.createElement("canvas"); os.width = PW; os.height = PH; const octx = os.getContext("2d")!;
     const C: Record<string, string> = {
-      sky1: "#8fd6ff", sky2: "#c6ecff", sun: "#fff2b0", cloud: "#fffaf0", grass: "#8fd06a", grassD: "#6fb84e",
+      sun: "#fff2b0",
       body: "#ffd24a", light: "#ffe9a0", dark: "#eba21f", outline: "#6b3a2e", cavity: "#7a2e14", belly: "#fff2c4",
       beak: "#ff9f1c", beakD: "#e07a12", eye: "#3a2f36", white: "#ffffff", blush: "#ff89a8", foot: "#f2861a", tongue: "#ff5d7a", sprout: "#e8a41f",
       paper: "#fffdf5", paperL: "#c9c3ad", desk: "#b06a3a", deskD: "#8a4f28", glass: "#2c2a36",
       pencil: "#ffcf3a", pencilT: "#ff8fb0", tw: "#4a4a55", twD: "#33333d", twKey: "#d8d8e2",
     };
-    const ell = (cx: number, cy: number, rx: number, ry: number, col: string) => { octx.fillStyle = col; for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) { const t = (y + .5 - cy) / ry; if (Math.abs(t) > 1) continue; const hw = rx * Math.sqrt(1 - t * t); octx.fillRect(Math.round(cx - hw), y, Math.max(1, Math.round(2 * hw)), 1); } };
     const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
+    // yap-1106-pill-sky — the sky, sun/moon and grass for the Home room's time of
+    // day, painted into its OWN cached surface only when the time of day changes
+    // (at most four times a day; the clock is read at most every 30 s). Each
+    // redraw is ONE drawImage of it (`blitSky`). A dev/matrix build may pin it
+    // with `float.html?sky=dawn|day|dusk|night`; <html data-sky> says which is up.
+    const skyCanvas = document.createElement("canvas"); skyCanvas.width = PW; skyCanvas.height = PH;
+    const forcedSky = (import.meta.env.DEV || __YAP_PILL_MATRIX__) ? skyForced(new URLSearchParams(window.location.search).get("sky")) : null;
+    const sky = new SkyBackdrop<HTMLCanvasElement>(
+      { image: skyCanvas, ctx: skyCanvas.getContext("2d")! }, PW, PH, GY, () => new Date(), forcedSky,
+      (look, builds) => {
+        document.documentElement.dataset.sky = look.time;
+        console.info(`pill sky_change time=${look.time} builds=${builds} forced=${forcedSky ? 1 : 0}`);
+      },
+    );
+    // the capsule's own fill follows the same sky; one gradient, rebuilt only
+    // when the time of day or the capsule's box changes
+    let capGrad: CanvasGradient | null = null, capGradKey = "";
 
     interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
 
@@ -260,17 +294,9 @@ export default function YappyPill(
     function drawScene(A: SP) {
       octx.clearRect(0, 0, PW, PH);
       const w = A.world;
-      { octx.globalAlpha = Math.max(0.8, w);
-        octx.fillStyle = C.sky1; octx.fillRect(0, 0, PW, GY);
-        octx.fillStyle = C.sky2; octx.fillRect(0, 0, PW, 7);
-        ell(20, 8, 5, 5, C.sun);
-        // slow drifting clouds
-        const cd = (elapsed * 2) % (PW + 20), cX = (x: number) => ((x + cd) % (PW + 20)) - 10;
-        ell(cX(120), 7, 7, 2, C.cloud); ell(cX(126), 7, 4, 2, C.cloud); ell(cX(64), 11, 6, 2, C.cloud);
-        octx.fillStyle = C.grass; octx.fillRect(0, GY, PW, PH - GY); octx.fillStyle = C.grassD; octx.fillRect(0, GY, PW, 2);
-        for (let x = 3; x < PW; x += 9) rct(x, GY - 2, 1, 2, C.grassD);
-        octx.globalAlpha = 1;
-      }
+      // yap-1106-pill-sky — the whole backdrop in ONE blit (no drifting clouds:
+      // nothing in the sky moves between time-of-day changes).
+      blitSky<HTMLCanvasElement>(octx, sky, performance.now(), Math.max(0.8, w));
       const cx = FX - (A.prop === "desk" ? CHICK_DESK_SHIFT : 0), feet = GY;
       // notepad slides in from the side when noting
       if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
@@ -313,11 +339,28 @@ export default function YappyPill(
     const hop = (p: number) => { if (J.phase === "ground" || J.phase === "land") { J.phase = "crouch"; J.t = 0; J.power = p; } };
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
-    let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
+    let chatterTimer = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
     // YV71 — the live commentary state machine (live.ts) owns the tier ladder,
     // the speech estimate and the chatter schedule for the whole take.
     const live = createLiveState();
     let liveProp: Prop = "none";
+    // yap-1106-live-reactions-during-take — the take's line tally. `afterLines`
+    // caps the post-release workLine chatter (AFTER_TAKE_MAX_LINES); `takeOpen`
+    // makes the `live.lines` telemetry fire exactly once per take; `glanceT` is
+    // the remaining eyes-forward time of a new user's listening glance.
+    let afterLines = 0, takeOpen = false, glanceT = 0;
+    let takesSeen = loadTakesSeen();
+    const logLiveLines = (vadSec: number | null) => {
+      if (!takeOpen) return;
+      takeOpen = false;
+      console.info(liveLinesLog({ during: live.lines, after: afterLines, voicedSec: live.voicedT, vadSec }));
+    };
+    const afterLine = (): string => {
+      if (!chatty(chatTone, words) || !afterTakeLineAllowed(afterLines)) return "";
+      const line = workLine(chatTone, words, afterLines);
+      afterLines++;
+      return line;
+    };
     // YV27 — live companion tone, read off settings (not a hardcoded constant).
     // Seeded from get_settings + kept current via the "settings" event the float
     // already emits on save, so a tone change takes effect without a remount.
@@ -380,10 +423,19 @@ export default function YappyPill(
       // ladder to `quick` and blank the bubble mid-sentence. `done` is exempt:
       // a fresh transcript re-fires its celebration.
       if (p === phase && p !== "done") return;
-      phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0; liveProp = "none";
+      // A take that ends WITHOUT a transcript (cancelled, empty, failed) still
+      // reports its live.lines — with no VAD time to compare against.
+      if (p === "listening" || (p !== "thinking" && p !== "transcribing" && p !== "done")) logLiveLines(null);
+      phase = p; idleFor = 0; chatterTimer = 0; liveProp = "none"; glanceT = 0;
       wake();
-      if (p === "listening") { moodT = 0; hop(1); say(""); resetLive(live); copyCardShown = noteTakeSignal(copyCardShown, "listening"); }
-      else if (p === "thinking") { moodT = 0; say(chatty(chatTone, words) ? workLine(chatTone, words, 0) : ""); }
+      if (p === "listening") {
+        moodT = 0; hop(1); say(""); resetLive(live);
+        if (isNewUser(takesSeen)) armGlance(live);
+        takesSeen++; saveTakesSeen(takesSeen);
+        afterLines = 0; takeOpen = true;
+        copyCardShown = noteTakeSignal(copyCardShown, "listening");
+      }
+      else if (p === "thinking") { moodT = 0; say(afterLine()); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(doneLine(words)); }
       else { moodT = 0; say(""); }
     }
@@ -420,7 +472,11 @@ export default function YappyPill(
       const st = e.payload?.stage;
       if (st === "paste_not_confirmed" || st === "paste_confirmed") copyCardShown = noteTakeSignal(copyCardShown, st);
     }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<Transcript>("transcript", (e) => {
+      words = e.payload?.wordCount ?? 0;
+      const vad = e.payload?.speechSeconds;
+      logLiveLines(typeof vad === "number" && Number.isFinite(vad) ? vad : null);
+      setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
@@ -479,7 +535,10 @@ export default function YappyPill(
         const f = advanceLive(live, wallDt, level, chatTone, undefined, liveVoice);
         liveProp = f.prop;
         if (f.say) say(f.say);
+        // a new user's one listening glance: eyes up at you, a small hop
+        if (f.glance) { glanceT = GLANCE_LOOK_SEC; hop(.8); }
       }
+      if (glanceT > 0) glanceT = Math.max(0, glanceT - dt);
       const wantProp = wantPropFor(phase, words);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
       mood += (moodT - mood) * Math.min(1, dt * 10);
@@ -499,11 +558,13 @@ export default function YappyPill(
       beakHold -= dt;
       if (phase === "done") beakFrame = 0;
       else if (beakHold <= 0) { let w = beakFrame; if (beakFrame === 0 && beak > .28) w = 1; else if (beakFrame === 1 && beak > .6) w = 2; else if (beakFrame >= 2 && beak < .42) w = 1; else if (beakFrame === 1 && beak < .12) w = 0; if (w !== beakFrame) { beakFrame = w; beakHold = .05; } }
-      if (phase === "thinking" && chatty(chatTone, words)) { chatterTimer -= dt; if (chatterTimer <= 0) { chatterN++; say(workLine(chatTone, words, chatterN)); chatterTimer = .9 + Math.random() * .5; } }
+      // after release the chatter is CAPPED (AFTER_TAKE_MAX_LINES): the bubble keeps
+      // its last line instead of rotating every second while the take decodes.
+      if (phase === "thinking" && chatty(chatTone, words) && afterTakeLineAllowed(afterLines)) { chatterTimer -= dt; if (chatterTimer <= 0) { say(afterLine()); chatterTimer = .9 + Math.random() * .5; } }
       for (const p of sparkle) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 120 * dt; p.life -= dt * 1.2; }
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 
-      const lookMode: "down" | "fwd" = (wantProp !== "none" && propV > .5) ? "down" : "fwd";
+      const lookMode: "down" | "fwd" = glanceT > 0 ? "fwd" : (wantProp !== "none" && propV > .5) ? "down" : "fwd";
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
@@ -535,9 +596,14 @@ export default function YappyPill(
       reportPillHitbox(x0, y0, capW, capH);
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
-      // SKY-BLUE capsule fill (not obsidian)
-      const g = ctx.createLinearGradient(0, y0, 0, y0 + capH); g.addColorStop(0, "#c6ecff"); g.addColorStop(1, "#8fd6ff");
-      ctx.fillStyle = g; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
+      // the capsule fill is the same time-of-day sky (not obsidian)
+      const look = sky.look, gKey = `${look ? look.time : "-"}|${y0}|${capH}`;
+      if (!capGrad || gKey !== capGradKey) {
+        capGrad = ctx.createLinearGradient(0, y0, 0, y0 + capH);
+        capGrad.addColorStop(0, look ? look.top : "#8fd6ff"); capGrad.addColorStop(1, look ? look.bot : "#c6ecff");
+        capGradKey = gKey;
+      }
+      ctx.fillStyle = capGrad; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
       ctx.save(); rr(x0 + 1, y0 + 1, capW - 2, capH - 2, (capH - 2) / 2); ctx.clip(); ctx.imageSmoothingEnabled = false;
       // CAMERA (yap-1106-fb-10): centred on Yappy's whole bounding box — tufts,
       // wings, tail, a hop — at the largest WHOLE number of device px per art px
@@ -764,7 +830,7 @@ export default function YappyPill(
           <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
         </button>
       )}
-      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} />
+      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
     </div>
   );
 }
