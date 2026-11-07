@@ -75,7 +75,7 @@ export function usePartialTranscript(governor: GovernorView | null): string {
             hiddenByGovernor: 0,
           };
         }
-        const s = stats.current;
+        const s = stats.current as PartialTakeStats;
         s.updates += 1;
         if (lastPartialAt.current !== null) s.maxGapMs = Math.max(s.maxGapMs, now - lastPartialAt.current);
         lastPartialAt.current = now;

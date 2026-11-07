@@ -42,6 +42,10 @@ import PolishRevealCard from "./pill/PolishRevealCard";
 import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
 import SilentMicRow from "./pill/SilentMicRow";
+// yap-1106-partial-transcript-stream — the take's live words in the phase strip.
+import { useGovernor } from "./pill/GovernorChip";
+import { usePartialTranscript } from "./pill/usePartialTranscript";
+import { forcedPartial, partialShows, partialTail } from "./pill/partialTranscript";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
@@ -727,6 +731,9 @@ function Float() {
   useEffect(() => {
     document.documentElement.dataset.railError = railError ? "true" : "false";
   }, [railError]);
+  // yap-1106-partial-transcript-stream — the governor's view gates the live
+  // words (off whenever the engine is not at full).
+  const governorView = useGovernor();
   const slots: SlotCtx = {
     phase,
     dock,
@@ -760,6 +767,21 @@ function Float() {
   const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
   const silentMicUp = silentMicShows(silentMicWarning, phase);
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
+  // yap-1106-partial-transcript-stream — SP-05's committed words, drawn in the
+  // phase strip while the take records (pill only, never history; hidden when
+  // the governor is not at full). Every line that already owns the strip during
+  // a take — a rail error, "Still recording", the fn hint, the engine's health —
+  // keeps it; the live words only fill what was a silent strip.
+  const partialLive = usePartialTranscript(FORCED ? null : governorView);
+  const partialWords = FORCED ? (forcedPartial(window.location.search) ?? "") : partialLive;
+  const partialUp = partialShows(partialWords, phase, FORCED ? null : governorView)
+    && !railError && !stillRecording && !fnHint
+    && !engineHealthTakesStrip(engineHealth, PHASE_ID[phase]);
+  useEffect(() => {
+    // `.phase-strip` is opacity 0 in `listening`; this is the CSS hook that
+    // shows it while live words are drawn (float.css `html[data-partial]`).
+    document.documentElement.dataset.partial = partialUp ? "true" : "false";
+  }, [partialUp]);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} />
@@ -866,6 +888,17 @@ function Float() {
             restarting, THAT is the one line worth saying during a decode. */}
         {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
           <EngineHealthChip state={engineHealth} />
+        ) : partialUp ? (
+          // The newest words that fit one line; the hands-free way out stays
+          // the strip's tooltip and the rail's Stop. Not a live region: the
+          // words change every half second and would flood a screen reader.
+          <span
+            className="partial-words"
+            data-partial-words="true"
+            title={phase === "listening-locked" ? handsFreeLabel(chordLabel) : undefined}
+          >
+            {partialTail(partialWords)}
+          </span>
         ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
