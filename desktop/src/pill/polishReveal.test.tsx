@@ -216,7 +216,8 @@ describe("WF-05 polish reveal — model", () => {
     // The take's own polish_result route (byom) uses the same two words.
     expect(resultRouteLabel({ route: "cloud" })).toBe("Cloud");
     expect(resultRouteLabel({ route: "local" })).toBe(LOCAL_ROUTE_LABEL);
-    expect(POLISH_REVEAL_TTL_MS).toBe(4_000);
+    // yap-1107-reveal-stays-until-read: never sooner than 8 s (revealDwell.ts).
+    expect(POLISH_REVEAL_TTL_MS).toBe(8_000);
     const lines = Object.values(polishRevealLines(REVEAL)).join(" ");
     expect(lines).not.toMatch(/openai|gpt|gemini|claude|anthropic|qwen|llama|groq|mistral/i);
   });
@@ -353,7 +354,13 @@ describe("polish reveal — close button", () => {
       const html = renderToStaticMarkup(el);
       expect(html).toContain('class="polish-reveal-close"');
       expect(html).toContain('aria-label="Close"');
-      const close = buttons(el).find((b) => b.props.className === "polish-reveal-close");
+      // The close button is its own small component (CloseButton, no hooks):
+      // render that one element to reach the <button> it draws.
+      const closer = walk(el).find(
+        (e) => typeof e.type === "function" && (e.type as { name?: string }).name === "CloseButton",
+      );
+      const drawn = closer ? (closer.type as (p: unknown) => ReactElement)(closer.props) : null;
+      const close = [...buttons(el), ...(drawn ? buttons(drawn) : [])].find((b) => b.props.className === "polish-reveal-close");
       expect(close).toBeDefined();
       close?.props.onClick?.();
       expect(onClose).toHaveBeenCalledTimes(1);
