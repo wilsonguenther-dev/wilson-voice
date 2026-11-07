@@ -3,8 +3,11 @@
 //! PRIVACY.md makes a claim that is Yap's sharpest marketing line: the audio
 //! you dictate and the text it becomes never leave your Mac, Yap ships no
 //! analytics, telemetry or crash-upload SDK, and the network is touched in
-//! exactly three places — the model download, the updater check, and (only if
-//! the user adds one, yap-byom-0) a model provider they chose. This file
+//! exactly four places — the model download, the updater check, (only if the
+//! user adds one, yap-byom-0) a model provider they chose, and (yap-1106-lic-03)
+//! the drivia.consulting licensing call: activate a pasted key, refresh a token
+//! that is close to expiry, free the seat on deactivate. None of the four is
+//! on the dictation path and none carries audio or text. This file
 //! is the proof that claim cites by name. Every test here reads SOURCE, so it
 //! needs no network, no microphone and no app state, and it fails the moment a
 //! change makes the claim false.
@@ -115,14 +118,20 @@ const NETWORK_TOOLS: &[&str] = &[
 
 /// THE ALLOWLIST. Every network call site in the whole crate, by the purpose
 /// it serves and then by `(file, function)`. A new site anywhere — a telemetry
-/// ping, a license or revocation fetch re-added in `lib.rs` or a new module —
-/// is a `(file, fn)` pair missing from this table and fails
+/// ping, a revocation fetch, a second licensing door in `lib.rs` or a new
+/// module — is a `(file, fn)` pair missing from this table and fails
 /// `only_two_network_call_sites_exist`; an entry that no longer matches code
 /// fails it too, so the list cannot rot into a wildcard.
 ///
 /// The revocation-list refresh was DELETED by yap-lic-00-kill-forge-fetch
-/// (SECURITY) and is deliberately absent. Licensing returns to the network
-/// only through the yap-lic-01..06 items, which must edit this table.
+/// (SECURITY) and is deliberately absent. Licensing returned to the network in
+/// yap-1106-lic-03 (spec yap-lic-02-activation-client) through ONE door:
+/// `license_client.rs::HttpTransport::post_json`, a POST to the fixed
+/// drivia.consulting licensing host (no GET, so no key list can be fetched).
+/// It runs only when the user pastes a key (activate), when a stored token is
+/// under 7 days from `exp` (refresh, at most once per 24 h; every launch while
+/// a license is on a dispute hold), and on deactivate. A launch with a fresh
+/// token makes no request (`launch_check_makes_no_request_when_token_fresh`).
 const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
     (
         "model download",
@@ -155,6 +164,15 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
         // redirects followed; every other file reaches it through this one.
         "model provider you choose",
         &[("http_client.rs", "use")],
+    ),
+    (
+        // yap-1106-lic-03 — drivia.consulting licensing: activate a pasted
+        // key, refresh a token close to expiry, deactivate. It sends the key
+        // (activate) or the token (refresh / deactivate), a random install id,
+        // the Mac's name (activate only), platform, macOS and app version —
+        // never audio, text, history or anything about how Yap is used.
+        "licensing",
+        &[("license_client.rs", "post_json")],
     ),
 ];
 
@@ -679,15 +697,21 @@ fn the_take_path_does_not_import_the_http_client_crate() {
 /// SCOPE: every `.rs` file under `desktop/src-tauri/src` (non-test code).
 /// Every hit of an HTTP client, a remote socket, the updater or a network-tool
 /// subprocess is mapped to `(file, function)` and must be EXACTLY the
-/// allowlist in [`NETWORK_CALL_SITES`]: two purposes, the model download and
-/// the updater check. No licensing or revocation fetch exists anywhere.
+/// allowlist in [`NETWORK_CALL_SITES`]: four purposes — the model download,
+/// the updater check, a model provider the user adds, and the one licensing
+/// door (`license_client.rs::post_json`: activate, refresh near expiry,
+/// deactivate). No revocation fetch exists anywhere, and `license.rs` itself
+/// makes no network call: it reaches the licensing service only through the
+/// `LicenseTransport` the client hands it.
 #[test]
 fn only_two_network_call_sites_exist() {
     assert_eq!(
         NETWORK_CALL_SITES.len(),
-        3,
-        "PRIVACY.md names exactly three network uses (the third, yap-byom-0, only when the \
-         user adds a model provider); adding a purpose means editing both"
+        4,
+        "PRIVACY.md names exactly four network uses (the third, yap-byom-0, only when the \
+         user adds a model provider; the fourth, yap-1106-lic-03, the drivia.consulting \
+         licensing call: activate, refresh near expiry, deactivate); adding a purpose means \
+         editing both"
     );
     let src = manifest().join("src");
     let files = rs_files(&src);
@@ -728,9 +752,11 @@ fn only_two_network_call_sites_exist() {
         .collect();
     assert!(
         unlisted.is_empty(),
-        "a network call site outside the model download and the updater check. If it is \
-         one of those two, add it to NETWORK_CALL_SITES; if it is anything else (telemetry, \
-         a licensing or revocation fetch), it breaks the claim PRIVACY.md makes:\n{}",
+        "a network call site outside the four allowlisted purposes (model download, updater \
+         check, a model provider the user adds, the one licensing door in license_client.rs). \
+         If it is one of those, add it to NETWORK_CALL_SITES; if it is anything else \
+         (telemetry, a revocation fetch, a second licensing door), it breaks the claim \
+         PRIVACY.md makes:\n{}",
         unlisted.join("\n")
     );
     let stale: Vec<String> = allowed
@@ -743,7 +769,8 @@ fn only_two_network_call_sites_exist() {
     );
     assert!(
         !seen.iter().any(|(f, _)| f == "license.rs"),
-        "licensing makes no network call (yap-lic-00)"
+        "license.rs makes no network call of its own (yap-lic-00); licensing reaches the \
+         network only through license_client.rs::post_json"
     );
 
     // The deleted revocation refresh, by every name it ever had. Built with

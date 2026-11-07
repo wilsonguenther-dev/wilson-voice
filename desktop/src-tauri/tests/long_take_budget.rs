@@ -893,7 +893,20 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     let mut all = BTreeMap::new();
     all.insert(
         "src/record.rs",
-        BTreeMap::from([(1, 1), (2, 1), (5, 3), (10, 3), (60, 2), (300, 2), (500, 4)]),
+        BTreeMap::from([
+            (1, 1),
+            (2, 1),
+            (5, 3),
+            (10, 3),
+            (60, 2),
+            // yap-wf-10-mic-fallback-order-and — ARMED_TICK (250 ms): the capture
+            // worker's tick only while a take or meeting is in flight, so a mic
+            // that vanishes mid-take is noticed and the take carries on on the
+            // next ranked mic. The idle stream keeps IDLE_TICK (YV81).
+            (250, 1),
+            (300, 2),
+            (500, 4),
+        ]),
     );
     all.insert(
         "src/transcription.rs",

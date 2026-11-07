@@ -247,13 +247,24 @@ describe("Y5-I dock geometry — the shell's table", () => {
   });
 
   it("the_capsule_is_never_rotated_and_no_other_rule_sizes_the_box", () => {
-    expect(FLOAT_CSS).not.toMatch(/transform:\s*rotate/);
+    // The meeting scene's tape reels (yap-1106-pill-rec-headphones-hoot-tape) turn
+    // a quarter at a time: they are content inside the scene, not the capsule, so
+    // their one keyframe block is the only rotate the sheet may hold.
+    expect(FLOAT_CSS.replace(/@keyframes meeting-reel-turn\s*\{\s*to\s*\{[^{}]*\}\s*\}/, "")).not.toMatch(/transform:\s*rotate/);
     for (const r of RULES) {
       for (const s of r.selectors) {
         if (!/\.pill\b/.test(s) || /\.pill\b\S*\s+\S/.test(s)) continue; // descendants are content, not the box
         const own = ["width", "height", "min-width", "max-width", "min-height", "max-height"]
           .filter((k) => r.decls[k] !== undefined);
         if (own.length === 0) continue;
+        // WF-02 (yap-wf-02-the-pill-shrinks-to) — the one sanctioned exception:
+        // while it is DRAGGED the box collapses to the 28 pt blob (drag.ts
+        // BLOB_PT), sized only by --blob-d, and it is back on the tokens the
+        // moment the drag ends. Nothing else may use it.
+        if (s === 'html[data-pill-drag="blob"] .pill') {
+          for (const k of own) expect(r.decls[k], `${s} ${k}`).toMatch(/^(var\(--blob-d\)|0)$/);
+          continue;
+        }
         // Only the base and the row override may size the bar, and only with the tokens.
         expect([".pill", '[data-bar-position="bottom"] .pill', '[data-bar-orientation="banner"] .pill'], s).toContain(s);
         for (const k of own) expect(r.decls[k], `${s} ${k}`).toMatch(/^var\(--flow-bar-(length|thickness)\)$/);

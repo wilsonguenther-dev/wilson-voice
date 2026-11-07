@@ -54,7 +54,8 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 // Y8-A: +3 (hands_free_chord, copy_last_chord, scratchpad_chord) on top of 37;
 // Y6-A: +1 (dictation_proven); Y10-A: +2 (language_set, language_auto).
 // WF-17: +1 (muted_pill_categories). WF-18: +1 (extra_chords).
-const APP_SETTINGS_FIELD_COUNT: usize = 46;
+// WF-16: +1 (hide_from_capture_in_meetings). WF-19: +1 (ptt_mouse_binding).
+const APP_SETTINGS_FIELD_COUNT: usize = 48;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -70,7 +71,7 @@ fn fully_populated() -> AppSettings {
         // the running app wrote", so it must not be a stale one: a store
         // pinned below CURRENT is by definition migrated on load, and this
         // test asserts a byte-for-byte round trip, not a migration.
-        schema_version: 2,
+        schema_version: 3,
         language: "fr".into(),
         // Y10-A — non-default on purpose, so the round trip proves both persist.
         language_set: vec!["fr".into(), "en".into()],
@@ -157,6 +158,8 @@ fn fully_populated() -> AppSettings {
         )]),
         // WF-17 — non-default: two of the three quiet-mode switches off.
         muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
+        // WF-19 — non-default: side button 4 as click-to-toggle hands-free.
+        ptt_mouse_binding: "button4:hands_free".into(),
         // WF-18 — non-default: one extra binding on Copy last.
         extra_chords: vec![wilson_voice_lib::shortcuts::editor::ExtraBinding {
             action: wilson_voice_lib::hotkey_table::BindingAction::CopyLast,
@@ -168,6 +171,8 @@ fn fully_populated() -> AppSettings {
                 shift: false,
             },
         }],
+        // WF-16 — non-default: the screen-share hide switched off.
+        hide_from_capture_in_meetings: false,
     }
 }
 
@@ -198,12 +203,19 @@ fn field_count_forces_this_test_to_be_updated() {
 
     // And the populated struct must differ from the defaults in EVERY field —
     // otherwise a field could be "covered" by a value the store never had to
-    // carry. `schema_version` is the one exception: its only valid value is the
+    // carry. `schema_version` is one exception: its only valid value is the
     // current one, and the migration test below is what proves it moves.
+    // `pill_style` is the other (yap-1106-retire-classic-pill): Classic is
+    // retired, so "yappy" is both the default and the only valid style;
+    // tests/settings_migration.rs proves a saved "classic" moves to it.
     let populated = as_object(&fully_populated());
     let same: Vec<&String> = defaults
         .iter()
-        .filter(|(k, v)| k.as_str() != "schemaVersion" && populated.get(*k) == Some(*v))
+        .filter(|(k, v)| {
+            k.as_str() != "schemaVersion"
+                && k.as_str() != "pillStyle"
+                && populated.get(*k) == Some(*v)
+        })
         .map(|(k, _)| k)
         .collect();
     assert!(

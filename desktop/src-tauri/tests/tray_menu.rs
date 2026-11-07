@@ -77,7 +77,11 @@ fn every_menu_item_maps_to_a_registered_command() {
                 "{:?} does not dispatch to the command its row names",
                 item.id
             ),
-            ItemKind::StateLabel | ItemKind::KindSubmenu | ItemKind::UpcomingSubmenu => assert_eq!(
+            ItemKind::StateLabel
+            | ItemKind::KindSubmenu
+            | ItemKind::UpcomingSubmenu
+            | ItemKind::MicrophoneSubmenu
+            | ItemKind::LanguageSubmenu => assert_eq!(
                 command_for(item.id),
                 None,
                 "{:?} is not an action and must not dispatch",
@@ -142,6 +146,11 @@ fn every_menu_item_maps_to_a_registered_command() {
             .unwrap_or_else(|| match name {
                 // WF-07 — the "Today's Meetings" children.
                 "record_upcoming" => "RecordUpcoming".to_string(),
+                // WF-09 — the "Microphone" children.
+                "pick_microphone" => "PickMicrophone".to_string(),
+                // WF-11 — the "Languages" children.
+                "pick_language" => "PickLanguage".to_string(),
+                "open_language_settings" => "OpenLanguageSettings".to_string(),
                 _ => "RecordMeetingAs".to_string(),
             });
         assert!(
@@ -193,6 +202,10 @@ fn no_item_is_unreachable() {
             ItemKind::Action(c) => c.name() == name,
             ItemKind::KindSubmenu => name == "record_meeting_as" && !KIND_PICKER.is_empty(),
             ItemKind::UpcomingSubmenu => name == "record_upcoming",
+            ItemKind::MicrophoneSubmenu => name == "pick_microphone",
+            ItemKind::LanguageSubmenu => {
+                name == "pick_language" || name == "open_language_settings"
+            }
             ItemKind::StateLabel => false,
         });
         assert!(reachable, "command {name} has no menu item");
@@ -229,20 +242,69 @@ fn no_item_is_unreachable() {
         command_for("upcoming_record_2"),
         Some(TrayCommand::RecordUpcoming(2))
     );
+    // WF-09 — the Microphone submenu is anchored on Hands-free, placed by ONE
+    // function, filled by the device-list watcher, and its children dispatch
+    // through the registry.
+    let place = fn_body(&lib, "place_microphone_submenu");
+    assert!(place.contains("tray_menu::ID_MICROPHONE"));
+    assert!(place.contains("tray_menu::ID_HANDS_FREE"));
+    assert!(lib.contains("mic_select::start_watch("));
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_MICROPHONE));
+    assert_eq!(
+        command_for("mic_pick_1"),
+        Some(TrayCommand::PickMicrophone(1))
+    );
 }
 
-/// Y6-B "what not to do": no Languages / Formatting submenu (Y10).
+/// Y6-B "what not to do": no Formatting submenu. The one language row is
+/// WF-11's Languages submenu, which is never empty.
 #[test]
 fn no_language_or_formatting_submenu() {
     for item in TRAY_ITEMS.iter() {
         let l = item.label.to_lowercase();
         assert!(
-            !l.contains("language") && !l.contains("formatting"),
+            !l.contains("formatting"),
             "{:?} ({}) is out of scope for Y6-B",
             item.id,
             item.label
         );
+        if l.contains("language") {
+            assert_eq!(item.id, tray_menu::ID_LANGUAGES, "one language row only");
+            assert_eq!(item.kind, ItemKind::LanguageSubmenu);
+        }
     }
+}
+
+/// WF-11 — the Languages submenu: anchored under Microphone (or Hands-free),
+/// placed by ONE function that always ends on "Language Settings…", picks
+/// written through the ONE language writer (the same one the bar's chip and
+/// Settings call), and every write — from any surface — redraws the tray and
+/// tells every window at once.
+#[test]
+fn languages_submenu_shares_the_one_language_writer() {
+    let lib = code_only(LIB_SRC);
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_LANGUAGES));
+    let place = fn_body(&lib, "place_language_submenu");
+    assert!(place.contains("tray_menu::ID_LANGUAGES"));
+    assert!(place.contains("tray_menu::ID_MICROPHONE"));
+    assert!(place.contains("tray_menu::ID_HANDS_FREE"));
+    assert!(place.contains("tray_menu::ID_LANGUAGE_SETTINGS"));
+    let writer = fn_body(&lib, "write_dictation_languages");
+    assert!(writer.contains("languages::LANGUAGES_CHANGED_EVENT"));
+    assert!(writer.contains("sync_language_menu("));
+    let command = fn_body(&lib, "set_dictation_languages");
+    assert!(command.contains("write_dictation_languages("));
+    let tray_pick = fn_body(&lib, "pick_language_from_tray");
+    assert!(tray_pick.contains("tray_menu::language_row("));
+    assert!(tray_pick.contains("write_dictation_languages("));
+    assert_eq!(
+        command_for("lang_pick_2"),
+        Some(TrayCommand::PickLanguage(2))
+    );
+    assert_eq!(
+        command_for(tray_menu::ID_LANGUAGE_SETTINGS),
+        Some(TrayCommand::OpenLanguageSettings)
+    );
 }
 
 /// "Transcript History…" lands on a view the frontend actually has: the value
@@ -322,8 +384,15 @@ fn a_restart_during_the_hide_window_shows_the_pill() {
 
     // Nothing about the hide reaches settings.json.
     let json = serde_json::to_value(AppSettings::default()).expect("settings serialize");
+    // WF-16's screen-share switch is a real preference ("hide Yap from
+    // capture during meetings"), not a persisted pill hide: the one named
+    // exemption. Any other hide/hidden/until key still fails.
+    const NOT_A_PILL_HIDE: &[&str] = &["hidefromcaptureinmeetings"];
     for key in json.as_object().expect("settings object").keys() {
         let k = key.to_lowercase();
+        if NOT_A_PILL_HIDE.contains(&k.as_str()) {
+            continue;
+        }
         assert!(
             !(k.contains("hide") || k.contains("hidden") || k.contains("until")),
             "settings key {key:?} looks like a persisted pill hide"
@@ -440,4 +509,77 @@ fn quit_runs_the_exit_drain() {
     assert!(teardown.contains("exit_step_asr_drain"));
     assert!(teardown.contains("exit_step_await_take"));
     assert!(fn_body(&lib, "exit_step_asr_drain").contains("drain_and_unload("));
+}
+
+// ─── WF-14: "Update ready" and the quiet gate ───────────────────────────────
+
+/// WF-14 — an installed release puts "Update ready" in the menu, and both
+/// update restarts in `lib.rs` sit behind the quiet gate: the click
+/// (`restart_click` → `RestartNow`) and the deferred one
+/// (`restart_when_quiet`, run on every `sync_tray`). The gate reads every busy
+/// state — a dictation, a take in flight, a polish pass, notes being written
+/// and a meeting recording.
+#[test]
+fn update_restart_goes_through_the_quiet_gate() {
+    let lib = code_only(LIB_SRC);
+    let install = fn_body(&lib, "install_update");
+    assert!(install.contains("tray_menu::UPDATE_READY.mark_ready(&version)"));
+    assert!(install.contains("sync_update_ready("));
+    assert!(fn_body(&lib, "sync_tray").contains("sync_update_ready(app, state)"));
+
+    let sync = fn_body(&lib, "sync_update_ready");
+    assert!(sync.contains("tray_menu::update_item_visible("));
+    assert!(sync.contains("tray_menu::restart_when_quiet("));
+    assert!(sync.contains("tray_menu::update_ready_label("));
+    assert!(sync.contains("tray_menu::ID_UPDATE_READY"));
+    assert!(sync.contains("app.request_restart()"));
+
+    let dispatch = fn_body(&lib, "run_tray_command");
+    let click = arm(dispatch, "TrayCommand::RestartToUpdate =>", "TrayCommand::");
+    assert!(click.contains("tray_menu::restart_click("));
+    assert!(click.contains("tray_menu::RestartAction::Arm"));
+    assert!(click.contains("tray_menu::RestartAction::Disarm"));
+    assert!(click.contains("app.request_restart()"));
+
+    assert_eq!(
+        lib.matches("request_restart()").count(),
+        2,
+        "an update restart outside the click and the deferred path bypasses the quiet gate"
+    );
+
+    let activity = fn_body(&lib, "update_activity");
+    for input in [
+        "state.recording",
+        "state.busy",
+        "tray_menu::polish_in_flight()",
+        "is_active()",
+        "is_recording()",
+    ] {
+        assert!(activity.contains(input), "the restart gate ignores {input}");
+    }
+    assert!(lib.contains("tray_menu::PolishGuard::enter()"));
+}
+
+/// WF-14 — the line is an inserted row (never laid out), resolves to its
+/// command, and a fresh process (the one a successful restart starts, already
+/// running the installed version) never shows it.
+#[test]
+fn update_ready_line_is_inserted_and_gone_after_restart() {
+    assert!(INSERTED_ITEMS.contains(&tray_menu::ID_UPDATE_READY));
+    assert_eq!(
+        command_for(tray_menu::ID_UPDATE_READY),
+        Some(TrayCommand::RestartToUpdate)
+    );
+    assert!(!tray_menu::update_item_visible(None, "1.4.0"));
+    assert!(!tray_menu::update_item_visible(Some("1.4.0"), "1.4.0"));
+    assert!(tray_menu::update_item_visible(Some("1.4.0"), "1.3.9"));
+    let busy = tray_menu::Activity {
+        meeting: true,
+        ..tray_menu::Activity::default()
+    };
+    assert!(!tray_menu::restart_gate(busy));
+    assert_eq!(
+        tray_menu::update_ready_label(tray_menu::restart_blocker(busy), true),
+        "Will restart after this meeting \u{00b7} Cancel"
+    );
 }

@@ -1,5 +1,9 @@
 # Yap Changelog
 
+## Unreleased
+
+- **Yappy is the pill.** The Classic capsule is retired; if you used it, or never picked a style, Yap switches you to Yappy.
+
 ## v0.9.3
 
 - **Dictation lands where you dictated.** Text goes into the field you were in when you started talking, or it does not paste at all, including secure fields, and a take is never stranded on the Copy card. New hotkeys cover hands-free, cancel, copy last, paste last and a Scratchpad window you can dictate notes into. More languages are in the picker, a rule you say once applies where it matches, your own writing samples shape the polish, and formatting keeps every word and finishes every list.

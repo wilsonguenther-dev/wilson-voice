@@ -15,6 +15,7 @@
  */
 import type { ComponentType, ReactNode } from "react";
 import { ALL_LIVE_PHASES, type ChatTone, type LivePhase, type PhaseArt, type TranscribeProgress } from "../live";
+import type { VoiceId } from "../voices";
 import type { MeetingAfterView, MeetingStatus } from "../meeting";
 import type { PillLicense } from "../license";
 
@@ -68,6 +69,8 @@ export interface CharacterStageProps {
   /** yap24-PILL4 — the bound stop key, for a hands-free take's name and announcement. */
   chordLabel?: string;
   tone?: ChatTone;
+  /** yap-1106-voice-modes — Yappy's voice (Best friend, Badass, Professional, Rose). */
+  voice?: VoiceId;
   progress?: TranscribeProgress | null;
   meeting?: MeetingStatus;
   meetingAfter?: MeetingAfterView | null;

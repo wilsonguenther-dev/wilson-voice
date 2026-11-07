@@ -1,0 +1,39 @@
+{
+  "synthetic": true,
+  "note": "Chrome helper running input, Accessibility not granted, and a calendar event with a call link is in its window: yap-call-2 offers \"Browser call (site unknown)\". Hand-built (synthetic) from the measured shape in plan section 2.2.",
+  "own_pid": 900,
+  "procs": [
+    {
+      "pid": 900,
+      "parent_pid": 1,
+      "bundle_id": "com.wilsonguenther.wilson-voice",
+      "running_input": false,
+      "running_output": false
+    },
+    {
+      "pid": 2001,
+      "parent_pid": 2000,
+      "bundle_id": "com.google.Chrome.helper",
+      "running_input": true,
+      "running_output": true
+    }
+  ],
+  "running_apps": [
+    {
+      "pid": 2000,
+      "bundle_id": "com.google.Chrome"
+    }
+  ],
+  "frontmost": null,
+  "browser_titles": null,
+  "ax_source": "unknown",
+  "calendar": {
+    "linked_event_in_window": true
+  },
+  "expect": {
+    "bundle_id": "com.google.Chrome",
+    "offer": true,
+    "via": "helper_parent",
+    "text": "Browser call (site unknown) — record it?"
+  }
+}

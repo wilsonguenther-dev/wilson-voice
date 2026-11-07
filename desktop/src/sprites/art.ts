@@ -79,9 +79,11 @@ export function H(o: PixelCtx): Helpers {
   };
 }
 
-function shadow(h: Helpers, cx: number, y: number, rx: number): void { h.ell(cx, y, rx, 1.6, "#3a2418", .2); }
+/** The ground shadow every friend stands on (warm brown at 20 percent). */
+export function shadow(h: Helpers, cx: number, y: number, rx: number): void { h.ell(cx, y, rx, 1.6, "#3a2418", .2); }
 
-function eye(h: Helpers, x: number, y: number, f: number, big?: boolean): void {
+/** A friend eye: dark oval, a two-pixel shine top-left, a soft one bottom-right; f === 1 is shut. */
+export function eye(h: Helpers, x: number, y: number, f: number, big?: boolean): void {
   if (f === 1) { h.r(x - 2, y, 4, 1, "#2b2118"); return; }
   h.ell(x, y, big ? 2.6 : 2.1, big ? 3 : 2.5, "#2b2118"); h.r(x - 1, y - 2, 2, 1, "#fff"); h.r(x - 1, y - 1, 1, 1, "#fff"); h.r(x + 1, y + 1, 1, 1, "#fff", .7);
 }

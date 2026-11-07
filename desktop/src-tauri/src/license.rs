@@ -625,6 +625,41 @@ pub struct LicenseFile {
     /// Mirrored into `DB_KEY_MAX_TOKEN_IAT`; only ever raised, never cleared.
     #[serde(default)]
     pub max_token_iat: Option<i64>,
+    /// yap-1106-lic-03 — the install UUID `license_client` sends as
+    /// `device_id`. The Keychain holds the primary copy; this mirror is not a
+    /// secret and exists so a Keychain read failure (e.g. after a signing
+    /// identity change) re-activates the SAME seat instead of burning one.
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// yap-1106-lic-03 — wall-clock ms of the last refresh that got an answer
+    /// from the licensing service (the at-most-once-per-24-h rule).
+    #[serde(default)]
+    pub last_refresh_at_ms: Option<i64>,
+    /// yap-1106-lic-03 — a `429 Retry-After` from the licensing service: no
+    /// licensing request before this wall-clock ms.
+    #[serde(default)]
+    pub retry_after_until_ms: Option<i64>,
+    /// yap-1106-lic-03 — `403 disputed`: the license is on hold while a payment
+    /// dispute is reviewed. Holds the message to show. A valid token NEVER
+    /// re-entitles a held license; only a 200 from the licensing service clears
+    /// it (`set_disputed_hold(None)`). Mirrored in SQLite (`DB_KEY_DISPUTED_HOLD`).
+    #[serde(default)]
+    pub disputed_hold: Option<String>,
+}
+
+/// yap-1106-lic-03 — SQLite copy of [`LicenseFile::disputed_hold`], so deleting
+/// `license.json` cannot lift a payment hold.
+pub const DB_KEY_DISPUTED_HOLD: &str = "license.disputed_hold";
+
+/// yap-1106-lic-03 — what `license_client` needs to know about this install,
+/// read in one lock. No decoded token claims are cached here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientRecord {
+    pub token: Option<String>,
+    pub device_id: Option<String>,
+    pub last_refresh_at_ms: Option<i64>,
+    pub retry_after_until_ms: Option<i64>,
+    pub disputed_hold: Option<String>,
 }
 
 // ─── Trial arithmetic (pure) ─────────────────────────────────────────
@@ -1500,6 +1535,25 @@ impl LicenseManager {
             ),
             None => (v1_entitlement, v1_problem),
         };
+        // yap-1106-lic-03 — a payment hold (403 disputed) outranks a valid
+        // token: the token stays on disk, but nothing is entitled until a 200
+        // from the licensing service clears the hold. Either store's copy holds.
+        let hold = file
+            .disputed_hold
+            .clone()
+            .or_else(|| self.store.get(DB_KEY_DISPUTED_HOLD))
+            .filter(|m| !m.trim().is_empty());
+        let held_while_licensed =
+            stored_token.is_some() && matches!(entitlement, Entitlement::Licensed { .. });
+        let (entitlement, problem) = match hold {
+            Some(message) if held_while_licensed => (
+                Entitlement::LicenseRequired {
+                    reason: "disputed".to_string(),
+                },
+                Some(("disputed".to_string(), message)),
+            ),
+            _ => (entitlement, problem),
+        };
 
         if dirty {
             write_license_file(&self.path, &file);
@@ -1707,7 +1761,116 @@ impl LicenseManager {
         // The token goes too; `max_token_iat` stays (it is a ratchet).
         file.license_token = None;
         file.activated_at_ms = None;
+        // yap-1106-lic-03 — the seat is freed server-side before this runs
+        // (`license_client::LicenseClient::deactivate`), so its refresh
+        // bookkeeping and any hold go with it. `device_id` stays: the next
+        // activation of this Mac is the same seat.
+        file.last_refresh_at_ms = None;
+        file.disputed_hold = None;
         write_license_file(&self.path, &file);
+        self.store.set(DB_KEY_DISPUTED_HOLD, "");
+    }
+
+    // ─── yap-1106-lic-03 — the activation client's bookkeeping ───────────
+    //
+    // `license_client` owns the network; these are the only doors through
+    // which it touches `license.json`. None of them can store a token — that
+    // is `install_token`, which verifies first.
+
+    /// Everything the client needs, in one lock.
+    pub fn client_record(&self) -> ClientRecord {
+        let file = self.file.lock();
+        ClientRecord {
+            token: file.license_token.clone().filter(|t| !t.trim().is_empty()),
+            device_id: file.device_id.clone(),
+            last_refresh_at_ms: file.last_refresh_at_ms,
+            retry_after_until_ms: file.retry_after_until_ms,
+            disputed_hold: file
+                .disputed_hold
+                .clone()
+                .or_else(|| self.store.get(DB_KEY_DISPUTED_HOLD))
+                .filter(|m| !m.trim().is_empty()),
+        }
+    }
+
+    /// The stored token re-verified on the ratchet's clock, or `None` when no
+    /// token is stored. Used to schedule a refresh; it grants nothing.
+    pub fn stored_token_claims(&self) -> Option<Result<TokenClaims, TokenError>> {
+        let file = self.file.lock();
+        let token = file
+            .license_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())?;
+        let now = evaluate_trial(self.trial_inputs(&file)).effective_now_ms;
+        let max_iat = self.max_token_iat(&file);
+        Some((self.verify_token)(&token, now).and_then(|c| {
+            license_v2::check_iat(&c, max_iat)?;
+            Ok(c)
+        }))
+    }
+
+    /// The trial ratchet's `max(wall, monotonic, floor)` clock, in ms.
+    pub fn effective_now_ms(&self) -> i64 {
+        let file = self.file.lock();
+        evaluate_trial(self.trial_inputs(&file)).effective_now_ms
+    }
+
+    /// Mirror the install UUID into `license.json` (not a secret).
+    pub fn set_device_id_mirror(&self, device_id: &str) {
+        let mut file = self.file.lock();
+        if file.device_id.as_deref() == Some(device_id) {
+            return;
+        }
+        file.device_id = Some(device_id.to_string());
+        write_license_file(&self.path, &file);
+    }
+
+    /// Record that the licensing service answered a refresh at `at_ms`.
+    pub fn note_refresh(&self, at_ms: i64) {
+        let mut file = self.file.lock();
+        file.last_refresh_at_ms = Some(at_ms);
+        write_license_file(&self.path, &file);
+    }
+
+    /// Honour (or clear) a `429 Retry-After`.
+    pub fn set_retry_after_until(&self, until_ms: Option<i64>) {
+        let mut file = self.file.lock();
+        if file.retry_after_until_ms == until_ms {
+            return;
+        }
+        file.retry_after_until_ms = until_ms;
+        write_license_file(&self.path, &file);
+    }
+
+    /// Persist (Some) or lift (None) a `403 disputed` hold in BOTH stores.
+    pub fn set_disputed_hold(&self, message: Option<String>) {
+        let mut file = self.file.lock();
+        let message = message.filter(|m| !m.trim().is_empty());
+        let db_has = self
+            .store
+            .get(DB_KEY_DISPUTED_HOLD)
+            .is_some_and(|m| !m.trim().is_empty());
+        if file.disputed_hold == message && db_has == message.is_some() {
+            return;
+        }
+        file.disputed_hold = message.clone();
+        write_license_file(&self.path, &file);
+        self.store
+            .set(DB_KEY_DISPUTED_HOLD, message.as_deref().unwrap_or(""));
+    }
+
+    /// FAIL CLOSED: the licensing service said the seat or license is gone
+    /// (403 revoked / expired / deactivated, 401 reactivate_required /
+    /// device_mismatch, or an unknown `kid`). The token is deleted; the
+    /// install UUID and the iat ratchet stay.
+    pub fn drop_token(&self) {
+        let mut file = self.file.lock();
+        file.license_token = None;
+        file.activated_at_ms = None;
+        file.last_refresh_at_ms = None;
+        file.disputed_hold = None;
+        write_license_file(&self.path, &file);
+        self.store.set(DB_KEY_DISPUTED_HOLD, "");
     }
 
     /// Seed the cached kid list, exactly as an older build left it on disk.
@@ -1803,6 +1966,24 @@ fn write_license_file(path: &Path, file: &LicenseFile) {
 /// holds an HTTP client.
 pub trait LicenseTransport: Send + Sync {
     fn get(&self, url: &str) -> Result<Vec<u8>, String>;
+
+    /// yap-1106-lic-03 — POST a JSON body to the licensing service with the
+    /// `X-Drivia-App: <app_key>` header. The HTTP implementation lives in
+    /// `license_client::HttpTransport` (this file holds no HTTP crate). The
+    /// default refuses, so [`NoNetwork`] and test fakes make no request.
+    fn post_json(&self, url: &str, app_key: &str, body: &[u8]) -> Result<TransportReply, String> {
+        let _ = (url, app_key, body);
+        Err("licensing makes no network call".into())
+    }
+}
+
+/// yap-1106-lic-03 — one answer from the licensing service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportReply {
+    pub status: u16,
+    /// `Retry-After` in seconds, when the reply carried one (429).
+    pub retry_after_s: Option<u64>,
+    pub body: Vec<u8>,
 }
 
 /// The production transport: there is no licensing endpoint, so there is

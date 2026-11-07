@@ -35,13 +35,15 @@
 import type { BarDock } from "./dock";
 import type { LivePhase } from "./live";
 import type { MeetingAfterView, MeetingStatus } from "./meeting";
+import { REST_CAPSULE } from "./characterFit";
 
 /** `after` = stopping, processing, notes ready, failed: the post-stop badge. */
 export type MeetingMode = "none" | "recording" | "after";
 /**
  * `yappy` lays out from this module. `legacy` is any character that still owns
- * a full-window stage of its own (the Classic pill, being retired by
- * yap-1106-retire-classic-pill): it keeps the historical fixed panel.
+ * a full-window stage of its own (the shell-body path; the Classic pill that
+ * used it was retired by yap-1106-retire-classic-pill): it keeps the
+ * historical fixed panel.
  */
 export type LayoutCharacter = "yappy" | "legacy";
 
@@ -64,8 +66,10 @@ export interface PillInput {
   /** Lines the hint reserves; defaults to 3 for `blind` (it wraps), else 1. */
   hintLines?: number;
   /**
-   * A card on screen (the copy card, "Record this meeting?", the coaching
-   * nudge), with its measured height. It gets the top row of the panel.
+   * A card on screen (the copy card, "Record this meeting?", WF-12's
+   * "Sounded like Spanish — Add Spanish?", the coaching nudge), with its
+   * measured height — the whole stack's, when more than one is up. It gets
+   * the top row of the panel.
    */
   card?: { h: number } | null;
 }
@@ -99,8 +103,12 @@ export const PANEL_MARGIN = 10;
 export const SLOT_GAP = 6;
 /** Acceptance: the clock touches or sits within this many points of the character. */
 export const CLOCK_REACH_PT = 12;
-/** Yappy's resting capsule (YappyPill: lerp(72, …), lerp(22, …) at openV = 0). */
-export const CHARACTER_REST = { w: 72, h: 22 } as const;
+/**
+ * Yappy's resting capsule (YappyPill: lerp(REST_CAPSULE.w, …) at openV = 0).
+ * yap-1106-fb-10 — sized by characterFit to hold every pill character WHOLE
+ * (was 72 x 22, which only fitted a face close-up: "the heads cropped").
+ */
+export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /** Yappy's widest open capsule: 236 x 60 at the desk tier (x 1.16), rounded up. */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /** The speech bubble's reserved row (12 px bold + 5 px padding + border). */
@@ -111,9 +119,15 @@ export const BUBBLE_LIFT = 10;
 /** `.phase-strip` max-width (SIDE_DOCK_TEXT_PX) and its 11px/1.25 line. */
 export const HINT_W = 192;
 export const HINT_LINE_H = 14;
-/** The clock row: dot + "00:03:37" + call-audio mark + stop; the after badge is wider. */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 184, after: 184 };
-export const CLOCK_H = 26;
+/**
+ * The clock row. yap-1106-pill-rec-headphones-hoot-tape: no red dot any more —
+ * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 112 x 40: sun, time,
+ * Hoot at the tape, Yappy in headphones) + call-audio mark + stop. 40 tall is
+ * the scene at a whole-number scale, and still clears the bubble row above
+ * (vertically centred on the 22 pt capsule: -9 vs the bubble's -10).
+ */
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
+export const CLOCK_H = 40;
 /** Y3-C's decode fill + numeral (`.kami-progress`): a row under Yappy while transcribing. */
 export const PROGRESS_W = 100;
 export const PROGRESS_H = 14;
@@ -121,6 +135,40 @@ export const PROGRESS_H = 14;
 export const PROGRESS_PHASE: LivePhase = "transcribing";
 /** A card's width: the old 300 pt panel less its 8 pt insets. */
 export const CARD_W = 284;
+/**
+ * fix-b1-2 — every card that takes the panel's top row while it is on
+ * screen: the copy card, "Record this meeting?", WF-12's language offer and
+ * the coaching nudge. float-main measures EVERY match (not the first), stacks
+ * them in DOM order with `stackCards`, and hands the stack's height to
+ * `pillLayout` as `card`; float.css places each one in that row. A card left
+ * off this list is neither measured nor placed, so it is drawn over Yappy.
+ */
+export const CARD_CLASSES = ["copy-card", "meeting-offer-wrap", "language-offer-wrap", "nudge-row"] as const;
+export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
+/** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */
+export const CARD_STACK_VAR = "--card-stack-y";
+
+/**
+ * fix-b1-2 — two cards can be up at once (a nudge and a language offer), so
+ * the card row is a STACK: each card's top inside the row, SLOT_GAP apart,
+ * and the row's total height. A card with no height (not laid out yet) takes
+ * no room and no gap.
+ */
+export function stackCards(heights: readonly number[]): { offsets: number[]; total: number } {
+  const offsets: number[] = [];
+  let y = 0;
+  for (const raw of heights) {
+    const h = Math.max(0, Math.ceil(raw));
+    if (h === 0) {
+      offsets.push(y);
+      continue;
+    }
+    if (y > 0) y += SLOT_GAP;
+    offsets.push(y);
+    y += h;
+  }
+  return { offsets, total: y };
+}
 /** The historical fixed panel (float_pill.rs PILL_W x PILL_H) a legacy character keeps. */
 export const LEGACY_PANEL = { w: 300, h: 140 } as const;
 /** Phases Yappy draws as the small resting capsule; every other phase opens him. */
@@ -282,9 +330,19 @@ export function layoutVars(l: PillLayout): Record<string, string> {
  * has to thread into the loop. float-main is the only writer.
  */
 let published: PillLayout | null = null;
+/**
+ * fix-b1-2 — fired on `window` each time a layout is applied, AFTER the slot
+ * positions are written: a card that holds the window's hitbox re-takes it
+ * from its real box here, since the layout MOVES the card (into the row it
+ * reserved) without resizing it, and a ResizeObserver never sees a move.
+ */
+export const PILL_LAYOUT_EVENT = "yap-pill-layout";
 export function publishPillLayout(l: PillLayout | null): void {
   published = l;
-  if (typeof window !== "undefined") (window as unknown as { __YAP_PILL_LAYOUT__?: PillLayout | null }).__YAP_PILL_LAYOUT__ = l;
+  if (typeof window !== "undefined") {
+    (window as unknown as { __YAP_PILL_LAYOUT__?: PillLayout | null }).__YAP_PILL_LAYOUT__ = l;
+    window.dispatchEvent(new Event(PILL_LAYOUT_EVENT));
+  }
 }
 export function currentPillLayout(): PillLayout | null {
   return published;

@@ -128,6 +128,41 @@ tauri_nspanel::tauri_panel! {
     })
 }
 
+/// fix-b5-1 — the note the next open must land on (the pill's timestamped
+/// meeting note). A PULL slot rather than an event payload: on the very first
+/// open the window is created by [`open`] and its webview has no listener yet
+/// when `scratchpad-shown` fires, so the window takes this on its first load
+/// AND on every later show (`scratchpad_take_open_note`). Taken once.
+static OPEN_NOTE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Ask the next Scratchpad load/show to open `note_id` as the active tab.
+/// An empty id clears the request.
+pub fn request_open_note(note_id: Option<String>) {
+    let mut slot = OPEN_NOTE.lock().unwrap_or_else(|p| p.into_inner());
+    *slot = note_id.filter(|id| !id.is_empty());
+}
+
+/// The pending note to open, once: a second call returns `None`.
+pub fn take_open_note() -> Option<String> {
+    OPEN_NOTE.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// Open the Scratchpad ON `note_id` (fix-b5-1: the pill's Note during a
+/// meeting). Same non-activating open as [`open`]; a failed open drops the
+/// request so a later plain open does not jump to a stale note.
+pub fn open_note(app: &AppHandle, note_id: String) -> Result<(), String> {
+    request_open_note(Some(note_id));
+    let r = open(app);
+    match &r {
+        Ok(()) => log::info!("scratchpad open_note ok"),
+        Err(e) => {
+            request_open_note(None);
+            log::warn!("scratchpad open_note failed err={e}");
+        }
+    }
+    r
+}
+
 /// Open the Scratchpad without activating Yap. Safe from any thread: AppKit
 /// panel calls are dispatched to the main thread.
 pub fn open(app: &AppHandle) -> Result<(), String> {
@@ -235,6 +270,9 @@ pub fn ensure_window(app: &AppHandle) -> Result<(), String> {
         log::warn!("scratchpad create_failed err={e}");
         format!("scratchpad window: {e}")
     })?;
+    // WF-16 — a Scratchpad opened during a recorded meeting is built hidden
+    // from screen capture; `float_pill::sync_capture_hidden` restores it on stop.
+    crate::call_offer::apply_content_protection(&w);
     let w2 = w.clone();
     w.on_window_event(move |e| match e {
         tauri::WindowEvent::CloseRequested { api, .. } => {

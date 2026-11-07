@@ -118,6 +118,12 @@ export interface AppSettings {
    * option (⌥) | off. Plain dictation is unaffected either way.
    */
   commandBinding?: string;
+  /**
+   * WF-19 — a mouse button as push-to-talk: "" (off) | "middle" | "button<N>"
+   * (N ≥ 3), plus ":hands_free" for click-to-toggle. Left / right click are
+   * refused (src/mouseBinding.ts here, ptt_macos::MouseBinding in Rust).
+   */
+  pttMouseBinding?: string;
   keepCmdShiftV?: boolean;
   /**
    * yap-p0-hotkeys-no-permission — the user's rebind of the "Works everywhere"
@@ -139,7 +145,7 @@ export interface AppSettings {
    * in its own field). Rust `shortcuts::editor` validates every save.
    */
   extraChords?: ExtraBinding[];
-  /** classic (obsidian capsule) | yappy (pixel pet) */
+  /** yappy (pixel pet). "classic" is retired and migrated to yappy at launch. */
   pillStyle?: string;
   /**
    * Where the pill docks on screen (backend `pill_position`, YV53): "bottom"
@@ -161,6 +167,12 @@ export interface AppSettings {
    * lines always show (`pill/live.ts` `PILL_MESSAGES`).
    */
   mutedPillCategories?: string[];
+  /**
+   * WF-16 (backend `hide_from_capture_in_meetings`, default true): while a
+   * meeting records, the pill, its meeting chip and the Scratchpad are kept
+   * out of screen shares and screenshots. Missing = on.
+   */
+  hideFromCaptureInMeetings?: boolean;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**

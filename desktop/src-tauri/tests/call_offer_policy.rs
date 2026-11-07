@@ -5,9 +5,10 @@
 //! and nothing ever stops a recording but the user's Stop.
 
 use wilson_voice_lib::call_offer::{
-    content_protected_for, never_rows, parse_policy, policy_for, policy_json, set_app_policy,
-    AppPolicy, CallOfferMachine, DetectedVia, Effect, Input, Phase, PolicyMap, Sighting,
-    UserChoice, CALL_ENDED_QUIET_MS, CALL_OFFER_POLICY_KEY, CALL_OFFER_WINDOW, OFFER_COUNTDOWN_MS,
+    content_protected_for, may_stamp_detection, never_rows, offer_start_decision, parse_policy,
+    policy_for, policy_json, set_app_policy, AppPolicy, CallOfferMachine, DetectedVia, Effect,
+    Input, OfferStart, Phase, PolicyMap, Sighting, UserChoice, ALREADY_RECORDING_MSG,
+    CALL_ENDED_QUIET_MS, CALL_OFFER_POLICY_KEY, CALL_OFFER_WINDOW, OFFER_COUNTDOWN_MS,
 };
 use wilson_voice_lib::call_signals::{catalog, CallCandidate, Via};
 
@@ -306,6 +307,7 @@ fn only_user_choice_record_yields_start_recording() {
             user(UserChoice::KeepGoing, &id),
             user(UserChoice::Never, "stale#0"),
             Input::StartFailed,
+            Input::MeetingStartedElsewhere,
             seen(None, now + 1),
             seen(Some(zoom()), now + 2),
         ];
@@ -332,6 +334,194 @@ fn only_user_choice_record_yields_start_recording() {
         now += 1_000_000;
     }
     assert!(records > 0, "the table must exercise a real Record");
+}
+
+// ─── fix-b1-1: a meeting started any other way ──────────────────────────────
+
+#[test]
+fn offering_then_meeting_started_elsewhere_withdraws() {
+    let policy = PolicyMap::new();
+    let mut m = CallOfferMachine::default();
+    offering(&mut m, &policy);
+    let fx = m.step(Input::MeetingStartedElsewhere, &policy);
+    assert_eq!(fx, vec![Effect::Withdraw]);
+    assert!(!starts(&fx));
+    assert!(!stops(&fx));
+    assert_eq!(m.phase, Phase::Idle);
+    assert!(m.live_offer_id().is_none());
+    // The countdown that was running can no longer turn into a chip.
+    assert_eq!(
+        m.step(tick(1_000 + OFFER_COUNTDOWN_MS * 2, None), &policy),
+        vec![]
+    );
+    assert_eq!(m.view(1_000 + OFFER_COUNTDOWN_MS).phase, Phase::Idle);
+}
+
+#[test]
+fn chip_then_meeting_started_elsewhere_withdraws() {
+    let policy = PolicyMap::new();
+    let mut m = CallOfferMachine::default();
+    let id = offering(&mut m, &policy);
+    assert_eq!(
+        m.step(user(UserChoice::NotNow, &id), &policy),
+        vec![Effect::ShowChip]
+    );
+    assert_eq!(m.phase, Phase::Chip);
+    let fx = m.step(Input::MeetingStartedElsewhere, &policy);
+    assert_eq!(fx, vec![Effect::Withdraw]);
+    assert!(!starts(&fx));
+    assert_eq!(m.phase, Phase::Idle);
+    // The chip's id is dead: pressing it now cannot stamp the manual meeting.
+    let late = m.step(user(UserChoice::Record, &id), &policy);
+    assert!(!starts(&late), "{late:?}");
+    assert!(matches!(late.as_slice(), [Effect::Rejected { .. }]));
+}
+
+#[test]
+fn the_call_is_spent_after_the_manual_recording_stops() {
+    let policy = PolicyMap::new();
+    let mut m = CallOfferMachine::default();
+    offering(&mut m, &policy);
+    assert_eq!(
+        m.step(Input::MeetingStartedElsewhere, &policy),
+        vec![Effect::Withdraw]
+    );
+    // The manual recording stops; the same Zoom call is still Seen.
+    assert_eq!(m.step(Input::RecordingStopped, &policy), vec![]);
+    let fx = m.step(seen(Some(zoom()), 60_000), &policy);
+    assert!(!fx.contains(&Effect::ShowOffer), "{fx:?}");
+    assert_eq!(fx, vec![]);
+    assert_eq!(m.phase, Phase::Idle);
+    // Mic input drops (the call ended): the next call is a new offer.
+    m.step(seen(None, 61_000), &policy);
+    assert_eq!(
+        m.step(seen(Some(zoom()), 62_000), &policy),
+        vec![Effect::ShowOffer]
+    );
+}
+
+#[test]
+fn recording_or_end_prompt_ignore_meeting_started_elsewhere() {
+    let policy = PolicyMap::new();
+    // Idle: nothing to withdraw.
+    let mut idle = CallOfferMachine::default();
+    assert_eq!(idle.step(Input::MeetingStartedElsewhere, &policy), vec![]);
+    assert_eq!(idle.phase, Phase::Idle);
+    // Recording (the offer's own recording): untouched.
+    let mut m = CallOfferMachine::default();
+    let id = offering(&mut m, &policy);
+    assert!(starts(&m.step(user(UserChoice::Record, &id), &policy)));
+    assert_eq!(m.phase, Phase::Recording);
+    assert_eq!(m.step(Input::MeetingStartedElsewhere, &policy), vec![]);
+    assert_eq!(m.phase, Phase::Recording);
+    assert_eq!(m.live_offer_id(), Some(id.as_str()));
+    // EndPrompt: untouched too.
+    m.step(tick(100_000, Some(false)), &policy);
+    assert_eq!(
+        m.step(tick(100_000 + CALL_ENDED_QUIET_MS, Some(false)), &policy),
+        vec![Effect::ShowEndPrompt]
+    );
+    assert_eq!(m.step(Input::MeetingStartedElsewhere, &policy), vec![]);
+    assert_eq!(m.phase, Phase::EndPrompt);
+}
+
+/// [Record] on the chip while a manual meeting already records: the machine
+/// goes Recording → (StartFailed) Chip → (MeetingStartedElsewhere) withdrawn
+/// and spent — the sequence `apply_call_offer_effects` drives.
+#[test]
+fn record_while_a_meeting_already_records_withdraws_and_spends() {
+    let policy = PolicyMap::new();
+    let mut m = CallOfferMachine::default();
+    let id = offering(&mut m, &policy);
+    assert!(starts(&m.step(user(UserChoice::Record, &id), &policy)));
+    assert_eq!(m.step(Input::StartFailed, &policy), vec![Effect::ShowChip]);
+    assert_eq!(
+        m.step(Input::MeetingStartedElsewhere, &policy),
+        vec![Effect::Withdraw]
+    );
+    assert_eq!(m.phase, Phase::Idle);
+    assert_eq!(m.step(seen(Some(zoom()), 50_000), &policy), vec![]);
+}
+
+#[test]
+fn already_recording_never_calls_set_meeting_detection() {
+    assert_eq!(offer_start_decision(true), OfferStart::AlreadyRecording);
+    assert_eq!(offer_start_decision(false), OfferStart::Begin);
+    assert!(!may_stamp_detection(true, true));
+    assert!(!may_stamp_detection(true, false));
+    assert!(!may_stamp_detection(false, false), "lost the start race");
+    assert!(may_stamp_detection(false, true));
+    assert_eq!(ALREADY_RECORDING_MSG, "A meeting is already recording");
+
+    // The StartRecording branch reads is_recording() BEFORE begin_meeting,
+    // and set_meeting_detection only runs behind may_stamp_detection.
+    let lib = include_str!("../src/lib.rs");
+    let body = &lib[lib
+        .find("fn apply_call_offer_effects(")
+        .expect("apply_call_offer_effects")..];
+    let body = &body[..body.find("\n}\n").expect("end of fn")];
+    let arm = &body[body
+        .find("Effect::StartRecording {")
+        .expect("StartRecording arm")..];
+    let already = arm
+        .find("c.is_recording()")
+        .expect("is_recording read first");
+    let decide = arm
+        .find("call_offer::offer_start_decision(already)")
+        .expect("decision");
+    let begin = arm.find("begin_meeting_from(").expect("begin_meeting_from");
+    let gate = arm
+        .find("call_offer::may_stamp_detection(")
+        .expect("stamp gate");
+    let stamp = arm.find("set_meeting_detection(").expect("stamp");
+    assert!(
+        already < decide && decide < begin,
+        "checked before starting"
+    );
+    assert!(gate < stamp, "the stamp sits behind may_stamp_detection");
+    assert_eq!(arm.matches("set_meeting_detection(").count(), 1);
+    let refused = &arm[arm
+        .find("None | Some(Ok((_, false)))")
+        .expect("refused arm")..];
+    let refused = &refused[..refused.find("Some(Ok((status, true)))").expect("next arm")];
+    assert!(!refused.contains("set_meeting_detection"));
+    assert!(refused.contains("call_offer::ALREADY_RECORDING_MSG"));
+    assert!(refused.contains("call_offer::Input::MeetingStartedElsewhere"));
+    assert!(arm.contains("StartOrigin::CallOffer"));
+}
+
+/// Every non-offer start withdraws the offer: begin_meeting (pill, Meetings
+/// tab, tray Upcoming row, calendar offer), toggle_meeting (tray, ⌃⌘M), the
+/// detector's meeting-recording branch, and the calendar raising its offer.
+#[test]
+fn every_other_start_drives_meeting_started_elsewhere() {
+    let lib = include_str!("../src/lib.rs");
+    let detect = include_str!("../src/meeting_detect.rs");
+    let fn_body = |src: &'static str, sig: &str| -> &'static str {
+        let b = &src[src.find(sig).unwrap_or_else(|| panic!("{sig}"))..];
+        &b[..b.find("\n}\n").expect("end of fn")]
+    };
+    let begin = fn_body(lib, "fn begin_meeting_from(");
+    let call = begin
+        .find("call_offer_meeting_started_elsewhere(app, \"begin_meeting\")")
+        .expect("begin_meeting withdraws");
+    let guard = begin
+        .find("if origin == StartOrigin::Elsewhere")
+        .expect("the offer's own start is skipped");
+    assert!(guard < call);
+    assert!(fn_body(lib, "fn begin_meeting(").contains("StartOrigin::Elsewhere"));
+    assert!(fn_body(lib, "fn toggle_meeting(")
+        .contains("call_offer_meeting_started_elsewhere(app, \"toggle\")"));
+    let helper = fn_body(lib, "pub(crate) fn call_offer_meeting_started_elsewhere(");
+    assert!(helper.contains("call_offer::Input::MeetingStartedElsewhere"));
+
+    let eval = fn_body(detect, "fn evaluate(app");
+    let rec = &eval[eval.find("if meeting_recording").expect("recording branch")..];
+    let rec = &rec[..rec.find("return;").expect("early return")];
+    assert!(rec.contains("crate::call_offer_meeting_started_elsewhere(app, \"meeting_recording\")"));
+    let cal = &eval[eval.find("if calendar_raised").expect("calendar branch")..];
+    let cal = &cal[..cal.find("} else {").expect("else")];
+    assert!(cal.contains("crate::call_offer_meeting_started_elsewhere(app, \"calendar_offer\")"));
 }
 
 // ─── per-app memory ─────────────────────────────────────────────────────────
@@ -433,8 +623,11 @@ fn sighting_copy_comes_from_offer_copy() {
 
 // ─── content protection (no GUI launch) ─────────────────────────────────────
 
+/// WF-16 changed the pill's half of this: the static rule still protects only
+/// the offer window, and the pill / Scratchpad are hidden only while a meeting
+/// records (`tests/capture_hide_in_meetings.rs`).
 #[test]
-fn offer_window_is_content_protected_and_the_pill_never_is() {
+fn offer_window_is_always_content_protected_and_the_pill_only_in_meetings() {
     assert_eq!(CALL_OFFER_WINDOW, "call-offer");
     assert!(content_protected_for("call-offer"));
     assert!(!content_protected_for("pill"));
@@ -452,8 +645,8 @@ fn offer_window_is_content_protected_and_the_pill_never_is() {
     let body = &body[..body.find("\n}\n").expect("end of fn")];
     assert!(body.contains("call_offer::CALL_OFFER_WINDOW"));
     assert!(body.contains("call_offer::apply_content_protection(&win)"));
-    // The pill window is built through the same rule (false for "float"),
-    // and is never built with protection switched on.
+    // The pill window is built through the same rule (false for "float"
+    // outside a meeting), and never switches protection on by itself.
     assert!(float.contains("crate::call_offer::apply_content_protection(&win)"));
     assert!(!float.contains("set_content_protected"));
     assert!(!float.contains("content_protected(true)"));

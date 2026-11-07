@@ -1,6 +1,6 @@
 {
   "synthetic": true,
-  "note": "Chrome helper running input with Accessibility not granted (browser_titles null = AX unknown). Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot.",
+  "note": "Chrome helper running input with Accessibility not granted (browser_titles null = AX unknown). Hand-built (synthetic) from the measured shape in plan section 2.2; scripts/call-walk.sh replaces it with a recorded snapshot. yap-call-2: Accessibility off = \"Browser call (site unknown)\", offered ONLY with a calendar match; none here, so no offer.",
   "own_pid": 900,
   "procs": [
     {
@@ -30,8 +30,8 @@
   "calendar": null,
   "expect": {
     "bundle_id": "com.google.Chrome",
-    "offer": true,
+    "offer": false,
     "via": "helper_parent",
-    "text": "Google Chrome call — record it?"
+    "text": null
   }
 }

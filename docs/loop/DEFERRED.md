@@ -321,3 +321,7 @@ The structural smoke cannot see this, because the nav is an `overflow-x: auto` s
 **Destination.** The fix spans `desktop/src/App.tsx` and `desktop/src/App.css`, not one view
 file. Collapse the labels to icons, or move the overflow into a "More" menu, under ~800 px,
 and keep Dictate visible.
+
+## 16. Browser calls outside the Chromium family (yap-call-2, 2026-11-06)
+
+yap-call-2 Safari + Firefox: deferred to the next release. Safari's call audio runs on `com.apple.WebKit.GPU` (ppid 1, launchd), so attributing it to Safari rests on an unproven "title match + Safari running" rule; until a Wilson walk records a real Safari call snapshot, a WebKit.GPU input never produces an offer (`safari-webkit-input-no-title` and `safari-meet-with-title` fixtures, `desktop/src-tauri/src/call_signals.rs` `score`). Firefox has no catalog row and no measured helper shape. **Destination.** A walk with `scripts/call-walk.sh` in Safari and Firefox on a real Meet, then a catalog row for Firefox and the Safari gate lifted in `score`.

@@ -4,8 +4,10 @@ Runtime pieces for the on-screen Dictate pill (the small always-on capsule that
 reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
 
 ## Pieces
-- `ClassicPill.tsx` — the original obsidian waveform capsule, kept as a
-  selectable pill style. Bars driven by a `--level` CSS var each rAF frame.
+- `PillShell.tsx` (+ `characters/classic/`) — the original obsidian waveform
+  capsule. RETIRED as a pill style (yap-1106-retire-classic-pill): a saved
+  `"classic"` migrates to `"yappy"` and the registry no longer lists it; its
+  art lives on only as the shell's neutral body (`shellBody()`).
 - `YappyPill.tsx` — the pixel-chick companion pill. A pull-back camera fills the
   capsule with the pixel world while dictating; longer prompts add props.
 - `live.ts` — the PURE live-commentary state machine: what Yappy reacts to WHILE
@@ -25,7 +27,7 @@ reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
 
 A green gate cannot see a pill. `node scripts/pill-matrix.mjs --out <scratch dir>`
 photographs float.html in every phase x dock {bottom,left,right} x character
-{classic,yappy} in headless Chrome (never the app, never a visible window) and
+{yappy} in headless Chrome (never the app, never a visible window) and
 fails on empty text, clipped text and overflow. A PILL item runs
 `--only <its phase>` and attaches the PNGs (plus `contact-sheet.png`) to its PR —
 never commits them. Phases come from `matrixPhases()` in `forced.ts`, so a new
@@ -65,3 +67,20 @@ pill offers is therefore ALSO reachable without it:
 | Copy card — Dismiss | No equivalent needed: dismissing loses nothing, the take stays in history. |
 
 A new pill affordance adds a row here, or it is mouse-only.
+
+## The sky (yap-1106-pill-sky)
+
+The pill's sky is the Home room's time of day (`sky.ts`, option C of the 2026-11-06
+companions page): the room's clock (`skyPhase`) and the room's four keyframe colours
+(`home/YappyHouse.tsx` `SKY`), as six pixel bands with the sun, or the moon and a few
+stars at night, and grass to match. The pill snaps to the nearest keyframe instead of
+blending, because the mid-blends drop Yappy to about 2.5:1 against the sky at the
+22-px nub; the keyframes all clear 5:1 (`sky.test.ts`).
+
+Cost: the backdrop is painted once into a cached surface and repainted only when the
+time of day changes (at most four times a day; the clock is read at most every 30 s).
+Each redraw is one `drawImage` of it. Nothing in the sky moves, so the frame policy
+(`framePlan`) is unchanged and reduced motion and a meeting park lose nothing.
+`<html data-sky>` names the sky on screen; dev and matrix builds can pin it with
+`float.html?sky=dawn|day|dusk|night`, and `scripts/pill-matrix.mjs --sky <time|all>`
+photographs every phase x dock under it (default `day`).

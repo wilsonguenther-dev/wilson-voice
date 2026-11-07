@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { holdPillHitbox } from "./drag";
+import { PILL_LAYOUT_EVENT } from "./state";
 import {
   LANGUAGE_OFFER_EVENT,
   LANGUAGE_OFFER_RESPOND,
@@ -112,6 +113,8 @@ export default function LanguageOfferCard({
       respondToLanguageOffer(offer, choice)
         .then(() => setOffer(null))
         .catch((e) => {
+          // Never the language name or the error text: the choice and the fact.
+          console.warn(`language_offer respond_failed choice=${choice}`);
           setBusy(false);
           setError(String(e));
         });
@@ -123,11 +126,20 @@ export default function LanguageOfferCard({
     if (!offer) return;
     // The float window is click-through outside the reported hitbox; while
     // the card is up it IS the hitbox, so Add and Not now can be clicked.
-    const el = ref.current;
-    if (el) {
+    // fix-b1-2 — taken from the card's REAL box, and taken again whenever
+    // that box changes: on resize (an error line, a long language name) and
+    // after every layout, because the one-pill layout MOVES the card into the
+    // row it reserved for it after the card mounts (a move is not a resize).
+    const hold = () => {
+      const el = ref.current;
+      if (!el || !el.isConnected) return;
       const r = el.getBoundingClientRect();
       holdPillHitbox({ x: r.left, y: r.top, w: r.width, h: r.height }, "language-offer");
-    }
+    };
+    hold();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => hold());
+    if (ref.current && ro) ro.observe(ref.current);
+    window.addEventListener(PILL_LAYOUT_EVENT, hold);
     // An error stays up until answered; a quiet card leaves on its own (a
     // forced matrix scene stays, so the photo is of the card).
     const ttl = error || forced ? null : window.setTimeout(() => setOffer(null), LANGUAGE_OFFER_TTL_MS);
@@ -138,6 +150,8 @@ export default function LanguageOfferCard({
     return () => {
       if (ttl !== null) window.clearTimeout(ttl);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener(PILL_LAYOUT_EVENT, hold);
+      ro?.disconnect();
       holdPillHitbox(null, "language-offer");
     };
   }, [offer, error, forced, choose]);

@@ -1,6 +1,6 @@
 /**
  * Float entry — picks the pill style from settings and renders it.
- *   any registered character id (pill/characters/registry.ts); unknown → classic
+ *   any registered character id (pill/characters/registry.ts); unknown or retired → yappy
  * Live-switches when settings are saved (backend emits "settings").
  *
  * YV53: the same settings carry the dock edge (bottom | left | right). The
@@ -22,14 +22,20 @@ import {
   parseEngineHealth,
   type EngineHealth,
 } from "./pill/engineHealth";
-import { resolveCharacter } from "./pill/characters/registry";
+import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
+import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import StyleChipButton from "./pill/StyleChipButton";
+import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
+import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
+import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
   errorSentence,
@@ -62,9 +68,13 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
+  CARD_SELECTOR,
+  CARD_STACK_VAR,
+  stackCards,
   layoutVars,
   meetingMode,
   pillLayout,
@@ -75,12 +85,19 @@ import {
   type MeetingMode,
   type PillLayout,
 } from "./pill/state";
-import type { ListenEstimate, SlotCtx } from "./pill/slots";
+import {
+  NO_RAIL_KEYS, railKeysFrom, subscribeRailFailure,
+  type ListenEstimate, type RailBindingRow, type RailKeys, type SlotCtx,
+} from "./pill/slots";
 import {
   forcedPill,
   matrixLanguageOfferScene,
+  matrixBacktrackCaughtScene,
+  matrixStyleChipScene,
+  matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
+  matrixDragBlobScene,
   type ForcedPill,
 } from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
@@ -104,6 +121,33 @@ interface Settings {
   /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
   mutedPillCategories?: string[];
 }
+
+/**
+ * WF-03 — the rail's keycaps, read from the backend's LIVE hotkey table
+ * (`hotkey_bindings`, the same rows Settings › Shortcut draws). Re-read on
+ * every `settings` broadcast — a rebind is saved through `save_settings`, which
+ * broadcasts — so a tooltip follows a rebind with no restart. A failed read
+ * keeps the last good keys and logs once; it never invents a default.
+ */
+function useRailKeys(): RailKeys {
+  const [keys, setKeys] = useState<RailKeys>(NO_RAIL_KEYS);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const read = () => {
+      invoke<{ rows?: RailBindingRow[] }>("hotkey_bindings")
+        .then((r) => { if (!dead) setKeys(railKeysFrom(r?.rows)); })
+        .catch(() => console.warn("pill_rail keys_failed source=hotkey_bindings"));
+    };
+    read();
+    listen("settings", read).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  return keys;
+}
+
+/** How long a failed rail action's sentence holds the phase strip. */
+const RAIL_ERROR_MS = 5000;
 
 /**
  * Y8-B — the WPM slot's numbers while LISTENING: an estimate off voiced
@@ -208,14 +252,25 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     ...matrixLicenseScenes(),
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
+    matrixBacktrackCaughtScene(),
+    // WF-20 — the per-app style chip over a listening pill.
+    matrixStyleChipScene(),
+    // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
+    matrixRailScene(),
+    // WF-02 — the pill mid-drag: the blob plus its three drop zones.
+    matrixDragBlobScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+  if (forcedDragScene(window.location.search)) {
+    const root = document.documentElement;
+    applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
+  }
 }
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
-  const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
+  const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
   // the capsule inside keeps its identity, so it never remounts.
@@ -453,7 +508,7 @@ function Float() {
     // The dock edge rides on <html> (not React state) — it only drives CSS
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
-      setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
+      setStyle(FORCED?.style ?? (s?.pillStyle || FALLBACK_CHARACTER));
       const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
       document.documentElement.dataset.dock = d;
       setDock(d);
@@ -533,6 +588,18 @@ function Float() {
   // input: the phase, the dock, the meeting, Y3-C's real progress and the
   // listening estimate. The capsule lays the slots out; it decides none of it.
   const listenEst = useListenEstimate(isListening(phase));
+  const railKeys = useRailKeys();
+  // A failed rail action says so in the strip, once, then the strip returns.
+  const [railError, setRailError] = useState<string | null>(null);
+  useEffect(() => subscribeRailFailure(setRailError), []);
+  useEffect(() => {
+    if (!railError) return undefined;
+    const t = window.setTimeout(() => setRailError(null), RAIL_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [railError]);
+  useEffect(() => {
+    document.documentElement.dataset.railError = railError ? "true" : "false";
+  }, [railError]);
   const slots: SlotCtx = {
     phase,
     dock,
@@ -540,9 +607,17 @@ function Float() {
     progress,
     listen: listenEst,
     scratchpadOnBar,
+    // yap-1106-pill-notes-and-meeting — the rail's inputs (the capsule adds `railOpen`).
+    meetingRecording: meeting.status.recording,
+    meetingClock: meeting.status.elapsedLabel ?? null,
+    meetingTitle: meeting.status.title ?? null,
+    keys: railKeys,
+    stopKey: chordLabel,
+    // A matrix scene forces the rail out; a real pill opens it on hover/focus (PillShell).
+    railOpen: FORCED?.rail ? true : undefined,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
-  // unknown id falls back to classic. The shell never branches on an id: a
+  // unknown or retired id falls back to yappy. The shell never branches on an id: a
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
@@ -556,7 +631,7 @@ function Float() {
   const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -583,7 +658,8 @@ function Float() {
   // built from the key the user bound (`chordLabel`), and it wears the shell's
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
-  const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+  const line = railError
+    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
@@ -598,6 +674,11 @@ function Float() {
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
+      <BacktrackCaughtCard
+        forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
       {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
@@ -614,10 +695,22 @@ function Float() {
         )}
         {/* yap-1106-engine-owner — while the engine is loading, stuck or
             restarting, THAT is the one line worth saying during a decode. */}
-        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase])
-          ? <EngineHealthChip state={engineHealth} />
-          : stripLine(line, stillRecording, fnHint, chordLabel)}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+          // Item 18 — the hands-free hint, shorter: the key as a keycap and two
+          // words. The full sentence stays the accessible name and the
+          // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
+          <span className="hands-free-hint" title={line ?? undefined}>
+            <kbd className="keycap">{chordLabel.trim() || DEFAULT_STOP_KEY}</kbd> to stop
+          </span>
+        ) : stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
+      {/* WF-20 — "Slack · casual": the app-aware mode for this app; a click
+          changes it for this app for 15 minutes. Listening only, and never
+          when app-aware modes are off. A later sibling of .bar, so the side
+          dock rules in float.css can place it like the phase line. */}
+      <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
     </>
   );
 }
@@ -638,36 +731,50 @@ function usePanelLayout(
   return useMemo(() => next, [next.key]);
 }
 
-/** The cards that take the panel's top row while they are on screen. */
-const CARD_SELECTOR = ".copy-card, .meeting-offer-wrap, .nudge-row";
-
 /**
- * yap-1106-one-pill — the height of the card on screen (copy card, meeting
- * offer, coaching nudge), or null. The cards mount and unmount themselves, so
- * the shell watches the DOM for them rather than re-deciding when they show;
- * the panel then makes room for the card instead of clipping it.
+ * yap-1106-one-pill, fix-b1-2 — the height of the card row: every card on
+ * screen that CARD_SELECTOR (pill/state.ts) names — the copy card
+ * `.copy-card`, "Record this meeting?" `.meeting-offer-wrap`, WF-12's
+ * "Sounded like Spanish — Add Spanish?" `.language-offer-wrap` and the
+ * coaching nudge `.nudge-row` — or null when none is up. The cards mount and
+ * unmount themselves, so the shell watches the DOM for them rather than
+ * re-deciding when they show; the panel then makes room for them instead of
+ * clipping them or drawing them over Yappy. Two cards up at once (a nudge and
+ * a language offer) are STACKED, not the first match taken: each card gets
+ * its place in the row as CARD_STACK_VAR, which float.css adds to --card-y,
+ * and the layout reserves the whole stack.
  */
 function useCardOnScreen(): number | null {
   const [h, setH] = useState<number | null>(null);
   useEffect(() => {
     const root = document.getElementById("root");
     if (!root) return;
-    let el: HTMLElement | null = null;
+    let els: HTMLElement[] = [];
+    let lastCount = -1;
     const measure = () => {
-      const next = el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
-      setH(next > 0 ? next : null);
+      const live = els.filter((el) => el.isConnected);
+      const { offsets, total } = stackCards(live.map((el) => el.getBoundingClientRect().height));
+      live.forEach((el, i) => el.style.setProperty(CARD_STACK_VAR, `${offsets[i]}px`));
+      if (live.length !== lastCount) {
+        // One line per change in the card count, never per resize.
+        console.info(`pill card_row cards=${live.length} h=${total}`);
+        lastCount = live.length;
+      }
+      setH(total > 0 ? total : null);
     };
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => measure());
     const track = () => {
-      const found = root.querySelector<HTMLElement>(CARD_SELECTOR);
-      if (found !== el) {
-        if (el) ro.unobserve(el);
-        el = found;
-        if (el) ro.observe(el);
+      const found = Array.from(root.querySelectorAll<HTMLElement>(CARD_SELECTOR));
+      if (found.length !== els.length || found.some((el, i) => el !== els[i])) {
+        for (const el of els) ro.unobserve(el);
+        els = found;
+        for (const el of els) ro.observe(el);
       }
       measure();
     };
     track();
+    // childList only: the stack offsets this hook writes are style attributes,
+    // so writing them never re-triggers the observer.
     const mo = new MutationObserver(track);
     mo.observe(root, { childList: true, subtree: true });
     return () => {
