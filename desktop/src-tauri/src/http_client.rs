@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 // tests/no_outbound_on_the_dictation_path.rs (NETWORK_CALL_SITES) and PRIVACY.md.
 use reqwest::header::LOCATION;
 use reqwest::redirect::Policy;
-use reqwest::{Client, Url};
+use reqwest::{Client, Response, Url};
 
 /// Why an outbound call failed, in words a person can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,4 +236,185 @@ impl ClientCache {
             map.remove(provider_id);
         }
     }
+}
+
+// ── yap-1106-byom-cloud-fast-path · streamed POST ───────────────────────────
+
+use crate::cloud_route::CloudError;
+
+/// What a streamed POST measured. The body itself went to `on_chunk`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamStats {
+    pub status: u16,
+    /// Headers + first body byte, from the call.
+    pub ttft_ms: u64,
+    pub total_ms: u64,
+}
+
+fn retry_after_of(resp: &Response) -> Option<Duration> {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+/// POST `body` and stream the answer: the headers AND the first body chunk
+/// must arrive within `ttft`, the whole body within `total`; `cancel` is
+/// polled between chunks. Redirects are refused like [`post_json`]. The
+/// auth header is never logged; the body is never logged.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_stream(
+    client: &HttpClient,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &serde_json::Value,
+    ttft: Duration,
+    total: Duration,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_chunk: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<StreamStats, CloudError> {
+    let parsed = Url::parse(url).map_err(|_| CloudError::Protocol)?;
+    let host = host_label(url).unwrap_or_else(|| "the server".into());
+    let started = Instant::now();
+    log::info!(
+        "http_client stream start host={host} ttft_ms={} total_ms={}",
+        ttft.as_millis(),
+        total.as_millis()
+    );
+    let mut req = client.inner.post(parsed.clone()).json(body);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let sent = tokio::time::timeout(ttft, req.send()).await;
+    let resp = match sent {
+        Err(_) => {
+            log::warn!(
+                "http_client stream ttft_exceeded host={host} ms={}",
+                started.elapsed().as_millis()
+            );
+            return Err(CloudError::Ttft);
+        }
+        Ok(Err(e)) => {
+            let err = if e.is_timeout() {
+                CloudError::Ttft
+            } else if e.is_connect() {
+                CloudError::Unreachable
+            } else {
+                CloudError::ConnectionReset
+            };
+            log::warn!(
+                "http_client stream failed host={host} error={} ms={}",
+                err.tag(),
+                started.elapsed().as_millis()
+            );
+            return Err(err);
+        }
+        Ok(Ok(r)) => r,
+    };
+    let status = resp.status();
+    if status.is_redirection() {
+        log::warn!(
+            "http_client stream redirect_refused host={host} status={}",
+            status.as_u16()
+        );
+        return Err(CloudError::Status {
+            code: status.as_u16(),
+            retry_after: None,
+        });
+    }
+    if !status.is_success() {
+        let retry_after = retry_after_of(&resp);
+        log::warn!(
+            "http_client stream finish host={host} status={} ms={}",
+            status.as_u16(),
+            started.elapsed().as_millis()
+        );
+        return Err(if status.as_u16() == 529 {
+            CloudError::Overloaded { retry_after }
+        } else {
+            CloudError::Status {
+                code: status.as_u16(),
+                retry_after,
+            }
+        });
+    }
+    let mut resp = resp;
+    let mut ttft_ms: Option<u64> = None;
+    loop {
+        if cancel() {
+            return Err(CloudError::Cancelled);
+        }
+        let elapsed = started.elapsed();
+        let wait = if ttft_ms.is_none() {
+            ttft.saturating_sub(elapsed)
+        } else {
+            total.saturating_sub(elapsed)
+        };
+        if wait.is_zero() {
+            return Err(if ttft_ms.is_none() {
+                CloudError::Ttft
+            } else {
+                CloudError::Total
+            });
+        }
+        match tokio::time::timeout(wait, resp.chunk()).await {
+            Err(_) => {
+                let err = if ttft_ms.is_none() {
+                    CloudError::Ttft
+                } else {
+                    CloudError::Total
+                };
+                log::warn!(
+                    "http_client stream {} host={host} ms={}",
+                    err.tag(),
+                    started.elapsed().as_millis()
+                );
+                return Err(err);
+            }
+            Ok(Err(_)) => {
+                log::warn!(
+                    "http_client stream reset host={host} ms={}",
+                    started.elapsed().as_millis()
+                );
+                return Err(CloudError::ConnectionReset);
+            }
+            Ok(Ok(None)) => break,
+            Ok(Ok(Some(bytes))) => {
+                if ttft_ms.is_none() {
+                    ttft_ms = Some(started.elapsed().as_millis() as u64);
+                }
+                on_chunk(&bytes);
+            }
+        }
+    }
+    let stats = StreamStats {
+        status: status.as_u16(),
+        ttft_ms: ttft_ms.unwrap_or_else(|| started.elapsed().as_millis() as u64),
+        total_ms: started.elapsed().as_millis() as u64,
+    };
+    log::info!(
+        "http_client stream finish host={host} status={} ttft_ms={} ms={}",
+        stats.status,
+        stats.ttft_ms,
+        stats.total_ms
+    );
+    Ok(stats)
+}
+
+/// [`post_stream`] for a synchronous caller on a blocking thread.
+#[allow(clippy::too_many_arguments)]
+pub fn post_stream_blocking(
+    client: &HttpClient,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &serde_json::Value,
+    ttft: Duration,
+    total: Duration,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_chunk: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<StreamStats, CloudError> {
+    tauri::async_runtime::block_on(post_stream(
+        client, url, headers, body, ttft, total, cancel, on_chunk,
+    ))
 }

@@ -25,6 +25,8 @@ import LanguageOfferCard from "./pill/LanguageOfferCard";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import StyleChipButton from "./pill/StyleChipButton";
+import SilentMicRow from "./pill/SilentMicRow";
+import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -87,6 +89,7 @@ import {
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
   matrixStyleChipScene,
+  matrixSilentMicScene,
   matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
@@ -226,6 +229,8 @@ interface BackendStatus extends BlindStatusSlice {
   handsFree?: boolean;
   /** yap24-PILL4 — lib.rs `AppStatus.chord_label`: the key that ends the latch. */
   chordLabel?: string;
+  /** WF-13 — lib.rs `AppStatus.silent_mic_warning`: "I can't hear <mic>". */
+  silentMicWarning?: string | null;
 }
 
 /** The `transcript` event, for its word count only (lib.rs:2509). */
@@ -251,6 +256,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixBacktrackCaughtScene(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
+    // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
+    matrixSilentMicScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
     matrixRailScene(),
     // WF-02 — the pill mid-drag: the blob plus its three drop zones.
@@ -264,6 +271,30 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
   }
 }
+
+/**
+ * WF-04 — right-click (or Ctrl-click, which WebKit reports as the same
+ * `contextmenu` event) on the pill pops Yap's native pill menu: Hide for 1
+ * hour, the three docks, Microphone, Languages, Open Scratchpad, Open Yap.
+ * The rows are decided in Rust from the menu bar's own item table
+ * (`tray_menu::pill_context_menu`), so nothing about them lives here. A text
+ * field inside a card keeps the system's Cut / Copy / Paste menu.
+ */
+function wantsPillMenu(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (!el) return true;
+  return !el.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+}
+
+window.addEventListener("contextmenu", (e) => {
+  if (!wantsPillMenu(e.target)) return;
+  e.preventDefault();
+  invoke("pill_context_menu").catch((err: unknown) => {
+    // Rust already logged the cause; the pill has no toast surface, and the
+    // menu bar icon carries every row of this menu.
+    console.warn("pill context_menu failed", err);
+  });
+});
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
@@ -296,6 +327,8 @@ function Float() {
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
+  // WF-13 — the live take's mic records nothing (record.rs SilentMicCheck).
+  const [silentMic, setSilentMic] = useState<string | null>(null);
   // yap24-PILL4 — the key that ends a hands-free take, off the status payload.
   const [chordLabel, setChordLabel] = useState<string>(DEFAULT_STOP_KEY);
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
@@ -437,6 +470,7 @@ function Float() {
       if (!st) return;
       setLastErrorCode(st.lastError ? st.lastErrorCode ?? "take_failed" : null);
       setStillRecording(!!st.recording && !!st.stillRecording);
+      setSilentMic(st.recording ? parseSilentMicWarning(st.silentMicWarning) : null);
       const nextBlind = blindFromStatus(st);
       // Keep the same object while nothing changed: every status emit (HUD
       // cadence while recording) would otherwise re-render the shell.
@@ -614,7 +648,11 @@ function Float() {
   const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
   const cardH = useCardOnScreen();
-  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
+  // WF-13 — while "I can't hear <mic>" is up, the hint slot holds its two-row
+  // chip (SILENT_MIC_ROW_H), so the layout reserves SILENT_MIC_HINT_LINES.
+  const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
+  const silentMicUp = silentMicShows(silentMicWarning, phase);
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
       <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
@@ -702,6 +740,13 @@ function Float() {
           when app-aware modes are off. A later sibling of .bar, so the side
           dock rules in float.css can place it like the phase line. */}
       <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
+      {/* WF-13 — "I can't hear <mic>" + Switch mic, while the take keeps
+          recording. Takes the hint row; the style chip yields it (float.css). */}
+      <SilentMicRow
+        warning={silentMicWarning}
+        phase={phase}
+        forced={!!FORCED}
+      />
     </>
   );
 }
@@ -717,8 +762,9 @@ function usePanelLayout(
   dock: BarDock,
   character: LayoutCharacter,
   cardH: number | null,
+  hintLines?: number,
 ): PillLayout {
-  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null, hintLines });
   return useMemo(() => next, [next.key]);
 }
 

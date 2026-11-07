@@ -413,6 +413,7 @@ pub fn start_recording(
     journal_dir: &Path,
     denoise: bool,
     pressed_at: Option<Instant>,
+    stream_vad: Option<Arc<vad::WarmVad>>,
 ) -> Result<ActiveRecording, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let wav_path = dir.join(format!("{}.wav", Uuid::new_v4()));
@@ -424,11 +425,20 @@ pub fn start_recording(
     // history wav as it is captured, so a long dictation costs a bounded window
     // of RAM instead of growing two Vecs for as long as the key is held.
     let spill = SpillWriter::open(&wav_path, journal_dir).map(Box::new);
+    // SP-06 — with denoise on, the take's release DSP runs WHILE it is
+    // captured: RNNoise frame by frame, and Silero on each frame through the
+    // warm second session (when one is loaded and free).
+    let analysis = denoise.then(|| {
+        let vad = stream_vad.as_ref().and_then(vad::WarmVad::begin_stream);
+        log::info!("record stream_dsp_armed vad={}", vad.is_some());
+        Box::new(TakeAnalysis::new(true, vad))
+    });
 
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Arm {
         journal,
         spill,
+        analysis,
         reply: reply_tx,
     })?;
     await_reply(&reply_rx, ARM_TIMEOUT, "arm")?;
@@ -531,10 +541,39 @@ pub fn finish_recording(
     // YV67: the device's health at Disarm belongs to THIS take — read it off
     // before `finalize_take` consumes the capture.
     let device_failed = captured.device_failed;
-    // Everything that CAN stream already ran on the capture frames (YV37); this
-    // only finishes the take — apply the accumulated AGC gain, de-click the
-    // edges, optionally denoise — and yields the 16 kHz mono buffer ASR reads.
-    let mut samples = finalize_take(captured, active.denoise)?;
+    // SP-06 — with denoise on, the edge fade, RNNoise and Silero already ran
+    // over the capture frame by frame; what is left is their tails and the
+    // gain. Anything that does not check out falls to the batch chain below.
+    let t_release = Instant::now();
+    let gain = captured.gain;
+    let (mut samples, mut streamed_vad) = match captured.analysis.take().map(|a| (*a).finish(gain))
+    {
+        Some(Ok(done)) if !done.out.is_empty() => {
+            let samples = if gain == 1.0 {
+                done.out
+            } else {
+                apply_gain(&done.out, gain)
+            };
+            log::info!(
+                "record stream_release ok=true ms={} samples={} vad_frames={}",
+                t_release.elapsed().as_millis(),
+                samples.len(),
+                done.vad.as_ref().map_or(0, vad::StreamIsolation::frames)
+            );
+            (samples, done.vad)
+        }
+        other => {
+            if let Some(Err(e)) = &other {
+                log::warn!("record stream_release ok=false reason=\"{e}\" -> batch chain");
+            }
+            drop(other);
+            // Everything that CAN stream already ran on the capture frames
+            // (YV37); this only finishes the take — apply the accumulated AGC
+            // gain, de-click the edges, optionally denoise — and yields the
+            // 16 kHz mono buffer ASR reads.
+            (finalize_take(captured, active.denoise)?, None)
+        }
+    };
 
     // Y3-F — the declared ceiling is enforced on the AUDIO, not only on the
     // watchdog that normally trips first. The watchdog stops the take within one
@@ -573,8 +612,13 @@ pub fn finish_recording(
     let take_pauses = pause_spans(&samples, TARGET_RATE);
 
     // YV36 — Silero VAD voice isolation (see `silero_trim`). SP-03: the same
-    // function is what `wilson-voice --bench` runs over a file.
-    let (samples, speech_present) = silero_trim(samples, isolation_vad);
+    // function is what `wilson-voice --bench` runs over a file. SP-06: when the
+    // take streamed through Silero, the verdict is already made — only the
+    // trim's copy is left.
+    let (samples, speech_present) = match streamed_vad.take() {
+        Some(stream) => streamed_trim(samples, stream, isolation_vad),
+        None => silero_trim(samples, isolation_vad),
+    };
 
     // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
     // runs alongside transcription + paste instead of sitting between key-release
@@ -614,38 +658,59 @@ pub fn finish_recording(
 /// energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
 /// Returns the ASR buffer (trimmed to the voiced span when Silero found speech)
 /// and whether speech is present.
-fn silero_trim(mut samples: Vec<f32>, isolation_vad: Option<&vad::WarmVad>) -> (Vec<f32>, bool) {
-    let mut speech_present = true;
+fn silero_trim(samples: Vec<f32>, isolation_vad: Option<&vad::WarmVad>) -> (Vec<f32>, bool) {
     if let Some(warm) = isolation_vad {
         match warm.isolate(&samples, TARGET_RATE) {
-            Ok(iso) => {
-                speech_present = iso.has_speech;
-                // (b) Trim the ASR buffer to the voiced span so Whisper decodes
-                // only the speech (never trim to empty — if Silero found speech we
-                // keep its padded span). Since YV37 this is a plain in-memory swap
-                // instead of a wav rewrite. We do NOT touch `voiced`/`speech_seconds`:
-                // WPM stays anchored to the energy VAD over the full utterance.
-                let did_trim = iso.trimmed.is_some();
-                if iso.has_speech {
-                    if let Some(trimmed) = iso.trimmed {
-                        if !trimmed.is_empty() {
-                            samples = trimmed;
-                        }
-                    }
-                }
-                log::info!(
-                    "YV36 silero: has_speech={} voiced={:.2}s trimmed={}",
-                    iso.has_speech,
-                    iso.voiced_seconds,
-                    did_trim
-                );
-            }
+            Ok(iso) => return apply_isolation(samples, iso, false),
             Err(e) => {
                 // Safe fallback — energy VAD alone decides the gate.
                 log::warn!("YV36 silero unavailable, using energy VAD: {e}");
             }
         }
     }
+    (samples, true)
+}
+
+/// SP-06 — the streamed take's Silero verdict over its final buffer. A stream
+/// that cannot vouch for the buffer (inference failed mid-take, or the session
+/// ceiling cut the clip after capture) hands over to the batch pass.
+fn streamed_trim(
+    samples: Vec<f32>,
+    stream: vad::StreamIsolation<'_>,
+    isolation_vad: Option<&vad::WarmVad>,
+) -> (Vec<f32>, bool) {
+    let frames = stream.frames();
+    match stream.finish(&samples, TARGET_RATE) {
+        Ok(iso) => apply_isolation(samples, iso, true),
+        Err(e) => {
+            log::warn!("record stream_vad ok=false frames={frames} reason=\"{e}\" -> batch silero");
+            silero_trim(samples, isolation_vad)
+        }
+    }
+}
+
+/// Apply one isolation verdict (batch or streamed) to the ASR buffer.
+fn apply_isolation(mut samples: Vec<f32>, iso: vad::Isolation, streamed: bool) -> (Vec<f32>, bool) {
+    let speech_present = iso.has_speech;
+    // (b) Trim the ASR buffer to the voiced span so Whisper decodes only the
+    // speech (never trim to empty — if Silero found speech we keep its padded
+    // span). Since YV37 this is a plain in-memory swap instead of a wav
+    // rewrite. We do NOT touch `voiced`/`speech_seconds`: WPM stays anchored to
+    // the energy VAD over the full utterance.
+    let did_trim = iso.trimmed.is_some();
+    if iso.has_speech {
+        if let Some(trimmed) = iso.trimmed {
+            if !trimmed.is_empty() {
+                samples = trimmed;
+            }
+        }
+    }
+    log::info!(
+        "YV36 silero: has_speech={} voiced={:.2}s trimmed={} streamed={streamed}",
+        speech_present,
+        iso.voiced_seconds,
+        did_trim
+    );
     (samples, speech_present)
 }
 
@@ -696,6 +761,66 @@ pub(crate) fn bench_release_dsp(
     // Same work the live take does on release; the bench only pays for it.
     let _pauses = pause_spans(&out, TARGET_RATE);
     let (samples, speech_present) = silero_trim(out, isolation_vad);
+    Ok(BenchDsp {
+        samples,
+        voiced_seconds: voiced,
+        speech_present,
+    })
+}
+
+/// SP-06 — what a capture callback hands the DSP at 16 kHz (~10.6 ms), the
+/// chunk the bench streams a file in.
+const BENCH_CALLBACK_SAMPLES: usize = 170;
+
+/// SP-06 — the bench's capture half of the streamed release DSP: feed a
+/// leveled file through [`TakeAnalysis`] in callback-sized chunks, exactly as
+/// the capture worker does while the key is held. Runs BEFORE the bench's
+/// release clock. `None` when nothing would stream (denoise off, no VAD).
+pub(crate) fn bench_capture_stream<'a>(
+    leveled: &[f32],
+    denoise: bool,
+    isolation_vad: Option<&'a vad::WarmVad>,
+) -> Option<TakeAnalysis<'a>> {
+    let vad = isolation_vad.and_then(vad::WarmVad::begin_stream_local);
+    if !denoise && vad.is_none() {
+        return None;
+    }
+    let mut analysis = TakeAnalysis::new(denoise, vad);
+    for chunk in leveled.chunks(BENCH_CALLBACK_SAMPLES) {
+        analysis.push(chunk, 1.0);
+    }
+    Some(analysis)
+}
+
+/// SP-06 — [`bench_release_dsp`] for a take that streamed: only the tails of
+/// the fade, RNNoise and Silero are left for the release clock. Byte-identical
+/// to the batch function on the same input (test); any stream that cannot
+/// vouch for its output runs the batch function instead.
+pub(crate) fn bench_release_streamed(
+    leveled: &[f32],
+    denoise: bool,
+    isolation_vad: Option<&vad::WarmVad>,
+    streamed: Option<TakeAnalysis<'_>>,
+) -> Result<BenchDsp, String> {
+    let Some(analysis) = streamed else {
+        return bench_release_dsp(leveled, denoise, isolation_vad);
+    };
+    let done = match analysis.finish(1.0) {
+        Ok(done) if !done.out.is_empty() => done,
+        Ok(_) => return Err(NO_AUDIO_ERR.into()),
+        Err(e) => {
+            log::warn!("bench stream_release ok=false reason=\"{e}\" -> batch chain");
+            return bench_release_dsp(leveled, denoise, isolation_vad);
+        }
+    };
+    let StreamedTake { out, vad } = done;
+    // The energy VAD is unchanged: whole-buffer, over the untrimmed take.
+    let voiced = voiced_seconds(&out, TARGET_RATE);
+    let _pauses = pause_spans(&out, TARGET_RATE);
+    let (samples, speech_present) = match vad {
+        Some(stream) => streamed_trim(out, stream, isolation_vad),
+        None => silero_trim(out, isolation_vad),
+    };
     Ok(BenchDsp {
         samples,
         voiced_seconds: voiced,
@@ -1791,6 +1916,228 @@ fn is_mid_take_switch(from: &str, to: &str, armed: bool) -> bool {
     armed && !to.is_empty() && from != to
 }
 
+// ── WF-13: "I can't hear <mic>" ─────────────────────────────────────────────
+// A take whose first 1.5 s carries no sound at all — a muted interface, a
+// headset with its hardware mute on, a virtual input with nothing routed into
+// it — used to run to the end and come back as an empty dictation. The capture
+// consumer now listens to that opening window, and if it is below the silence
+// floor the pill says "I can't hear <mic>" with a Switch mic button while the
+// take KEEPS recording (the warning never stops capture). It fires at most once
+// per take, and it goes away the moment real sound arrives.
+
+/// How much of the take's opening is judged.
+pub const SILENT_MIC_WINDOW: Duration = Duration::from_millis(1500);
+
+/// The silence floor, as an AMPLITUDE (half the peak-to-peak swing, full scale
+/// = 1.0) — about -66 dBFS. A dead or muted input delivers digital zero or a
+/// few LSBs of converter noise (~1e-5); a live mic in a quiet room idles at
+/// -60 dBFS and up, and the quietest speech the `ORPHAN_SILENCE_RMS` forensics
+/// measured sits near 0.002 RMS with peaks well above this. Peak-to-peak (not
+/// raw peak) so an interface that idles at a DC offset still reads silent.
+pub const SILENT_MIC_FLOOR: f32 = 0.0005;
+
+/// What one block of the take's audio changed about the silent-mic verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SilentMicEvent {
+    /// Nothing to report (still inside the window, or already decided).
+    None,
+    /// The opening window closed below the floor: warn — once.
+    Silent,
+    /// After a `Silent`, sound finally arrived: clear the warning — once.
+    Recovered,
+}
+
+/// WF-13 — the level check over a take's opening window. Pure (no clock, no
+/// device): it counts frames, so the unit tests feed it recorded fixtures.
+#[derive(Debug, Clone)]
+pub struct SilentMicCheck {
+    channels: usize,
+    window_frames: u64,
+    seen_frames: u64,
+    lo: f32,
+    hi: f32,
+    /// `Some(true)` = warned and still silent, `Some(false)` = decided (heard
+    /// sound, or recovered). `None` = still inside the window.
+    state: Option<bool>,
+}
+
+impl SilentMicCheck {
+    pub fn new(sample_rate: u32, channels: usize) -> Self {
+        let rate = u64::from(sample_rate.max(1));
+        Self {
+            channels: channels.max(1),
+            window_frames: rate * SILENT_MIC_WINDOW.as_millis() as u64 / 1000,
+            seen_frames: 0,
+            lo: f32::INFINITY,
+            hi: f32::NEG_INFINITY,
+            state: None,
+        }
+    }
+
+    /// Has the opening window been judged yet?
+    #[cfg(test)]
+    pub fn decided(&self) -> bool {
+        self.state.is_some()
+    }
+
+    /// Feed the take's next INTERLEAVED block (native rate, `channels` wide).
+    pub fn feed(&mut self, interleaved: &[f32]) -> SilentMicEvent {
+        match self.state {
+            Some(false) => SilentMicEvent::None,
+            Some(true) => {
+                if block_amplitude(interleaved) > SILENT_MIC_FLOOR {
+                    self.state = Some(false);
+                    SilentMicEvent::Recovered
+                } else {
+                    SilentMicEvent::None
+                }
+            }
+            None => {
+                let frames = (interleaved.len() / self.channels) as u64;
+                let room = self.window_frames.saturating_sub(self.seen_frames);
+                let take = frames.min(room) as usize * self.channels;
+                for &s in &interleaved[..take.min(interleaved.len())] {
+                    if s.is_finite() {
+                        self.lo = self.lo.min(s);
+                        self.hi = self.hi.max(s);
+                    }
+                }
+                self.seen_frames += frames.min(room);
+                if self.amplitude() > SILENT_MIC_FLOOR {
+                    // Sound inside the window: decided early, never warns.
+                    self.state = Some(false);
+                    return SilentMicEvent::None;
+                }
+                if self.seen_frames >= self.window_frames {
+                    self.state = Some(true);
+                    return SilentMicEvent::Silent;
+                }
+                SilentMicEvent::None
+            }
+        }
+    }
+
+    fn amplitude(&self) -> f32 {
+        if self.hi < self.lo {
+            0.0
+        } else {
+            (self.hi - self.lo) * 0.5
+        }
+    }
+}
+
+/// Half the peak-to-peak swing of a block (0.0 for an empty one).
+fn block_amplitude(block: &[f32]) -> f32 {
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for &s in block.iter().filter(|s| s.is_finite()) {
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    if hi < lo {
+        0.0
+    } else {
+        (hi - lo) * 0.5
+    }
+}
+
+/// The pill line. The name is the one Settings shows; never empty, never a path.
+pub fn silent_mic_note(mic: &str) -> String {
+    let mic = mic.trim();
+    if mic.is_empty() {
+        "I can't hear your microphone".to_string()
+    } else {
+        format!("I can't hear {mic}")
+    }
+}
+
+fn silent_mic_slot() -> &'static Mutex<Option<String>> {
+    static NOTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    NOTE.get_or_init(|| Mutex::new(None))
+}
+
+fn armed_mic_slot() -> &'static Mutex<String> {
+    static NAME: OnceLock<Mutex<String>> = OnceLock::new();
+    NAME.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Bumped at every Arm: the take the silent-mic warning belongs to.
+static SILENT_MIC_TAKE: AtomicU64 = AtomicU64::new(0);
+/// The take the warning last fired for — the once-per-take gate. A mid-take
+/// reopen (WF-10) starts a new consumer with a fresh check, and this is what
+/// keeps the second device from warning a second time in the same take.
+static SILENT_MIC_FIRED_FOR: AtomicU64 = AtomicU64::new(0);
+
+/// The pure once-per-take gate: true only for the FIRST claim of `take`.
+fn claim_once(fired_for: &AtomicU64, take: u64) -> bool {
+    take != 0 && fired_for.swap(take, Ordering::SeqCst) != take
+}
+
+/// The warning for the take in flight, if its mic is silent.
+pub fn silent_mic_warning() -> Option<String> {
+    silent_mic_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// A new take: forget the last take's warning and remember which mic it opened on.
+fn begin_silent_mic_take(device_name: &str) {
+    SILENT_MIC_TAKE.fetch_add(1, Ordering::SeqCst);
+    *armed_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = device_name.to_string();
+    *silent_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// A mid-take reopen moved the take to `device_name`: the old mic's warning no
+/// longer describes it (the WF-10 note replaces it).
+fn retarget_silent_mic(device_name: &str) {
+    *armed_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) = device_name.to_string();
+    let had = silent_mic_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .is_some();
+    if had {
+        MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Apply one check event to the shared slot (the HUD loop redraws on the seq).
+fn apply_silent_mic_event(event: SilentMicEvent) {
+    match event {
+        SilentMicEvent::None => {}
+        SilentMicEvent::Silent => {
+            let take = SILENT_MIC_TAKE.load(Ordering::SeqCst);
+            if !claim_once(&SILENT_MIC_FIRED_FOR, take) {
+                return;
+            }
+            let mic = armed_mic_slot()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            *silent_mic_slot().lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(silent_mic_note(&mic));
+            MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+            log::warn!(
+                "record silent_mic_warned window_ms={} floor={} named={}",
+                SILENT_MIC_WINDOW.as_millis(),
+                SILENT_MIC_FLOOR,
+                !mic.trim().is_empty()
+            );
+        }
+        SilentMicEvent::Recovered => {
+            let had = silent_mic_slot()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+                .is_some();
+            if had {
+                MIC_SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
+                log::info!("record silent_mic_recovered");
+            }
+        }
+    }
+}
+
 pub(crate) const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 pub(crate) const NO_SAMPLES_ERR: &str =
     "No samples captured. Enable Microphone for Yap in System Settings.";
@@ -1823,6 +2170,11 @@ struct CapturedAudio {
     /// device error while this take was being held? The DSP never sets it; the
     /// worker does, because only the worker owns the stream.
     device_failed: bool,
+    /// SP-06 — the release-side DSP (edge fade, denoise, Silero) already run
+    /// over this take frame by frame during capture. `None` when the take was
+    /// not analysed (denoise off) or the analysis fell out of step with the
+    /// capture; `finish_recording` then runs the batch chain, as before.
+    analysis: Option<Box<TakeAnalysis<'static>>>,
 }
 
 /// Stamp a finished take with the capture device's health (YV67).
@@ -1854,6 +2206,9 @@ enum CaptureCmd {
         /// Boxed: the writer is ~16x every other command, and every command
         /// on this channel would otherwise pay for its size.
         spill: Option<Box<SpillWriter>>,
+        /// SP-06 — this take's streamed release DSP, installed with the take so
+        /// it sees the first sample.
+        analysis: Option<Box<TakeAnalysis<'static>>>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     /// Stop buffering and hand back the take. The stream STAYS open.
@@ -2091,11 +2446,24 @@ impl LiveStream {
     /// SAFE, because a meeting's audio does not live in `StreamDsp` — it is a
     /// separate consumer of the same fanned-out block. Wiping the take state
     /// here can no longer wipe a meeting that is recording.
+    #[cfg(test)]
     fn begin(&mut self, journal: Option<CaptureJournal>, spill: Option<SpillWriter>) {
+        self.begin_with(journal, spill, None);
+    }
+
+    /// [`Self::begin`] with the take's SP-06 streamed analysis, installed under
+    /// the same lock as the reset so it sees the take's first sample.
+    fn begin_with(
+        &mut self,
+        journal: Option<CaptureJournal>,
+        spill: Option<SpillWriter>,
+        analysis: Option<Box<TakeAnalysis<'static>>>,
+    ) {
         if let Ok(mut dsp) = self.dsp.lock() {
             dsp.reset();
             dsp.journal = journal;
             dsp.spill = spill;
+            dsp.analysis = analysis;
         }
         self.watch.restart_segments();
         capture_level().store(0, Ordering::Relaxed);
@@ -2129,6 +2497,7 @@ impl LiveStream {
                 gain: 1.0,
                 journal: None,
                 device_failed: false,
+                analysis: None,
             })
     }
 
@@ -2375,6 +2744,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
             Ok(CaptureCmd::Arm {
                 journal,
                 spill,
+                analysis,
                 reply,
             }) => {
                 // A stream whose device errored (unplugged, format changed) is
@@ -2411,7 +2781,9 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     }
                     // WF-10 — a fresh take starts with no "continuing on" note.
                     clear_mid_take_note();
-                    stream.begin(journal, spill.map(|s| *s));
+                    // WF-13 — a fresh take is judged on its own opening 1.5 s.
+                    begin_silent_mic_take(&stream.device_name);
+                    stream.begin_with(journal, spill.map(|s| *s), analysis);
                     let _ = reply.send(Ok(()));
                 }
             }
@@ -2741,6 +3113,7 @@ fn reopen_with(
                 live.window.open(0);
             }
             if switched {
+                retarget_silent_mic(&live.device_name);
                 note_mid_take_switch(&live.device_name, device_lost);
                 log::warn!(
                     "mic_select switched_mid_take device_lost={device_lost} kept_samples={}",
@@ -3039,6 +3412,9 @@ fn capture_consumer_loop(
     level: LevelHandle,
 ) {
     let channels = rt.channels().max(1) as usize;
+    // WF-13 — the silent-mic check for the take this consumer is serving,
+    // keyed on the arm window's start so every new take gets a fresh one.
+    let mut silent_check: Option<(u64, SilentMicCheck)> = None;
     let mut block: Vec<f32> = Vec::with_capacity(crate::meeting::RING_FRAMES);
     let mut anchors: Vec<crate::rtring::CaptureAnchor> =
         Vec::with_capacity(crate::meeting::ANCHOR_RING_LEN);
@@ -3077,6 +3453,12 @@ fn capture_consumer_loop(
         drop(guard);
 
         if let Some(range) = armed_slice {
+            if silent_check.as_ref().map(|(at, _)| *at) != Some(from) {
+                silent_check = Some((from, SilentMicCheck::new(rt.sample_rate(), channels)));
+            }
+            if let Some((_, check)) = silent_check.as_mut() {
+                apply_silent_mic_event(check.feed(&block[range.clone()]));
+            }
             push_level(&level, &block[range]);
         } else if crate::meeting::meeting_capture_active() {
             push_level(&level, &block);
@@ -3433,6 +3815,9 @@ struct StreamDsp {
     /// and handed back by `take`. `None` between takes (and whenever journalling
     /// could not be started), which turns every spill below into a no-op.
     journal: Option<CaptureJournal>,
+    /// SP-06 — the take's release DSP, fed every 16 kHz sample as it lands in
+    /// `out`. Dropped by `reset` (its Silero session goes back to the warm VAD).
+    analysis: Option<Box<TakeAnalysis<'static>>>,
 }
 
 impl StreamDsp {
@@ -3451,6 +3836,7 @@ impl StreamDsp {
             spilled: 0,
             mono: Vec::new(),
             journal: None,
+            analysis: None,
         }
     }
 
@@ -3487,6 +3873,8 @@ impl StreamDsp {
         if let Some(journal) = self.journal.as_ref() {
             journal.append(&self.out[before..]);
         }
+        // SP-06: the flushed tail is part of the take — the analysis sees it too.
+        self.feed_analysis(before);
         // yap-audit-meeting-timings: while a meeting records, the number that
         // matters is the MEETING's — this take's counter is 0 whenever nobody
         // is dictating, which is what made a retune 30 minutes into a meeting
@@ -3569,6 +3957,9 @@ impl StreamDsp {
         if let Some(journal) = self.journal.as_ref() {
             journal.append(&self.out[before..]);
         }
+        // SP-06: …and through the release DSP + Silero, frame by frame, so the
+        // take is analysed by the time the key comes up.
+        self.feed_analysis(before);
         // …and Y3's drain: everything behind the working window goes to the
         // take's own WAV, so `out` stops growing with the length of the take.
         self.drain_to_spill(false);
@@ -3607,19 +3998,51 @@ impl StreamDsp {
             + self.resampler.resident_bytes()
     }
 
-    /// Close the take: flush the resampler's tail and hand the buffers over.
-    fn take(&mut self) -> CapturedAudio {
-        let before_tail = self.out.len();
-        self.resampler.finish(&mut self.out);
-        let rms = if self.finite && self.counted > 0 {
+    /// The soft-AGC gain over the take so far — at `take` time, the take's
+    /// gain. SP-06 scales what Silero sees by it during capture, so the
+    /// detector hears roughly the level the batch pass used to.
+    fn running_gain(&self) -> f32 {
+        if !self.finite {
+            return 1.0;
+        }
+        let rms = if self.counted > 0 {
             (self.sum_sq / self.counted as f64).sqrt() as f32
         } else {
             0.0
         };
-        let gain = if self.finite {
-            agc_gain(rms, self.peak, NORMALIZE_TARGET_DBFS)
-        } else {
-            1.0
+        agc_gain(rms, self.peak, NORMALIZE_TARGET_DBFS)
+    }
+
+    /// SP-06 — hand `out[from..]` (just resampled) to the take's analysis.
+    fn feed_analysis(&mut self, from: usize) {
+        if self.analysis.is_none() || from >= self.out.len() {
+            return;
+        }
+        let gain = self.running_gain();
+        if let Some(analysis) = self.analysis.as_mut() {
+            analysis.push(&self.out[from..], gain);
+        }
+    }
+
+    /// Close the take: flush the resampler's tail and hand the buffers over.
+    fn take(&mut self) -> CapturedAudio {
+        let before_tail = self.out.len();
+        self.resampler.finish(&mut self.out);
+        let gain = self.running_gain();
+        self.feed_analysis(before_tail);
+        // SP-06: the analysis is only worth anything if it saw EVERY sample of
+        // the take; anything else and the batch chain decides.
+        let captured_total = self.spilled + self.out.len();
+        let analysis = match self.analysis.take() {
+            Some(a) if a.fed() == captured_total => Some(a),
+            Some(a) => {
+                log::warn!(
+                    "record stream_dsp_out_of_step analysed={} captured={captured_total}",
+                    a.fed()
+                );
+                None
+            }
+            None => None,
         };
         // Y3: the resampler's tail has landed, so the take is complete — push
         // ALL of it to the spill and close the file. When there is a spill the
@@ -3646,6 +4069,7 @@ impl StreamDsp {
             journal: self.journal.take(),
             // A device error is stamped by the worker at Disarm (YV67), not here.
             device_failed: false,
+            analysis,
         };
         self.reset();
         captured
@@ -3939,6 +4363,361 @@ fn denoise_rnnoise(samples: &[f32], sample_rate: u32) -> Vec<f32> {
         return samples.to_vec();
     }
     restored
+}
+
+// ── SP-06: the release-side DSP, streamed during capture ───────────────────
+// Before SP-06 a stop paid for the edge fade, RNNoise and Silero over the whole
+// take (≈1.5 s on a 240 s take, 6.1 s on a 281 s one). Every one of them is a
+// streaming computation with a short edge: the fade-in only needs the first
+// 5 ms, RNNoise is a recurrent 10 ms-frame model, Silero a recurrent 30 ms-frame
+// one. So they run as the capture ring drains, and the stop only pays for the
+// last 5 ms of fade, RNNoise's one-frame flush and Silero's last frame.
+//
+// The arithmetic is the batch chain's, sample for sample (tests prove the
+// stream byte-identical to `edge_fade` + `denoise_rnnoise` + `WarmVad::isolate`
+// on the same input). The one live-path difference is the AGC gain, which is
+// only known at stop: the stream runs on the un-gained take and the gain is
+// applied to its output (and Silero hears the running gain), where the batch
+// chain applied it first.
+
+/// [`resample_linear`], one chunk at a time. Every output sample is the same
+/// expression over the same two inputs as the batch function, so the stream is
+/// byte-identical to it (test). What a stream cannot know early is the clip's
+/// length, which decides the output count and clamps the last interpolation;
+/// both are settled in [`Self::finish`].
+struct LinearStream {
+    ratio: f64,
+    /// Input retained from global index `base` on.
+    buf: Vec<f32>,
+    base: usize,
+    /// Next output index.
+    next: usize,
+}
+
+impl LinearStream {
+    fn new(from: u32, to: u32) -> Self {
+        Self {
+            ratio: from as f64 / to as f64,
+            buf: Vec::new(),
+            base: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        self.buf.extend_from_slice(input);
+        let have = self.base + self.buf.len();
+        loop {
+            let src = self.next as f64 * self.ratio;
+            let i0 = src.floor() as usize;
+            // Both neighbours must be in hand; the last sample's clamp waits
+            // for `finish`.
+            if i0 + 1 >= have {
+                break;
+            }
+            let t = (src - i0 as f64) as f32;
+            out.push(self.buf[i0 - self.base] * (1.0 - t) + self.buf[i0 + 1 - self.base] * t);
+            self.next += 1;
+        }
+        let keep_from = ((self.next as f64 * self.ratio).floor() as usize).min(have);
+        if keep_from > self.base {
+            self.buf.drain(..keep_from - self.base);
+            self.base = keep_from;
+        }
+    }
+
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        let len = self.base + self.buf.len();
+        if len == 0 {
+            return;
+        }
+        let out_len = ((len as f64) / self.ratio).floor() as usize;
+        while self.next < out_len {
+            let src = self.next as f64 * self.ratio;
+            let i0 = src.floor() as usize;
+            let i1 = (i0 + 1).min(len - 1);
+            let t = (src - i0 as f64) as f32;
+            out.push(self.buf[i0 - self.base] * (1.0 - t) + self.buf[i1 - self.base] * t);
+            self.next += 1;
+        }
+    }
+
+    /// Outputs produced so far (after `finish`: the batch output length).
+    fn produced(&self) -> usize {
+        self.next
+    }
+}
+
+/// RNNoise's frame at 48 kHz (10 ms).
+const DENOISE_FRAME: usize = DenoiseState::FRAME_SIZE;
+
+/// [`denoise_rnnoise`] frame by frame: the same 16→48 kHz interpolation, the
+/// same i16-range frames through one recurrent state, the same one-frame
+/// delay dropped, the same 48→16 kHz return and the same never-gut-the-take
+/// guard — the guard and the zero-padded flush in [`Self::finish`].
+struct StreamDenoise {
+    state: Box<DenoiseState<'static>>,
+    up: LinearStream,
+    down: LinearStream,
+    /// The 48 kHz frame not yet whole, already i16-scaled.
+    frame_in: Vec<f32>,
+    frames: usize,
+    /// Denoised 48 kHz samples produced, the delay frame included.
+    produced48: usize,
+    fed16: usize,
+    /// Σx² over the 16 kHz input, summed in input order like `rms_energy`.
+    in_sq: f64,
+    finite: bool,
+    at48: Vec<f32>,
+    aligned: Vec<f32>,
+}
+
+impl StreamDenoise {
+    fn new() -> Self {
+        Self {
+            state: DenoiseState::new(),
+            up: LinearStream::new(TARGET_RATE, RNNOISE_SR),
+            down: LinearStream::new(RNNOISE_SR, TARGET_RATE),
+            frame_in: Vec::with_capacity(DENOISE_FRAME),
+            frames: 0,
+            produced48: 0,
+            fed16: 0,
+            in_sq: 0.0,
+            finite: true,
+            at48: Vec::new(),
+            aligned: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, x16: &[f32], out: &mut Vec<f32>) {
+        self.fed16 += x16.len();
+        for &x in x16 {
+            if !x.is_finite() {
+                self.finite = false;
+            }
+            self.in_sq += (x as f64) * (x as f64);
+        }
+        if !self.finite {
+            return;
+        }
+        self.at48.clear();
+        self.up.push(x16, &mut self.at48);
+        self.run_frames(out);
+    }
+
+    /// Frame `at48`, denoise every whole frame, return the aligned output to 16 kHz.
+    fn run_frames(&mut self, out: &mut Vec<f32>) {
+        self.aligned.clear();
+        let mut at = 0;
+        while at < self.at48.len() {
+            let take = (DENOISE_FRAME - self.frame_in.len()).min(self.at48.len() - at);
+            self.frame_in.extend(
+                self.at48[at..at + take]
+                    .iter()
+                    .map(|&s| s * i16::MAX as f32),
+            );
+            at += take;
+            if self.frame_in.len() == DENOISE_FRAME {
+                self.run_one();
+            }
+        }
+        self.down.push(&self.aligned, out);
+    }
+
+    fn run_one(&mut self) {
+        let mut out_frame = [0.0f32; DENOISE_FRAME];
+        self.state.process_frame(&mut out_frame, &self.frame_in);
+        for &o in out_frame.iter() {
+            // The first frame out is RNNoise's algorithmic delay — dropped, so
+            // the output re-aligns sample for sample with the input.
+            if self.produced48 >= DENOISE_FRAME {
+                self.aligned.push(o / i16::MAX as f32);
+            }
+            self.produced48 += 1;
+        }
+        self.frames += 1;
+        self.frame_in.clear();
+    }
+
+    /// Flush the tail into `out` (which holds ONLY this stream's output).
+    /// `false` = the batch function would have returned its input unchanged,
+    /// so `out` must not be used.
+    fn finish(&mut self, out: &mut Vec<f32>) -> bool {
+        if !self.finite || self.fed16 < DENOISE_FRAME {
+            return false;
+        }
+        self.at48.clear();
+        self.up.finish(&mut self.at48);
+        self.run_frames(out);
+        let len48 = self.up.produced();
+        if len48 < DENOISE_FRAME {
+            return false;
+        }
+        // The batch pass runs one zero frame past the end (plus the zero-padded
+        // partial frame) to flush the delay, then keeps exactly `len48`.
+        let total = len48 + DENOISE_FRAME;
+        self.aligned.clear();
+        while self.frames * DENOISE_FRAME < total {
+            self.frame_in.resize(DENOISE_FRAME, 0.0);
+            self.run_one();
+        }
+        let excess = (self.produced48 - DENOISE_FRAME).saturating_sub(len48);
+        let keep = self.aligned.len().saturating_sub(excess);
+        self.aligned.truncate(keep);
+        self.down.push(&self.aligned, out);
+        self.down.finish(out);
+        if out.is_empty() || out.iter().any(|s| !s.is_finite()) {
+            return false;
+        }
+        let in_rms = (self.in_sq / self.fed16 as f64).sqrt() as f32;
+        let out_rms = rms_energy(out);
+        !(in_rms > 1e-5 && out_rms < in_rms * 0.05)
+    }
+}
+
+/// The edge fade's length in samples at the take rate (`edge_fade`'s own sum).
+fn edge_fade_samples() -> usize {
+    (TARGET_RATE as f32 * EDGE_FADE_MS / 1000.0) as usize
+}
+
+/// SP-06 — one take's release DSP, fed the 16 kHz capture as it lands: the
+/// edge fade (the fade-out tail is held back until the take's length is
+/// known), RNNoise when `denoise`, and Silero through a warm streamed session.
+///
+/// It keeps the finished (pre-gain) buffer in RAM, 64 KB per second of take,
+/// beside the Y3 spill: that buffer IS the ASR input, so the stop no longer
+/// reads the spill back. The spill stays the crash/recovery copy.
+pub(crate) struct TakeAnalysis<'a> {
+    fade: usize,
+    /// The last `fade` samples, not yet released (their fade-out factor
+    /// depends on the take's final length).
+    hold: Vec<f32>,
+    fed: usize,
+    released: usize,
+    finite: bool,
+    denoise: Option<StreamDenoise>,
+    /// The finished buffer so far (faded, denoised, before the AGC gain).
+    out: Vec<f32>,
+    vad: Option<vad::StreamIsolation<'a>>,
+    vad_fed: usize,
+    scratch: Vec<f32>,
+}
+
+/// A finished [`TakeAnalysis`]: the ASR buffer before the AGC gain, and the
+/// Silero pass that saw every frame of it.
+pub(crate) struct StreamedTake<'a> {
+    pub out: Vec<f32>,
+    pub vad: Option<vad::StreamIsolation<'a>>,
+}
+
+impl<'a> TakeAnalysis<'a> {
+    pub(crate) fn new(denoise: bool, vad: Option<vad::StreamIsolation<'a>>) -> Self {
+        Self {
+            fade: edge_fade_samples(),
+            hold: Vec::new(),
+            fed: 0,
+            released: 0,
+            finite: true,
+            denoise: denoise.then(StreamDenoise::new),
+            out: Vec::new(),
+            vad,
+            vad_fed: 0,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Samples of the take seen so far.
+    fn fed(&self) -> usize {
+        self.fed
+    }
+
+    /// Feed the next 16 kHz samples of the take. `vad_gain` scales what Silero
+    /// hears (`1.0` = untouched; the bench, and the identity tests).
+    pub(crate) fn push(&mut self, samples: &[f32], vad_gain: f32) {
+        self.fed += samples.len();
+        if !self.finite {
+            return;
+        }
+        if samples.iter().any(|s| !s.is_finite()) {
+            // The batch chain salvages a non-finite take; the stream does not try.
+            self.finite = false;
+            return;
+        }
+        // `apply_gain(x, 1.0)`: the batch chain's hard limit, gain applied later.
+        self.hold
+            .extend(samples.iter().map(|&s| s.clamp(-1.0, 1.0)));
+        if self.hold.len() <= self.fade {
+            return;
+        }
+        let release = self.hold.len() - self.fade;
+        self.scratch.clear();
+        for (k, &s) in self.hold[..release].iter().enumerate() {
+            let idx = self.released + k;
+            // `edge_fade`'s fade-in, the same factor expression.
+            self.scratch.push(if idx < self.fade {
+                s * (idx as f32 / self.fade as f32)
+            } else {
+                s
+            });
+        }
+        self.hold.drain(..release);
+        self.released += release;
+        self.forward(vad_gain);
+    }
+
+    fn forward(&mut self, vad_gain: f32) {
+        match self.denoise.as_mut() {
+            Some(dn) => dn.push(&self.scratch, &mut self.out),
+            None => self.out.extend_from_slice(&self.scratch),
+        }
+        self.feed_vad(vad_gain);
+    }
+
+    fn feed_vad(&mut self, gain: f32) {
+        if let Some(vad) = self.vad.as_mut() {
+            vad.push(&self.out[self.vad_fed..], gain);
+        }
+        self.vad_fed = self.out.len();
+    }
+
+    /// Close the take: fade out the held tail, flush RNNoise, decide Silero's
+    /// last frames. `Err` = use the batch chain (non-finite capture, a take
+    /// shorter than its two fades, or a denoise the batch guard would refuse).
+    pub(crate) fn finish(mut self, vad_gain: f32) -> Result<StreamedTake<'a>, String> {
+        if !self.finite {
+            return Err("non-finite capture".into());
+        }
+        let n = self.fed;
+        if n < 2 * self.fade {
+            return Err(format!(
+                "take of {n} samples is shorter than its edge fades"
+            ));
+        }
+        self.scratch.clear();
+        for (k, &s) in self.hold.iter().enumerate() {
+            let idx = self.released + k;
+            // `edge_fade`'s fade-out: sample n-1-i gets i/fade.
+            let i = n - 1 - idx;
+            self.scratch.push(if i < self.fade {
+                s * (i as f32 / self.fade as f32)
+            } else {
+                s
+            });
+        }
+        self.hold.clear();
+        self.released = n;
+        self.forward(vad_gain);
+        if let Some(mut dn) = self.denoise.take() {
+            if !dn.finish(&mut self.out) {
+                return Err("denoise would gut the take; batch guard decides".into());
+            }
+        }
+        self.feed_vad(vad_gain);
+        Ok(StreamedTake {
+            out: std::mem::take(&mut self.out),
+            vad: self.vad.take(),
+        })
+    }
 }
 
 /// The one float→PCM conversion in the app: hard-limited, then scaled. Shared by
@@ -5704,6 +6483,7 @@ mod tests {
                 gain: 1.0,
                 journal: None,
                 device_failed: false,
+                analysis: None,
             },
             true,
         );
@@ -5728,6 +6508,7 @@ mod tests {
                 gain: 1.0,
                 journal: None,
                 device_failed: true,
+                analysis: None,
             },
             false,
         );
@@ -5746,6 +6527,7 @@ mod tests {
             gain,
             journal: None,
             device_failed: false,
+            analysis: None,
         };
         let out = finalize_take(captured, false).expect("a normal take finalizes");
         assert_eq!(
@@ -5776,6 +6558,7 @@ mod tests {
                 gain: 1.0,
                 journal: None,
                 device_failed: false,
+                analysis: None,
             },
             false,
         )
@@ -5796,6 +6579,7 @@ mod tests {
                 gain: 1.0,
                 journal: None,
                 device_failed: false,
+                analysis: None,
             },
             false,
         )
@@ -6009,5 +6793,278 @@ mod tests {
             !code.contains(&raw_default),
             "record.rs must not open the system default directly"
         );
+    }
+
+    // ── SP-06: the release DSP streamed during capture ──────────────────────
+
+    fn sp06_bits(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// Speech-like voicing over hiss, with silence either side.
+    fn sp06_take() -> Vec<f32> {
+        let sr = TARGET_RATE;
+        let mut take = vec![0.0f32; sr as usize / 2];
+        take.extend(voiced(1.5, sr, 0.2));
+        take.resize(take.len() + sr as usize / 2, 0.0);
+        let hiss = broadband_noise(take.len(), 0.01, 0x5106);
+        take.iter().zip(hiss).map(|(a, b)| a + b).collect()
+    }
+
+    #[test]
+    fn linear_stream_is_byte_identical_to_resample_linear() {
+        let x = sp06_take();
+        for (from, to) in [(TARGET_RATE, RNNOISE_SR), (RNNOISE_SR, TARGET_RATE)] {
+            let want = resample_linear(&x, from, to);
+            for chunk in [1usize, 7, 170, 481, x.len()] {
+                let mut stream = LinearStream::new(from, to);
+                let mut got = Vec::new();
+                for c in x.chunks(chunk) {
+                    stream.push(c, &mut got);
+                }
+                stream.finish(&mut got);
+                assert_eq!(
+                    sp06_bits(&got),
+                    sp06_bits(&want),
+                    "{from}->{to} chunk {chunk}"
+                );
+                assert_eq!(stream.produced(), want.len());
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_fade_and_denoise_are_byte_identical_to_the_batch_chain() {
+        let x = sp06_take();
+        let faded = edge_fade(&apply_gain(&x, 1.0), TARGET_RATE, EDGE_FADE_MS);
+        let want = denoise_rnnoise(&faded, TARGET_RATE);
+        // The batch guard kept the denoised take, so the stream must too.
+        assert_ne!(sp06_bits(&want), sp06_bits(&faded));
+        for chunk in [1usize, 170, 997] {
+            let mut analysis = TakeAnalysis::new(true, None);
+            for c in x.chunks(chunk) {
+                analysis.push(c, 1.0);
+            }
+            assert_eq!(analysis.fed(), x.len());
+            let done = analysis.finish(1.0).expect("the streamed chain finishes");
+            assert!(done.vad.is_none());
+            assert_eq!(sp06_bits(&done.out), sp06_bits(&want), "chunk {chunk}");
+        }
+        // Denoise off: the stream is the batch edge fade.
+        let mut analysis = TakeAnalysis::new(false, None);
+        for c in x.chunks(170) {
+            analysis.push(c, 1.0);
+        }
+        let done = analysis.finish(1.0).expect("fade-only stream finishes");
+        assert_eq!(sp06_bits(&done.out), sp06_bits(&faded));
+    }
+
+    #[test]
+    fn streamed_chain_refuses_what_the_batch_chain_must_decide() {
+        // Shorter than its two fades.
+        let mut short = TakeAnalysis::new(true, None);
+        short.push(&[0.1; 100], 1.0);
+        assert!(short.finish(1.0).is_err());
+        // A non-finite sample: the batch chain's salvage path owns it.
+        let mut bad = TakeAnalysis::new(true, None);
+        let mut x = sp06_take();
+        x[1000] = f32::NAN;
+        bad.push(&x, 1.0);
+        assert!(bad.finish(1.0).is_err());
+    }
+
+    #[test]
+    fn streamed_bench_release_matches_the_batch_release_on_the_fixture() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("quick-brown-fox-16k.wav");
+        let raw = read_wav_16k_mono(&fixture).expect("fixture loads");
+        let leveled = bench_capture_chain(&raw);
+        // The real Silero when it is cached; the energy-VAD path otherwise.
+        let model = crate::models::models_dir().join("silero_vad_v4.onnx");
+        let warm = if model.exists() {
+            vad::WarmVad::load(&model).ok()
+        } else {
+            None
+        };
+        for denoise in [true, false] {
+            let want = bench_release_dsp(&leveled, denoise, warm.as_ref()).expect("batch");
+            let streamed = bench_capture_stream(&leveled, denoise, warm.as_ref());
+            assert_eq!(streamed.is_some(), denoise || warm.is_some());
+            let got = bench_release_streamed(&leveled, denoise, warm.as_ref(), streamed)
+                .expect("streamed");
+            assert_eq!(
+                sp06_bits(&got.samples),
+                sp06_bits(&want.samples),
+                "denoise={denoise}"
+            );
+            // Energy-VAD (WPM denominator) is unchanged.
+            assert_eq!(got.voiced_seconds.to_bits(), want.voiced_seconds.to_bits());
+            assert_eq!(got.speech_present, want.speech_present);
+        }
+    }
+
+    #[test]
+    fn a_take_hands_its_analysis_over_only_when_it_saw_every_sample() {
+        let x = sp06_take();
+        let mut dsp = StreamDsp::new(TARGET_RATE, 1);
+        dsp.analysis = Some(Box::new(TakeAnalysis::new(true, None)));
+        for c in x.chunks(170) {
+            dsp.push(c);
+        }
+        let captured = dsp.take();
+        let analysis = captured
+            .analysis
+            .expect("the analysis rides out with the take");
+        assert_eq!(analysis.fed(), captured.samples.len());
+        assert!(analysis.finish(captured.gain).is_ok());
+
+        // Installed late, it missed the head of the take: never trusted.
+        let mut dsp = StreamDsp::new(TARGET_RATE, 1);
+        for c in x.chunks(170).take(3) {
+            dsp.push(c);
+        }
+        dsp.analysis = Some(Box::new(TakeAnalysis::new(true, None)));
+        for c in x.chunks(170).skip(3) {
+            dsp.push(c);
+        }
+        assert!(dsp.take().analysis.is_none());
+    }
+}
+
+#[cfg(test)]
+mod silent_mic_tests {
+    //! WF-13 — the silent-mic level check, on recorded fixtures.
+    use super::*;
+
+    const RATE: u32 = 16_000;
+
+    fn fox() -> Vec<f32> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/quick-brown-fox-16k.wav"
+        );
+        read_wav_16k_mono(Path::new(path)).expect("fox fixture reads")
+    }
+
+    /// The fox recording turned into QUIET speech: started at the first word
+    /// and attenuated 30 dB (x0.0316) — a soft talker far from the mic.
+    fn quiet_speech() -> Vec<f32> {
+        let loud = fox();
+        let onset = loud.iter().position(|s| s.abs() > 0.05).unwrap_or(0);
+        let start = onset.saturating_sub(RATE as usize / 10);
+        loud[start..].iter().map(|s| s * 0.0316).collect()
+    }
+
+    /// A muted interface as it really records: a DC offset plus a couple of
+    /// LSBs of 16-bit converter noise (deterministic, so the test is stable).
+    fn recorded_silence(seconds: f32) -> Vec<f32> {
+        let n = (RATE as f32 * seconds) as usize;
+        let lsb = 1.0 / 32_768.0;
+        (0..n)
+            .map(|i| 0.01 + lsb * [0.0, 1.0, -1.0, 2.0, -2.0, 1.0, 0.0][i % 7])
+            .collect()
+    }
+
+    /// Feed `samples` in 10 ms callbacks, as the consumer does; collect events.
+    fn run(check: &mut SilentMicCheck, samples: &[f32], channels: usize) -> Vec<SilentMicEvent> {
+        samples
+            .chunks(160 * channels)
+            .map(|c| check.feed(c))
+            .filter(|e| *e != SilentMicEvent::None)
+            .collect()
+    }
+
+    #[test]
+    fn silent_mic_recorded_silence_warns_after_the_window() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let silence = recorded_silence(1.4);
+        assert!(run(&mut check, &silence, 1).is_empty(), "not before 1.5 s");
+        assert!(!check.decided());
+        let more = recorded_silence(0.2);
+        assert_eq!(run(&mut check, &more, 1), vec![SilentMicEvent::Silent]);
+    }
+
+    #[test]
+    fn silent_mic_digital_zero_warns() {
+        let mut check = SilentMicCheck::new(48_000, 2);
+        let zeros = vec![0.0f32; 48_000 * 2 * 2];
+        assert_eq!(run(&mut check, &zeros, 2), vec![SilentMicEvent::Silent]);
+    }
+
+    #[test]
+    fn silent_mic_quiet_speech_never_warns() {
+        let quiet = quiet_speech();
+        assert!(
+            quiet.len() >= RATE as usize * 3 / 2,
+            "fixture covers the window"
+        );
+        let mut check = SilentMicCheck::new(RATE, 1);
+        assert!(
+            run(&mut check, &quiet, 1).is_empty(),
+            "quiet speech is not a silent mic"
+        );
+        assert!(check.decided());
+    }
+
+    #[test]
+    fn silent_mic_full_level_speech_never_warns() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        assert!(run(&mut check, &fox(), 1).is_empty());
+    }
+
+    #[test]
+    fn silent_mic_fires_once_per_take_even_on_long_silence() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let events = run(&mut check, &recorded_silence(20.0), 1);
+        assert_eq!(
+            events,
+            vec![SilentMicEvent::Silent],
+            "one warning, not one per block"
+        );
+    }
+
+    #[test]
+    fn silent_mic_recovers_once_when_speech_arrives() {
+        let mut check = SilentMicCheck::new(RATE, 1);
+        let mut take = recorded_silence(2.0);
+        take.extend(quiet_speech());
+        take.extend(recorded_silence(3.0));
+        let events = run(&mut check, &take, 1);
+        assert_eq!(
+            events,
+            vec![SilentMicEvent::Silent, SilentMicEvent::Recovered]
+        );
+    }
+
+    #[test]
+    fn silent_mic_once_gate_holds_across_a_mid_take_reopen() {
+        let fired = AtomicU64::new(0);
+        assert!(claim_once(&fired, 7), "first device of take 7 warns");
+        assert!(
+            !claim_once(&fired, 7),
+            "the reopened device of take 7 does not"
+        );
+        assert!(claim_once(&fired, 8), "the next take may warn again");
+        assert!(!claim_once(&fired, 0), "no take armed yet: never");
+    }
+
+    #[test]
+    fn silent_mic_note_names_the_mic() {
+        assert_eq!(silent_mic_note("Shure MV7"), "I can't hear Shure MV7");
+        assert_eq!(silent_mic_note("  "), "I can't hear your microphone");
+    }
+
+    #[test]
+    fn silent_mic_check_is_wired_into_the_consumer_and_arm() {
+        // Only the code ABOVE this test module counts (the asserts below
+        // would otherwise find their own string literals).
+        let full = include_str!("record.rs");
+        let code = full.split("mod silent_mic_tests").next().unwrap_or(full);
+        assert!(code.len() < full.len(), "the test module marker is found");
+        assert!(code.contains("apply_silent_mic_event(check.feed("));
+        assert!(code.contains("begin_silent_mic_take(&stream.device_name);"));
+        assert!(code.contains("retarget_silent_mic(&live.device_name);"));
     }
 }

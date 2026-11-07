@@ -51,6 +51,7 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "meetings/callAudio.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "meetings/transcript.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   "meetings/liveSnapshot.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  "meetings/meetingsLayout.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "micStatus.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "onboarding.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "permission.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
@@ -60,12 +61,20 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
+  "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
+  "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-wf-12 — the "Speaking a different language?" card's copy and answers.
   "pill/languageOffer.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/backtrackCaught.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/styleChip.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/silentMic.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/live.ts": { lines: 98, branches: 89, functions: 90, statements: 95 },
   "pill/meeting.ts": { lines: 100, branches: 92, functions: 100, statements: 100 },
+  "pill/governor.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1106-yappy-states-and-motion — the phase transition table and the speech-bubble rules.
+  "pill/transitions.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  "pill/bubble.ts": { lines: 100, branches: 82, functions: 100, statements: 97 },
   // yap-1106-pill-rec-headphones-hoot-tape — the meeting scene: sun clock, glance, redraw key.
   "pill/meetingScene.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   // yap-1106-pill-sky — the pill sky: the Home room's time of day, cached backdrop.
@@ -75,6 +84,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-call-1 — the call offer's copy, surface and countdown rules.
   "pill/callOfferModel.ts": { lines: 95, branches: 85, functions: 100, statements: 95 },
   "views/settings/browserCalls.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-insights-redesign — headline numbers, the insight sentence, chart states, keyboard steps.
+  "views/insightsModel.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/motion.ts": { lines: 88, branches: 84, functions: 84, statements: 89 },
   "pill/mouth.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   "pill/nudge.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },

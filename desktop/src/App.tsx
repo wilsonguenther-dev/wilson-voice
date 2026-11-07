@@ -17,6 +17,8 @@ import SupportBundleSheet from "./support/SupportBundleSheet";
 import type { Toast } from "./toast";
 import HideHint from "./HideHint";
 import Banner from "./Banner";
+import { useGovernor } from "./pill/GovernorChip";
+import { governorMainBanner } from "./pill/governor";
 import Home from "./views/Home";
 import Permissions from "./views/Permissions";
 import Meetings from "./views/Meetings";
@@ -28,6 +30,7 @@ import "./App.css";
 
 export default function App() {
   const ctx = useAppShell();
+  const governorBanner = governorMainBanner(useGovernor());
   const {
     bootError, buyPrompt, buyYap, closeConsentNotice, consentOpen,
     copyText, dictionary, dismissToast, finishOnboarding, openModelSettings, openSupportSheet, toasts, toastError,
@@ -355,6 +358,14 @@ export default function App() {
         {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
             the same probe onboarding renders. */}
         <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
+
+        {/* yap-1106-resource-governor (FX-03) — one plain sentence while a
+            meeting's transcription waits for power, heat or memory. */}
+        {governorBanner && (
+          <Banner tone="warn" role="status">
+            {governorBanner}
+          </Banner>
+        )}
 
         {status.modelReady && needsPerms && nav === "home" && (
           <Banner tone="warn" onActivate={() => setNav("permissions")}>

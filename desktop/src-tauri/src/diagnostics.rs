@@ -373,14 +373,22 @@ pub struct DiagSnapshot {
     pub events: Vec<DiagEvent>,
     pub counters: BTreeMap<String, Stat>,
     pub health: Health,
+    /// yap-1106 — the named states (`byom.route`, `byom.cap`, the meeting
+    /// stage, the last insert path): one row each in Diagnostics.
+    #[serde(default)]
+    pub states: BTreeMap<String, String>,
 }
 
 /// The live view: the newest [`SNAPSHOT_EVENTS`] events, every stat, the
 /// health the caller assembled. Transcript-shaped fields never leave here.
 pub fn snapshot(health: Health) -> DiagSnapshot {
-    let (mut events, counters) = {
+    let (mut events, counters, states) = {
         let g = global();
-        (g.ring.newest(SNAPSHOT_EVENTS), g.stats.clone())
+        (
+            g.ring.newest(SNAPSHOT_EVENTS),
+            g.stats.clone(),
+            g.states.clone(),
+        )
     };
     for e in &mut events {
         e.fields.retain(|k, _| !is_sensitive_key(k));
@@ -390,6 +398,7 @@ pub fn snapshot(health: Health) -> DiagSnapshot {
         events,
         counters,
         health,
+        states,
     }
 }
 
@@ -508,6 +517,11 @@ pub fn redact_snapshot(snap: &DiagSnapshot, username: &str) -> DiagSnapshot {
         events,
         counters: snap.counters.clone(),
         health,
+        states: snap
+            .states
+            .iter()
+            .map(|(k, v)| (k.clone(), scrub_username(v, username)))
+            .collect(),
     }
 }
 
@@ -527,6 +541,12 @@ pub fn render_text(snap: &DiagSnapshot) -> String {
     );
     for (k, v) in &snap.health.permissions {
         out.push_str(&format!("  {k}: {v}\n"));
+    }
+    if !snap.states.is_empty() {
+        out.push_str("\nSTATES\n");
+        for (k, v) in &snap.states {
+            out.push_str(&format!("  {k}: {v}\n"));
+        }
     }
     out.push_str("\nCOUNTERS\n");
     if snap.counters.is_empty() {
@@ -667,6 +687,7 @@ mod tests {
     fn snap_with(fields: &[(&str, &str)], msg: &str) -> DiagSnapshot {
         DiagSnapshot {
             generated_at_ms: 0,
+            states: BTreeMap::new(),
             events: vec![DiagEvent {
                 ts_ms: 0,
                 level: "WARN".into(),
