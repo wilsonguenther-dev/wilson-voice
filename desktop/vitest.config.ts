@@ -58,6 +58,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/characters/types.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/copyCardModel.ts": { lines: 100, branches: 97, functions: 100, statements: 100 },
   "pill/dock.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1106-launch-walk — floor set conservatively (the coder may not run coverage); the integrator may raise it to the measured value.
+  "pill/launchWalk.ts": { lines: 90, branches: 80, functions: 100, statements: 90 },
   "pill/forced.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
   "pill/hitbox.ts": { lines: 92, branches: 85, functions: 87, statements: 90 },
   "pill/license.ts": { lines: 96, branches: 95, functions: 100, statements: 97 },
