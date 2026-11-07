@@ -3,18 +3,112 @@
   "writtenAt": "2026-11-07T05:25Z",
   "method": "Arithmetic from source (a Python re-run of characterFit's stadium / largestFittingCell / restCapsuleFor geometry), no compile, no capture. The integrator takes the before/after PNGs: node scripts/pill-matrix.mjs --out <scratch> --only listening (and idle, done) on origin/main and on this branch, then copies them here next to the artifact crops from design-2026-11-06/pill.html.",
   "decision": "Built the artifact's SPRITE SIZE without cropping him (option C of the earlier measure, applied only where it is needed): on a 2x display the open pill draws Yappy at cell 3 = 1.5 CSS px per art px (96 percent of the artifact's 1.5625), and his hop is capped to what the capsule can hold at that size (1 art px in the plain open pill, 3 with the notepad, full at the desk tier). 1x is unchanged (1.56 rounds down to one device px). The shell is not shrunk to 52 px: at the artifact's own scale a 52 px shell cuts his tufts, which Wilson's earlier no-crop fix (yap-1106-fb-10) forbids.",
-  "before_a1f6995": { "open_2x_cssPerArt": 1.0, "open_1x_cssPerArt": 1.0, "rest_2x_cssPerArt": 1.0 },
+  "before_a1f6995": {
+    "open_2x_cssPerArt": 1.0,
+    "open_1x_cssPerArt": 1.0,
+    "rest_2x_cssPerArt": 1.0
+  },
   "after": {
-    "open_2x": { "tier1": { "cell": 3, "lift": 1, "cssPerArt": 1.5 }, "tier1.05": { "cell": 3, "lift": 3, "cssPerArt": 1.5 }, "tier1.16": { "cell": 3, "lift": 8, "cssPerArt": 1.5 } },
-    "open_1.5x": { "tier1": { "cell": 2, "lift": 5, "cssPerArt": 1.333 }, "tier1.05": { "cell": 2, "lift": 7 }, "tier1.16": { "cell": 2, "lift": 8 } },
-    "open_1x": { "cell": 1, "lift": 8, "cssPerArt": 1.0 },
-    "rest_capsule": [80, 59], "rest_2x": { "cell": 2, "lift": 8, "cssPerArt": 1.0 },
-    "open_capsule": [236, 60]
+    "open_2x": {
+      "tier1": {
+        "cell": 3,
+        "lift": 1,
+        "cssPerArt": 1.5
+      },
+      "tier1.05": {
+        "cell": 3,
+        "lift": 3,
+        "cssPerArt": 1.5
+      },
+      "tier1.16": {
+        "cell": 3,
+        "lift": 8,
+        "cssPerArt": 1.5
+      }
+    },
+    "open_1.5x": {
+      "tier1": {
+        "cell": 2,
+        "lift": 5,
+        "cssPerArt": 1.333
+      },
+      "tier1.05": {
+        "cell": 2,
+        "lift": 7
+      },
+      "tier1.16": {
+        "cell": 2,
+        "lift": 8
+      }
+    },
+    "open_1x": {
+      "cell": 1,
+      "lift": 8,
+      "cssPerArt": 1.0
+    },
+    "rest_capsule": [
+      80,
+      59
+    ],
+    "rest_2x": {
+      "cell": 2,
+      "lift": 8,
+      "cssPerArt": 1.0
+    },
+    "open_capsule": [
+      236,
+      60
+    ]
   },
   "vs_artifact": {
     "listening_shell": "236 x 60 vs 228 x 52: width +3.5 percent (inside 5), height +15 percent (kept: the least height that holds him whole at the artifact's size on 2x is 58)",
     "listening_sprite_2x": "1.5 vs 1.5625 CSS px per art px: -4 percent (inside 5)",
     "idle": "80 x 59 vs the acceptance's 56 tall: +5.4 percent. 59 is the smallest rest capsule that holds every pill character whole at 1x (fb-10); the artifact's 72 x 28 nub is a face close-up that crops his tufts.",
     "compact": "The app has no compact pill state; none was added (a 32 px compact capsule cannot hold Yappy whole, and every state the item names stays full size)."
+  },
+  "bounceFix": {
+    "writtenAt": "2026-11-07T12:29:31Z",
+    "bounce": "batch 10: REST_CAPSULE 80 x 59 (+5.4 percent over 56) and open shell 60 tall vs 52 (+15 percent), outside the 5 percent acceptance",
+    "fix": "OPEN_CAPSULE 228 x 54 (artifact 228 x 52: width exact, height +3.8 percent). REST_CAPSULE capped at the acceptance's 56 tall: least-area search under the cap gives 86 x 56 (exact height). A clamped pose now uses the chick's exact painted rows (CHICK_ROWS: sprout feetY-26-lift, toes feetY+5+stretch) instead of the full box with two slack rows, so the 54 px shell still holds him WHOLE at cell 3 on 2x (1.5 CSS px per art px, -4 percent vs the artifact's 1.5625) with a one-art-px hop.",
+    "computed_python_rerun": {
+      "open_228x54": {
+        "1x": {
+          "cell": 1,
+          "lift": 8
+        },
+        "1.5x": {
+          "cell": 2,
+          "lift": 5
+        },
+        "2x": {
+          "cell": 3,
+          "lift": 1
+        }
+      },
+      "open_228x52_for_reference": {
+        "2x": {
+          "cell": 3,
+          "lift": 0
+        },
+        "note": "52 exact would freeze the done hop (lift 0)"
+      },
+      "rest_86x56": {
+        "1x_cell": 1,
+        "1.5x_cell": 1,
+        "2x_cell": 2,
+        "cssPerArt": 1.0
+      },
+      "side_tall_open_54x228": {
+        "every_character_cell_1x": 1,
+        "2x": 2
+      }
+    },
+    "vs_artifact": {
+      "listening": "228 x 54 vs 228 x 52: 0 / +3.8 percent; sprite 1.5 vs 1.5625 CSS px per art px (-4 percent)",
+      "done": "same open capsule as listening (done adds no prop tier): 228 x 54, cell 3 on 2x",
+      "idle": "86 x 56 vs the acceptance's 56 tall: 0 percent. Width 86 vs the artifact nub's 72: the nub is a 28 px face close-up that crops his tufts (yap-1106-fb-10 forbids); 86 is the least width that holds every pill character whole at 56 tall",
+      "idle_sprite": "1.0 CSS px per art px on 1x and 2x (whole body); the artifact's resting nub shows a face close-up at 2.46, which is a crop"
+    },
+    "integrator_capture": "node scripts/pill-matrix.mjs --out <scratch> --only idle,listening,done at 2x on this branch and on a1f6995, copy the PNGs here next to crops of design-2026-11-06/pill.html (Resting, Holding fn, Pasted)"
   }
 }
