@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 
 const VIEWS = [
   "Home",
+  "History",
   "Permissions",
   "Meetings",
   "Insights",

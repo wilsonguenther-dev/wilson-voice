@@ -205,6 +205,9 @@ body:has(.float-pill),
   display: grid;
   grid-template-columns: 220px 1fr;
   height: 100vh;
+  /* yap-1106-home-contained-scroll-footer — the window itself never scrolls:
+     the sidebar and the footer stay put and only .content moves. */
+  overflow: hidden;
   /* YV56 — the two wash gradients were teal + indigo, the last of the pre-warm
      palette and the largest surface in the app: they tinted the locked cream
      green at the top-left and violet at the top-right on every screen. Same
@@ -780,8 +783,188 @@ code {
 
 .content {
   flex: 1;
+  min-height: 0;
   overflow: auto;
+  /* yap-1106-home-contained-scroll-footer — a scroll that reaches the end of
+     the column stops there; it never chains to the window (no rubber-band of
+     the sidebar or footer). */
+  overscroll-behavior: contain;
   padding: 8px 24px 24px;
+}
+
+/* yap-1106-home-contained-scroll-footer — the footer under every view. It is
+   a sibling of .content inside .main, so it never scrolls away. */
+.app-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 24px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.app-footer-engine {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.app-footer-engine .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.app-footer-engine .dot.ok {
+  background: var(--status-ready);
+}
+.app-footer-version {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.app-footer-links {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 14px;
+}
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent-data-ink);
+  cursor: pointer;
+}
+button.link:hover {
+  text-decoration: underline;
+}
+/* Keyboard focus: the global ring in a11y/focus.css (never a per-component rule). */
+
+/* ── yap-1106-home-full-width-room — Home, round two ──────────────────────
+   Room (full width), one quiet stats line, the latest take beside Needs
+   attention, search, the last 5 takes, then a definite end. */
+.home-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.home-stats .link {
+  margin-left: auto;
+  font-family: inherit;
+}
+.home-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+.home-split.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.home-split:empty {
+  display: none;
+}
+@media (max-width: 980px) {
+  .home-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.latest-take .latest-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+.needs-attention {
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-card));
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.needs-attention .failed-head {
+  flex-wrap: wrap;
+}
+.needs-attention .failed-head h3 {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.attention-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.attention-row + .attention-row {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.attention-row .failed-why {
+  margin: 4px 0 6px;
+  color: var(--warn-ink);
+  font-size: 0.82rem;
+}
+.recent-takes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.recent-takes li + li {
+  border-top: 1px solid var(--border);
+}
+.recent-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.recent-row:hover {
+  background: var(--bg-elev);
+}
+.recent-when,
+.recent-words {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.recent-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-end,
+.history-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+.card.focused {
+  border-color: var(--accent-data);
 }
 
 .stats-row {
@@ -2111,29 +2294,18 @@ button.star.on {
      and the Dictate button frame together above the fold on a normal-height
      window. Capping the width keeps the 3:2 stage from growing taller than its
      max-height below, so it needs no letterboxing to stay crisp. */
-  /* yap15: the habitat IS Home's hero — full measure, room to live in. */
-  max-width: 640px;
-  margin: 4px auto 24px;
-}
-.yappy-house .yh-tag {
-  position: absolute;
-  top: -11px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2;
-  background: var(--retro-wood-deep);
-  color: var(--retro-paper);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 4px 12px;
-  border-radius: 999px;
-  box-shadow: var(--elevation-tag);
-  white-space: nowrap;
+  /* yap15: the habitat IS Home's hero — full measure, room to live in.
+     yap-1106-home-full-width-room: no size cap — the room fills the main
+     column at a whole-number scale (YappyHouse / homeLayout.roomBox). */
+  margin: 4px 0 10px;
 }
 .yappy-house .yh-frame {
   position: relative;
+  /* A column narrower than the 3x room (576 px) crops the room's sides
+     evenly instead of drawing it at a fraction. */
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
   background: var(--retro-wood);
   border-radius: 20px;
   padding: 12px;
@@ -2152,96 +2324,30 @@ button.star.on {
 }
 .yappy-house .yh-stage {
   display: block;
+  flex: none;
+  /* yap-1106-home-full-width-room — full column width; the HEIGHT is set
+     inline by YappyHouse to 128 x the whole-number scale (5x / 4x / 3x), so the
+     art is drawn at exactly that many CSS px per art px with the side margin in
+     the room's own wall shade. Never a fraction, never letterboxed vertically.
+     object-fit is READ by YappyHouse (contain = the whole room). */
   width: 100%;
-  height: auto;
-  /* YV19: bound the displayed height so the full scene fits above the fold.
-     yap24-UI1: the box is a fixed 3:2 (aspect-ratio, NOT the backing store's
-     intrinsic ratio, so resizing the store can never feed back into layout).
-     YappyHouse sizes the backing store to this box in whole device px and
-     draws the room at an integer cell, centred, margin in the scene colour —
-     so CSS never rescales it and image-rendering is only a safety net.
-     object-fit / object-position are READ by YappyHouse to pick contain vs
-     cover (see the short-window rule below), so they stay meaningful. */
-  aspect-ratio: 3 / 2;
-  max-height: 300px;
+  min-width: 576px;
   object-fit: contain;
   border-radius: 8px;
   /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
   background: var(--retro-lcd-backdrop);
 }
-.yappy-house .yh-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 14px;
-}
-.yappy-house .yh-stat {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 14px;
-  text-align: left;
-}
-.yappy-house .yh-k {
-  display: block;
+/* The room's label: Yappy's live mood, or the meeting clock while one records. */
+.yappy-house .yh-label {
+  margin: 8px 2px 0;
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-size: 12px;
   color: var(--muted);
 }
-.yappy-house .yh-v {
-  margin-top: 4px;
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  font-family: var(--mono);
-  font-size: 19px;
-  font-weight: 400;
+.yappy-house .yh-meeting {
+  color: hsl(var(--accent-meeting));
   font-variant-numeric: tabular-nums;
-}
-.yappy-house .yh-v small {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--muted);
-}
-/* yap-uiux-2026-10-16-H3 — on a window under 800 px tall the full 300 px scene
-   plus the stat tiles filled the first screen and pushed search and every take
-   below the fold. Short windows get the room as a strip: same pixel art, same
-   nearest-neighbour scaling, cropped (cover) around Yappy's floor instead of
-   letterboxed, so the controls and the latest takes are on the first screen. */
-@media (max-height: 800px) {
-  .yappy-house {
-    margin: 4px auto 12px;
-  }
-  .yappy-house .yh-frame {
-    padding: 8px;
-  }
-  .yappy-house .yh-frame::after {
-    inset: 8px;
-  }
-  .yappy-house .yh-stage {
-    max-height: 112px;
-    object-fit: cover;
-    object-position: 50% 70%;
-  }
-  .yappy-house .yh-stats {
-    margin-top: 8px;
-    gap: 8px;
-  }
-  .yappy-house .yh-stat {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 6px 10px;
-  }
-  .yappy-house .yh-v {
-    margin-top: 0;
-    font-size: 15px;
-  }
 }
 @media (prefers-color-scheme: dark) {
   .yappy-house .yh-frame {

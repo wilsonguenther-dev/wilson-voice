@@ -92,6 +92,8 @@ if [[ "${YAP_DIET_NO_BUILD:-}" != "1" ]]; then
   cp "$REL/yap-polish" "$SRC/binaries/yap-polish-$TRIPLE"
   cp "$REL/yap-diarize" "$SRC/binaries/yap-diarize-$TRIPLE"
   cp "$REL/yap-asr" "$SRC/binaries/yap-asr-$TRIPLE"
+  # SP-10: bundle.externalBin also names the Neural Engine helper (Swift).
+  bash "$ROOT/scripts/build-ane-engine.sh" >&2
   ( cd "$SRC" && cargo build --release --features custom-protocol ) >&2
 fi
 for b in wilson-voice yap-polish yap-diarize; do

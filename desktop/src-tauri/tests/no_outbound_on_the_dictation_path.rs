@@ -3,11 +3,13 @@
 //! PRIVACY.md makes a claim that is Yap's sharpest marketing line: the audio
 //! you dictate and the text it becomes never leave your Mac, Yap ships no
 //! analytics, telemetry or crash-upload SDK, and the network is touched in
-//! exactly four places — the model download, the updater check, (only if the
-//! user adds one, yap-byom-0) a model provider they chose, and (yap-1106-lic-03)
+//! exactly five places — the model download, the updater check, (only if the
+//! user adds one, yap-byom-0) a model provider they chose, (yap-1106-lic-03)
 //! the drivia.consulting licensing call: activate a pasted key, refresh a token
-//! that is close to expiry, free the seat on deactivate. None of the four is
-//! on the dictation path and none carries audio or text. This file
+//! that is close to expiry, free the seat on deactivate, and (yap-1106-news-feeds,
+//! only when the user turns Yappy News on with the cloud option connected and
+//! at least one topic set) the three public news/quote feeds. None of the five
+//! is on the dictation path and none carries audio or text. This file
 //! is the proof that claim cites by name. Every test here reads SOURCE, so it
 //! needs no network, no microphone and no app state, and it fails the moment a
 //! change makes the claim false.
@@ -173,6 +175,19 @@ const NETWORK_CALL_SITES: &[(&str, &[(&str, &str)])] = &[
         // never audio, text, history or anything about how Yap is used.
         "licensing",
         &[("license_client.rs", "post_json")],
+    ),
+    (
+        // yap-1106-news-feeds — Yappy News: Google News search RSS, the
+        // Hacker News front page and stock quotes (the user's own quote key).
+        // ONE door, `news/feeds.rs::news_feed_get` (the `use` is the URL
+        // builder's import), reached only through `refresh`, which makes ZERO
+        // requests unless the cloud option is connected, the Yappy News
+        // switch is on and at least one topic, ticker or custom word is set
+        // (`no_request_when_cloud_is_off`, `no_request_without_any_topic`). It
+        // sends the user's topic words as search words, tickers and the
+        // user's quote key — never audio, text, history or anything dictated.
+        "Yappy News",
+        &[("news/feeds.rs", "use"), ("news/feeds.rs", "news_feed_get")],
     ),
 ];
 
@@ -697,21 +712,23 @@ fn the_take_path_does_not_import_the_http_client_crate() {
 /// SCOPE: every `.rs` file under `desktop/src-tauri/src` (non-test code).
 /// Every hit of an HTTP client, a remote socket, the updater or a network-tool
 /// subprocess is mapped to `(file, function)` and must be EXACTLY the
-/// allowlist in [`NETWORK_CALL_SITES`]: four purposes — the model download,
-/// the updater check, a model provider the user adds, and the one licensing
+/// allowlist in [`NETWORK_CALL_SITES`]: five purposes — the model download,
+/// the updater check, a model provider the user adds, the one licensing
 /// door (`license_client.rs::post_json`: activate, refresh near expiry,
-/// deactivate). No revocation fetch exists anywhere, and `license.rs` itself
+/// deactivate), and the one Yappy News door (`news/feeds.rs::news_feed_get`,
+/// gated on cloud on + news on + a topic set). No revocation fetch exists anywhere, and `license.rs` itself
 /// makes no network call: it reaches the licensing service only through the
 /// `LicenseTransport` the client hands it.
 #[test]
 fn only_two_network_call_sites_exist() {
     assert_eq!(
         NETWORK_CALL_SITES.len(),
-        4,
-        "PRIVACY.md names exactly four network uses (the third, yap-byom-0, only when the \
+        5,
+        "PRIVACY.md names exactly five network uses (the third, yap-byom-0, only when the \
          user adds a model provider; the fourth, yap-1106-lic-03, the drivia.consulting \
-         licensing call: activate, refresh near expiry, deactivate); adding a purpose means \
-         editing both"
+         licensing call: activate, refresh near expiry, deactivate; the fifth, \
+         yap-1106-news-feeds, Yappy News, only when the user turns it on); adding a purpose \
+         means editing both"
     );
     let src = manifest().join("src");
     let files = rs_files(&src);
@@ -752,8 +769,9 @@ fn only_two_network_call_sites_exist() {
         .collect();
     assert!(
         unlisted.is_empty(),
-        "a network call site outside the four allowlisted purposes (model download, updater \
-         check, a model provider the user adds, the one licensing door in license_client.rs). \
+        "a network call site outside the five allowlisted purposes (model download, updater \
+         check, a model provider the user adds, the one licensing door in license_client.rs, \
+         the one Yappy News door in news/feeds.rs). \
          If it is one of those, add it to NETWORK_CALL_SITES; if it is anything else \
          (telemetry, a revocation fetch, a second licensing door), it breaks the claim \
          PRIVACY.md makes:\n{}",

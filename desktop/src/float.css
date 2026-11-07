@@ -2351,3 +2351,36 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
     animation: none !important;
   }
 }
+
+/* yap-1106-friend-visits — the visiting friend, beside the capsule's right
+ * end. Decorative (aria-hidden, no pointer events): it never takes a click
+ * from the pill. Whole-number scale is set on the canvas (crisp.ts). */
+.friend-visit {
+  position: fixed;
+  right: calc(var(--flow-bar-inset) + 6px);
+  bottom: calc(var(--flow-bar-inset) + 4px);
+  width: var(--friend-visit-box);
+  height: var(--friend-visit-box);
+  pointer-events: none;
+  z-index: 3;
+  animation: friend-visit-in var(--friend-visit-in) var(--ease-glide) both;
+}
+.friend-visit-art {
+  display: block;
+  image-rendering: pixelated;
+}
+html[data-dock="left"] .friend-visit,
+html[data-dock="right"] .friend-visit {
+  right: auto;
+  bottom: auto;
+  top: calc(var(--flow-bar-inset) + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+@keyframes friend-visit-in {
+  from { opacity: 0; translate: 0 4px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .friend-visit { animation: none; }
+}
