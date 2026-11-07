@@ -20,7 +20,7 @@ import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
 import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
-import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, isEngineUnhealthy, retryAllSummary, retryDeadlineMs, runRetryAll, type RetryOutcome, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
+import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, isEngineUnhealthy, raceRetryWatchdog, retryAllSummary, retryDeadlineMs, runRetryAll, type RetryOutcome, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
 import type { MicList } from "./views/settings/parts/MicrophonePicker";
 
@@ -1107,19 +1107,48 @@ export function useAppShell() {
     retryWatchdog.current?.clear();
     retryWatchdog.current = watchdog;
     if (!keepPartial) watchdog.arm(retryDeadlineMs(row?.speechSeconds ?? 0) + RETRY_WATCHDOG_GRACE_MS);
-    try {
-      // `confirm` — the backend refuses Keep without it (yap-recovery-followups
-      // (b)); it is only ever true here after the user said yes to the dialog.
-      const entry = await invoke<TranscriptEntry>("retry_failed_dictation", {
-        id,
-        keepPartial,
-        confirm: keepPartial,
-      });
+    // The row leaves the recovery list and becomes a history entry. Shared by
+    // the on-time answer and a late one that lands after the watchdog fired.
+    const applyRecovered = (entry: TranscriptEntry) => {
       setFailed((f) => f.filter((x) => x.id !== id));
       dropRetry(id);
       setHistory((h) =>
         [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
       );
+    };
+    try {
+      // `confirm` — the backend refuses Keep without it (yap-recovery-followups
+      // (b)); it is only ever true here after the user said yes to the dialog.
+      const work = invoke<TranscriptEntry>("retry_failed_dictation", {
+        id,
+        keepPartial,
+        confirm: keepPartial,
+      });
+      // fix-b5-2 — the watchdog ENDS the retry, not just its spinner: a
+      // backend that never answers must not leave a Retry-all run awaiting
+      // forever ("Retrying k of N…", every Retry disabled until relaunch).
+      // It counts as engine-busy so Retry all stops. A late answer still
+      // updates the rows and history, with no second toast (the watchdog
+      // already said its one sentence, or Retry all says its summary).
+      const raced = await raceRetryWatchdog(work, watchdog);
+      if (raced.kind === "expired") {
+        console.warn(`retry_failed watchdog_expired quiet=${quiet}`);
+        void work.then(
+          (entry) => {
+            applyRecovered(entry);
+            console.info("retry_failed late_answer outcome=recovered");
+            void refreshInsights();
+          },
+          () => {
+            console.info("retry_failed late_answer outcome=failed");
+            void loadFailed().catch(() => {});
+          },
+        );
+        return "engine-busy";
+      }
+      if (raced.kind === "errored") throw raced.error;
+      const entry = raced.value;
+      applyRecovered(entry);
       if (!quiet)
         toast(
           keepPartial
