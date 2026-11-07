@@ -350,8 +350,12 @@ function __pillDetect(want) {
     const boxes = [L.char, L.bubble, L.hint, L.clock, L.progress, L.card].filter(Boolean);
     const ux = Math.min(...boxes.map((b) => b.x)), uy = Math.min(...boxes.map((b) => b.y));
     const uw = Math.max(...boxes.map((b) => b.x + b.w)) - ux, uh = Math.max(...boxes.map((b) => b.y + b.h)) - uy;
-    const wantW = Math.ceil(uw + 2 * MARGIN), wantH = Math.ceil(uh + 2 * MARGIN);
-    if (Math.abs(ux - MARGIN) > 0.5 || Math.abs(uy - MARGIN) > 0.5 || L.panel.w !== wantW || L.panel.h !== wantH || Math.abs(W - L.panel.w) > tol || Math.abs(H - L.panel.h) > tol)
+    /* yap-1106-pill-vertical-dock-world — a side dock is FLUSH to its screen
+       edge: the edge side carries no margin, the inner side MARGIN (state.ts sideLayout). */
+    const flush = want && (want.dock === "left" || want.dock === "right");
+    const wantX = flush && want.dock === "left" ? 0 : MARGIN;
+    const wantW = Math.ceil(uw + (flush ? 1 : 2) * MARGIN), wantH = Math.ceil(uh + 2 * MARGIN);
+    if (Math.abs(ux - wantX) > 0.5 || Math.abs(uy - MARGIN) > 0.5 || L.panel.w !== wantW || L.panel.h !== wantH || Math.abs(W - L.panel.w) > tol || Math.abs(H - L.panel.h) > tol)
       out.push({ id: "panel-not-union", detail: "window " + W + "x" + H + ", layout panel " + L.panel.w + "x" + L.panel.h + ", union+margin " + wantW + "x" + wantH });
   }
 

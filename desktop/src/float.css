@@ -2142,8 +2142,14 @@ html[data-one-pill="true"] .kami-license {
   --lic-x: calc(var(--char-x) + var(--char-w) / 2);
   top: calc(var(--char-y) + var(--char-h) / 2 - 32px);
 }
-html[data-one-pill="true"][data-dock="left"] .kami-license { --lic-x: calc(var(--char-x) + 36px); }
-html[data-one-pill="true"][data-dock="right"] .kami-license { --lic-x: calc(var(--char-x) + var(--char-w) - 36px); }
+/* yap-1106-pill-vertical-dock-world — a side dock is a tall shell (a 30 x 40 tab
+ * at rest, 64 px wide open), flush to the edge: the badge sits centred INSIDE
+ * its top edge, so it never reaches past the panel above or beside it. */
+html[data-one-pill="true"][data-dock="left"] .kami-license,
+html[data-one-pill="true"][data-dock="right"] .kami-license {
+  --lic-x: calc(var(--char-x) + var(--char-w) / 2);
+  top: calc(var(--char-y) + 2px);
+}
 /* A card (copy card, "Record this meeting?", WF-12's language offer, the
  * nudge) takes the top row the layout reserved for it; the panel grew to hold
  * it. The list here is CARD_CLASSES in pill/state.ts: a card on one list and
