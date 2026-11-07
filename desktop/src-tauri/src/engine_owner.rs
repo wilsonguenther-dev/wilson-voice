@@ -1497,7 +1497,7 @@ fn owner_loop(shared: Arc<OwnerShared>) {
 // the engine that exists.
 
 thread_local! {
-    static JOB_KIND: std::cell::Cell<Option<JobKind>> = std::cell::Cell::new(None);
+    static JOB_KIND: std::cell::Cell<Option<JobKind>> = const { std::cell::Cell::new(None) };
 }
 
 /// Run `f` with every decode it makes on THIS thread filed as `kind` — how a

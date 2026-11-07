@@ -213,7 +213,7 @@ pub fn samples_to_le_bytes(samples: &[f32]) -> Vec<u8> {
 /// Decode a samples file's bytes. A trailing partial sample is an error, not
 /// silently dropped: it means the file was truncated.
 pub fn samples_from_le_bytes(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(format!(
             "samples file is {} bytes, not a whole number of samples",
             bytes.len()
