@@ -13,10 +13,54 @@ use crate::paste_tx;
 use crate::perm_probe;
 use crate::permissions;
 
+/// Put `text` on the clipboard and PROVE it: written, read back (changeCount
+/// moved, string equal), retried with `paste_tx::WRITE_BACKOFF_MS` before the
+/// error comes back (yap-1107-clipboard-write-never-fails-silently). `Ok`
+/// means the pasteboard was seen holding the text.
 pub fn copy_text(app: &AppHandle, text: &str) -> Result<(), String> {
-    app.clipboard()
-        .write_text(text.to_string())
-        .map_err(|e| format!("clipboard write: {e}"))
+    #[cfg(target_os = "macos")]
+    let mut io = {
+        let _ = app;
+        paste_tx::general_pasteboard()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut io = PluginPasteboard { app };
+    paste_tx::write_verified(&mut io, text, "copy")
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The clipboard plugin as a [`paste_tx::PasteboardIo`] (no changeCount off
+/// macOS, so the read-back string compare is the whole proof there).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+struct PluginPasteboard<'a> {
+    app: &'a AppHandle,
+}
+
+impl paste_tx::PasteboardIo for PluginPasteboard<'_> {
+    fn write(&mut self, text: &str) -> Result<(), String> {
+        self.app
+            .clipboard()
+            .write_text(text.to_string())
+            .map_err(|e| e.to_string())
+    }
+    fn read(&mut self) -> Option<String> {
+        self.app.clipboard().read_text().ok()
+    }
+    fn change_count(&mut self) -> Option<i64> {
+        None
+    }
+}
+
+impl PasteOutcome {
+    /// Y6-C — the take was deliberately NOT put on the clipboard (a password
+    /// field: held on the pill only). Not a clipboard failure: the take path
+    /// must not say "could not put the text on the clipboard" or offer the
+    /// paste_failed toast for it (the 2026-11-07 16:11:18Z secure_field take
+    /// showed both, see docs/loop/evidence/clipboard-write/REPORT.md).
+    pub fn clipboard_withheld(&self) -> bool {
+        !self.copied && !self.pasted && self.message == SECURE_FIELD_MESSAGE
+    }
 }
 
 /// Y6-B — a clipboard write that cannot race a paste (YV39).
@@ -820,7 +864,14 @@ pub fn insert_traced(
                 trace.path = InsertPath::CopyCard;
                 trace.fallback = InsertFallback::WrongTarget;
                 (
-                    hold_with(b, text, CopyCardReason::TargetMoved, true, why, NOTE_GONE_MESSAGE),
+                    hold_with(
+                        b,
+                        text,
+                        CopyCardReason::TargetMoved,
+                        true,
+                        why,
+                        NOTE_GONE_MESSAGE,
+                    ),
                     trace,
                 )
             }
@@ -1007,7 +1058,11 @@ pub fn insert_traced(
             )
         }
         Err(e) => {
-            diag_error!("paste", "paste failed: {err} — showing the Copy card", err = e);
+            diag_error!(
+                "paste",
+                "paste failed: {err} — showing the Copy card",
+                err = e
+            );
             trace.path = InsertPath::CopyCard;
             trace.fallback = InsertFallback::PasteFailed;
             (
@@ -1132,7 +1187,12 @@ impl InsertBackend for LiveInsert<'_> {
     fn show_copy_card(&mut self, card: CopyCard) {
         crate::float_pill::hold_copy_card(self.app, card.clone());
         if let Err(e) = self.app.emit(INSERT_COPY_CARD_EVENT, card) {
-            diag_warn!("paste", "emit {event}: {err}", event = INSERT_COPY_CARD_EVENT, err = e);
+            diag_warn!(
+                "paste",
+                "emit {event}: {err}",
+                event = INSERT_COPY_CARD_EVENT,
+                err = e
+            );
         }
     }
     fn no_receipt_detail(&mut self, reason: &str) -> String {
@@ -1711,5 +1771,28 @@ mod tests {
         assert!(!is_same_paste_target(None, None));
         assert!(!is_same_paste_target(Some(""), Some("")));
         assert!(!is_same_paste_target(Some("   "), Some("   ")));
+    }
+
+    /// yap-1107 — only the deliberate password-field hold counts as a
+    /// withheld clipboard; a failed or user-won recopy is still reported.
+    #[test]
+    fn only_the_secure_field_hold_withholds_the_clipboard() {
+        let held = super::PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: super::SECURE_FIELD_MESSAGE.into(),
+        };
+        assert!(held.clipboard_withheld());
+
+        let user_won = outcome_for_verdict(
+            &PasteVerdict::NotPasted { reason: "x".into() },
+            Recopy::UserCopyWins,
+        );
+        assert!(!user_won.clipboard_withheld());
+        let failed = outcome_for_verdict(
+            &PasteVerdict::NotPasted { reason: "x".into() },
+            Recopy::Failed("clipboard write: clobbered after 4 tries".into()),
+        );
+        assert!(!failed.clipboard_withheld());
     }
 }

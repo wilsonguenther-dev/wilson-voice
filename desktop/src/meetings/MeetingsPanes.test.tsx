@@ -228,8 +228,9 @@ describe("the Meetings view source", () => {
     expect(hover).not.toBeNull();
     const props = (hover?.[1] ?? "").split(";").map((d) => d.split(":")[0].trim()).filter(Boolean);
     expect(props).toEqual(["background"]);
-    // The row does not wrap (the old hover bar wrapped onto a second line).
-    expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row\s*\{[^}]*flex-wrap:\s*nowrap/);
+    // The row cannot wrap: it is a one-row grid (the old hover bar wrapped onto a second line).
+    expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row\s*\{[^}]*display:\s*grid/);
+    expect(meetingsCss).not.toMatch(/\.meetings-list-pane \.meeting-row\s*\{[^}]*flex-wrap:\s*wrap/);
     // The status column is laid out in every state: no opacity/visibility/display/position toggles.
     const status = meetingsCss.match(/\.meeting-row-status\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(status).toContain("flex: none");
@@ -245,6 +246,74 @@ describe("the Meetings view source", () => {
     // Export's list is fixed-position (portalled), never absolute inside a clipping row.
     expect(meetingsCss).toMatch(/\.floating-menu\s*\{[^}]*position:\s*fixed/);
     expect(meetingsCss).not.toContain(".export-menu-list");
+  });
+
+  describe("yap-1107-meetings-row-whole-click-target", () => {
+    const rowAt = meetingsView.indexOf('className="meeting-row-main"');
+    const rowButton = meetingsView.slice(meetingsView.lastIndexOf("<button", rowAt), meetingsView.indexOf("</button>", rowAt));
+    const rule = (sel: string) => {
+      const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return meetingsCss.match(new RegExp(esc + "\\s*\\{([^}]*)\\}"))?.[1] ?? "";
+    };
+
+    it("the open button spans the whole card: no padding gutter outside it", () => {
+      expect(rule(".meetings-list-pane .meeting-row")).toMatch(/padding:\s*0/);
+      const main = rule(".meetings-list-pane .meeting-row-main");
+      expect(main).toMatch(/grid-column:\s*1 \/ -1/);
+      expect(main).toMatch(/align-self:\s*stretch/);
+      expect(main).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
+      expect(main).toMatch(/cursor:\s*pointer/);
+      // The status column shares the button's grid row; the button reserves its width.
+      expect(rule(".meetings-list-pane .meeting-row-status")).toMatch(/grid-column:\s*2/);
+      expect(rule(".meetings-list-pane .meeting-row.has-status .meeting-row-main")).toContain("var(--row-status-w, 0px)");
+      expect(meetingsView).toContain("ref={reserveStatusWidth}");
+    });
+
+    it("no row corner is a dead spot: rows sit inside the list card, rounded no wider than a 2 px-inset point allows", () => {
+      // batch 3 bounce (C1): the list card's 16 px corner clip hid the first and
+      // last rows' corners, so a press there landed on section.meetings-group.
+      const list = rule(".meetings-list-pane .meetings-list");
+      expect(list).toMatch(/padding:\s*var\(--space-1\)/);
+      expect(list).toMatch(/gap:\s*var\(--space-1\)/);
+      const row = rule(".meetings-list-pane .meeting-row");
+      expect(row).toMatch(/border-radius:\s*var\(--radius-xs\)/);
+      expect(row).toMatch(/border-bottom:\s*0/);
+      // The button follows the row's corners (pressed fill, inset ring), never square under a clip.
+      expect(rule(".meetings-list-pane .meeting-row-main")).toMatch(/border-radius:\s*inherit/);
+    });
+
+    it("no interactive element is nested inside the row button (ONE stop per row)", () => {
+      expect(rowButton.length).toBeGreaterThan(0);
+      expect(rowButton.slice(1)).not.toMatch(/<button|<a\s|<input|<select|role="button"|tabIndex=\{0\}/);
+    });
+
+    it("is a list of buttons with aria-current and ONE roving Tab stop", () => {
+      expect(rowButton).toContain('aria-current={isOpen ? "true" : undefined}');
+      expect(rowButton).toContain("tabIndex={m.id === tabStopId ? 0 : -1}");
+      expect(rowButton).toContain("onFocus={() => setSelected(m.id)}");
+      expect(meetingsView).toContain("const tabStopId = rowTabStop(ids, selected, openId);");
+      // ↑/↓ carry keyboard focus with the selection; Return opens through the one handler.
+      expect(meetingsView).toContain('document.activeElement?.classList.contains("meeting-row-main")');
+      expect(meetingsView).toContain('openRow(k.selected, "keyboard")');
+    });
+
+    it("hover, pressed and selected are distinct token fills; reduced motion drops the transition", () => {
+      expect(rule(".meetings-list-pane .meeting-row:hover")).toContain("var(--row-hover)");
+      expect(rule(".meetings-list-pane .meeting-row-main:active")).toContain("var(--row-pressed)");
+      const sel = rule(".meetings-list-pane .meeting-row.selected");
+      expect(sel).toContain("var(--row-selected)");
+      expect(sel).toContain("inset 3px 0 0 var(--row-selected-bar)");
+      expect(meetingsCss).toMatch(/\.meetings-list-pane \.meeting-row\.open,\s*\.meetings-list-pane \.meeting-row\.selected\s*\{/);
+      const rowRules = rule(".meetings-list-pane .meeting-row") + rule(".meetings-list-pane .meeting-row-main");
+      expect(rowRules).toContain("transition:");
+      for (const m of rowRules.matchAll(/transition:\s*([^;]+);/g)) {
+        for (const ms of m[1].matchAll(/([\d.]+)(m?s)\b/g)) expect(Number(ms[1]) * (ms[2] === "s" ? 1000 : 1)).toBeLessThanOrEqual(120);
+      }
+      expect(meetingsCss).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.meetings-list-pane \.meeting-row,\s*\.meetings-list-pane \.meeting-row-main\s*\{\s*transition:\s*none/);
+      // The ring is focus.css's (one rule app-wide), pulled inside the clipping row by its token.
+      expect(meetingsCss).not.toMatch(/:focus-visible\s*[,{]/);
+      expect(rule(".meetings-list-pane .meeting-row-main")).toContain("--focus-ring-offset: calc(-1 * var(--focus-ring-width))");
+    });
   });
 
   it("deletes through the 10 s Undo, never at once", () => {

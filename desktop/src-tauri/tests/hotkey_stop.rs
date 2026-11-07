@@ -258,14 +258,25 @@ fn every_stop_call_site_goes_through_stop_take() {
         .expect("stop_take body ends");
     let body = &lib[body_start..body_start + body_len];
     assert!(body.contains("ptt_macos::stop_take_with(origin"), "{body}");
-    assert!(lib.contains("stop_take(&app, state.inner(), StopOrigin::OnScreen)"));
+    // yap-1107-start-stop-any-surface: every surface's stop goes through the
+    // ONE take dispatcher, whose stop half (`take_stop`) is `stop_take` with
+    // the surface's origin. No surface calls `stop_take` itself any more.
+    let ts_start = lib.find("fn take_stop(").expect("take_stop exists");
+    let ts_len = lib[ts_start..].find("\n}\n").expect("take_stop body ends");
+    assert!(lib[ts_start..ts_start + ts_len]
+        .contains("stop_take(app, state, stop_origin_for(surface))"));
+    for surface in [
+        "take_control::Surface::MenuBar,\n                take_control::Intent::Toggle",
+        "take_control::Surface::DictateButton,\n        take_control::Intent::Toggle",
+        "take_control::Surface::Pill,\n        take_control::Intent::Toggle",
+    ] {
+        assert!(lib.contains(surface), "surface sends its intent: {surface}");
+    }
     assert_eq!(
-        // Y6-B: both arms moved into `run_tray_command`, which takes
-        // `state: &Arc<AppState>` — hence `state`, not `&state`.
         lib.matches("stop_take(app, state, StopOrigin::MenuBar)")
             .count(),
-        1,
-        "the tray Stop item"
+        0,
+        "the tray Stop item goes through take_intent"
     );
     // Y8-A: the tray Hands-free item and the ⌃⌘H chord share ONE toggle,
     // and its only stop path is stop_take.
@@ -275,7 +286,8 @@ fn every_stop_call_site_goes_through_stop_take() {
     let hf_len = lib[hf_start..]
         .find("\n}\n")
         .expect("toggle_hands_free body ends");
-    assert!(lib[hf_start..hf_start + hf_len].contains("stop_take(app, state, origin)"));
+    assert!(lib[hf_start..hf_start + hf_len]
+        .contains("take_intent(app, state, surface, take_control::Intent::Stop"));
     // Y6-B: the tray item dispatches through `run_tray_command`, where the
     // state is already a reference.
     assert!(lib.contains("toggle_hands_free(app, state, StopOrigin::MenuBar)"));
@@ -283,7 +295,8 @@ fn every_stop_call_site_goes_through_stop_take() {
     // yap-p0-hotkeys-no-permission: the hotkey stop moved into the ONE
     // dispatcher, `take_hotkey_edge`, which both the fn tap's PttEvent::Stop
     // and the Carbon dictate chord reach.
-    assert!(lib.contains("hotkeys::TakeAction::Stop => stop_take(app, state, StopOrigin::Hotkey)"));
+    assert!(lib.contains("take_intent(app, state, take_control::Surface::Hotkey, intent"));
+    assert!(lib.contains("take_control::Surface::Hotkey => StopOrigin::Hotkey"));
     assert!(lib.contains("take_hotkey_edge(&h, &st, HotkeyEdge::Release, HotkeySource::FnTap)"));
     // No stop path left that skips end_hands_free.
     assert_eq!(

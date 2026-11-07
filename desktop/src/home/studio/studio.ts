@@ -102,6 +102,18 @@ export interface StudioState {
   newsArrivedAtMs?: number | null;
   /** Cinder's flight, 0 (just set off) .. 1 (landed); the room computes it. Missing = landed. */
   cinderFlight?: number;
+  /**
+   * yap-1106-news-duo-delivery: a briefing was delivered this visit, so Cinder
+   * sits at Yappy's desk (not waiting at the back door). False while a delivery
+   * is held for a meeting, a screen share or Do Not Disturb.
+   */
+  newsDelivered?: boolean;
+  /** The paper's trip from Cinder's claws to Yappy's desk, 0..1. Missing = on the desk. */
+  duoHandover?: number;
+  /** Whose turn it is to talk in the joint delivery (null = nobody). */
+  duoSpeaker?: "cinder" | "yappy" | null;
+  /** How many turns the current briefing's delivery has (2 per story). */
+  newsTurns?: number;
   /** yap-1106-sal-and-mochi: the speech engine is loading (AppStatus.engineLoading). */
   engineLoading: boolean;
   /** The speech model is on this Mac (AppStatus.modelReady); null = not known yet. */
@@ -288,9 +300,37 @@ export function parallaxTarget(clientX: number, left: number, width: number): nu
 
 /** How long Cinder's flight in with a new briefing takes. */
 export const CINDER_FLIGHT_MS = 2400;
-/** Where the flight starts (in through the window, top left) and lands (the back door). */
+/**
+ * Where the flight starts (in through the window, top left) and lands.
+ * yap-1106-news-duo-delivery: she lands at Yappy's desk (news design page,
+ * section 2: "Cinder flies in to Yappy's desk in the studio with the paper and
+ * a heart"); she waits at the back door only while a delivery is held.
+ */
 export const CINDER_FROM = { x: 20, y: 6 } as const;
-export const CINDER_LAND = { x: 240, y: FLOOR - 40 } as const;
+export const CINDER_LAND = { x: 178, y: FLOOR - 74 } as const;
+/** Where Cinder waits with the paper while a delivery is held (quiet) or not yet made. */
+export const CINDER_DOOR = { x: 240, y: FLOOR - 40 } as const;
+/** The paper in Cinder's claws, relative to her top-left. */
+export const PAPER_IN_CLAWS = { dx: 16, dy: 20 } as const;
+/** Where the handed-over paper rests on Yappy's desk (left of Yappy, on the desk top). */
+export const PAPER_ON_DESK = { x: 126, y: FLOOR - 22 } as const;
+
+/** The paper's top-left during the hand-over (0 = in Cinder's claws at the desk, 1 = on the desk), whole pixels. */
+export function paperSpot(handover: number): { x: number; y: number } {
+  const t = Math.max(0, Math.min(1, Number.isFinite(handover) ? handover : 1));
+  const fx = CINDER_LAND.x + PAPER_IN_CLAWS.dx, fy = CINDER_LAND.y + PAPER_IN_CLAWS.dy;
+  const x = fx + (PAPER_ON_DESK.x - fx) * t;
+  const y = fy + (PAPER_ON_DESK.y - fy) * t - Math.sin(Math.PI * t) * 6;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** Where Cinder is drawn: mid-flight on the arc, at the desk once delivered, else at the back door. */
+export function cinderPlace(s: Pick<StudioState, "cinderFlight" | "newsDelivered">): { x: number; y: number; where: "flying" | "desk" | "door" } {
+  const p = s.cinderFlight ?? 1;
+  if (p < 1) return { ...cinderSpot(p), where: "flying" };
+  if (s.newsDelivered === true) return { x: CINDER_LAND.x, y: CINDER_LAND.y, where: "desk" };
+  return { x: CINDER_DOOR.x, y: CINDER_DOOR.y, where: "door" };
+}
 
 /**
  * Cinder's flight progress, 0..1. Reduce motion skips the flight (1 at once);
@@ -454,7 +494,9 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   stamp(o, "hoot", 66, FLOOR - 40, (t % 3.1) < 0.15 ? 1 : 0, { bare: !onAirLit(s) });
   // Yappy stands behind his desk (the desk is in the front layer).
   const yf = s.yappy === "sleep" ? 1 : s.yappy === "work" ? (Math.floor(t * 6) % 3 === 0 ? 2 : 0) : s.yappy === "cheer" ? 2 : (t % 3.4) < 0.15 ? 1 : 0;
-  stamp(o, "yappy", 140, FLOOR - 50, yf);
+  // yap-1106-news-duo-delivery: on Yappy's turn in the news delivery he talks.
+  const yTalk = s.duoSpeaker === "yappy" ? (Math.floor(t * 4) % 2 === 0 ? 2 : 0) : yf;
+  stamp(o, "yappy", 140, FLOOR - 50, yTalk);
   // Tidy's bench (her counter hangs over the pegboard, back layer).
   h.r(190, FLOOR - 22, 36, 4, "#6b4428"); h.r(190, FLOOR - 22, 36, 1, "#8a5a36"); h.r(192, FLOOR - 18, 2, 18, "#4a2c1e"); h.r(222, FLOOR - 18, 2, 18, "#4a2c1e"); h.r(196, FLOOR - 27, 10, 5, "#9aa3ad");
   stamp(o, "tidy", 186, FLOOR - 34, fr);
@@ -474,12 +516,17 @@ export function drawMid(o: StudioCtx, s: StudioState, t: number): void {
   // Cinder's news delivery at the back door, when a briefing is waiting.
   // yap-1106-news-home-briefing: a NEW briefing flies in with the paper and a
   // heart (reduce motion skips the flight: cinderFlight is 1 at once).
+  // yap-1106-news-duo-delivery: she lands at Yappy's desk and hands the paper
+  // over; then she talks only on her turn (Yappy talks on his).
   if (s.newsReady) {
     const p = s.cinderFlight ?? 1;
-    const at = cinderSpot(p);
-    const dx = at.x - CINDER_LAND.x, dy = at.y - CINDER_LAND.y;
-    stamp(o, "cinder", at.x, at.y, Math.floor(t * 3) % 2, { talk: Math.floor(t * 3) % 2 === 1, t });
-    h.r(256 + dx, FLOOR - 20 + dy, 8, 6, "#fffdf5"); h.r(257 + dx, FLOOR - 18 + dy, 6, 1, "#4a4f5c"); h.r(257 + dx, FLOOR - 16 + dy, 4, 1, "#4a4f5c");
+    const place = cinderPlace(s);
+    const at = { x: place.x, y: place.y };
+    const talking = place.where === "flying" || place.where === "door" ? Math.floor(t * 3) % 2 === 1 : s.duoSpeaker === "cinder" && Math.floor(t * 5) % 2 === 0;
+    stamp(o, "cinder", at.x, at.y, Math.floor(t * 3) % 2, { talk: talking, t });
+    const handed = place.where === "desk" ? (s.duoHandover ?? 1) : 0;
+    const paper = place.where === "desk" ? paperSpot(handed) : { x: at.x + PAPER_IN_CLAWS.dx, y: at.y + PAPER_IN_CLAWS.dy };
+    h.r(paper.x, paper.y, 8, 6, "#fffdf5"); h.r(paper.x + 1, paper.y + 2, 6, 1, "#4a4f5c"); h.r(paper.x + 1, paper.y + 4, 4, 1, "#4a4f5c");
     if (p < 1) {
       const hx = at.x + 34, hy = at.y - 6;
       h.r(hx, hy, 2, 1, "#ff5a7a"); h.r(hx + 3, hy, 2, 1, "#ff5a7a"); h.r(hx, hy + 1, 5, 1, "#ff5a7a"); h.r(hx + 1, hy + 2, 3, 1, "#ff5a7a"); h.r(hx + 2, hy + 3, 1, 1, "#ff5a7a");
@@ -721,7 +768,20 @@ export function studioAriaLabel(s: StudioState): string {
   else if (shellyPluggedIn(s.battery)) parts.push("Shelly is plugged in.");
   const flies = fireflyCount(s.streakDays, band);
   if (flies > 0) parts.push(`Ember has ${flies} ${flies === 1 ? "firefly" : "fireflies"} out for your streak.`);
-  if (s.newsReady) parts.push("Cinder is at the back door with the news.");
+  if (s.newsReady) {
+    const where = cinderPlace(s).where;
+    parts.push(
+      where === "flying"
+        ? "Cinder is flying in with the news."
+        : where === "desk"
+          ? s.duoSpeaker === "cinder"
+            ? "Cinder is at Yappy's desk, naming the next story."
+            : s.duoSpeaker === "yappy"
+              ? "Yappy is explaining the story Cinder brought."
+              : "Cinder is at Yappy's desk with the news."
+          : "Cinder is at the back door with the news.",
+    );
+  }
   parts.push(studioBackRoomLabel(s));
   return parts.join(" ");
 }

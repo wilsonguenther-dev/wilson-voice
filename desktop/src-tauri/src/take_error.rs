@@ -62,6 +62,33 @@ pub fn paste_last_error(copied: bool, pasted: bool, auto_paste: bool) -> Option<
     }
 }
 
+/// yap-1107-clipboard-write-never-fails-silently — the take's `last_error`,
+/// aware of a clipboard that was WITHHELD on purpose (a password field: the
+/// take is held on the pill, never copied). That is not a clipboard failure,
+/// so it gets no [`CLIPBOARD_FAILED`] line; the pill's card already says
+/// "Held in the pill, not on your clipboard". [`CLIPBOARD_FAILED`] is only
+/// reached when `copied` is false because the verified write
+/// (`paste_tx::write_verified`) exhausted every retry.
+pub fn take_paste_last_error(
+    copied: bool,
+    pasted: bool,
+    withheld: bool,
+    auto_paste: bool,
+) -> Option<LastError> {
+    if withheld {
+        None
+    } else {
+        paste_last_error(copied, pasted, auto_paste)
+    }
+}
+
+/// Whether the take sends `paste_failed` (the "Copy again" toast). Exactly one
+/// per take, and never for a withheld clipboard: the secure-field hold is
+/// already explained by its own `paste_outcome` line and the pill card.
+pub fn should_emit_paste_failed(attempted_paste: bool, pasted: bool, withheld: bool) -> bool {
+    attempted_paste && !pasted && !withheld
+}
+
 /// The `paste_failed` payload: the row id plus the code that says whether the
 /// transcript is on the clipboard (`copied`) or not.
 pub fn paste_failed_payload(id: &str, copied: bool) -> serde_json::Value {
@@ -279,5 +306,29 @@ mod tests {
                 assert!(!e.message.contains(bad), "{} leaks {bad}", e.code);
             }
         }
+    }
+
+    /// yap-1107 acceptance (4): the 2026-11-07 16:11:18Z secure-field take
+    /// (clipboard withheld on purpose) showed BOTH "could not put the text on
+    /// the clipboard" and the paste_not_copied toast. A withheld clipboard
+    /// gets neither; a real exhausted-retry failure still gets both, once.
+    #[test]
+    fn withheld_clipboard_is_not_a_clipboard_failure() {
+        assert_eq!(take_paste_last_error(false, false, true, true), None);
+        assert!(!should_emit_paste_failed(true, false, true));
+
+        let failed = take_paste_last_error(false, false, false, true).expect("a real failure");
+        assert_eq!(failed.code, CLIPBOARD_FAILED);
+        assert!(should_emit_paste_failed(true, false, false));
+        assert_eq!(
+            paste_failed_payload("row", false)["code"],
+            serde_json::json!(PASTE_NOT_COPIED)
+        );
+
+        // A landed paste never toasts, withheld or not.
+        assert!(!should_emit_paste_failed(true, true, false));
+        assert_eq!(take_paste_last_error(true, true, false, true), None);
+        // An un-attempted paste never toasts.
+        assert!(!should_emit_paste_failed(false, false, false));
     }
 }
