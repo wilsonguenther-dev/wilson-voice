@@ -80,7 +80,6 @@ export default function SilentMicRow({
       data-silent-mic-row={after ? "switched" : "warning"}
       role="status"
       aria-label={after ?? silentMicAccessibleName(warning)}
-      onPointerDown={(e) => e.stopPropagation()}
     >
       <span className="silent-mic-line" title={after ?? warning}>{after ?? warning}</span>
       {after === null && (
@@ -88,6 +87,7 @@ export default function SilentMicRow({
           type="button"
           className="silent-mic-switch"
           aria-busy={busy}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={switchMic}
         >
           {SWITCH_MIC_LABEL}

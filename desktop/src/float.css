@@ -1622,7 +1622,6 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   gap: 6px;
 }
 .meeting-dictation-actions button.is-primary { background: var(--overlay-action); color: var(--overlay-text-on-action); }
-.meeting-dictation-actions button:focus-visible { outline: 2px solid var(--overlay-text); outline-offset: 1px; }
 .meeting-dictation-actions button:disabled { opacity: 0.6; cursor: default; }
 .meeting-dictation-chord {
   font: inherit;
