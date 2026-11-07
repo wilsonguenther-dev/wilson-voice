@@ -15103,6 +15103,9 @@ pub fn run() {
             live_transcript::meeting_live_name,
             live_transcript::meeting_live_same,
             live_transcript::meeting_live_skip,
+            // yap-1106-fb-23 — "People: Auto · − 4 +" (pill + after-meeting header).
+            live_transcript::meeting_set_expected_speakers,
+            live_transcript::meeting_recap_speakers,
             // yap-byom-0 — Settings → Model providers.
             list_model_providers,
             delete_model_provider,
