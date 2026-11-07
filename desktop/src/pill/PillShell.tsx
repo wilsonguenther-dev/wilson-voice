@@ -280,7 +280,8 @@ export default function ClassicPill(
       const v = typeof e.payload === "number" ? e.payload : 0;
       levelRef.current = Math.max(0, Math.min(1, v));
       if (levelRef.current > 0.002) wakeRef.current(); // re-arm the smoothing loop
-    }).then((u) => (dead ? u() : unsubs.push(u)));
+      // SP-11: float-targeted only, so the main window's copy never doubles it.
+    }, { target: "float" }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
