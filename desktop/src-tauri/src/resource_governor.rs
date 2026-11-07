@@ -418,6 +418,23 @@ pub fn pill_label_for(v: &Verdict) -> Option<String> {
     })
 }
 
+/// YAP-FX-04 — the main window's sentence while the slow-machine state holds
+/// background ASR (the "Run anyway" action is the same per-job override).
+pub const SLOW_MACHINE_SENTENCE: &str =
+    "This Mac is transcribing slowly right now — your meeting will transcribe when it speeds back up";
+
+/// YAP-FX-04 — at full, a tripped slow-machine detector still holds heavy
+/// work; say so in the view instead of showing a Mac with nothing held.
+/// A constrained verdict keeps its own (more specific) reason and sentence.
+pub fn overlay_slow_machine(v: &mut GovernorView, slow: bool) {
+    if !slow || v.heavy_work_deferred {
+        return;
+    }
+    v.heavy_work_deferred = true;
+    v.reason = Some(crate::latency::SLOW_MACHINE_REASON.to_string());
+    v.main_sentence = Some(SLOW_MACHINE_SENTENCE.to_string());
+}
+
 /// The main window's one plain sentence (FX-03) while a meeting's
 /// transcription is being held. `None` when nothing heavy is held.
 pub fn main_sentence_for(v: &Verdict) -> Option<String> {
@@ -554,7 +571,12 @@ impl Governor {
     /// including when the user pressed "Run anyway" for this job.
     pub fn heavy_work_deferred(&self, job: &str) -> Option<String> {
         let verdict = self.verdict(Duration::from_secs(5));
-        let held = heavy_work_deferred_by(&verdict).filter(|_| {
+        // YAP-FX-04: two decodes in a row slower than RTF 0.3 hold background
+        // ASR through this same gate (reason `slow_machine`), so the meeting
+        // queue, notes, diarization and "Run anyway" behave exactly as here.
+        let held = heavy_work_deferred_by(&verdict)
+            .or_else(crate::latency::slow_machine_deferred)
+            .filter(|_| {
             !self
                 .inner
                 .lock()
@@ -632,6 +654,7 @@ impl Governor {
     fn view_of(g: &Inner) -> GovernorView {
         let mut v = Self::view_of_parts(&g.verdict, &g.readings, g.pause_below);
         v.waiting_jobs = g.waiting.clone();
+        overlay_slow_machine(&mut v, crate::latency::slow_machine_now());
         v
     }
 

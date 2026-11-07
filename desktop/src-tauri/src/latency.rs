@@ -30,6 +30,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// How many recent takes the rolling decode RTF is taken over.
 pub const RTF_WINDOW: usize = 10;
@@ -93,11 +94,234 @@ static SESSION_RTF: Mutex<RtfWindow> = Mutex::new(RtfWindow::new());
 
 /// Record one take's decode into the session window and return
 /// `(rtf_p50, rtf_last)` for its latency line.
+///
+/// YAP-FX-04: the same take feeds the slow-machine detector
+/// ([`slow_machine_deferred`]), so two slow takes in a row pause background ASR.
 pub fn record_decode_rtf(decode_ms: i64, audio_seconds: f64) -> (f64, f64) {
     let rtf = decode_rtf(decode_ms, audio_seconds);
-    let mut window = SESSION_RTF.lock().unwrap_or_else(|p| p.into_inner());
-    window.push(rtf);
-    (window.p50(), rtf)
+    let p50 = {
+        let mut window = SESSION_RTF.lock().unwrap_or_else(|p| p.into_inner());
+        window.push(rtf);
+        window.p50()
+    };
+    observe_slow_machine(rtf);
+    (p50, rtf)
+}
+
+// ─────────────── YAP-FX-04 — adaptive decode timeout ───────────────
+//
+// The decode timeout used to be a fixed 120 s (`transcription::TRANSCRIBE_TIMEOUT`):
+// far too long for a wedged two-second take (the user stared at a spinner for
+// two minutes) and, on a slow Mac, a wall a long window was always going to hit.
+// It now scales with the audio being decoded and the RTF this session has
+// actually measured.
+
+/// No decode is given less than this — it also has to absorb a cold Metal
+/// warm-up and the helper's IPC, which do not scale with audio length.
+pub const DECODE_TIMEOUT_FLOOR: Duration = Duration::from_secs(30);
+/// No decode is given more than this, however long or slow.
+pub const DECODE_TIMEOUT_CAP: Duration = Duration::from_secs(180);
+/// The RTF assumed before the session has measured one (or when the window
+/// only holds degenerate takes): pessimistic, so the first take of a launch on
+/// a slow Mac is not cut short.
+pub const UNMEASURED_RTF: f64 = 0.5;
+/// Head-room over the expected decode time: a meeting chunk may run a larger
+/// model than the dictation takes that set the RTF, and one decode may hit a
+/// thermal dip the median does not show yet.
+pub const DECODE_TIMEOUT_SAFETY: f64 = 4.0;
+
+/// The timeout for decoding `audio_seconds` of audio at `recent_rtf`:
+/// `audio × rtf × DECODE_TIMEOUT_SAFETY`, clamped to
+/// [`DECODE_TIMEOUT_FLOOR`]..=[`DECODE_TIMEOUT_CAP`]. A non-positive or
+/// non-finite `recent_rtf` means "not measured yet" ([`UNMEASURED_RTF`]); a
+/// non-positive or non-finite `audio_seconds` gets the floor.
+pub fn adaptive_decode_timeout(audio_seconds: f64, recent_rtf: f64) -> Duration {
+    let audio = if audio_seconds.is_finite() && audio_seconds > 0.0 {
+        audio_seconds
+    } else {
+        0.0
+    };
+    let rtf = if recent_rtf.is_finite() && recent_rtf > 0.0 {
+        recent_rtf
+    } else {
+        UNMEASURED_RTF
+    };
+    let secs = (audio * rtf * DECODE_TIMEOUT_SAFETY).clamp(
+        DECODE_TIMEOUT_FLOOR.as_secs_f64(),
+        DECODE_TIMEOUT_CAP.as_secs_f64(),
+    );
+    Duration::from_secs_f64(secs)
+}
+
+/// The RTF the timeout plans with: the slower of the session median and the
+/// last take, so one slow take widens the next timeout at once while a single
+/// fast outlier cannot shrink it. `0.0` before the first take (= unmeasured).
+pub fn rtf_estimate(window: &RtfWindow) -> f64 {
+    window.p50().max(window.last())
+}
+
+/// [`rtf_estimate`] over this session's takes.
+pub fn session_rtf_estimate() -> f64 {
+    let window = SESSION_RTF.lock().unwrap_or_else(|p| p.into_inner());
+    rtf_estimate(&window)
+}
+
+// ─────────────── YAP-FX-04 — the slow-machine detector ───────────────
+
+/// A take decoding slower than this (decode / audio) counts as slow.
+pub const SLOW_MACHINE_RTF: f64 = 0.3;
+/// Consecutive slow takes that trip the slow-machine state.
+pub const SLOW_MACHINE_STREAK: u32 = 2;
+/// Consecutive takes at or under [`SLOW_MACHINE_RTF`] that clear it.
+pub const SLOW_MACHINE_RECOVER_STREAK: u32 = 2;
+/// With no new slow take for this long the state clears on its own, so a
+/// meeting queued behind it is not held forever by a user who stopped
+/// dictating. If the Mac is still slow, the next two takes trip it again.
+pub const SLOW_MACHINE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+/// The reason background ASR reports while held by this state (the same slot
+/// the resource governor's `battery` / `thermal` reasons use).
+pub const SLOW_MACHINE_REASON: &str = "slow_machine";
+
+/// What one observation (or the cooldown) changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlowMachineChange {
+    /// Two slow takes in a row: background ASR pauses.
+    Tripped,
+    /// Two healthy takes in a row: background ASR resumes.
+    Recovered,
+    /// [`SLOW_MACHINE_COOLDOWN`] without a slow take: background ASR resumes.
+    Expired,
+}
+
+/// Counts slow and healthy takes in a row. Pure: the caller hands in `now`,
+/// so a test drives it without sleeping.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SlowMachineDetector {
+    slow_streak: u32,
+    fast_streak: u32,
+    /// `Some(when the latest slow take kept it on)` while tripped.
+    slow_since: Option<Instant>,
+    /// Times the state tripped in this process (a counter for the logs).
+    trips: u64,
+}
+
+impl SlowMachineDetector {
+    pub const fn new() -> Self {
+        Self {
+            slow_streak: 0,
+            fast_streak: 0,
+            slow_since: None,
+            trips: 0,
+        }
+    }
+
+    pub fn is_slow(&self) -> bool {
+        self.slow_since.is_some()
+    }
+
+    pub fn trips(&self) -> u64 {
+        self.trips
+    }
+
+    /// One take's decode RTF. Degenerate takes (`0.0`, negative, non-finite —
+    /// what [`decode_rtf`] returns for an empty clip) say nothing about speed
+    /// and neither extend nor break a streak.
+    pub fn observe(&mut self, rtf: f64, now: Instant) -> Option<SlowMachineChange> {
+        if !rtf.is_finite() || rtf <= 0.0 {
+            return None;
+        }
+        if rtf > SLOW_MACHINE_RTF {
+            self.slow_streak = self.slow_streak.saturating_add(1);
+            self.fast_streak = 0;
+            if self.slow_since.is_some() {
+                self.slow_since = Some(now);
+                return None;
+            }
+            if self.slow_streak >= SLOW_MACHINE_STREAK {
+                self.slow_since = Some(now);
+                self.trips += 1;
+                return Some(SlowMachineChange::Tripped);
+            }
+            None
+        } else {
+            self.fast_streak = self.fast_streak.saturating_add(1);
+            self.slow_streak = 0;
+            if self.slow_since.is_some() && self.fast_streak >= SLOW_MACHINE_RECOVER_STREAK {
+                self.slow_since = None;
+                return Some(SlowMachineChange::Recovered);
+            }
+            None
+        }
+    }
+
+    /// Clear a state no slow take has renewed for [`SLOW_MACHINE_COOLDOWN`].
+    pub fn expire(&mut self, now: Instant) -> Option<SlowMachineChange> {
+        match self.slow_since {
+            Some(since) if now.saturating_duration_since(since) >= SLOW_MACHINE_COOLDOWN => {
+                self.slow_since = None;
+                self.slow_streak = 0;
+                self.fast_streak = 0;
+                Some(SlowMachineChange::Expired)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The session's detector, fed by every dictation take ([`record_decode_rtf`]).
+static SLOW_MACHINE: Mutex<SlowMachineDetector> = Mutex::new(SlowMachineDetector::new());
+
+fn observe_slow_machine(rtf: f64) {
+    let (change, trips) = {
+        let mut d = SLOW_MACHINE.lock().unwrap_or_else(|p| p.into_inner());
+        (d.observe(rtf, Instant::now()), d.trips())
+    };
+    if let Some(change) = change {
+        log_slow_machine(change, rtf, trips);
+    }
+}
+
+/// One line per transition, plus the diagnostics state the support bundle shows.
+fn log_slow_machine(change: SlowMachineChange, rtf: f64, trips: u64) {
+    match change {
+        SlowMachineChange::Tripped => log::warn!(
+            "latency slow_machine state=on rtf_last={rtf:.3} threshold={SLOW_MACHINE_RTF} streak={SLOW_MACHINE_STREAK} trips={trips} background_asr=paused"
+        ),
+        SlowMachineChange::Recovered => log::info!(
+            "latency slow_machine state=off reason=fast_takes rtf_last={rtf:.3} trips={trips} background_asr=resumed"
+        ),
+        SlowMachineChange::Expired => log::info!(
+            "latency slow_machine state=off reason=cooldown cooldown_s={} trips={trips} background_asr=resumed",
+            SLOW_MACHINE_COOLDOWN.as_secs()
+        ),
+    }
+    let on = change == SlowMachineChange::Tripped;
+    crate::diagnostics::set_state("latency.slow_machine", if on { "on" } else { "off" });
+}
+
+/// Is the Mac in the slow-machine state right now? (Read-only: no cooldown.)
+pub fn slow_machine_now() -> bool {
+    SLOW_MACHINE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_slow()
+}
+
+/// YAP-FX-04 — `Some("slow_machine")` while two slow takes in a row hold
+/// background ASR (meeting ASR, its recovery decode, notes, diarization). The
+/// resource governor folds it into `heavy_work_deferred`, so it is the SAME
+/// pause FX-03 uses: the meeting still records, the decode queues, "Run
+/// anyway" still pushes one job through. Applies the cooldown on read.
+pub fn slow_machine_deferred() -> Option<String> {
+    let (slow, change, trips) = {
+        let mut d = SLOW_MACHINE.lock().unwrap_or_else(|p| p.into_inner());
+        let change = d.expire(Instant::now());
+        (d.is_slow(), change, d.trips())
+    };
+    if let Some(change) = change {
+        log_slow_machine(change, 0.0, trips);
+    }
+    slow.then(|| SLOW_MACHINE_REASON.to_string())
 }
 
 /// One dictation's latency, stage by stage. Every `*_ms` field is a WALL span in
