@@ -24,14 +24,27 @@
 //!   for byte.
 //! * **Partials are honest.** `transcript_partial {take, committed, tentative}`
 //!   carries only text a window really decoded, at most once every
-//!   [`PARTIAL_MIN_INTERVAL`]. Window cutting has no tentative hypothesis, so
-//!   `tentative` is always empty here; the field exists so the pill item
-//!   (yap-1106-partial-transcript-stream) renders one shape.
+//!   [`PARTIAL_MIN_INTERVAL`].
+//! * **The tentative tail is display only** (yap-1106-partial-transcript-
+//!   stream). A committed window lands 20–30 s into a take, far too late for
+//!   the pill, so while the uncommitted audio grows the stream also decodes
+//!   its newest [`TentativeConfig::max_seconds`] about once a
+//!   [`TentativeConfig::interval`] and sends that guess as `tentative`. The
+//!   guess never reaches [`StreamedTake::text`], history or the polish feed;
+//!   it is dropped the moment a window commits over its audio, it never runs
+//!   while a committed window is queued (committed work always goes first),
+//!   it stops while the resource governor is constrained, and it is held to
+//!   [`TentativeConfig::max_duty`] (10 %) of the take's wall time
+//!   ([`tentative_gate`]), so it adds at most that much decode over a take
+//!   that streams without it.
 //!
 //! Telemetry: one `stream_decode window …` line per decoded window and one
 //! `stream_decode finish …` line per take, carrying the decode time spent
 //! during capture and its duty cycle (`duty_pct`, decode wall time over capture
-//! wall time) — the CPU+GPU overhead proxy the energy bench checks against.
+//! wall time) — the CPU+GPU overhead proxy the energy bench checks against —
+//! plus the tentative tail's own count, decode time, duty and lag (the time
+//! from the newest sample a guess covers to its emit), and one
+//! `stream_decode tentative_summary …` line per take whatever its outcome.
 //! Never transcript text, never audio.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -77,6 +90,98 @@ pub const REASON_INCOMPLETE: &str = "incomplete";
 pub const REASON_DROPPED: &str = "dropped";
 pub const REASON_SHORT: &str = "short_take";
 
+/// yap-1106-partial-transcript-stream — how the live guess at the
+/// uncommitted words is paced. `None` in [`StreamConfig::tentative`] turns it
+/// off (the SP-05 unit tests run without it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TentativeConfig {
+    /// The fastest a new guess starts. The pill's lag behind speech is about
+    /// this plus one guess's decode time.
+    pub interval: Duration,
+    /// Uncommitted audio shorter than this is not guessed at (the model only
+    /// invents words on a sliver).
+    pub min_seconds: f64,
+    /// Only the newest this-many seconds of uncommitted audio are decoded:
+    /// the pill shows the newest words, and a short slice keeps a guess cheap.
+    pub max_seconds: f64,
+    /// Ceiling on guess decode time over the take's wall time (0.10 = 10 %).
+    pub max_duty: f64,
+}
+
+impl Default for TentativeConfig {
+    fn default() -> Self {
+        TentativeConfig {
+            interval: Duration::from_millis(1000),
+            min_seconds: 1.0,
+            max_seconds: 5.0,
+            max_duty: 0.10,
+        }
+    }
+}
+
+/// Why [`tentative_gate`] did or did not start a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TentativeGate {
+    Go,
+    /// Inside the interval since the last guess (or since the take began).
+    Wait,
+    /// A guess or a committed window is still being decoded.
+    Busy,
+    /// Not enough uncommitted audio yet.
+    Short,
+    /// Another guess now would push guess decode past `max_duty`.
+    Budget,
+}
+
+/// What [`tentative_gate`] decides on — a plain snapshot, so the pacing is
+/// testable on a simulated clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TentativeClock {
+    /// Take wall time so far.
+    pub since_start: Duration,
+    /// Since the last guess started, `None` before the first.
+    pub since_last: Option<Duration>,
+    /// Guess decode time spent this take.
+    pub spent: Duration,
+    /// The last guess's decode time: the estimate of what the next one costs.
+    pub last_cost: Duration,
+    /// Uncommitted samples.
+    pub pending_samples: usize,
+    /// A guess or a committed window is in flight.
+    pub busy: bool,
+}
+
+/// Start a guess now? Pure: the whole tentative pacing is this function.
+///
+/// Two budget rules keep guess decode at `max_duty` of the take: each guess's
+/// cost is spread over the gap after it (the next one waits at least
+/// `last_cost / max_duty`, so a 150 ms guess repeats every 1.5 s and a 50 ms
+/// one every `interval`), and the take's total guess time may not run ahead of
+/// `max_duty × since_start`. Together the take's guess duty never exceeds
+/// `max_duty` by more than one guess.
+pub fn tentative_gate(t: &TentativeConfig, c: &TentativeClock, sample_rate: u32) -> TentativeGate {
+    if c.busy {
+        return TentativeGate::Busy;
+    }
+    let waited = c.since_last.unwrap_or(c.since_start);
+    if waited < t.interval {
+        return TentativeGate::Wait;
+    }
+    let rate = f64::from(sample_rate.max(1));
+    if (c.pending_samples as f64) / rate < t.min_seconds {
+        return TentativeGate::Short;
+    }
+    if t.max_duty <= 0.0 {
+        return TentativeGate::Budget;
+    }
+    let pace = c.last_cost.as_secs_f64() / t.max_duty;
+    let ahead = c.spent.as_secs_f64() > c.since_start.as_secs_f64() * t.max_duty;
+    if waited.as_secs_f64() < pace || ahead {
+        return TentativeGate::Budget;
+    }
+    TentativeGate::Go
+}
+
 /// The stream's geometry. A struct so tests can shrink the windows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamConfig {
@@ -91,6 +196,8 @@ pub struct StreamConfig {
     pub max_backlog_windows: usize,
     pub partial_interval: Duration,
     pub sample_rate: u32,
+    /// The live guess at the uncommitted words (`None` = off).
+    pub tentative: Option<TentativeConfig>,
 }
 
 impl Default for StreamConfig {
@@ -102,6 +209,7 @@ impl Default for StreamConfig {
             max_backlog_windows: 2,
             partial_interval: PARTIAL_MIN_INTERVAL,
             sample_rate: STREAM_SAMPLE_RATE,
+            tentative: Some(TentativeConfig::default()),
         }
     }
 }
@@ -229,6 +337,12 @@ pub struct StreamedTake {
     /// Decode time spent while the take was still recording.
     pub capture_decode_ms: u64,
     pub committed_audio_seconds: f64,
+    /// Tentative guesses that reached the pill this take (display only).
+    pub tentatives: usize,
+    /// Decode time the guesses spent during capture.
+    pub tentative_ms: u64,
+    /// The worst speech → pill lag of an emitted guess.
+    pub tentative_lag_max_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,9 +355,18 @@ pub enum StreamOutcome {
     Degraded(String),
 }
 
-struct Job {
-    index: usize,
-    samples: Vec<f32>,
+enum Job {
+    /// A committed window: its text becomes part of the take.
+    Window { index: usize, samples: Vec<f32> },
+    /// The newest uncommitted audio, guessed at for the pill only.
+    Tentative {
+        samples: Vec<f32>,
+        /// Windows committed when the guess was cut; any newer commit makes
+        /// the guess stale.
+        base_windows: usize,
+        /// When its newest sample arrived (the lag clock).
+        spoken_at: Instant,
+    },
 }
 
 #[derive(Default)]
@@ -254,6 +377,13 @@ struct Progress {
     decode_ms: u64,
     audio_seconds: f64,
     throttle: PartialThrottle,
+    tentatives: usize,
+    tentative_failed: usize,
+    tentative_stale: usize,
+    tentative_lag_sum_ms: u64,
+    tentative_lag_max_ms: u64,
+    /// Set (to the last reason) while a guess was refused by the governor.
+    tentative_off: Option<&'static str>,
 }
 
 struct Shared {
@@ -262,6 +392,15 @@ struct Shared {
     queued: AtomicUsize,
     /// Cheap mirror of `progress.degraded.is_some()` for the capture thread.
     degraded: AtomicBool,
+    /// Windows committed so far (a guess cut before the newest is stale).
+    sent: AtomicUsize,
+    /// The take was sealed or released: queued guesses are skipped.
+    released: AtomicBool,
+    /// A guess is queued or decoding.
+    tentative_busy: AtomicBool,
+    /// Guess decode time this take, and the last guess's.
+    tentative_spent_ms: AtomicU64,
+    tentative_last_ms: AtomicU64,
 }
 
 impl Shared {
@@ -348,6 +487,12 @@ pub struct StreamDecoder {
     decoder: Arc<dyn WindowDecoder>,
     sink: Option<PartialSink>,
     started: Instant,
+    /// When the last guess started (or was last refused as quiet/governed).
+    last_tentative: Option<Instant>,
+    /// `fed` when the last guess was cut: the new audio since must hold speech.
+    tentative_fed_at: usize,
+    tentative_skipped_budget: usize,
+    last_budget_skip: Option<Instant>,
 }
 
 impl StreamDecoder {
@@ -362,6 +507,11 @@ impl StreamDecoder {
             progress: Mutex::new(Progress::default()),
             queued: AtomicUsize::new(0),
             degraded: AtomicBool::new(false),
+            sent: AtomicUsize::new(0),
+            released: AtomicBool::new(false),
+            tentative_busy: AtomicBool::new(false),
+            tentative_spent_ms: AtomicU64::new(0),
+            tentative_last_ms: AtomicU64::new(0),
         });
         let (tx, rx) = mpsc::channel::<Job>();
         let worker = {
@@ -398,6 +548,10 @@ impl StreamDecoder {
             decoder,
             sink,
             started: Instant::now(),
+            last_tentative: None,
+            tentative_fed_at: 0,
+            tentative_skipped_budget: 0,
+            last_budget_skip: None,
         }
     }
 
@@ -480,6 +634,99 @@ impl StreamDecoder {
                 break;
             }
         }
+        self.maybe_tentative();
+    }
+
+    /// yap-1106-partial-transcript-stream — cut a guess from the newest
+    /// uncommitted audio when [`tentative_gate`] allows one. Runs on the
+    /// capture thread, so it only snapshots atomics and copies at most
+    /// [`TentativeConfig::max_seconds`] of samples.
+    fn maybe_tentative(&mut self) {
+        let Some(t) = self.cfg.tentative else {
+            return;
+        };
+        if self.is_degraded() || self.sealed.is_some() || self.tx.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let busy = self.shared.tentative_busy.load(Ordering::Acquire)
+            || self.shared.queued.load(Ordering::Acquire) > 0;
+        let clock = TentativeClock {
+            since_start: now.saturating_duration_since(self.started),
+            since_last: self
+                .last_tentative
+                .map(|at| now.saturating_duration_since(at)),
+            spent: Duration::from_millis(self.shared.tentative_spent_ms.load(Ordering::Acquire)),
+            last_cost: Duration::from_millis(self.shared.tentative_last_ms.load(Ordering::Acquire)),
+            pending_samples: self.pending.len(),
+            busy,
+        };
+        match tentative_gate(&t, &clock, self.cfg.sample_rate) {
+            TentativeGate::Go => {}
+            TentativeGate::Budget => {
+                // Counted once per interval, not once per 30 ms frame.
+                let due = self
+                    .last_budget_skip
+                    .is_none_or(|at| now.saturating_duration_since(at) >= t.interval);
+                if due {
+                    self.tentative_skipped_budget += 1;
+                    self.last_budget_skip = Some(now);
+                }
+                return;
+            }
+            TentativeGate::Wait | TentativeGate::Busy | TentativeGate::Short => return,
+        }
+        // The audio since the last guess must hold speech, or the last guess
+        // still stands and the model is not asked again.
+        let fresh = self
+            .fed
+            .saturating_sub(self.tentative_fed_at)
+            .min(self.pending.len());
+        let fresh_quiet =
+            fresh == 0 || rms(&self.pending[self.pending.len() - fresh..]) < QUIET_RMS_FLOOR;
+        if fresh_quiet {
+            self.last_tentative = Some(now);
+            return;
+        }
+        if self.decoder.constrained() {
+            let first = {
+                let mut p = lock(&self.shared.progress);
+                let first = p.tentative_off.is_none();
+                p.tentative_off = Some(REASON_GOVERNOR);
+                first
+            };
+            if first {
+                log::info!(
+                    "stream_decode tentative_off take={} reason={REASON_GOVERNOR}",
+                    self.take
+                );
+            }
+            self.last_tentative = Some(now);
+            return;
+        }
+        let rate = f64::from(self.cfg.sample_rate.max(1));
+        let max = ((t.max_seconds.max(0.0) * rate) as usize).max(1);
+        let start = self.pending.len().saturating_sub(max);
+        let samples = self.pending[start..].to_vec();
+        self.shared.tentative_busy.store(true, Ordering::Release);
+        let sent = self
+            .tx
+            .as_ref()
+            .map(|tx| {
+                tx.send(Job::Tentative {
+                    samples,
+                    base_windows: self.windows_sent,
+                    spoken_at: now,
+                })
+                .is_ok()
+            })
+            .unwrap_or(false);
+        if !sent {
+            self.shared.tentative_busy.store(false, Ordering::Release);
+            return;
+        }
+        self.last_tentative = Some(now);
+        self.tentative_fed_at = self.fed;
     }
 
     fn commit_window(&mut self, cut_frame: usize) {
@@ -490,6 +737,7 @@ impl StreamDecoder {
         self.committed_samples += n;
         let index = self.windows_sent;
         self.windows_sent += 1;
+        self.shared.sent.store(self.windows_sent, Ordering::Release);
         let backlog = self.shared.queued.fetch_add(1, Ordering::AcqRel) + 1;
         if backlog > self.cfg.max_backlog_windows {
             self.shared.degrade(self.take, REASON_BACKLOG);
@@ -497,7 +745,7 @@ impl StreamDecoder {
         let sent = self
             .tx
             .as_ref()
-            .map(|tx| tx.send(Job { index, samples }).is_ok())
+            .map(|tx| tx.send(Job::Window { index, samples }).is_ok())
             .unwrap_or(false);
         if !sent {
             self.shared.queued.fetch_sub(1, Ordering::AcqRel);
@@ -512,6 +760,8 @@ impl StreamDecoder {
         if self.sealed.is_none() {
             self.sealed = Some(captured_total);
         }
+        // No guess after the key comes up: release time belongs to the tail.
+        self.shared.released.store(true, Ordering::Release);
     }
 
     /// Release: wait for the committed windows, decode ONLY the tail, and
@@ -519,12 +769,15 @@ impl StreamDecoder {
     pub fn finish(mut self) -> StreamOutcome {
         let released = Instant::now();
         let capture_wall_ms = released.duration_since(self.started).as_millis() as u64;
+        self.shared.released.store(true, Ordering::Release);
         drop(self.tx.take());
         if let Some(worker) = self.worker.take() {
             if worker.join().is_err() {
                 self.shared.degrade(self.take, REASON_WORKER_GONE);
             }
         }
+        let (tentatives, tentative_ms, tentative_lag_max_ms) =
+            self.log_tentative_summary(capture_wall_ms);
         let (degraded, windows_done, committed, capture_decode_ms, audio_seconds) = {
             let p = lock(&self.shared.progress);
             (
@@ -628,7 +881,49 @@ impl StreamDecoder {
             release_ms,
             capture_decode_ms,
             committed_audio_seconds: audio_seconds,
+            tentatives,
+            tentative_ms,
+            tentative_lag_max_ms,
         })
+    }
+
+    /// One `stream_decode tentative_summary …` line per take that guessed
+    /// (any outcome): count, failures, stale drops, budget skips, decode time,
+    /// duty and lag. Counts and timings only, never text.
+    fn log_tentative_summary(&self, capture_wall_ms: u64) -> (usize, u64, u64) {
+        let (count, failed, stale, lag_sum, lag_max, off) = {
+            let p = lock(&self.shared.progress);
+            (
+                p.tentatives,
+                p.tentative_failed,
+                p.tentative_stale,
+                p.tentative_lag_sum_ms,
+                p.tentative_lag_max_ms,
+                p.tentative_off,
+            )
+        };
+        let spent_ms = self.shared.tentative_spent_ms.load(Ordering::Acquire);
+        if self.cfg.tentative.is_some()
+            && (count + failed + stale + self.tentative_skipped_budget > 0 || off.is_some())
+        {
+            let duty_pct = if capture_wall_ms == 0 {
+                0.0
+            } else {
+                spent_ms as f64 * 100.0 / capture_wall_ms as f64
+            };
+            let lag_avg_ms = if count == 0 {
+                0
+            } else {
+                lag_sum / count as u64
+            };
+            log::info!(
+                "stream_decode tentative_summary take={} count={count} failed={failed} stale={stale} skipped_budget={} spent_ms={spent_ms} capture_ms={capture_wall_ms} duty_pct={duty_pct:.1} lag_avg_ms={lag_avg_ms} lag_max_ms={lag_max} off={}",
+                self.take,
+                self.tentative_skipped_budget,
+                off.unwrap_or("none")
+            );
+        }
+        (count, spent_ms, lag_max)
     }
 }
 
@@ -652,6 +947,26 @@ fn worker_loop(
 ) {
     let rate = cfg.sample_rate.max(1) as f64;
     for job in rx {
+        let (index, samples) = match job {
+            Job::Window { index, samples } => (index, samples),
+            Job::Tentative {
+                samples,
+                base_windows,
+                spoken_at,
+            } => {
+                run_tentative(
+                    &shared,
+                    &*decoder,
+                    sink.as_ref(),
+                    take,
+                    &cfg,
+                    samples,
+                    base_windows,
+                    spoken_at,
+                );
+                continue;
+            }
+        };
         if shared.degraded.load(Ordering::Acquire) {
             shared.queued.fetch_sub(1, Ordering::AcqRel);
             continue;
@@ -661,14 +976,14 @@ fn worker_loop(
             shared.queued.fetch_sub(1, Ordering::AcqRel);
             continue;
         }
-        let audio_seconds = job.samples.len() as f64 / rate;
+        let audio_seconds = samples.len() as f64 / rate;
         let started = Instant::now();
         // A window of pure silence (the user held the key and said nothing)
         // commits as no words instead of asking the model to invent some.
-        let result = if rms(&job.samples) < QUIET_RMS_FLOOR {
+        let result = if rms(&samples) < QUIET_RMS_FLOOR {
             Ok(String::new())
         } else {
-            decoder.decode(job.samples)
+            decoder.decode(samples)
         };
         let ms = started.elapsed().as_millis() as u64;
         match result {
@@ -690,8 +1005,7 @@ fn worker_loop(
                 };
                 let backlog = shared.queued.load(Ordering::Acquire).saturating_sub(1);
                 log::info!(
-                    "stream_decode window take={take} index={} audio_ms={} decode_ms={ms} backlog={backlog}",
-                    job.index,
+                    "stream_decode window take={take} index={index} audio_ms={} decode_ms={ms} backlog={backlog}",
                     (audio_seconds * 1000.0) as u64
                 );
                 if let (Some(sink), Some(partial)) = (sink.as_ref(), partial) {
@@ -699,14 +1013,85 @@ fn worker_loop(
                 }
             }
             Err(e) => {
-                log::warn!(
-                    "stream_decode window_failed take={take} index={} error={e}",
-                    job.index
-                );
+                log::warn!("stream_decode window_failed take={take} index={index} error={e}");
                 shared.degrade(take, REASON_WINDOW_FAILED);
             }
         }
         shared.queued.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// yap-1106-partial-transcript-stream — decode one guess and, unless a window
+/// committed over its audio meanwhile, send it to the pill as `tentative`
+/// beside the committed text. A failed guess is only counted: committed
+/// windows and the release path never depend on one.
+#[allow(clippy::too_many_arguments)]
+fn run_tentative(
+    shared: &Shared,
+    decoder: &dyn WindowDecoder,
+    sink: Option<&PartialSink>,
+    take: u64,
+    cfg: &StreamConfig,
+    samples: Vec<f32>,
+    base_windows: usize,
+    spoken_at: Instant,
+) {
+    let stale = |shared: &Shared| {
+        shared.degraded.load(Ordering::Acquire)
+            || shared.released.load(Ordering::Acquire)
+            || shared.sent.load(Ordering::Acquire) != base_windows
+    };
+    if stale(shared) {
+        lock(&shared.progress).tentative_stale += 1;
+        shared.tentative_busy.store(false, Ordering::Release);
+        return;
+    }
+    if decoder.constrained() {
+        lock(&shared.progress).tentative_off = Some(REASON_GOVERNOR);
+        shared.tentative_busy.store(false, Ordering::Release);
+        return;
+    }
+    let audio_ms = samples.len() as u64 * 1000 / u64::from(cfg.sample_rate.max(1));
+    let started = Instant::now();
+    let result = decoder.decode(samples);
+    let ms = started.elapsed().as_millis() as u64;
+    shared.tentative_spent_ms.fetch_add(ms, Ordering::AcqRel);
+    shared.tentative_last_ms.store(ms, Ordering::Release);
+    let partial = match result {
+        Err(e) => {
+            log::warn!("stream_decode tentative_failed take={take} error={e}");
+            lock(&shared.progress).tentative_failed += 1;
+            None
+        }
+        Ok(text) => {
+            let mut p = lock(&shared.progress);
+            if stale(shared) {
+                p.tentative_stale += 1;
+                None
+            } else {
+                let lag_ms = spoken_at.elapsed().as_millis() as u64;
+                let tentative = text.trim().to_string();
+                let admitted =
+                    !tentative.is_empty() && p.throttle.admit(Instant::now(), cfg.partial_interval);
+                if admitted {
+                    p.tentatives += 1;
+                    p.tentative_lag_sum_ms += lag_ms;
+                    p.tentative_lag_max_ms = p.tentative_lag_max_ms.max(lag_ms);
+                }
+                log::debug!(
+                    "stream_decode tentative take={take} audio_ms={audio_ms} decode_ms={ms} lag_ms={lag_ms} emitted={admitted}"
+                );
+                admitted.then(|| TranscriptPartial {
+                    take,
+                    committed: join_texts(&p.committed),
+                    tentative,
+                })
+            }
+        }
+    };
+    shared.tentative_busy.store(false, Ordering::Release);
+    if let (Some(sink), Some(partial)) = (sink, partial) {
+        sink(&partial);
     }
 }
 
@@ -805,6 +1190,9 @@ mod tests {
             max_backlog_windows: 100,
             partial_interval: Duration::from_millis(0),
             sample_rate: STREAM_SAMPLE_RATE,
+            // The SP-05 tests pin exact decode calls; the tentative tests
+            // below switch the guess on explicitly.
+            tentative: None,
         }
     }
 
@@ -1073,5 +1461,274 @@ mod tests {
         assert_eq!(stream_language("en", 2, true), None);
         assert_eq!(stream_language("en", 1, true), Some("en".into()));
         assert_eq!(stream_language("fr", 3, false), Some("fr".into()));
+    }
+
+    // ---- yap-1106-partial-transcript-stream: the tentative tail ----------
+
+    /// A guess every frame it is allowed: no interval, no budget, no windows.
+    fn guessing() -> StreamConfig {
+        StreamConfig {
+            min_window_seconds: 100.0,
+            max_window_seconds: 101.0,
+            tentative: Some(TentativeConfig {
+                interval: Duration::from_millis(0),
+                min_seconds: 0.5,
+                max_seconds: 1.0,
+                max_duty: 1_000.0,
+            }),
+            ..small()
+        }
+    }
+
+    fn collect() -> (PartialSink, Arc<Mutex<Vec<TranscriptPartial>>>) {
+        let seen: Arc<Mutex<Vec<TranscriptPartial>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let sink: PartialSink = Arc::new(move |p: &TranscriptPartial| {
+            lock(&seen2).push(p.clone());
+        });
+        (sink, seen)
+    }
+
+    fn wait_for(mut done: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !done() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn clock(
+        since_start: f64,
+        since_last: Option<f64>,
+        spent: f64,
+        last_cost: f64,
+    ) -> TentativeClock {
+        TentativeClock {
+            since_start: Duration::from_secs_f64(since_start),
+            since_last: since_last.map(Duration::from_secs_f64),
+            spent: Duration::from_secs_f64(spent),
+            last_cost: Duration::from_secs_f64(last_cost),
+            pending_samples: 10 * RATE,
+            busy: false,
+        }
+    }
+
+    #[test]
+    fn tentative_gate_waits_for_the_interval_and_for_audio() {
+        let t = TentativeConfig::default();
+        let r = STREAM_SAMPLE_RATE;
+        assert_eq!(
+            tentative_gate(&t, &clock(0.5, None, 0.0, 0.0), r),
+            TentativeGate::Wait
+        );
+        assert_eq!(
+            tentative_gate(&t, &clock(1.2, None, 0.0, 0.0), r),
+            TentativeGate::Go
+        );
+        assert_eq!(
+            tentative_gate(&t, &clock(9.0, Some(0.4), 0.0, 0.0), r),
+            TentativeGate::Wait
+        );
+        let short = TentativeClock {
+            pending_samples: RATE / 2,
+            ..clock(9.0, Some(2.0), 0.0, 0.0)
+        };
+        assert_eq!(tentative_gate(&t, &short, r), TentativeGate::Short);
+        let busy = TentativeClock {
+            busy: true,
+            ..clock(9.0, Some(2.0), 0.0, 0.0)
+        };
+        assert_eq!(tentative_gate(&t, &busy, r), TentativeGate::Busy);
+    }
+
+    #[test]
+    fn tentative_gate_holds_guess_decode_to_ten_percent_of_the_take() {
+        let t = TentativeConfig::default();
+        let r = STREAM_SAMPLE_RATE;
+        // A 0.2 s guess is spread over 2 s: 1.5 s after it is too soon.
+        assert_eq!(
+            tentative_gate(&t, &clock(10.0, Some(1.5), 0.5, 0.2), r),
+            TentativeGate::Budget
+        );
+        // 1.1 s spent in a 10 s take is ahead of 10 %.
+        assert_eq!(
+            tentative_gate(&t, &clock(10.0, Some(3.0), 1.1, 0.2), r),
+            TentativeGate::Budget
+        );
+        assert_eq!(
+            tentative_gate(&t, &clock(10.0, Some(2.0), 0.7, 0.2), r),
+            TentativeGate::Go
+        );
+        // A zero budget never guesses.
+        let none = TentativeConfig { max_duty: 0.0, ..t };
+        assert_eq!(
+            tentative_gate(&none, &clock(10.0, Some(3.0), 0.0, 0.0), r),
+            TentativeGate::Budget
+        );
+    }
+
+    /// A 30 s take on a simulated clock: with a guess costing 150 ms the gate
+    /// starts one about every 1.5 s, so a word is on the pill at most ~1.65 s
+    /// after it is spoken, and guess decode stays at or under 10 % of the take.
+    #[test]
+    fn a_cheap_guess_keeps_the_pill_under_two_seconds_behind_on_a_30s_take() {
+        let t = TentativeConfig::default();
+        let cost = Duration::from_millis(150);
+        let step = Duration::from_millis(30);
+        let mut now = Duration::ZERO;
+        let mut last: Option<Duration> = None;
+        let mut spent = Duration::ZERO;
+        let mut busy_until = Duration::ZERO;
+        let mut worst_lag = Duration::ZERO;
+        let mut guesses = 0;
+        while now <= Duration::from_secs(30) {
+            let c = TentativeClock {
+                since_start: now,
+                since_last: last.map(|at| now - at),
+                spent,
+                last_cost: if guesses == 0 { Duration::ZERO } else { cost },
+                pending_samples: 10 * RATE,
+                busy: now < busy_until,
+            };
+            if tentative_gate(&t, &c, STREAM_SAMPLE_RATE) == TentativeGate::Go {
+                // A word spoken just after the previous guess was cut waits
+                // for this guess to be cut and decoded.
+                let gap = now - last.unwrap_or(Duration::ZERO);
+                worst_lag = worst_lag.max(gap + cost);
+                last = Some(now);
+                spent += cost;
+                busy_until = now + cost;
+                guesses += 1;
+            }
+            now += step;
+        }
+        assert!(guesses >= 15, "guesses={guesses}");
+        assert!(
+            worst_lag <= Duration::from_secs(2),
+            "worst lag {worst_lag:?}"
+        );
+        let duty = spent.as_secs_f64() / 30.0;
+        assert!(duty <= 0.10 + cost.as_secs_f64() / 30.0, "duty={duty}");
+    }
+
+    #[test]
+    fn a_tentative_guess_reaches_the_pill_before_any_window_commits() {
+        let (sink, seen) = collect();
+        let stub = Stub::new();
+        let mut s = StreamDecoder::start(7, guessing(), stub.clone(), Some(sink));
+        let audio = tone(2.0);
+        for chunk in audio.chunks(160) {
+            s.push(chunk, 1.0);
+        }
+        wait_for(|| !lock(&seen).is_empty());
+        let first = lock(&seen).first().cloned().expect("a tentative partial");
+        assert_eq!(first.take, 7);
+        assert_eq!(first.committed, "");
+        assert!(first.tentative.starts_with('w'), "{first:?}");
+        // Only the newest max_seconds were decoded.
+        assert!(stub.lens().iter().all(|n| *n <= RATE), "{:?}", stub.lens());
+        s.seal(audio.len());
+        // No window ever committed: the take still decodes the batch way, so
+        // the guess is nowhere in the take's text.
+        assert_eq!(s.finish(), StreamOutcome::NotUsed(REASON_SHORT));
+    }
+
+    #[test]
+    fn a_tentative_guess_is_never_part_of_the_take_text() {
+        let (sink, seen) = collect();
+        let cfg = StreamConfig {
+            tentative: guessing().tentative,
+            ..small()
+        };
+        let out = run(cfg, Stub::new(), &tone(5.0), Some(sink));
+        let StreamOutcome::Streamed(take) = out else {
+            panic!("expected a streamed take, got {out:?}");
+        };
+        // The text is exactly one word per committed window plus the tail;
+        // no guess's word slipped in.
+        assert_eq!(
+            take.text.split_whitespace().count(),
+            take.windows,
+            "{take:?}"
+        );
+        for p in lock(&seen).iter().filter(|p| !p.tentative.is_empty()) {
+            assert!(
+                !take.text.split_whitespace().any(|w| w == p.tentative),
+                "{p:?} in {take:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_guess_overtaken_by_a_committed_window_is_dropped() {
+        let (sink, seen) = collect();
+        let stub = Arc::new(Stub {
+            calls: Mutex::new(Vec::new()),
+            delay: Duration::from_millis(200),
+            fail_on: None,
+            constrained: false,
+        });
+        let cfg = StreamConfig {
+            tentative: guessing().tentative,
+            ..small()
+        };
+        let mut s = StreamDecoder::start(3, cfg, stub, Some(sink));
+        let audio = tone(3.5);
+        // The first guess is cut at 0.5 s and decodes for 200 ms; the window
+        // at 2–3 s commits long before it returns.
+        for chunk in audio.chunks(160) {
+            s.push(chunk, 1.0);
+        }
+        wait_for(|| lock(&s.shared.progress).tentative_stale > 0);
+        assert!(lock(&s.shared.progress).tentative_stale > 0);
+        assert!(
+            lock(&seen)
+                .iter()
+                .all(|p| p.tentative.is_empty() || !p.committed.is_empty()),
+            "a guess cut before the window was shown after it"
+        );
+        s.seal(audio.len());
+        let _ = s.finish();
+    }
+
+    #[test]
+    fn a_constrained_governor_turns_the_guess_off() {
+        let (sink, seen) = collect();
+        let stub = Arc::new(Stub {
+            calls: Mutex::new(Vec::new()),
+            delay: Duration::from_millis(0),
+            fail_on: None,
+            constrained: true,
+        });
+        let mut s = StreamDecoder::start(5, guessing(), stub.clone(), Some(sink));
+        let audio = tone(2.0);
+        for chunk in audio.chunks(160) {
+            s.push(chunk, 1.0);
+        }
+        assert!(stub.lens().is_empty(), "no guess reached the engine");
+        assert!(lock(&seen).is_empty());
+        assert_eq!(
+            lock(&s.shared.progress).tentative_off,
+            Some(REASON_GOVERNOR)
+        );
+        s.seal(audio.len());
+        let _ = s.finish();
+    }
+
+    #[test]
+    fn no_guess_runs_after_the_take_is_sealed() {
+        let stub = Stub::new();
+        let mut s = StreamDecoder::start(9, guessing(), stub.clone(), None);
+        s.seal(0);
+        s.push(&tone(2.0), 1.0);
+        assert!(stub.lens().is_empty());
+        let _ = s.finish();
+    }
+
+    #[test]
+    fn the_shipped_config_guesses_and_the_unit_config_does_not() {
+        let t = StreamConfig::default().tentative.expect("on by default");
+        assert_eq!(t.max_duty, 0.10);
+        assert!(t.interval <= Duration::from_millis(1000));
+        assert!(small().tentative.is_none());
     }
 }

@@ -3164,7 +3164,12 @@ fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) -> Option<u64> {
         Arc::new(move |partial: &stream_decode::TranscriptPartial| {
             // yap-1106-sp-07 — the same committed text feeds the polish
             // pipeline, which polishes its finished chunks right away.
-            polish::pipeline_feed(partial.take, &partial.committed);
+            // yap-1106-partial-transcript-stream — a tentative emit repeats
+            // the committed text beside a display-only guess; the guess never
+            // reaches polish (or history), so only committed emits feed it.
+            if partial.tentative.is_empty() {
+                polish::pipeline_feed(partial.take, &partial.committed);
+            }
             if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
                 log::warn!(
                     "stream_decode partial_emit_failed take={} error={e}",
