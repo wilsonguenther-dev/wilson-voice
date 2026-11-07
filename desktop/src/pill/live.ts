@@ -33,6 +33,9 @@ import { GATED_HEADLINE } from "./license";
 import type { MilestoneId, NudgeId } from "./nudge";
 // yap-1106-voice-modes — the voices table is a leaf (imports nothing from here).
 import { duringLines, type VoiceId } from "./voices";
+// SP-02 — the Copy card's one copy-only line; `./copyCardModel` imports only
+// `../permission`, neither imports this file, so this adds no cycle.
+import { COPY_CARD_HINT_NO_REPAIR } from "./copyCardModel";
 
 /** The user's companion tone (YV27). Anything unknown reads as friendly. */
 export type ChatTone = "rude" | "friendly" | "rose";
@@ -1426,6 +1429,29 @@ export function errorSentence(lastError?: string | null): string | null {
   const cut = one.slice(0, budget - 1);
   const sp = cut.lastIndexOf(" ");
   return `${(sp > budget * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
+/**
+ * SP-02 — the take-error codes that mean "copied, not pasted": the text IS on
+ * the clipboard (take_error.rs `PASTE_NOT_CONFIRMED`, set for a stale take, a
+ * paste with no receipt, or no text field in front).
+ */
+export const COPY_ONLY_ERROR_CODES: readonly string[] = ["paste_not_confirmed"];
+
+/** SP-02 — what the pill says for every copy-only outcome. */
+export const COPY_ONLY_PILL_LINE = COPY_CARD_HINT_NO_REPAIR;
+
+/**
+ * SP-02 — the pill's `error` line for a take's error code. Any copy-only
+ * outcome says ONE thing, "Copied — press ⌘V.", the same words as the Copy
+ * card; every other code keeps its catalogue line through [`errorSentence`].
+ */
+export function takeErrorLine(
+  code: string | null | undefined,
+  catalogueLine: string | null | undefined,
+): string | null {
+  if (code && COPY_ONLY_ERROR_CODES.includes(code)) return COPY_ONLY_PILL_LINE;
+  return errorSentence(catalogueLine);
 }
 
 /**

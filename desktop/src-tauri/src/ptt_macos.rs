@@ -1608,9 +1608,12 @@ unsafe extern "C" fn tap_callback(
         if !is_modifier_keycode(keycode) {
             state.fn_hint.lock().on_key_down();
         }
-        let step = state.machine.lock().key_down(is_modifier_keycode(keycode));
+        let modifier = is_modifier_keycode(keycode);
+        let step = state.machine.lock().key_down(modifier);
         if !step.events.is_empty() {
             log::info!("PTT interrupted by keycode {keycode}");
+        } else if keycode == GLOBE_KEYCODE {
+            log::debug!("ptt globe_keydown ignored keycode={keycode} part_of=fn_edge");
         }
         dispatch(&state, step);
     }
@@ -1618,8 +1621,17 @@ unsafe extern "C" fn tap_callback(
     event
 }
 
+/// SP-02 — the Globe key's OWN key-down. On Macs with a Globe (🌐) key, macOS
+/// posts a `kCGEventKeyDown` with this virtual keycode alongside the fn flag
+/// edge. It is part of the fn edge, never an ordinary key: counted as one, it
+/// interrupted the very take the fn press had just started (Wilson 2026-11-06
+/// 16:41Z — a 155-word take lost).
+pub const GLOBE_KEYCODE: i64 = 179;
+
+/// A key-down that belongs to a modifier edge (⇧ ⌃ ⌥ ⌘ ⇪ fn, and the Globe
+/// key's own key-down) — never a reason to interrupt a held take.
 fn is_modifier_keycode(code: i64) -> bool {
-    matches!(code, 54..=63)
+    matches!(code, 54..=63) || code == GLOBE_KEYCODE
 }
 
 fn combo_wanted(binding: PttBinding, fn_down: bool, control: bool) -> bool {
@@ -2512,5 +2524,60 @@ mod mouse_tests {
         assert!(!mouse_lost_release(hold(3), true, true, true));
         assert!(!mouse_lost_release(hold(3), true, false, false));
         assert!(!mouse_lost_release(hands_free(3), true, false, true));
+    }
+}
+
+/// SP-02 — the Globe key's own key-down (keycode 179) is part of the fn edge.
+#[cfg(test)]
+mod globe_keycode_tests {
+    use super::{
+        is_modifier_keycode, EdgeSource, PttEvent, PttMachine, GLOBE_KEYCODE, HOLD_ARM_MS,
+    };
+
+    /// fn down, hold armed: a live HOLD take.
+    fn live_hold(m: &mut PttMachine) {
+        let down = m.edge(true, false, 0, EdgeSource::Tap);
+        let gen = down.arm_hold.expect("a fresh press arms the hold timer");
+        assert_eq!(m.hold_timer(gen, HOLD_ARM_MS).events, vec![PttEvent::Start]);
+    }
+
+    #[test]
+    fn globe_keycode_179_is_part_of_the_fn_edge() {
+        assert_eq!(GLOBE_KEYCODE, 179);
+        assert!(is_modifier_keycode(179));
+        assert!(is_modifier_keycode(63)); // kVK_Function
+        assert!(!is_modifier_keycode(0)); // kVK_ANSI_A
+        assert!(!is_modifier_keycode(178));
+        assert!(!is_modifier_keycode(180));
+    }
+
+    /// (a) fn down + keycode 179 during a hold does not emit Interrupted; the
+    /// take still stops on fn-up, exactly once.
+    #[test]
+    fn fn_down_plus_globe_keycode_during_hold_does_not_interrupt() {
+        let mut m = PttMachine::new();
+        live_hold(&mut m);
+        let globe = is_modifier_keycode(GLOBE_KEYCODE);
+        assert!(m.key_down(globe).events.is_empty());
+        assert!(m.key_down(globe).events.is_empty());
+        assert!(m.take_live());
+        assert_eq!(
+            m.edge(false, false, 5_000, EdgeSource::Tap).events,
+            vec![PttEvent::Stop]
+        );
+    }
+
+    /// (c) fn+letter during a live hold still interrupts, as today.
+    #[test]
+    fn fn_plus_letter_during_live_hold_still_interrupts() {
+        let mut m = PttMachine::new();
+        live_hold(&mut m);
+        let globe = is_modifier_keycode(GLOBE_KEYCODE);
+        assert!(m.key_down(globe).events.is_empty());
+        assert_eq!(
+            m.key_down(is_modifier_keycode(0)).events,
+            vec![PttEvent::Interrupted]
+        );
+        assert!(!m.take_live());
     }
 }

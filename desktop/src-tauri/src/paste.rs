@@ -806,7 +806,7 @@ pub fn insert_traced(
         trace.app = Some(crate::scratchpad::TRACE_APP.into());
         if !want_paste {
             return (
-                copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
+                copy_only_with(b, text, COPY_CARD_MESSAGE_NO_REPAIR),
                 trace,
             );
         }
@@ -853,7 +853,7 @@ pub fn insert_traced(
     }
     if !want_paste {
         return (
-            copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
+            copy_only_with(b, text, COPY_CARD_MESSAGE_NO_REPAIR),
             trace,
         );
     }
