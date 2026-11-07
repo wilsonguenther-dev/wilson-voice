@@ -522,6 +522,17 @@ async function clickTargetChecks(cdp, s, ids, fail) {
   // C4 — ↓ moves selection AND focus; ↑ comes back; Return opens the selected row.
   const focusedRow = `(() => { const a = document.activeElement; return a && a.classList.contains("meeting-row-main") ? a.closest("li.meeting-row").dataset.meetingId : null; })()`;
   const selectedRow = `(document.querySelector("li.meeting-row.selected") || {}).dataset?.meetingId || null`;
+  // The Tab walk above ends with focus PAST the list (that is what proves the
+  // list is one stop), so put focus back on the list's one Tab stop before the
+  // arrow walk — the batch-3 bounce read the focus after it had left the list.
+  // The stop must be the selected row T (roving tabindex follows selection).
+  const refocused = await evaluate(
+    cdp,
+    s,
+    `(() => { const b = document.querySelector('.meeting-row-main[tabindex="0"]'); if (!b) return null; b.focus(); return b.closest("li.meeting-row")?.dataset.meetingId || null; })()`,
+  );
+  if (refocused !== T) fail("C4", `the list's Tab stop is row ${refocused}, expected the selected row ${T}`);
+  await sleep(100);
   const start = await evaluate(cdp, s, focusedRow);
   if (!start) fail("C4", "no row button had keyboard focus before ↓");
   else {

@@ -269,6 +269,19 @@ describe("the Meetings view source", () => {
       expect(meetingsView).toContain("ref={reserveStatusWidth}");
     });
 
+    it("no row corner is a dead spot: rows sit inside the list card, rounded no wider than a 2 px-inset point allows", () => {
+      // batch 3 bounce (C1): the list card's 16 px corner clip hid the first and
+      // last rows' corners, so a press there landed on section.meetings-group.
+      const list = rule(".meetings-list-pane .meetings-list");
+      expect(list).toMatch(/padding:\s*var\(--space-1\)/);
+      expect(list).toMatch(/gap:\s*var\(--space-1\)/);
+      const row = rule(".meetings-list-pane .meeting-row");
+      expect(row).toMatch(/border-radius:\s*var\(--radius-xs\)/);
+      expect(row).toMatch(/border-bottom:\s*0/);
+      // The button follows the row's corners (pressed fill, inset ring), never square under a clip.
+      expect(rule(".meetings-list-pane .meeting-row-main")).toMatch(/border-radius:\s*inherit/);
+    });
+
     it("no interactive element is nested inside the row button (ONE stop per row)", () => {
       expect(rowButton.length).toBeGreaterThan(0);
       expect(rowButton.slice(1)).not.toMatch(/<button|<a\s|<input|<select|role="button"|tabIndex=\{0\}/);
