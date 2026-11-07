@@ -2610,7 +2610,10 @@ mod polish_fallback_tests {
         // Used a moment ago — the idle sweep would keep it; the governor does not.
         assert!(!pool.sweep_idle());
         assert!(pool.unload_now(), "the warm child is terminated");
-        assert!(pool.slot.lock().is_none(), "no second engine is left resident");
+        assert!(
+            pool.slot.lock().is_none(),
+            "no second engine is left resident"
+        );
         assert_eq!(
             pool.status(),
             SidecarStatus::new(SidecarState::NotInstalled, None)

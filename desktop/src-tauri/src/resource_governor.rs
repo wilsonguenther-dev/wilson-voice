@@ -53,10 +53,10 @@
 //! Polling: the OS readings are re-read on every consumer ask (four cheap
 //! calls — a decode is minutes long and a meeting queue is asked once per
 //! job), on a 30 s background tick for the UI (the app's floor for polling),
-//! and immediately when the memory-pressure source fires. The
-//! `NSProcessInfoPowerStateDidChange` notification would need a block-based
-//! observer for a fact the 30 s tick learns anyway; the 1 Hz meeting tick
-//! already made that call in `meeting_energy`, and it holds here.
+//! and immediately when the memory-pressure source fires or
+//! `NSProcessInfoPowerStateDidChangeNotification` is posted (Low Power Mode
+//! toggled), so the level moves the moment the user flips Low Power Mode
+//! instead of up to 30 s later.
 //!
 //! Everything degrades to **full** rather than refusing work: a governor that
 //! cannot read the battery must not hold a meeting's notes hostage.
@@ -725,6 +725,7 @@ pub fn start_background(quit: Arc<dyn Fn() -> bool + Send + Sync>) {
         return;
     };
     install_memory_pressure_source();
+    install_power_state_observer();
     let g = Arc::clone(g);
     let spawned = std::thread::Builder::new()
         .name("wv-resource-governor".into())
@@ -739,8 +740,12 @@ pub fn start_background(quit: Arc<dyn Fn() -> bool + Send + Sync>) {
                     if quit() {
                         return;
                     }
-                    // The memory-pressure handler flags; this tick acts.
-                    if MEMORY_EVENT.swap(0, Ordering::SeqCst) != 0 {
+                    // The memory-pressure handler and the power-state
+                    // observer flag; this tick acts. Both flags are always
+                    // cleared (no short-circuit), so one wake serves both.
+                    let memory = MEMORY_EVENT.swap(0, Ordering::SeqCst) != 0;
+                    let power = take_power_state_event();
+                    if memory | power {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(500));
@@ -905,6 +910,65 @@ fn install_memory_pressure_source() {
 
 #[cfg(not(target_os = "macos"))]
 fn install_memory_pressure_source() {}
+
+/// Set by the `NSProcessInfoPowerStateDidChangeNotification` observer,
+/// consumed by the background tick.
+static POWER_STATE_EVENT: AtomicU8 = AtomicU8::new(0);
+
+/// Test seam / observer target: Low Power Mode changed, re-read now.
+pub fn note_power_state_change() {
+    POWER_STATE_EVENT.store(1, Ordering::SeqCst);
+}
+
+/// Consume the power-state flag: `true` once per posted change.
+fn take_power_state_event() -> bool {
+    POWER_STATE_EVENT.swap(0, Ordering::SeqCst) != 0
+}
+
+/// Observe `NSProcessInfoPowerStateDidChangeNotification` on the default
+/// center. The block only flags (posting thread, `queue: nil`); the 500 ms
+/// inner wait of the background tick picks it up and refreshes, which logs
+/// the transition line if the level moved.
+#[cfg(target_os = "macos")]
+fn install_power_state_observer() {
+    use block2::RcBlock;
+    use objc2_foundation::{
+        NSNotification, NSNotificationCenter, NSProcessInfoPowerStateDidChangeNotification,
+    };
+    use std::ptr::NonNull;
+    use std::sync::atomic::AtomicBool;
+
+    static OBSERVER_INSTALLED: AtomicBool = AtomicBool::new(false);
+    if OBSERVER_INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let block = RcBlock::new(|_note: NonNull<NSNotification>| {
+        note_power_state_change();
+        log::info!(
+            "governor power_state_changed low_power={}",
+            low_power_mode()
+        );
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: the name is Foundation's own constant; `object: nil` and
+    // `queue: nil` (deliver on the posting thread) are documented values; the
+    // block captures nothing and only touches atomics + the logger, so it is
+    // sendable. The center copies the block; the returned token is leaked on
+    // purpose — the observer lives as long as the process.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSProcessInfoPowerStateDidChangeNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(token);
+    log::info!("governor power_state observer=installed");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_power_state_observer() {}
 
 // ───────────────────────────────── tests ────────────────────────────────────
 
@@ -1330,5 +1394,14 @@ mod tests {
         let _ = low_power_mode();
         let _ = adapter_watts();
         let _ = memory_pressure();
+    }
+
+    #[test]
+    fn a_power_state_change_wakes_the_tick_once() {
+        // The NSProcessInfoPowerStateDidChange observer flags; the tick takes
+        // the flag exactly once, so one Low Power toggle is one refresh.
+        note_power_state_change();
+        assert!(take_power_state_event(), "the posted change is seen");
+        assert!(!take_power_state_event(), "and consumed, not re-seen");
     }
 }
