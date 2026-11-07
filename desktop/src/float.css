@@ -708,6 +708,39 @@ body,
   border-color: hsl(0 0% 60% / 0.4);
 }
 
+/* fix-l3b4-1-pill-shows-live-speaker — who is talking, one word stacked over
+   the call-audio chip in a single column so the clock row (CLOCK_W 208) gains
+   no width. A long name ellipsizes to the chip's width; the full hint is the
+   tooltip / accessible label. "Someone new" and the track word (You / Call)
+   are quieter than a matched name, which is still only a suggestion. */
+.rec-side {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 64px;
+}
+.rec-speaker {
+  font: 600 10px/1.1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  color: var(--pill-text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rec-speaker.is-someone_new,
+.rec-speaker.is-track {
+  font-weight: 500;
+  opacity: 0.78;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rec-speaker {
+    transition: opacity 160ms ease-out;
+  }
+}
+
 .rec-stop {
   display: grid;
   place-items: center;
