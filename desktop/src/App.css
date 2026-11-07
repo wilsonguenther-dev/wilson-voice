@@ -3756,5 +3756,91 @@ button.primary.big {
   .chart-skeleton {
     animation: none;
     opacity: 0.6;
+
+/* yap-1106-news-prefs-onboarding — the one Yappy News interest picker (onboarding
+   step, one-time Home card, Settings → Yappy News). Tokens only. */
+.news-interests {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0;
+}
+.news-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.news-group legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 6px;
+}
+.news-group[disabled] {
+  opacity: 0.6;
+}
+.news-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.news-chips button.chip {
+  border: 1px solid var(--border-subtle);
+}
+.news-chips button.chip.selected {
+  background: var(--surface-inverse);
+  border-color: var(--surface-inverse);
+  color: var(--text-on-inverse);
+}
+.news-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.news-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+  font-size: 0.85rem;
+}
+.news-token-remove {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 6px;
+  line-height: 1;
+}
+.news-add {
+  display: flex;
+  gap: 8px;
+  max-width: 420px;
+}
+.news-add input {
+  flex: 1;
+  min-width: 0;
+}
+.news-error {
+  color: var(--accent-urgent-ink);
+  margin: 0;
+}
+.news-offer {
+  margin: 12px 0;
+}
+.news-offer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .news-chips button.chip {
+    transition: none;
   }
 }
