@@ -8991,6 +8991,67 @@ fn rename_meeting(
     state.db.rename_meeting(&id, &title)
 }
 
+// ── yap-1106-voiceprints · Settings → Voices ────────────────────────────────
+//
+// Saved voiceprints, all on this Mac. Every command takes profile ids; none
+// returns a voiceprint (`SpeakerProfile.centroid` is never serialised). The
+// Database methods log one `speaker_profiles <event>` line each.
+#[tauri::command]
+fn list_voices(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<speaker_profiles::SpeakerProfile>, String> {
+    state.db.list_speaker_profiles()
+}
+
+#[tauri::command]
+fn rename_voice(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    name: String,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.rename_speaker_profile(id, &name)
+}
+
+#[tauri::command]
+fn merge_voices(
+    state: State<'_, Arc<AppState>>,
+    keep: i64,
+    absorb: i64,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.merge_speaker_profiles(keep, absorb)
+}
+
+#[tauri::command]
+fn delete_voice(state: State<'_, Arc<AppState>>, id: i64) -> Result<bool, String> {
+    state.db.delete_speaker_profile(id)
+}
+
+#[tauri::command]
+fn forget_all_voices(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    state.db.forget_all_voiceprints()
+}
+
+/// "This wasn't John": the voiceprint drops what it learned in this meeting.
+#[tauri::command]
+fn unlearn_voice_meeting(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    meeting_id: String,
+) -> Result<speaker_profiles::SpeakerProfile, String> {
+    state.db.unlearn_meeting_from_profile(id, &meeting_id)
+}
+
+/// The one-time "save my voice from my dictation" answer; `None` = not asked.
+#[tauri::command]
+fn voices_enroll_me_choice(state: State<'_, Arc<AppState>>) -> Option<bool> {
+    state.db.enroll_me_choice()
+}
+
+#[tauri::command]
+fn set_voices_enroll_me_choice(state: State<'_, Arc<AppState>>, yes: bool) -> Result<(), String> {
+    state.db.set_enroll_me_choice(yes)
+}
+
 // ── yap-byom-0 · Settings → Model providers ─────────────────────────────────
 //
 // Every command takes ids, never a URL or a key: Test connection takes the
@@ -13476,6 +13537,14 @@ pub fn run() {
             retry_meeting,
             get_meeting,
             rename_meeting,
+            list_voices,
+            rename_voice,
+            merge_voices,
+            delete_voice,
+            forget_all_voices,
+            unlearn_voice_meeting,
+            voices_enroll_me_choice,
+            set_voices_enroll_me_choice,
             delete_meeting,
             export_meeting_markdown,
             copy_meeting_markdown,

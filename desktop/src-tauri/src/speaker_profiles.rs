@@ -114,7 +114,8 @@ pub const ENROLL_ME_SETTING: &str = "voiceprints.enroll_me";
 pub const EVAL_AUTO_ENV: &str = "YAP_EVAL_VOICEPRINT_AUTO";
 pub const EVAL_ASK_ENV: &str = "YAP_EVAL_VOICEPRINT_ASK";
 
-/// The Speakers settings page's privacy line. Kept here so the label and the
+/// The Settings → Voices page's privacy line (the approved design calls the
+/// page "Voices"). Kept here so the label and the
 /// fact it states are one greppable place.
 pub const LEAVES_THIS_MAC: &str = "Leaves this Mac: No";
 
@@ -295,6 +296,11 @@ pub fn match_voice(
     let mut best: Option<(&SpeakerProfile, CosineSimilarity)> = None;
     let mut stale = 0usize;
     for p in profiles {
+        // A profile that has unlearned every sample has no voice to compare;
+        // it is neither a match nor a stale model.
+        if p.n_samples <= 0 || p.centroid.is_empty() {
+            continue;
+        }
         if !comparable(p, embedder_digest, embedding.len()) {
             stale += 1;
             continue;

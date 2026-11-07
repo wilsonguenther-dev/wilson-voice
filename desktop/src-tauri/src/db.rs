@@ -2427,6 +2427,75 @@ impl Database {
         Ok(n > 0)
     }
 
+    /// "This wasn't John": the profile drops every sample it learned in
+    /// `meeting_id` and its centroid is rebuilt from the samples that remain
+    /// (empty, with `n_samples = 0`, if none do — it then matches nothing until
+    /// it is taught again). Segments of that meeting labelled with it are
+    /// unlinked; their plain-text name is left for the caller to relabel.
+    pub fn unlearn_meeting_from_profile(
+        &self,
+        profile_id: i64,
+        meeting_id: &str,
+    ) -> Result<SpeakerProfile, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let p = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        let dropped = tx
+            .execute(
+                "DELETE FROM speaker_samples WHERE profile_id = ?1 AND meeting_id = ?2",
+                params![profile_id, meeting_id],
+            )
+            .map_err(|e| e.to_string())?;
+        let remaining: Vec<Vec<u8>> = {
+            let mut stmt = tx
+                .prepare("SELECT embedding FROM speaker_samples WHERE profile_id = ?1 ORDER BY id")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![profile_id], |r| r.get::<_, Vec<u8>>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+        let mut centroid: Vec<f32> = Vec::new();
+        let mut n: i64 = 0;
+        for blob in &remaining {
+            let v = speaker_profiles::decode_embedding(blob)?;
+            if !centroid.is_empty() && v.len() != centroid.len() {
+                continue;
+            }
+            centroid = speaker_profiles::fold_into_centroid(&centroid, n, &v)?;
+            n += 1;
+        }
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL
+                  WHERE speaker_profile_id = ?1 AND meeting_id = ?2",
+                params![profile_id, meeting_id],
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles SET centroid = ?2, n_samples = ?3, updated_at = ?4 WHERE id = ?1",
+            params![
+                profile_id,
+                speaker_profiles::encode_embedding(&centroid),
+                n,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles unlearn id={profile_id} samples_dropped={dropped} n_samples={n} \
+             was={} segments_unlinked={segments}",
+            p.n_samples
+        );
+        Ok(out)
+    }
+
     /// "Forget all voiceprints": every profile and sample goes, past meetings
     /// keep their names as plain text, and the "enroll my voice" answer is
     /// cleared (the user wiped it, so asking again is honest). Returns the
