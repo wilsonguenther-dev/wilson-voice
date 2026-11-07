@@ -186,7 +186,11 @@ describe("neither Sal nor Mochi ever appears in the pill", () => {
       for (const who of ["sal", "mochi"]) {
         // The only pill mention allowed is the ROOM_ONLY list that keeps them out.
         const hits = src.split("\n").filter((line) => line.includes(`"${who}"`) || line.includes(`'${who}'`) || line.includes(`FRIENDS.${who}`));
-        const allowed = hits.filter((line) => /ROOM_ONLY/.test(line));
+        // The launch walk's house table (walk.js FH, verbatim) is approved too:
+        // companions.html has Sal waving by his chimney (56%) and Mochi in her tree
+        // (72%) while Yappy walks to work. That is the walk passing their houses,
+        // not Sal or Mochi as a pill companion.
+        const allowed = hits.filter((line) => /ROOM_ONLY/.test(line) || (f === "launchWalk.ts" && /from: "(win|porch|tree|roof)"/.test(line)));
         expect({ f, who, hits: hits.length - allowed.length }).toEqual({ f, who, hits: 0 });
       }
     }

@@ -470,7 +470,8 @@ export function drawFront(o: StudioCtx, s: StudioState, t: number): void {
  */
 export function drawLights(o: StudioCtx, s: StudioState, t: number, backDx: number, midDx: number): void {
   const band = skyBand(s.phase);
-  const fr = Math.floor(t * 2) % 2;
+  // A NaN or negative clock must still pick a real bunting colour (raster takes hex only).
+  const fr = finite(t) ? ((Math.floor(t * 2) % 2) + 2) % 2 : 0;
   o.save();
   o.translate(backDx, 0);
   const h = H(o);

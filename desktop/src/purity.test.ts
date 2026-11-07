@@ -38,6 +38,7 @@ const isModule = (f: string) => /\.ts$/.test(f) && !isTest(f) && !f.endsWith(".d
 const ADAPTERS: Record<string, string> = {
   "appShell.ts": "the main window's bridge: every invoke() and listen() the views use",
   "diagnostics.ts": "Settings → Diagnostics reads diagnostics_snapshot and calls export_diagnostics over invoke()",
+  "home/studio/useStudioQuiet.ts": "listens to the backend's pill_quiet event and reads pill_quiet_state so the studio door shows Mochi during Focus, DND or a screen share",
   "home/habitat/events.ts": "subscribes the habitat director to the backend's take, paste and model-download events",
   "formatting.ts": "useFormattingOptions loads and saves the formatting settings over invoke()",
   "news/newsPrefs.ts": "the Yappy News picker's edits plus get_news_prefs / set_news_prefs / dismiss_news_offer plus get_news_quote_key / set_news_quote_key / clear_news_quote_key / news_explain_top over invoke() (its pure edits are covered by newsPrefs.test.ts)",

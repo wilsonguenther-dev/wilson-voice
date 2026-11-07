@@ -463,6 +463,17 @@ describe("the Saved stop beat has a real slot (fix-b8-1-meeting-saved-beat-gets-
     expect(MEETING_STOP_FAILED_EVENT).toBe(MEETING_STOP_FAILED_DOM_EVENT);
   });
 
+  it("(c2) a stop error with no meeting on screen changes nothing; an id-less Saved yields to its road; stale saved_elapsed is ignored", () => {
+    expect(reduceMeetingPill(MEETING_PILL_IDLE, { type: "stop_failed", sentence: "x", nowMs: T0 })).toBe(MEETING_PILL_IDLE);
+    const anon = reduceMeetingPill({ kind: "recording", id: null }, { type: "status", status: stopped, nowMs: T0 });
+    expect(anon.kind).toBe("saved");
+    expect(reduceMeetingPill(anon, { type: "stop_failed", sentence: "  ", nowMs: T0 + 1 })).toEqual(MEETING_PILL_IDLE);
+    expect(reduceMeetingPill({ kind: "recording", id: null, stopFailed: { sentence: "no", atMs: T0 } }, { type: "status", status: stopped, nowMs: T0 + 1 })).toEqual(MEETING_PILL_IDLE);
+    const saved = stop();
+    expect(reduceMeetingPill(saved, { type: "saved_elapsed", until: -1 })).toBe(saved);
+    expect(reduceMeetingPill(MEETING_PILL_IDLE, { type: "saved_elapsed", until: -1 })).toBe(MEETING_PILL_IDLE);
+  });
+
   it("(d) after SAVED_HOLD_MS (fake timers) a transcribing event shows the processing badge", () => {
     vi.useFakeTimers();
     vi.setSystemTime(T0);

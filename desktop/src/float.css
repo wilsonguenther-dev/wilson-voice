@@ -2155,7 +2155,7 @@ html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true
     Menlo,
     monospace;
   font-variant-numeric: tabular-nums;
-  color: var(--meeting-scene-ink, #fff);
+  color: var(--meeting-scene-ink);
 }
 /* WF-13 — the silent-mic row sits IN the hint slot, its bottom on the slot's
  * bottom (just above the bubble), aligned to the dock edge like the phase

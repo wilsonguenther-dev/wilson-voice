@@ -65,7 +65,9 @@ describe("yap-1106-news-refresh-setting", () => {
     expect(html).toContain("How often");
     for (const o of CADENCE_OPTIONS) expect(html).toContain(`value="${o.id}"`);
     expect(html).toContain('data-news-cadence="twice_a_day"');
-    expect(html).toMatch(/value="twice_a_day" checked=""/);
+    // React writes `checked` before `value`, so match the radio by both, in any order.
+    expect(html).toMatch(/<input(?=[^>]*value="twice_a_day")(?=[^>]*checked="")[^>]*>/);
+    expect(html).not.toMatch(/<input(?=[^>]*value="every_few_hours")(?=[^>]*checked="")[^>]*>/);
   });
 
   it("news_refresh_setting_shows_the_last_refresh_time_next_to_it", () => {

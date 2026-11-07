@@ -306,9 +306,10 @@
   cursor: pointer;
   border-radius: 0;
 }
-/* The row clips (overflow:hidden), so the button's focus ring sits inside it. */
-.meetings-list-pane .meeting-row-main:focus-visible {
-  outline-offset: -2px;
+/* The row clips (overflow:hidden), so the button's focus ring sits inside it:
+ * the one global ring (a11y/focus.css) reads this offset. */
+.meetings-list-pane .meeting-row-main {
+  --focus-ring-offset: -2px;
 }
 .meetings-list-pane .meeting-row:hover {
   background: color-mix(in srgb, var(--accent-action-soft) 55%, transparent);
