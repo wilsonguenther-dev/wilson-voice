@@ -166,8 +166,6 @@ pub mod mic_select;
 pub mod models;
 // yap-notetaker-notes — the one HTTP door, and the live meeting transcript.
 pub mod net;
-/// yap-1106-news-feeds — Yappy News fetch from public feeds (gated on cloud + topics).
-pub mod news;
 /// yap-1106-news-prefs-onboarding — Yappy News interests (onboarding, Home card, Settings).
 pub mod news_prefs;
 pub mod live_transcript;
