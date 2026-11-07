@@ -437,6 +437,83 @@ pub struct LoadedEngine {
 /// Loads a model file into a ready engine. Swapped out in tests.
 type EngineLoader = Arc<dyn Fn(&Path) -> Result<Box<dyn Transcriber>, String> + Send + Sync>;
 
+/// yap-1106-launch-walk — the engine load as a number the pill can walk on.
+///
+/// The launch walk's position comes from `pct` and nothing else (never a
+/// timer). The only part of a model load we can measure from outside the
+/// native call is reading the model file, so that is what moves 0 → 95:
+/// [`page_in_model`] reads the file through the page cache in chunks and
+/// reports bytes. The native load itself is one opaque call, so the walk
+/// WAITS at [`LOAD_HOLD_PCT`] for it and only the engine being stored in the
+/// slot ever reports `ready` (100). A failed load reports `failed` with the
+/// last percentage it reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineLoadProgress {
+    /// 0..=100. 100 is sent ONLY with `stage == "ready"`.
+    pub pct: u8,
+    /// "starting" | "reading" | "waiting" | "ready" | "failed".
+    pub stage: &'static str,
+    /// Model id (catalog id, never a path).
+    pub model_id: String,
+    /// Milliseconds since this load started.
+    pub elapsed_ms: u64,
+}
+
+/// Where the walk waits for the native load: the office door.
+pub const LOAD_HOLD_PCT: u8 = 95;
+/// Page-in chunk. 8 MiB keeps the progress smooth (a ~1.5 GB model is ~190
+/// steps) without a syscall storm.
+pub const PAGE_IN_CHUNK: usize = 8 * 1024 * 1024;
+/// The event the backend emits each time the load percentage changes.
+pub const ENGINE_LOAD_PROGRESS_EVENT: &str = "engine_load_progress";
+
+/// Receives every [`EngineLoadProgress`] change. Set once by the app's setup
+/// (it emits [`ENGINE_LOAD_PROGRESS_EVENT`]); swapped in tests.
+pub type LoadProgressSink = Arc<dyn Fn(&EngineLoadProgress) + Send + Sync>;
+
+/// Bytes read of `total` → 1..=LOAD_HOLD_PCT. Reading the file is the walk;
+/// it can never reach the ready number. An empty or unknown size is 1 until
+/// the read ends, then the hold.
+pub fn read_progress_pct(read: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 1;
+    }
+    let read = read.min(total);
+    let span = u64::from(LOAD_HOLD_PCT - 1);
+    (1 + read.saturating_mul(span) / total) as u8
+}
+
+/// Read the model file through the page cache in [`PAGE_IN_CHUNK`] pieces,
+/// calling `on_bytes(read, total)` after every chunk. The native loader reads
+/// the same bytes straight after, so this costs a cold load nothing extra and
+/// is what makes "reading the file" a real, measured number. `stop` is polled
+/// between chunks (the app exiting). An I/O error ends the page-in early and
+/// is returned; the caller still runs the loader, which is the authority.
+pub fn page_in_model(
+    path: &Path,
+    stop: &dyn Fn() -> bool,
+    on_bytes: &mut dyn FnMut(u64, u64),
+) -> std::io::Result<u64> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = vec![0u8; PAGE_IN_CHUNK.min(total.max(1) as usize)];
+    let mut read: u64 = 0;
+    loop {
+        if stop() {
+            break;
+        }
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        read += n as u64;
+        on_bytes(read, total);
+    }
+    Ok(read)
+}
+
 /// Snapshot of the engine lifecycle for the UI (`engine_status` command).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -593,6 +670,11 @@ struct Inner {
     /// i.e. the fifteen-minute decode the user cancelled still runs to the end.
     /// This flag is what the loop reads at every chunk boundary.
     user_cancelled: AtomicBool,
+    /// yap-1106-launch-walk — where the progress of a load goes (the app emits
+    /// it as an event), and the last value sent, so a pill that opens mid-load
+    /// (or after it) reads where the walk is instead of guessing.
+    progress_sink: Mutex<Option<LoadProgressSink>>,
+    last_progress: Mutex<Option<EngineLoadProgress>>,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
     idle_check_interval: Duration,
@@ -660,6 +742,8 @@ impl TranscriptionManager {
                 interactive_waiting: AtomicU64::new(0),
                 live_recording: AtomicBool::new(false),
                 user_cancelled: AtomicBool::new(false),
+                progress_sink: Mutex::new(None),
+                last_progress: Mutex::new(None),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
                 idle_check_interval,
@@ -817,6 +901,60 @@ impl TranscriptionManager {
     /// True while a load is building an engine right now. Read straight off the
     /// atomic (no slot lock), because YV80 asks it on every status emit so the
     /// UI can say "Preparing your speech engine…" instead of nothing.
+    /// yap-1106-launch-walk — route load progress to `sink` (the app's setup
+    /// emits it as [`ENGINE_LOAD_PROGRESS_EVENT`]). A load that started before
+    /// this was set is still recorded in [`last_load_progress`](Self::last_load_progress).
+    pub fn set_load_progress_sink(&self, sink: LoadProgressSink) {
+        *self.inner.progress_sink.lock() = Some(sink);
+    }
+
+    /// yap-1106-launch-walk — the last load progress sent, or `None` if this
+    /// process has not loaded an engine yet. A ready engine that has since been
+    /// idle-unloaded still reads its last `ready`; the pill pairs it with
+    /// `engine_status` to tell warm from cold.
+    pub fn last_load_progress(&self) -> Option<EngineLoadProgress> {
+        self.inner.last_progress.lock().clone()
+    }
+
+    /// Record and send one progress value. Only a CHANGE is sent (the page-in
+    /// calls this per chunk; most chunks do not move the whole percentage).
+    fn report_progress(&self, model_id: &str, started: Instant, pct: u8, stage: &'static str) {
+        // `ready` is the only stage allowed to say 100.
+        let pct = if stage == "ready" {
+            100
+        } else {
+            pct.min(LOAD_HOLD_PCT)
+        };
+        let next = EngineLoadProgress {
+            pct,
+            stage,
+            model_id: model_id.to_string(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        };
+        {
+            let mut last = self.inner.last_progress.lock();
+            if let Some(prev) = last.as_ref() {
+                if prev.pct == next.pct
+                    && prev.stage == next.stage
+                    && prev.model_id == next.model_id
+                {
+                    return;
+                }
+            }
+            *last = Some(next.clone());
+        }
+        if matches!(stage, "starting" | "waiting" | "ready" | "failed") {
+            log::info!(
+                "engine load_progress stage={stage} pct={pct} model={model_id} elapsed_ms={}",
+                next.elapsed_ms
+            );
+        }
+        let sink = self.inner.progress_sink.lock().clone();
+        if let Some(sink) = sink {
+            sink(&next);
+        }
+    }
+
     pub fn is_loading(&self) -> bool {
         self.inner.loading.load(Ordering::Acquire)
     }
@@ -869,6 +1007,26 @@ impl TranscriptionManager {
             }
             self.inner.loading.store(true, Ordering::Release);
         }
+        // yap-1106-launch-walk — the measurable part of a load (reading the
+        // file) drives the walk 0 → 95; the native call below holds it at 95.
+        let load_started = Instant::now();
+        self.report_progress(model_id, load_started, 0, "starting");
+        let paged = page_in_model(
+            model_path,
+            &|| self.inner.exiting.load(Ordering::Acquire),
+            &mut |read: u64, total: u64| {
+                self.report_progress(
+                    model_id,
+                    load_started,
+                    read_progress_pct(read, total),
+                    "reading",
+                )
+            },
+        );
+        if let Err(e) = paged {
+            log::warn!("engine page_in_failed model={model_id} kind={:?}", e.kind());
+        }
+        self.report_progress(model_id, load_started, LOAD_HOLD_PCT, "waiting");
         // A panicking native load must not take the app with it, and must not
         // leave a half-built engine in the slot.
         let loaded = catch_unwind(AssertUnwindSafe(|| (self.inner.loader)(model_path)))
@@ -877,6 +1035,7 @@ impl TranscriptionManager {
             Ok(engine) => engine,
             Err(e) => {
                 self.inner.loading.store(false, Ordering::Release);
+                self.report_progress(model_id, load_started, LOAD_HOLD_PCT, "failed");
                 return Err(e);
             }
         };
@@ -893,6 +1052,7 @@ impl TranscriptionManager {
                 drop(engine);
                 self.inner.loading.store(false, Ordering::Release);
                 log::info!("dropping freshly loaded ASR engine '{model_id}' — the app is exiting");
+                self.report_progress(model_id, load_started, LOAD_HOLD_PCT, "failed");
                 return Err("the app is exiting".into());
             }
             self.inner.generation.fetch_add(1, Ordering::AcqRel);
@@ -902,6 +1062,9 @@ impl TranscriptionManager {
             });
         }
         self.inner.loading.store(false, Ordering::Release);
+        // yap-1106-launch-walk — the ONLY place 100 is ever reported: the
+        // engine is in the slot. Nothing before this line can say ready.
+        self.report_progress(model_id, load_started, 100, "ready");
         self.touch();
         let loads = self.inner.loads.fetch_add(1, Ordering::AcqRel) + 1;
         log::info!(
@@ -2798,5 +2961,150 @@ mod tests {
         let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(decoded, vec!["dict".to_string()]);
         assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+    }
+
+    // ---- yap-1106-launch-walk: engine load progress ----
+
+    type ProgressLog = Arc<Mutex<Vec<(EngineLoadProgress, bool)>>>;
+
+    /// A sink that records every progress value AND whether the slowed loader
+    /// had returned when it was sent.
+    fn recording_sink(log: ProgressLog, loader_returned: Arc<AtomicBool>) -> LoadProgressSink {
+        Arc::new(move |p: &EngineLoadProgress| {
+            log.lock()
+                .push((p.clone(), loader_returned.load(Ordering::SeqCst)));
+        })
+    }
+
+    #[test]
+    fn launch_walk_slowed_fake_loader_never_reports_ready_before_ready() {
+        let returned = Arc::new(AtomicBool::new(false));
+        let flag = returned.clone();
+        let loader: EngineLoader = Arc::new(move |_path: &Path| {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.store(true, Ordering::SeqCst);
+            Ok(Box::new(StubEngine {
+                text: "slow".to_string(),
+                delay: Duration::ZERO,
+                panics: false,
+                seen_language: Arc::new(Mutex::new(None)),
+                seen_prompt: Arc::new(Mutex::new(None)),
+            }) as Box<dyn Transcriber>)
+        });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let log: ProgressLog = Arc::new(Mutex::new(Vec::new()));
+        m.set_load_progress_sink(recording_sink(log.clone(), returned.clone()));
+        let model = stub_model_file("walk.gguf");
+        let handle = {
+            let m = m.clone();
+            let model = model.clone();
+            std::thread::spawn(move || m.load("walk/model", &model))
+        };
+        // While the slowed loader runs, a pill reading the snapshot must never
+        // see the ready number.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !returned.load(Ordering::SeqCst) && Instant::now() < deadline {
+            if let Some(p) = m.last_load_progress() {
+                if !returned.load(Ordering::SeqCst) {
+                    assert!(
+                        p.pct <= LOAD_HOLD_PCT && p.stage != "ready",
+                        "ready before ready: {p:?}"
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.join().expect("load thread").expect("load ok");
+        let events = log.lock().clone();
+        assert!(!events.is_empty(), "a load reports progress");
+        assert_eq!(events[0].0.stage, "starting");
+        assert_eq!(events[0].0.pct, 0);
+        let mut last = 0u8;
+        for (p, loader_done) in &events {
+            assert!(p.pct >= last, "progress never goes backwards: {events:?}");
+            last = p.pct;
+            if p.pct == 100 || p.stage == "ready" {
+                assert!(
+                    *loader_done,
+                    "ready sent before the engine was stored: {p:?}"
+                );
+                assert_eq!((p.pct, p.stage), (100, "ready"));
+            } else {
+                assert!(
+                    p.pct <= LOAD_HOLD_PCT,
+                    "only ready may pass the hold: {p:?}"
+                );
+            }
+        }
+        assert!(events
+            .iter()
+            .any(|(p, done)| p.stage == "waiting" && p.pct == LOAD_HOLD_PCT && !done));
+        let (final_p, _) = events.last().unwrap();
+        assert_eq!((final_p.pct, final_p.stage), (100, "ready"));
+        assert_eq!(final_p.model_id, "walk/model");
+        // A warm engine reports nothing new: the walk is skipped (the pill hops).
+        m.load("walk/model", &model).expect("warm load ok");
+        assert_eq!(
+            log.lock().len(),
+            events.len(),
+            "a warm load sends no progress"
+        );
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    #[test]
+    fn launch_walk_failed_load_reports_failed_and_never_ready() {
+        let loader: EngineLoader =
+            Arc::new(|_path: &Path| -> Result<Box<dyn Transcriber>, String> {
+                Err("bad model".into())
+            });
+        let m = manager(loader, Duration::from_secs(60), Duration::from_secs(5));
+        let log: ProgressLog = Arc::new(Mutex::new(Vec::new()));
+        m.set_load_progress_sink(recording_sink(
+            log.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+        let model = stub_model_file("broken.gguf");
+        assert!(m.load("broken/model", &model).is_err());
+        let events = log.lock().clone();
+        assert!(events
+            .iter()
+            .all(|(p, _)| p.pct < 100 && p.stage != "ready"));
+        assert_eq!(events.last().map(|(p, _)| p.stage), Some("failed"));
+        assert_eq!(m.last_load_progress().map(|p| p.stage), Some("failed"));
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
+    }
+
+    #[test]
+    fn launch_walk_read_progress_stays_under_the_hold() {
+        assert_eq!(read_progress_pct(0, 100), 1);
+        assert_eq!(read_progress_pct(50, 100), 48);
+        assert_eq!(read_progress_pct(100, 100), LOAD_HOLD_PCT);
+        assert_eq!(
+            read_progress_pct(500, 100),
+            LOAD_HOLD_PCT,
+            "an over-read clamps"
+        );
+        assert_eq!(
+            read_progress_pct(10, 0),
+            1,
+            "an unknown size never jumps ahead"
+        );
+    }
+
+    #[test]
+    fn launch_walk_page_in_reads_the_whole_file_and_reports_bytes() {
+        let model = stub_model_file("pagein.gguf");
+        let mut seen: Vec<(u64, u64)> = Vec::new();
+        let read = page_in_model(&model, &|| false, &mut |r: u64, t: u64| seen.push((r, t)))
+            .expect("page in");
+        assert_eq!(read, b"stub gguf".len() as u64);
+        assert_eq!(seen.last().copied(), Some((read, read)));
+        let stopped = page_in_model(&model, &|| true, &mut |_: u64, _: u64| {
+            panic!("a stopped page-in reads nothing")
+        })
+        .expect("stopped page in");
+        assert_eq!(stopped, 0);
+        let _ = std::fs::remove_dir_all(model.parent().unwrap());
     }
 }
