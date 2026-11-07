@@ -11,7 +11,9 @@
  * - a voice under 70% like a known or just-named person → "Same person as
  *   John? 62% sure" with "No, someone new" / "Yes, John";
  * - Save → named, and a 2-second toast; Skip or 20 s with no input → that voice
- *   is deferred to the after-meeting cards (FB-22b);
+ *   is deferred to the after-meeting cards (FB-22b). The 20 s run from the
+ *   LATEST of the card appearing and the last input (typing, focusing the
+ *   field, pressing on the card), so a name typed at 18 s is never lost;
  * - at most ONE question per voice per meeting;
  * - the card never takes focus (non-activating: you click it to type).
  *
@@ -25,7 +27,7 @@ export const WHO_ASK_EVENT = "meeting:live-ask";
 export const WHO_SETTING = "askWhosTalkingLive";
 /** A voice is asked about after this much of its speech. */
 export const WHO_MIN_SPEECH_S = 5;
-/** An ignored card slides away after this long. */
+/** An ignored card slides away after this long with no input (from the last input). */
 export const WHO_IGNORE_MS = 20_000;
 /** How long the "saved" toast stays. */
 export const WHO_TOAST_MS = 2_000;
@@ -55,8 +57,16 @@ export interface WhoContext {
 
 export type WhoCard =
   | { kind: "hidden" }
-  | { kind: "ask"; cluster: number; label: string; shownAtMs: number }
-  | { kind: "same"; cluster: number; label: string; name: string; percent: number; shownAtMs: number }
+  | { kind: "ask"; cluster: number; label: string; shownAtMs: number; lastInputMs?: number }
+  | {
+      kind: "same";
+      cluster: number;
+      label: string;
+      name: string;
+      percent: number;
+      shownAtMs: number;
+      lastInputMs?: number;
+    }
   | { kind: "toast"; cluster: number; text: string; untilMs: number };
 
 export interface WhoState {
@@ -79,6 +89,8 @@ export type WhoInput =
   | { type: "skip"; nowMs: number }
   | { type: "same"; yes: boolean; nowMs: number }
   | { type: "tick"; ctx: WhoContext; nowMs: number }
+  /** Any sign the user is answering: typing, focusing the field, pressing on the card. */
+  | { type: "input"; nowMs: number }
   | { type: "reset" };
 
 /** What the component must tell the backend. */
@@ -95,6 +107,15 @@ export interface WhoStep {
 /** Can a card show in this context at all? */
 export function whoCanShow(ctx: WhoContext): boolean {
   return ctx.enabled && ctx.recording && !ctx.screenSharing;
+}
+
+/**
+ * When an open question slides away: 20 s after the LATER of the card
+ * appearing and the last input. The reducer's tick and the component's one
+ * timer both read this, so they can never disagree.
+ */
+export function whoIgnoreDueMs(card: { shownAtMs: number; lastInputMs?: number }): number {
+  return Math.max(card.shownAtMs, card.lastInputMs ?? card.shownAtMs) + WHO_IGNORE_MS;
 }
 
 /** "62% sure" — a whole percent, clamped. */
@@ -191,6 +212,12 @@ export function reduceWho(s: WhoState, input: WhoInput): WhoStep {
         effects: [{ kind: "same", cluster, yes: false }],
       };
     }
+    case "input": {
+      // Only an open question waits on the user; a toast or nothing ignores it.
+      if (s.card.kind !== "ask" && s.card.kind !== "same") return { state: s, effects: [] };
+      if (s.card.lastInputMs !== undefined && s.card.lastInputMs >= input.nowMs) return { state: s, effects: [] };
+      return { state: { ...s, card: { ...s.card, lastInputMs: input.nowMs } }, effects: [] };
+    }
     case "skip": {
       if (s.card.kind !== "ask" && s.card.kind !== "same") return { state: s, effects: [] };
       const cluster = s.card.cluster;
@@ -217,7 +244,7 @@ export function reduceWho(s: WhoState, input: WhoInput): WhoStep {
           effects: [{ kind: "skip", cluster: c.cluster, reason }],
         };
       }
-      if (nowMs - c.shownAtMs >= WHO_IGNORE_MS) {
+      if (nowMs >= whoIgnoreDueMs(c)) {
         return {
           state: next(defer(s, c.cluster), ctx, nowMs),
           effects: [{ kind: "skip", cluster: c.cluster, reason: "timeout" }],
