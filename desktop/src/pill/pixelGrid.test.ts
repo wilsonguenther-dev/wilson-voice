@@ -289,9 +289,7 @@ describe("pixelGrid — reachability: the canvases that draw pixel art use it", 
     const css = readSibling("../App.css").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).not.toMatch(/\.yappy-house \.yh-stage \{[^}]*max-height: 112px/);
     expect(css).toMatch(/\.yappy-house \.yh-stage \{[^}]*object-fit: contain;/);
-    // yap-1107-parity-home sizes the canvas exactly (width AND height from the
-    // whole-number scale) so no min-width can overflow and crop the room.
-    expect(house).toMatch(/style=\{\{ (width: `\$\{ROOM_W \* scale\}px`, )?height: `\$\{ROOM_H \* scale\}px` \}\}/);
+    expect(house).toMatch(/style=\{\{ height: `\$\{ROOM_H \* scale\}px` \}\}/);
     // contain at a whole-number cell: the 5x room in a 1000 px column is 5 CSS px per art px
     for (const dpr of DPRS) {
       const g = pixelGrid({ w: 1000, h: 128 * 5 }, { w: 192, h: 128 }, dpr);
