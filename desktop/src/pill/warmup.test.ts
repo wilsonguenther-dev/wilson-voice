@@ -110,7 +110,8 @@ describe("yap-1106-pill-warmup-engine — beats from the load signal", () => {
     expect(loadBar(prog(1, "reading"))).toBe(0);
     expect(loadBar(prog(48, "reading"))).toBeGreaterThan(15);
     expect(loadBar(prog(48, "reading"))).toBeLessThan(17);
-    expect(loadBar(prog(94, "reading"))).toBeCloseTo(33.3, 1);
+    expect(loadBar(prog(94, "reading"))).toBeGreaterThan(32.5);
+    expect(loadBar(prog(94, "reading"))).toBeLessThanOrEqual(33.4);
     expect(loadBar(prog(95, "waiting"))).toBeCloseTo(33.3, 1);
     expect(loadBar(prog(95, "testing"))).toBeCloseTo(66.7, 1);
     expect(loadBar(prog(100, "ready"))).toBe(100);

@@ -31,6 +31,8 @@ import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LaunchWalk from "./pill/LaunchWalkScene";
 import { forcedLaunchWalk } from "./pill/launchWalk";
+import WarmupEngine from "./pill/WarmupEngine";
+import { forcedWarmup } from "./pill/warmup";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
 import MeetingDictationCard from "./pill/MeetingDictationCard";
 import { forcedMeetingNotice } from "./pill/meetingDictation";
@@ -679,6 +681,10 @@ function Float() {
   }, [meetingAfter?.kind, meeting.status.recording]);
   // yap-1106-launch-walk — a headless capture can pin the walk (`?walk=40`).
   const forcedWalk = FORCED ? forcedLaunchWalk(window.location.search) : null;
+  // yap-1106-pill-warmup-engine — the compact warm-up pill paints the same
+  // load signal whenever the walk is not on screen (`?warm=` pins it headless).
+  const forcedWarm = FORCED ? forcedWarmup(window.location.search) : null;
+  const [walkVisible, setWalkVisible] = useState(false);
   const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
   // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
   // Badass only, and never in a meeting state (recording, or its after-view on
@@ -798,6 +804,15 @@ function Float() {
           recording={isListening(phase)}
           forced={forcedWalk}
           suppressed={(Boolean(FORCED) && !forcedWalk) || meeting.status.recording || meetingAfter !== null}
+          onVisibleChange={setWalkVisible}
+        />
+        {/* yap-1106-pill-warmup-engine — Yappy starts a little engine in the
+            compact pill (72 x 24 window + fill bar): the first-launch download
+            and every load after the launch walk. fn still records during it. */}
+        <WarmupEngine
+          recording={isListening(phase)}
+          forced={forcedWarm}
+          suppressed={walkVisible || (Boolean(FORCED) && !forcedWarm) || meeting.status.recording || meetingAfter !== null}
         />
       </div>
       {/* yap-1106-friend-visits — a friend visits for its own event only: at

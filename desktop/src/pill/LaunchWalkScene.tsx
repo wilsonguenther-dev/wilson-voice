@@ -190,9 +190,17 @@ export default function LaunchWalk({
   recording,
   suppressed = false,
   forced = null,
+  onVisibleChange,
 }: {
   recording: boolean;
   suppressed?: boolean;
+  /**
+   * yap-1106-pill-warmup-engine — one signal, two renderers: the walk paints
+   * the window's FIRST load (the launch); once it has been shown and folded
+   * away, later loads in the same session belong to the compact warm-up pill
+   * (WarmupEngine). Told here so the two never draw at once.
+   */
+  onVisibleChange?: (visible: boolean) => void;
   /** A headless capture's fixed percentage (`?walk=`); the live clock is ignored. */
   forced?: EngineLoadProgress | null;
 }) {
@@ -218,7 +226,19 @@ export default function LaunchWalk({
     reduceMotion,
     tMs: now,
   });
-  const visible = !suppressed && model.mode !== "hidden";
+  // The launch is over once the walk has been on screen and folded away.
+  const shownOnce = useRef(false);
+  const [launchDone, setLaunchDone] = useState(false);
+  const visible = !suppressed && !launchDone && model.mode !== "hidden";
+  useEffect(() => {
+    if (forced) return;
+    if (visible) shownOnce.current = true;
+    else if (shownOnce.current && !launchDone && model.mode === "hidden") {
+      console.info("pill launch_walk_done handoff=warmup");
+      setLaunchDone(true);
+    }
+  }, [visible, forced, launchDone, model.mode]);
+  useEffect(() => { onVisibleChange?.(visible); }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The frame loop: only while the walk is on screen. Its clock moves the legs,
   // the waves and the after-ready beats; the scroll comes from the percentage.
