@@ -17224,6 +17224,51 @@ mod retry_engine_tests {
     }
 }
 
+/// fix-b5-2 — the Retry-all queue in the UI (desktop/src/retryDictation.ts)
+/// decides "this clip failed, try the next" vs "the engine is unhealthy, stop"
+/// by matching these exact sentences. A reword here without the TS mirror
+/// would silently queue every later clip behind a wedged engine again, so
+/// this test reads the TS source and pins both sides to the same text.
+#[cfg(test)]
+mod retry_ui_contract_tests {
+    use super::*;
+
+    const RETRY_TS: &str = include_str!("../../src/retryDictation.ts");
+
+    /// The string value of `export const NAME = "…";` in retryDictation.ts.
+    fn ts_const<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let marker = format!("export const {name} = \"");
+        let start = src.find(&marker)? + marker.len();
+        let len = src[start..].find('"')?;
+        Some(&src[start..start + len])
+    }
+
+    #[test]
+    fn retry_errors_match_the_ui_mirror() {
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_DEADLINE_ERROR"),
+            Some(RETRY_DEADLINE_ERROR),
+            "retryDictation.ts RETRY_DEADLINE_ERROR must mirror lib.rs verbatim"
+        );
+        assert_eq!(
+            ts_const(RETRY_TS, "RETRY_ENGINE_BUSY_ERROR"),
+            Some(RETRY_ENGINE_BUSY_ERROR),
+            "retryDictation.ts RETRY_ENGINE_BUSY_ERROR must mirror lib.rs verbatim"
+        );
+    }
+
+    #[test]
+    fn engine_stuck_starts_with_the_ui_prefix() {
+        let prefix = ts_const(RETRY_TS, "ENGINE_STUCK_PREFIX")
+            .expect("ENGINE_STUCK_PREFIX in retryDictation.ts");
+        assert!(!prefix.is_empty());
+        assert!(
+            transcription::ENGINE_STUCK.starts_with(prefix),
+            "transcription::ENGINE_STUCK must start with the UI's ENGINE_STUCK_PREFIX {prefix:?}"
+        );
+    }
+}
+
 /// yap-1106-retry-failed-dictation — the headless replay of the two clips
 /// Wilson's 2026-11-06 session kept (82.3 s bb865dde… and 153.1 s 6c97f34c…)
 /// through the REAL retry engine stage. The clips are private data: the test
