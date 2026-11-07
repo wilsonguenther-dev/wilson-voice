@@ -16,6 +16,7 @@ import { drawChick as drawChickArt } from "../sprites/art";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
+import GovernorChip from "./GovernorChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { bucketFor } from "./tone";
@@ -816,6 +817,7 @@ export default function YappyPill(
         </button>
       )}
       <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
+      <GovernorChip />
     </div>
   );
 }

@@ -156,6 +156,9 @@ fn fully_populated() -> AppSettings {
             "com.apple.mail".to_string(),
             "markdown".to_string(),
         )]),
+        // yap-1106-resource-governor — a non-default value, so the round-trip
+        // proves the field is written and read, not defaulted.
+        pause_heavy_work_below_percent: 35,
         // WF-17 — non-default: two of the three quiet-mode switches off.
         muted_pill_categories: vec!["tip".to_string(), "milestone".to_string()],
         // WF-19 — non-default: side button 4 as click-to-toggle hands-free.
