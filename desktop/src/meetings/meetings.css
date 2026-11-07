@@ -307,32 +307,22 @@
   color: var(--text-muted);
 }
 
-/* yap-1107-meetings-row-whole-click-target — in the list pane the row's open
-   button IS the card: it spans the whole grid row edge to edge (the padding is
-   inside it), so a press anywhere on the card opens the meeting — never only
-   the corner. A row's status column (Retry / Cancel notes), when it has one,
-   sits in the same grid row on the right; the button reserves its measured
-   width (--row-status-w, MeetingsPanes reserveStatusWidth) as right padding,
-   so nothing covers the title, the time or the chips, and nothing reflows.
-   States (tokens.css --row-*): hover a subtle fill, pressed one step deeper,
-   selected/open the soft accent fill plus the 3 px inset bar; the keyboard
-   ring is a11y/focus.css's, drawn inside the card. */
+/* In the list pane a row is ONE button that fills the whole row (press
+   anywhere, not just the corner) plus, only when the meeting has one, its
+   status column. Nothing is revealed on hover, so nothing can cover the
+   title, the time or the chips, and the row height never changes. */
 .meetings-list-pane .meeting-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   height: auto;
   min-height: 64px;
+  flex-wrap: nowrap;
   align-items: stretch;
   padding: 0;
-  transition: background-color 0.12s ease, box-shadow 0.12s ease;
+  transition: background-color 0.12s ease;
 }
 .meetings-list-pane .meeting-row-main {
-  grid-row: 1;
-  grid-column: 1 / -1;
   appearance: none;
   align-self: stretch;
   justify-content: center;
-  min-width: 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -341,41 +331,24 @@
   padding: var(--space-2) var(--space-3);
   cursor: pointer;
   border-radius: 0;
-  transition: background-color 0.12s ease;
-  /* The row clips (overflow:hidden), so focus.css's ring is drawn inside it. */
-  --focus-ring-offset: calc(-1 * var(--focus-ring-width));
 }
-.meetings-list-pane .meeting-row.has-status .meeting-row-main {
-  padding-right: calc(var(--space-2) + var(--row-status-w, 0px));
-}
-/* The column's own box passes presses through to the card; only its buttons
-   are targets of their own. */
-.meetings-list-pane .meeting-row-status {
-  grid-row: 1;
-  grid-column: 2;
-  align-self: center;
-  pointer-events: none;
-}
-.meetings-list-pane .meeting-row-status > button {
-  pointer-events: auto;
+/* The row clips (overflow:hidden), so the button's focus ring sits inside it:
+ * the one global ring (a11y/focus.css) reads this offset. */
+.meetings-list-pane .meeting-row-main {
+  --focus-ring-offset: -2px;
 }
 .meetings-list-pane .meeting-row:hover {
-  background: var(--row-hover);
-}
-.meetings-list-pane .meeting-row-main:active {
-  background: var(--row-pressed);
-}
-/* Open == selected, visually. */
-.meetings-list-pane .meeting-row.open,
-.meetings-list-pane .meeting-row.selected {
-  background: var(--row-selected);
-  box-shadow: inset 3px 0 0 var(--row-selected-bar);
+  background: color-mix(in srgb, var(--accent-action-soft) 55%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
-  .meetings-list-pane .meeting-row,
-  .meetings-list-pane .meeting-row-main {
-    transition: none;
-  }
+  .meetings-list-pane .meeting-row { transition: none; }
+}
+.meetings-list-pane .meeting-row.open,
+.meetings-list-pane .meeting-row.selected {
+  background: var(--accent-action-soft);
+}
+.meetings-list-pane .meeting-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent-action);
 }
 
 .people-chips {

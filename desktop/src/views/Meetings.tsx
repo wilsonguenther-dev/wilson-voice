@@ -25,13 +25,13 @@ import {
 } from "../meetings/transcript";
 import {
   NO_FILTER, defaultTab, detailPeople, duePendingDeletes, filterActive, filterMeetings, groupMeetings, isNarrow,
-  listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, rowTabStop, schedulePendingDelete, shortId,
+  listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, schedulePendingDelete, shortId,
   stopNeedsConfirm, undoPendingDelete, unnamedVoices, withoutPending,
   type DetailTab, type MeetingFilter, type PendingDelete,
 } from "../meetings/meetingsLayout";
 import {
   DetailTabs, ListSkeleton, MeetingFilters, PeopleChips, PeopleTab, PickAMeeting, RecordingHero, UndoDeleteBar,
-  WhoIsTalkingStrip, reserveStatusWidth,
+  WhoIsTalkingStrip,
 } from "../meetings/MeetingsPanes";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
@@ -189,9 +189,6 @@ export default function Meetings() {
   const groups = useMemo(() => groupMeetings(visible, new Date()), [visible]);
   const people = useMemo(() => peopleOptions(meetings), [meetings]);
   const ids = useMemo(() => groups.flatMap((g) => g.meetings.map((m) => m.id)), [groups]);
-  // yap-1107-meetings-row-whole-click-target: the list is ONE Tab stop (roving
-  // tabindex): the selected row, else the open one, else the first. ↑/↓ move it.
-  const tabStopId = rowTabStop(ids, selected, openId);
   const detailPeopleRows = useMemo(
     () => (openMeeting ? detailPeople(openMeeting.segments, openMeeting.meeting.kind) : []),
     [openMeeting],
@@ -200,9 +197,8 @@ export default function Meetings() {
     if (filterActive(filter)) logUi("filter", { kind: filter.kind, notes: filter.notes, person: Boolean(filter.person) });
   }, [filter]);
 
-  function openRow(id: string, via: "pointer" | "keyboard" = "pointer") {
+  function openRow(id: string) {
     setSelected(id);
-    logUi("row_open", { id: shortId(id), via });
     void openMeetingDetail(id);
   }
   function openRowMenu(e: { preventDefault: () => void; clientX: number; clientY: number; currentTarget: Element }, id: string, title: string) {
@@ -234,20 +230,13 @@ export default function Meetings() {
           e.preventDefault();
           const next = moveSelection(k.ids, k.selected, action.by);
           setSelected(next);
-          if (next) {
-            // yap-1107-meetings-row-whole-click-target: when a row has keyboard
-            // focus, focus follows the selection (roving tab stop), so the ring
-            // and the selected fill never sit on two different rows.
-            const rowButton = document.querySelector<HTMLElement>(`[data-meeting-id="${next}"] .meeting-row-main`);
-            if (rowButton && document.activeElement?.classList.contains("meeting-row-main")) rowButton.focus();
-            document.querySelector(`[data-meeting-id="${next}"]`)?.scrollIntoView({ block: "nearest" });
-          }
+          if (next) document.querySelector(`[data-meeting-id="${next}"]`)?.scrollIntoView({ block: "nearest" });
           break;
         }
         case "open":
           if (k.selected) {
             e.preventDefault();
-            openRow(k.selected, "keyboard");
+            openRow(k.selected);
           }
           break;
         case "delete": {
@@ -628,14 +617,12 @@ export default function Meetings() {
                       return (
                         <li
                           key={m.id}
-                          className={`meeting-row${isOpen ? " open" : ""}${isSelected ? " selected" : ""}${hasStatusActions ? " has-status" : ""}`}
+                          className={`meeting-row${isOpen ? " open" : ""}${isSelected ? " selected" : ""}`}
                           data-meeting-id={m.id}
                           data-meeting-state={m.state}
+                          aria-current={isOpen ? "true" : undefined}
                           onContextMenu={(e) => openRowMenu(e, m.id, m.title)}
                         >
-                          {/* yap-1107-meetings-row-whole-click-target — this button IS the
-                              card: it fills the li edge to edge (the padding lives inside
-                              it), so a press anywhere on the row opens the meeting. */}
                           {/* yap-1107-meetings-row-chips-baseline — §3.3 row anatomy, two
                               lines, every row the same height: line 1 = title (ellipsis) |
                               time · duration (right); line 2 = the people chips on ONE
@@ -645,15 +632,7 @@ export default function Meetings() {
                               (the detail beside it shows both; the failure is the chip's
                               tooltip): a third line on some rows made the list ragged. A
                               transcribing row's real progress fills its own state chip. */}
-                          <button
-                            type="button"
-                            className="meeting-row-main"
-                            title={m.title}
-                            aria-current={isOpen ? "true" : undefined}
-                            tabIndex={m.id === tabStopId ? 0 : -1}
-                            onFocus={() => setSelected(m.id)}
-                            onClick={(e) => openRow(m.id, e.detail === 0 ? "keyboard" : "pointer")}
-                          >
+                          <button type="button" className="meeting-row-main" title={m.title} onClick={() => openRow(m.id)}>
                             <span className="meeting-row-line1">
                               <span className="meeting-row-title">{m.title}</span>
                               <span className="meeting-row-when">
@@ -690,7 +669,7 @@ export default function Meetings() {
                               status buttons stay, in a column that is laid out in every
                               state (hover changes colour, never layout). */}
                           {hasStatusActions && (
-                            <div className="meeting-row-status" data-meeting-row-status ref={reserveStatusWidth}>
+                            <div className="meeting-row-status" data-meeting-row-status>
                               {actions.includes("retry") && (
                                 <button onClick={() => void retryMeeting(m.id)}>Retry</button>
                               )}

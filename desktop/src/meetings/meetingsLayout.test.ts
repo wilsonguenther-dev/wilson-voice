@@ -23,7 +23,6 @@ import {
   meetingsKeyAction,
   meetingsLogLine,
   moveSelection,
-  rowTabStop,
   peopleOptions,
   schedulePendingDelete,
   shortId,
@@ -275,26 +274,5 @@ describe("telemetry", () => {
     expect(meetingsLogLine("delete", { id: "1a2b3c4d", undone: true })).toBe("ui meeting_delete id=1a2b3c4d undone=true");
     expect(meetingsLogLine("filter", { kind: "in person" })).toBe("ui meeting_filter kind=in_person");
     expect(meetingsLogLine("close")).toBe("ui meeting_close");
-  });
-});
-
-describe("yap-1107-meetings-row-whole-click-target: the list is one Tab stop", () => {
-  const ids = ["a", "b", "c"];
-  it("is the selected row when it is listed", () => {
-    expect(rowTabStop(ids, "b", "c")).toBe("b");
-  });
-  it("falls back to the open row, then the first row", () => {
-    expect(rowTabStop(ids, null, "c")).toBe("c");
-    expect(rowTabStop(ids, "gone", null)).toBe("a");
-    expect(rowTabStop(ids, "gone", "also-gone")).toBe("a");
-  });
-  it("is nothing for an empty list", () => {
-    expect(rowTabStop([], "a", "a")).toBeNull();
-  });
-  it("names exactly one row per list, so Tab reaches the list once", () => {
-    for (const sel of [null, "a", "b", "c", "x"]) {
-      const stop = rowTabStop(ids, sel, null);
-      expect(ids.filter((id) => id === stop)).toHaveLength(1);
-    }
   });
 });
