@@ -286,6 +286,9 @@ pub mod structure;
 // pause-cut windows while it records, so release decodes only the tail.
 pub mod stream_decode;
 pub mod take_stage;
+/// yap-1107-start-stop-any-surface — THE take state machine every surface
+/// (pill, hotkey, menu bar, Dictate button) sends its start / stop intent to.
+pub mod take_control;
 /// yap-1106-fb-04 — paste waits for a typing pause.
 pub mod typing_pause;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
@@ -1037,9 +1040,10 @@ struct AppState {
     saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
     last_error: PLMutex<Option<take_error::LastError>>,
-    /// yap-p0-hotkeys-no-permission — the ONE start/stop decision for every
-    /// hotkey edge, Carbon or fn tap (see `take_hotkey_edge`).
-    hotkey_arbiter: PLMutex<hotkeys::HotkeyArbiter>,
+    /// yap-1107-start-stop-any-surface — the ONE start/stop decision for every
+    /// surface: pill click, hotkey edge (Carbon or fn tap), menu bar item and
+    /// the in-app Dictate button all go through `take_intent`.
+    take_machine: PLMutex<take_control::TakeMachine>,
     /// Menu-bar (tray) handles, set once during setup after the tray is built.
     /// Kept so state transitions can reflect into the dropdown + tooltip (YV26).
     tray: PLMutex<Option<TrayIcon<Wry>>>,
@@ -2079,13 +2083,17 @@ fn run_tray_command(app: &AppHandle, state: &Arc<AppState>, command: tray_menu::
             toggle_hands_free(app, state, StopOrigin::MenuBar);
         }
         TrayCommand::ToggleDictation => {
-            if *state.recording.lock() {
-                // Tray Stop also exits hands-free (see manual_toggle) — clear
-                // both the app-side and PTT tap-side latches.
-                stop_take(app, state, StopOrigin::MenuBar);
-            } else {
-                start_recording(app, state);
-            }
+            // yap-1107-start-stop-any-surface: the menu bar only sends its
+            // intent; the ONE take machine decides, so this item stops a take
+            // the hotkey, the pill or the Dictate button started. The stop
+            // (`take_stop` -> `stop_take`) also exits hands-free.
+            take_intent(
+                app,
+                state,
+                take_control::Surface::MenuBar,
+                take_control::Intent::Toggle,
+                || start_recording(app, state),
+            );
         }
         // WF-07 — Record one of today's calendar meetings from the submenu.
         TrayCommand::RecordUpcoming(index) => {
@@ -7165,59 +7173,77 @@ fn pill_drag_start(app: AppHandle) {
 #[tauri::command]
 fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
     let state = state.inner();
-    if !*state.recording.lock() {
-        if *state.busy.lock() {
-            log::info!("pill click action=ignored reason=busy");
-            return Ok(());
-        }
-        if !license_allows_new_dictation(&app, state) {
-            log::info!("pill click action=refused reason=license");
-            return Err(CommandError::license_required());
-        }
-        start_recording(&app, state);
-        if *state.recording.lock() {
-            // A click take is hands-free: nothing is held, so key release or
-            // an fn edge must not finalize it. The next click (or any stop)
-            // ends it through `stop_take`, which clears this latch.
-            *state.hands_free.lock() = true;
-            *state.hands_free_by_chord.lock() = false;
-            log::info!("pill click action=start hands_free=true");
-            ask_hands_free_during_meeting(&app, state, "pill_click");
-        } else {
-            log::warn!("pill click action=start_failed reason=take_did_not_start");
-        }
-        emit_status(&app, state);
-        return Ok(());
-    }
-    let pre = pill_click::PRESS
-        .lock()
-        .pre_click(hotkeys::now_ms())
-        .cloned();
-    match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
-        pill_click::PasteTarget::Keep => {
-            log::info!("pill click action=stop refocus=false");
-            stop_take(&app, state, StopOrigin::OnScreen);
-        }
-        pill_click::PasteTarget::Refocus(target) => {
-            // Activation lands through the main run loop, so the wait for it
-            // runs OFF the main thread; the stop follows once the pre-click
-            // app is frontmost (or the bounded wait gives up).
-            let app = app.clone();
-            let state = state.clone();
-            std::thread::spawn(move || {
-                let t0 = std::time::Instant::now();
-                let asked = pill_click::refocus(&target);
-                let front = asked && pill_click::wait_until_front(&target);
-                if !front {
-                    log::warn!("pill click refocus_failed asked={asked}");
+    // yap-1107-start-stop-any-surface: the pill only sends its intent. The ONE
+    // take machine decides start vs stop, so a click stops a take the hotkey,
+    // the menu bar or the Dictate button started — and a click during warm-up
+    // stops the take the moment it is armed instead of starting a second one.
+    let mut refused = false;
+    take_intent_with(
+        &app,
+        state,
+        take_control::Surface::Pill,
+        take_control::Intent::Toggle,
+        || {
+            if *state.busy.lock() {
+                log::info!("pill click action=ignored reason=busy");
+                return;
+            }
+            if !license_allows_new_dictation(&app, state) {
+                log::info!("pill click action=refused reason=license");
+                refused = true;
+                return;
+            }
+            start_recording(&app, state);
+            if *state.recording.lock() {
+                // A click take is hands-free: nothing is held, so key release
+                // or an fn edge must not finalize it. The next click (or any
+                // stop) ends it through `stop_take`, which clears this latch.
+                *state.hands_free.lock() = true;
+                *state.hands_free_by_chord.lock() = false;
+                log::info!("pill click action=start hands_free=true");
+                ask_hands_free_during_meeting(&app, state, "pill_click");
+            } else {
+                log::warn!("pill click action=start_failed reason=take_did_not_start");
+            }
+            emit_status(&app, state);
+        },
+        || {
+            let pre = pill_click::PRESS
+                .lock()
+                .pre_click(hotkeys::now_ms())
+                .cloned();
+            match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
+                pill_click::PasteTarget::Keep => {
+                    log::info!("pill click action=stop refocus=false");
+                    take_stop(&app, state, take_control::Surface::Pill);
                 }
-                log::info!(
-                    "pill click action=stop refocus=true front={front} wait_ms={}",
-                    t0.elapsed().as_millis()
-                );
-                stop_take(&app, &state, StopOrigin::OnScreen);
-            });
-        }
+                pill_click::PasteTarget::Refocus(target) => {
+                    // Activation lands through the main run loop, so the wait
+                    // for it runs OFF the main thread; the stop follows once
+                    // the pre-click app is frontmost (or the bounded wait gives
+                    // up). The machine stays Stopping until then, so a second
+                    // stop from any surface is a no-op.
+                    let app = app.clone();
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        let t0 = std::time::Instant::now();
+                        let asked = pill_click::refocus(&target);
+                        let front = asked && pill_click::wait_until_front(&target);
+                        if !front {
+                            log::warn!("pill click refocus_failed asked={asked}");
+                        }
+                        log::info!(
+                            "pill click action=stop refocus=true front={front} wait_ms={}",
+                            t0.elapsed().as_millis()
+                        );
+                        take_stop(&app, &state, take_control::Surface::Pill);
+                    });
+                }
+            }
+        },
+    );
+    if refused {
+        return Err(CommandError::license_required());
     }
     Ok(())
 }
@@ -12837,49 +12863,158 @@ impl CommandError {
 /// somebody their trial ended.
 #[tauri::command]
 fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
-    // Same helper the hotkey path uses, so the event + the (throttled) toast
-    // fire however the user reached this — including the floating pill, whose
-    // click handler has nowhere to put a returned error.
-    if !*state.recording.lock() && !license_allows_new_dictation(&app, state.inner()) {
+    let state = state.inner();
+    // yap-1107-start-stop-any-surface: the in-app Dictate button only sends
+    // its intent; the ONE take machine decides, so it stops a take the hotkey,
+    // the pill or the menu bar started. A manual stop always exits hands-free
+    // (`take_stop` -> `stop_take` clears BOTH latches: the app-side flag and
+    // the PTT tap-side latch).
+    let mut refused = false;
+    take_intent(
+        &app,
+        state,
+        take_control::Surface::DictateButton,
+        take_control::Intent::Toggle,
+        || {
+            // Same helper the hotkey path uses, so the event + the (throttled)
+            // toast fire however the user reached this.
+            if !license_allows_new_dictation(&app, state) {
+                refused = true;
+                return;
+            }
+            start_recording(&app, state);
+        },
+    );
+    if refused {
         return Err(CommandError::license_required());
     }
-    manual_toggle_inner(app, state);
     Ok(())
-}
-
-fn manual_toggle_inner(app: AppHandle, state: State<'_, Arc<AppState>>) {
-    if *state.recording.lock() {
-        // A manual stop (Home button / pill / sidebar) always exits hands-free —
-        // clear BOTH latches: the app-side flag (or stop_and_transcribe's guard
-        // makes every on-screen Stop a no-op while locked) AND the PTT tap-side
-        // latch (or the next fn gesture is swallowed resetting it).
-        stop_take(&app, state.inner(), StopOrigin::OnScreen);
-    } else {
-        start_recording(&app, state.inner());
-    }
 }
 
 /// yap-p0-hotkeys-no-permission DO 2 — THE dispatcher for every hotkey edge.
 /// The Carbon dictate chord (and the legacy ⌘⇧V) and the fn tap's
-/// `PttEvent::Start` / `PttEvent::Stop` all land here; `hotkeys::HotkeyArbiter`
-/// decides start / stop / ignore, so the two sources can never double-start
-/// and there is no second start/stop path.
+/// `PttEvent::Start` / `PttEvent::Stop` all land here. yap-1107: the edge is
+/// turned into an intent (`hotkeys::intent_for`) for the ONE take machine
+/// every other surface uses too, so the two sources can never double-start,
+/// the hotkey stops a take the pill / menu bar / Dictate button started, and
+/// a click stop during a hold makes the hold's release a no-op.
 fn take_hotkey_edge(
     app: &AppHandle,
     state: &Arc<AppState>,
     edge: HotkeyEdge,
     source: HotkeySource,
 ) {
+    let intent = hotkeys::intent_for(edge, source);
+    let decision = take_intent(app, state, take_control::Surface::Hotkey, intent, || {
+        start_from_hotkey(app, state, source)
+    });
+    log::info!("hotkey edge {edge:?} from {source:?} -> {decision:?}");
+}
+
+/// yap-1107-start-stop-any-surface — THE take dispatcher. Every surface sends
+/// its intent here; `take_control::TakeMachine` decides and this runs the
+/// decision: the surface's own `start`, then reports armed (and runs a stop
+/// that landed during warm-up), or the default stop (`take_stop`). The
+/// machine lock is never held across `start` / `stop`, so an intent from
+/// another surface during warm-up sees `Arming` and is answered by the machine.
+fn take_intent(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    surface: take_control::Surface,
+    intent: take_control::Intent,
+    start: impl FnOnce(),
+) -> take_control::Decision {
+    take_intent_with(app, state, surface, intent, start, || {
+        take_stop(app, state, surface)
+    })
+}
+
+/// `take_intent` with the surface's own stop. `stop` MUST end in `take_stop`
+/// (now, or from a thread it spawns) — the pill hands focus back to the
+/// pre-click app first.
+fn take_intent_with(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    surface: take_control::Surface,
+    intent: take_control::Intent,
+    start: impl FnOnce(),
+    stop: impl FnOnce(),
+) -> take_control::Decision {
+    use take_control::Decision;
     let live = *state.recording.lock();
-    let action = state
-        .hotkey_arbiter
-        .lock()
-        .edge(edge, source, live, hotkeys::now_ms());
-    log::info!("hotkey edge {edge:?} from {source:?} -> {action:?}");
-    match action {
-        hotkeys::TakeAction::Start => start_from_hotkey(app, state, source),
-        hotkeys::TakeAction::Stop => stop_take(app, state, StopOrigin::Hotkey),
-        hotkeys::TakeAction::Ignore => {}
+    let (decision, phase) = {
+        let mut machine = state.take_machine.lock();
+        machine.observe(live);
+        let decision = machine.intent(surface, intent, hotkeys::now_ms());
+        (decision, machine.phase())
+    };
+    match decision {
+        Decision::Ignore(reason) => log::info!(
+            "take intent surface={} intent={intent:?} action=ignored reason={} phase={}",
+            surface.as_str(),
+            reason.as_str(),
+            phase.as_str()
+        ),
+        _ => log::info!(
+            "take intent surface={} intent={intent:?} action={decision:?} live={live}",
+            surface.as_str()
+        ),
+    }
+    match decision {
+        Decision::Start => {
+            let t0 = std::time::Instant::now();
+            start();
+            let ok = *state.recording.lock();
+            let (after, stop_by) = {
+                let mut machine = state.take_machine.lock();
+                let stop_by = machine.pending_stop_by();
+                (machine.armed(ok), stop_by)
+            };
+            log::info!(
+                "take armed surface={} ok={ok} arm_ms={}",
+                surface.as_str(),
+                t0.elapsed().as_millis()
+            );
+            if after == Decision::Stop {
+                let by = stop_by.unwrap_or(surface);
+                log::info!(
+                    "take stop_after_arming started_by={} stop_by={}",
+                    surface.as_str(),
+                    by.as_str()
+                );
+                take_stop(app, state, by);
+            }
+        }
+        Decision::Stop => stop(),
+        Decision::StopWhenArmed | Decision::Ignore(_) => {}
+    }
+    decision
+}
+
+/// The stop half of every surface: `stop_take` (which clears both hands-free
+/// latches and counts the origin), then the machine back to Idle.
+fn take_stop(app: &AppHandle, state: &Arc<AppState>, surface: take_control::Surface) {
+    stop_take(app, state, stop_origin_for(surface));
+    state.take_machine.lock().stopped();
+}
+
+/// The `StopOrigin` a surface's stop is counted under.
+fn stop_origin_for(surface: take_control::Surface) -> StopOrigin {
+    match surface {
+        take_control::Surface::Hotkey => StopOrigin::Hotkey,
+        take_control::Surface::MenuBar => StopOrigin::MenuBar,
+        take_control::Surface::Pill | take_control::Surface::DictateButton => {
+            StopOrigin::OnScreen
+        }
+    }
+}
+
+/// The surface a hands-free toggle's origin names.
+fn surface_for_origin(origin: StopOrigin) -> take_control::Surface {
+    match origin {
+        StopOrigin::Hotkey => take_control::Surface::Hotkey,
+        StopOrigin::MenuBar => take_control::Surface::MenuBar,
+        StopOrigin::OnScreen => take_control::Surface::Pill,
     }
 }
 
@@ -13342,12 +13477,22 @@ fn run_shortcut_job(app: &AppHandle, state: &Arc<AppState>, job: shortcut_defer:
 /// stop will not finalize. OFF: finalize the take, clearing both the app-side
 /// and PTT tap-side latches (`stop_take`), then transcribe what was captured.
 fn toggle_hands_free(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin) {
+    // yap-1107-start-stop-any-surface: through the ONE take machine like
+    // every other surface, so it never starts a second take during warm-up.
+    let surface = surface_for_origin(origin);
     if *state.hands_free.lock() {
-        stop_take(app, state, origin);
-    } else {
-        if !*state.recording.lock() && !*state.busy.lock() {
-            start_recording(app, state);
+        let decision = take_intent(app, state, surface, take_control::Intent::Stop, || {});
+        if matches!(decision, take_control::Decision::Ignore(_)) {
+            // No live take behind a stale latch: clear it so the next toggle
+            // starts instead of stopping nothing again.
+            *state.hands_free.lock() = false;
+            log::info!("hands-free OFF stale_latch=true origin={origin:?}");
+            emit_status(app, state);
         }
+    } else {
+        take_intent(app, state, surface, take_control::Intent::Start, || {
+            start_recording(app, state)
+        });
         if *state.recording.lock() {
             *state.hands_free.lock() = true;
             *state.hands_free_by_chord.lock() = true;
@@ -14528,7 +14673,7 @@ pub fn run() {
         saved_audio: PLMutex::new(None),
         db,
         last_error: PLMutex::new(None),
-        hotkey_arbiter: PLMutex::new(hotkeys::HotkeyArbiter::new()),
+        take_machine: PLMutex::new(take_control::TakeMachine::new()),
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
@@ -17757,7 +17902,7 @@ mod tests {
             saved_audio: super::PLMutex::new(None),
             db,
             last_error: super::PLMutex::new(None),
-            hotkey_arbiter: super::PLMutex::new(super::hotkeys::HotkeyArbiter::new()),
+            take_machine: super::PLMutex::new(super::take_control::TakeMachine::new()),
             tray: super::PLMutex::new(None),
             tray_dictation: super::PLMutex::new(None),
             tray_hands_free: super::PLMutex::new(None),
