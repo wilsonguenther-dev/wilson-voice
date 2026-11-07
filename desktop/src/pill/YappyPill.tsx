@@ -20,7 +20,7 @@ import GovernorChip from "./GovernorChip";
 import PhaseAnnouncer from "./PhaseAnnouncer";
 import { IDLE_MEETING, type MeetingAfterView, type MeetingStatus } from "./meeting";
 import { bucketFor } from "./tone";
-import { pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
+import { curseAllowed, pickTakeLine, rememberTakeLine, parseMemory, voiceFor, type TakeLineMemory, type VoiceId } from "./voices";
 import {
   advanceLive, createLiveState, DEFAULT_STOP_KEY, framePlan, isListening, PHASE_ID, phaseAccessibleName, phaseVisual, progressFraction,
   progressLabel, progressNumeral, resetLive, transcribeLine,
@@ -116,7 +116,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -126,6 +126,12 @@ export default function YappyPill(
      * rude → Badass, rose → Rose).
      */
     voice?: VoiceId;
+    /**
+     * yap-1106-curse-setting — curse mode as the shell decided it (toggle on,
+     * Badass, no meeting / screen-share state). Off by default; re-checked at
+     * the line against this capsule's own voice and meeting flag.
+     */
+    curse?: boolean;
     /**
      * yap24-PILL4 — the key that ends a hands-free take (`AppStatus.chord_label`),
      * decided by the SHELL. Only the accessible name and the announcement read
@@ -163,6 +169,9 @@ export default function YappyPill(
   const voiceRef = useRef<VoiceId>(voiceNow);
   voiceRef.current = voiceNow;
   useEffect(() => { voiceSink.current(voiceNow); }, [voiceNow]);
+  // yap-1106-curse-setting — read by the mount-once draw loop at the line.
+  const curseRef = useRef<boolean>(curse);
+  curseRef.current = curse;
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
   // so the 2-line clamp's overflow never clips the bubble's tail.
@@ -391,11 +400,15 @@ export default function YappyPill(
     let takeCount = takeMemory.recent.length;
     const doneLine = (w: number): string => {
       const today = localDay();
-      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today });
+      // Belt and braces: the shell already gated `curse`; the line re-checks
+      // this capsule's live voice and meeting flag so a stale prop can never
+      // swear in Professional or during a meeting.
+      const curseNow = curseAllowed({ enabled: curseRef.current, voice: liveVoice, meeting: meetingRef.current, screenShared: false });
+      const picked = pickTakeLine(w, liveVoice, takeMemory, { nonce: takeCount, today, curse: curseNow, rand: Math.random });
       takeCount++;
       takeMemory = rememberTakeLine(takeMemory, picked, today);
       saveTakeMemory(takeMemory);
-      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} recent=${takeMemory.recent.length}`);
+      console.info(`pill voice_line voice=${liveVoice} band=${picked.band} source=${picked.source} curse=${curseNow} recent=${takeMemory.recent.length}`);
       return picked.text;
     };
     // yap-1106-yappy-states-and-motion — ONE bubble at a time: a new line waits
