@@ -274,6 +274,9 @@ pub mod style_chip;
 // yap-format-structure: spoken lists -> written lists. Pure, std-only; also
 // compiled into the yap-polish sidecar via #[path].
 pub mod structure;
+// yap-1106-sp-05 — streaming decode during capture: the take is decoded in
+// pause-cut windows while it records, so release decodes only the tail.
+pub mod stream_decode;
 pub mod take_stage;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
@@ -2955,6 +2958,145 @@ fn preload_engine_at_startup(
 /// A failure is only logged: `transcribe_native` calls `load` again and its
 /// error is the one the user sees, on the path that already knows how to
 /// report one.
+/// yap-1106-sp-05 — a streamed window decodes on the dictation's own pinned
+/// engine (inside the engine helper since yap-1106-engine-owner), in the
+/// take's one fixed language, biased by the same dictionary the batch decode
+/// uses. The bias prompt is read on the decode thread at the first window, so
+/// the key-press path never touches the database.
+struct EngineWindowDecoder {
+    state: Arc<AppState>,
+    model_id: String,
+    model_path: PathBuf,
+    language: String,
+    bias: std::sync::OnceLock<Option<String>>,
+}
+
+impl stream_decode::WindowDecoder for EngineWindowDecoder {
+    fn decode(&self, samples: Vec<f32>) -> Result<String, String> {
+        let bias = self
+            .bias
+            .get_or_init(|| match self.state.db.bias_terms(BIAS_TERM_LIMIT) {
+                Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                Err(e) => {
+                    log::warn!("stream_decode bias_unavailable error={e} — decoding unbiased");
+                    None
+                }
+            })
+            .clone();
+        self.state.transcription.transcribe_window_on(
+            &self.model_id,
+            &self.model_path,
+            samples,
+            Some(self.language.clone()),
+            bias,
+        )
+    }
+
+    /// The governor's "minimal" budget pauses the live meeting view; it stops
+    /// the streaming decode for the same reason (the take then decodes in
+    /// batch on release, losing nothing).
+    fn constrained(&self) -> bool {
+        resource_governor::live_transcript_paused()
+    }
+}
+
+/// yap-1106-sp-05 — arm the streaming decode for the take about to record.
+/// Called BEFORE the capture opens, so the stream sees the take's first sample
+/// (the seal in `record` proves it saw every one).
+fn arm_stream_decode(app: &AppHandle, state: &Arc<AppState>) {
+    let (native, prefs) = {
+        let settings = state.settings.lock();
+        (settings.native_model.clone(), settings.language_prefs())
+    };
+    let Some((model_id, model_path)) = native_model_ready(&native) else {
+        stream_decode::disarm("no_model");
+        return;
+    };
+    let Some(language) = stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    else {
+        stream_decode::disarm("auto_language");
+        log::info!("stream_decode skipped reason=auto_language");
+        return;
+    };
+    let take = stream_decode::next_take_id();
+    let decoder: Arc<dyn stream_decode::WindowDecoder> = Arc::new(EngineWindowDecoder {
+        state: state.clone(),
+        model_id,
+        model_path,
+        language,
+        bias: std::sync::OnceLock::new(),
+    });
+    let app_ev = app.clone();
+    let sink: stream_decode::PartialSink =
+        Arc::new(move |partial: &stream_decode::TranscriptPartial| {
+            if let Err(e) = app_ev.emit(stream_decode::TRANSCRIPT_PARTIAL_EVENT, partial.clone()) {
+                log::warn!(
+                    "stream_decode partial_emit_failed take={} error={e}",
+                    partial.take
+                );
+            }
+        });
+    stream_decode::arm(stream_decode::StreamDecoder::start(
+        take,
+        stream_decode::StreamConfig::default(),
+        decoder,
+        Some(sink),
+    ));
+    log::info!("stream_decode armed take={take}");
+}
+
+/// yap-1106-sp-05 — the take's streamed decode, when streaming carried it all
+/// the way: committed windows decoded during capture plus the tail decoded
+/// now. `None` means decode the whole take the way it always has (a short
+/// take, a degraded stream, a blank result, or the language plan changed) —
+/// `transcribe_native` then runs over every sample, so nothing is lost.
+fn streamed_asr_output(prefs: &languages::LanguagePrefs) -> Option<transcription::AsrOutput> {
+    let stream = stream_decode::take_active()?;
+    let take = stream.take_id();
+    let Some(language) = stream_decode::stream_language(&prefs.primary, prefs.set.len(), prefs.auto)
+    else {
+        log::info!("stream_decode discarded take={take} reason=language_changed");
+        return None;
+    };
+    let started = std::time::Instant::now();
+    match stream.finish() {
+        stream_decode::StreamOutcome::Streamed(s) if !s.text.trim().is_empty() => {
+            log::info!(
+                "stream_decode used take={take} windows={} tail_s={:.2} release_ms={}",
+                s.windows,
+                s.tail_seconds,
+                s.release_ms
+            );
+            Some(transcription::AsrOutput {
+                text: s.text,
+                backend: "native".into(),
+                seconds: started.elapsed().as_secs_f64(),
+                load_ms: 0,
+                decode_ms: s.release_ms as i64,
+                degraded: false,
+                chunks: s.windows,
+                chunks_failed: 0,
+                degraded_reason: None,
+                language,
+                language_notice: None,
+                language_outside: None,
+            })
+        }
+        stream_decode::StreamOutcome::Streamed(_) => {
+            log::info!("stream_decode fallback take={take} reason=blank");
+            None
+        }
+        stream_decode::StreamOutcome::NotUsed(reason) => {
+            log::info!("stream_decode fallback take={take} reason={reason}");
+            None
+        }
+        stream_decode::StreamOutcome::Degraded(reason) => {
+            log::info!("stream_decode fallback take={take} reason={reason} path=batch");
+            None
+        }
+    }
+}
+
 fn arm_asr_engine(app: &AppHandle, state: &Arc<AppState>) {
     if state.transcription.is_loaded() || state.transcription.is_loading() {
         return; // warm (or already coming up) — nothing to do
@@ -3159,6 +3301,8 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     } else {
         None
     };
+    // yap-1106-sp-05 — the streaming decode is armed before the capture opens.
+    arm_stream_decode(app, state);
     match record::start_recording(
         data_dir().join("recordings"),
         &recovery_dir(),
@@ -3269,6 +3413,7 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // Y5-F: the cpal/io text goes to the log; the user gets a sentence
             // and the code the catalogue turns into an action.
             log::error!("record start failed: {e}");
+            stream_decode::disarm("capture_failed");
             let line =
                 "Yap could not open the microphone — check that an input device is connected.";
             *state.last_error.lock() = Some(take_error::LastError::new(
@@ -4303,6 +4448,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     rec.voiced_seconds,
                     rec.speech_present
                 );
+                stream_decode::disarm("no_speech");
                 return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
             // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
@@ -4362,15 +4508,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // SP-03 — the decoded audio's length, read before `rec.samples`
             // moves into the decode, for the latency line's rolling RTF.
             let decoded_audio_s = rec.samples.len() as f64 / f64::from(record::TARGET_RATE);
-            let asr = match transcribe_native(
-                &state2.transcription,
-                &model_id,
-                &model_path,
-                rec.samples,
-                &settings.language_prefs(),
-                bias_prompt,
-                &mut persist,
-            ) {
+            // yap-1106-sp-05 — most of the take was decoded WHILE it recorded;
+            // only its uncommitted tail is decoded here. Anything the stream
+            // could not vouch for decodes the whole take below, as before.
+            let decoded = match streamed_asr_output(&settings.language_prefs()) {
+                Some(asr) => Ok(asr),
+                None => transcribe_native(
+                    &state2.transcription,
+                    &model_id,
+                    &model_path,
+                    rec.samples,
+                    &settings.language_prefs(),
+                    bias_prompt,
+                    &mut persist,
+                ),
+            };
+            let asr = match decoded {
                 Ok(asr) => asr,
                 // Y3-D — the engine stopped because the user asked, which is
                 // not a decode failure. Compared against the CONSTANT, never a
