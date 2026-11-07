@@ -351,6 +351,52 @@ pub fn insert_log_line(trace: &InsertTrace) -> String {
     )
 }
 
+/// yap-1106-paste-target-defect — how a dictated take ended, for the
+/// `paste target` line: `pasted` (receipt-confirmed), `copied` (copy-only by
+/// design: auto-paste off, a stale take, no text field), or `failed:<reason>`
+/// (a paste was wanted and did not land, or the text was held off the
+/// clipboard).
+pub fn paste_target_result(
+    want_paste: bool,
+    outcome: &PasteOutcome,
+    fallback: InsertFallback,
+) -> String {
+    if outcome.pasted {
+        "pasted".to_string()
+    } else if !want_paste && outcome.copied {
+        "copied".to_string()
+    } else {
+        format!("failed:{}", fallback.as_str())
+    }
+}
+
+/// `paste target app=<bundle> captured_at=<press|release>
+/// result=<pasted|copied|failed:…>` — `None` for every target that is not a
+/// dictated app (explicit re-pastes, Scratchpad notes). Bundle id only: no
+/// text, no path, no window title.
+pub fn paste_target_log_line(
+    target: PasteTarget<'_>,
+    captured_at: crate::focus::CapturedAt,
+    want_paste: bool,
+    outcome: &PasteOutcome,
+    trace: &InsertTrace,
+) -> Option<String> {
+    let PasteTarget::Dictated(dictated) = target else {
+        return None;
+    };
+    let app = dictated
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(trace.app.as_deref())
+        .unwrap_or("unknown");
+    Some(format!(
+        "paste target app={} captured_at={} result={}",
+        app,
+        captured_at.as_str(),
+        paste_target_result(want_paste, outcome, trace.fallback)
+    ))
+}
+
 /// Prefix of the `AxInsert::Refused` reason produced by [`settle_unverified`].
 pub const AX_UNVERIFIED_UNCHANGED: &str = "ax_unverified_unchanged";
 
@@ -1050,9 +1096,12 @@ impl InsertBackend for LiveInsert<'_> {
         copy_text(self.app, text)
     }
     fn frontmost_app(&mut self) -> Option<String> {
-        // The same NSWorkspace bundle id `PasteTarget::Dictated` carries —
-        // readable with Accessibility denied, so the guard never goes blind.
-        crate::focus::frontmost_bundle_id()
+        // The same live read `PasteTarget::Dictated` was captured with at the
+        // stop edge (yap-1106-paste-target-defect): AX's focused app when
+        // granted, NSWorkspace otherwise — readable with Accessibility denied,
+        // so the guard never goes blind, and both sides of the compare come
+        // from one source.
+        crate::focus::frontmost_identity().and_then(|i| i.bundle_id)
     }
     fn frontmost_has_electron(&mut self) -> bool {
         crate::focus::frontmost_bundle_path().is_some_and(|p| bundle_has_electron_framework(&p))
@@ -1115,17 +1164,35 @@ pub fn copy_and_maybe_paste(
         Some(s) => PasteTarget::Dictated(Some(s)),
         None => PasteTarget::Explicit,
     };
-    insert_take(app, text, want_paste, target, None)
+    insert_take(app, text, want_paste, target, None, None)
 }
 
-/// A dictation take. `target_bundle_id` is `focus::frontmost_bundle_id()`
-/// captured at record start; `None` (unreadable) means the take is copied and
-/// never typed anywhere.
+/// A dictation take. `target_bundle_id` is the take's resolved paste target
+/// (`focus::resolve_paste_target`, read at the stop edge); `None` (unreadable)
+/// means the take is copied and never typed anywhere.
 pub fn insert_dictated_take(
     app: &AppHandle,
     text: &str,
     want_paste: bool,
     target_bundle_id: Option<&str>,
+) -> PasteOutcome {
+    insert_dictated_take_at(
+        app,
+        text,
+        want_paste,
+        target_bundle_id,
+        crate::focus::CapturedAt::Release,
+    )
+}
+
+/// yap-1106-paste-target-defect — [`insert_dictated_take`] naming the edge the
+/// target was read at, for the `paste target` log line.
+pub fn insert_dictated_take_at(
+    app: &AppHandle,
+    text: &str,
+    want_paste: bool,
+    target_bundle_id: Option<&str>,
+    captured_at: crate::focus::CapturedAt,
 ) -> PasteOutcome {
     insert_take(
         app,
@@ -1133,6 +1200,7 @@ pub fn insert_dictated_take(
         want_paste,
         PasteTarget::Dictated(target_bundle_id),
         None,
+        Some(captured_at),
     )
 }
 
@@ -1144,8 +1212,9 @@ pub fn insert_take_for(
     want_paste: bool,
     target: PasteTarget<'_>,
     stages: Option<&crate::take_stage::TakeStages<'_>>,
+    captured_at: crate::focus::CapturedAt,
 ) -> PasteOutcome {
-    insert_take(app, text, want_paste, target, stages)
+    insert_take(app, text, want_paste, target, stages, Some(captured_at))
 }
 
 /// The one insertion boundary every take goes through. yap24-PILL2: with a
@@ -1159,6 +1228,7 @@ fn insert_take(
     want_paste: bool,
     target: PasteTarget<'_>,
     stages: Option<&crate::take_stage::TakeStages<'_>>,
+    captured_at: Option<crate::focus::CapturedAt>,
 ) -> PasteOutcome {
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
     // happens to be frontmost on the developer's machine.
@@ -1181,6 +1251,7 @@ fn insert_take(
         (InsertPath::PasteBridge, false)
     };
     let mut live = LiveInsert { app, ax_granted };
+    let log_target = target;
     let mut run = || insert_serialized(&mut live, path, text, want_paste, target);
     let (outcome, trace) = match stages {
         Some(stages) => stages.around_paste(want_paste, run, |(o, _)| o.pasted),
@@ -1191,6 +1262,17 @@ fn insert_take(
     // default (a confirmed paste bridge).
     if want_paste || trace.path == InsertPath::CopyCard {
         log::info!("{}", insert_log_line(&trace));
+    }
+    // yap-1106-paste-target-defect: ONE `paste target` line per dictated take —
+    // which app it was for, which edge that was read at, and how it ended.
+    if let Some(line) = paste_target_log_line(
+        log_target,
+        captured_at.unwrap_or(crate::focus::CapturedAt::Release),
+        want_paste,
+        &outcome,
+        &trace,
+    ) {
+        log::info!("{line}");
     }
     outcome
 }
