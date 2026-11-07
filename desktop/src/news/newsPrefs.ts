@@ -224,3 +224,28 @@ export function saveQuoteKey(provider: QuoteProvider, key: string): Promise<Quot
 export function clearQuoteKey(): Promise<QuoteKeyView> {
   return invoke<QuoteKeyView>("clear_news_quote_key");
 }
+
+/** yap-1106-news-explain — one story as the card shows it: Yappy's line, or the headline alone (`explained: false`). */
+export interface ExplainedLine {
+  urlKey: string;
+  url: string;
+  headline: string;
+  line: string;
+  explained: boolean;
+}
+
+/** The top 3 explained, plus why any line is the headline alone (`fallback`). */
+export interface NewsExplained {
+  lines: ExplainedLine[];
+  voice: "bestFriend" | "badass" | "professional" | "rose";
+  fallback: string;
+  sent: number;
+  unsupported: number;
+  advice: number;
+  ms: number;
+}
+
+/** One line each for the top 3 cached stories in Yappy's voice; `voice` is the stored `companionTone`. */
+export function explainTopNews(voice: string): Promise<NewsExplained> {
+  return invoke<NewsExplained>("news_explain_top", { voice });
+}
