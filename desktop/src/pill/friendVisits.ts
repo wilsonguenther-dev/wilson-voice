@@ -220,9 +220,9 @@ export function decideVisit(
   const friend = EVENT_OWNER[event];
   if (requested !== undefined && requested !== friend) return { show: false, reason: "not-own-event" };
   // Room-only friends own no event (EVENT_OWNER), so they can never get here.
-  // yap-1106-chatter-setting — "only milestones": Yappy's milestone visits are the only ones
+  // yap-1106-chatter-setting — "only milestones": the milestone visit is the only one
   // (checked before the occupant so the skip reason names the setting).
-  if (ctx.chatter === "milestones" && !YAPPY_MILESTONES.includes(event)) return { show: false, reason: "chatter-milestones" };
+  if (ctx.chatter === "milestones" && event !== "milestone") return { show: false, reason: "chatter-milestones" };
   if (ctx.occupant === friend) return { show: false, reason: "occupant" };
   if (friend === "cinder" && !ctx.cloudConnected) return { show: false, reason: "cloud-off" };
   const quiet = quietReason(ctx);
