@@ -9950,6 +9950,87 @@ async fn news_refresh(
     })?
 }
 
+/// yap-1106-news-home-briefing — Home's market quote check: while Home is
+/// open in market hours the followed tickers are checked every 30 minutes
+/// (the user's "How often", the floor and the quiet rules decide). Returns
+/// only the tickers that moved 3% or more, each marked delayed.
+#[tauri::command]
+async fn news_quotes_check(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    trigger: String,
+) -> Result<news::briefing::QuotesOutcome, String> {
+    let Some(trigger) = news::schedule::Trigger::parse(&trigger) else {
+        log::warn!("news quotes_refused reason=unknown_trigger");
+        return Err("Yap didn't recognise that ticker check. Try again.".to_string());
+    };
+    let quiet = news_quiet_now(&state);
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<news::briefing::QuotesOutcome, String> {
+        let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
+        news::briefing::check_quotes_if_due(
+            &state.db,
+            &quote,
+            trigger,
+            quiet,
+            news_prefs::now_ms(),
+            news::schedule::local_utc_offset_ms(),
+        )
+        .map_err(|tag| {
+            log::warn!(
+                "news quotes_failed trigger={} reason={tag}",
+                trigger.as_str()
+            );
+            "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
+        })
+    })
+    .await
+    .map_err(|e| {
+        log::error!("news quotes_worker_failed error=\"{e}\"");
+        "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
+    })?
+}
+
+/// yap-1106-news-home-briefing — the top 3 cached stories for Home's
+/// briefing when no refresh is due (fetches nothing, sends nothing to the
+/// cloud, marks nothing seen). `Err` is the news gate's reason tag.
+#[tauri::command]
+async fn news_briefing_cached(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<news::rank::RankedStory>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<news::rank::RankedStory>, String> {
+        let db: &Database = &state.db;
+        let prefs = news::feeds::gate(db).map_err(|c| c.tag().to_string())?;
+        let now = news_prefs::now_ms();
+        let (top, _) = db
+            .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
+            .inspect_err(|e| log::warn!("news cache_failed op=briefing error=\"{e}\""))?;
+        Ok(top)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// yap-1106-news-home-briefing — open a briefing story's source in the
+/// browser. Only plain web links are handed to the system opener.
+#[tauri::command]
+fn news_open_story(url: String) -> Result<(), String> {
+    if !news::briefing::openable_url(&url) {
+        log::warn!("news story_open_refused reason=not_web_link");
+        return Err("That link can't be opened. Search for the headline instead.".to_string());
+    }
+    std::process::Command::new("open")
+        .arg(url.trim())
+        .spawn()
+        .map_err(|e| {
+            log::warn!("news story_open_failed error=\"{e}\"");
+            "Yap couldn't open that story. Try again.".to_string()
+        })?;
+    log::info!("news story_opened");
+    Ok(())
+}
+
 /// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
 /// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
 fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
@@ -14568,6 +14649,9 @@ pub fn run() {
             set_news_quote_key,
             clear_news_quote_key,
             news_explain_top,
+            news_quotes_check,
+            news_briefing_cached,
+            news_open_story,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,

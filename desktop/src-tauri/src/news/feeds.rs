@@ -1128,6 +1128,65 @@ pub fn refresh_now_with(kv: &dyn SettingsKv, quote: &QuoteFeed) -> Result<FetchR
     refresh_with(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote)
 }
 
+/// yap-1106-news-home-briefing — the market quote check alone: one price
+/// request per followed ticker, only with the user's own quote-feed key (the
+/// free tier makes no price request). Makes NO request when [`gate`] refuses.
+/// Does not stamp the story refresh time.
+pub fn refresh_quotes_with(
+    kv: &dyn SettingsKv,
+    http: &dyn FeedHttp,
+    limiter: &mut RateLimiter,
+    now_ms: i64,
+    quote: &QuoteFeed,
+) -> Result<Vec<Quote>, Closed> {
+    let prefs = match gate(kv) {
+        Ok(p) => p,
+        Err(why) => {
+            log::info!("news quotes_fetch_skipped reason={}", why.tag());
+            return Err(why);
+        }
+    };
+    let mut quotes: Vec<Quote> = Vec::new();
+    let mut q = Tally::with_limits(Source::Quotes, quote.limits());
+    if quote.host().is_some() && !prefs.tickers.is_empty() {
+        let mut order: Vec<&String> = prefs.tickers.iter().collect();
+        order.sort_by_key(|t| limiter.last_sent(Source::Quotes, t).unwrap_or(i64::MIN));
+        for sym in order {
+            let Some((url, headers)) = quote.request(sym) else {
+                continue;
+            };
+            let hdrs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            if let Some(body) = fetch_one(http, limiter, &mut q, sym, &url, &hdrs, now_ms) {
+                match quote.parse(&body, sym) {
+                    Ok(Some(found)) => {
+                        q.count += 1;
+                        quotes.push(found);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        if e == FeedError::RateLimited {
+                            limiter.back_off(Source::Quotes, now_ms);
+                        }
+                        q.error = Some(e);
+                    }
+                }
+            }
+        }
+        if matches!(q.error, Some(FeedError::Status { code: 401 | 403 })) {
+            q.error = Some(FeedError::BadKey);
+        }
+    }
+    let _outcome = q.finish();
+    Ok(quotes)
+}
+
+/// [`refresh_quotes_with`] over the real network with the shared limiter.
+/// Blocking, like [`refresh_now`].
+pub fn refresh_quotes_now(kv: &dyn SettingsKv, quote: &QuoteFeed) -> Result<Vec<Quote>, Closed> {
+    let mut limiter = shared_limiter().lock().unwrap_or_else(|p| p.into_inner());
+    refresh_quotes_with(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
