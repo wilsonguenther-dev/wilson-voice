@@ -5,6 +5,7 @@
 //! is on and at least one topic is set ([`feeds::gate`]).
 
 pub mod cache;
+pub mod explain;
 pub mod feeds;
 pub mod rank;
 

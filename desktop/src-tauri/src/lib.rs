@@ -9912,6 +9912,105 @@ fn clear_news_quote_key(
     news::quote_key::clear(&*state.db, &news_quote_keychain(&app))
 }
 
+/// yap-1106-news-explain — the one cloud call of the explain step: the BYOM
+/// cloud route (mode, key, network path, cap, breaker, ledger) with the
+/// explain budget. `Ok` is the complete answer; `Err` is why there is none
+/// (`user`, `no_key`, `offline`, `cap`, `breaker`, `timeout`, `error`, ...),
+/// and the caller then shows the headlines alone. It never moves the
+/// dictation pill's route chip.
+fn news_explain_cloud(
+    app: &AppHandle,
+    db: &Database,
+    system: &str,
+    user: &str,
+) -> Result<String, &'static str> {
+    let job = cloud_route::Job::Format;
+    let mode = cloud_route::CloudMode::load(db);
+    let provider = if mode.wants_cloud() {
+        model_providers::cloud_key_provider(db, &byom_keychain(app))
+    } else {
+        None
+    };
+    let model = cloud_client::model_for(job, false);
+    let ctx = cloud_route::RouteContext {
+        mode,
+        has_key: provider.is_some(),
+        probe: &cloud_route::NwPathProbe,
+        breaker: cloud_breaker(),
+        kv: db,
+        today: cloud_today(),
+        job,
+        model,
+        budget: news::explain::BUDGET,
+        constrained_notes_allowed: false,
+    };
+    let cancel = summary_jobs::CancelToken::new();
+    let mut cloud = |budget: cloud_route::Budget, _attempt: u32| {
+        let (cfg, key) = provider
+            .as_ref()
+            .ok_or(cloud_route::CloudError::Cancelled)?;
+        let client = byom_clients()
+            .client_for(&cfg.id, cloud_client::CLIENT_TIMEOUT)
+            .map_err(|_| cloud_route::CloudError::Protocol)?;
+        let model = if cfg.model.trim().is_empty() {
+            model
+        } else {
+            cfg.model.trim()
+        };
+        let mut sink = |_: &str| {};
+        cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
+            model,
+            job,
+            system,
+            user,
+            news::explain::MAX_TOKENS,
+            budget,
+            &cancel,
+            &mut sink,
+        )
+    };
+    let accept = |text: &str| Some(Some(text.to_string()));
+    let mut local = || None::<String>;
+    let routed = cloud_route::run_routed(&ctx, &mut cloud, &accept, &mut local);
+    match routed.value {
+        Some(text) => Ok(text),
+        None if routed.fallback != cloud_route::Fallback::None => Err(routed.fallback.as_str()),
+        None => Err(routed.reason.as_str()),
+    }
+}
+
+/// yap-1106-news-explain — one line each for the top 3 cached stories in
+/// Yappy's chosen voice (`voice` is the stored `companionTone`). Only those
+/// three headlines and snippets go to the cloud; a failed call, or a line
+/// the snippet does not support, is the headline alone. Reads the cache the
+/// refresh filled; fetches nothing and marks nothing seen. `Err` is the news
+/// gate's reason tag (`cloud_off`, `disabled`, `no_topics`) or a storage
+/// error.
+#[tauri::command]
+async fn news_explain_top(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    voice: String,
+) -> Result<news::explain::Explained, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db: &Database = &state.db;
+        let prefs = news::feeds::gate(db).map_err(|c| {
+            log::info!("news explain skipped reason={}", c.tag());
+            c.tag().to_string()
+        })?;
+        let now = news_prefs::now_ms();
+        let (top, _) = db
+            .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
+            .inspect_err(|e| log::warn!("news cache_failed op=explain error=\"{e}\""))?;
+        let voice = news::explain::Voice::from_setting(&voice);
+        let mut call = |system: &str, user: &str| news_explain_cloud(&app, db, system, user);
+        Ok(news::explain::explain_with(&top, voice, &mut call))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn delete_model_provider(
     app: AppHandle,
@@ -14391,6 +14490,7 @@ pub fn run() {
             get_news_quote_key,
             set_news_quote_key,
             clear_news_quote_key,
+            news_explain_top,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
