@@ -26,7 +26,7 @@
  *       (homeLayout.roomBox) of the main column.
  */
 import { useEffect, useRef, useState } from "react";
-import { ROOM_H, ROOM_W, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
+import { ROOM_H, meetingRoomLabel, roomBox, type RoomScale } from "./homeLayout";
 import { toChatTone, type ChatTone } from "../pill/live";
 import { YAPPY_HABITAT_MOODS } from "../pill/characters/yappy";
 import { createDirector, moodOf, reactTo, skyPhase, stepDirector } from "./habitat/habitat";
@@ -117,7 +117,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
   const frameRef = useRef<HTMLDivElement | null>(null);
   // Set by the mount effect: redraw now (a state change), whatever the mode.
   const wakeRef = useRef<(() => void) | null>(null);
-  // The room's whole-number scale for the column it sits in (3x / 2x; 3x is the approved ceiling).
+  // The room's whole-number scale for the column it sits in (4x / 3x / 2x).
   const [scale, setScale] = useState<RoomScale>(3);
   useEffect(() => {
     const el = frameRef.current;
@@ -437,27 +437,24 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
           data-on-air={meeting?.recording ? "on" : "off"}
           // Full column width, the room's height at the whole-number scale:
           // YappyHouse grids the art at exactly `scale` CSS px per art px.
-          style={{ width: `${ROOM_W * scale}px`, height: `${ROOM_H * scale}px` }}
+          style={{ height: `${ROOM_H * scale}px` }}
           role="img"
           aria-label={aria}
         />
       </div>
       <p className="yh-label" data-room-label={meetingLabel ? "recording" : "mood"}>
-        {/* yap-1107-parity-home — the approved label's green dot (7 px, #6fd08c). */}
-        <span className="yh-dot" aria-hidden="true" />
         {meetingLabel ? (
           <span className="yh-meeting" aria-live="off">
             {meetingLabel}
           </span>
         ) : (
-          // One text run beside the dot, as on the approved label ("Yappy · at his desk").
-          <span className="yh-mood">
+          <>
             Yappy ·{" "}
             {/* live mood is announced to assistive tech as Yappy's state changes */}
             <span ref={moodRef} aria-live="polite">
               content
             </span>
-          </span>
+          </>
         )}
       </p>
     </div>

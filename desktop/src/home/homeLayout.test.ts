@@ -24,23 +24,20 @@ import {
   seeAllLabel,
   showNeedsAttention,
   statsLine,
-  statsParts,
   takeHistoryFocus,
   takePreview,
 } from "./homeLayout";
 
 describe("roomScale / roomBox — whole-number scale, never a fraction (option A)", () => {
-  it("the scene is the 320 x 160 studio and the only scales are 3, 2 (yap-1107-parity-home: 3x is the approved ceiling)", () => {
+  it("the scene is the 320 x 160 studio and the only scales are 4, 3, 2", () => {
     expect([ROOM_W, ROOM_H]).toEqual([320, 160]);
     expect([ROOM_W, ROOM_H]).toEqual([STUDIO_W, STUDIO_H]);
-    expect([...ROOM_SCALES]).toEqual([3, 2]);
+    expect([...ROOM_SCALES]).toEqual([4, 3, 2]);
   });
 
   it("picks the largest scale whose room fits the column (3x on the design page's 960 px)", () => {
-    // yap-1107-parity-home — never 4x: the approved page draws exactly 3x (960 x 480).
-    expect(roomScale(1280)).toBe(3);
-    expect(roomScale(1600)).toBe(3);
-    expect(roomScale(2400)).toBe(3);
+    expect(roomScale(1280)).toBe(4);
+    expect(roomScale(1600)).toBe(4);
     expect(roomScale(1279)).toBe(3);
     expect(roomScale(960)).toBe(3);
     expect(roomScale(959)).toBe(2);
@@ -198,25 +195,5 @@ describe("requestHistoryFocus / takeHistoryFocus — Open hands one take to Hist
     requestHistoryFocus("c");
     requestHistoryFocus(null);
     expect(takeHistoryFocus()).toBeNull();
-  });
-});
-
-describe("statsParts — yap-1107-parity-home: the approved stats line, number then label", () => {
-  it("bold number + label per figure, in the page's order", () => {
-    expect(statsParts({ wordsToday: 2632, streakDays: 17, totalTakes: 288 })).toEqual([
-      { key: "words", value: "2,632", label: "words today" },
-      { key: "streak", value: "17", label: "day streak" },
-      { key: "takes", value: "288", label: "takes" },
-    ]);
-  });
-  it("leaves out what has not loaded, never a fake 0; one take is singular", () => {
-    expect(statsParts({})).toEqual([]);
-    expect(statsParts({ wordsToday: null, streakDays: undefined, totalTakes: 1 })).toEqual([
-      { key: "takes", value: "1", label: "take" },
-    ]);
-  });
-  it("agrees with statsLine figure for figure", () => {
-    const o = { wordsToday: 0, streakDays: 3, totalTakes: 12 };
-    expect(statsParts(o).map((p) => `${p.value} ${p.label}`)).toEqual(statsLine(o));
   });
 });

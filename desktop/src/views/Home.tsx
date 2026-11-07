@@ -15,7 +15,7 @@ import { viewState } from "../viewState";
 import { type RetryPhase, retryAllLabel, retryButtonLabel } from "../retryDictation";
 import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 import {
-  HOME_RECENT, attentionTitle, recentTakes, requestHistoryFocus, seeAllLabel, showNeedsAttention, statsParts, takePreview,
+  HOME_RECENT, attentionTitle, recentTakes, requestHistoryFocus, seeAllLabel, showNeedsAttention, statsLine, takePreview,
 } from "../home/homeLayout";
 
 /**
@@ -37,11 +37,10 @@ export function NeedsAttention({
 }) {
   if (!showNeedsAttention(failed)) return null;
   return (
-    <section className="needs-attention home-panel" data-home="needs-attention" aria-labelledby="needs-attention-h">
+    <section className="needs-attention" data-home="needs-attention" aria-labelledby="needs-attention-h">
       <div className="failed-head">
-        {/* yap-1107-parity-home — the approved panel head: title, count as meta. */}
-        <h3 id="needs-attention-h" className="home-panel-h">
-          Needs attention <span className="count home-meta">{failed.length}</span>
+        <h3 id="needs-attention-h">
+          Needs attention <span className="count">{failed.length}</span>
         </h3>
         {/* PRIV-B — retained audio is VISIBLE: the count, the window, the way out. */}
         <span className="tiny" data-testid="retained-clips">
@@ -49,7 +48,7 @@ export function NeedsAttention({
         </span>
         {failed.length > 1 ? (
           <button
-            className="home-btn failed-retry-all"
+            className="ghost failed-retry-all"
             data-testid="retry-all"
             disabled={retryAll !== null || retrying !== null}
             aria-busy={retryAll !== null}
@@ -83,7 +82,7 @@ export function NeedsAttention({
             ) : null}
             <div className="actions">
               <button
-                className="home-btn"
+                className="primary"
                 disabled={retrying === f.id || retryAll !== null}
                 onClick={() => onRetry(f.id)}
               >
@@ -91,7 +90,7 @@ export function NeedsAttention({
               </button>
               {f.attemptText ? (
                 <button
-                  className="home-btn"
+                  className="ghost"
                   disabled={retrying === f.id}
                   onClick={() => {
                     if (
@@ -107,7 +106,7 @@ export function NeedsAttention({
                   Keep what was transcribed
                 </button>
               ) : null}
-              <button className="home-btn" onClick={() => onDiscard(f.id)}>
+              <button className="ghost danger" onClick={() => onDiscard(f.id)}>
                 Discard
               </button>
             </div>
@@ -240,7 +239,7 @@ export default function Home() {
   // The last 5 takes (the latest included, as on the approved mock), or the
   // top 5 matches while a search is typed. Never more: Home has an end.
   const recent = recentTakes(history);
-  const stats = statsParts({
+  const stats = statsLine({
     wordsToday: insights?.wordsToday,
     streakDays: insights?.streakDays,
     totalTakes: insights?.totalSessions,
@@ -269,24 +268,10 @@ export default function Home() {
         onSkipDuo={onSkipDuo}
       />
 
-      {/* The three stat tiles, now one quiet line under the room.
-          yap-1107-parity-home: drawn as the approved page draws it — each
-          number bold in mono 20 px, its label after it, 28 px apart. */}
+      {/* The three stat tiles, now one quiet line under the room. */}
       <p className="home-stats" data-home="stats">
-        {stats.map((p) => (
-          <span key={p.key} className="home-stat" data-stat={p.key}>
-            <b>{p.value}</b>
-            {p.label}
-          </span>
-        ))}
-        <button
-          type="button"
-          className="link home-stats-insights"
-          onClick={() => {
-            console.info("home open_insights from=stats");
-            setNav("insights");
-          }}
-        >
+        {stats.length > 0 ? <span>{stats.join(" · ")}</span> : null}
+        <button type="button" className="link" onClick={() => setNav("insights")}>
           Insights →
         </button>
       </p>
@@ -324,27 +309,21 @@ export default function Home() {
 
       <div className={showNeedsAttention(failed) && latest ? "home-split" : "home-split single"}>
         {latest ? (
-          <article className="latest-take home-panel" data-home="latest" aria-live="polite">
-            {/* yap-1107-parity-home — the approved panel: "Last take" with one
-                meta run (time · app · words), the text fading out, then Copy
-                (the dark button), Open and Paste again. */}
-            <h3 className="home-panel-h">
-              Last take{" "}
-              <span className="home-meta">
-                {formatTime(latest.createdAt)}
+          <article className="card latest-take" data-home="latest" aria-live="polite">
+            <div className="card-meta">
+              <span>
+                <strong>Last take</strong> {formatTime(latest.createdAt)}
                 {latest.sourceApp ? ` · ${latest.sourceApp}` : ""}
-                {` · ${(latest.wordCount ?? 0).toLocaleString("en-US")} words`}
               </span>
-            </h3>
+              <span>{(latest.wordCount ?? 0).toLocaleString("en-US")} words</span>
+            </div>
             <p className="latest-text">{latest.text}</p>
-            <div className="home-acts">
-              <button className="home-btn dark" onClick={() => copyText(latest.text)}>
-                Copy
-              </button>
-              <button className="home-btn" onClick={() => openInHistory(latest, "latest")}>
+            <div className="actions">
+              <button onClick={() => copyText(latest.text)}>Copy</button>
+              <button className="primary" onClick={() => openInHistory(latest, "latest")}>
                 Open
               </button>
-              <button className="home-btn" onClick={() => pasteText(latest.text)}>
+              <button className="ghost" onClick={() => pasteText(latest.text)}>
                 Paste again
               </button>
             </div>
@@ -361,20 +340,15 @@ export default function Home() {
         />
       </div>
 
-      <div className="toolbar home-search">
-        {/* yap-uiux-2026-10-16-H4 — what it does, not how it works.
-            yap-1107-parity-home: the approved page's words, no ellipsis. */}
+      <div className="toolbar">
+        {/* yap-uiux-2026-10-16-H4 — what it does, not how it works. */}
         <input
           type="search"
           aria-label="Search your dictations"
+          placeholder="Search everything you've said…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {query ? null : (
-          <span className="home-search-hint" aria-hidden="true">
-            Search everything you&apos;ve said
-          </span>
-        )}
       </div>
 
       {permsGate ? null : history.length === 0 ? (
@@ -407,12 +381,12 @@ export default function Home() {
           ) : null}
           {/* Home's definite end: no list grows as you scroll. */}
           <div className="home-end" data-home="see-all">
-            <span className="home-end-note">
+            <span className="tiny">
               {query
                 ? `The top ${HOME_RECENT} matches. Every match lives in History.`
                 : `That's the last ${HOME_RECENT}. Older takes live in History.`}
             </span>
-            <button type="button" className="home-see-all" data-testid="home-see-all" onClick={() => openInHistory(null, "see_all")}>
+            <button type="button" className="ghost" data-testid="home-see-all" onClick={() => openInHistory(null, "see_all")}>
               {seeAllLabel(total, query)}
             </button>
           </div>
