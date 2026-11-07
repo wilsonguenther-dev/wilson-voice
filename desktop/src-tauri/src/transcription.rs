@@ -49,10 +49,37 @@ pub const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(15 * 60);
 /// order of magnitude finer than the thing it measures, and every extra wake is
 /// paid for the whole life of the process.
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
-/// Hard ceiling on ONE transcription. Way above any real clip (a 60 s take is
-/// ~1 s on Metal) — this exists only so a wedged native call surfaces as an
-/// error instead of freezing dictation forever.
+/// The PLANNING budget the chunk geometry is sized against (meeting windows,
+/// [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`], the dictation window threshold).
+///
+/// YAP-FX-04: this is no longer the decode timeout. A live decode is bounded
+/// by `latency::adaptive_decode_timeout` — audio length times the
+/// session's measured RTF, floored at `latency::DECODE_TIMEOUT_FLOOR`
+/// (30 s) and capped at `latency::DECODE_TIMEOUT_CAP` (180 s) — so a
+/// wedged two-second take surfaces in 30 s instead of 120, and a long window on
+/// a slow Mac is not killed at a fixed wall it was always going to cross.
 pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// YAP-FX-04 — the timeout ONE decode of `audio_seconds` gets: the adaptive
+/// timeout for the session's recent RTF, never above `cap` (the manager's
+/// ceiling — `latency::DECODE_TIMEOUT_CAP` in the app, a few hundred
+/// milliseconds in the lifecycle tests). `None` (a probe that decodes nothing,
+/// e.g. language support) gets the ceiling itself.
+pub fn effective_decode_timeout(
+    cap: Duration,
+    audio_seconds: Option<f64>,
+    recent_rtf: f64,
+) -> Duration {
+    match audio_seconds {
+        None => cap,
+        Some(audio) => crate::latency::adaptive_decode_timeout(audio, recent_rtf).min(cap),
+    }
+}
+
+/// Seconds of 16 kHz mono audio in `samples` (the rate every decode runs at).
+fn audio_seconds_16k(samples: &[f32]) -> f64 {
+    samples.len() as f64 / DICTATION_CHUNK_SAMPLE_RATE as f64
+}
 
 /// What a caller gets when the engine is not in the slot — because nothing is
 /// loaded, or because another caller has it leased out. A constant since YV93:
@@ -354,6 +381,10 @@ pub trait Transcriber: Send + 'static {
     }
 }
 
+// yap-1106-engine-owner: the in-process engine exists only with
+// `--features in-process-asr`; shipped builds decode in the `yap-asr` helper
+// (`engine_owner::HelperEngine`).
+#[cfg(feature = "in-process-asr")]
 impl Transcriber for asr_engine::AsrEngine {
     fn transcribe(
         &mut self,
@@ -597,6 +628,10 @@ struct Inner {
     idle_timeout: Duration,
     idle_check_interval: Duration,
     transcribe_timeout: Duration,
+    /// yap-1106-engine-owner — every lease is a job on this queue first:
+    /// one decode at a time, dictation before retry before meeting, a plain
+    /// "catching up" sentence instead of a parallel engine, closed at quit.
+    jobs: crate::engine_owner::JobQueue,
 }
 
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
@@ -628,12 +663,13 @@ impl TranscriptionManager {
     /// Production manager: real transcribe-cpp loads, Handy's idle timeout.
     pub fn new() -> Self {
         Self::with_loader(
-            Arc::new(|path: &Path| {
-                asr_engine::load(path).map(|e| Box::new(e) as Box<dyn Transcriber>)
-            }),
+            // yap-1106-engine-owner: the one construction site — the `yap-asr`
+            // helper process, never a model inside the app.
+            Arc::new(|path: &Path| crate::engine_owner::load_engine(path)),
             IDLE_UNLOAD_AFTER,
             IDLE_CHECK_INTERVAL,
-            TRANSCRIBE_TIMEOUT,
+            // YAP-FX-04: the ceiling; each decode gets its own adaptive share.
+            crate::latency::DECODE_TIMEOUT_CAP,
         )
     }
 
@@ -664,6 +700,9 @@ impl TranscriptionManager {
                 idle_timeout,
                 idle_check_interval,
                 transcribe_timeout,
+                jobs: crate::engine_owner::JobQueue::new(
+                    crate::engine_owner::JOB_QUEUE_MAX_WAITING,
+                ),
             }),
         };
         manager.spawn_idle_watcher();
@@ -782,6 +821,13 @@ impl TranscriptionManager {
     /// [`unload`]: Self::unload
     pub fn drain_and_unload(&self, wait: Duration) -> DrainOutcome {
         self.inner.exiting.store(true, Ordering::Release);
+        // yap-1106-engine-owner — quit stops the queue first: nothing new is
+        // admitted and every waiting job fails with a plain sentence, so the
+        // only decode left to end is the one running now.
+        let turned_away = self.inner.jobs.close();
+        if turned_away > 0 {
+            log::info!("exit: engine queue closed turned_away={turned_away}");
+        }
         if !self.engine_in_flight() {
             self.unload();
             return DrainOutcome::Idle;
@@ -812,6 +858,18 @@ impl TranscriptionManager {
     fn engine_in_flight(&self) -> bool {
         let _slot = self.inner.engine.lock();
         self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
+    }
+
+    /// yap-1106-quit-during-asr-crash — is ANY ggml device alive right now: in
+    /// the slot, leased to a decode, or being built by a load? The exit path
+    /// asks this after its teardown: `true` means `exit()`'s C++ static
+    /// destructors would free a Metal device something still owns (the
+    /// `ggml_metal_rsets_free → ggml_abort` crash), so it must `_exit` instead.
+    pub fn device_live(&self) -> bool {
+        let slot = self.inner.engine.lock();
+        slot.is_some()
+            || self.inner.leases.load(Ordering::Acquire) != 0
+            || self.inner.loading.load(Ordering::Acquire)
     }
 
     /// True while a load is building an engine right now. Read straight off the
@@ -999,8 +1057,9 @@ impl TranscriptionManager {
         // engine is taken — so meeting ASR sees a dictation that is still only
         // waiting, which is the only moment yielding to it is worth anything.
         let _claim = self.claim_interactive();
+        let audio_s = audio_seconds_16k(&samples_16k_mono);
         // NOT preemptible: this take exists nowhere but in the samples above.
-        self.leased_interactive_on(expect, move |engine| {
+        self.leased_interactive_on(expect, Some(audio_s), move |engine| {
             engine.transcribe(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -1027,16 +1086,19 @@ impl TranscriptionManager {
     fn leased_interactive_on<R: Send + 'static>(
         &self,
         expect: Option<(&str, &Path)>,
+        audio_seconds: Option<f64>,
         job: impl Fn(&mut dyn Transcriber) -> Result<R, String> + Send + Sync + 'static,
     ) -> Result<R, String> {
         let Some((model_id, model_path)) = expect else {
-            return self.leased(false, job);
+            return self.leased(false, audio_seconds, job);
         };
         let job = Arc::new(job);
         let mut reloads = 0u32;
         loop {
             let run = job.clone();
-            match self.leased_on(false, Some(model_id), move |engine| run(engine)) {
+            match self.leased_on(false, Some(model_id), audio_seconds, move |engine| {
+                run(engine)
+            }) {
                 // yap-1106-retry-failed-dictation — the slot is empty because a
                 // timed-out lease still holds the engine on its worker thread.
                 // Reloading here is what stacked engines on the GPU in the
@@ -1110,7 +1172,8 @@ impl TranscriptionManager {
             self.touch();
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
-        self.leased_on(true, expect_model, move |engine| {
+        let audio_s = audio_seconds_16k(&samples_16k_mono);
+        self.leased_on(true, expect_model, Some(audio_s), move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -1288,9 +1351,20 @@ impl TranscriptionManager {
     fn leased<R: Send + 'static>(
         &self,
         preemptible: bool,
+        audio_seconds: Option<f64>,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
-        self.leased_on(preemptible, None, job)
+        self.leased_on(preemptible, None, audio_seconds, job)
+    }
+
+    /// YAP-FX-04 — this manager's timeout for one decode of `audio_seconds`
+    /// (see [`effective_decode_timeout`]), from the session's measured RTF.
+    pub fn decode_timeout_for(&self, audio_seconds: Option<f64>) -> Duration {
+        effective_decode_timeout(
+            self.inner.transcribe_timeout,
+            audio_seconds,
+            crate::latency::session_rtf_estimate(),
+        )
     }
 
     /// [`Self::leased`], but when `expect_model` is set the job runs ONLY on
@@ -1302,8 +1376,30 @@ impl TranscriptionManager {
         &self,
         preemptible: bool,
         expect_model: Option<&str>,
+        audio_seconds: Option<f64>,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
+        // yap-1106-engine-owner — this decode is a job on the engine's queue.
+        // It waits its turn behind the running one (dictation first), and the
+        // ticket is held to the end of this function, i.e. until the engine
+        // is back in its slot (or dropped) and the lease count is down.
+        let kind = crate::engine_owner::current_job_kind(preemptible);
+        // A meeting chunk keeps the words its driver already understands:
+        // turned away by quit it is `ABANDONED_FOR_EXIT` (re-decoded next
+        // launch, never written as a failure), and out-waited it is the same
+        // `NO_ENGINE_LOADED` the handback wait always gave it. A dictation
+        // that cannot get its turn gets the plain `CATCHING_UP` sentence and
+        // keeps its audio — it never loads a second engine to jump the queue.
+        let _job = match self.inner.jobs.admit(kind, self.job_wait_cap()) {
+            Ok(ticket) => ticket,
+            Err(e) if preemptible && e == crate::engine_owner::OWNER_QUITTING => {
+                return Err(ABANDONED_FOR_EXIT.into())
+            }
+            Err(e) if preemptible && e == crate::engine_owner::CATCHING_UP => {
+                return Err(NO_ENGINE_LOADED.into())
+            }
+            Err(e) => return Err(e),
+        };
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let mut engine = self.take_engine()?;
@@ -1390,7 +1486,16 @@ impl TranscriptionManager {
             let _ = tx.send(sent);
         });
 
-        let mut outcome = rx.recv_timeout(self.inner.transcribe_timeout);
+        // YAP-FX-04 — the adaptive bound for THIS decode (audio length × the
+        // session's measured RTF, 30 s floor, 180 s cap), not a fixed 120 s.
+        let timeout = self.decode_timeout_for(audio_seconds);
+        let mut outcome = rx.recv_timeout(timeout);
+        // yap-1106-engine-owner — an abandoned decode is never left running:
+        // it is cancelled the moment the lease gives up on it. For the
+        // `yap-asr` helper that cancel escalates to a kill BY ITS PID past the
+        // cancel grace, so the GPU memory comes back and the next take loads
+        // at most one fresh copy instead of piling a second one on top.
+        let mut cancel_abandoned = false;
         if matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)) {
             let mut f = fate.lock();
             match *f {
@@ -1403,13 +1508,34 @@ impl TranscriptionManager {
                 }
                 LeaseFate::Waiting => {
                     *f = LeaseFate::Abandoned;
+                    cancel_abandoned = true;
                     let live = abandoned_live.fetch_add(1, Ordering::AcqRel) + 1;
                     log::warn!(
-                        "ASR decode timed out after {}s — engine abandoned to its worker thread abandoned_live={live}",
-                        self.inner.transcribe_timeout.as_secs()
+                        "ASR decode timed out after {}s — engine abandoned to its worker thread abandoned_live={live} timeout_ms={} audio_ms={} rtf_est={:.3} slow_machine={}",
+                        timeout.as_secs(),
+                        timeout.as_millis(),
+                        (audio_seconds.unwrap_or(0.0) * 1000.0).round() as i64,
+                        crate::latency::session_rtf_estimate(),
+                        crate::latency::slow_machine_now()
                     );
                 }
                 LeaseFate::Abandoned => {}
+            }
+        }
+        if cancel_abandoned {
+            let cancel = self
+                .inner
+                .in_flight
+                .lock()
+                .as_ref()
+                .and_then(|f| f.cancel.clone());
+            log::warn!(
+                "engine lease_timeout cancel_abandoned={} engines_live={}",
+                cancel.is_some(),
+                crate::engine_owner::engines_live()
+            );
+            if let Some(cancel) = cancel {
+                cancel();
             }
         }
         let result = match outcome {
@@ -1421,7 +1547,7 @@ impl TranscriptionManager {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
                 "transcription timed out after {}s",
-                self.inner.transcribe_timeout.as_secs()
+                timeout.as_secs()
             )),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("transcription worker died unexpectedly".into())
@@ -1455,6 +1581,19 @@ impl TranscriptionManager {
             None => {}
         }
         result
+    }
+
+    /// yap-1106-engine-owner — how long one decode job waits for its turn on
+    /// the queue: the job ahead of it is ended by its own lease timeout, and
+    /// a chunk handback is bounded by `ENGINE_HANDBACK_WAIT`, so this is
+    /// never the wait that fails a healthy take.
+    fn job_wait_cap(&self) -> Duration {
+        self.inner.transcribe_timeout + ENGINE_HANDBACK_WAIT
+    }
+
+    /// yap-1106-engine-owner — decode jobs waiting for their turn right now.
+    pub fn jobs_waiting(&self) -> usize {
+        self.inner.jobs.waiting()
     }
 
     /// Y3-D — arm a new take: drop any cancel latch left by the previous one.
@@ -1678,6 +1817,27 @@ impl TranscriptionManager {
         )
     }
 
+    /// yap-1106-sp-05 — ONE window of a take that is still recording,
+    /// decoded by `stream_decode` while the user keeps talking. The same
+    /// interactive, non-preemptible, model-pinned decode a dictation's
+    /// single-call path runs, so a streamed window and a batch take decode on
+    /// the same engine under the same rules (and a meeting yields to it).
+    pub fn transcribe_window_on(
+        &self,
+        model_id: &str,
+        model_path: &Path,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<String, String> {
+        self.transcribe_interactive_on(
+            Some((model_id, model_path)),
+            samples_16k_mono,
+            language,
+            bias_prompt,
+        )
+    }
+
     /// Y10-A — the probed language support of `model_id`, loading it first
     /// if it is not resident. Pinned like a dictation decode, so the answer is
     /// about the dictation's model and never the meeting's.
@@ -1686,7 +1846,7 @@ impl TranscriptionManager {
         model_id: &str,
         model_path: &Path,
     ) -> Result<Option<crate::languages::LanguageSupport>, String> {
-        self.leased_interactive_on(Some((model_id, model_path)), |engine| {
+        self.leased_interactive_on(Some((model_id, model_path)), None, |engine| {
             Ok(engine.language_support())
         })
     }
@@ -1699,7 +1859,7 @@ impl TranscriptionManager {
         model_id: &str,
         model_path: &Path,
     ) -> Result<Option<String>, String> {
-        self.leased_interactive_on(Some((model_id, model_path)), |engine| {
+        self.leased_interactive_on(Some((model_id, model_path)), None, |engine| {
             Ok(engine.last_detected_language())
         })
     }
@@ -1752,7 +1912,17 @@ impl TranscriptionManager {
         // take and is never a fixed number), and it exists to surface time
         // burned OUTSIDE the decodes — handback waits, engine reloads, a
         // pathological load loop — which the per-window bound cannot see.
-        let per_chunk = self.inner.transcribe_timeout;
+        // YAP-FX-04: per window, the adaptive timeout of the WIDEST window
+        // (each decode is bounded by its own in `leased_on`).
+        let per_chunk = windows
+            .iter()
+            .map(|w| {
+                self.decode_timeout_for(Some(
+                    (w.audio_end_seconds - w.audio_start_seconds).max(0.0),
+                ))
+            })
+            .max()
+            .unwrap_or(self.inner.transcribe_timeout);
         let take_deadline = per_chunk
             .checked_mul(windows.len() as u32)
             .and_then(|d| d.checked_add(per_chunk))
@@ -1898,7 +2068,8 @@ impl TranscriptionManager {
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
         let _claim = self.claim_interactive();
-        self.leased_interactive_on(expect, move |engine| {
+        let audio_s = audio_seconds_16k(&samples_16k_mono);
+        self.leased_interactive_on(expect, Some(audio_s), move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -2161,6 +2332,162 @@ mod tests {
         );
         // The abandoned engine stays with the worker thread; nothing is resident.
         assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// yap-1106-engine-owner (absorbs quit-during-asr-crash) — a stub engine
+    /// that records what happens to it, in order.
+    struct DropOrderStub {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl DropOrderStub {
+        fn decode(&self) -> Result<String, String> {
+            self.events.lock().push("decode_started");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if self.cancel.load(Ordering::Acquire) {
+                    self.events.lock().push("decode_returned");
+                    return Err("aborted".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.events.lock().push("decode_returned");
+            Ok("ran to the end".to_string())
+        }
+    }
+
+    impl Transcriber for DropOrderStub {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.decode()
+        }
+
+        fn transcribe_timed(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<asr_engine::TimedTranscript, String> {
+            self.decode().map(asr_engine::TimedTranscript::text_only)
+        }
+
+        fn cancel_handle(&self) -> Option<CancelHandle> {
+            let flag = self.cancel.clone();
+            let events = self.events.clone();
+            Some(Arc::new(move || {
+                events.lock().push("cancel");
+                flag.store(true, Ordering::Release);
+            }))
+        }
+
+        fn reset_cancel(&mut self) {
+            self.cancel.store(false, Ordering::Release);
+        }
+    }
+
+    impl Drop for DropOrderStub {
+        fn drop(&mut self) {
+            self.events.lock().push("engine_dropped");
+        }
+    }
+
+    /// The teardown order the quit crash needed: quit cancels the decode in
+    /// flight, the decode returns, the engine is DROPPED, and only then does
+    /// the drain return — i.e. before `exit()` could run any C++ static
+    /// destructor over a live Metal device.
+    #[test]
+    fn exit_teardown_cancels_the_decode_and_frees_the_engine_before_the_drain_returns() {
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let path = stub_model_file("stub.gguf");
+        let loader_events = events.clone();
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(DropOrderStub {
+                    events: loader_events.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        m.load("stub/model", &path).expect("load");
+        let chunk_manager = m.clone();
+        let chunk = std::thread::spawn(move || {
+            chunk_manager.transcribe_timed(vec![0.1f32; 16_000], None, None)
+        });
+        let started = Instant::now();
+        while !events.lock().contains(&"decode_started") {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the decode never started"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let outcome = m.drain_and_unload(Duration::from_secs(5));
+        events.lock().push("drain_returned");
+
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert_eq!(
+            chunk.join().expect("chunk thread").err().as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        let seen = events.lock().clone();
+        let at = |name: &str| {
+            seen.iter()
+                .position(|e| *e == name)
+                .unwrap_or_else(|| panic!("{name} never happened: {seen:?}"))
+        };
+        assert!(at("decode_started") < at("cancel"), "{seen:?}");
+        assert!(at("cancel") < at("decode_returned"), "{seen:?}");
+        assert!(at("decode_returned") < at("engine_dropped"), "{seen:?}");
+        assert!(
+            at("engine_dropped") < at("drain_returned"),
+            "the engine must be freed before the drain returns: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|e| **e == "engine_dropped").count(),
+            1,
+            "one engine, freed once: {seen:?}"
+        );
+        assert!(!m.is_loaded());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// yap-1106-engine-owner — quit closes the engine's job queue: a meeting
+    /// chunk turned away is `ABANDONED_FOR_EXIT` (re-decoded next launch,
+    /// never recorded as failed) and a dictation gets the plain quitting line.
+    #[test]
+    fn after_quit_the_queue_turns_new_jobs_away_with_their_own_words() {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            stub_loader("never", Duration::ZERO, false),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        m.load("stub/model", &path).expect("load");
+        assert_eq!(
+            m.drain_and_unload(Duration::from_secs(1)),
+            DrainOutcome::Idle
+        );
+        assert_eq!(
+            m.transcribe_timed(vec![0.1; 16], None, None)
+                .err()
+                .as_deref(),
+            Some(ABANDONED_FOR_EXIT)
+        );
+        assert_eq!(
+            m.transcribe(vec![0.1; 16], None, None).err().as_deref(),
+            Some(crate::engine_owner::OWNER_QUITTING)
+        );
+        assert_eq!(m.jobs_waiting(), 0);
+        assert_eq!(m.engine_loads(), 1, "quit never loads another engine");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
@@ -2798,5 +3125,116 @@ mod tests {
         let decoded: Vec<String> = log.lock().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(decoded, vec!["dict".to_string()]);
         assert_eq!(m.loaded_model().as_deref(), Some("dict"));
+    }
+
+    /// YAP-FX-04 — a fake engine whose decode takes `audio × rtf` of wall
+    /// time; `rtf` is shared so a test can make the "Mac" fast again.
+    struct FixedRtfEngine {
+        rtf: Arc<Mutex<f64>>,
+    }
+
+    impl Transcriber for FixedRtfEngine {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            let audio_s = samples.len() as f64 / DICTATION_CHUNK_SAMPLE_RATE as f64;
+            let rtf = *self.rtf.lock();
+            std::thread::sleep(Duration::from_secs_f64(audio_s * rtf));
+            Ok("decoded".to_string())
+        }
+    }
+
+    /// YAP-FX-04 acceptance, end to end through the manager: a fake slow
+    /// engine at RTF 0.5 trips the slow-machine state on the second take in a
+    /// row (decode wall time measured exactly as the live path measures it),
+    /// and two fast takes later the state recovers.
+    #[test]
+    fn a_fake_slow_engine_through_the_manager_trips_the_slow_machine_state_and_recovers() {
+        use crate::latency::{decode_rtf, SlowMachineChange, SlowMachineDetector};
+        let rtf = Arc::new(Mutex::new(0.5f64));
+        let engine_rtf = rtf.clone();
+        let path = stub_model_file("rtf.gguf");
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(FixedRtfEngine {
+                    rtf: engine_rtf.clone(),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(30),
+        );
+        m.load("stub/model", &path).expect("load");
+        // One second of audio per take.
+        let take = |m: &TranscriptionManager| -> f64 {
+            let started = Instant::now();
+            let text = m
+                .transcribe(
+                    vec![0.1f32; DICTATION_CHUNK_SAMPLE_RATE as usize],
+                    None,
+                    None,
+                )
+                .expect("decode");
+            assert_eq!(text, "decoded");
+            decode_rtf(started.elapsed().as_millis() as i64, 1.0)
+        };
+        let mut detector = SlowMachineDetector::new();
+
+        let first = take(&m);
+        assert!(
+            first >= 0.5,
+            "the fake engine decodes at RTF 0.5, measured {first}"
+        );
+        assert_eq!(detector.observe(first, Instant::now()), None);
+        assert_eq!(
+            detector.observe(take(&m), Instant::now()),
+            Some(SlowMachineChange::Tripped)
+        );
+        assert!(detector.is_slow());
+
+        // The Mac speeds back up.
+        *rtf.lock() = 0.01;
+        assert_eq!(detector.observe(take(&m), Instant::now()), None);
+        assert_eq!(
+            detector.observe(take(&m), Instant::now()),
+            Some(SlowMachineChange::Recovered)
+        );
+        assert!(!detector.is_slow());
+    }
+
+    /// YAP-FX-04 — the decode timeout is audio × RTF between the 30 s floor
+    /// and the 180 s cap, never a fixed 120 s, and an injected (test) ceiling
+    /// still wins.
+    #[test]
+    fn the_decode_timeout_is_adaptive_under_the_manager_ceiling() {
+        use crate::latency::{DECODE_TIMEOUT_CAP, DECODE_TIMEOUT_FLOOR};
+        let cap = DECODE_TIMEOUT_CAP;
+        assert_eq!(
+            effective_decode_timeout(cap, Some(5.0), 0.05),
+            DECODE_TIMEOUT_FLOOR
+        );
+        assert_eq!(
+            effective_decode_timeout(cap, Some(60.0), 0.5),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            effective_decode_timeout(cap, Some(80.0), 0.5),
+            Duration::from_secs(160)
+        );
+        assert_eq!(effective_decode_timeout(cap, Some(600.0), 0.5), cap);
+        assert_eq!(effective_decode_timeout(cap, None, 0.5), cap);
+        let tiny = Duration::from_millis(50);
+        assert_eq!(effective_decode_timeout(tiny, Some(60.0), 0.5), tiny);
+
+        let m = manager(
+            stub_loader("x", Duration::ZERO, false),
+            Duration::from_secs(600),
+            cap,
+        );
+        let t = m.decode_timeout_for(Some(1.0));
+        assert!(t >= DECODE_TIMEOUT_FLOOR && t <= cap, "{t:?}");
+        assert_eq!(audio_seconds_16k(&[0.0f32; 8_000]), 0.5);
     }
 }

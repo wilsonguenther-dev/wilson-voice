@@ -2,7 +2,8 @@
 /**
  * menubar-preview.mjs — before/after PNGs of the menu-bar menu
  * (yap-1106-menubar-redesign + WF-07 upcoming meetings + WF-11 Languages +
- * WF-14 "Update ready").
+ * WF-14 "Update ready") — and, from WF-04, the pill's right-click menu
+ * (`tray_menu::PILL_MENU_LAYOUT`, drawn from the same TrayItem rows).
  *
  * The real menu is a native NSMenu built by lib.rs FROM
  * `tray_menu::MENU_LAYOUT` + `TRAY_ITEMS`. A native menu cannot be rendered
@@ -79,8 +80,58 @@ export function parseTrayMenu(src) {
       layout.push(items.get(id));
     }
   }
-  return { consts, items, layout, src };
+  // WF-04 — the pill's right-click menu, when this revision has one.
+  let pillLayout = null;
+  const pillStart = src.indexOf("pub const PILL_MENU_LAYOUT");
+  if (pillStart >= 0) {
+    pillLayout = [];
+    const pillBody = src.slice(src.indexOf("= [", pillStart), src.indexOf("];", pillStart));
+    for (const m of pillBody.matchAll(/Slot::(Separator|Item\((\w+)\))/g)) {
+      if (m[1] === "Separator") pillLayout.push({ sep: true });
+      else {
+        const id = str(m[2]);
+        if (!items.has(id)) throw new Error("PILL_MENU_LAYOUT names " + id + " with no TrayItem");
+        pillLayout.push(items.get(id));
+      }
+    }
+  }
+  return { consts, items, layout, pillLayout, src };
 }
+
+/* ── WF-04: the pill's right-click menu, mirroring tray_menu::pill_context_menu ── */
+
+/**
+ * The rows `pill_context_menu` decides: every label is the registry's (the
+ * same TrayItem rows the menu bar parses above), Hide greys while a take or a
+ * meeting runs, the dock the pill has carries the check, Microphone and
+ * Languages open the menu bar's own submenus (fixture rows here).
+ */
+function pillMenuFor(parsed, { busy = false, dock = "bottom" }) {
+  const dockIds = {
+    [parsed.consts.get("ID_PILL_DOCK_BOTTOM")]: "bottom",
+    [parsed.consts.get("ID_PILL_DOCK_LEFT")]: "left",
+    [parsed.consts.get("ID_PILL_DOCK_RIGHT")]: "right",
+  };
+  const out = [];
+  for (const slot of parsed.pillLayout) {
+    if (slot.sep) {
+      out.push({ sep: true });
+      continue;
+    }
+    if (slot.id === parsed.consts.get("ID_HIDE_PILL")) out.push({ label: slot.label, disabled: busy });
+    else if (dockIds[slot.id]) out.push({ label: slot.label, checked: dockIds[slot.id] === dock });
+    else if (slot.kind === "MicrophoneSubmenu" || slot.kind === "LanguageSubmenu") {
+      out.push({ label: slot.label, submenuArrow: true });
+    } else out.push({ label: slot.label });
+  }
+  return out;
+}
+
+const PILL_STATES = [
+  { name: "idle", title: "Right-click on the resting pill", state: {} },
+  { name: "dictating", title: "Right-click mid-take: Hide is greyed", state: { busy: true } },
+  { name: "docked-left", title: "Docked left: the check follows the dock", state: { dock: "left" } },
+];
 
 /* ── WF-14: the "Update ready" line, mirroring tray_menu::update_ready_label ── */
 
@@ -359,6 +410,12 @@ async function main() {
     for (const st of STATES) {
       if (st.afterOnly && side === "before") continue;
       jobs.push({ file: `menubar-${side}-${st.name}.png`, title: `${side}: ${st.title}`, rows: menuFor(parsed, st.state) });
+    }
+    // WF-04 — the pill's menu exists only from this item on: after-only shots.
+    if (parsed.pillLayout) {
+      for (const st of PILL_STATES) {
+        jobs.push({ file: `pillmenu-${side}-${st.name}.png`, title: `${side}: ${st.title}`, rows: pillMenuFor(parsed, st.state) });
+      }
     }
   }
   if (args.selfTest) {

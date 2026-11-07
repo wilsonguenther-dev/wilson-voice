@@ -231,7 +231,7 @@ fn bundled_is_always_present_and_cannot_be_deleted() {
     assert!(!ProviderKind::OpenAiCompatible.is_wired());
     assert_eq!(
         list_view(&db, &keys).wired_kinds,
-        vec![ProviderKind::Bundled]
+        vec![ProviderKind::Bundled, ProviderKind::CloudKey]
     );
 }
 

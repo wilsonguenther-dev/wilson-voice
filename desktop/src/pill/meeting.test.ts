@@ -15,6 +15,7 @@ import {
   MEETING_PILL_IDLE,
   MEETING_PROGRESS_EVENT,
   MEETING_RESULT_HOLD_MS,
+  MEETING_STOP_FAILED_DOM_EVENT,
   MEETING_STOP_FAILED_FALLBACK,
   meetingAfterView,
   meetingSavedUntil,
@@ -32,6 +33,7 @@ import {
 } from "./meeting";
 import { MEETING_PROGRESS_EVENT as DECLARED_PROGRESS_EVENT } from "../meetings/progress";
 import { SAVED_HOLD_MS, SAVED_LABEL, SCENE_W } from "./meetingScene";
+import { MEETING_STOP_FAILED_EVENT } from "./meetingDictation";
 import { CLOCK_H, CLOCK_W, meetingMode, pillLayout } from "./state";
 
 const recording = (over: Partial<MeetingStatus> = {}): MeetingStatus => ({
@@ -455,6 +457,10 @@ describe("the Saved stop beat has a real slot (fix-b8-1-meeting-saved-beat-gets-
     expect(stop(old, T0).kind).toBe("saved");
     expect(stopFailedSentence(new Error("  boom  "))).toBe("boom");
     expect(stopFailedSentence(undefined)).toBe(MEETING_STOP_FAILED_FALLBACK);
+    // The pill's Stop (stopMeetingFromPill, yap-fx-06) raises the stop-failed
+    // card's window event with no detail; the shell's phase listens on the
+    // SAME name, so a failed badge Stop reaches reduceMeetingPill.
+    expect(MEETING_STOP_FAILED_EVENT).toBe(MEETING_STOP_FAILED_DOM_EVENT);
   });
 
   it("(d) after SAVED_HOLD_MS (fake timers) a transcribing event shows the processing badge", () => {

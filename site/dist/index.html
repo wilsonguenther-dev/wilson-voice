@@ -68,7 +68,7 @@
       <dl class="spec">
         <div><dt>Engine</dt><dd>Whisper, GGUF + Metal</dd></div>
         <div><dt>Runs on</dt><dd>Your Mac, on its own GPU</dd></div>
-        <div><dt>Network</dt><dd>Model download, update check, refund list</dd></div>
+        <div><dt>Network</dt><dd>Model download, update check, license activation</dd></div>
         <div><dt>Account</dt><dd>None</dd></div>
         <div><dt>Telemetry</dt><dd>None</dd></div>
         <div><dt>Requires</dt><dd>macOS 13+, Apple Silicon</dd></div>
@@ -198,10 +198,10 @@
         </div>
         <div class="fact">
           <b>Your license is checked here too</b>
-          <span>Activation verifies a signature against a key inside the app — no login, no server, and nothing that can fail because you are offline. The one call licensing makes is downloading a public list of refunded licenses, identical for everyone, carrying no key, no email and no query.</span>
+          <span>Activating a license is one request to drivia.consulting: it sends the key and a random install identifier and gets back a signed token, which Yap checks against a key inside the app every time it reads it. Yap renews that token about once a month, and if you are offline it keeps working through a 30-day grace period. No account, no login, and the license requests never carry your audio, your text or your history.</span>
         </div>
       </div>
-      <p class="net"><b>The complete list of network calls Yap makes:</b> a one-time model download on first run, an update check you can switch off in Settings, and a background download of the public refunded-licenses list. That is the whole list. <a href="privacy.html">Read the privacy policy &rarr;</a></p>
+      <p class="net"><b>The complete list of network calls Yap makes:</b> a one-time model download on first run, an update check you can switch off in Settings, and your license &mdash; one call to drivia.consulting when you activate it, a token refresh about once a month, and one call if you remove it from a Mac. A model provider you add yourself is the only other, and it is off unless you add one. That is the whole list. <a href="privacy.html">Read the privacy policy &rarr;</a></p>
     </div>
   </section>
 

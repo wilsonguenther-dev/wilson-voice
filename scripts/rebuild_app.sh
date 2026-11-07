@@ -23,7 +23,7 @@ SIGN="$ROOT/scripts/sign-local.sh"
 # killed or deleted, so a missing sidecar fails with the installed app intact.
 TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
 [[ -n "$TRIPLE" ]] || { echo "FATAL: could not read the host triple from rustc -vV" >&2; exit 1; }
-SIDECARS=(yap-polish yap-diarize)
+SIDECARS=(yap-polish yap-diarize yap-asr yap-engine-ane)
 for s in "${SIDECARS[@]}"; do
   [[ -x "$SRC/binaries/$s-$TRIPLE" ]] || {
     echo "FATAL: sidecar $SRC/binaries/$s-$TRIPLE is not staged. Build it first:" >&2

@@ -15,6 +15,13 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
+import { EngineHealthChip } from "./pill/EngineHealthChip";
+import {
+  ENGINE_HEALTH_EVENT,
+  engineHealthTakesStrip,
+  parseEngineHealth,
+  type EngineHealth,
+} from "./pill/engineHealth";
 import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
@@ -22,9 +29,15 @@ import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
 import LanguageOfferCard from "./pill/LanguageOfferCard";
+import MeetingDictationCard from "./pill/MeetingDictationCard";
+import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
 import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import PolishRevealCard from "./pill/PolishRevealCard";
+import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
+import SilentMicRow from "./pill/SilentMicRow";
+import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -51,7 +64,6 @@ import {
   advanceLive,
   createLiveState,
   CANCELLED_SETTLE_MS,
-  GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
   parseMutedCategories,
@@ -61,7 +73,13 @@ import {
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
-import { voiceFor } from "./pill/voices";
+import {
+  GATE_HOLD_IDLE, gateHovered, gateSettleDueIn, onGateHover, reduceGateHold,
+  type GateHold,
+} from "./pill/gateClick";
+import { curseAllowed, curseBlock, voiceFor } from "./pill/voices";
+import { useCallRecordingView } from "./pill/CallOffer";
+import { isLiveCall } from "./pill/callOfferModel";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
 import {
@@ -86,13 +104,19 @@ import {
   forcedPill,
   matrixLanguageOfferScene,
   matrixBacktrackCaughtScene,
+  matrixMeetingDictationScenes,
+  matrixPolishRevealScenes,
   matrixStyleChipScene,
+  matrixSilentMicScene,
   matrixRailScene,
   matrixLicenseScenes,
   matrixPhases,
   matrixDragBlobScene,
+  matrixFriendVisitScene,
   type ForcedPill,
 } from "./pill/forced";
+import { FriendVisit } from "./pill/FriendVisit";
+import { forcedFriendVisit } from "./pill/friendVisits";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -105,6 +129,8 @@ interface Settings {
   pillStyle?: string;
   pillPosition?: string;
   companionTone?: string;
+  /** yap-1106-curse-setting — the Badass curse toggle (backend `companion_curse`, off by default). */
+  companionCurse?: boolean;
   /**
    * Y8-B — the Scratchpad's "Add to Flow Bar" toggle. Not on the backend's
    * Settings yet: it ships with DB-D (the Scratchpad window), and until then
@@ -173,7 +199,9 @@ function useListenEstimate(listening: boolean): ListenEstimate {
         shownSec = Math.floor(sec);
         setEst({ estWords: f.estWords, sec });
       }
-    }).then((u) => (dead ? u() : (unsub = u)));
+      // SP-11: the level stream is aimed at the float window; the main window
+      // gets its own copy only while it is visible, never a second one here.
+    }, { target: "float" }).then((u) => (dead ? u() : (unsub = u)));
     return () => {
       dead = true;
       unsub?.();
@@ -223,6 +251,8 @@ interface BackendStatus extends BlindStatusSlice {
   handsFree?: boolean;
   /** yap24-PILL4 — lib.rs `AppStatus.chord_label`: the key that ends the latch. */
   chordLabel?: string;
+  /** WF-13 — lib.rs `AppStatus.silent_mic_warning`: "I can't hear <mic>". */
+  silentMicWarning?: string | null;
 }
 
 /** The `transcript` event, for its word count only (lib.rs:2509). */
@@ -246,12 +276,20 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     // WF-12 — the language-offer card over an idle pill.
     matrixLanguageOfferScene(),
     matrixBacktrackCaughtScene(),
+    // yap-fx-06 — Esc during a meeting, the hands-free question, stop failed.
+    ...matrixMeetingDictationScenes(),
+    // WF-05 — "Polished — Reveal": the toast, then the opened diff card.
+    ...matrixPolishRevealScenes(),
     // WF-20 — the per-app style chip over a listening pill.
     matrixStyleChipScene(),
+    // WF-13 — "I can't hear <mic>" + Switch mic over a listening pill.
+    matrixSilentMicScene(),
     // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
     matrixRailScene(),
     // WF-02 — the pill mid-drag: the blob plus its three drop zones.
     matrixDragBlobScene(),
+    // yap-1106-friend-visits — Tidy visiting a resting pill.
+    matrixFriendVisitScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -259,6 +297,30 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
   }
 }
+
+/**
+ * WF-04 — right-click (or Ctrl-click, which WebKit reports as the same
+ * `contextmenu` event) on the pill pops Yap's native pill menu: Hide for 1
+ * hour, the three docks, Microphone, Languages, Open Scratchpad, Open Yap.
+ * The rows are decided in Rust from the menu bar's own item table
+ * (`tray_menu::pill_context_menu`), so nothing about them lives here. A text
+ * field inside a card keeps the system's Cut / Copy / Paste menu.
+ */
+function wantsPillMenu(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (!el) return true;
+  return !el.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+}
+
+window.addEventListener("contextmenu", (e) => {
+  if (!wantsPillMenu(e.target)) return;
+  e.preventDefault();
+  invoke("pill_context_menu").catch((err: unknown) => {
+    // Rust already logged the cause; the pill has no toast surface, and the
+    // menu bar icon carries every row of this menu.
+    console.warn("pill context_menu failed", err);
+  });
+});
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
@@ -280,6 +342,7 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -291,6 +354,8 @@ function Float() {
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   // yap-hotkey-stop — the take the hotkey may have lost track of says so.
   const [stillRecording, setStillRecording] = useState(false);
+  // WF-13 — the live take's mic records nothing (record.rs SilentMicCheck).
+  const [silentMic, setSilentMic] = useState<string | null>(null);
   // yap24-PILL4 — the key that ends a hands-free take, off the status payload.
   const [chordLabel, setChordLabel] = useState<string>(DEFAULT_STOP_KEY);
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
@@ -317,6 +382,7 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
@@ -350,15 +416,44 @@ function Float() {
     // permanent noise. Fire-and-forget like Y3-D's cancel timer: `gate_settled`
     // only ever moves the phase it owns, so a press that has already moved the
     // pill on is left alone.
+    //
+    // yap-1106-pill-trial-clickable — the refusal is now the BUY button, so it
+    // holds GATE_HOLD_MS (6 s) and for as long as the pointer rests on it, then
+    // settles a short grace after the pointer leaves. The policy is pure
+    // (pill/gateClick.ts); this effect only owns the one timer.
+    let hold: GateHold = reduceGateHold(GATE_HOLD_IDLE, { type: "hover", on: gateHovered(), at: performance.now() });
+    let settleTimer: number | null = null;
+    const armSettle = () => {
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      const due = gateSettleDueIn(hold, performance.now());
+      if (due === null || dead) return;
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        const again = gateSettleDueIn(hold, performance.now());
+        if (again === null) return;
+        if (again > 0) { armSettle(); return; }
+        hold = reduceGateHold(hold, { type: "settled" });
+        setGate((p) => reduceGatePhase(p, { type: "gate_settled" }));
+      }, due);
+    };
+    unsubs.push(onGateHover((on) => {
+      hold = reduceGateHold(hold, { type: "hover", on, at: performance.now() });
+      armSettle();
+    }));
     listen<LicenseStatus>("license_required", (e) => {
       setLicense(e.payload);
       setGate((p) => reduceGatePhase(p, { type: "license_required" }));
-      setTimeout(
-        () => setGate((p) => reduceGatePhase(p, { type: "gate_settled" })),
-        GATED_SETTLE_MS,
-      );
+      hold = reduceGateHold(hold, { type: "shown", at: performance.now() });
+      armSettle();
     }).then(push);
-    return () => { dead = true; unsubs.forEach((u) => u()); };
+    return () => {
+      dead = true;
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      unsubs.forEach((u) => u());
+    };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -379,6 +474,17 @@ function Float() {
     listen<unknown>("transcript", () => setProgress(null)).then(push);
     listen<unknown>("transcript_error", () => setProgress(null)).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  // yap-1106-engine-owner — the speech engine's one health state, pushed by
+  // `engine_owner` on every transition (never polled). "Catching up…" while a
+  // stuck engine is being waited out, "Restarting…" while it is replaced.
+  useEffect(() => {
+    let dead = false;
+    let unsub: (() => void) | null = null;
+    listen<unknown>(ENGINE_HEALTH_EVENT, (e) => setEngineHealth(parseEngineHealth(e.payload))).then(
+      (u) => (dead ? u() : (unsub = u)),
+    );
+    return () => { dead = true; unsub?.(); };
   }, []);
   useEffect(() => {
     let dead = false;
@@ -432,6 +538,7 @@ function Float() {
       if (!st) return;
       setLastErrorCode(st.lastError ? st.lastErrorCode ?? "take_failed" : null);
       setStillRecording(!!st.recording && !!st.stillRecording);
+      setSilentMic(st.recording ? parseSilentMicWarning(st.silentMicWarning) : null);
       const nextBlind = blindFromStatus(st);
       // Keep the same object while nothing changed: every status emit (HUD
       // cadence while recording) would otherwise re-render the shell.
@@ -497,6 +604,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
@@ -565,6 +673,25 @@ function Float() {
     document.documentElement.dataset.meetingPhase = meetingAfter?.kind ?? (meeting.status.recording ? "recording" : "");
   }, [meetingAfter?.kind, meeting.status.recording]);
   const pillProps = { gate: phase, chordLabel, progress, license: lic, meeting: meeting.status, meetingAfter, onMeetingOpen };
+  // yap-1106-curse-setting — decided ONCE here, like the voice: the toggle,
+  // Badass only, and never in a meeting state (recording, or its after-view on
+  // screen). Yap has no screen-share detector (no Screen Recording permission,
+  // by rule), so a LIVE CALL the call detector sees (Zoom, Meet, Teams… in any
+  // phase but idle, recorded or not) is the stand-in for "the screen may be
+  // shared": a call is where screens get shared. `screenShared` is also the
+  // hook a real share signal plugs into later.
+  const liveCall = isLiveCall(useCallRecordingView());
+  const curseGateIn = {
+    enabled: curseSetting,
+    voice: voiceFor(tone),
+    meeting: meeting.status.recording || meetingAfter !== null,
+    screenShared: liveCall,
+  };
+  const curseOn = curseAllowed(curseGateIn);
+  const curseWhy = curseBlock(curseGateIn);
+  useEffect(() => {
+    console.info(`pill voice_curse state=${curseWhy ?? "on"}`);
+  }, [curseWhy]);
   useEffect(() => {
     document.documentElement.dataset.fnHint = fnHint ? "true" : "false";
   }, [fnHint]);
@@ -612,10 +739,14 @@ function Float() {
   const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
   const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
   const cardH = useCardOnScreen();
-  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
+  // WF-13 — while "I can't hear <mic>" is up, the hint slot holds its two-row
+  // chip (SILENT_MIC_ROW_H), so the layout reserves SILENT_MIC_HINT_LINES.
+  const silentMicWarning = FORCED ? forcedSilentMic(window.location.search) : silentMic;
+  const silentMicUp = silentMicShows(silentMicWarning, phase);
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH, silentMicUp ? SILENT_MIC_HINT_LINES : undefined);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} curse={curseOn} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -653,14 +784,33 @@ function Float() {
       <div className="bar" {...bar}>
         {pill}
       </div>
+      {/* yap-1106-friend-visits — a friend visits for its own event only: at
+          most 4 s, once a day each, never during a meeting, a screen share or
+          Do Not Disturb, and less often after 50 takes (pill/friendVisits.ts). */}
+      <FriendVisit
+        /* fix-b8-1 — the 2.4 s "Saved" stop beat is still the meeting's
+           moment: no visitor walks over Hoot's tape hand-over. */
+        meetingRecording={meeting.status.recording || meeting.phase.kind === "saved"}
+        meetingNotesReady={meeting.phase.kind === "notes-ready"}
+        occupant={character.id}
+        forced={FORCED ? forcedFriendVisit(window.location.search) : null}
+      />
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
       {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
       <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* yap-fx-06 — "Dictation cancelled — meeting still recording. Stop meeting?",
+          the once-per-meeting hands-free question, and a Stop that failed. */}
+      <MeetingDictationCard forced={FORCED ? forcedMeetingNotice(window.location.search) : null} />
       {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
       <BacktrackCaughtCard
         forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
+      {/* WF-05 — "Polished — Reveal" (Reveal → diff with Use original / Keep). Muted with Tips. */}
+      <PolishRevealCard
+        forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
@@ -677,7 +827,11 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+        {/* yap-1106-engine-owner — while the engine is loading, stuck or
+            restarting, THAT is the one line worth saying during a decode. */}
+        {engineHealthTakesStrip(engineHealth, PHASE_ID[phase]) ? (
+          <EngineHealthChip state={engineHealth} />
+        ) : phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
           // Item 18 — the hands-free hint, shorter: the key as a keycap and two
           // words. The full sentence stays the accessible name and the
           // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
@@ -691,6 +845,13 @@ function Float() {
           when app-aware modes are off. A later sibling of .bar, so the side
           dock rules in float.css can place it like the phase line. */}
       <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
+      {/* WF-13 — "I can't hear <mic>" + Switch mic, while the take keeps
+          recording. Takes the hint row; the style chip yields it (float.css). */}
+      <SilentMicRow
+        warning={silentMicWarning}
+        phase={phase}
+        forced={!!FORCED}
+      />
     </>
   );
 }
@@ -706,8 +867,9 @@ function usePanelLayout(
   dock: BarDock,
   character: LayoutCharacter,
   cardH: number | null,
+  hintLines?: number,
 ): PillLayout {
-  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null, hintLines });
   return useMemo(() => next, [next.key]);
 }
 

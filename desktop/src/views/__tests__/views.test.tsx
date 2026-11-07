@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 
 const VIEWS = [
   "Home",
+  "History",
   "Permissions",
   "Meetings",
   "Insights",
@@ -41,6 +42,7 @@ const SETTINGS_TABS = [
   "Privacy",
   "Diagnostics",
   "Notifications",
+  "News",
   "License",
 ];
 

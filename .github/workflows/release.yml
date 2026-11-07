@@ -46,15 +46,19 @@ jobs:
       # EVERY `cargo build` of the app — not just at bundle time — so this has
       # to run before the compile gate below. Both are signed and notarized with
       # the app because they live inside the bundle.
-      - name: Build + stage the sidecars (yap-polish, yap-diarize)
+      - name: Build + stage the sidecars (yap-polish, yap-diarize, yap-asr)
         working-directory: desktop
         run: |
-          cargo build -p yap-polish -p yap-diarize --release
+          cargo build -p yap-polish -p yap-diarize -p yap-asr --release
           TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
           mkdir -p src-tauri/binaries
           cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
           cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
-          ls -l "src-tauri/binaries/yap-polish-${TRIPLE}" "src-tauri/binaries/yap-diarize-${TRIPLE}"
+          cp target/release/yap-asr "src-tauri/binaries/yap-asr-${TRIPLE}"
+          # SP-10: the Neural Engine helper (Swift + FluidAudio, pinned). Same
+          # externalBin precondition as the three Rust sidecars.
+          bash ../scripts/build-ane-engine.sh
+          ls -l "src-tauri/binaries/yap-polish-${TRIPLE}" "src-tauri/binaries/yap-diarize-${TRIPLE}" "src-tauri/binaries/yap-asr-${TRIPLE}"
 
       # Fast-fail compile gate before the heavier bundling/signing step.
       - name: Compile Rust (release)

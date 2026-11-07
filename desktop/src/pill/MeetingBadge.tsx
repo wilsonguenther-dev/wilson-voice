@@ -32,7 +32,6 @@ import {
   meetingPillHoldMs,
   meetingSavedUntil,
   reduceMeetingPill,
-  stopFailedSentence,
   systemAudioBadge,
   type MeetingAfterView,
   type MeetingPillInput,
@@ -41,6 +40,7 @@ import {
   type MeetingStatus,
 } from "./meeting";
 import { callAudioChip } from "../meetings/callAudio";
+import { stopMeetingFromPill } from "./MeetingDictationCard";
 
 interface MeetingPillState {
   status: MeetingStatus;
@@ -215,13 +215,13 @@ export default function MeetingBadge({
         aria-label={`Stop meeting — recording for ${elapsedLabel(status)}`}
         onClick={(e) => {
           e.stopPropagation();
-          // fix-b8-1 — a failed stop is never followed by "Saved": the shell's
-          // meeting phase hears it through one window-local event.
-          invoke("stop_meeting").catch((err: unknown) => {
-            const sentence = stopFailedSentence(err);
-            console.warn(`pill meeting_stop_failed elapsed_s=${Math.floor(status.elapsedSeconds)}`);
-            window.dispatchEvent(new CustomEvent(MEETING_STOP_FAILED_DOM_EVENT, { detail: sentence }));
-          });
+          // yap-fx-06 — the one-click Stop, always in the pill while a meeting
+          // records (dictating or not). A failure is never swallowed: it
+          // opens the stop-failed card (Try again / Quit Yap). fix-b8-1 — the
+          // same window event (MEETING_STOP_FAILED_EVENT === the shell's
+          // MEETING_STOP_FAILED_DOM_EVENT) reaches useMeetingPill, so a failed
+          // stop is never followed by "Saved".
+          void stopMeetingFromPill("badge");
         }}
       >
         <svg viewBox="0 0 24 24" aria-hidden>

@@ -973,6 +973,12 @@ pub struct FormattingTrace {
     /// WF-06 — how many self-corrections the backtrack stage applied. A count,
     /// never text, so it is safe for a log line.
     pub backtrack_corrections: usize,
+    /// WF-05 — how many words the polish stage (on this Mac or in the cloud:
+    /// both reach the pipeline as the same `polish` closure) changed, ignoring
+    /// punctuation and capitals ([`polish_changed_words`]). `0` when polish did
+    /// not run or only re-punctuated / re-cased. A count, never text.
+    #[serde(skip)]
+    pub polish_changed_words: usize,
 }
 
 impl FormattingTrace {
@@ -1272,6 +1278,7 @@ where
     } else if level.runs_llm() {
         match polish(&text) {
             Ok(out) if !out.trim().is_empty() => {
+                trace.polish_changed_words = polish_changed_words(&text, &out);
                 text = out;
                 trace.stages.push(STAGE_POLISH);
             }
@@ -1312,6 +1319,95 @@ pub fn undo_ai_edit_text<'a>(polished: &str, raw: Option<&'a str>) -> Option<&'a
         return None;
     }
     Some(raw)
+}
+
+// ---------------------------------------------------------------------------
+// WF-05 — "Polished — Reveal". After a take the polish stage really rewrote,
+// the pill offers a 4-second toast; Reveal opens the take's diff with "Use
+// original" (the Undo AI Edit paste) and "Keep". A take the model only
+// re-punctuated or re-cased is not a rewrite, so it raises nothing.
+// ---------------------------------------------------------------------------
+
+/// The fewest changed words that count as a rewrite worth a toast. One swapped
+/// word is too small to interrupt anyone for; two or more is a real edit.
+pub const POLISH_REVEAL_MIN_WORDS: usize = 2;
+
+/// Words as the reveal rule compares them: lowercased, with every character
+/// that is not a letter or a digit dropped, so `Hello,` and `hello` are the
+/// same word and a lone `—` is no word at all.
+fn reveal_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// How many words `after` changed relative to `before`, ignoring punctuation
+/// and capitals: the larger of words removed and words added outside their
+/// longest common subsequence, so one swapped word counts once. Two rolling
+/// rows keep a long take at O(words) memory.
+pub fn polish_changed_words(before: &str, after: &str) -> usize {
+    let a = reveal_tokens(before);
+    let b = reveal_tokens(after);
+    let mut prev = vec![0usize; b.len() + 1];
+    let mut cur = vec![0usize; b.len() + 1];
+    for x in &a {
+        for (j, y) in b.iter().enumerate() {
+            cur[j + 1] = if x == y {
+                prev[j] + 1
+            } else {
+                cur[j].max(prev[j + 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let common = prev[b.len()];
+    (a.len() - common).max(b.len() - common)
+}
+
+/// Does a polish that changed `changed_words` words earn the toast?
+pub fn polish_reveal_worthy(changed_words: usize) -> bool {
+    changed_words >= POLISH_REVEAL_MIN_WORDS
+}
+
+/// Why "Use original" refused to paste (a tag for the log, never shown).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseOriginalRefusal {
+    /// Another take landed since the toast: its field may no longer hold this
+    /// take, so pasting would put the old words in the wrong place.
+    NotNewest,
+    /// Raw and pasted text match, or the row has no usable raw take.
+    NothingToUndo,
+}
+
+impl UseOriginalRefusal {
+    pub fn tag(self) -> &'static str {
+        match self {
+            UseOriginalRefusal::NotNewest => "not_newest",
+            UseOriginalRefusal::NothingToUndo => "nothing_to_undo",
+        }
+    }
+}
+
+/// WF-05 "Use original" — the text that replaces the polished take in the
+/// field it was pasted into. It is the Undo AI Edit rule ([`undo_ai_edit_text`])
+/// plus one guard: only the NEWEST take can be swapped back, because Undo AI
+/// Edit re-pastes over the newest take in the frontmost field.
+pub fn use_original_for_take<'a>(
+    take_id: &str,
+    newest_id: &str,
+    polished: &str,
+    raw: Option<&'a str>,
+) -> Result<&'a str, UseOriginalRefusal> {
+    if take_id.trim().is_empty() || take_id != newest_id {
+        return Err(UseOriginalRefusal::NotNewest);
+    }
+    undo_ai_edit_text(polished, raw).ok_or(UseOriginalRefusal::NothingToUndo)
 }
 
 // ---------------------------------------------------------------------------
@@ -4501,6 +4597,121 @@ mod tests {
         // A blank raw must never be pasted over the user's text.
         assert_eq!(undo_ai_edit_text("polished text", Some("")), None);
         assert_eq!(undo_ai_edit_text("polished text", Some("   \n ")), None);
+    }
+
+    // --- WF-05 "Polished — Reveal" ----------------------------------------
+
+    fn polish_take(raw: &str, rewrite: &'static str) -> (String, FormattingTrace) {
+        run_cleanup_traced(
+            raw,
+            CleanupLevel::High,
+            DictationMode::Notes,
+            Style::Default,
+            &[],
+            no_dict,
+            move |_| Ok(rewrite.to_string()),
+        )
+    }
+
+    #[test]
+    fn polish_reveal_ignores_punctuation_and_capitals() {
+        assert_eq!(
+            polish_changed_words("so the report is done", "So, the report is done."),
+            0
+        );
+        assert_eq!(
+            polish_changed_words("its fine — really", "Its fine. Really!"),
+            0
+        );
+        assert_eq!(polish_changed_words("dont stop", "don't stop"), 0);
+        assert!(!polish_reveal_worthy(polish_changed_words(
+            "hello world",
+            "Hello, World!"
+        )));
+        // Through the real pipeline: a model that only re-punctuates raises nothing.
+        let (_, trace) = polish_take("the report is done", "The report is done.");
+        assert!(trace.stages.contains(&STAGE_POLISH));
+        assert_eq!(trace.polish_changed_words, 0);
+        assert!(!polish_reveal_worthy(trace.polish_changed_words));
+    }
+
+    #[test]
+    fn polish_reveal_counts_a_real_rewrite() {
+        assert_eq!(
+            polish_changed_words("the report is done", "the report is finished"),
+            1
+        );
+        assert!(!polish_reveal_worthy(1));
+        let n = polish_changed_words(
+            "so basically the report is kind of done now",
+            "The report is now complete.",
+        );
+        assert!(n >= POLISH_REVEAL_MIN_WORDS, "changed {n}");
+        let (_, trace) = polish_take("the report is done", "The quarterly report is finished.");
+        assert!(polish_reveal_worthy(trace.polish_changed_words));
+    }
+
+    #[test]
+    fn polish_reveal_is_zero_when_polish_did_not_run() {
+        let (_, trace) = run_cleanup_traced(
+            "the report is done",
+            CleanupLevel::Light,
+            DictationMode::Notes,
+            Style::Default,
+            &[],
+            no_dict,
+            |_| Err("no_model"),
+        );
+        assert_eq!(trace.polish_changed_words, 0);
+        let (_, refused) = run_cleanup_traced(
+            "the report is done",
+            CleanupLevel::High,
+            DictationMode::Notes,
+            Style::Default,
+            &[],
+            no_dict,
+            |_| Err("deadline"),
+        );
+        assert_eq!(refused.polish_changed_words, 0);
+    }
+
+    #[test]
+    fn use_original_replaces_the_polished_take_with_the_raw_one() {
+        let raw = "the report is done";
+        let (polished, _) = polish_take(raw, "The quarterly report is finished.");
+        // The replace path hands back the verbatim raw take — what is pasted
+        // over the polished text in the same field.
+        assert_eq!(
+            use_original_for_take("t1", "t1", &polished, Some(raw)),
+            Ok(raw)
+        );
+        // Same rule as Undo AI Edit.
+        assert_eq!(
+            use_original_for_take("t1", "t1", &polished, Some(raw)).ok(),
+            undo_ai_edit_text(&polished, Some(raw))
+        );
+    }
+
+    #[test]
+    fn use_original_refuses_a_take_that_is_no_longer_the_newest() {
+        let raw = "the report is done";
+        assert_eq!(
+            use_original_for_take("t1", "t2", "The report is finished.", Some(raw)),
+            Err(UseOriginalRefusal::NotNewest)
+        );
+        assert_eq!(
+            use_original_for_take("", "", "The report is finished.", Some(raw)),
+            Err(UseOriginalRefusal::NotNewest)
+        );
+        assert_eq!(
+            use_original_for_take("t1", "t1", raw, Some(raw)),
+            Err(UseOriginalRefusal::NothingToUndo)
+        );
+        assert_eq!(
+            use_original_for_take("t1", "t1", "text", None),
+            Err(UseOriginalRefusal::NothingToUndo)
+        );
+        assert_eq!(UseOriginalRefusal::NotNewest.tag(), "not_newest");
     }
 
     #[test]

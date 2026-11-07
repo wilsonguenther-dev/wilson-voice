@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { type DictEntry, type DictCandidate } from "../appTypes";
-import { useAppCtx } from "../appShell";
+import { raiseFriendEvent, useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 
@@ -50,7 +50,7 @@ const listRegion: CSSProperties = {
 const emptyCard: CSSProperties = { flexShrink: 0, margin: 0, padding: "16px 24px", gap: 6, minHeight: 0 };
 /* Overrides App.css's narrow-width rule that stacks .dict-add into three rows:
    stacked, the controls alone filled the 720x520 pane and pushed the footer off it. */
-const addRow: CSSProperties = { gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto" };
+const addRow: CSSProperties = { gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto auto" };
 const footer: CSSProperties = {
   flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
   borderTop: "1px solid var(--border)", paddingTop: 10,
@@ -81,6 +81,9 @@ export default function Dictionary() {
       setDictQuery("");
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term added");
+      // yap-1106-friend-visits — Gulp's event: a word went into the Dictionary.
+      // Raised through the shell; the pill applies the quiet rules.
+      raiseFriendEvent("word-added");
     } catch (e) {
       toastError(e);
     }
@@ -124,6 +127,27 @@ export default function Dictionary() {
       toast("Dictionary term updated");
     } catch (e) {
       toastError(e);
+    }
+  }
+  // yap-1106-vocab-bias — words the recogniser is known to mishear
+  // ("Trivia" for Drivia, "Plus Lane" for Postline). Adding twice is harmless:
+  // a word already in the list keeps your spelling.
+  const [addingSuggested, setAddingSuggested] = useState(false);
+  async function addSuggested() {
+    if (addingSuggested) return;
+    setAddingSuggested(true);
+    try {
+      const added = await invoke<number>("add_suggested_dictionary_terms");
+      setDictionary(await invoke("list_dictionary"));
+      toast(
+        added === 0
+          ? "The suggested words are already in your dictionary"
+          : `Added ${added} suggested ${added === 1 ? "word" : "words"}`,
+      );
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setAddingSuggested(false);
     }
   }
   async function acceptCandidate(c: DictCandidate) {
@@ -194,6 +218,16 @@ export default function Dictionary() {
           />
           <button className="primary" onClick={addTerm}>
             Add
+          </button>
+          <button
+            className="ghost"
+            data-dict-suggested
+            onClick={addSuggested}
+            disabled={addingSuggested}
+            aria-busy={addingSuggested}
+            title="Adds names the transcriber often mishears, like Trivia for Drivia"
+          >
+            {addingSuggested ? "Adding…" : "Add suggested words"}
           </button>
         </div>
         {dictionary.length > 0 && (

@@ -268,6 +268,15 @@ function __pillDetect(want) {
     // yap-1106-pill-sky — the pinned time of day must be the sky on screen.
     if (want.sky && de.dataset.sky !== want.sky) bad.push("html[data-sky]=" + de.dataset.sky + " (asked " + want.sky + ")");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
+    // yap-1106-friend-visits — the friend scene must paint Tidy, crisp, unless a
+    // meeting records (then the quiet rule hides every visitor).
+    if (want.id === "friend-visit") {
+      const fv = document.querySelector('[data-friend-visit="tidy"]');
+      // fix-b8-1 — the "Saved" stop beat is as quiet as the recording.
+      if (want.meeting === "recording" || want.meeting === "saved") { if (fv) bad.push("friend visit drawn during a meeting"); }
+      else if (!fv) bad.push("no [data-friend-visit=tidy] visitor");
+      else { const cv = fv.querySelector("canvas"); if (!cv || !cv.width || !cv.height) bad.push("friend visit canvas not painted"); }
+    }
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
     // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
