@@ -49,15 +49,17 @@ export const SKY_CHECK_MS = 30_000;
 /** The pill's scene: the art buffer YappyPill draws into (PW x PH, grass at GY). */
 export const SKY_SCENE = { w: 176, h: 44, gy: 30 } as const;
 
-/** Sun / moon per time of day: where it sits in the scene and its colour. */
+/** Sun / moon per time of day (companions.html section 9 positions), all clear
+ * of Yappy's face at the nub (x 75..101). */
 const DISC: Record<SkyTime, { x: number; y: number; col: string; moon: boolean }> = {
   dawn: { x: 30, y: 22, col: "#ffcf7a", moon: false },
-  day: { x: 40, y: 8, col: "#ffd23f", moon: false },
+  day: { x: 60, y: 8, col: "#ffd23f", moon: false },
   dusk: { x: 140, y: 20, col: "#ff8a3c", moon: false },
-  night: { x: 130, y: 8, col: "#f6f0cf", moon: true },
+  night: { x: 120, y: 8, col: "#f6f0cf", moon: true },
 };
-/** Night only: fixed stars, kept clear of Yappy's face (x 75..101 at the nub). */
-const STARS: ReadonlyArray<readonly [number, number]> = [[12, 4], [30, 5], [52, 12], [60, 3], [112, 6], [150, 4], [164, 14]];
+/** Night only: the design's fixed stars (companions.html section 9), all above
+ * the rows the 22-px nub shows (y 14..22), so the nub is never speckled. */
+const STARS: ReadonlyArray<readonly [number, number]> = [[30, 5], [52, 12], [80, 4], [100, 10], [150, 6], [164, 14]];
 const STAR_BRIGHT = "#fffbe0";
 const STAR_DIM = "#8a8fb8";
 

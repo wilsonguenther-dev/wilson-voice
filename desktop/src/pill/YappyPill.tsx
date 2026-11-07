@@ -1,6 +1,6 @@
 /**
  * YappyPill — the pixel-chick companion, as an actual PILL.
- * At rest the capsule is a SKY-BLUE pill zoomed onto Yappy's tiny face. When you
+ * At rest the capsule is a pill of SKY zoomed onto Yappy's tiny face. When you
  * dictate, a pull-back camera pans out so the pixel WORLD (sky + grass) fills the
  * ENTIRE capsule edge-to-edge — no black box-in-a-box. Longer prompts add props:
  * a paragraph → notepad + pencil in the wing; a few paragraphs → a desk + a pixel
@@ -40,6 +40,9 @@ import { backingScale, dockCentreX, sceneBlit, toDevice } from "./pixelGrid";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout } from "./state";
+// yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
+// cached backdrop blitted once per redraw (pill/sky.ts).
+import { SkyBackdrop, blitSky, skyForced } from "./sky";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -234,14 +237,30 @@ export default function YappyPill(
     const PW = 176, PH = 44, GY = 30, FX = 88, FY = 18;   // face at (FX,FY); grass starts at GY
     const os = document.createElement("canvas"); os.width = PW; os.height = PH; const octx = os.getContext("2d")!;
     const C: Record<string, string> = {
-      sky1: "#8fd6ff", sky2: "#c6ecff", sun: "#fff2b0", cloud: "#fffaf0", grass: "#8fd06a", grassD: "#6fb84e",
+      sun: "#fff2b0",
       body: "#ffd24a", light: "#ffe9a0", dark: "#eba21f", outline: "#6b3a2e", cavity: "#7a2e14", belly: "#fff2c4",
       beak: "#ff9f1c", beakD: "#e07a12", eye: "#3a2f36", white: "#ffffff", blush: "#ff89a8", foot: "#f2861a", tongue: "#ff5d7a", sprout: "#e8a41f",
       paper: "#fffdf5", paperL: "#c9c3ad", desk: "#b06a3a", deskD: "#8a4f28", glass: "#2c2a36",
       pencil: "#ffcf3a", pencilT: "#ff8fb0", tw: "#4a4a55", twD: "#33333d", twKey: "#d8d8e2",
     };
-    const ell = (cx: number, cy: number, rx: number, ry: number, col: string) => { octx.fillStyle = col; for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) { const t = (y + .5 - cy) / ry; if (Math.abs(t) > 1) continue; const hw = rx * Math.sqrt(1 - t * t); octx.fillRect(Math.round(cx - hw), y, Math.max(1, Math.round(2 * hw)), 1); } };
     const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
+    // yap-1106-pill-sky — the sky, sun/moon and grass for the Home room's time of
+    // day, painted into its OWN cached surface only when the time of day changes
+    // (at most four times a day; the clock is read at most every 30 s). Each
+    // redraw is ONE drawImage of it (`blitSky`). A dev/matrix build may pin it
+    // with `float.html?sky=dawn|day|dusk|night`; <html data-sky> says which is up.
+    const skyCanvas = document.createElement("canvas"); skyCanvas.width = PW; skyCanvas.height = PH;
+    const forcedSky = (import.meta.env.DEV || __YAP_PILL_MATRIX__) ? skyForced(new URLSearchParams(window.location.search).get("sky")) : null;
+    const sky = new SkyBackdrop<HTMLCanvasElement>(
+      { image: skyCanvas, ctx: skyCanvas.getContext("2d")! }, PW, PH, GY, () => new Date(), forcedSky,
+      (look, builds) => {
+        document.documentElement.dataset.sky = look.time;
+        console.info(`pill sky_change time=${look.time} builds=${builds} forced=${forcedSky ? 1 : 0}`);
+      },
+    );
+    // the capsule's own fill follows the same sky; one gradient, rebuilt only
+    // when the time of day or the capsule's box changes
+    let capGrad: CanvasGradient | null = null, capGradKey = "";
 
     interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
 
@@ -253,17 +272,9 @@ export default function YappyPill(
     function drawScene(A: SP) {
       octx.clearRect(0, 0, PW, PH);
       const w = A.world;
-      { octx.globalAlpha = Math.max(0.8, w);
-        octx.fillStyle = C.sky1; octx.fillRect(0, 0, PW, GY);
-        octx.fillStyle = C.sky2; octx.fillRect(0, 0, PW, 7);
-        ell(20, 8, 5, 5, C.sun);
-        // slow drifting clouds
-        const cd = (elapsed * 2) % (PW + 20), cX = (x: number) => ((x + cd) % (PW + 20)) - 10;
-        ell(cX(120), 7, 7, 2, C.cloud); ell(cX(126), 7, 4, 2, C.cloud); ell(cX(64), 11, 6, 2, C.cloud);
-        octx.fillStyle = C.grass; octx.fillRect(0, GY, PW, PH - GY); octx.fillStyle = C.grassD; octx.fillRect(0, GY, PW, 2);
-        for (let x = 3; x < PW; x += 9) rct(x, GY - 2, 1, 2, C.grassD);
-        octx.globalAlpha = 1;
-      }
+      // yap-1106-pill-sky — the whole backdrop in ONE blit (no drifting clouds:
+      // nothing in the sky moves between time-of-day changes).
+      blitSky(octx, sky, performance.now(), Math.max(0.8, w));
       const cx = FX - (A.prop === "desk" ? 6 : 0), feet = GY;
       // notepad slides in from the side when noting
       if (A.prop === "pad" && A.propIn > .05) { const px = cx + 13 + (1 - A.propIn) * 18, py = GY - 12;
@@ -512,9 +523,14 @@ export default function YappyPill(
       reportPillHitbox(x0, y0, capW, capH);
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
-      // SKY-BLUE capsule fill (not obsidian)
-      const g = ctx.createLinearGradient(0, y0, 0, y0 + capH); g.addColorStop(0, "#c6ecff"); g.addColorStop(1, "#8fd6ff");
-      ctx.fillStyle = g; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
+      // the capsule fill is the same time-of-day sky (not obsidian)
+      const look = sky.look, gKey = `${look ? look.time : "-"}|${y0}|${capH}`;
+      if (!capGrad || gKey !== capGradKey) {
+        capGrad = ctx.createLinearGradient(0, y0, 0, y0 + capH);
+        capGrad.addColorStop(0, look ? look.top : "#8fd6ff"); capGrad.addColorStop(1, look ? look.bot : "#c6ecff");
+        capGradKey = gKey;
+      }
+      ctx.fillStyle = capGrad; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
       ctx.save(); rr(x0 + 1, y0 + 1, capW - 2, capH - 2, (capH - 2) / 2); ctx.clip(); ctx.imageSmoothingEnabled = false;
       // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
       const iw = capW - 2, ih = capH - 2;

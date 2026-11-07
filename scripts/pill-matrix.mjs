@@ -69,6 +69,11 @@
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
  *           for a PR, never a commit — do not point this inside the repo.
  *   --only  a phase by variant (model-loading) or product id (model_loading).
+ *   --sky   yap-1106-pill-sky: the time of day the pill's sky is pinned to
+ *           (dawn|day|dusk|night, or "all" to walk every phase x dock under
+ *           each of the four). Default day, so a PNG never depends on the
+ *           hour the matrix ran. A sky the page did not apply (<html data-sky>)
+ *           is a phase-not-applied finding.
  *
  * ENV  YAP_SMOKE_CHROME (Chromium path, shared with the smoke), YAP_PILL_PORT
  *      (preview port; default: a free one), YAP_PILL_SETTLE_MS (default 900).
@@ -96,28 +101,32 @@ const CHARACTERS = ["yappy"];
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
 const MEETINGS = ["none", "recording"];
 const SETTLE_MS = Number(process.env.YAP_PILL_SETTLE_MS || 900);
+/* yap-1106-pill-sky — the Home room's four times of day (desktop/src/pill/sky.ts SKY_TIMES). */
+const SKY_TIMES = ["dawn", "day", "dusk", "night"];
 const CHROME =
   process.env.YAP_SMOKE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 /* ── args ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const a = { out: null, only: null, selfTest: false };
+  const a = { out: null, only: null, sky: "day", selfTest: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
-    if (k === "--out" || k === "--only") {
+    if (k === "--out" || k === "--only" || k === "--sky") {
       const v = argv[++i];
       if (!v || v.startsWith("--")) usage(k + " needs a value");
       a[k.slice(2)] = v;
     } else if (k.startsWith("--out=")) a.out = k.slice(6);
     else if (k.startsWith("--only=")) a.only = k.slice(7);
+    else if (k.startsWith("--sky=")) a.sky = k.slice(6);
     else if (k === "--self-test-must-fail") a.selfTest = true;
     else usage("unknown argument " + k);
   }
+  if (a.sky !== "all" && !SKY_TIMES.includes(a.sky)) usage("--sky must be one of " + SKY_TIMES.join("|") + "|all");
   return a;
 }
 function usage(msg) {
-  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--self-test-must-fail]");
+  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--sky <dawn|day|dusk|night|all>] [--self-test-must-fail]");
   process.exit(2);
 }
 const ARGS = parseArgs(process.argv.slice(2));
@@ -194,6 +203,8 @@ function __pillDetect(want) {
     // WF-02 — a drag scene must actually be in the blob, with its drop zones up.
     if (want.drag && de.dataset.pillDrag !== want.drag) bad.push("html[data-pill-drag]=" + de.dataset.pillDrag + " (asked " + want.drag + ")");
     if (want.drag && !de.dataset.pillDragTarget) bad.push("no html[data-pill-drag-target] (drop zones not lit)");
+    // yap-1106-pill-sky — the pinned time of day must be the sky on screen.
+    if (want.sky && de.dataset.sky !== want.sky) bad.push("html[data-sky]=" + de.dataset.sky + " (asked " + want.sky + ")");
     if (de.dataset.dock !== want.dock) bad.push("html[data-dock]=" + de.dataset.dock + " (asked " + want.dock + ")");
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
@@ -453,7 +464,10 @@ async function contactSheet(cdp, rows, outDir) {
   await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }, s);
   const head = ["", ...CHARACTERS.flatMap((c) => DOCKS.flatMap((d) => MEETINGS.map((m) => c + " · " + d + (m === "none" ? "" : " · meeting"))))];
   const byPhase = new Map();
-  for (const r of rows) (byPhase.get(r.id) || byPhase.set(r.id, []).get(r.id)).push(r);
+  // yap-1106-pill-sky — under --sky all, one row per phase x time of day.
+  const skyRows = new Set(rows.map((r) => r.sky)).size > 1;
+  const rowKey = (r) => r.id + (skyRows && r.sky ? " · " + r.sky : "");
+  for (const r of rows) (byPhase.get(rowKey(r)) || byPhase.set(rowKey(r), []).get(rowKey(r))).push(r);
   let html = '<html><body style="margin:12px;background:#1d1f24;color:#e6e6e6;font:12px -apple-system,system-ui,sans-serif">' +
     '<table style="border-collapse:separate;border-spacing:6px"><tr>' + head.map((h) => "<th>" + h + "</th>").join("") + "</tr>";
   for (const [id, list] of byPhase) {
@@ -531,24 +545,25 @@ async function run() {
     const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
     s = await openPage(cdp, tones);
     console.log("pill-matrix: " + todo.length + " phase(s) x " + DOCKS.length + " docks x " + CHARACTERS.length + " characters x " + MEETINGS.length + " meeting states, legacy " + W + "x" + H + " / one-pill sized to its layout, @" + SCALE + "x -> " + outDir);
-    for (const p of todo) {
+    const skies = ARGS.sky === "all" ? SKY_TIMES : [ARGS.sky];
+    for (const sky of skies) for (const p of todo) {
       for (const character of CHARACTERS) {
         for (const dock of DOCKS) {
           for (const meeting of MEETINGS) {
-            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
+            const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + "&sky=" + sky + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
             cdp.errors.set(s, []);
             await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
             await cdp.send("Page.navigate", { url: base + "/float.html" + q }, s);
             await settle(cdp, s, p.phaseId || p.id);
             const size = await fitPanel(cdp, s);
             await evaluate(cdp, s, DETECTORS + ";true");
-            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting }) + ")");
-            const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + ".png");
+            const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: p.id, phaseId: p.phaseId, license: p.license, offer: p.offer, chip: p.chip, drag: p.drag, pill: character, dock, meeting, sky }) + ")");
+            const file = join(outDir, p.id + "__" + character + "__" + dock + "__" + meeting + (skies.length > 1 ? "__" + sky : "") + ".png");
             await shoot(cdp, s, file);
             const pageErrors = (cdp.errors.get(s) || []).slice(0, 4);
-            captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, meeting, w: size.w, h: size.h, line: res.line, findings: res.findings, pageErrors, shot: file });
+            captures.push({ id: p.id, phase: p.phase, tone: p.tone, character, dock, meeting, sky, w: size.w, h: size.h, line: res.line, findings: res.findings, pageErrors, shot: file });
             const tag = res.findings.length ? "FAIL" : "ok  ";
-            console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + meeting.padEnd(10) + (size.w + "x" + size.h).padEnd(8) + JSON.stringify(res.line).padEnd(34) + file);
+            console.log(tag + " " + p.id.padEnd(14) + character.padEnd(8) + dock.padEnd(7) + meeting.padEnd(10) + sky.padEnd(6) + (size.w + "x" + size.h).padEnd(8) + JSON.stringify(res.line).padEnd(34) + file);
             for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
             for (const e of pageErrors) console.log("       page: " + e.split("\n")[0]);
           }
@@ -557,7 +572,7 @@ async function run() {
     }
     const sheet = await contactSheet(cdp, captures, outDir);
     const failed = captures.filter((c) => c.findings.length);
-    writeFileSync(join(outDir, "result.json"), JSON.stringify({ window: W + "x" + H + "@" + SCALE + "x", only: ARGS.only, phases: todo.map((p) => p.id), captures: captures.length, failing: failed.length, contactSheet: sheet, captures_: captures }, null, 2));
+    writeFileSync(join(outDir, "result.json"), JSON.stringify({ window: W + "x" + H + "@" + SCALE + "x", only: ARGS.only, skies, phases: todo.map((p) => p.id), captures: captures.length, failing: failed.length, contactSheet: sheet, captures_: captures }, null, 2));
     console.log("");
     console.log("pill-matrix: " + captures.length + " captures, " + failed.length + " carrying findings");
     console.log("pill-matrix: PNGs + result.json + contact-sheet.png in " + outDir + " (PR evidence — never commit them)");
