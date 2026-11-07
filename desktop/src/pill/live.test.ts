@@ -923,7 +923,7 @@ describe("yap-qa-hotkey-walk-binding — fn alone under fn⌃ says why", () => {
     expect(css).toMatch(/html\[data-fn-hint="true"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
     const shell = readSibling("../float-main.tsx");
     expect(shell).toContain("listen<string>(FN_HINT_EVENT");
-    expect(shell).toContain("stripLine(line, stillRecording, fnHint, chordLabel)");
+    expect(shell).toContain("stripLine(line, stillRecording, fnHint ?? pasteWaitHint(lastStage, phase), chordLabel)");
   });
 });
 
@@ -1262,7 +1262,7 @@ describe("yap24-PILL4 — hands-free looks different from hold", () => {
     expect(shell).toContain("handsFree: !!st.handsFree");
     expect(shell).toContain("handsFreeLabel(chordLabel)");
     expect(shell).toContain('className="lock-chip"');
-    expect(shell).toContain("stripLine(line, stillRecording, fnHint, chordLabel)");
+    expect(shell).toContain("stripLine(line, stillRecording, fnHint ?? pasteWaitHint(lastStage, phase), chordLabel)");
     const css = readSibling("../float.css");
     expect(css).toMatch(/html\[data-phase="listening_locked"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
     const rust = readSibling("../../src-tauri/src/lib.rs");

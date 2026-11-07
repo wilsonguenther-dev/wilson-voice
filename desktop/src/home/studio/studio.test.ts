@@ -275,3 +275,17 @@ describe("every station reads real app state", () => {
     expect(label).toContain("Cinder is at the back door");
   });
 });
+
+describe("yap-1106-news-home-briefing Cinder's flight in the room (integrator, loop3 batch 3)", () => {
+  it("mid-flight Cinder carries a heart; landed (or reduce motion) draws none", () => {
+    const pink = (r: Raster) => {
+      let n = 0;
+      for (let i = 0; i < r.data.length; i += 4) if (r.data[i] === 0xff && r.data[i + 1] === 0x5a && r.data[i + 2] === 0x7a && r.data[i + 3] > 0) n++;
+      return n;
+    };
+    const flying = paint((r) => drawMid(r, st({ newsReady: true, cinderFlight: 0.5 }), 0));
+    const landed = paint((r) => drawMid(r, st({ newsReady: true, cinderFlight: 1 }), 0));
+    expect(pink(flying)).toBeGreaterThan(pink(landed));
+    expect(Array.from(flying.data)).not.toEqual(Array.from(landed.data));
+  });
+});

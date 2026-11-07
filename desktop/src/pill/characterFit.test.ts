@@ -320,7 +320,12 @@ describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifa
     for (const phase of ["idle", "sleepy"] as const) for (const dpr of DPRS) {
       const c = pillCamera({ x: 0, y: 0, ...capsuleSize(phase, 1) }, dpr);
       expect(c.fits, `${phase} dpr=${dpr}`).toBe(true);
-      expect(cssPerArtPx(c.blit, dpr), `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+      // macOS backing scales are whole (1x, 2x): there the resting pill is at
+      // least one CSS px per art px. At a fractional 1.5 no whole cell above 1
+      // fits a 56 px shell (nor the previous 59 px one): it keeps cell 1, as
+      // before this item, never less (integrator, loop3 batch 3).
+      if (Number.isInteger(dpr)) expect(cssPerArtPx(c.blit, dpr), `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+      else expect(c.blit.cell, `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
     }
   });
 

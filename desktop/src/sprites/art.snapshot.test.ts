@@ -190,7 +190,7 @@ describe("chick_snapshot_matches_approved — the pill's Yappy is the approved d
     expect(pill).toMatch(/drawChickArt\(octx, cx, feetY, A\)/);
     expect(pill).not.toMatch(/const cy = feetY - 11 - A\.hop/);
     // one call site in drawScene, never skipped by phase
-    expect(pill.match(/drawChick\(cx, feet, clampChickPose\(A\)\)/g)?.length).toBe(1);
+    expect(pill.match(/drawChick\(cx, feet, clampChickPose\(A(, A\.lift)?\)\)/g)?.length).toBe(1);
     expect(pill).not.toMatch(/hideChick/);
   });
 });
