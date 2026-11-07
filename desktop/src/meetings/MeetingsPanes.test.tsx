@@ -11,8 +11,10 @@ import {
   DetailTabs,
   ListSkeleton,
   MeetingFilters,
+  PeopleChipLine,
   PeopleChips,
   PeopleTab,
+  moreChipLabel,
   PickAMeeting,
   RecordingHero,
   UndoDeleteBar,
@@ -130,6 +132,63 @@ describe("recording hero + undo", () => {
   });
 });
 
+describe("yap-1107-meetings-row-chips-baseline: the list row's one chip line", () => {
+  const SIX = ["You", "Call", "Speaker 2", "Dana", "Eli", "Fay"];
+
+  it("folds the people that do not fit into a +N chip that names them", () => {
+    const html = renderToStaticMarkup(<PeopleChipLine people={SIX} shown={3} />);
+    expect(html).toContain('data-people-more="3"');
+    expect(html).toContain(">+3</span>");
+    expect(html).toContain(`aria-label="${moreChipLabel(["Dana", "Eli", "Fay"])}"`);
+    expect(moreChipLabel(["Dana", "Eli", "Fay"])).toBe("3 more: Dana, Eli, Fay");
+    // The folded chips stay measurable but hidden from sight and from VoiceOver.
+    expect(html.match(/person-chip is-overflow" data-person-chip="\d" aria-hidden="true"/g)?.length).toBe(3);
+    expect(html).toContain('class="person-chip is-you" data-person-chip="0"');
+  });
+
+  it("shows every chip and an inert +N probe when all fit", () => {
+    const html = renderToStaticMarkup(<PeopleChipLine people={["You", "Call"]} shown={2} />);
+    expect(html).not.toContain("is-overflow\" data-person-chip");
+    expect(html).toContain('class="person-chip people-more is-overflow" data-people-more="0"');
+    expect(html).not.toContain("more:");
+  });
+
+  it("clamps a bad count instead of throwing", () => {
+    expect(renderToStaticMarkup(<PeopleChipLine people={SIX} shown={-2} />)).toContain('data-people-more="6"');
+    expect(renderToStaticMarkup(<PeopleChipLine people={SIX} shown={99} />)).toContain('data-people-more="0"');
+  });
+
+  it("is one line in a list row (fit) and wraps only in the detail header", () => {
+    const fit = renderToStaticMarkup(<PeopleChips people={SIX} fit />);
+    expect(fit).toContain('class="people-chips is-fit"');
+    expect(fit).toContain('data-people-chips="6"');
+    const head = renderToStaticMarkup(<PeopleChips people={SIX} />);
+    expect(head).toContain('class="people-chips"');
+    expect(head).not.toContain("people-more");
+    expect(renderToStaticMarkup(<PeopleChips people={[]} fit />)).toBe("");
+  });
+
+  it("gives the state chip a person chip's box on the row's chip line, centred, never wrapping", () => {
+    const chips = meetingsCss.match(/\.meeting-row-chips\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(chips).toMatch(/flex-wrap:\s*nowrap/);
+    expect(chips).toMatch(/align-items:\s*center/);
+    const box = meetingsCss.match(/\.meeting-row-chips \.person-chip,\s*\.meeting-row-chips \.meeting-state\s*\{([^}]*)\}/)?.[1] ?? "";
+    for (const prop of ["font-size: var(--text-xs)", "line-height: var(--meeting-chip-line)", "padding: 1px var(--space-2)", "border-width: 1px"])
+      expect(box).toContain(prop);
+    const fitLine = meetingsCss.match(/\.meeting-row-chips \.people-chips\.is-fit\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(fitLine).toMatch(/flex-wrap:\s*nowrap/);
+    expect(fitLine).toMatch(/overflow:\s*hidden/);
+    // Line 1 = title then time; line 2 = chips then the state chip; no detail line.
+    const rowAt = meetingsView.indexOf('className="meeting-row-line1"');
+    const chipsAt = meetingsView.indexOf("data-meeting-row-chips");
+    expect(rowAt).toBeGreaterThan(0);
+    expect(chipsAt).toBeGreaterThan(rowAt);
+    expect(meetingsView.indexOf('className="meeting-row-when"', rowAt)).toBeLessThan(chipsAt);
+    expect(meetingsView).not.toContain("meeting-row-detail");
+    expect(meetingsView).toContain("data-meeting-progress");
+  });
+});
+
 describe("the Meetings view source", () => {
   it("is two panes with the list on the left and the detail on the right", () => {
     expect(meetingsView).toContain('className="meetings-list-pane"');
@@ -140,7 +199,7 @@ describe("the Meetings view source", () => {
 
   it("groups the list by date and carries people chips and the state chip per row", () => {
     expect(meetingsView).toContain("groupMeetings(");
-    expect(meetingsView).toContain("<PeopleChips people={listPeople(m)} />");
+    expect(meetingsView).toContain("<PeopleChips people={listPeople(m)} fit />");
     expect(meetingsView).toContain("className={`meeting-state ${m.state}`}");
   });
 

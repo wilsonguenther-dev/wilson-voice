@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
-  canCancelNotes, canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
-  summaryFirstLine, transcribedLabel, transcribePercent, transcribeProgress,
+  canRetryTranscript, meetingActions, meetingStateLabel, notesLabel, retryNotesLabel,
+  transcribedLabel, transcribePercent, transcribeProgress,
 } from "../meetings/progress";
 import NotesView, { StreamingNotes } from "../meetings/NotesView";
 import ExportMenu, { FloatingMenu, exportItems, type ExportAction } from "../meetings/ExportMenu";
@@ -615,11 +615,10 @@ export default function Meetings() {
                   <ul className="meetings-list">
                     {g.meetings.map((m) => {
                       const tp = transcribeProgress(m, progress[m.id]);
-                      const notes = summaryFirstLine(m.summary);
+                      const tpPct = tp ? transcribePercent(tp) : null;
                       const stateLabel = tp
-                        ? `Transcribing ${transcribePercent(tp)}%`
+                        ? `Transcribing ${tpPct}%`
                         : meetingStateLabel(m.state, progress[m.id], Boolean(m.summary));
-                      const notesJob = notesLabel(progress[m.id]);
                       // yap24-NT6: one pure decision for every button.
                       const actions = meetingActions(m, progress[m.id], Boolean(m.summary));
                       const isOpen = openId === m.id;
@@ -637,6 +636,15 @@ export default function Meetings() {
                           {/* yap-1107-meetings-row-whole-click-target — this button IS the
                               card: it fills the li edge to edge (the padding lives inside
                               it), so a press anywhere on the row opens the meeting. */}
+                          {/* yap-1107-meetings-row-chips-baseline — §3.3 row anatomy, two
+                              lines, every row the same height: line 1 = title (ellipsis) |
+                              time · duration (right); line 2 = the people chips on ONE
+                              line (overflow folds into "+N", never wraps) then the state
+                              chip, the same box as a chip so the line shares one baseline.
+                              The notes' first line and the failure text moved off the row
+                              (the detail beside it shows both; the failure is the chip's
+                              tooltip): a third line on some rows made the list ragged. A
+                              transcribing row's real progress fills its own state chip. */}
                           <button
                             type="button"
                             className="meeting-row-main"
@@ -646,35 +654,35 @@ export default function Meetings() {
                             onFocus={() => setSelected(m.id)}
                             onClick={(e) => openRow(m.id, e.detail === 0 ? "keyboard" : "pointer")}
                           >
-                            <span className="meeting-row-head">
+                            <span className="meeting-row-line1">
                               <span className="meeting-row-title">{m.title}</span>
-                              <span className={`meeting-state ${m.state}`}>{stateLabel}</span>
+                              <span className="meeting-row-when">
+                                {formatTime(m.startedAt)} · {formatMeetingDuration(m.durationSeconds)}
+                              </span>
                             </span>
-                            <span className="meeting-row-when">
-                              {formatTime(m.startedAt)} · {formatMeetingDuration(m.durationSeconds)}
-                            </span>
-                            {m.error ? (
-                              <span className="meeting-row-detail bad">{m.error}</span>
-                            ) : tp ? (
-                              <span className="meeting-row-detail" data-meeting-progress>
+                            <span className="meeting-row-chips" data-meeting-row-chips>
+                              <PeopleChips people={listPeople(m)} fit />
+                              {tp && tpPct !== null ? (
                                 <span
-                                  className="meeting-row-track"
+                                  className={`meeting-state ${m.state}`}
+                                  data-meeting-progress
                                   role="progressbar"
                                   aria-label={`${m.title} transcription`}
-                                  aria-valuenow={transcribePercent(tp)}
+                                  aria-valuenow={tpPct}
                                   aria-valuemin={0}
                                   aria-valuemax={100}
+                                  aria-valuetext={transcribedLabel(tp)}
+                                  title={transcribedLabel(tp)}
+                                  style={{ "--meeting-progress": `${tpPct}%` } as CSSProperties}
                                 >
-                                  <span style={{ width: `${transcribePercent(tp)}%` }} />
+                                  {stateLabel}
                                 </span>
-                                <span>{transcribedLabel(tp)}</span>
-                              </span>
-                            ) : notes ? (
-                              <span className="meeting-row-detail">{notes}</span>
-                            ) : m.state === "complete" && notesJob && canCancelNotes(progress[m.id]) ? (
-                              <span className="meeting-row-detail">{notesJob}</span>
-                            ) : null}
-                            <PeopleChips people={listPeople(m)} />
+                              ) : (
+                                <span className={`meeting-state ${m.state}`} title={m.error ?? stateLabel}>
+                                  {stateLabel}
+                                </span>
+                              )}
+                            </span>
                           </button>
                           {/* yap-1107-meetings-row-actions-no-overlay — the row keeps no
                               hover bar: Export and Delete live in the detail header, on

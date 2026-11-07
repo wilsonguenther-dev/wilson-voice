@@ -53,8 +53,24 @@
  *       build origin/main's desktop to a dir and run this script with
  *       --dist <that dir> --label before (its checks are EXPECTED to fail).
  *
+ * yap-1107-meetings-row-chips-baseline adds (same run, same fixture plus a
+ * row with You + Call + Speaker 2 and one with six people; at 1190x773 AND at
+ * the narrowest two-pane width, 900 px):
+ *   B1  per row, every visible people chip, the "+N" chip and the state chip
+ *       share one line (rect tops within 1 px) and one text baseline (rect
+ *       bottom − padding-bottom − border-bottom within 1 px).
+ *   B2  §3.3 anatomy: line 1 = title then time · duration on the same line,
+ *       the time right-aligned; line 2 (chips, then the state chip) wholly
+ *       below line 1; no two content pieces intersect — idle, hover, selected.
+ *   B3  no chip line wraps or clips a chip: the six-person row shows a "+N"
+ *       chip, N = the people not shown, its aria-label naming them.
+ *   B4  every row in the list has the same height (within 0.5 px; a
+ *       transcribing row included — its progress lives in its state chip).
+ *   B5  PNGs: <label>-idle / -selected / -hover at 1190, <label>-idle-900, and
+ *       <label>-list[-900] crops of the list pane.
+ *
  * USAGE   node scripts/meetings-row-shots.mjs [--out <dir>] [--label after|before] [--dist <built dist>]
- *   --out    default docs/loop/evidence/yap-1107-meetings-row-actions-no-overlay
+ *   --out    default docs/loop/evidence/yap-1107-meetings-row-chips-baseline
  *   --label  PNG name prefix (default "after"). The BEFORE shots come from the
  *            same script run in an origin/main worktree with --label before; it
  *            is EXPECTED to exit 1 there (the overlap is the defect).
@@ -71,11 +87,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TAURI_SHIM, evaluate, openChrome, sleep } from "./headless-chrome.mjs";
 
-const ID = "yap-1107-meetings-row-actions-no-overlay";
+// The first item's evidence lives in docs/loop/evidence/yap-1107-meetings-row-actions-no-overlay/;
+// new runs write under the chips-baseline item (pass --out for the other).
+const ID = "yap-1107-meetings-row-chips-baseline";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESKTOP = join(ROOT, "desktop");
 const W = 1190;
 const H = 773;
+const W_NARROW = 900; // TWO_PANE_MIN_WIDTH: the narrowest width that still shows two panes
 const SCALE = 2;
 const SETTLE_MS = Number(process.env.YAP_ROW_SHOTS_SETTLE_MS || 700);
 const CHROME =
@@ -121,6 +140,19 @@ const MEETINGS = [
     sysWavPath: "/tmp/fixture-sys.wav",
     summary: "Launch moves to the 14th; checkout must be ready first.\n- owner: Wilson",
     summaryModel: "fixture",
+    // The list row's names when the backend knows them (Meeting.people).
+    people: ["You", "Call", "Speaker 2"],
+  }),
+  meeting({
+    id: "m-six-0006",
+    title: "Board prep",
+    startedAt: iso(2 * HOUR),
+    durationSeconds: 2710,
+    state: "complete",
+    sysWavPath: "/tmp/fixture-sys.wav",
+    summary: "Numbers for the deck are final.",
+    summaryModel: "fixture",
+    people: ["You", "Call", "Speaker 2", "Dana Whitfield", "Eli", "Fay"],
   }),
   meeting({ id: "m-short-0002", title: "Retro", startedAt: iso(3 * HOUR), durationSeconds: 412, state: "complete", kind: "in_person" }),
   meeting({
@@ -190,6 +222,89 @@ const MEASURE = String.raw`((only) => {
     out.push({ id, top: rr.t, height: rr.h, actions: actions.length, content: content.length, bad });
   }
   return out;
+})`;
+
+/* yap-1107-meetings-row-chips-baseline — B1..B4, measured on the row itself
+   (not on the new line-2 wrapper) so a BEFORE run measures the old layout. */
+const CHIPS = String.raw`((sixId) => {
+  const vis = (el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) > 0.01 && r.width > 0 && r.height > 0;
+  };
+  const R = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, h: r.height }; };
+  const hit = (a, b) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5;
+  const base = (el) => {
+    const cs = getComputedStyle(el);
+    return el.getBoundingClientRect().bottom - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth);
+  };
+  const out = [];
+  const heights = [];
+  for (const row of document.querySelectorAll("li.meeting-row[data-meeting-id]")) {
+    const id = row.dataset.meetingId;
+    const bad = [];
+    heights.push([id, row.getBoundingClientRect().height]);
+    const title = row.querySelector(".meeting-row-title");
+    const when = row.querySelector(".meeting-row-when");
+    const state = row.querySelector(".meeting-state");
+    const people = [...row.querySelectorAll(".person-chip")].filter(vis);
+    const chips = state && vis(state) ? [...people, state] : people;
+    // B1 — one line, one baseline.
+    if (chips.length > 1) {
+      const tops = chips.map((c) => R(c).t);
+      const bases = chips.map(base);
+      const dt = Math.max(...tops) - Math.min(...tops);
+      const db = Math.max(...bases) - Math.min(...bases);
+      if (dt > 1) bad.push(["B1", "chip tops differ by " + dt.toFixed(2) + " px (not one line)"]);
+      if (db > 1) bad.push(["B1", "chip baselines differ by " + db.toFixed(2) + " px"]);
+    }
+    // B2 — anatomy and zero intersections.
+    if (!title || !when || !state) bad.push(["B2", "missing title/time/state chip"]);
+    else {
+      const t = R(title), w = R(when), line = title.parentElement ? R(title.parentElement) : t;
+      if (!(w.t < t.b && w.b > t.t)) bad.push(["B2", "time · duration is not on the title's line"]);
+      if (w.l < t.r - 0.5) bad.push(["B2", "time · duration starts before the title ends"]);
+      if (Math.abs(line.r - w.r) > 1) bad.push(["B2", "time · duration is not right-aligned (" + (line.r - w.r).toFixed(1) + " px short)"]);
+      const line1Bottom = Math.max(t.b, w.b);
+      for (const c of chips) if (R(c).t < line1Bottom - 0.5) bad.push(["B2", "chip '" + c.textContent.trim() + "' is not below line 1"]);
+      const lastPerson = people[people.length - 1];
+      if (lastPerson && R(state).l < R(lastPerson).r - 0.5) bad.push(["B2", "the state chip is not after the people chips"]);
+      const pieces = [["title", title], ["when", when], ...chips.map((c) => ["chip:" + c.textContent.trim(), c])];
+      for (const sel of [".meeting-row-detail", "[data-meeting-row-status] button"])
+        for (const el of row.querySelectorAll(sel)) if (vis(el)) pieces.push([sel, el]);
+      for (let i = 0; i < pieces.length; i++)
+        for (let j = i + 1; j < pieces.length; j++)
+          if (pieces[i][1].contains(pieces[j][1]) || pieces[j][1].contains(pieces[i][1])) continue;
+          else if (hit(R(pieces[i][1]), R(pieces[j][1]))) bad.push(["B2", "overlap " + pieces[i][0] + " x " + pieces[j][0]]);
+    }
+    // B3 — no clipped chip; the six-person row folds into "+N" that names the rest.
+    const holder = people[0] ? people[0].parentElement : null;
+    if (holder) {
+      const hr = R(holder);
+      for (const c of people) {
+        const r = R(c);
+        if (r.r > hr.r + 0.5 || r.l < hr.l - 0.5) bad.push(["B3", "chip '" + c.textContent.trim() + "' is clipped by its line"]);
+      }
+    }
+    let more = null;
+    if (id === sixId) {
+      const m = [...row.querySelectorAll("[data-people-more]")].find(vis);
+      const shown = people.filter((c) => !c.hasAttribute("data-people-more")).length;
+      if (!m) bad.push(["B3", "six people and no visible +N chip (shown " + shown + ")"]);
+      else {
+        const n = Number(m.dataset.peopleMore);
+        more = { text: m.textContent.trim(), label: m.getAttribute("aria-label"), shown };
+        if (m.textContent.trim() !== "+" + n) bad.push(["B3", "+N chip reads '" + m.textContent.trim() + "' for " + n]);
+        if (shown + n !== 6) bad.push(["B3", "shown " + shown + " + folded " + n + " != 6 people"]);
+        if (!(m.getAttribute("aria-label") || "").startsWith(n + " more: ")) bad.push(["B3", "+N chip has no accessible list of names"]);
+      }
+    }
+    out.push({ id, bad, more, chips: chips.map((c) => c.textContent.trim()) });
+  }
+  // B4 — one row height.
+  const hs = heights.map(([, h]) => h);
+  const spread = hs.length ? Math.max(...hs) - Math.min(...hs) : 0;
+  return { rows: out, heights, spread };
 })`;
 
 const MENU_CHECK = String.raw`((name) => {
@@ -544,6 +659,22 @@ async function run() {
     const judge = (state, rows) => {
       for (const r of rows) for (const b of r.bad) fail("A1", `${state} ${r.id}: ${b}`);
     };
+    const chipsJudge = async (state) => {
+      const c = await evaluate(cdp, s, `${CHIPS}("m-six-0006")`);
+      for (const r of c.rows) for (const [check, b] of r.bad) fail(check, `${state} ${r.id}: ${b}`);
+      if (c.spread > 0.5) fail("B4", `${state}: row heights differ by ${c.spread.toFixed(2)} px ${JSON.stringify(c.heights)}`);
+      const six = c.rows.find((r) => r.id === "m-six-0006");
+      if (!six) fail("B3", `${state}: the six-person fixture row is missing`);
+      console.log(`chips ${state} ` + JSON.stringify({ spread: c.spread, six: six && six.more, rows: c.rows.map((r) => [r.id, r.chips]) }));
+      return c;
+    };
+    const listShot = async (name) => {
+      await sleep(SETTLE_MS);
+      const r = await evaluate(cdp, s, `(() => { const p = document.querySelector(".meetings-list-pane"); if (!p) return null; const b = p.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: Math.min(b.height, innerHeight - b.top) }; })()`);
+      if (!r) { fail("B5", "no list pane to crop for " + name); return; }
+      const png = await cdp.send("Page.captureScreenshot", { format: "png", clip: { ...r, scale: 1 } }, s);
+      writeFileSync(join(OUT, `${LABEL}-${name}.png`), Buffer.from(png.data, "base64"));
+    };
 
     // idle — pointer parked outside the list, nothing focused.
     await mouse(cdp, s, "mouseMoved", W - 4, H - 4);
@@ -552,7 +683,9 @@ async function run() {
     const idle = await measure();
     judge("idle", idle);
     console.log("idle " + JSON.stringify(idle.map((r) => [r.id, r.height, r.actions])));
+    await chipsJudge("idle-1190");
     await shot(cdp, s, "idle");
+    await listShot("list");
 
     // hover — each row in turn; A2: no row's height or top moves.
     for (const r of idle) {
@@ -562,6 +695,7 @@ async function run() {
       await sleep(250);
       const rows = await measure(r.id);
       judge("hover", rows);
+      await chipsJudge("hover-" + r.id);
       for (const cur of rows) {
         const was = idle.find((x) => x.id === cur.id);
         if (!was) continue;
@@ -587,7 +721,21 @@ async function run() {
     const sel = await evaluate(cdp, s, `document.querySelectorAll("li.meeting-row.selected").length`);
     if (!sel) fail("A1", "ArrowDown selected no row");
     judge("selected", await measure());
+    await chipsJudge("selected-1190");
     await shot(cdp, s, "selected");
+
+    // B1..B4 again at the narrowest two-pane width, then back to 1190.
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: W_NARROW, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+    await sleep(400);
+    const twoPane = await evaluate(cdp, s, `getComputedStyle(document.querySelector(".meetings-list-pane")).display !== "none" && getComputedStyle(document.querySelector(".meetings-detail-pane")).display !== "none"`);
+    if (!twoPane) fail("B1", "900 px is not showing two panes (the narrow-width check would measure the wrong layout)");
+    await mouse(cdp, s, "mouseMoved", W_NARROW - 4, H - 4);
+    judge("idle-900", await measure());
+    await chipsJudge("idle-900");
+    await shot(cdp, s, "idle-900");
+    await listShot("list-900");
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+    await sleep(400);
 
     // A4 — the row's right-click menu: three export choices + Delete.
     const second = await centre(cdp, s, `li.meeting-row[data-meeting-id="${idle[1].id}"]`);

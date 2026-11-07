@@ -91,13 +91,48 @@ export function groupMeetings<M extends Pick<Meeting, "startedAt">>(
  * tracks it recorded and the kind it was started under. Mirrors the speaker
  * labels the transcript itself uses (`speakerLabel`).
  */
-export function listPeople(meeting: Pick<Meeting, "kind" | "state"> & { sysWavPath?: string | null }): string[] {
+export function listPeople(
+  meeting: Pick<Meeting, "kind" | "state"> & { sysWavPath?: string | null; people?: string[] | null },
+): string[] {
   if (meeting.state === "recording") return [];
+  // yap-1107-meetings-row-chips-baseline — names the backend already knows win;
+  // blanks and repeats never become chips.
+  if (Array.isArray(meeting.people)) {
+    const named = Array.from(new Set(meeting.people.map((p) => p.trim()).filter((p) => p.length > 0)));
+    if (named.length > 0) return named;
+  }
   const twoTrack = Boolean(meeting.sysWavPath);
   const target = diarizationTarget(meeting.kind, twoTrack);
   const people = [speakerLabel(MIC_TRACK, target)];
   if (twoTrack) people.push(speakerLabel(SYSTEM_TRACK, target));
   return people;
+}
+
+/**
+ * yap-1107-meetings-row-chips-baseline — how many people chips fit on a list
+ * row's one chip line before the rest collapse into a "+N" chip. `widths` are
+ * the chips' rendered widths in order, `gap` the line's column gap, `avail`
+ * the width the chips may use (the state chip already taken out), and
+ * `moreWidth` the "+N" chip's width. All chips fit → all of them; otherwise
+ * the longest prefix that still leaves room for the "+N" chip (possibly 0,
+ * so a very narrow row shows "+N" alone rather than wrapping or clipping).
+ */
+export function fitChipCount(widths: readonly number[], gap: number, avail: number, moreWidth: number): number {
+  const n = widths.length;
+  if (n === 0) return 0;
+  const g = Number.isFinite(gap) && gap > 0 ? gap : 0;
+  const room = Number.isFinite(avail) ? avail + 0.5 : Infinity; // sub-pixel layout slack
+  const w = widths.map((x) => (Number.isFinite(x) && x > 0 ? x : 0));
+  const all = w.reduce((a, b) => a + b, 0) + g * (n - 1);
+  if (all <= room) return n;
+  const more = Number.isFinite(moreWidth) && moreWidth > 0 ? moreWidth : 0;
+  let used = more;
+  let k = 0;
+  while (k < n - 1 && used + w[k] + g <= room) {
+    used += w[k] + g;
+    k += 1;
+  }
+  return k;
 }
 
 export interface PersonRow {
