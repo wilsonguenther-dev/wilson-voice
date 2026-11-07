@@ -108,6 +108,8 @@ describe("chick_snapshot_matches_approved — the pill's Yappy is the approved d
     { beakF: 1 }, { beakF: 2 }, { hop: 2 }, { hop: 6 }, { hop: -2 }, { sx: 1, sy: -1 }, { sx: 3, sy: 2 }, { sx: -1, sy: -4 },
     { sway: 1.4 }, { sway: -2 }, { flap: 1 }, { flap: 2 }, { droop: true }, { droop: true, sway: 2 },
     { glasses: true, pencil: true, beakF: 2, look: "down" }, { glasses: true, mood: 0.8, hop: 3, flap: 2 },
+    // yap-1106-yappy-states-and-motion's hands-free pose (listening-locked) is the same detailed bird
+    { handsFree: true }, { handsFree: true, pencil: true, flap: 2 }, { handsFree: true, glasses: true, beakF: 2 },
   ];
   const hexOf = (p: { r: number; g: number; b: number }) => "#" + [p.r, p.g, p.b].map((v) => v.toString(16).padStart(2, "0")).join("");
   /** Opaque pixels of exactly `hex`. */

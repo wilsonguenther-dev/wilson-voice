@@ -215,6 +215,13 @@ export interface ChickPose {
   look: "down" | "fwd"; glasses: boolean; pencil: boolean;
   /** Y2-B — tufts folded flat once the trial is out (app-only pose). */
   droop: boolean;
+  /**
+   * yap-1106-yappy-states-and-motion — a HANDS-FREE take: wings folded across
+   * his belly (no hands needed). A POSE, not an
+   * animation, so it holds under reduce motion too. Optional: every existing
+   * caller and snapshot draws exactly as before.
+   */
+  handsFree?: boolean;
 }
 
 /** The 0.9.3 art box (`Yappy.sprite()` in ./approved/yappy.js): feet at (20, 30)
@@ -268,10 +275,20 @@ export function drawChick(o: PixelCtx, cx: number, feetY: number, A: ChickPose):
     r(cx - 1 + sw, cy - ry - 2, 1, 3, K.stem); r(cx - 3 + sw, cy - ry - 3, 2, 2, C.sprout);
     r(cx + sw, cy - ry - 4, 3, 2, C.sprout); r(cx + 1 + sw, cy - ry - 4, 1, 1, K.leafHi);
   }
-  // front wing with two feather marks; it lifts with `flap` and holds the pencil
-  const wx = cx - rx + 1, wy = cy + 1 - A.flap;
-  ell(wx, wy, 3, 4.5, K.outline); ell(wx, wy, 2, 3.5, C.body); r(wx - 1, wy + 2, 2, 1, K.tail); r(wx - 1, wy, 1, 1, K.tail);
-  if (A.pencil) { const px = cx - rx - 2, py = cy + 3; r(px - 3, py - 3, 1, 1, C.pencilT); r(px - 2, py - 2, 1, 1, C.pencil); r(px - 1, py - 1, 1, 1, C.pencil); r(px, py, 1, 1, C.pencil); r(px + 1, py + 1, 1, 1, C.dark); }
+  if (A.handsFree) {
+    // yap-1106-yappy-states-and-motion — a HANDS-FREE take: both wings folded
+    // over the belly, tips meeting under the beak, each with one feather mark
+    // (detail-pass tones). No pencil: no hands needed.
+    for (const s of [-1, 1]) {
+      ell(cx + s * 4, cy + 8, 4, 2, K.outline); ell(cx + s * 4, cy + 8, 3, 1, C.body);
+      r(cx + s * 4 - (s < 0 ? 1 : 0), cy + 8, 1, 1, K.tail);
+    }
+  } else {
+    // front wing with two feather marks; it lifts with `flap` and holds the pencil
+    const wx = cx - rx + 1, wy = cy + 1 - A.flap;
+    ell(wx, wy, 3, 4.5, K.outline); ell(wx, wy, 2, 3.5, C.body); r(wx - 1, wy + 2, 2, 1, K.tail); r(wx - 1, wy, 1, 1, K.tail);
+    if (A.pencil) { const px = cx - rx - 2, py = cy + 3; r(px - 3, py - 3, 1, 1, C.pencilT); r(px - 2, py - 2, 1, 1, C.pencil); r(px - 1, py - 1, 1, 1, C.pencil); r(px, py, 1, 1, C.pencil); r(px + 1, py + 1, 1, 1, C.dark); }
+  }
   const ex = 5, ey = cy + 1;
   for (const s of [-1, 1]) { const eXc = cx + s * ex;
     if (A.mood > .55) { r(eXc - 2, ey, 1, 1, K.eye); r(eXc - 1, ey - 1, 1, 1, K.eye); r(eXc, ey - 1, 1, 1, K.eye); r(eXc + 1, ey, 1, 1, K.eye); }

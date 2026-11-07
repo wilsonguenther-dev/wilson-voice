@@ -74,6 +74,9 @@ const POSES = [
   ["pencil (pad prop)", { pencil: true, look: "down" }],
   ["glasses (desk prop)", { glasses: true, beakF: 1 }],
   ["droop (trial over)", { droop: true }],
+  // listening-locked: wings folded over the belly. The approved 0.9.3 chick has
+  // no hands-free pose, so its "before" cell is the plain rest bird.
+  ["hands-free (wings folded)", { handsFree: true, pencil: true }],
 ];
 const CELL = { w: 44, h: 40, cx: 22, feetY: 32 };
 
