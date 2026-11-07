@@ -286,6 +286,8 @@ pub mod structure;
 // pause-cut windows while it records, so release decodes only the tail.
 pub mod stream_decode;
 pub mod take_stage;
+/// yap-1106-fb-04 — paste waits for a typing pause.
+pub mod typing_pause;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
@@ -8455,7 +8457,14 @@ async fn retry_failed_dictation(
                         .apply_dictionary(t)
                         .unwrap_or_else(|_| t.to_string())
                 },
-                |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+                // yap-1107-cloud-first-when-key-present: a retry's cleanup
+                // takes the same route as a live take — cloud first when a
+                // key is in and the Mac is online, the bundled model else.
+                |t| {
+                    cloud_polish(&app, &state.db, t, &|t| {
+                        polish::polish_llm_result(t, mode, &polish_config)
+                    })
+                },
             );
             text
         };
@@ -10086,6 +10095,89 @@ async fn news_refresh(
     })?
 }
 
+/// yap-1106-news-home-briefing — Home's market quote check: while Home is
+/// open in market hours the followed tickers are checked every 30 minutes
+/// (the user's "How often", the floor and the quiet rules decide). Returns
+/// only the tickers that moved 3% or more, each marked delayed.
+#[tauri::command]
+async fn news_quotes_check(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    trigger: String,
+) -> Result<news::briefing::QuotesOutcome, String> {
+    let Some(trigger) = news::schedule::Trigger::parse(&trigger) else {
+        log::warn!("news quotes_refused reason=unknown_trigger");
+        return Err("Yap didn't recognise that ticker check. Try again.".to_string());
+    };
+    let quiet = news_quiet_now(&state);
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<news::briefing::QuotesOutcome, String> {
+            let quote = news::quote_key::feed(&*state.db, &news_quote_keychain(&app));
+            news::briefing::check_quotes_if_due(
+                &state.db,
+                &quote,
+                trigger,
+                quiet,
+                news_prefs::now_ms(),
+                news::schedule::local_utc_offset_ms(),
+            )
+            .map_err(|tag| {
+                log::warn!(
+                    "news quotes_failed trigger={} reason={tag}",
+                    trigger.as_str()
+                );
+                "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
+            })
+        },
+    )
+    .await
+    .map_err(|e| {
+        log::error!("news quotes_worker_failed error=\"{e}\"");
+        "Yap couldn't check your tickers. Home tries again in 30 minutes.".to_string()
+    })?
+}
+
+/// yap-1106-news-home-briefing — the top 3 cached stories for Home's
+/// briefing when no refresh is due (fetches nothing, sends nothing to the
+/// cloud, marks nothing seen). `Err` is the news gate's reason tag.
+#[tauri::command]
+async fn news_briefing_cached(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<news::rank::RankedStory>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<news::rank::RankedStory>, String> {
+        let db: &Database = &state.db;
+        let prefs = news::feeds::gate(db).map_err(|c| c.tag().to_string())?;
+        let now = news_prefs::now_ms();
+        let (top, _) = db
+            .with_news_cache(|c| news::cache::ranked(c, &prefs, now, news::explain::TOP_N))
+            .inspect_err(|e| log::warn!("news cache_failed op=briefing error=\"{e}\""))?;
+        Ok(top)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// yap-1106-news-home-briefing — open a briefing story's source in the
+/// browser. Only plain web links are handed to the system opener.
+#[tauri::command]
+fn news_open_story(url: String) -> Result<(), String> {
+    if !news::briefing::openable_url(&url) {
+        log::warn!("news story_open_refused reason=not_web_link");
+        return Err("That link can't be opened. Search for the headline instead.".to_string());
+    }
+    std::process::Command::new("open")
+        .arg(url.trim())
+        .spawn()
+        .map_err(|e| {
+            log::warn!("news story_open_failed error=\"{e}\"");
+            "Yap couldn't open that story. Try again.".to_string()
+        })?;
+    log::info!("news story_opened");
+    Ok(())
+}
+
 /// yap-1106-fb-14-news-quote-key — the Keychain store for the optional
 /// quote-feed key: `<running bundle id>.news`, never the `.byom` service.
 fn news_quote_keychain(app: &AppHandle) -> keychain::MacKeychain {
@@ -10640,7 +10732,9 @@ fn set_cloud_mode(
     state: State<'_, Arc<AppState>>,
     mode: cloud_route::CloudMode,
 ) -> Result<CloudRouteView, String> {
-    cloud_route::CloudMode::save(&*state.db, mode).map_err(|e| {
+    // yap-1107-cloud-first-when-key-present: a pick in Settings is the
+    // user's — the cloud-first default never overrides it.
+    cloud_route::CloudMode::save_explicit(&*state.db, mode).map_err(|e| {
         log::error!("byom mode_save_failed error={e}");
         "The mode could not be saved — try again.".to_string()
     })?;
@@ -10685,8 +10779,10 @@ fn set_cloud_notes_model(
 }
 
 /// Save (or replace) the cloud key: Keychain only, bound to the host. A new
-/// key clears "needs attention" and — the first time — turns the mode to
-/// "Cloud when online" (DO 11). An empty key deletes the provider.
+/// key clears "needs attention" and turns the mode to "Cloud when online"
+/// unless the user picked a mode themselves (yap-1107-cloud-first-when-key-
+/// present, D2: cloud first whenever a key is in). An empty key deletes the
+/// provider.
 #[tauri::command]
 fn save_cloud_key(
     app: AppHandle,
@@ -10715,17 +10811,13 @@ fn save_cloud_key(
         log::info!("byom key_removed");
         return Ok(cloud_route_view_for(&app, db));
     }
-    let had_key = model_providers::cloud_key_provider(db, &keys).is_some();
     model_providers::upsert_provider(db, &keys, cfg, Some(&key)).map_err(|e| {
         log::error!("byom key_save_failed reason={}", e.tag());
         e.plain()
     })?;
     cloud_route::set_key_attention(db, false);
-    if !had_key && cloud_route::CloudMode::load(db) == cloud_route::CloudMode::AlwaysLocal {
-        if let Err(e) = cloud_route::CloudMode::save(db, cloud_route::CloudMode::CloudWhenOnline) {
-            log::warn!("byom mode_autoselect_failed error={e}");
-        }
-    }
+    // Never over an explicit pick: "Always on this Mac" stays exactly that.
+    cloud_route::ensure_cloud_first_default(db, true);
     cloud_route::start_path_monitor();
     if let Ok(mut b) = cloud_breaker().lock() {
         b.record_success();
@@ -14816,6 +14908,9 @@ pub fn run() {
             set_news_quote_key,
             clear_news_quote_key,
             news_explain_top,
+            news_quotes_check,
+            news_briefing_cached,
+            news_open_story,
             // yap-telemetry-diagnostics — Settings → Diagnostics.
             diagnostics_snapshot,
             export_diagnostics,
@@ -15141,6 +15236,27 @@ pub fn run() {
                 if resource_governor::install(governor) {
                     resource_governor::start_background(Arc::new(|| false));
                 }
+            }
+            // yap-1107-cloud-first-when-key-present — D2: a key saved by an
+            // older build gets "Cloud when online" once, never over an explicit
+            // pick. Off the setup thread: the key is read from the Keychain.
+            {
+                let handle = app.handle().clone();
+                let db = state.db.clone();
+                std::thread::spawn(move || {
+                    let has_key =
+                        model_providers::cloud_key_provider(&*db, &byom_keychain(&handle))
+                            .is_some();
+                    cloud_route::ensure_cloud_first_default(&*db, has_key);
+                    let mode = cloud_route::CloudMode::load(&*db);
+                    log::info!(
+                        "byom startup_route mode={} has_key={has_key}",
+                        mode.as_str()
+                    );
+                    if has_key && mode.wants_cloud() {
+                        cloud_route::start_path_monitor();
+                    }
+                });
             }
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),

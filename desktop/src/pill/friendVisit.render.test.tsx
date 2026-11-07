@@ -2,11 +2,29 @@
 // (renderToStaticMarkup, like backtrackCaught.test.tsx). Effects do not run
 // here, so this proves what the markup is for a visitor on screen and that the
 // quiet rule hides even a pinned one; WHEN a visit happens is friendVisits.test.ts.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FriendVisit } from "./FriendVisit";
+
+// fix-l3b8-1 — the pill's take count comes from `get_insights`; mock the IPC.
+const { invoke } = vi.hoisted(() => ({
+  invoke: vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(null)),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(() => Promise.resolve()),
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+
+import { FriendVisit, INSIGHTS_COMMAND, pillTakeTracker, startPillTakes } from "./FriendVisit";
 import { matrixFriendVisitScene } from "./forced";
-import { forcedFriendVisit } from "./friendVisits";
+import {
+  EMPTY_LEDGER,
+  decideVisit,
+  forcedFriendVisit,
+  recordVisit,
+  type VisitContext,
+  type VisitDecision,
+} from "./friendVisits";
 
 describe("friend visit — the view", () => {
   it("draws nothing when nobody is visiting", () => {
@@ -37,5 +55,87 @@ describe("friend visit — the view", () => {
     expect(row.phase).toBe("idle");
     expect(row.id).toBe("friend-visit");
     expect(forcedFriendVisit("?" + row.query)).toBe("tidy");
+  });
+});
+
+describe("friend visits — the pill reads the real take count on mount", () => {
+  const MORNING = new Date(2026, 10, 7, 9, 0, 0).getTime();
+  const calm: Omit<VisitContext, "takesSoFar"> = {
+    meetingRecording: false,
+    screenSharing: false,
+    doNotDisturb: false,
+    occupant: "yappy",
+    cloudConnected: true,
+  };
+  const why = (d: VisitDecision) => (d.show ? "shown" : d.reason);
+  /** Answer get_insights with `total()`; anything else resolves null. */
+  const insightsReturn = (total: () => number) =>
+    invoke.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(args[0] === INSIGHTS_COMMAND ? { totalSessions: total(), totalWords: 0 } : null),
+    );
+
+  afterEach(() => {
+    invoke.mockReset();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("totalSessions=3000: the after-50 rules apply from the first event (shown, too-soon, daily-cap)", async () => {
+    insightsReturn(() => 3000);
+    // The old local counter says 0 takes; it must not drive the ladder.
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => "0"), setItem: vi.fn() });
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    // What the mount effect runs (startPillTakes), so this is the first mount.
+    const { tracker: t, ready } = startPillTakes();
+    expect(await ready).toBe("insights");
+    expect(invoke).toHaveBeenCalledWith(INSIGHTS_COMMAND);
+    expect(t.takes()).toBe(3000);
+    const ctx: VisitContext = { ...calm, takesSoFar: t.takes() };
+    const first = decideVisit("word-added", ctx, EMPTY_LEDGER, MORNING);
+    expect(why(first)).toBe("shown");
+    if (!first.show) throw new Error("expected Gulp's visit");
+    const ledger = recordVisit(EMPTY_LEDGER, first.visit);
+    expect(why(decideVisit("backtrack-caught", ctx, ledger, MORNING + 10 * 60 * 1000))).toBe("too-soon");
+    expect(why(decideVisit("battery-low", ctx, ledger, MORNING + 3 * 60 * 60 * 1000))).toBe("daily-cap");
+  });
+
+  it("totalSessions=99: one transcript raises the milestone visit and the next does not", async () => {
+    let real = 99;
+    insightsReturn(() => real);
+    const t = pillTakeTracker();
+    await t.seed();
+    real = 100;
+    const crossed = await t.transcript();
+    expect(crossed).toBe(true);
+    // Yappy's milestone shows only while someone else sits in the pill (friendVisits.ts:14).
+    expect(why(decideVisit("milestone", { ...calm, occupant: "hoot", takesSoFar: t.takes() }, EMPTY_LEDGER, MORNING))).toBe("shown");
+    real = 101;
+    expect(await t.transcript()).toBe(false);
+  });
+
+  it("mount logs exactly one takes_source line, with no counts in it", async () => {
+    insightsReturn(() => 3000);
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn() });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await startPillTakes().ready;
+    const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("takes_source"));
+    expect(lines).toEqual(["pill friend_visit takes_source=insights"]);
+    expect(lines[0]).not.toMatch(/\d/);
+
+    info.mockClear();
+    invoke.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await startPillTakes().ready).toBe("fallback");
+    expect(info.mock.calls.map((c) => String(c[0]))).toContain("pill friend_visit takes_source=fallback");
+  });
+
+  it("the local counter is only the fallback, with a warn line, when get_insights fails", async () => {
+    invoke.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => "64"), setItem: vi.fn() });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = pillTakeTracker();
+    expect(await t.seed()).toBe("fallback");
+    expect(t.takes()).toBe(64);
+    expect(warn).toHaveBeenCalledWith("pill friend_visit takes_fallback reason=insights-unavailable");
   });
 });

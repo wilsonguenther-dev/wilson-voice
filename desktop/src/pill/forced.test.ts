@@ -6,6 +6,8 @@ import {
   matrixLicenseScenes,
   matrixPhases,
   matrixRailScene,
+  matrixStuckEngineScenes,
+  forcedEngine,
   PILL_STYLES,
   resolvePhase,
   SAMPLE_PROGRESS,
@@ -99,5 +101,21 @@ describe("yap-1106-pill-notes-and-meeting / WF-03 — the rail scene", () => {
     const row = matrixRailScene();
     expect(row).toMatchObject({ phase: "idle", id: "rail", phaseId: PHASE_ID.idle, query: "rail=open", offer: "" });
     expect(row.label.length).toBeGreaterThan(0);
+  });
+});
+
+describe("yap-1106-stuck-pill-keeps-its-scene matrix rows (integrator, loop3 batch 3)", () => {
+  it("the stuck and restarting rows are transcribing pills with the engine forced by query", () => {
+    const rows = matrixStuckEngineScenes();
+    expect(rows.map((r) => r.id)).toEqual(["engine-stuck", "engine-restarting"]);
+    for (const r of rows) {
+      expect(r.phase).toBe("transcribing");
+      expect(r.phaseId).toBe(PHASE_ID.transcribing);
+      expect(r.query).toBe(`engine=${r.engine}`);
+      expect(forcedEngine(r.engine)).toBe(r.engine);
+      expect(forcedPill(`phase=transcribing&${r.query}`)?.engine).toBe(r.engine);
+    }
+    expect(forcedEngine("melting")).toBeNull();
+    expect(forcedEngine(null)).toBeNull();
   });
 });

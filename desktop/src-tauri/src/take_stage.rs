@@ -39,6 +39,9 @@ use std::time::Instant;
 pub enum TakeStage {
     Decoding,
     Polishing,
+    /// yap-1106-fb-04 — the user is typing in the target app, so the paste
+    /// is held until a pause (the pill says "Pastes when you pause").
+    PasteWaiting,
     Pasting,
     PasteConfirmed,
     PasteNotConfirmed,
@@ -49,9 +52,10 @@ pub enum TakeStage {
 }
 
 impl TakeStage {
-    pub const ALL: [TakeStage; 9] = [
+    pub const ALL: [TakeStage; 10] = [
         TakeStage::Decoding,
         TakeStage::Polishing,
+        TakeStage::PasteWaiting,
         TakeStage::Pasting,
         TakeStage::PasteConfirmed,
         TakeStage::PasteNotConfirmed,
@@ -65,6 +69,7 @@ impl TakeStage {
         match self {
             TakeStage::Decoding => "decoding",
             TakeStage::Polishing => "polishing",
+            TakeStage::PasteWaiting => "paste_waiting",
             TakeStage::Pasting => "pasting",
             TakeStage::PasteConfirmed => "paste_confirmed",
             TakeStage::PasteNotConfirmed => "paste_not_confirmed",

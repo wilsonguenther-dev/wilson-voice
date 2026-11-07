@@ -15,6 +15,8 @@ import {
   CHICK_EXTENT, CHICK_LIMITS, FIT_DOCKS, OPEN_CAPSULE, OPEN_TIERS, PILL_CHARACTERS, PILL_SCENE, REST_CAPSULE, REST_MIN_W,
   capsuleForDock, chickBox, characterArt, clampChickPose, cropWarning, inStadium, largestFittingCell, pillCamera,
   placeCharacter, placeSprite, restCapsuleFor, stadiumContains, type FitBox, type FitDock,
+  ARTIFACT_SPRITE_SCALE, ARTIFACT_TOLERANCE, MAX_LIFT, chickBoxFor, cssPerArtPx, liftBudget, pillFit, scaleEvent,
+  ARTIFACT_OPEN_SHELL, ARTIFACT_REST_H, CHICK_DESK_SHIFT, REST_MAX_H,
 } from "./characterFit";
 import { ALL_LIVE_PHASES, type LivePhase } from "./live";
 import { CHARACTER_OPEN, CHARACTER_REST, PANEL_MARGIN, RESTING_PHASES, capsuleCentre, pillLayout, type MeetingMode } from "./state";
@@ -210,5 +212,131 @@ describe("yap-1106-fb-10 geometry", () => {
 
   it("cropWarning is one structured line with no content", () => {
     expect(cropWarning("yappy", { w: 72.4, h: 22.6 }, 2)).toBe("pill character-cropped character=yappy capW=72 capH=23 dpr=2");
+  });
+});
+
+/**
+ * yap-1107-pill-matches-artifact-size — Wilson 2026-11-07: the pill "looks small
+ * and shrunken" next to the approved Pill artifact. The artifact draws Yappy at
+ * 1.5625 CSS px per art px (listening: 0.8 x 176 art px across a 220 px window);
+ * the app drew him at 1.0 on 2x. On 2x the open capsule now draws him at 1.5
+ * (cell 3, 96 percent), still whole: only the height of a hop is given up.
+ */
+describe("yap-1107-pill-matches-artifact-size the pill draws Yappy at the artifact's size", () => {
+  const OPEN_PHASES: readonly LivePhase[] = ["listening", "listening-locked", "transcribing", "polishing", "pasting", "done"];
+
+  it("chick_box_for_lift_holds_every_clamped_pose: a smaller lift budget keeps every painted pixel inside chickBoxFor(lift)", () => {
+    const cx = 60, feetY = 70, full = chickBox();
+    let n = 0;
+    let prevH = 0;
+    for (let lift = 0; lift <= MAX_LIFT; lift++) {
+      const b = chickBoxFor(lift);
+      // same left / right as the full box, inside it, and never shorter than a smaller budget's
+      expect(b.x).toBe(full.x);
+      expect(b.w).toBe(full.w);
+      expect(b.y).toBeGreaterThanOrEqual(full.y);
+      expect(b.y + b.h).toBeLessThanOrEqual(full.y + full.h);
+      expect(b.h).toBeGreaterThanOrEqual(prevH);
+      prevH = b.h;
+      // the scene box, moved onto this raster's (cx, feetY): groundY is the feet row
+      const up = PILL_SCENE.groundY - b.y, down = b.y + b.h - PILL_SCENE.groundY;
+      expect(full.x + CHICK_DESK_SHIFT + CHICK_EXTENT.left).toBe(PILL_SCENE.faceX);
+      const box = { x: cx - CHICK_EXTENT.left, y: feetY - up, w: CHICK_EXTENT.left + CHICK_EXTENT.right, h: up + down };
+      for (const pose of chickPoses()) {
+        if (pose.sway !== 0 && pose.sway !== CHICK_LIMITS.sway[1]) continue; // sway never moves the top; keeps the run short
+        const r = new Raster(120, 100);
+        drawChick(r, cx, feetY, clampChickPose(pose, lift));
+        const got = paintedBox(r);
+        expect(got).not.toBeNull();
+        expect(inside(got!, box), `lift=${lift} ${JSON.stringify(got)} outside ${JSON.stringify(box)} for ${JSON.stringify(pose)}`).toBe(true);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThan(100);
+    expect(chickBoxFor(MAX_LIFT)).toEqual(full);
+  }, 60_000);
+
+  it("lift_budget_caps_hop_then_stretch_and_leaves_the_rest", () => {
+    expect(MAX_LIFT).toBe(CHICK_LIMITS.hop[1] + CHICK_LIMITS.sy[1]);
+    expect(liftBudget(Number.NaN)).toBe(MAX_LIFT);
+    expect(liftBudget(-3)).toBe(0);
+    expect(liftBudget(99)).toBe(MAX_LIFT);
+    const p = clampChickPose({ hop: 6, sx: 3, sy: 2, flap: 2, sway: 2 }, 1);
+    expect(p).toEqual({ hop: 1, sx: 3, sy: 0, flap: 2, sway: 2 });
+    // a crouch and a squash are never cut
+    expect(clampChickPose({ hop: -2, sx: -1, sy: -4, flap: 0, sway: -2 }, 0)).toEqual({ hop: -2, sx: -1, sy: -4, flap: 0, sway: -2 });
+    // the default is the full range (yap-1106-fb-10 unchanged)
+    expect(clampChickPose({ hop: 6, sx: 0, sy: 2, flap: 0, sway: 0 })).toEqual({ hop: 6, sx: 0, sy: 2, flap: 0, sway: 0 });
+  });
+
+  it("open_pill_on_2x_draws_yappy_within_5_percent_of_the_artifact_and_whole", () => {
+    for (const phase of OPEN_PHASES) for (const dock of ["bottom", "top", "left", "right"] as const) for (const meeting of MEETINGS) {
+      const { cap } = placeCapsule(phase, meeting, dock, capsuleSize(phase, 1));
+      const c = pillCamera(cap, 2);
+      const scale = cssPerArtPx(c.blit, 2);
+      expect(Math.abs(scale - ARTIFACT_SPRITE_SCALE) / ARTIFACT_SPRITE_SCALE, `${phase} ${dock} ${meeting} scale=${scale}`).toBeLessThanOrEqual(ARTIFACT_TOLERANCE);
+      expect(c.fits, `${phase} ${dock} ${meeting} ${JSON.stringify(c.char)} in ${JSON.stringify(c.stadium)}`).toBe(true);
+      expect(c.lift).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("retina_never_halves_the_sprite: 2x draws at least the 1x size, and never past the artifact's", () => {
+    for (const phase of [...OPEN_PHASES, "idle", "sleepy"] as const) for (const tier of OPEN_TIERS) {
+      const size = capsuleSize(phase, tier);
+      const one = pillCamera({ x: 0, y: 0, ...size }, 1), two = pillCamera({ x: 0, y: 0, ...size }, 2);
+      expect(cssPerArtPx(two.blit, 2), `${phase} tier=${tier}`).toBeGreaterThanOrEqual(cssPerArtPx(one.blit, 1));
+      expect(cssPerArtPx(two.blit, 2)).toBeLessThanOrEqual(ARTIFACT_SPRITE_SCALE * (1 + ARTIFACT_TOLERANCE));
+      expect(two.fits && one.fits).toBe(true);
+    }
+  });
+
+  it("1x_is_unchanged: cell 1 and the full hop (the artifact's 1.56 rounds down to one device px)", () => {
+    const { stadium } = { stadium: pillCamera({ x: 0, y: 0, w: OPEN_CAPSULE.w, h: OPEN_CAPSULE.h }, 1).stadium };
+    expect(pillFit(stadium, 1)).toEqual({ cell: 1, lift: MAX_LIFT });
+  });
+
+  it("shell_matches_the_artifact_within_5_percent: open 228 x 54 vs the artifact's 228 x 52, resting 56 tall", () => {
+    expect(OPEN_CAPSULE.w).toBe(ARTIFACT_OPEN_SHELL.w);
+    expect(Math.abs(OPEN_CAPSULE.h - ARTIFACT_OPEN_SHELL.h) / ARTIFACT_OPEN_SHELL.h).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(REST_CAPSULE.h - ARTIFACT_REST_H) / ARTIFACT_REST_H).toBeLessThanOrEqual(0.05);
+    expect(REST_CAPSULE.h).toBeLessThanOrEqual(REST_MAX_H);
+    // the batch-10 bounce: 80 x 59 resting and 236 x 60 open were both outside the 5 percent
+    expect(REST_CAPSULE.h).not.toBe(59);
+    expect(OPEN_CAPSULE.h).not.toBe(60);
+  });
+
+  it("artifact_height_shell_holds_him_whole_at_its_scale_on_2x: cell 3 and a hop of at least one art px in the plain open pill", () => {
+    const { cap } = placeCapsule("listening", "none", "bottom", capsuleSize("listening", 1));
+    const c = pillCamera(cap, 2);
+    expect(c.blit.cell).toBe(3);
+    expect(c.lift).toBeGreaterThanOrEqual(1);
+    expect(c.fits).toBe(true);
+    const done = pillCamera(placeCapsule("done", "none", "bottom", capsuleSize("done", 1)).cap, 2);
+    expect(done.blit.cell).toBe(3);
+    expect(done.fits).toBe(true);
+  });
+
+  it("idle_and_sleepy_stay_whole_and_never_shrink_below_1x: the resting capsule draws him at one CSS px per art px or more", () => {
+    for (const phase of ["idle", "sleepy"] as const) for (const dpr of DPRS) {
+      const c = pillCamera({ x: 0, y: 0, ...capsuleSize(phase, 1) }, dpr);
+      expect(c.fits, `${phase} dpr=${dpr}`).toBe(true);
+      // macOS backing scales are whole (1x, 2x): there the resting pill is at
+      // least one CSS px per art px. At a fractional 1.5 no whole cell above 1
+      // fits a 56 px shell (nor the previous 59 px one): it keeps cell 1, as
+      // before this item, never less (integrator, loop3 batch 3).
+      if (Number.isInteger(dpr)) expect(cssPerArtPx(c.blit, dpr), `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+      else expect(c.blit.cell, `${phase} dpr=${dpr}`).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("rest_capsule_cap_falls_back_when_nothing_that_short_fits", () => {
+    // a 70 art px tall character cannot fit a 56 px capsule: the uncapped search answers
+    const big = restCapsuleFor([{ w: 30, h: 70 }]);
+    expect(big.h).toBeGreaterThan(REST_MAX_H);
+    expect(restCapsuleFor([{ w: 30, h: 30 }]).h).toBeLessThanOrEqual(REST_MAX_H);
+  });
+
+  it("scaleEvent is one structured line with numbers only", () => {
+    expect(scaleEvent({ cell: 3, lift: 1 }, { w: 236.2, h: 59.8 }, 2)).toBe("pill sprite-scale cell=3 lift=1 cssPerArt=1.500 capW=236 capH=60 dpr=2");
   });
 });

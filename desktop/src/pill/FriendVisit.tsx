@@ -14,6 +14,11 @@
  *            `pill_quiet { screenSharing, doNotDisturb }`; a visit on screen
  *            leaves the moment any of them turns on.
  *
+ * Takes come from the app's real total (`get_insights` -> `totalSessions`),
+ * read on mount and again on each `transcript` (`takeTracker`); the old local
+ * counter is only a warned fallback. The milestone is an edge (exactly
+ * crossing 100 or 1000), so a re-read never repeats it.
+ *
  * The ledger (once a day each, the after-50 caps) is one localStorage row, so
  * a relaunch does not reset a friend's day. Storage failing costs only the
  * visit, never the pill. Decorative: `aria-hidden`, no pointer events — the
@@ -34,14 +39,16 @@ import {
   VISIT_MAX_MS,
   callLive,
   decideVisit,
-  milestoneReached,
   parseLedger,
   parseQuietState,
   quietReason,
   recordVisit,
   serializeLedger,
+  takeTracker,
   visitLogLine,
   visitRemainingMs,
+  type TakeTracker,
+  type TakesSource,
   type Visit,
   type VisitContext,
   type VisitLedger,
@@ -54,7 +61,10 @@ import { FRIENDS } from "../sprites/art";
 import { crispPlan, domBuffer, paintCrisp } from "../sprites/crisp";
 
 const LEDGER_KEY = "yap.friends.visits";
+/** Fallback only: the last take count the pill knew, for when get_insights fails. */
 const TAKES_KEY = "yap.friends.takes";
+/** The app's stats command; its `totalSessions` is the real take count. */
+export const INSIGHTS_COMMAND = "get_insights";
 /** The visitor's CSS box (whole-number scale inside it, crisp.ts). */
 const BOX = { w: 28, h: 28 };
 /** Animation step while a visit is on screen (never runs between visits). */
@@ -77,6 +87,34 @@ function loadTakes(): number {
 function saveTakes(n: number): void {
   try { globalThis.localStorage?.setItem(TAKES_KEY, String(n)); }
   catch (e) { console.warn("pill friend_visit takes_save_failed", e instanceof Error ? e.name : "unknown"); }
+}
+
+/**
+ * The pill's take count: the app's real total (`get_insights` ->
+ * `totalSessions`, the number Home and the sidebar show), so a user with
+ * thousands of takes gets the after-50 quiet from the first event. The local
+ * counter is only the fallback when that read fails (warned).
+ */
+export function pillTakeTracker(): TakeTracker {
+  return takeTracker(() => invoke<unknown>(INSIGHTS_COMMAND), loadTakes);
+}
+
+/**
+ * What the pill does on mount: seed the take count from the real total and log
+ * ONE line naming where it came from (`takes_source=insights|fallback`, no
+ * counts). The local counter is refreshed so a later failed read starts near
+ * the truth.
+ */
+export function startPillTakes(tracker: TakeTracker = pillTakeTracker()): {
+  tracker: TakeTracker;
+  ready: Promise<TakesSource>;
+} {
+  const ready = tracker.seed().then((source) => {
+    console.info(`pill friend_visit takes_source=${source}`);
+    saveTakes(tracker.takes());
+    return source;
+  });
+  return { tracker, ready };
 }
 
 /** Paint one frame of `id` into `canvas` at a whole-number scale. */
@@ -130,7 +168,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const meetingQuiet = meetingRecording || inCall;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ledgerRef = useRef<VisitLedger>(EMPTY_LEDGER);
-  const takesRef = useRef(0);
+  const takesRef = useRef<TakeTracker | null>(null);
   const visitRef = useRef<Visit | null>(null);
   const ctxRef = useRef({ meetingQuiet, occupant, quiet, chatter });
   // Synced first, so every effect below (and every listener) reads this render.
@@ -140,8 +178,9 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
 
   useEffect(() => {
     ledgerRef.current = loadLedger();
-    takesRef.current = loadTakes();
-  }, []);
+    if (forced) return;
+    takesRef.current = startPillTakes().tracker;
+  }, [forced]);
 
   const raise = useCallback((event: string, cloudConnected = false) => {
     const c = ctxRef.current;
@@ -149,7 +188,7 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       meetingRecording: c.meetingQuiet,
       screenSharing: c.quiet.screenSharing,
       doNotDisturb: c.quiet.doNotDisturb,
-      takesSoFar: takesRef.current,
+      takesSoFar: takesRef.current?.takes() ?? 0,
       occupant: c.occupant,
       cloudConnected,
       chatter: c.chatter,
@@ -200,9 +239,12 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
       .then((v) => { if (!dead) call(v); })
       .catch((e: unknown) => console.warn(`pill friend_visit call_state_failed reason=${e instanceof Error ? e.name : "unknown"}`));
     listen<unknown>("transcript", () => {
-      takesRef.current += 1;
-      saveTakes(takesRef.current);
-      if (milestoneReached(takesRef.current)) raise("milestone");
+      const tracker = takesRef.current;
+      if (!tracker) return;
+      void tracker.transcript().then((crossed) => {
+        saveTakes(tracker.takes());
+        if (!dead && crossed) raise("milestone");
+      });
     }).then(push, fail("transcript"));
     return () => {
       dead = true;

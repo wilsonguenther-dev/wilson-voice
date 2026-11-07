@@ -68,6 +68,8 @@ import {
   stripLine,
   FN_HINT_EVENT,
   FN_HINT_SHOW_MS,
+  pasteWaitHint,
+  type TakeStageName,
   toChatTone,
   winningPhase,
   advanceLive,
@@ -122,6 +124,7 @@ import {
   matrixPhases,
   matrixDragBlobScene,
   matrixFriendVisitScene,
+  matrixStuckEngineScenes,
   type ForcedPill,
 } from "./pill/forced";
 import { FriendVisit } from "./pill/FriendVisit";
@@ -301,6 +304,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixDragBlobScene(),
     // yap-1106-friend-visits — Tidy visiting a resting pill.
     matrixFriendVisitScene(),
+    // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
+    ...matrixStuckEngineScenes(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -353,7 +358,13 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(FORCED?.progress ?? null);
-  const [engineHealth, setEngineHealth] = useState<EngineHealth>("idle");
+  const [engineHealth, setEngineHealth] = useState<EngineHealth>(FORCED?.engine ?? "idle");
+  useEffect(() => {
+    // yap-1106-stuck-pill-keeps-its-scene — the health rides on <html> like the
+    // phase (CSS + the matrix's handle); a stuck engine is logged once per change.
+    document.documentElement.dataset.engineHealth = engineHealth;
+    console.info(`pill engine_scene health=${engineHealth} scene=full`);
+  }, [engineHealth]);
   // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
   // of the pipeline is running is a property of the take, not of whichever
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
@@ -372,6 +383,9 @@ function Float() {
   // yap-qa-hotkey-walk-binding — fn held without the binding's ⌃: the backend
   // says so (throttled) and the strip shows it for FN_HINT_SHOW_MS.
   const [fnHint, setFnHint] = useState<string | null>(null);
+  // yap-1106-fb-04 — the take's newest backend stage: `paste_waiting` puts
+  // "Pastes when you pause" on the strip until the paste goes out.
+  const [lastStage, setLastStage] = useState<TakeStageName | null>(null);
   // yap24-PILL3 — the fn key cannot hear the user (Secure Input). Derived from
   // the status payload alone (secure_input.rs's 2 s poll owns the dwell and the
   // loginwindow rule), so it clears the moment the status does; ranked
@@ -583,6 +597,7 @@ function Float() {
     listen<TakeStageNotice>(TAKE_STAGE_EVENT, (e) => {
       const st = e.payload;
       if (!st?.stage) return;
+      setLastStage(st.stage);
       setTake((prev) => reduceTakePhase(prev, { type: "stage", stage: st.stage, words: st.words }));
     }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
@@ -784,7 +799,7 @@ function Float() {
   }, [partialUp]);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -906,7 +921,7 @@ function Float() {
           <span className="hands-free-hint" title={line ?? undefined}>
             <kbd className="keycap">{chordLabel.trim() || DEFAULT_STOP_KEY}</kbd> to stop
           </span>
-        ) : stripLine(line, stillRecording, fnHint, chordLabel)}
+        ) : stripLine(line, stillRecording, fnHint ?? pasteWaitHint(lastStage, phase), chordLabel)}
       </div>
       {/* WF-20 — "Slack · casual": the app-aware mode for this app; a click
           changes it for this app for 15 minutes. Listening only, and never

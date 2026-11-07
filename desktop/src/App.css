@@ -587,6 +587,194 @@ code {
   color: var(--text-on-fill);
 }
 
+/* yap-1107-sidebar-collapses-to-icons — the icon rail.
+   Expanded: 220 px, icon + label + count. Rail: 56 px (8 px padding each side,
+   40 px of content), icons centred, labels kept for VoiceOver but visually
+   hidden, counts as a dot on the icon, the brand mark alone, Dictate as its
+   icon button, tooltips on hover and on keyboard focus. App.tsx sets .rail
+   when the user collapsed it (remembered) or the window is under 900 px.
+   Motion: only the grid column animates (<= 160 ms), the main column follows
+   it; nothing animates under prefers-reduced-motion. Tokens only. */
+.shell {
+  transition: grid-template-columns var(--duration-fast) var(--ease-standard);
+}
+
+.shell.rail {
+  grid-template-columns: 56px 1fr;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell {
+    transition: none;
+  }
+}
+
+.nav-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+/* The label takes the row so the count stays at the right edge now that an
+   icon leads the row. */
+.nav-item .nav-label {
+  flex: 1 1 auto;
+}
+
+.rail-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-2);
+  padding: 6px var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.rail-toggle:hover:not(:disabled) {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.rail-toggle-key {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.shell.rail .sidebar {
+  /* Its own layer above .main so a tooltip that hangs past the rail is never
+     painted under a positioned card in the content column. */
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  padding: var(--space-4) var(--space-2);
+  gap: var(--space-3);
+}
+
+.shell.rail .brand-block {
+  justify-content: center;
+  padding: 2px 0;
+}
+
+.shell.rail .brand-text {
+  display: none;
+}
+
+.shell.rail .nav {
+  gap: 2px;
+  align-items: stretch;
+}
+
+.shell.rail .nav-item {
+  position: relative;
+  justify-content: center;
+  height: 36px;
+  padding: 0;
+}
+
+/* Visually hidden, still the button's accessible name. */
+.shell.rail .nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The count stays on the icon as a dot; its number stays in the accessible
+   name and in the tooltip. Permissions keeps its warning ink. */
+.shell.rail .nav-item .count {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  font-size: 0;
+  line-height: 0;
+  color: transparent;
+  background: var(--accent-data-ink);
+}
+
+.shell.rail .nav-item .count.warn {
+  background: var(--danger-ink);
+}
+
+.shell.rail .sidebar-foot .model-ribbon {
+  justify-content: center;
+  margin-bottom: 6px;
+  padding: 6px 4px;
+}
+
+.shell.rail .sidebar-foot .model-ribbon-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.shell.rail .sidebar-foot .model-ribbon button {
+  padding: 2px 4px;
+  font-size: 0.62rem;
+}
+
+.shell.rail .dictate-side {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  gap: 0;
+  border-radius: var(--radius-md);
+}
+
+.shell.rail .rail-toggle {
+  justify-content: center;
+  height: 32px;
+  padding: 0;
+}
+
+/* Tooltips: one per control, to the right of the rail, on hover AND on
+   keyboard focus (focus-visible), never on a mouse click's focus. */
+.shell.rail .sidebar [data-tip] {
+  position: relative;
+}
+
+.shell.rail .sidebar [data-tip]:hover::after,
+.shell.rail .sidebar [data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + var(--space-3));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 550;
+  line-height: 1.3;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .main {
   display: flex;
   flex-direction: column;
@@ -842,6 +1030,40 @@ code {
      the sidebar or footer). */
   overscroll-behavior: contain;
   padding: 8px 24px 24px;
+}
+
+/* yap-1107-settings-banner-no-overlay — Wilson (Yap Test 0.9.4-loop3.11,
+   2026-11-07 14:33Z) saw the Secure Input banner sitting on the Settings >
+   Advanced "Model providers" header. The banners were loose flex items of
+   .main (flex column, above) with the default flex-shrink:1, sharing the
+   column with .content (flex:1, min-height:0, overflow:auto); nothing gave the
+   banner stack a row of its own, and only measurement can say which engine
+   rule then let a banner and the view share pixels (scripts/
+   settings-banner-shots.mjs prints it). Now every app-level banner sits in ONE
+   wrapper that is its own row: flex:none, so it always keeps its full height
+   and .content alone shrinks and scrolls. No position:absolute/fixed/sticky
+   anywhere in it — a banner pushes the view down, it never covers it. The
+   wrapper has no padding/border/gap, so with no banner it is 0 px tall and
+   every banner keeps its own margin (0 24px 8px) exactly as before. */
+.main-head,
+.main-banners {
+  flex: none;
+}
+
+.main-banners {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.main-banners > * {
+  flex: none;
+}
+
+/* A scrolled-to section header (keyboard, scrollIntoView) lands at the
+   content's own top padding, below the banner row, never under its edge. */
+.content {
+  scroll-padding-top: 8px;
 }
 
 /* yap-1106-home-contained-scroll-footer — the footer under every view. It is
@@ -1898,75 +2120,14 @@ button.star.on {
   color: var(--muted);
 }
 
-/* yap-uiux-2026-10-16-H5 — at 720x520 the rail became a top nav that WRAPPED
-   onto three rows (Settings alone on the last), ~150 of 520 px before any
-   content, on every screen. Narrow windows now get ONE row: brand mark, the
-   nav as a horizontally scrolling strip, the Dictate button. The shell gives
-   that row its height and the rest to the view, so nothing below it grows the
-   window past 100vh. */
+/* yap-uiux-2026-10-16-H5 + yap-1107-sidebar-collapses-to-icons — under 900 px
+   the sidebar is the icon rail (App.tsx sets .shell.rail from the
+   (max-width: 899px) query, see the rail block near .dictate-side), which
+   replaces the old one-row top strip below 860 px: the 56 px rail leaves
+   664 px of main column at the 720x520 minimum window and its column of 36 px
+   icons fits 520 px tall (scripts/sidebar-shots.mjs measures both). Only the
+   view grids still go to one column here. */
 @media (max-width: 860px) {
-  .shell {
-    /* minmax(0, …): a bare 1fr column floors at the row's min-content, which
-       is the whole unscrolled nav — the strip must shrink and scroll instead. */
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  /* yap-uiux-2026-10-16-O2 (fix round 1) — the strip is a GRID, not a flex
-     row. The speech-model ribbon lives in .sidebar-foot; in a flex row the
-     flex:none foot took the ribbon's whole one-line width and .nav
-     (min-width:0) shrank to ZERO, so at 720x520 a running or failed download
-     hid Home…Settings entirely. Now row 1 is brand | nav | Dictate, with the
-     nav column minmax(0, 1fr) so it always keeps the leftover width, and the
-     ribbon takes a full-width row 2 of its own. */
-  .sidebar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    min-width: 0;
-    align-items: center;
-    gap: 6px 10px;
-    padding: 8px 12px;
-    border-right: none;
-    border-bottom: 1px solid var(--glass-border);
-  }
-  .brand-block {
-    grid-column: 1;
-    grid-row: 1;
-    padding: 0;
-  }
-  .brand-tag {
-    display: none;
-  }
-  .nav {
-    grid-column: 2;
-    grid-row: 1;
-    flex-direction: row;
-    flex-wrap: nowrap;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .nav::-webkit-scrollbar {
-    display: none;
-  }
-  .nav-item {
-    flex: none;
-    gap: 6px;
-    padding: 0.45rem 0.6rem;
-  }
-  /* The foot dissolves so the ribbon and Dictate are grid items. */
-  .sidebar-foot {
-    display: contents;
-  }
-  .dictate-side {
-    grid-column: 3;
-    grid-row: 1;
-    width: auto;
-    padding: 0.5rem 0.75rem;
-  }
-  .sidebar-foot .model-ribbon {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
   .stats-row,
   .panel-grid,
   .dict-add,
@@ -2227,23 +2388,6 @@ button.star.on {
 .sidebar-foot .model-ribbon-text {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-/* In the narrow one-row strip (see the H5 block) the ribbon has a full-width
-   row of its own, so it goes back to one line: track, text, Retry. This sits
-   AFTER the sidebar-width rules above so it wins at equal specificity. */
-@media (max-width: 860px) {
-  .sidebar-foot .model-ribbon {
-    flex-wrap: nowrap;
-    margin-bottom: 0;
-    padding: 5px 10px;
-  }
-  .sidebar-foot .model-ribbon-track {
-    flex: 0 0 88px;
-  }
-  .sidebar-foot .model-ribbon-text {
-    min-width: 0;
-  }
 }
 
 .model-ribbon-track {
@@ -4092,4 +4236,109 @@ button.primary.big {
 }
 .news-cadence-last p {
   margin: 0;
+}
+
+/* yap-1106-news-home-briefing — the Home briefing: one contained card under
+   the studio, the pair in its header, three stories in a row, the footer. */
+.news-briefing {
+  margin: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.news-briefing-head {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+.news-briefing-pair {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  flex: none;
+}
+.news-briefing-sprite {
+  image-rendering: pixelated;
+}
+.news-briefing-says {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.news-briefing-says h3,
+.news-briefing-says p {
+  margin: 0;
+}
+.news-briefing-stories {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+}
+.news-briefing-story {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+.news-briefing-story h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.news-briefing-tag {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent-action-ink);
+  background: var(--accent-action-soft);
+  border-radius: var(--radius-xs);
+  padding: 0 var(--space-1);
+}
+.news-briefing-line {
+  margin: 0;
+  color: var(--text-primary);
+}
+.news-briefing-source {
+  margin-top: auto;
+  align-self: flex-start;
+  text-align: left;
+  color: var(--accent-data-ink);
+}
+.news-briefing-quotes {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.news-briefing-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.news-briefing-foot p {
+  margin: 0;
+}
+.news-briefing-topics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.news-briefing-chip {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font-size: 0.8rem;
 }

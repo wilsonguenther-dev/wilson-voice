@@ -29,6 +29,7 @@ import {
   applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
 } from "./motion";
 import MeetingBadge from "./MeetingBadge";
+import { meetingClockStacked } from "./state";
 import GovernorChip from "./GovernorChip";
 import LanguageChip from "./LanguageChip";
 import RouteChip from "./RouteChip";
@@ -458,7 +459,7 @@ export default function ClassicPill(
         }}
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
-        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} dictating={isListening(gate)} />
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} />
         <GovernorChip />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill

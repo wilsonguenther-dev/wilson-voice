@@ -194,6 +194,17 @@ export class SkyBackdrop<S> {
     return this.surface.image;
   }
 
+  /**
+   * yap-1106-stuck-pill-keeps-its-scene — forget the painted surface so the
+   * next `current` repaints it from scratch. Called when a canvas backing
+   * store may have been dropped (GPU pressure, a lost context): the cached
+   * surface is otherwise never repainted until the time of day changes.
+   */
+  invalidate(): void {
+    this.time = null;
+    this.nextCheck = -Infinity;
+  }
+
   /** The look last painted, or null before the first `current`. */
   get look(): SkyLook | null {
     return this.look_;

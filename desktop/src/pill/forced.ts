@@ -32,6 +32,7 @@ import {
   type TranscribeProgress,
 } from "./live";
 import { type LicenseStatus } from "../license/status";
+import { ENGINE_HEALTH_STATES, type EngineHealth } from "./engineHealth";
 
 /**
  * yap-1106-retire-classic-pill — Classic is retired, so the matrix no longer
@@ -71,6 +72,12 @@ export interface ForcedPill {
    * dock without a pointer.
    */
   rail: boolean;
+  /**
+   * yap-1106-stuck-pill-keeps-its-scene — `&engine=stuck|restarting` forces
+   * the engine health state, so the matrix photographs a stuck take at every
+   * dock. Null when absent or unknown.
+   */
+  engine: EngineHealth | null;
 }
 
 /**
@@ -135,7 +142,37 @@ export function forcedPill(search: string): ForcedPill | null {
     blind: phase === "blind" ? SAMPLE_BLIND : null,
     license: sceneLicense(q.get("license")),
     rail: q.get("rail") === "open",
+    engine: forcedEngine(q.get("engine")),
   };
+}
+
+/** A forced engine health by name; null for anything else (never a guess). */
+export function forcedEngine(raw: string | null | undefined): EngineHealth | null {
+  return raw && (ENGINE_HEALTH_STATES as readonly string[]).includes(raw) ? (raw as EngineHealth) : null;
+}
+
+/**
+ * yap-1106-stuck-pill-keeps-its-scene — the stuck-take rows: a transcribing
+ * pill with the engine forced to stuck, then restarting. The matrix asserts
+ * `<html data-engine-health>`, the explicit label, a full scene
+ * (`data-scene="full"`, a painted canvas) and Yappy's box inside it.
+ */
+export interface MatrixEngineRow extends MatrixOfferRow {
+  engine: EngineHealth;
+}
+
+export function matrixStuckEngineScenes(): MatrixEngineRow[] {
+  const v = phaseVisual("transcribing");
+  return (["stuck", "restarting"] as const).map((engine) => ({
+    phase: "transcribing" as const,
+    id: `engine-${engine}`,
+    phaseId: PHASE_ID.transcribing,
+    query: `engine=${engine}`,
+    offer: "",
+    engine,
+    tone: v.tone,
+    label: v.label,
+  }));
 }
 
 /** One row of the matrix's phase list. */

@@ -4,12 +4,13 @@
  * takes its data and its callbacks, so `MeetingsPanes.test.tsx` renders them
  * with renderToStaticMarkup. The decisions live in `meetingsLayout.ts`.
  */
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { KindChoice } from "../appTypes";
 import {
   DETAIL_TABS,
   NO_FILTER,
   filterActive,
+  fitChipCount,
   sunProgress,
   talkTimeLabel,
   undoSecondsLeft,
@@ -78,13 +79,108 @@ export function MeetingFilters({
   );
 }
 
-/** One people chip. `you` gets the accent so a person finds themself first. */
-export function PeopleChips({ people }: { people: readonly string[] }) {
+function chipClass(name: string): string {
+  return name === "You" ? "person-chip is-you" : "person-chip";
+}
+
+/** The "+N" chip's accessible label: how many, and who. */
+export function moreChipLabel(hidden: readonly string[]): string {
+  return `${hidden.length} more: ${hidden.join(", ")}`;
+}
+
+/**
+ * yap-1107-meetings-row-chips-baseline — a list row's ONE chip line: the first
+ * `shown` people as chips, the rest folded into a "+N" chip whose accessible
+ * label (and tooltip) names them. Chips past `shown` stay in the DOM out of
+ * flow and invisible (`is-overflow`) so `FitPeopleChips` can measure them on
+ * the next resize; the "+N" chip is always rendered for the same reason.
+ * Pure markup: `MeetingsPanes.test.tsx` renders it with renderToStaticMarkup.
+ */
+export function PeopleChipLine({ people, shown }: { people: readonly string[]; shown: number }) {
+  const k = Math.max(0, Math.min(people.length, Math.floor(shown)));
+  const hidden = people.slice(k);
+  return (
+    <>
+      {people.map((p, i) => (
+        <span
+          key={p}
+          className={i < k ? chipClass(p) : `${chipClass(p)} is-overflow`}
+          data-person-chip={i}
+          aria-hidden={i < k ? undefined : true}
+        >
+          {p}
+        </span>
+      ))}
+      <span
+        className={hidden.length > 0 ? "person-chip people-more" : "person-chip people-more is-overflow"}
+        data-people-more={hidden.length}
+        role={hidden.length > 0 ? "img" : undefined}
+        aria-label={hidden.length > 0 ? moreChipLabel(hidden) : undefined}
+        aria-hidden={hidden.length > 0 ? undefined : true}
+        title={hidden.length > 0 ? hidden.join(", ") : undefined}
+      >
+        {`+${Math.max(1, hidden.length)}`}
+      </span>
+    </>
+  );
+}
+
+/**
+ * The measured chip line: every chip gets its real width, and whatever does
+ * not fit beside the state chip collapses into "+N" (never a second line).
+ * Re-measures when the line's width or a chip's width changes (window or
+ * pane resize, the web font arriving).
+ * Without ResizeObserver (jsdom, SSR) it shows every chip — the CSS still
+ * clips, so it can never wrap.
+ */
+function FitPeopleChips({ people }: { people: readonly string[] }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [shown, setShown] = useState(people.length);
+  const key = people.join("\u0000");
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      const chips = Array.from(el.querySelectorAll<HTMLElement>("[data-person-chip]"));
+      const more = el.querySelector<HTMLElement>("[data-people-more]");
+      const cs = getComputedStyle(el);
+      const gap = parseFloat(cs.columnGap || cs.gap || "0");
+      const next = fitChipCount(
+        chips.map((c) => c.offsetWidth),
+        gap,
+        el.clientWidth,
+        more ? more.offsetWidth : 0,
+      );
+      setShown((cur) => (cur === next ? cur : next));
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    // The line AND every chip: a chip's width changes when the web font
+    // lands, without the line's width changing.
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    for (const c of Array.from(el.querySelectorAll<HTMLElement>("[data-person-chip], [data-people-more]"))) ro.observe(c);
+    return () => ro.disconnect();
+  }, [key]);
+  return (
+    <span ref={ref} className="people-chips is-fit" aria-label="People" data-people-chips={people.length}>
+      <PeopleChipLine people={people} shown={shown} />
+    </span>
+  );
+}
+
+/**
+ * People chips. `You` gets the accent so a person finds themself first. The
+ * detail header lets them wrap; a list row passes `fit` and gets one line
+ * that overflows into "+N" (yap-1107-meetings-row-chips-baseline).
+ */
+export function PeopleChips({ people, fit = false }: { people: readonly string[]; fit?: boolean }) {
   if (people.length === 0) return null;
+  if (fit) return <FitPeopleChips people={people} />;
   return (
     <span className="people-chips" aria-label="People">
       {people.map((p) => (
-        <span key={p} className={p === "You" ? "person-chip is-you" : "person-chip"}>
+        <span key={p} className={chipClass(p)}>
           {p}
         </span>
       ))}

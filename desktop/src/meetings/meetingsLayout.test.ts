@@ -16,6 +16,7 @@ import {
   duePendingDeletes,
   filterActive,
   filterMeetings,
+  fitChipCount,
   groupMeetings,
   isNarrow,
   listPeople,
@@ -79,6 +80,37 @@ describe("people", () => {
     expect(listPeople(row("b", { kind: "in_person" }))).toEqual(["Speaker"]);
     expect(listPeople(row("c", { kind: "in_person", sysWavPath: "/x/sys.wav" }))).toEqual(["Speaker", "Call"]);
     expect(listPeople(row("d", { state: "recording" }))).toEqual([]);
+  });
+
+  it("yap-1107-meetings-row-chips-baseline: names the backend sends win, trimmed and deduped", () => {
+    const six = ["You", "Call", "Speaker 2", "Dana", "Eli", "Fay"];
+    expect(listPeople({ ...row("e", { sysWavPath: "/x/sys.wav" }), people: six })).toEqual(six);
+    expect(listPeople({ ...row("f"), people: [" Dana ", "Dana", "", "  "] })).toEqual(["Dana"]);
+    // Empty or missing → the tracks decide, as before.
+    expect(listPeople({ ...row("g", { sysWavPath: "/x/sys.wav" }), people: [] })).toEqual(["You", "Call"]);
+    expect(listPeople({ ...row("h", { sysWavPath: "/x/sys.wav" }), people: null })).toEqual(["You", "Call"]);
+    // A recording row still shows no chips.
+    expect(listPeople({ ...row("i", { state: "recording" }), people: six })).toEqual([]);
+  });
+
+  it("yap-1107-meetings-row-chips-baseline: fitChipCount keeps one line and folds the rest into +N", () => {
+    // Everything fits: 30 + 4 + 40 + 4 + 60 = 138 <= 140.
+    expect(fitChipCount([30, 40, 60], 4, 140, 24)).toBe(3);
+    // Exactly at the edge (sub-pixel slack) still fits.
+    expect(fitChipCount([30, 40, 60], 4, 137.6, 24)).toBe(3);
+    // Too wide: keep the prefix that leaves room for "+N" (24 + 30+4 + 40+4 = 102 <= 110; + 60+4 > 110).
+    expect(fitChipCount([30, 40, 60], 4, 110, 24)).toBe(2);
+    // Six people in a narrow row.
+    expect(fitChipCount([34, 36, 70, 44, 30, 32], 4, 150, 26)).toBe(2);
+    // Not even one chip beside "+N": "+N" alone, never a wrap.
+    expect(fitChipCount([80, 90], 4, 60, 26)).toBe(0);
+    // The "+N" chip's own width counts: 38 > 37 folds, and 30 + 10 + 4 > 37 leaves only "+N".
+    expect(fitChipCount([10, 10, 10], 4, 37, 30)).toBe(0);
+    expect(fitChipCount([], 4, 100, 24)).toBe(0);
+    // No layout (jsdom: every width 0, avail 0) → everything "fits".
+    expect(fitChipCount([0, 0, 0], 0, 0, 0)).toBe(3);
+    // Garbage in never throws or goes negative.
+    expect(fitChipCount([Number.NaN, 20], Number.NaN, Number.NaN, Number.NaN)).toBe(2);
   });
 
   it("builds the People tab from the transcript, most lines first, each label with a reason", () => {

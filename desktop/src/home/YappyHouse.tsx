@@ -49,6 +49,7 @@ import {
   parallaxOffsets,
   parallaxTarget,
   redrawPlan,
+  cinderFlight,
   studioAriaLabel,
   furnaceState,
   mochiQuietReason,
@@ -217,6 +218,8 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
       const phase = skyPhase(new Date());
       return {
         ...inputsRef.current,
+        // yap-1106-news-home-briefing — Cinder's flight in with a new briefing.
+        cinderFlight: cinderFlight(inputsRef.current.newsArrivedAtMs, Date.now(), reduce),
         phase,
         sky: skyAt(phase),
         meetingRecording: meetingRef.current,
@@ -274,6 +277,7 @@ export default function YappyHouse({ companionTone, meeting, studio }: YappyHous
         parallaxSettling: settling(),
         meetingRecording: meetingRef.current,
         furnaceLighting: inputsRef.current.engineLoading,
+        cinderFlying: inputsRef.current.newsReady && cinderFlight(inputsRef.current.newsArrivedAtMs, Date.now(), reduce) < 1,
       });
       if (p.mode !== mode) {
         console.info(`home studio_mode from=${mode ?? "none"} to=${p.mode} draws=${draws}`);
