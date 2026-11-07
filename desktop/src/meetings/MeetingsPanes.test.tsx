@@ -140,7 +140,7 @@ describe("the Meetings view source", () => {
 
   it("groups the list by date and carries people chips and the state chip per row", () => {
     expect(meetingsView).toContain("groupMeetings(");
-    expect(meetingsView).toContain("<PeopleChips people={listPeople(m)} />");
+    expect(meetingsView).toContain("<PeopleChips people={listPeople(m)} fit />");
     expect(meetingsView).toContain("className={`meeting-state ${m.state}`}");
   });
 

@@ -4,7 +4,10 @@
    progress, or the failure) — so a 700 px window shows the list, not three
    cards. yap-1107-meetings-row-actions-no-overlay: the row has NO hover bar.
    Export/Delete live in the detail header (and the right-click menu, and ⌫
-   on the selected row); hover and selection change colour, never layout. */
+   on the selected row); hover and selection change colour, never layout.
+   yap-1107-meetings-row-chips-baseline: the row is two lines (title | time ·
+   duration, then chips + state chip); the detail line is gone, so every row
+   is the same height. */
 
 .meetings-list {
   list-style: none;
@@ -34,25 +37,24 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
-.meeting-row-head {
+/* yap-1107-meetings-row-chips-baseline — §3.3 row anatomy, two lines.
+   Line 1: title (ellipsis) | time · duration, right-aligned, mono, muted. */
+.meeting-row-line1 {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
 }
 .meeting-row-title {
+  flex: 0 1 auto;
   font-weight: 590;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-}
-.meeting-row-head .meeting-state {
-  flex: none;
-  white-space: nowrap;
 }
 .meeting-row-when {
   margin-left: auto;
@@ -63,39 +65,67 @@
   white-space: nowrap;
 }
 
-.meeting-row-detail {
-  margin: 0;
+/* Line 2: the people chips on ONE line (what does not fit folds into "+N",
+   measured in PeopleChips — never a wrap), then the state chip at the line's
+   end, under the time. Every chip on this line is the same box — same
+   font-size, line-height, padding and border — so the boxes share one top and
+   one text baseline. The line centres equal boxes rather than using
+   align-items: baseline: the state chip speaks the pixel mono and a person
+   chip the UI sans, whose ascents differ, so baseline alignment would step the
+   boxes by a pixel or two; equal boxes centred keep both the box line and the
+   measured baseline identical. */
+.meeting-row-chips {
+  --meeting-chip-line: 1.5;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-  white-space: nowrap;
+}
+.meeting-row-chips .people-chips.is-fit {
+  position: relative;
+  display: flex;
+  flex: 1 1 0%;
+  flex-wrap: nowrap;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
-.meeting-row-detail.bad {
-  color: var(--danger-ink);
-}
-.meeting-row-detail > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* The transcribing bar — determinate, never a spinner. */
-.meeting-row-track {
+.meeting-row-chips .person-chip,
+.meeting-row-chips .meeting-state {
+  box-sizing: border-box;
   flex: none;
-  width: 96px;
-  height: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--border) 80%, transparent);
-  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-xs);
+  line-height: var(--meeting-chip-line);
+  padding: 1px var(--space-2);
+  border-width: 1px;
+  border-style: solid;
+  white-space: nowrap;
 }
-.meeting-row-track > span {
-  display: block;
-  height: 100%;
-  background: var(--warn-ink);
+.meeting-row-chips .meeting-state {
+  margin-left: auto;
+}
+/* Chips past the fold stay measurable but out of flow and unseen. */
+.people-chips .person-chip.is-overflow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.person-chip.people-more {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+/* A transcribing row's real progress fills its own state chip — no extra
+   line, so the row keeps the list's one height. */
+.meeting-row-chips .meeting-state[data-meeting-progress] {
+  background-image: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--warn-ink) 18%, transparent) var(--meeting-progress, 0%),
+    transparent var(--meeting-progress, 0%)
+  );
 }
 
 /* Status buttons (Retry on a failed row, Cancel notes / Write notes while
@@ -127,17 +157,6 @@
   gap: 2px;
   min-width: 0;
   flex: 1;
-}
-
-.meeting-row-detail .link {
-  flex: none;
-  background: none;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  color: var(--accent-action);
-  text-decoration: underline;
-  cursor: pointer;
 }
 
 .empty .meetings-engine {

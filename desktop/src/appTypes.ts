@@ -666,6 +666,13 @@ export interface Meeting {
   summaryModel?: string | null;
   createdAt: string;
   segmentCount: number;
+  /**
+   * yap-1107-meetings-row-chips-baseline — the names a list row shows as people
+   * chips, when the backend knows more than the two tracks (saved voices from
+   * "Who was this?"). Optional on the wire: today's rows omit it and the row
+   * derives You / Call from its tracks (`listPeople`).
+   */
+  people?: string[] | null;
 }
 
 /**
