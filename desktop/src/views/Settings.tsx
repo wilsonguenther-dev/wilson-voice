@@ -11,6 +11,7 @@ import Meetings from "./settings/Meetings";
 import License from "./settings/License";
 import Diagnostics from "./settings/Diagnostics";
 import ModelProviders from "../settings/ModelProviders";
+import CloudRouteSettings from "../settings/CloudRoute";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
@@ -94,6 +95,7 @@ export default function Settings() {
                   <Advanced />
                   {/* yap-byom-0 — where notes and polish run, and whether that leaves this Mac. */}
                   <ModelProviders />
+                  <CloudRouteSettings />
                 </>
               )}
 
