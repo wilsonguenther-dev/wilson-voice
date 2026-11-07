@@ -116,6 +116,10 @@ pub mod meeting_matrix;
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
+// yap-1106-voiceprints — speaker profiles (saved voiceprints): the migration-11
+// SQL, the match bands and the centroid math. Public so tests/speaker_profiles.rs
+// drives the shipped matcher.
+pub mod speaker_profiles;
 // yap-byom-0 — bring your own model: provider model + per-task pick, API keys in
 // the Keychain bound to their host, and the one redirect-free HTTP client.
 pub mod http_client;

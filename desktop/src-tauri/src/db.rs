@@ -9,6 +9,7 @@ use crate::meetings::{
     self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
+use crate::speaker_profiles::{self, MatchBands, SpeakerProfile, VoiceMatch};
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -671,6 +672,11 @@ pub struct UserContextView {
 ///     user reopens this build, we do not "downgrade" — we log and carry on with
 ///     the tables we understand. Every step is additive, so that is safe.
 ///   * **Shipped steps are immutable.** Add an arm; never edit one.
+/// yap-1106-voiceprints — the `speaker_profiles` columns, in
+/// `Database::map_speaker_profile` order.
+const SPEAKER_PROFILE_COLS: &str =
+    "id, display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at";
+
 fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version > SCHEMA_VERSION {
@@ -696,6 +702,9 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             9 => meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
             // yap-call-1 — the detected app / how it was found.
             10 => meetings::MIGRATION_10_DETECTED_CALL,
+            // yap-1106-voiceprints — speaker profiles, their samples, and the
+            // plain-text name a past meeting's segment keeps.
+            11 => crate::speaker_profiles::MIGRATION_11_SPEAKER_PROFILES,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2069,6 +2078,415 @@ impl Database {
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // yap-1106-voiceprints — speaker profiles (see `speaker_profiles.rs`).
+    // Every lifecycle step logs one `speaker_profiles <event>` line with ids
+    // and counts only — never a name, an embedding or a path.
+    // -----------------------------------------------------------------------
+
+    fn map_speaker_profile(r: &rusqlite::Row<'_>) -> rusqlite::Result<SpeakerProfile> {
+        let blob: Vec<u8> = r.get(6)?;
+        let centroid = speaker_profiles::decode_embedding(&blob).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Blob,
+                Box::<dyn std::error::Error + Send + Sync>::from(e),
+            )
+        })?;
+        Ok(SpeakerProfile {
+            id: r.get(0)?,
+            display_name: r.get(1)?,
+            is_me: r.get::<_, i64>(2)? != 0,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+            embedder_digest: r.get(5)?,
+            centroid,
+            n_samples: r.get(7)?,
+            last_heard_at: r.get(8)?,
+        })
+    }
+
+    fn speaker_profile_on(conn: &Connection, id: i64) -> Result<Option<SpeakerProfile>, String> {
+        conn.query_row(
+            &format!("SELECT {SPEAKER_PROFILE_COLS} FROM speaker_profiles WHERE id = ?1"),
+            params![id],
+            Self::map_speaker_profile,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// Create a profile from its first voice sample (the "who was this?"
+    /// prompt, or the opt-in "You" enrollment from dictation with `is_me`).
+    /// `meeting_id` is `None` for a dictation sample.
+    pub fn create_speaker_profile(
+        &self,
+        display_name: &str,
+        is_me: bool,
+        embedder_digest: &str,
+        first_sample: &[f32],
+        seconds: f64,
+        meeting_id: Option<&str>,
+    ) -> Result<SpeakerProfile, String> {
+        let name = speaker_profiles::clean_display_name(display_name)?;
+        if embedder_digest.trim().is_empty() {
+            return Err("a voiceprint needs the digest of the model that made it".into());
+        }
+        let centroid = speaker_profiles::fold_into_centroid(&[], 0, first_sample)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        if is_me {
+            let existing: Option<i64> = tx
+                .query_row("SELECT id FROM speaker_profiles WHERE is_me = 1", [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if existing.is_some() {
+                log::warn!("speaker_profiles create_refused reason=me_exists");
+                return Err("Your voice is already saved. Add to it or delete it first.".into());
+            }
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO speaker_profiles
+               (display_name, is_me, created_at, updated_at, embedder_digest, centroid, n_samples, last_heard_at)
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, 1, ?3)",
+            params![
+                name,
+                is_me as i64,
+                now,
+                embedder_digest,
+                speaker_profiles::encode_embedding(&centroid)
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id,
+                meeting_id,
+                speaker_profiles::encode_embedding(first_sample),
+                seconds,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let profile = Self::speaker_profile_on(&tx, id)?
+            .ok_or_else(|| "the new speaker profile vanished".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles create id={id} is_me={is_me} dim={} from_meeting={}",
+            centroid.len(),
+            meeting_id.is_some()
+        );
+        Ok(profile)
+    }
+
+    /// Add one more voice sample to a profile. Refuses a sample from another
+    /// embedding model (digest) or dimension: a model change means re-enroll.
+    pub fn add_speaker_sample(
+        &self,
+        profile_id: i64,
+        embedder_digest: &str,
+        embedding: &[f32],
+        seconds: f64,
+        meeting_id: Option<&str>,
+    ) -> Result<SpeakerProfile, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let p = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        if p.embedder_digest != embedder_digest {
+            log::warn!("speaker_profiles sample_refused id={profile_id} reason=digest_mismatch");
+            return Err(
+                "This voice was saved with a different voice model. Enroll it again.".into(),
+            );
+        }
+        if !p.centroid.is_empty() && p.centroid.len() != embedding.len() {
+            log::warn!("speaker_profiles sample_refused id={profile_id} reason=dim_mismatch");
+            return Err("This voice sample does not fit the saved voice. Enroll it again.".into());
+        }
+        let centroid = speaker_profiles::fold_into_centroid(&p.centroid, p.n_samples, embedding)?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO speaker_samples (profile_id, meeting_id, embedding, seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                profile_id,
+                meeting_id,
+                speaker_profiles::encode_embedding(embedding),
+                seconds,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles
+                SET centroid = ?2, n_samples = n_samples + 1, updated_at = ?3, last_heard_at = ?3
+              WHERE id = ?1",
+            params![profile_id, speaker_profiles::encode_embedding(&centroid), now],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, profile_id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles sample_added id={profile_id} n_samples={}",
+            out.n_samples
+        );
+        Ok(out)
+    }
+
+    pub fn list_speaker_profiles(&self) -> Result<Vec<SpeakerProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SPEAKER_PROFILE_COLS} FROM speaker_profiles
+                  ORDER BY is_me DESC, display_name COLLATE NOCASE, id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], Self::map_speaker_profile)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn get_speaker_profile(&self, id: i64) -> Result<Option<SpeakerProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::speaker_profile_on(&conn, id)
+    }
+
+    /// How many samples a profile holds (the delete-cascade evidence).
+    pub fn speaker_sample_count(&self, profile_id: i64) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM speaker_samples WHERE profile_id = ?1",
+            params![profile_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Match one turn embedding against every saved profile (never across
+    /// embedder digests). Logs the outcome, never the name.
+    pub fn match_speaker_voice(
+        &self,
+        embedding: &[f32],
+        embedder_digest: &str,
+        bands: MatchBands,
+    ) -> Result<VoiceMatch, String> {
+        let profiles = self.list_speaker_profiles()?;
+        let m = speaker_profiles::match_voice(embedding, embedder_digest, &profiles, bands);
+        log::info!(
+            "speaker_profiles match outcome={} profiles={}",
+            m.outcome(),
+            profiles.len()
+        );
+        Ok(m)
+    }
+
+    /// Rename a profile. Segments labelled with it take the new name too.
+    pub fn rename_speaker_profile(&self, id: i64, display_name: &str) -> Result<SpeakerProfile, String> {
+        let name = speaker_profiles::clean_display_name(display_name)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let n = tx
+            .execute(
+                "UPDATE speaker_profiles SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, name, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("That speaker no longer exists.".into());
+        }
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_name = ?2 WHERE speaker_profile_id = ?1",
+                params![id, name],
+            )
+            .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, id)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!("speaker_profiles rename id={id} segments={segments}");
+        Ok(out)
+    }
+
+    /// Merge `absorb` into `keep`: its samples move over, the centroid is the
+    /// sample-weighted mean, its labelled segments take `keep`'s name, and
+    /// `absorb` is deleted. Refuses two different embedder digests.
+    pub fn merge_speaker_profiles(&self, keep: i64, absorb: i64) -> Result<SpeakerProfile, String> {
+        if keep == absorb {
+            return Err("Pick two different speakers to merge.".into());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let k = Self::speaker_profile_on(&tx, keep)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        let a = Self::speaker_profile_on(&tx, absorb)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        if k.embedder_digest != a.embedder_digest {
+            log::warn!("speaker_profiles merge_refused keep={keep} absorb={absorb} reason=digest_mismatch");
+            return Err(
+                "These voices were saved with different voice models and cannot be merged.".into(),
+            );
+        }
+        let centroid =
+            speaker_profiles::merge_centroids(&k.centroid, k.n_samples, &a.centroid, a.n_samples)?;
+        let now = Utc::now().to_rfc3339();
+        let last_heard = match (&k.last_heard_at, &a.last_heard_at) {
+            (Some(x), Some(y)) => Some(if x >= y { x.clone() } else { y.clone() }),
+            (x, y) => x.clone().or_else(|| y.clone()),
+        };
+        let is_me = k.is_me || a.is_me;
+        let moved = tx
+            .execute(
+                "UPDATE speaker_samples SET profile_id = ?1 WHERE profile_id = ?2",
+                params![keep, absorb],
+            )
+            .map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = ?1, speaker_name = ?3
+                  WHERE speaker_profile_id = ?2",
+                params![keep, absorb, k.display_name],
+            )
+            .map_err(|e| e.to_string())?;
+        // Delete first so the one-"me" unique index never sees two rows.
+        tx.execute("DELETE FROM speaker_profiles WHERE id = ?1", params![absorb])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE speaker_profiles
+                SET centroid = ?2, n_samples = ?3, last_heard_at = ?4, is_me = ?5, updated_at = ?6
+              WHERE id = ?1",
+            params![
+                keep,
+                speaker_profiles::encode_embedding(&centroid),
+                k.n_samples + a.n_samples,
+                last_heard,
+                is_me as i64,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let out = Self::speaker_profile_on(&tx, keep)?
+            .ok_or_else(|| "That speaker no longer exists.".to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles merge keep={keep} absorb={absorb} samples_moved={moved} segments={segments}"
+        );
+        Ok(out)
+    }
+
+    /// Delete a profile and its samples. Past meetings keep the name as plain
+    /// text: the segment is unlinked, `speaker_name` stays. `false` if absent.
+    pub fn delete_speaker_profile(&self, id: i64) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL WHERE speaker_profile_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        let samples = tx
+            .execute("DELETE FROM speaker_samples WHERE profile_id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        let n = tx
+            .execute("DELETE FROM speaker_profiles WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles delete id={id} found={} samples={samples} segments_unlinked={segments}",
+            n > 0
+        );
+        Ok(n > 0)
+    }
+
+    /// "Forget all voiceprints": every profile and sample goes, past meetings
+    /// keep their names as plain text, and the "enroll my voice" answer is
+    /// cleared (the user wiped it, so asking again is honest). Returns the
+    /// number of profiles removed.
+    pub fn forget_all_voiceprints(&self) -> Result<usize, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let segments = tx
+            .execute(
+                "UPDATE meeting_segments SET speaker_profile_id = NULL
+                  WHERE speaker_profile_id IS NOT NULL",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        let samples = tx
+            .execute("DELETE FROM speaker_samples", [])
+            .map_err(|e| e.to_string())?;
+        let profiles = tx
+            .execute("DELETE FROM speaker_profiles", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM settings_kv WHERE key = ?1",
+            params![speaker_profiles::ENROLL_ME_SETTING],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log::info!(
+            "speaker_profiles forget_all profiles={profiles} samples={samples} segments_unlinked={segments}"
+        );
+        Ok(profiles)
+    }
+
+    /// Label one transcript segment with a profile: links it and copies the
+    /// name as plain text (what survives a later delete).
+    pub fn label_segment_speaker(&self, segment_id: &str, profile_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meeting_segments
+                    SET speaker_profile_id = ?2,
+                        speaker_name = (SELECT display_name FROM speaker_profiles WHERE id = ?2)
+                  WHERE id = ?1 AND EXISTS (SELECT 1 FROM speaker_profiles WHERE id = ?2)",
+                params![segment_id, profile_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            log::warn!("speaker_profiles label_refused profile={profile_id} reason=missing");
+            return Err("That speaker or line no longer exists.".into());
+        }
+        log::info!("speaker_profiles label profile={profile_id}");
+        Ok(())
+    }
+
+    /// A segment's stored speaker: `(profile id, plain-text name)`.
+    pub fn segment_speaker(&self, segment_id: &str) -> Result<(Option<i64>, Option<String>), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT speaker_profile_id, speaker_name FROM meeting_segments WHERE id = ?1",
+            params![segment_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// The one-time "use my dictation audio to save my voice" answer.
+    /// `None` = never asked.
+    pub fn enroll_me_choice(&self) -> Option<bool> {
+        self.setting_get(speaker_profiles::ENROLL_ME_SETTING)
+            .map(|v| v == "yes")
+    }
+
+    pub fn set_enroll_me_choice(&self, yes: bool) -> Result<(), String> {
+        self.setting_set(
+            speaker_profiles::ENROLL_ME_SETTING,
+            if yes { "yes" } else { "no" },
+        )?;
+        log::info!("speaker_profiles enroll_me_choice yes={yes}");
+        Ok(())
     }
 
     /// Has the one-time meeting-capture notice been shown and closed yet?
