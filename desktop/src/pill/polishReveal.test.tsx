@@ -269,7 +269,11 @@ describe("WF-05 polish reveal — view", () => {
     expect(walk(el).some((e) => e.type === DiffView)).toBe(true);
     const html = renderToStaticMarkup(el);
     expect(html).toContain("diff-view");
-    expect(html).toContain("diff-added");
+    // REVEAL rewrites most of a short take, so readableDiff picks the
+    // Before/After blocks (yap-1107-polish-diff-readable) instead of inline runs.
+    expect(html).toContain("diff-blocks");
+    expect(html).toContain("Show as before/after");
+    expect(html).toContain("The quarterly report is finished.");
     expect(html).toContain("Cloud");
     expect(html).toContain('role="dialog"');
     const bs = buttons(el);

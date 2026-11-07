@@ -1,0 +1,36 @@
+Wispr Flow 1.6.1400 bundle excerpts, read-only, 2026-11-07. Wispr was never launched; its data dir was never opened.
+Format: [Wn] file @ byte offset: excerpt. Offsets are into the unmodified files named below.
+A = /Applications/Wispr Flow.app/Contents/Resources/app.asar
+B = /Applications/Wispr Flow.app/Contents/Resources/swift-helper-app-dist/Wispr Flow.app/Contents/MacOS/Wispr Flow (Swift helper)
+
+[W1] A @ 9327751: Escape (the Dismiss shortcut) cancels a running polish, then dismisses the dictation with reason user_action_escape. The handler itself has no status check; the abort in W2 is what makes it work mid-transcription.
+    ){const e=B.RA.isContextMenuOpen,t=(0,R.isNotificationActive)(),n=(0,P.isPolishRunning)();if(e||t||n)(0,y.hasActiveBarReminders)()&&s().info("[CalendarReminder] Esc fell through with reminders active",{customAttributes:{contextMenuOpen:e,notificationActive:t,polishRunning:n}});else if((0,y.tryDismissFrontReminderOnEsc)())return}const t=(0,P.cancelPolishIfRunning)();B.RA.isContextMenuOpen&&((0,O.Bn)(B.RA.contextMenuWindow,u.qM.ShowDiff,{isOpen:!1}),(0,P.clearLastPolishDiff)()),t||(0,R.clearActiveNotific
+
+[W2] A @ 8457191: While transcribing, the result is thrown away ("aborted") once status becomes Dismissed: Escape during processing cancels.
+    Transitioning Stopping → Processing, starting transcription",{customAttributes:{uuid:c.ZZ.uuid}}),(0,Rt.x7)(Qe._W.Processing),Y=(0,z.js)(c.ZZ.uuid,n,Qe._W.Processing,R,B).catch(e=>{s().error("Failed to save audio to history:",{customAttributes:{error:(0,o.serializeError)(e)}})});const he=await(async()=>{const e=c.ZZ.uuid,t=()=>c.ZZ.timedOut||c.ZZ.uuid!==e||c.ZZ.status===Qe._W.Dismissed;if(c.ZZ.currentTranscriptionTask&&await c.ZZ.currentTranscriptionTask.promise,t())return"aborted";if(Ft.A.isConnecte
+
+[W3] A @ 8457321: Audio is saved to History when processing starts, so a cancelled take keeps its audio.
+    (0,z.js)(c.ZZ.uuid,n,Qe._W.Processing,R,B).catch(e=>{s().error("Failed to save audio to history:",{customAttributes:{error:(0,o.serializeError)(e)}})});const
+
+[W4] A @ 6583925: Dismiss reasons include user_action_escape.
+    n",e.UserActionSettingsButton="user_action_settings_button",e.UserActionEscape="user_action_escape",e.OtherShortcut="other_shortcut",e.OtherShortcutFnBuiltin="other_shortcut_fn_builtin",e.DebouncePTT="debounce_ptt",e.De
+
+[W5] B @ 5008352: The helper names AXSecureTextField only inside its selected-text reader (context capture), not on the paste path.
+     this interaction.......Unable to create AX Value.......AX type mismatch ...............CF type mismatch ...............AXSecureTextField...............Returning selectedTextInfo from parent after trying children (role: ............Returning selectedTextInf
+
+[W6] A @ 8627527: The only "paste blocked" event: a notification...
+    ["PasteBlocked",e=>{const t=e.PasteBlocked;if(!t)throw new Error("PasteBlocked is undefined");const n=t.payload;return i().warn(`Paste was blocked due to: ${n.reason}`),(0,ye.sendNotification)(N.Eg.PasteBlocked),(0,J.fV)("failure",`paste_blocked:${n.reason}`,H.ZZ.appName),Be(e.u
+
+[W7] A @ 31290283: ...whose copy is "Run Flow as Administrator to paste anywhere" (Windows elevation), not a password-field rule. No Mac password-field paste refusal exists in the bundle.
+    "paste_blocked_body":"Execute o Flow como Administrador para inserir texto em qualquer lugar","paste_blocked_title":"Atualize as defini\xe7\xf5es de administrador para colar!","paste_failed_title":"Clique numa caixa de texto 
+
+[W8] B @ 5055120: Keys still held at paste time are only logged; nothing waits for a typing pause.
+    ........com.realvnc.rvncconnect.........com.tigervnc.tigervnc...........Using original immediate clipboard setting......curKeysDown is non-empty on paste: .............Pasteboard content was not updated..............chromiumMajorSource.............Chromium paste prime was 
+
+[W9] A @ 7321064: A recording meeting and a running dictation are tracked side by side (the summary auto-open waits while dictating).
+    tingWindow();return{summaryIsReal:(0,Kh.SD)({summary:t}),onboardingCompleted:ei.RA.prefs?.user.onboardingCompleted??!1,recordingActive:$r.activeMeetingSession.isActive(),floatingShowsOtherMeeting:null!==n&&n.meetingId!==e,hubL2ShowsThisMeeting:(0,Hh.wm)()===e,dictating:Uu.wJ.includes(Bi.ZZ.status),notetakerBlocked:(0,Xh.kJ)(),recorderConfigEnabled:(0,Ai.ec)().enabled}},tm=asy
+
+[W10] A @ 11774961: Dictation and meeting capture can be active at the same moment.
+    ,g.NS)(i.detail)}),a=1===o;if(s().info("Manual restart-to-update confirmation during active capture",{customAttributes:{dictationActive:e,meetingActive:t,meetingAudioSaving:n,confirmed:a}}),!a)return!1}return await this.applyUpdate({showHu
+
+
