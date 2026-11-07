@@ -13,6 +13,8 @@ import SpeechEngineNotice from "../meetings/SpeechEngineNotice";
 import { CALL_AUDIO_ACTION_LABEL, callAudioChip, recordedTracks } from "../meetings/callAudio";
 import "../meetings/meetings.css";
 import NotetakerSetupCard from "../meetings/NotetakerSetupCard";
+import WhoIsTalking from "../meetings/WhoIsTalking";
+import { clusterLabel, withSpeakerNames } from "../meetings/transcript";
 import {
   NO_FILTER, defaultTab, detailPeople, duePendingDeletes, filterActive, filterMeetings, groupMeetings, isNarrow,
   listPeople, meetingsKeyAction, meetingsLogLine, moveSelection, peopleOptions, schedulePendingDelete, shortId,
@@ -636,6 +638,25 @@ export default function Meetings() {
             <article className="meeting-detail" aria-label={openMeeting.meeting.title}>
               {/* §9 — the "Who's talking?" strip sits at the top of the detail. */}
               <WhoIsTalkingStrip unnamed={unnamedVoices(detailPeopleRows)} onOpenPeople={() => setTab("people")} />
+              {/* yap-1106-who-is-this — "Who was this?" cards, only after the meeting. */}
+              <WhoIsTalking
+                meetingId={openMeeting.meeting.id}
+                title={openMeeting.meeting.title}
+                labelFor={(track, cluster) =>
+                  clusterLabel(openMeeting.segments, openMeeting.meeting.kind, track, cluster)
+                }
+                audioOnDisk={openMeeting.audioOnDisk}
+                retentionDays={insights?.meetings?.audioRetentionDays ?? 7}
+                recording={Boolean(meetingStatus.recording && meetingStatus.id === openMeeting.meeting.id)}
+                onNames={(names) =>
+                  setOpenMeeting((m) =>
+                    m && m.meeting.id === openMeeting.meeting.id
+                      ? { ...m, segments: withSpeakerNames(m.segments, names) }
+                      : m,
+                  )
+                }
+                toast={toast}
+              />
               <header className="meeting-detail-head">
                 <div className="meeting-detail-bar">
                   {narrow ? (

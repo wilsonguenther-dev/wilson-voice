@@ -140,8 +140,10 @@ measurements show one is better. A swap is a new dated section here plus a
 changed pins block, never a silent catalog edit.
 
 The voiceprint `embedder_digest` stores the embedding model's sha256 below
-(`c46fad10…`). That store is not on main yet; when it lands, its test must
-compare against this pins block.
+(`c46fad10…`). The store landed with yap-1106-voiceprints (see the dated
+section below); `tests/supply_chain.rs`
+(`the_voiceprint_embedder_digest_is_the_pinned_embedding_model`) compares it
+against this pins block.
 
 ## Pinned versions
 
@@ -181,3 +183,54 @@ Yap's corpus yet — the PENDING measurements in the table above still decide th
 Not ported in this item (later analyzer items own them): folding clusters under 1.6 s
 into the nearest centroid (`_merge_small`), single-window smoothing (`_mode_smooth`),
 enrolled voiceprints, the talk-time summary, and overlap flags.
+
+## 2026-11-07 — yap-1106-voiceprints: saved voiceprints (no new package)
+
+No crate or model changes. Enrolled speaker profiles (a re-port of the parked
+`feat/yv128` / `feat/yv129` designs, and the "enrolled speaker profiles" idea of
+the hedgehog analyzer's DIARIZE.md "Pipeline") live in `speaker_profiles.rs`
+and migration 11 (`speaker_profiles`, `speaker_samples`, plus
+`meeting_segments.speaker_profile_id` / `speaker_name`).
+
+- A profile's `embedder_digest` is the catalog's pinned sha256 of
+  `wespeaker-en-voxceleb-campplus` (the pins block above), read at runtime via
+  `speaker_profiles::pinned_embedder_digest`. Profiles of another digest or
+  dimension are never compared: the matcher answers "re-enroll".
+- The centroid is the normalised mean of normalised turn embeddings. Only
+  turns attributed to one cluster are embedded, inside the word-exact bounds of
+  section 2 minus `TURN_EMBED_GUARD_SECONDS` (0.2 s) at each end.
+- Two cosine-SIMILARITY bands, both PROVISIONAL until #152's scored population
+  is measured: `auto` = `PROVISIONAL_AUTO_SIMILARITY = 0.70` (the one shared
+  0.70), `ask` = `PROVISIONAL_ASK_SIMILARITY = 0.55`; eval-only overrides
+  `YAP_EVAL_VOICEPRINT_AUTO` / `YAP_EVAL_VOICEPRINT_ASK`;
+  `MatchBands::tuned` derives them from a genuine/impostor population
+  (`ask` = the EER threshold, `auto` = the lowest threshold within a FAR cap).
+- Everything stays on this Mac ("Leaves this Mac: No").
+
+## 2026-11-07 — yap-1106-who-is-this: the "Who was this?" cards (no new package)
+
+No crate or model changes; the pins above are untouched, so
+`tests/supply_chain.rs` keeps asserting the same digests.
+
+- The full-clustering pass now keeps each cluster's voice
+  (`diarize::cluster_voices`: the L2-normalised mean of the cluster's
+  L2-normalised turn embeddings, plus its talk seconds) in migration 12's
+  `meeting_cluster_voices`, stamped with the pinned embedder digest
+  (`speaker_profiles::pinned_embedder_digest`). This is the hedgehog
+  analyzer's DIARIZE.md "Pipeline" idea of one saved centroid per person,
+  fed from the turns the pass already embedded; nothing new is embedded.
+- Cards: clusters with at least 20 s of speech that match no saved voice,
+  five at most, most speaking time first, never "You"
+  (`speaker_profiles::pick_voice_cards`). `ask`/`auto`-band matches read
+  "Same person as Alex?" with the reason ("Probably Alex — voice match 0.82").
+- The clip is at most 3 s cut from the start of the cluster's LONGEST turn
+  (`speaker_profiles::clearest_clip`); turns are the word-exact rows of
+  section 2, so a clip never crosses a speaker switch. Played from the kept
+  audio; once the 7-day retention purged it, the card says so and still
+  names from the line.
+- Save / That's me / "Yes, same person" relabel every row of the cluster in
+  that meeting (whole turns) and add the cluster voice as a sample when one
+  was kept (`Database::name_meeting_cluster`). "Not sure" and "Ignore this
+  voice" keep nothing (`Database::dismiss_meeting_cluster`). "Forget all
+  voices" and deleting the meeting clear the kept cluster voices.
+- Everything stays on this Mac ("Leaves this Mac: No").

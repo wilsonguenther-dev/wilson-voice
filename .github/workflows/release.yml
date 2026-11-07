@@ -55,6 +55,9 @@ jobs:
           cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
           cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
           cp target/release/yap-asr "src-tauri/binaries/yap-asr-${TRIPLE}"
+          # SP-10: the Neural Engine helper (Swift + FluidAudio, pinned). Same
+          # externalBin precondition as the three Rust sidecars.
+          bash ../scripts/build-ane-engine.sh
           ls -l "src-tauri/binaries/yap-polish-${TRIPLE}" "src-tauri/binaries/yap-diarize-${TRIPLE}" "src-tauri/binaries/yap-asr-${TRIPLE}"
 
       # Fast-fail compile gate before the heavier bundling/signing step.

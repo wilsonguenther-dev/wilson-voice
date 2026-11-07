@@ -949,6 +949,78 @@ pub fn cluster_track(
     mode: TargetMode,
     min_embed: Duration,
 ) -> Result<Vec<DiarizedSegment>, DiarizeError> {
+    cluster_track_with_voices(pool, tracks, kind, threshold, mode, min_embed).map(|(d, _)| d)
+}
+
+/// yap-1106-who-is-this — one cluster's voice from a full-clustering pass: the
+/// L2-normalised mean of its turns' L2-normalised embeddings, and the seconds
+/// those turns cover. What a "Who was this?" Save feeds into a voiceprint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PassClusterVoice {
+    pub cluster_index: i64,
+    pub embedding: Vec<f32>,
+    pub seconds: f64,
+}
+
+/// The per-cluster voices of one pass. Only turns that were attributed AND
+/// carry an embedding of the majority width feed a voice (a turn under the
+/// `min_embed` floor came back with none and contributes nothing); a cluster
+/// whose turns carry no usable embedding has no voice. Sorted by cluster.
+pub fn cluster_voices(raw: &[DiarizeSegment], clusters: &[Option<i64>]) -> Vec<PassClusterVoice> {
+    let width = raw
+        .iter()
+        .map(|s| s.embedding.len())
+        .filter(|len| *len > 0)
+        .max()
+        .unwrap_or(0);
+    let mut acc: std::collections::BTreeMap<i64, (Vec<f32>, f64, usize)> =
+        std::collections::BTreeMap::new();
+    for (seg, cluster) in raw.iter().zip(clusters) {
+        let Some(cluster) = cluster else { continue };
+        let entry = acc
+            .entry(*cluster)
+            .or_insert_with(|| (vec![0.0; width], 0.0, 0));
+        entry.1 += (seg.end - seg.start).max(0.0);
+        if width == 0 || seg.embedding.len() != width {
+            continue;
+        }
+        let norm = seg.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if !norm.is_finite() || norm <= 0.0 {
+            continue;
+        }
+        for (a, x) in entry.0.iter_mut().zip(&seg.embedding) {
+            *a += x / norm;
+        }
+        entry.2 += 1;
+    }
+    acc.into_iter()
+        .map(|(cluster_index, (sum, seconds, n))| {
+            let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let embedding = if n == 0 || !norm.is_finite() || norm <= 0.0 {
+                Vec::new()
+            } else {
+                sum.iter().map(|x| x / norm).collect()
+            };
+            PassClusterVoice {
+                cluster_index,
+                embedding,
+                seconds,
+            }
+        })
+        .collect()
+}
+
+/// [`cluster_track`] plus the per-cluster voices of a full-clustering pass
+/// ([`cluster_voices`]); binary mode returns no voices (its clusters are
+/// "the enrolled person" and "everyone else", not voices to name).
+pub fn cluster_track_with_voices(
+    pool: &DiarizePool,
+    tracks: MeetingTracks<'_>,
+    kind: MeetingKind,
+    threshold: CosineDistance,
+    mode: TargetMode,
+    min_embed: Duration,
+) -> Result<(Vec<DiarizedSegment>, Vec<PassClusterVoice>), DiarizeError> {
     let target = diarization_target(kind, tracks.system_wav.is_some());
     let (wav, track) = match target {
         DiarizationTarget::ClusterTrackA => (tracks.mic_wav, MIC_TRACK),
@@ -966,16 +1038,18 @@ pub fn cluster_track(
     match mode {
         TargetMode::FullClustering => {
             let clustered = assign_clusters(&raw, threshold);
-            Ok(raw
+            let voices = cluster_voices(&raw, &clustered);
+            let segments = raw
                 .iter()
                 .zip(clustered)
                 .map(|(seg, cluster_index)| {
                     DiarizedSegment::new(track, seg.start, seg.end, cluster_index)
                 })
-                .collect())
+                .collect();
+            Ok((segments, voices))
         }
         TargetMode::EnrolledVsEveryoneElse(enrolled) => {
-            label_against_enrolled(track, &raw, &enrolled)
+            label_against_enrolled(track, &raw, &enrolled).map(|d| (d, Vec::new()))
         }
     }
 }

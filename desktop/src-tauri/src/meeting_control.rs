@@ -1706,6 +1706,11 @@ pub fn reconcile_stranded_meetings(
         if !stranded {
             continue;
         }
+        // yap-1106-quit-during-asr-crash — a row the last quit interrupted
+        // mid-job. Consumed for every stranded row (so no marker outlives its
+        // row's reconcile); the marker also clears the attempt marker, so a
+        // quit never counts toward the crash-loop guard.
+        let interrupted_by_quit = crate::meeting_pipeline::take_quit_marker(progress_dir, &m.id);
         let new_state = if state == MeetingState::Summarizing && m.segment_count > 0 {
             // Only the summary was interrupted. The pre-summary state was never
             // stored, and every shipped writer of `summarizing` cleared `error`
@@ -1722,14 +1727,12 @@ pub fn reconcile_stranded_meetings(
             if state == MeetingState::Recording {
                 let _ = db.set_meeting_state(&m.id, MeetingState::Partial, m.error.as_deref());
             }
-            if state == MeetingState::Transcribing {
-                // yap-1106-engine-owner (absorbs quit-during-asr-crash): a row
-                // left `transcribing` has no live job after a quit or crash.
-                log::info!(
-                    "pipeline requeue meeting={} reason=interrupted_by_quit",
-                    m.id
-                );
-            }
+            // The job reruns from its resume ledger and ends `complete`,
+            // `partial` or `failed` with a reason — never parked here.
+            log::info!(
+                "{}",
+                requeue_line(&m.id, requeue_reason(state, interrupted_by_quit))
+            );
             enqueue(&m.id);
             if state == MeetingState::Recording {
                 MeetingState::Partial
@@ -1764,10 +1767,55 @@ pub fn reconcile_stranded_meetings(
     out
 }
 
+/// yap-1106-quit-during-asr-crash — why reconcile hands a row back to the
+/// pipeline: the quit interrupted its job, a process death left it mid-job,
+/// it was still recording, or it was waiting for a model.
+pub fn requeue_reason(state: MeetingState, interrupted_by_quit: bool) -> &'static str {
+    if interrupted_by_quit {
+        return "interrupted_by_quit";
+    }
+    match state {
+        MeetingState::Recording => "crashed_while_recording",
+        MeetingState::WaitingForModel => "waiting_for_model",
+        _ => "stranded",
+    }
+}
+
+/// The one grep-able line per re-queued row.
+pub fn requeue_line(meeting_id: &str, reason: &str) -> String {
+    format!("pipeline requeue meeting={meeting_id} reason={reason}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    /// yap-1106-quit-during-asr-crash — the reason a quit-interrupted row is
+    /// re-queued with, and the exact line the log carries.
+    #[test]
+    fn a_quit_interrupted_row_is_requeued_with_its_reason() {
+        assert_eq!(
+            requeue_reason(MeetingState::Transcribing, true),
+            "interrupted_by_quit"
+        );
+        assert_eq!(
+            requeue_reason(MeetingState::Transcribing, false),
+            "stranded"
+        );
+        assert_eq!(
+            requeue_reason(MeetingState::Recording, false),
+            "crashed_while_recording"
+        );
+        assert_eq!(
+            requeue_reason(MeetingState::WaitingForModel, false),
+            "waiting_for_model"
+        );
+        assert_eq!(
+            requeue_line("2ba0baab", "interrupted_by_quit"),
+            "pipeline requeue meeting=2ba0baab reason=interrupted_by_quit"
+        );
+    }
 
     /// yap-fx-06 — a panic while the meeting slot is held must not leave a
     /// recording nobody can stop. The poisoned lock is recovered: the
