@@ -67,12 +67,11 @@ export type LicenseStatus = Entitlement & {
 
 // ─── Pricing ─────────────────────────────────────────────────────────
 //
-// The money copy, in one place. The Payment Link URL itself is deliberately NOT
-// here: it lives in Rust as `license::PAYMENT_LINK_URL` and is reached through
+// The money copy, in one place. The purchase URL itself is deliberately NOT
+// here: it lives in Rust as `license::PURCHASE_PAGE_URL`
+// (the drivia.consulting Yap page, never a Stripe link) and is reached through
 // the `open_purchase_page` command, so the only string that can ever be handed
-// to `open(1)` is a compile-time constant. See that constant's doc comment for
-// the citation (drivia-forge `docs/YAP-LICENSING.md` § "Live objects":
-// plink_1U2yNFBc7RJSrX28KrzOuXwk / price_1U2yN4Bc7RJSrX287I33050v).
+// to `open(1)` is a compile-time constant.
 
 /** Full price, one time, forever. */
 export const PRICE_LABEL = "$29";
@@ -84,6 +83,42 @@ export const FOUNDING_CODE = "FOUNDING19";
 export const FOUNDING_PRICE_LABEL = "$19";
 /** How many Macs one key activates (claims `seats`, default 3). */
 export const DEFAULT_SEATS = 3;
+
+/**
+ * yap-1106-lic-02 — what the Buy surfaces say, decided by the backend's
+ * `purchase_open` (Rust `PURCHASE_OPEN`) and nothing else.
+ *
+ * Every button still invokes `open_purchase_page`, which opens the
+ * drivia.consulting Yap page in both states. While checkout is CLOSED that page
+ * says "not open yet", so the words here promise no checkout: the button reads
+ * "See Yap pricing" and the body says sales are not open yet. Open, they quote
+ * the price and the checkout.
+ */
+export type PurchaseCopy = {
+  /** Settings → License card heading. */
+  heading: string;
+  /** Settings → License body under the price. */
+  body: string;
+  /** The primary button, in the panel and in the license-required sheet. */
+  button: string;
+};
+
+export function purchaseCopy(purchaseOpen: boolean): PurchaseCopy {
+  if (purchaseOpen) {
+    return {
+      heading: "Buy Yap",
+      body:
+        "once. Not a subscription, not an account — one key, yours for good, and it activates up to three Macs. Checkout opens on drivia.consulting in your browser; the key comes straight back by email.",
+      button: `Buy Yap — ${PRICE_LABEL} once`,
+    };
+  }
+  return {
+    heading: "Yap pricing",
+    body:
+      "once, when sales open. Not a subscription, not an account — one key, yours for good, for up to three Macs. Sales are not open yet; the Yap page on drivia.consulting has the details and can tell you when they open.",
+    button: "See Yap pricing",
+  };
+}
 
 /**
  * The one promise this whole screen exists to keep. Written once so the

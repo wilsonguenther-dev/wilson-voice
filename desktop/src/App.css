@@ -695,6 +695,12 @@ code {
   margin-bottom: 8px;
 }
 
+/* yap-fx-07 — Retry all sits at the end of the heading row. */
+.failed-retry-all {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .failed-head h3 {
   margin: 0;
   font-size: 0.9rem;
@@ -1441,6 +1447,48 @@ button.star.on {
   color: var(--muted);
 }
 
+/* WF-10 — Settings › Audio › Microphone: the fallback order. */
+.mic-order {
+  margin-top: var(--space-4);
+}
+.mic-order h4 {
+  margin: 0 0 var(--space-1);
+  font-size: inherit;
+  color: var(--text-primary);
+}
+.mic-order-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+.mic-order-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  cursor: grab;
+}
+.mic-order-list li:active {
+  cursor: grabbing;
+}
+.mic-order-rank {
+  min-width: 1.5em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.mic-order-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* yap-uiux-2026-10-16-SETTINGS — a pane's save / reset / leave actions are
    pinned to the bottom of the scroll area, on an opaque strip, so they stay
    reachable at 720x520 without scrolling past every card. */
@@ -2112,8 +2160,8 @@ button.star.on {
   max-height: 300px;
   object-fit: contain;
   border-radius: 8px;
+  /* FB-09: pixelated ONLY — a later crisp-edges would override it in WebKit. */
   image-rendering: pixelated;
-  image-rendering: crisp-edges;
   background: var(--retro-lcd-backdrop);
 }
 .yappy-house .yh-stats {
@@ -2621,11 +2669,20 @@ button.star.on {
 
 .transcript li {
   display: grid;
-  grid-template-columns: 4.6rem 2.6rem 1fr;
+  grid-template-columns: 4.6rem 2.6rem minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
+}
+/* yap-1106-transcript-grid · a single-track row has NO speaker cell (in person,
+   or a call whose tap sent nothing), so it gets a two-column template. With
+   the three-column one, auto-placement dropped the prose into the 2.6 rem
+   speaker column and `word-break` let it wrap inside words: 36 px lines of
+   "unde / rstan / d". Measured in headless WebKit: .seg-text 36x434 px before,
+   672x22 px after. */
+.transcript:not(.two-track) li {
+  grid-template-columns: 4.6rem minmax(0, 1fr);
 }
 .transcript li:hover {
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
@@ -2650,7 +2707,7 @@ button.star.on {
    left edge of the text stays a single vertical line, so a long meeting still
    scans as one column of prose instead of a zig-zag. */
 .transcript.two-track li {
-  grid-template-columns: 4.6rem 3.4rem 1fr;
+  grid-template-columns: 4.6rem 3.4rem minmax(0, 1fr);
 }
 .transcript.two-track .seg-who {
   font-weight: 600;
@@ -2660,7 +2717,14 @@ button.star.on {
 }
 .seg-text {
   line-height: 1.55;
-  word-break: break-word;
+  /* The LAST column, however many cells precede it — the template, not the
+     cell count, decides where the prose goes. `minmax(0, 1fr)` on that track
+     (not `1fr`, whose minimum is the content's min-content) is what lets a
+     long unbroken token shrink the column instead of widening the row. */
+  grid-column: -2 / -1;
+  /* `overflow-wrap`, not `word-break`: a word is only split when it alone is
+     wider than the line, so the min-content width stays a whole word. */
+  overflow-wrap: break-word;
 }
 
 /* The Insights strip: a full-width panel above the existing grid, with its own
@@ -2678,8 +2742,11 @@ button.star.on {
    transcript that drops attribution to save 2.6rem is a worse transcript. */
 @media (max-width: 900px) {
   .transcript li {
-    grid-template-columns: 4.2rem 2.4rem 1fr;
+    grid-template-columns: 4.2rem 2.4rem minmax(0, 1fr);
     gap: 8px;
+  }
+  .transcript:not(.two-track) li {
+    grid-template-columns: 4.2rem minmax(0, 1fr);
   }
   .meeting-strip .stats-row {
     grid-template-columns: repeat(2, 1fr);
@@ -2813,6 +2880,43 @@ button.star.on {
 /* YV110 — the recording bar's system-audio sentence (matrix rows 1 and 2). */
 .rec-sysaudio-note {
   color: hsl(38 92% 62%);
+}
+
+/* yap-1106-call-audio-truth — the live "Call audio" chip in the recording bar
+   and the tracks line in the meeting header. */
+.rec-call-audio {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+  margin-top: 0.2rem;
+}
+.rec-call-audio .ghost {
+  padding: 0.1rem 0.5rem;
+  font-size: inherit;
+}
+.call-audio-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid hsl(38 92% 50% / 0.5);
+  background: hsl(38 92% 50% / 0.16);
+  color: var(--text);
+  white-space: nowrap;
+}
+.call-audio-chip.is-on {
+  border-color: hsl(142 60% 40% / 0.55);
+  background: hsl(142 60% 40% / 0.16);
+}
+.call-audio-chip.is-off {
+  border-color: hsl(0 0% 55% / 0.45);
+  background: hsl(0 0% 55% / 0.14);
+}
+.meeting-tracks-why {
+  margin: -0.25rem 0 0.75rem;
+  color: var(--text-muted, inherit);
 }
 
 .rec-clock {
@@ -3458,3 +3562,31 @@ button.primary.big {
 .meeting-notes-section ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .meeting-notes-section li { line-height: 1.45; }
 .meeting-notes-note { font-size: 0.85rem; }
+
+/* WF-18 — an always-global action's extra shortcuts, under its main row. */
+.hotkey-extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-2) calc(130px + var(--space-2));
+}
+.hotkey-extras-list {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hotkey-extras-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.hotkey-extras-hint,
+.hotkey-extras-warning {
+  flex-basis: 100%;
+  margin: 0;
+}
+.hotkey-extras-warning {
+  color: var(--warn-ink);
+}

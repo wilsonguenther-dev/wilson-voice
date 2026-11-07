@@ -694,6 +694,8 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             8 => crate::transforms::MIGRATION_8_TRANSFORM_RUNS,
             // yap24-NT11 — echo-suppressed mic spans are kept, flagged.
             9 => meetings::MIGRATION_9_SUPPRESSED_AS_ECHO,
+            // yap-call-1 — the detected app / how it was found.
+            10 => meetings::MIGRATION_10_DETECTED_CALL,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2257,6 +2259,38 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    /// yap-call-1 — which app's call this meeting recorded, and how it was found.
+    pub fn set_meeting_detection(
+        &self,
+        id: &str,
+        detected_app: &str,
+        detected_via: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET detected_app = ?2, detected_via = ?3 WHERE id = ?1",
+            params![id, detected_app, detected_via],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// yap-call-1 — `(detected_app, detected_via)` for a meeting, if stored.
+    pub fn meeting_detection(&self, id: &str) -> Option<(Option<String>, Option<String>)> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT detected_app, detected_via FROM meetings WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .ok()
+    }
+
     /// yap24-NT2 R4 — record the catalog id of the model transcribing this
     /// meeting.
     pub fn set_meeting_asr_model(&self, id: &str, model_id: &str) -> Result<(), String> {
@@ -2646,6 +2680,20 @@ impl Database {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// yap-1106 — every meeting id in one state (the leftovers sweep asks for
+    /// `complete` to release their resume ledgers). Ids only: no segments, no
+    /// summaries, so it is cheap at launch however long the history is.
+    pub fn meeting_ids_in_state(&self, state: &str) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM meetings WHERE state = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![state], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
     }
 
     pub fn get_meeting(&self, id: &str) -> Result<Option<Meeting>, String> {

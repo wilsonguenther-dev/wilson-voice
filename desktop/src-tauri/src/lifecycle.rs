@@ -356,6 +356,31 @@ impl TeardownReport {
         )
     }
 
+    /// yap-1106 — `exit clean closed=<names>` when every step finished, or
+    /// `exit unclean closed=<names> missed=<names>` naming the steps that timed
+    /// out, were skipped or panicked. One greppable line per quit.
+    pub fn clean_line(&self) -> String {
+        let (mut done, mut missed): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+        for s in &self.steps {
+            if s.outcome == StepOutcome::Done {
+                done.push(s.name);
+            } else {
+                missed.push(s.name);
+            }
+        }
+        let join = |v: &[&str]| if v.is_empty() { "-".to_string() } else { v.join(",") };
+        if missed.is_empty() {
+            format!("exit clean closed={} ms={}", join(&done), self.total.as_millis())
+        } else {
+            format!(
+                "exit unclean closed={} missed={} ms={}",
+                join(&done),
+                join(&missed),
+                self.total.as_millis()
+            )
+        }
+    }
+
     pub fn outcome_of(&self, name: &str) -> Option<StepOutcome> {
         self.steps
             .iter()
@@ -649,3 +674,30 @@ pub fn hold_instance_lock(file: std::fs::File) {
 /// What a second launch prints when the data directory is already in use.
 pub const ALREADY_RUNNING_MESSAGE: &str =
     "Yap is already running with this data folder — use the menu-bar icon to open it.";
+
+#[cfg(test)]
+mod clean_line_tests {
+    use super::*;
+
+    /// yap-1106 — the greppable quit line names what closed and what did not.
+    #[test]
+    fn clean_line_names_closed_and_missed_steps() {
+        let report = TeardownReport {
+            total: Duration::from_millis(42),
+            steps: vec![
+                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
+                StepReport { name: "meeting", elapsed: Duration::from_millis(2), outcome: StepOutcome::Done },
+            ],
+        };
+        assert_eq!(report.clean_line(), "exit clean closed=pill,meeting ms=42");
+        let report = TeardownReport {
+            total: Duration::from_millis(900),
+            steps: vec![
+                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
+                StepReport { name: "asr", elapsed: Duration::from_millis(800), outcome: StepOutcome::TimedOut },
+                StepReport { name: "db", elapsed: Duration::ZERO, outcome: StepOutcome::Skipped },
+            ],
+        };
+        assert_eq!(report.clean_line(), "exit unclean closed=pill missed=asr,db ms=900");
+    }
+}

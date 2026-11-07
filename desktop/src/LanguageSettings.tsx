@@ -4,33 +4,15 @@
  * the installed model can transcribe, disables Auto-detect when the model
  * cannot detect, and shows the backend's notice in plain words.
  */
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { toggleLanguage, type LanguageOptions, type LanguagePrefs } from "./languagePicker";
+import { toggleLanguage, type LanguagePrefs } from "./languagePicker";
+import { languageStore, useLanguageStore } from "./languageStore";
 
 export default function LanguageSettings() {
-  const [opts, setOpts] = useState<LanguageOptions | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const refresh = useCallback(() => {
-    invoke<LanguageOptions>("language_options")
-      .then((o) => { setOpts(o); setError(null); })
-      .catch((e) => setError(String(e)));
-  }, []);
-  useEffect(() => {
-    refresh();
-    let dead = false;
-    let unlisten: (() => void) | null = null;
-    listen("settings", () => refresh()).then((u) => {
-      if (dead) u();
-      else unlisten = u;
-    });
-    return () => { dead = true; unlisten?.(); };
-  }, [refresh]);
+  // WF-11 — the same store the bar's chip reads; the tray's Languages
+  // submenu writes through the same backend writer, so all three agree.
+  const { opts, error } = useLanguageStore();
   const write = (next: LanguagePrefs) => {
-    invoke("set_dictation_languages", { ...next })
-      .then(refresh)
-      .catch((e) => setError(String(e)));
+    void languageStore.write(next);
   };
   if (!opts) {
     return error ? <p className="settings-hint" role="alert">{error}</p> : null;

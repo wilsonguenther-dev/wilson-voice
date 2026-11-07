@@ -29,6 +29,7 @@ export type SettingsTab =
   | "meetings"
   | "privacy"
   | "diagnostics"
+  | "notifications"
   | "license";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -40,6 +41,8 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "snippets", label: "Snippets" },
   { id: "audio", label: "Audio" },
   { id: "companion", label: "Companion" },
+  // WF-17 — quiet mode: which of the pill's soft messages show.
+  { id: "notifications", label: "Notifications" },
   { id: "advanced", label: "Advanced" },
   // yap-notetaker-detect — "Offer to record detected meetings" + "Use my calendar".
   { id: "meetings", label: "Meetings" },
@@ -115,6 +118,12 @@ export interface AppSettings {
    * option (⌥) | off. Plain dictation is unaffected either way.
    */
   commandBinding?: string;
+  /**
+   * WF-19 — a mouse button as push-to-talk: "" (off) | "middle" | "button<N>"
+   * (N ≥ 3), plus ":hands_free" for click-to-toggle. Left / right click are
+   * refused (src/mouseBinding.ts here, ptt_macos::MouseBinding in Rust).
+   */
+  pttMouseBinding?: string;
   keepCmdShiftV?: boolean;
   /**
    * yap-p0-hotkeys-no-permission — the user's rebind of the "Works everywhere"
@@ -131,7 +140,12 @@ export interface AppSettings {
   copyLastChord?: ChordSetting | null;
   /** Y8-A — Open Scratchpad chord rebind; null/absent = ⌃⌘J. */
   scratchpadChord?: ChordSetting | null;
-  /** classic (obsidian capsule) | yappy (pixel pet) */
+  /**
+   * WF-18 — each always-global action's 2nd … 4th shortcut (the primary stays
+   * in its own field). Rust `shortcuts::editor` validates every save.
+   */
+  extraChords?: ExtraBinding[];
+  /** yappy (pixel pet). "classic" is retired and migrated to yappy at launch. */
   pillStyle?: string;
   /**
    * Where the pill docks on screen (backend `pill_position`, YV53): "bottom"
@@ -146,6 +160,19 @@ export interface AppSettings {
    * by YappyPill (settings event) and YappyHouse (prop). Curse filter stays on.
    */
   companionTone?: string;
+  /**
+   * WF-17 — quiet mode (backend `muted_pill_categories`): the pill-message
+   * categories switched off in Settings › Notifications. Only "tip", "news"
+   * and "milestone" are honoured; errors, permission problems and recovery
+   * lines always show (`pill/live.ts` `PILL_MESSAGES`).
+   */
+  mutedPillCategories?: string[];
+  /**
+   * WF-16 (backend `hide_from_capture_in_meetings`, default true): while a
+   * meeting records, the pill, its meeting chip and the Scratchpad are kept
+   * out of screen shares and screenshots. Missing = on.
+   */
+  hideFromCaptureInMeetings?: boolean;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**
@@ -262,6 +289,12 @@ export interface AppSettings {
    * resident from launch, so even the first take starts instantly.
    */
   preloadModel?: boolean;
+  /**
+   * yap-1106 — where meeting Markdown exports are written (backend
+   * `meeting_export_dir`). `null` = the default `~/Documents/Yap/Meetings`.
+   * Changed through `set_meeting_export_dir`, never by the whole-settings save.
+   */
+  meetingExportDir?: string | null;
   /**
    * Launch Yap at login (backend `autostart`, YV42). Installs a macOS
    * LaunchAgent through tauri-plugin-autostart. Default off — the backend
@@ -589,6 +622,10 @@ export interface Meeting {
   processedThroughSeconds?: number;
   audioKept: boolean;
   micWavPath?: string | null;
+  /** YV106 — the call's track, when one was recorded. Its absence is "mic only". */
+  sysWavPath?: string | null;
+  /** YV104 — the tap's rebuild log as JSON, when the meeting needed one. */
+  tapRebuilds?: string | null;
   summary?: string | null;
   summaryModel?: string | null;
   createdAt: string;
@@ -783,4 +820,10 @@ export function formatDayShort(d: string) {
 export const RETAINED_CLIP_DAYS = 7;
 export function retainedClipsLabel(count: number): string {
   return `${count} ${count === 1 ? "clip" : "clips"} kept for ${RETAINED_CLIP_DAYS} days`;
+}
+
+/** WF-18 — one extra shortcut of an always-global action (Rust `editor::ExtraBinding`). */
+export interface ExtraBinding {
+  action: "record_meeting" | "hands_free_toggle" | "copy_last" | "open_scratchpad";
+  chord: ChordSetting;
 }

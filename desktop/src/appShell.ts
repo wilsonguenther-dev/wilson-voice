@@ -20,7 +20,9 @@ import { type SystemAudioSetup } from "./meetings/systemAudio";
 import type { SupportBundlePreview, SupportSendOutcome } from "./support/bundle";
 import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
+import { RETRY_DEADLINE_MESSAGE, RETRY_PHASE_EVENT, RETRY_WATCHDOG_GRACE_MS, createRetryWatchdog, isEngineUnhealthy, raceRetryWatchdog, retryAllSummary, retryDeadlineMs, runRetryAll, type RetryOutcome, type RetryPhase, type RetryPhaseEvent, type RetryWatchdog } from "./retryDictation";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
+import type { MicList } from "./views/settings/parts/MicrophonePicker";
 
 /**
  * yap-p0-insertion-bridge-fallback DO 3 — the boot batch, one entry per backend
@@ -91,6 +93,9 @@ export function useAppShell() {
   // sheet is up. `null` until the first `license_status` lands: the chip and the
   // License tab render nothing rather than guessing "trial" for a paying user.
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  // WF-09 — the backend device watcher's latest microphone list (plug /
+  // unplug), read by Settings › Audio › Microphone.
+  const [microphones, setMicrophones] = useState<MicList | null>(null);
   const [buyPrompt, setBuyPrompt] = useState(false);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
@@ -98,6 +103,14 @@ export function useAppShell() {
   // toast carries "Retry" for one of them as its action (`arg` = the row id).
   const [failed, setFailed] = useState<FailedDictation[]>([]);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // yap-1106-retry-failed-dictation — where the running retry is ("queued"
+  // behind a live dictation, or "decoding"), from the backend's phase event,
+  // and the clock that ends the loading state on its own if the backend
+  // never answers. See retryDictation.ts.
+  const [retryPhase, setRetryPhase] = useState<RetryPhase | null>(null);
+  // yap-fx-07 — "Retry all": where the one-at-a-time queue is, or null when idle.
+  const [retryAll, setRetryAll] = useState<{ done: number; total: number } | null>(null);
+  const retryWatchdog = useRef<RetryWatchdog | null>(null);
   // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
   // launch toast below (once per launch, never a modal).
@@ -681,6 +694,17 @@ export function useAppShell() {
     // the History recovery section until it is retried or discarded.
     // Y5-F — the payload carries the take path's CODE (take_error.rs); the
     // line and the action come from the catalogue, never the raw string.
+    // yap-1106-retry-failed-dictation — the retry's phase, and the backend's
+    // own deadline for it: the watchdog is re-armed to THAT plus grace, so the
+    // UI gives up a beat after the backend would, never before it.
+    listen<RetryPhaseEvent>(RETRY_PHASE_EVENT, (e) => {
+      const p = e.payload;
+      if (!p || typeof p.id !== "string") return;
+      setRetryPhase(p.phase === "queued" ? "queued" : "decoding");
+      if (typeof p.deadlineMs === "number" && p.deadlineMs > 0) {
+        retryWatchdog.current?.arm(p.deadlineMs + RETRY_WATCHDOG_GRACE_MS);
+      }
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<{ code?: string | null; message: string; failed?: FailedDictation | null }>(
       "transcript_error",
       (e) => {
@@ -770,6 +794,12 @@ export function useAppShell() {
     listen<LicenseStatus>("license", (e) => setLicense(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
+    // yap-1106-lic-03 — the launch refresh check was told the seat or license
+    // is gone (revoked / expired / deactivated / reactivate). The token is
+    // already deleted; this says why, in the one sentence Rust wrote.
+    listen<{ code: string; message: string }>("license_notice", (e) => {
+      if (e.payload?.message) toast(e.payload.message);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<LicenseStatus>("license_required", (e) => {
       setLicense(e.payload);
       setBuyPrompt(true);
@@ -781,6 +811,10 @@ export function useAppShell() {
     // window before the event arrives; all that is left is raising the sheet
     // that already exists, which is why the pill never needs a price or a URL.
     listen("show_purchase", () => setBuyPrompt(true)).then((u) =>
+      dead ? u() : unsubs.push(u),
+    );
+    // WF-09 — `mic_select::CHANGED_EVENT` (MICROPHONES_CHANGED in the picker).
+    listen<MicList>("microphones-changed", (e) => setMicrophones(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
     return () => {
@@ -993,7 +1027,8 @@ export function useAppShell() {
 
   // ── YP3 · licensing actions ──
   // The URL is NOT here: `open_purchase_page` takes no argument and opens the
-  // compile-time `license::PAYMENT_LINK_URL`, so no string the webview can
+  // compile-time `license::PURCHASE_PAGE_URL` (https://drivia.consulting/yap,
+  // in both purchase_open states), so no string the webview can
   // influence ever reaches a process launch.
   async function buyYap() {
     try {
@@ -1055,29 +1090,82 @@ export function useAppShell() {
   // conversion), with the recovered text on the clipboard.
   // `keepPartial` — "Keep what was transcribed": convert on the words a failed
   // attempt already got, without decoding again (the backend deletes the clip).
-  async function retryFailed(id: string, keepPartial = false) {
-    if (retrying) return;
+  //
+  // yap-fx-07 — returns how the retry ended, so "Retry all" can move on after a
+  // clip that failed and stop on an unhealthy engine. `quiet` keeps the
+  // per-row toasts out of a Retry-all run, which ends with ONE summary.
+  async function retryFailed(id: string, keepPartial = false, quiet = false): Promise<RetryOutcome> {
+    if (retrying) return "skipped";
     setRetrying(id);
-    try {
-      // `confirm` — the backend refuses Keep without it (yap-recovery-followups
-      // (b)); it is only ever true here after the user said yes to the dialog.
-      const entry = await invoke<TranscriptEntry>("retry_failed_dictation", {
-        id,
-        keepPartial,
-        confirm: keepPartial,
-      });
+    setRetryPhase(null);
+    // yap-1106-retry-failed-dictation — the loading state ends at the deadline
+    // no matter what: armed here from the row's own length, re-armed from the
+    // backend's deadline when its phase event lands, cleared when it answers.
+    // A backend that never answers (the hang this item is about) still leaves
+    // a usable button and one plain sentence.
+    const row = failed.find((x) => x.id === id);
+    const watchdog = createRetryWatchdog(() => {
+      setRetrying(null);
+      setRetryPhase(null);
+      if (!quiet) toast(RETRY_DEADLINE_MESSAGE);
+      void loadFailed().catch(() => {});
+    });
+    retryWatchdog.current?.clear();
+    retryWatchdog.current = watchdog;
+    if (!keepPartial) watchdog.arm(retryDeadlineMs(row?.speechSeconds ?? 0) + RETRY_WATCHDOG_GRACE_MS);
+    // The row leaves the recovery list and becomes a history entry. Shared by
+    // the on-time answer and a late one that lands after the watchdog fired.
+    const applyRecovered = (entry: TranscriptEntry) => {
       setFailed((f) => f.filter((x) => x.id !== id));
       dropRetry(id);
       setHistory((h) =>
         [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
       );
-      toast(
-        keepPartial
-          ? `Saved ${entry.wordCount} words — copied to clipboard`
-          : `Recovered ${entry.wordCount} words — copied to clipboard`,
-      );
+    };
+    try {
+      // `confirm` — the backend refuses Keep without it (yap-recovery-followups
+      // (b)); it is only ever true here after the user said yes to the dialog.
+      const work = invoke<TranscriptEntry>("retry_failed_dictation", {
+        id,
+        keepPartial,
+        confirm: keepPartial,
+      });
+      // fix-b5-2 — the watchdog ENDS the retry, not just its spinner: a
+      // backend that never answers must not leave a Retry-all run awaiting
+      // forever ("Retrying k of N…", every Retry disabled until relaunch).
+      // It counts as engine-busy so Retry all stops. A late answer still
+      // updates the rows and history, with no second toast (the watchdog
+      // already said its one sentence, or Retry all says its summary).
+      const raced = await raceRetryWatchdog(work, watchdog);
+      if (raced.kind === "expired") {
+        console.warn(`retry_failed watchdog_expired quiet=${quiet}`);
+        void work.then(
+          (entry) => {
+            applyRecovered(entry);
+            console.info("retry_failed late_answer outcome=recovered");
+            void refreshInsights();
+          },
+          () => {
+            console.info("retry_failed late_answer outcome=failed");
+            void loadFailed().catch(() => {});
+          },
+        );
+        return "engine-busy";
+      }
+      if (raced.kind === "errored") throw raced.error;
+      const entry = raced.value;
+      applyRecovered(entry);
+      if (!quiet)
+        toast(
+          keepPartial
+            ? `Saved ${entry.wordCount} words — copied to clipboard`
+            : `Recovered ${entry.wordCount} words — copied to clipboard`,
+        );
       await refreshInsights();
+      return "recovered";
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const outcome: RetryOutcome = isEngineUnhealthy(message, watchdog.expired) ? "engine-busy" : "failed";
       if (keepPartial) {
         toastError(e);
         // The clip may have been dropped (audio gone) — resync either way.
@@ -1091,10 +1179,40 @@ export function useAppShell() {
           () => null,
         );
         if (rows) setFailed(rows);
-        toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
+        if (!quiet) toast(finishFailedToast(rows ? (rows.find((x) => x.id === id) ?? null) : before));
       }
+      return outcome;
     } finally {
+      watchdog.clear();
+      if (retryWatchdog.current === watchdog) retryWatchdog.current = null;
       setRetrying(null);
+      setRetryPhase(null);
+    }
+  }
+
+  // yap-fx-07 — "Retry all": every kept clip, ONE AT A TIME (each retry is
+  // awaited before the next starts, so the one engine never queues two from
+  // here), stopping as soon as the engine is not healthy. One log line per
+  // run, one summary toast; the per-row toasts stay quiet.
+  async function retryAllFailed() {
+    if (retrying || retryAll) return;
+    const ids = failed.map((f) => f.id);
+    if (ids.length === 0) return;
+    const started = performance.now();
+    setRetryAll({ done: 0, total: ids.length });
+    try {
+      const result = await runRetryAll(
+        ids,
+        (id) => retryFailed(id, false, true),
+        (done, total) => setRetryAll({ done, total }),
+      );
+      console.info(
+        `retry_all done total=${ids.length} recovered=${result.recovered} failed=${result.failed} remaining=${result.remaining} engine_stopped=${result.stoppedForEngine} ms=${Math.round(performance.now() - started)}`,
+      );
+      toast(retryAllSummary(result));
+    } finally {
+      setRetryAll(null);
+      await loadFailed().catch(() => {});
     }
   }
 
@@ -1462,7 +1580,7 @@ export function useAppShell() {
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
-    refreshSystemAudio, replayOnboarding, retryFailed, retrying, runSystemAudioSetup,
+    refreshSystemAudio, replayOnboarding, retryAll, retryAllFailed, retryFailed, retrying, retryPhase, runSystemAudioSetup,
     saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCrashes, setDailySeries, setDictionary, setDiffId,
@@ -1477,7 +1595,7 @@ export function useAppShell() {
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,
     snippets, status, supportBusy, supportOpen, supportPreview, sysAudio,
     sysAudioBusy, sysAudioGate, toast, toggleRecord, trialWarnShown, update,
-    userName, wasModelReady,
+    userName, wasModelReady, microphones,
   };
 }
 

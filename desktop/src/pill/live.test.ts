@@ -11,6 +11,22 @@ import {
   DEFAULT_STOP_KEY, FN_HINT_EVENT, FN_HINT_LINE, LOCK_CHIP_PX, handsFreeLabel, isListening,
   stillRecordingLine, stripLine, stripTextWidthPx,
 } from "./live";
+import {
+  ALL_LIVE_PHASES as WF17_PHASES,
+  MUTABLE_CATEGORIES,
+  PHASE_COPY as WF17_PHASE_COPY,
+  PILL_CATEGORIES,
+  PILL_MESSAGES,
+  CATEGORY_NOUN,
+  isMutableCategory,
+  parseMutedCategories,
+  pillMessageAllowed,
+  pillMessageCategory,
+  withMuted,
+  type PillMessageId,
+} from "./live";
+import { MILESTONE_IDS, NUDGE_IDS as WF17_NUDGE_IDS } from "./nudge";
+import { MILESTONE_LINES, NUDGE_LINES as WF17_NUDGE_LINES } from "./tone";
 // The shell's CSS and TSX are read as TEXT from disk: Vitest blanks every
 // `.css` import (even `?raw`) unless `test.css` opts it in, and this test only
 // needs to assert that the rule exists. No @types/node in this project.
@@ -56,7 +72,7 @@ function take(seconds: number, level: (t: number) => number, tone: ChatTone = "f
   const state = createLiveState();
   const said: Array<{ t: number; line: string }> = [];
   let t = 0;
-  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null };
+  let frame: LiveFrame = { tier: "quick", prop: "none", estWords: 0, speaking: false, say: null, glance: false };
   while (t < seconds) {
     t += FRAME;
     frame = advanceLive(state, FRAME, level(t), tone);
@@ -488,7 +504,10 @@ describe("transcribe progress (Y3-C)", () => {
     // running off it — a playful state, never a stated number.
     const s = createLiveState();
     let f: LiveFrame | null = null;
-    for (let t = 0; t < 30; t += FRAME) f = advanceLive(s, FRAME, 0.05, "friendly");
+    // The take opens on half a second of room tone: the floor is seeded from the
+    // FIRST frame (yap-1106-live-reactions-during-take), so a take that is loud
+    // from frame one would read that level as the room, not as speech.
+    for (let t = 0; t < 30; t += FRAME) f = advanceLive(s, FRAME, t < 0.5 ? 0 : 0.05, "friendly");
     expect(f!.estWords).toBeGreaterThan(0);
     expect(f!.tier).toBe(liveTierForWords(wordsFromVoiced(s.voicedT)));
     expect(f!.estWords).toBeCloseTo(wordsFromVoiced(s.voicedT), 6);
@@ -1251,20 +1270,105 @@ describe("yap24-PILL4 — hands-free looks different from hold", () => {
   it("the character seam (Y5-K) carries the bound key: a creature's copy and the full-window stage both get it", async () => {
     const { characters } = await import("./characters/registry");
     const { example } = await import("./characters/example");
+    const { shellBody } = await import("./characters/registry");
     const frame = { phase: "listening-locked" as const, tone: "friendly" as const, level: 0, box: { w: 120, h: 30 }, dock: "x" as const, reducedMotion: true, chordLabel: REBOUND };
-    const byId = Object.fromEntries([...characters(), example].map((c) => [c.id, c.render(frame)]));
-    // Classic and the example creature say the phase's sentence: with the REBOUND key, never fn.
+    const byId = Object.fromEntries([...characters(), example, shellBody()].map((c) => [c.id, c.render(frame)]));
+    // The shell body (retired Classic) and the example creature say the phase's sentence: with the REBOUND key, never fn.
     for (const id of ["classic", "example"]) {
       expect(byId[id]?.copy, id).toBe(`Hands-free — ${REBOUND} to stop`);
       expect(byId[id]?.copy, id).not.toContain("tap fn");
     }
     // Every creature has art for the latch, and it is its listening art (the lock is the shell's chip).
-    for (const c of [...characters(), example]) {
+    for (const c of [...characters(), example, shellBody()]) {
       expect(c.render(frame)?.art, c.id).toEqual(c.render({ ...frame, phase: "listening" })?.art);
     }
     // The shell hands the key to the frame and to a full-window stage (Yappy) alike.
     expect(readSibling("./PillShell.tsx")).toMatch(/reducedMotion: prefersReducedMotion\(\),\s*chordLabel,\s*\};/);
     expect(readSibling("../float-main.tsx")).toMatch(/const pillProps = \{[^}]*chordLabel/);
     expect(readSibling("./characters/types.ts")).toMatch(/interface CharacterStageProps \{[^}]*chordLabel\?: string;/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WF-17 — quiet mode: every pill message has exactly one category, in one
+// table, and a muted category never reaches the pill.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("WF-17 pill message categories", () => {
+  /** Every message the pill can say, built from the sources that DEFINE them. */
+  const EVERY_MESSAGE: PillMessageId[] = [
+    ...WF17_PHASES.map((p) => `phase:${p}` as PillMessageId),
+    ...Object.keys(WF17_PHASE_COPY).map((p) => `phase:${p}` as PillMessageId),
+    ...WF17_NUDGE_IDS.map((id) => `nudge:${id}` as PillMessageId),
+    ...Object.keys(WF17_NUDGE_LINES).map((id) => `nudge:${id}` as PillMessageId),
+    ...MILESTONE_IDS.map((id) => `milestone:${id}` as PillMessageId),
+    ...Object.keys(MILESTONE_LINES).map((id) => `milestone:${id}` as PillMessageId),
+    "still-recording",
+    "fn-hint",
+    "copy-card",
+    "meeting-offer",
+    "backtrack-caught",
+  ];
+
+  it("every_pill_message_has_a_category: a message with none fails here", () => {
+    const missing = [...new Set(EVERY_MESSAGE)].filter((id) => !PILL_CATEGORIES.includes(PILL_MESSAGES[id]));
+    expect(missing, "pill messages with no category in PILL_MESSAGES").toEqual([]);
+    for (const id of EVERY_MESSAGE) expect(PILL_CATEGORIES).toContain(pillMessageCategory(id));
+  });
+
+  it("the table is the whole universe: no stray rows, one category per row", () => {
+    expect(Object.keys(PILL_MESSAGES).sort()).toEqual([...new Set(EVERY_MESSAGE)].sort());
+    for (const [id, cat] of Object.entries(PILL_MESSAGES)) {
+      expect(typeof cat, id).toBe("string");
+      expect(PILL_CATEGORIES, id).toContain(cat);
+    }
+    // Every category reads to a screen reader as something.
+    for (const c of PILL_CATEGORIES) expect(CATEGORY_NOUN[c].length).toBeGreaterThan(0);
+  });
+
+  it("the tags the spec names: errors, permission problems and recovery are their own kinds", () => {
+    expect(PILL_MESSAGES["phase:error"]).toBe("error");
+    expect(PILL_MESSAGES["phase:empty"]).toBe("error");
+    expect(PILL_MESSAGES["phase:blocked"]).toBe("permission");
+    expect(PILL_MESSAGES["phase:waiting"]).toBe("permission");
+    expect(PILL_MESSAGES["phase:blind"]).toBe("recovery");
+    expect(PILL_MESSAGES["fn-hint"]).toBe("recovery");
+    expect(PILL_MESSAGES["copy-card"]).toBe("recovery");
+    expect(PILL_MESSAGES["nudge:no-text-field"]).toBe("tip");
+    expect(PILL_MESSAGES["nudge:meetings"]).toBe("news");
+    for (const id of MILESTONE_IDS) expect(PILL_MESSAGES[`milestone:${id}` as const]).toBe("milestone");
+  });
+
+  it("muted_categories_never_reach_the_pill", () => {
+    for (const cat of MUTABLE_CATEGORIES) {
+      const muted = new Set<string>([cat]);
+      for (const [id, c] of Object.entries(PILL_MESSAGES) as [PillMessageId, string][]) {
+        expect(pillMessageAllowed(id, muted), `${id} with ${cat} muted`).toBe(c !== cat);
+      }
+    }
+    // Nothing muted: everything shows.
+    for (const id of Object.keys(PILL_MESSAGES) as PillMessageId[]) expect(pillMessageAllowed(id, new Set())).toBe(true);
+  });
+
+  it("errors_permission_and_recovery_can_never_be_muted", () => {
+    const everything = new Set<string>(PILL_CATEGORIES);
+    for (const [id, c] of Object.entries(PILL_MESSAGES) as [PillMessageId, string][]) {
+      if (!isMutableCategory(c)) expect(pillMessageAllowed(id, everything), id).toBe(true);
+    }
+    expect([...parseMutedCategories(["error", "permission", "recovery", "status"])]).toEqual([]);
+    expect(MUTABLE_CATEGORIES).not.toContain("error");
+  });
+
+  it("an untagged id is refused, never shown uncategorised", () => {
+    expect(pillMessageAllowed("nudge:not-a-real-one" as unknown as PillMessageId, new Set())).toBe(false);
+  });
+
+  it("parseMutedCategories and withMuted are total and keep table order", () => {
+    expect([...parseMutedCategories(undefined)]).toEqual([]);
+    expect([...parseMutedCategories("tip")]).toEqual([]);
+    expect([...parseMutedCategories(["milestone", 4, "tip", "tip"])].sort()).toEqual(["milestone", "tip"]);
+    expect(withMuted(["milestone"], "tip", true)).toEqual(["tip", "milestone"]);
+    expect(withMuted(["tip", "news"], "tip", false)).toEqual(["news"]);
+    expect(withMuted(undefined, "news", true)).toEqual(["news"]);
+    expect(withMuted(["error"], "news", false)).toEqual([]);
   });
 });

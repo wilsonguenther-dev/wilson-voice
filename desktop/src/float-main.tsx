@@ -1,6 +1,6 @@
 /**
  * Float entry — picks the pill style from settings and renders it.
- *   any registered character id (pill/characters/registry.ts); unknown → classic
+ *   any registered character id (pill/characters/registry.ts); unknown or retired → yappy
  * Live-switches when settings are saved (backend emits "settings").
  *
  * YV53: the same settings carry the dock edge (bottom | left | right). The
@@ -8,19 +8,27 @@
  * stage can align the pill flush to it — the pill/world itself is never
  * stretched or letterboxed, it just anchors to that side.
  */
-import React, { Suspense, useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { TEST_CHIP } from "./buildChannel";
 import { errorAdvice } from "./errors";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PillShell from "./pill/PillShell";
-import { resolveCharacter } from "./pill/characters/registry";
+import { FALLBACK_CHARACTER, resolveCharacter } from "./pill/characters/registry";
 import CopyCard from "./pill/CopyCard";
 import NudgeRow from "./pill/NudgeRow";
 import { openMeetingNotes, useMeetingPill } from "./pill/MeetingBadge";
 import { meetingAfterView } from "./pill/meeting";
 import MeetingOfferCard from "./pill/MeetingOfferCard";
+import LanguageOfferCard from "./pill/LanguageOfferCard";
+import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
+import { forcedBacktrackCaught } from "./pill/backtrackCaught";
+import StyleChipButton from "./pill/StyleChipButton";
+import { forcedStyleChip } from "./pill/styleChip";
+import { forcedLanguageOffer } from "./pill/languageOffer";
+import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
+import { prefersReducedMotion } from "./pill/motion";
 import {
   acceptProgress,
   errorSentence,
@@ -46,16 +54,45 @@ import {
   GATED_SETTLE_MS,
   PHASE_HOLD_MS,
   PHASE_ID,
+  parseMutedCategories,
   type BlindState,
   type BlindStatusSlice,
   type LivePhase,
   type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
+import { voiceFor } from "./pill/voices";
 import { pillLicense } from "./pill/license";
 import { barDock, barRootProps, shellBarPhase, type BarDock } from "./pill/dock";
-import type { ListenEstimate, SlotCtx } from "./pill/slots";
-import { forcedPill, matrixLicenseScenes, matrixPhases, type ForcedPill } from "./pill/forced";
+import {
+  CARD_SELECTOR,
+  CARD_STACK_VAR,
+  stackCards,
+  layoutVars,
+  meetingMode,
+  pillLayout,
+  publishPillLayout,
+  shrinkDelay,
+  layoutCharacterFor,
+  type LayoutCharacter,
+  type MeetingMode,
+  type PillLayout,
+} from "./pill/state";
+import {
+  NO_RAIL_KEYS, railKeysFrom, subscribeRailFailure,
+  type ListenEstimate, type RailBindingRow, type RailKeys, type SlotCtx,
+} from "./pill/slots";
+import {
+  forcedPill,
+  matrixLanguageOfferScene,
+  matrixBacktrackCaughtScene,
+  matrixStyleChipScene,
+  matrixRailScene,
+  matrixLicenseScenes,
+  matrixPhases,
+  matrixDragBlobScene,
+  type ForcedPill,
+} from "./pill/forced";
 import { type LicenseStatus } from "./license/status";
 import { Lock } from "lucide-react";
 import "./tokens.css";
@@ -74,7 +111,36 @@ interface Settings {
    * it reads as off and `SCRATCHPAD_WINDOW_LANDED` keeps the slot hidden.
    */
   scratchpadOnBar?: boolean;
+  /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
+  mutedPillCategories?: string[];
 }
+
+/**
+ * WF-03 — the rail's keycaps, read from the backend's LIVE hotkey table
+ * (`hotkey_bindings`, the same rows Settings › Shortcut draws). Re-read on
+ * every `settings` broadcast — a rebind is saved through `save_settings`, which
+ * broadcasts — so a tooltip follows a rebind with no restart. A failed read
+ * keeps the last good keys and logs once; it never invents a default.
+ */
+function useRailKeys(): RailKeys {
+  const [keys, setKeys] = useState<RailKeys>(NO_RAIL_KEYS);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const read = () => {
+      invoke<{ rows?: RailBindingRow[] }>("hotkey_bindings")
+        .then((r) => { if (!dead) setKeys(railKeysFrom(r?.rows)); })
+        .catch(() => console.warn("pill_rail keys_failed source=hotkey_bindings"));
+    };
+    read();
+    listen("settings", read).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  return keys;
+}
+
+/** How long a failed rail action's sentence holds the phase strip. */
+const RAIL_ERROR_MS = 5000;
 
 /**
  * Y8-B — the WPM slot's numbers while LISTENING: an estimate off voiced
@@ -174,14 +240,30 @@ const FORCED: ForcedPill | null =
 if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
-  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [...matrixPhases(), ...matrixLicenseScenes()];
+  (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [
+    ...matrixPhases(),
+    ...matrixLicenseScenes(),
+    // WF-12 — the language-offer card over an idle pill.
+    matrixLanguageOfferScene(),
+    matrixBacktrackCaughtScene(),
+    // WF-20 — the per-app style chip over a listening pill.
+    matrixStyleChipScene(),
+    // yap-1106-pill-notes-and-meeting / WF-03 — the resting rail, forced out.
+    matrixRailScene(),
+    // WF-02 — the pill mid-drag: the blob plus its three drop zones.
+    matrixDragBlobScene(),
+  ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
+  if (forcedDragScene(window.location.search)) {
+    const root = document.documentElement;
+    applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());
+  }
 }
 
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
-  const [style, setStyle] = useState<string>(FORCED?.style ?? "classic");
+  const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
   // the capsule inside keeps its identity, so it never remounts.
@@ -235,6 +317,8 @@ function Float() {
     };
   }, []);
   const [tone, setTone] = useState<string>("friendly");
+  // WF-17 — quiet mode, read live off the settings payload like the tone.
+  const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -405,7 +489,7 @@ function Float() {
     // The dock edge rides on <html> (not React state) — it only drives CSS
     // alignment, so flipping it must not re-render (and remount) the pill.
     const apply = (s?: Settings) => {
-      setStyle(FORCED?.style ?? (s?.pillStyle || "classic"));
+      setStyle(FORCED?.style ?? (s?.pillStyle || FALLBACK_CHARACTER));
       const d = FORCED?.dock ? barDock(FORCED.dock) : dockOf(s);
       document.documentElement.dataset.dock = d;
       setDock(d);
@@ -413,6 +497,7 @@ function Float() {
       // Y5-C — the tone decides WHICH line every phase says, so the shell has
       // to know it: the phase strip is drawn once, above both capsules.
       setTone(s?.companionTone || "friendly");
+      setMutedCats(parseMutedCategories(s?.mutedPillCategories));
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -484,6 +569,18 @@ function Float() {
   // input: the phase, the dock, the meeting, Y3-C's real progress and the
   // listening estimate. The capsule lays the slots out; it decides none of it.
   const listenEst = useListenEstimate(isListening(phase));
+  const railKeys = useRailKeys();
+  // A failed rail action says so in the strip, once, then the strip returns.
+  const [railError, setRailError] = useState<string | null>(null);
+  useEffect(() => subscribeRailFailure(setRailError), []);
+  useEffect(() => {
+    if (!railError) return undefined;
+    const t = window.setTimeout(() => setRailError(null), RAIL_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [railError]);
+  useEffect(() => {
+    document.documentElement.dataset.railError = railError ? "true" : "false";
+  }, [railError]);
   const slots: SlotCtx = {
     phase,
     dock,
@@ -491,15 +588,31 @@ function Float() {
     progress,
     listen: listenEst,
     scratchpadOnBar,
+    // yap-1106-pill-notes-and-meeting — the rail's inputs (the capsule adds `railOpen`).
+    meetingRecording: meeting.status.recording,
+    meetingClock: meeting.status.elapsedLabel ?? null,
+    meetingTitle: meeting.status.title ?? null,
+    keys: railKeys,
+    stopKey: chordLabel,
+    // A matrix scene forces the rail out; a real pill opens it on hover/focus (PillShell).
+    railOpen: FORCED?.rail ? true : undefined,
   };
   // Y5-K — `pill_style` resolves to a registered character ONCE, here, and an
-  // unknown id falls back to classic. The shell never branches on an id: a
+  // unknown or retired id falls back to yappy. The shell never branches on an id: a
   // character that still owns its whole window declares a `stage`.
   const character = resolveCharacter(style);
   const Stage = character.stage;
+  // yap-1106-one-pill — ONE layout for the whole panel, decided here from the
+  // same three inputs everything else above reads: the phase, the meeting and
+  // the dock (pill/state.ts). It places the clock, the hint and the bubble
+  // against the character's box and sizes the panel to their union.
+  const layoutCharacter: LayoutCharacter = layoutCharacterFor(Boolean(Stage));
+  const mMode: MeetingMode = meetingMode(meeting.status, meetingAfter);
+  const cardH = useCardOnScreen();
+  const target = usePanelLayout(phase, mMode, dock, layoutCharacter, cardH);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
@@ -526,21 +639,30 @@ function Float() {
   // built from the key the user bound (`chordLabel`), and it wears the shell's
   // lock chip — at all three docks, for both characters, because it is drawn
   // here and not inside either capsule.
-  const line = (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
+  const line = railError
+    ?? (phase === "error" ? errorSentence(errorAdvice(lastErrorCode).line) : null)
     ?? (phase === "blind" && blindNow ? blindLine(blindNow) : null)
     ?? (phase === "listening-locked" ? handsFreeLabel(chordLabel) : null)
     ?? phaseCopy(phase, chatTone);
   return (
     <>
+      <PanelFrameSync layout={target} />
       <div className="bar" {...bar}>
         {pill}
       </div>
       <CopyCard />
       {/* yap-notetaker-detect — "Record this meeting?" (never auto-records). */}
       <MeetingOfferCard />
+      {/* WF-12 — "Sounded like Spanish — Add Spanish?" (Add / Not now). */}
+      <LanguageOfferCard forced={FORCED ? forcedLanguageOffer(window.location.search) : null} />
+      {/* WF-06 — "Backtrack caught: Dropped ‘2’, kept ‘3’" (Undo / Dismiss). */}
+      <BacktrackCaughtCard
+        forced={FORCED ? forcedBacktrackCaught(window.location.search) : null}
+        muted={mutedCats}
+      />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
-      {!FORCED && <NudgeRow phase={phase} tone={chatTone} />}
+      {!FORCED && <NudgeRow phase={phase} tone={chatTone} muted={mutedCats} />}
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}
@@ -552,10 +674,131 @@ function Float() {
         {phase === "listening-locked" && (
           <Lock className="lock-chip" data-lock-chip="true" aria-hidden="true" strokeWidth={2.4} />
         )}
-        {stripLine(line, stillRecording, fnHint, chordLabel)}
+        {phase === "listening-locked" && !railError && !stillRecording && !fnHint ? (
+          // Item 18 — the hands-free hint, shorter: the key as a keycap and two
+          // words. The full sentence stays the accessible name and the
+          // announcement (`handsFreeLabel`); the clickable Stop is the rail's.
+          <span className="hands-free-hint" title={line ?? undefined}>
+            <kbd className="keycap">{chordLabel.trim() || DEFAULT_STOP_KEY}</kbd> to stop
+          </span>
+        ) : stripLine(line, stillRecording, fnHint, chordLabel)}
       </div>
+      {/* WF-20 — "Slack · casual": the app-aware mode for this app; a click
+          changes it for this app for 15 minutes. Listening only, and never
+          when app-aware modes are off. A later sibling of .bar, so the side
+          dock rules in float.css can place it like the phase line. */}
+      <StyleChipButton phase={phase} forced={FORCED ? forcedStyleChip(window.location.search) : null} />
     </>
   );
+}
+
+/**
+ * yap-1106-one-pill — the layout, memoised on its geometric identity so a
+ * phase change inside the same class (listening → transcribing) is not a new
+ * layout.
+ */
+function usePanelLayout(
+  phase: LivePhase,
+  meeting: MeetingMode,
+  dock: BarDock,
+  character: LayoutCharacter,
+  cardH: number | null,
+): PillLayout {
+  const next = pillLayout({ phase, meeting, dock, character, card: cardH ? { h: cardH } : null });
+  return useMemo(() => next, [next.key]);
+}
+
+/**
+ * yap-1106-one-pill, fix-b1-2 — the height of the card row: every card on
+ * screen that CARD_SELECTOR (pill/state.ts) names — the copy card
+ * `.copy-card`, "Record this meeting?" `.meeting-offer-wrap`, WF-12's
+ * "Sounded like Spanish — Add Spanish?" `.language-offer-wrap` and the
+ * coaching nudge `.nudge-row` — or null when none is up. The cards mount and
+ * unmount themselves, so the shell watches the DOM for them rather than
+ * re-deciding when they show; the panel then makes room for them instead of
+ * clipping them or drawing them over Yappy. Two cards up at once (a nudge and
+ * a language offer) are STACKED, not the first match taken: each card gets
+ * its place in the row as CARD_STACK_VAR, which float.css adds to --card-y,
+ * and the layout reserves the whole stack.
+ */
+function useCardOnScreen(): number | null {
+  const [h, setH] = useState<number | null>(null);
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return;
+    let els: HTMLElement[] = [];
+    let lastCount = -1;
+    const measure = () => {
+      const live = els.filter((el) => el.isConnected);
+      const { offsets, total } = stackCards(live.map((el) => el.getBoundingClientRect().height));
+      live.forEach((el, i) => el.style.setProperty(CARD_STACK_VAR, `${offsets[i]}px`));
+      if (live.length !== lastCount) {
+        // One line per change in the card count, never per resize.
+        console.info(`pill card_row cards=${live.length} h=${total}`);
+        lastCount = live.length;
+      }
+      setH(total > 0 ? total : null);
+    };
+    const ro = new ResizeObserver(() => measure());
+    const track = () => {
+      const found = Array.from(root.querySelectorAll<HTMLElement>(CARD_SELECTOR));
+      if (found.length !== els.length || found.some((el, i) => el !== els[i])) {
+        for (const el of els) ro.unobserve(el);
+        els = found;
+        for (const el of els) ro.observe(el);
+      }
+      measure();
+    };
+    track();
+    // childList only: the stack offsets this hook writes are style attributes,
+    // so writing them never re-triggers the observer.
+    const mo = new MutationObserver(track);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+    };
+  }, []);
+  return h;
+}
+
+/**
+ * yap-1106-one-pill — applies the layout: grows at once, shrinks after
+ * SHRINK_HOLD_MS (so Yappy's closing animation is never clipped), writes the
+ * slot positions float.css reads, publishes the layout for Yappy's draw loop
+ * and the pill matrix, and asks the backend for the matching panel frame.
+ * Renders nothing.
+ */
+function PanelFrameSync({ layout }: { layout: PillLayout }) {
+  const [shown, setShown] = useState<PillLayout>(layout);
+  useEffect(() => {
+    if (shown.key === layout.key) return;
+    const delay = shrinkDelay(shown, layout);
+    if (delay === 0) {
+      setShown(layout);
+      return;
+    }
+    const t = window.setTimeout(() => setShown(layout), delay);
+    return () => window.clearTimeout(t);
+  }, [layout, shown]);
+  useEffect(() => {
+    const de = document.documentElement;
+    de.dataset.onePill = shown.legacy ? "false" : "true";
+    de.dataset.pillMeeting = shown.meeting;
+    const vars = layoutVars(shown);
+    for (const [k, v] of Object.entries(vars)) {
+      if (shown.legacy) de.style.removeProperty(k);
+      else de.style.setProperty(k, v);
+    }
+    publishPillLayout(shown.legacy ? null : shown);
+    invoke("pill_set_panel_frame", {
+      w: shown.panel.w,
+      h: shown.panel.h,
+      anchorX: shown.anchor.x,
+      anchorY: shown.anchor.y,
+    }).catch((e) => console.warn("pill panel_frame failed", e));
+  }, [shown]);
+  return null;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

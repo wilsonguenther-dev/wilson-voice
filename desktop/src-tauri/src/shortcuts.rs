@@ -694,3 +694,314 @@ pub mod validate {
         Ok(())
     }
 }
+
+/// WF-18 — the Keyboard Shortcuts editor that cannot conflict, as pure
+/// functions the Settings screen, `save_settings` and the launch registration
+/// all call (and `tests/shortcuts_editor.rs` drives without an app).
+///
+/// Wispr lets one action carry up to four shortcuts, warns when a new one
+/// overlaps another action, and has Reset to default. Yap's version:
+///
+/// * **Several bindings per action.** The four always-global actions
+///   (Record meeting, Hands-free toggle, Copy last, Open Scratchpad) keep their
+///   primary chord where it always lived (`meeting_chord`, …) and up to
+///   [`MAX_BINDINGS_PER_ACTION`]` - 1` more in `AppSettings::extra_chords`.
+///   The dictate toggle and Cancel keep exactly one: the dictate toggle has its
+///   own hold/press path and Cancel is registered only while a take runs, so a
+///   second key there would be a second lifecycle, not a second chord.
+/// * **Cannot conflict.** [`check_add`] refuses a reserved macOS combo
+///   ([`reserved_combo`] over `hotkey_table::RESERVED_CHORDS`: ⌘C, ⌘V, ⌘Tab …),
+///   anything Wispr's rules refuse, a fixed Yap chord, a duplicate inside the
+///   action, and a fifth binding; a chord another action already holds comes
+///   back as [`Verdict::Overlaps`] with the warning sentence the row shows.
+///   `save_settings` re-runs the same checks, so a hand-edited settings file
+///   cannot double-book a chord either.
+/// * **Never zero.** [`remove_at`] refuses to delete an action's last
+///   binding; [`reset_to_default`] is the way back to the shipped chord.
+pub mod editor {
+    use serde::{Deserialize, Serialize};
+    use tauri_plugin_global_shortcut::Shortcut;
+
+    use crate::hotkey_table::{self, BindingAction};
+    use crate::hotkeys::ChordSetting;
+
+    /// The most shortcuts one action may carry (Wispr's limit).
+    pub const MAX_BINDINGS_PER_ACTION: usize = 4;
+
+    /// The sentence a refused delete of the last binding shows.
+    pub const LAST_BINDING_REFUSAL: &str =
+        "every action keeps at least one shortcut — add another before removing this one";
+
+    /// One extra (non-primary) binding, as stored in `AppSettings::extra_chords`.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ExtraBinding {
+        pub action: BindingAction,
+        pub chord: ChordSetting,
+    }
+
+    /// What the editor says about a candidate chord.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Verdict {
+        /// It may be added.
+        Ok,
+        /// Another action already holds it: the row shows this warning and the
+        /// add is not applied (no two actions on one chord).
+        Overlaps(String),
+        /// It may never be a Yap shortcut (reserved macOS combo, Wispr rule,
+        /// fixed Yap chord, duplicate, or the action is full).
+        Refused(String),
+    }
+
+    /// Can `action` carry more than one binding?
+    pub fn supports_extra(action: BindingAction) -> bool {
+        BindingAction::ALWAYS_GLOBAL_REBINDABLE.contains(&action)
+    }
+
+    /// The editable actions, in the order the Shortcuts screen lists them.
+    pub const EDITABLE: [BindingAction; 6] = [
+        BindingAction::DictateToggle,
+        BindingAction::Cancel,
+        BindingAction::RecordMeeting,
+        BindingAction::HandsFreeToggle,
+        BindingAction::CopyLast,
+        BindingAction::OpenScratchpad,
+    ];
+
+    /// The shipped chord of `action` as a setting (`None` for the hold keys).
+    pub fn default_chord(action: BindingAction) -> Option<ChordSetting> {
+        action.default_binding().map(|b| ChordSetting {
+            code: format!("{:?}", b.code),
+            ctrl: b.ctrl,
+            alt: b.alt,
+            cmd: b.cmd,
+            shift: b.shift,
+        })
+    }
+
+    /// The macOS function a chord belongs to, when it is a reserved combo
+    /// (⌘C → "Copy", ⌘Tab → "the app switcher").
+    pub fn reserved_combo(c: &ChordSetting) -> Option<&'static str> {
+        hotkey_table::RESERVED_CHORDS
+            .iter()
+            .find(|(ctrl, alt, shift, cmd, code, _)| {
+                (*ctrl, *alt, *shift, *cmd) == (c.ctrl, c.alt, c.shift, c.cmd) && *code == c.code
+            })
+            .map(|(.., what)| *what)
+    }
+
+    fn label_of(c: &ChordSetting) -> String {
+        hotkey_table::format_chord(c).unwrap_or_else(|_| c.code.clone())
+    }
+
+    /// Every binding `action` holds: the primary (or its default) first, then
+    /// its extras in stored order. Never empty for an editable action.
+    pub fn bindings_of(
+        action: BindingAction,
+        primary: Option<&ChordSetting>,
+        extras: &[ExtraBinding],
+    ) -> Vec<ChordSetting> {
+        let mut out: Vec<ChordSetting> = Vec::new();
+        if let Some(p) = primary.cloned().or_else(|| default_chord(action)) {
+            out.push(p);
+        }
+        if supports_extra(action) {
+            for e in extras.iter().filter(|e| e.action == action) {
+                if !out.contains(&e.chord) {
+                    out.push(e.chord.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The other action already holding `candidate`, if one does. `table` is
+    /// every editable action with all of its bindings ([`bindings_of`]).
+    pub fn overlapping_action(
+        action: BindingAction,
+        candidate: &ChordSetting,
+        table: &[(BindingAction, Vec<ChordSetting>)],
+    ) -> Option<BindingAction> {
+        table
+            .iter()
+            .find(|(other, chords)| *other != action && chords.contains(candidate))
+            .map(|(other, _)| *other)
+    }
+
+    /// The warning a row shows when `candidate` is already `other`'s.
+    pub fn overlap_warning(candidate: &ChordSetting, other: BindingAction) -> String {
+        format!(
+            "{} is already {} — remove it there first, or pick another chord",
+            label_of(candidate),
+            other.title()
+        )
+    }
+
+    /// Judge adding `candidate` to `action`, whose bindings are `current`.
+    pub fn check_add(
+        action: BindingAction,
+        candidate: &ChordSetting,
+        current: &[ChordSetting],
+        table: &[(BindingAction, Vec<ChordSetting>)],
+    ) -> Verdict {
+        if !current.is_empty() && !supports_extra(action) {
+            return Verdict::Refused(format!(
+                "{} has one shortcut — change it instead of adding another",
+                action.title()
+            ));
+        }
+        if current.len() >= MAX_BINDINGS_PER_ACTION {
+            return Verdict::Refused(format!(
+                "{} already has {MAX_BINDINGS_PER_ACTION} shortcuts — remove one first",
+                action.title()
+            ));
+        }
+        if current.contains(candidate) {
+            return Verdict::Refused(format!(
+                "{} is already one of {}'s shortcuts",
+                label_of(candidate),
+                action.title()
+            ));
+        }
+        // Reserved macOS combos, Wispr's rules and the fixed Yap chords — the
+        // same gate a primary rebind goes through.
+        if let Err(why) = hotkey_table::chord_for_action(action, candidate) {
+            return Verdict::Refused(why);
+        }
+        match overlapping_action(action, candidate, table) {
+            Some(other) => Verdict::Overlaps(overlap_warning(candidate, other)),
+            None => Verdict::Ok,
+        }
+    }
+
+    /// Remove binding `index` from `current`. Refuses the last one, so every
+    /// action keeps at least one binding.
+    pub fn remove_at(current: &[ChordSetting], index: usize) -> Result<Vec<ChordSetting>, String> {
+        if index >= current.len() {
+            return Err(format!("no shortcut at position {}", index + 1));
+        }
+        if current.len() <= 1 {
+            return Err(LAST_BINDING_REFUSAL.to_string());
+        }
+        let mut out = current.to_vec();
+        out.remove(index);
+        Ok(out)
+    }
+
+    /// Reset to default: exactly the shipped chord.
+    pub fn reset_to_default(action: BindingAction) -> Vec<ChordSetting> {
+        default_chord(action).into_iter().collect()
+    }
+
+    /// Store a binding list back as (primary setting, extras). The primary is
+    /// `None` when it is the shipped default, matching how every primary has
+    /// always been stored.
+    pub fn split(
+        action: BindingAction,
+        list: &[ChordSetting],
+    ) -> (Option<ChordSetting>, Vec<ExtraBinding>) {
+        let primary = list
+            .first()
+            .filter(|c| Some((*c).clone()) != default_chord(action))
+            .cloned();
+        let extras = if supports_extra(action) {
+            list.iter()
+                .skip(1)
+                .map(|c| ExtraBinding {
+                    action,
+                    chord: c.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (primary, extras)
+    }
+
+    /// The live hands-free line under the hold rows, naming the hold key the
+    /// `ptt_binding` setting arms: "Double-tap fn for hands-free".
+    pub fn hands_free_line(ptt_binding: &str) -> String {
+        let key = match ptt_binding {
+            "fn" => "fn",
+            "both" | "fn_or_fn_control" => "fn or fn⌃",
+            _ => "fn⌃",
+        };
+        format!("Double-tap {key} for hands-free")
+    }
+
+    /// Validate every stored extra for a save: each must belong to an action
+    /// that takes extras, pass the rebind gate, not repeat inside its action,
+    /// and keep the action at or under [`MAX_BINDINGS_PER_ACTION`]. Returns the
+    /// resolved chords, for `hotkey_table::check_distinct` alongside the
+    /// primaries (which catches an extra that another action holds).
+    pub fn validate_extras(
+        primaries: &[(BindingAction, Option<&ChordSetting>)],
+        extras: &[ExtraBinding],
+    ) -> Result<Vec<(BindingAction, Shortcut, String)>, String> {
+        let mut out = Vec::new();
+        for (i, e) in extras.iter().enumerate() {
+            if !supports_extra(e.action) {
+                return Err(format!(
+                    "{} has one shortcut — change it instead of adding another",
+                    e.action.title()
+                ));
+            }
+            let primary = primaries
+                .iter()
+                .find(|(a, _)| *a == e.action)
+                .and_then(|(_, p)| *p);
+            let before: Vec<ChordSetting> = {
+                let mut v = bindings_of(e.action, primary, &[]);
+                for prev in &extras[..i] {
+                    if prev.action == e.action {
+                        v.push(prev.chord.clone());
+                    }
+                }
+                v
+            };
+            if before.contains(&e.chord) {
+                return Err(format!(
+                    "{} is already one of {}'s shortcuts",
+                    label_of(&e.chord),
+                    e.action.title()
+                ));
+            }
+            if before.len() >= MAX_BINDINGS_PER_ACTION {
+                return Err(format!(
+                    "{} already has {MAX_BINDINGS_PER_ACTION} shortcuts — remove one first",
+                    e.action.title()
+                ));
+            }
+            let (sc, label) = hotkey_table::chord_for_action(e.action, &e.chord)?;
+            out.push((e.action, sc, label));
+        }
+        Ok(out)
+    }
+
+    /// The extras Yap registers at launch: [`validate_extras`] one at a time,
+    /// so a stored extra that breaks a rule (or that a newer reserved list
+    /// refuses) is dropped with a log line instead of taking the rest down.
+    pub fn resolve_extras_lenient(
+        primaries: &[(BindingAction, Option<&ChordSetting>)],
+        extras: &[ExtraBinding],
+    ) -> Vec<(BindingAction, Shortcut, String)> {
+        let mut kept: Vec<ExtraBinding> = Vec::new();
+        let mut out = Vec::new();
+        for e in extras {
+            let mut trial = kept.clone();
+            trial.push(e.clone());
+            match validate_extras(primaries, &trial) {
+                Ok(mut v) => {
+                    if let Some(last) = v.pop() {
+                        out.push(last);
+                    }
+                    kept.push(e.clone());
+                }
+                Err(why) => {
+                    log::warn!("shortcuts extra_dropped action={:?} reason={why}", e.action)
+                }
+            }
+        }
+        out
+    }
+}

@@ -40,6 +40,7 @@ const SETTINGS_TABS = [
   "Meetings",
   "Privacy",
   "Diagnostics",
+  "Notifications",
   "License",
 ];
 

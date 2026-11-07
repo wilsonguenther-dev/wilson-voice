@@ -290,7 +290,13 @@ fn display_change_lands_the_pill_on_a_visible_screen() {
     let park = fp.find("fn park_pill(").unwrap();
     let body = &fp[park..park + 2600];
     assert!(body.contains(".available_monitors()"));
-    assert!(body.contains("pill_origin_on_visible_screen("));
+    // yap-1106-one-pill: parked by the character's anchor inside the frame the
+    // webview sized to its content, through the same screen pick and clamp.
+    assert!(body.contains("pill_origin_for_frame("));
+    let fr = fp.find("pub fn pill_origin_for_frame(").unwrap();
+    let fr_body = &fp[fr..fr + 900];
+    assert!(fr_body.contains("pill_screen(screens, primary)"));
+    assert!(fr_body.contains("clamp_to_screen("));
 }
 
 // ─── FULLSCREEN ──────────────────────────────────────────────────────────

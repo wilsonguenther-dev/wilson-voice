@@ -25,8 +25,9 @@ use support::{open_db, temp_dir};
 /// 7 = Y9-B's `user_context` table (writing samples + custom rules).
 /// 8 = Y9-A's `transform_runs`, the per-invocation transform status log.
 /// 9 = yap24-NT11's `meeting_segments.suppressed_as_echo`, the kept-but-hidden
-/// speaker-echo flag.
-const EXPECTED_VERSION: i64 = 9;
+/// speaker-echo flag. 10 = yap-call-1's `meetings.detected_app` /
+/// `detected_via`, which app's call a recording came from and how it was found.
+const EXPECTED_VERSION: i64 = 10;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -38,6 +39,10 @@ const EXPECTED_VERSION: i64 = 9;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 10 {
+        sql.push_str("ALTER TABLE meetings DROP COLUMN detected_via;\n");
+        sql.push_str("ALTER TABLE meetings DROP COLUMN detected_app;\n");
+    }
     if version < 9 {
         sql.push_str("ALTER TABLE meeting_segments DROP COLUMN suppressed_as_echo;\n");
     }
@@ -378,6 +383,8 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
         "sys_wav_path",
         "tap_rebuilds",
         "kind",
+        "detected_app",
+        "detected_via",
     ] {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
@@ -788,4 +795,40 @@ fn migration_nine_adds_suppressed_as_echo_without_hiding_existing_rows() {
     assert!(columns(&path, "meeting_segments").contains(&"suppressed_as_echo".to_string()));
     assert_eq!(db.list_meeting_segments(&id).unwrap().len(), 2);
     assert_eq!(db.count_suppressed_echo_segments(&id).unwrap(), 0);
+}
+
+/// yap-call-1 — migration 10 adds the detected-call columns to a database that
+/// was on rung 9 with a meeting in it: the old row reads NULL for both, its
+/// segments are untouched, and the new setter writes them.
+#[test]
+fn migration_ten_adds_detected_call_columns_as_null_on_existing_rows() {
+    let dir = temp_dir("detected-call");
+    let path = dir.join("wilson_voice.db");
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Before call-1", &["one line", "two line"]);
+        drop(db);
+        rewind_to(&path, 9);
+        id
+    };
+    assert!(
+        !columns(&path, "meetings").contains(&"detected_app".to_string()),
+        "rewound below 10"
+    );
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    let cols = columns(&path, "meetings");
+    assert!(cols.contains(&"detected_app".to_string()), "{cols:?}");
+    assert!(cols.contains(&"detected_via".to_string()), "{cols:?}");
+    assert_eq!(db.meeting_detection(&id), Some((None, None)));
+    assert_eq!(db.list_meeting_segments(&id).unwrap().len(), 2);
+    db.set_meeting_detection(&id, "us.zoom.xos", "mic_in_use")
+        .unwrap();
+    assert_eq!(
+        db.meeting_detection(&id),
+        Some((
+            Some("us.zoom.xos".to_string()),
+            Some("mic_in_use".to_string())
+        ))
+    );
 }

@@ -79,6 +79,10 @@ pub struct CaptureOutcome {
     /// is still a whole recording and the row must not claim a second one.
     #[allow(dead_code)] // read by `MeetingController::stop`
     pub sys_wav_path: Option<PathBuf>,
+    /// yap-1106-call-audio-truth — what each track actually delivered, measured
+    /// by the engine at stop. Rides the outcome so the ONE stop path can write
+    /// the `meeting_tracks` line with the row id only it knows.
+    pub tracks: TrackEvidence,
     /// YV104 / YV106 — the tap's rebuild log as JSON, when the meeting needed a
     /// rebuild at all. `None` is the common case and stays `NULL` in the row.
     pub tap_rebuilds: Option<String>,
@@ -134,6 +138,16 @@ pub trait ActiveCapture: Send {
         None
     }
 
+    /// yap-1106-call-audio-truth — the live "Call audio" chip's inputs, read on
+    /// the same 1 Hz ticker as [`ActiveCapture::system_audio_probe`] and for the
+    /// same reason (the ticker holds no reference to the controller). Numbers,
+    /// never a sentence: the chip state is decided once, in
+    /// `meetings/callAudio.ts`, so the pill and the recording bar cannot
+    /// disagree. Defaulted: a fake engine has no tap and says nothing.
+    fn call_audio_probe(&self) -> Option<CallAudioProbe> {
+        None
+    }
+
     /// yap24-NT1 (R1) — tie the capture's on-disk journal to the meeting row
     /// that was just created for it, so a crash mid-meeting is recovered into
     /// THAT row at the next launch ([`adopt_recovered_meetings`]). Defaulted:
@@ -146,6 +160,78 @@ pub trait ActiveCapture: Send {
 /// A cheap, thread-safe read of the meeting's system-audio badge. See
 /// [`ActiveCapture::system_audio_probe`].
 pub type SystemAudioProbe = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// yap-1106-call-audio-truth — what the running meeting's tap is doing RIGHT
+/// NOW, as the YV104 liveness fold sees it. Serialized onto
+/// [`MeetingStatus::call_audio`] every tick; `None` there means no meeting.
+///
+/// Four tap states hide in these bits and `callAudio.ts` names them: no tap
+/// (`attached == false`), a tap that has never delivered (`ever_nonzero ==
+/// false`), a tap delivering now (`ever_nonzero` and a small `silent_seconds`),
+/// and a tap that delivered and went quiet or was degraded (`lost`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallAudioLive {
+    /// Was a system-audio tap WANTED for this meeting (a call, not an in-person
+    /// room)? False for `TrackBPlan::RoomOnly`, where "off" is not a failure.
+    pub planned: bool,
+    /// Is a tap open for this meeting (a Track B exists)?
+    pub attached: bool,
+    /// YV104's discriminator: has the tap EVER delivered a non-zero sample?
+    pub ever_nonzero: bool,
+    /// Seconds since the last non-zero sample — since the tap started when
+    /// none ever arrived (`TapLiveness::since_nonzero`).
+    pub silent_seconds: u64,
+    /// The ghost watchdog spent its rebuild budget and degraded the track.
+    pub lost: bool,
+    /// YV102's setup row holds no positive proof of the System Audio Recording
+    /// grant (`SetupVerdict::Granted` was never earned on this Mac).
+    pub grant_unknown: bool,
+}
+
+/// A cheap, thread-safe read of [`CallAudioLive`]. See
+/// [`ActiveCapture::call_audio_probe`].
+pub type CallAudioProbe = Arc<dyn Fn() -> CallAudioLive + Send + Sync>;
+
+/// The per-tick readers the ticker thread carries: YV110's sentence and
+/// yap-1106's chip. One struct so the ticker's signature stays inside clippy's
+/// argument budget as the status grows.
+#[derive(Clone, Default)]
+struct TickProbes {
+    system_audio: Option<SystemAudioProbe>,
+    call_audio: Option<CallAudioProbe>,
+}
+
+/// yap-1106-call-audio-truth — per-track delivery, measured by the engine at
+/// stop. Seconds of audio, not wall time; `sys_nonzero_s` is the part of the
+/// system track that carried sound (`syscapture::TapDelivery::nonzero_frames`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TrackEvidence {
+    pub mic_s: f64,
+    pub sys_s: f64,
+    pub sys_nonzero_s: f64,
+    /// Ghost-watchdog rebuild attempts (YV104), whatever their outcome.
+    pub tap_rebuilds: u32,
+}
+
+/// The one `meeting_tracks` line, written at stop by [`MeetingController`].
+///
+/// `aec_share` is the far-side coupling share `meeting_aec` measures when the
+/// transcription pipeline runs — AFTER stop, over both wavs — so the stop line
+/// carries `pending` for a meeting that recorded call sound (the pipeline's
+/// own `meeting_aec coupling … share=` line completes it) and `n/a` for one
+/// that has nothing to couple.
+pub fn meeting_tracks_line(id: &str, ev: &TrackEvidence, aec_share: Option<f64>) -> String {
+    let aec = match aec_share {
+        Some(share) => format!("{share:.2}"),
+        None if ev.sys_nonzero_s > 0.0 => "pending".to_string(),
+        None => "n/a".to_string(),
+    };
+    format!(
+        "meeting_tracks id={id} mic_s={:.1} sys_s={:.1} sys_nonzero_s={:.1} tap_rebuilds={} aec_share={aec}",
+        ev.mic_s, ev.sys_s, ev.sys_nonzero_s, ev.tap_rebuilds
+    )
+}
 
 /// Whoever owns audio capture implements this and installs it once.
 pub trait CaptureEngine: Send + Sync + 'static {
@@ -231,6 +317,10 @@ pub struct MeetingStatus {
     ///
     /// See [`ActiveCapture::system_audio`] for why it rides this payload.
     pub system_audio: Option<String>,
+    /// yap-1106-call-audio-truth — the live "Call audio" chip's inputs. `None`
+    /// when nothing is recording; `Some` every tick of a meeting, whether or
+    /// not it has a tap, so the chip can say "off" rather than vanish.
+    pub call_audio: Option<CallAudioLive>,
 }
 
 impl MeetingStatus {
@@ -249,6 +339,7 @@ impl MeetingStatus {
                 Some(NO_ENGINE_MESSAGE.to_string())
             },
             system_audio: None,
+            call_audio: None,
         }
     }
 }
@@ -342,6 +433,9 @@ struct Active {
     /// capture so the ticker thread can read it without reaching back through
     /// the controller (which would deadlock against the `stop` that joins it).
     system_audio: Option<SystemAudioProbe>,
+    /// yap-1106-call-audio-truth — the chip's reader, lifted out for the same
+    /// reason as `system_audio`.
+    call_audio: Option<CallAudioProbe>,
     diagnostics: Arc<Mutex<MeetingDiagnostics>>,
     stop: Arc<TickerStop>,
     ticker: Option<JoinHandle<()>>,
@@ -482,6 +576,7 @@ impl MeetingController {
                     capture_available: true,
                     unavailable_reason: None,
                     system_audio: a.system_audio.as_ref().and_then(|probe| probe()),
+                    call_audio: a.call_audio.as_ref().map(|probe| probe()),
                 }
             }
         }
@@ -572,14 +667,17 @@ impl MeetingController {
         );
 
         let stop = Arc::new(TickerStop::default());
-        let system_audio = capture.system_audio_probe();
+        let probes = TickProbes {
+            system_audio: capture.system_audio_probe(),
+            call_audio: capture.call_audio_probe(),
+        };
         let ticker = self.spawn_ticker(
             meeting.id.clone(),
             meeting.title.clone(),
             Instant::now(),
             Arc::clone(&diagnostics),
             Arc::clone(&stop),
-            system_audio.clone(),
+            probes.clone(),
         );
 
         *guard = Some(Active {
@@ -588,7 +686,8 @@ impl MeetingController {
             started_at: meeting.started_at,
             started: Instant::now(),
             capture,
-            system_audio,
+            system_audio: probes.system_audio,
+            call_audio: probes.call_audio,
             diagnostics,
             stop,
             ticker: Some(ticker),
@@ -608,7 +707,7 @@ impl MeetingController {
         started: Instant,
         diagnostics: Arc<Mutex<MeetingDiagnostics>>,
         stop: Arc<TickerStop>,
-        system_audio: Option<SystemAudioProbe>,
+        probes: TickProbes,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         let probe = Arc::clone(&self.probe);
@@ -644,7 +743,8 @@ impl MeetingController {
                         // YV110 — re-read every tick, not snapshotted at start:
                         // a tap lost at minute nine has to reach the pill on the
                         // next second, not at the end of the meeting.
-                        system_audio: system_audio.as_ref().and_then(|probe| probe()),
+                        system_audio: probes.system_audio.as_ref().and_then(|probe| probe()),
+                        call_audio: probes.call_audio.as_ref().map(|probe| probe()),
                     });
                 }
             })
@@ -689,7 +789,8 @@ impl MeetingController {
         let outcome = active.capture.stop();
         let battery_at_end = self.probe.battery();
 
-        let (duration, wav, sys_wav, tap_rebuilds, track_rates, note, state) = match outcome {
+        let (duration, wav, sys_wav, tap_rebuilds, track_rates, note, state, tracks) = match outcome
+        {
             Ok(o) => {
                 let state = if o.wav_path.is_some() && !o.partial {
                     // Capture landed WHOLE. YV93's transcription pipeline moves
@@ -717,6 +818,7 @@ impl MeetingController {
                     o.track_rates,
                     o.note,
                     state,
+                    o.tracks,
                 )
             }
             Err(e) => {
@@ -729,6 +831,7 @@ impl MeetingController {
                     Vec::new(),
                     Some(e),
                     MeetingState::Partial,
+                    TrackEvidence::default(),
                 )
             }
         };
@@ -779,6 +882,10 @@ impl MeetingController {
             meetings::format_offset(duration),
             state.as_str()
         );
+        // yap-1106-call-audio-truth — one line per meeting saying what each
+        // track delivered. It is the number behind a "Mic only" header, and
+        // the one a "0 Call lines" meeting is diagnosed from.
+        log::info!("{}", meeting_tracks_line(&active.id, &tracks, None));
         self.emit();
         // yap-meetings-fix (A) — the capture is on disk; hand it to the ONE
         // transcription worker. A partial capture with audio is transcribed
@@ -1054,6 +1161,14 @@ pub fn start_capture_session(
         config.env = Arc::new(syscapture::TappedEnv::new(host, Arc::clone(tap)));
     }
     let session = crate::meeting::MeetingSession::start(config).map_err(|e| e.to_string())?;
+    let call_audio_planned = matches!(
+        plan,
+        syscapture::TrackBPlan::Attach | syscapture::TrackBPlan::AttachWithBadge { .. }
+    );
+    let grant_unknown = db
+        .as_ref()
+        .map(|db| !matches!(db.system_audio_setup().verdict, meetings::SetupVerdict::Granted))
+        .unwrap_or(true);
     let pump = tap.map(|tap| {
         // Every track starts on the MIC's format because that is the only one
         // known at `start`; the tap's own (`kAudioTapPropertyFormat`) is
@@ -1072,6 +1187,8 @@ pub fn start_capture_session(
         pump,
         badge: plan.badge().map(crate::permissions::named),
         db,
+        call_audio_planned,
+        grant_unknown,
     }))
 }
 
@@ -1148,6 +1265,12 @@ struct SessionCapture {
     badge: Option<String>,
     /// Where the meeting's own permission discriminator is written back to.
     db: Option<Arc<Database>>,
+    /// yap-1106-call-audio-truth — was a Track B wanted at all? False for an
+    /// in-person room, where the chip's "off" is a fact and not a failure.
+    call_audio_planned: bool,
+    /// yap-1106-call-audio-truth — read ONCE at start: does YV102's row hold
+    /// positive proof of the grant? Drives the chip's "Turn on call audio".
+    grant_unknown: bool,
 }
 
 impl ActiveCapture for SessionCapture {
@@ -1186,14 +1309,51 @@ impl ActiveCapture for SessionCapture {
         }))
     }
 
+    fn call_audio_probe(&self) -> Option<CallAudioProbe> {
+        let planned = self.call_audio_planned;
+        let grant_unknown = self.grant_unknown;
+        let tap = self.pump.as_ref().map(|pump| Arc::clone(pump.tap()));
+        let log = self.session.as_ref()?.tap_rebuilds();
+        Some(Arc::new(move || {
+            let lost = log.lock().verdict().is_some();
+            match tap.as_ref() {
+                Some(tap) => {
+                    let (live, _, _) = tap.liveness();
+                    CallAudioLive {
+                        planned,
+                        attached: true,
+                        ever_nonzero: live.ever_nonzero,
+                        silent_seconds: live.since_nonzero.as_secs(),
+                        lost,
+                        grant_unknown,
+                    }
+                }
+                None => CallAudioLive {
+                    planned,
+                    attached: false,
+                    ever_nonzero: false,
+                    silent_seconds: 0,
+                    lost,
+                    grant_unknown,
+                },
+            }
+        }))
+    }
+
     fn stop(mut self: Box<Self>) -> Result<CaptureOutcome, String> {
         // The tap goes first, and its own `finish` is what gets the order right:
         // park the pump, tear the tap down through `TEARDOWN_ORDER`, then drain
         // the last of the ring into the journal — which is still open, because
         // the session below has not been stopped yet.
         let mut tap_notes: Vec<String> = Vec::new();
+        let mut tracks = TrackEvidence::default();
         if let Some(mut pump) = self.pump.take() {
             pump.finish();
+            // yap-1106-call-audio-truth — read after `finish` so the last
+            // drained block is counted.
+            let (sys_s, sys_nonzero_s) = pump.tap().delivered_seconds();
+            tracks.sys_s = sys_s;
+            tracks.sys_nonzero_s = sys_nonzero_s;
             // yap-meetings-fix (NT3) — the meeting's OWN evidence: did the tap
             // deliver, and did ANOTHER process run output while it did not? A
             // silent Mac is `Unknown` and writes nothing; one meeting of
@@ -1257,6 +1417,7 @@ impl ActiveCapture for SessionCapture {
         // YV104's log, for the same reason and at the same moment: the session
         // owns it and `stop()` consumes the session.
         let rebuilds = session.tap_rebuild_log();
+        tracks.tap_rebuilds = rebuilds.attempts().len() as u32;
         // Row 2's banner, persisted onto the meeting rather than only shown in
         // the pill for as long as the pill was open. It wins over the T-0 badge
         // for the same reason it does live: a meeting that lost the track has
@@ -1273,6 +1434,7 @@ impl ActiveCapture for SessionCapture {
         match session.stop() {
             Some(finalized) => {
                 let partial = finalized.state != crate::meeting::MeetingState::Complete;
+                tracks.mic_s = finalized.seconds;
                 let mut notes: Vec<String> = tap_notes;
                 if let Some(reason) = watchdog {
                     notes.push(format!("stopped early: {reason}"));
@@ -1298,6 +1460,7 @@ impl ActiveCapture for SessionCapture {
                         .wav_for_track(crate::meeting::SYSTEM_TRACK)
                         .cloned(),
                     tap_rebuilds,
+                    tracks,
                     track_rates: finalized.track_rates.clone(),
                     seconds: finalized.seconds,
                     note: if notes.is_empty() {
@@ -1315,6 +1478,7 @@ impl ActiveCapture for SessionCapture {
                 wav_path: None,
                 sys_wav_path: None,
                 tap_rebuilds,
+                tracks,
                 track_rates: Vec::new(),
                 seconds: 0.0,
                 note: Some("no audio reached disk for this meeting".to_string()),
@@ -1624,6 +1788,39 @@ mod tests {
         // a user who chooses "Not sure" and a user who never opened the submenu
         // land on the same branch.
         assert_eq!(KIND_PICKER[2].kind, MeetingKind::default());
+    }
+
+    /// yap-1106-call-audio-truth — the stop line's shape, key by key, and the
+    /// two `aec_share` placeholders: `pending` only when there is call sound to
+    /// couple, `n/a` otherwise.
+    #[test]
+    fn the_meeting_tracks_line_names_every_track_figure() {
+        let ev = TrackEvidence {
+            mic_s: 1800.25,
+            sys_s: 1799.9,
+            sys_nonzero_s: 1621.04,
+            tap_rebuilds: 2,
+        };
+        assert_eq!(
+            meeting_tracks_line("2ba0baab", &ev, None),
+            "meeting_tracks id=2ba0baab mic_s=1800.2 sys_s=1799.9 sys_nonzero_s=1621.0 tap_rebuilds=2 aec_share=pending"
+        );
+        assert_eq!(
+            meeting_tracks_line("2ba0baab", &ev, Some(0.99)),
+            "meeting_tracks id=2ba0baab mic_s=1800.2 sys_s=1799.9 sys_nonzero_s=1621.0 tap_rebuilds=2 aec_share=0.99"
+        );
+        let silent = TrackEvidence {
+            mic_s: 60.0,
+            sys_s: 60.0,
+            sys_nonzero_s: 0.0,
+            tap_rebuilds: 0,
+        };
+        assert_eq!(
+            meeting_tracks_line("0b27b40d", &silent, None),
+            "meeting_tracks id=0b27b40d mic_s=60.0 sys_s=60.0 sys_nonzero_s=0.0 tap_rebuilds=0 aec_share=n/a"
+        );
+        // An idle status carries no chip; the field is the contract the pill reads.
+        assert!(MeetingStatus::idle().call_audio.is_none());
     }
 
     #[test]
