@@ -19,10 +19,12 @@ import {
   lastRefreshLine,
   loadNews,
   prefsOf,
+  revealCloudRoute,
   samePrefs,
   saveNews,
   statusLine,
   topicLabels,
+  watchCloudRoute,
   type NewsPrefs,
   type NewsView,
 } from "../../news/newsPrefs";
@@ -124,6 +126,20 @@ export default function News() {
 
   useEffect(read, []);
 
+  // yap-1107-news-honours-cloud-key — a cloud key saved or removed (or the
+  // mode changed) in Advanced re-reads this view in place: the switch and the
+  // topic picker turn on (or off) without a remount. Unsaved topic edits are
+  // kept; only the server half (cloud, active, last refresh) moves.
+  useEffect(
+    () =>
+      watchCloudRoute((v) => {
+        setLoadError(null);
+        setView(v);
+        setDraft((d) => d ?? prefsOf(v));
+      }),
+    [],
+  );
+
   async function save() {
     if (!draft) return;
     setSaving(true);
@@ -170,7 +186,10 @@ export default function News() {
       onChange={setDraft}
       onSave={() => void save()}
       onRevert={() => setDraft(prefsOf(view))}
-      onConnect={() => setSettingsTab("advanced")}
+      onConnect={() => {
+        setSettingsTab("advanced");
+        void revealCloudRoute();
+      }}
       advanced={<NewsQuoteKey />}
     />
   );

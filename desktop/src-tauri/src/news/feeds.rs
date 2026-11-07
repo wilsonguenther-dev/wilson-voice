@@ -1064,6 +1064,67 @@ pub fn refresh_with(
     Ok(report)
 }
 
+/// yap-1107-news-honours-cloud-key — set (to the attempt time, ms) the first
+/// time the gate opens and the connect refresh is started.
+pub const FIRST_REFRESH_KEY: &str = "news_first_refresh_at_ms";
+
+/// Is the connect refresh still owed? The gate is open (cloud on, switch on,
+/// one topic) and Yap has never refreshed nor started the connect refresh.
+pub fn first_refresh_due(kv: &dyn SettingsKv) -> bool {
+    gate(kv).is_ok()
+        && kv.kv_get(FIRST_REFRESH_KEY).is_none()
+        && kv.kv_get(news_prefs::LAST_REFRESH_KEY).is_none()
+}
+
+/// yap-1107-news-honours-cloud-key — the connect transition: the first time
+/// the gate opens (a cloud key saved, or the mode moved to the cloud, with a
+/// topic set) run exactly one refresh. `None` = nothing owed (gate closed, or
+/// the connect refresh already ran or started). The marker is written BEFORE
+/// the fetch, so a second read of the view (a re-render, a second event)
+/// never fetches again; a marker write failure fetches nothing (logged) rather
+/// than risk a fetch on every read.
+pub fn refresh_on_connect(
+    kv: &dyn SettingsKv,
+    http: &dyn FeedHttp,
+    limiter: &mut RateLimiter,
+    now_ms: i64,
+    quote: &QuoteFeed,
+) -> Option<Result<FetchReport, Closed>> {
+    if !first_refresh_due(kv) {
+        return None;
+    }
+    if let Err(e) = kv.kv_set(FIRST_REFRESH_KEY, &now_ms.to_string()) {
+        log::warn!("news first_refresh_failed reason=marker error=\"{e}\"");
+        return None;
+    }
+    log::info!("news first_refresh started=true");
+    let started = std::time::Instant::now();
+    let r = refresh_with(kv, http, limiter, now_ms, quote);
+    match &r {
+        Ok(rep) => log::info!(
+            "news first_refresh done requests={} stories={} ms={}",
+            rep.requests,
+            rep.stories.len(),
+            started.elapsed().as_millis()
+        ),
+        Err(why) => log::info!("news first_refresh skipped reason={}", why.tag()),
+    }
+    Some(r)
+}
+
+/// [`refresh_on_connect`] over the real network with the shared limiter.
+/// Blocking, like [`refresh_now`].
+pub fn refresh_on_connect_now(
+    kv: &dyn SettingsKv,
+    quote: &QuoteFeed,
+) -> Option<Result<FetchReport, Closed>> {
+    if !first_refresh_due(kv) {
+        return None;
+    }
+    let mut limiter = shared_limiter().lock().unwrap_or_else(|p| p.into_inner());
+    refresh_on_connect(kv, &NetHttp, &mut limiter, news_prefs::now_ms(), quote)
+}
+
 /// The process's one limiter, so every caller shares the same budget.
 pub fn shared_limiter() -> &'static Mutex<RateLimiter> {
     static LIMITER: OnceLock<Mutex<RateLimiter>> = OnceLock::new();
@@ -1271,6 +1332,84 @@ mod tests {
             kv.kv_get(news_prefs::LAST_REFRESH_KEY).as_deref(),
             Some("1000000")
         );
+    }
+
+    /// yap-1107-news-honours-cloud-key — the byom route as `save_cloud_key`
+    /// leaves it: a CloudKey provider row, no notes/polish pick, and `mode`.
+    fn connect_cloud_key(kv: &MemKv, mode: crate::cloud_route::CloudMode) {
+        let s = ProviderSettings {
+            providers: vec![ProviderConfig::bundled(), ProviderConfig::cloud_key()],
+            notes_provider: String::new(),
+            polish_provider: String::new(),
+        };
+        model_providers::save(kv, &s).expect("save providers");
+        crate::cloud_route::CloudMode::save(kv, mode).expect("save mode");
+    }
+
+    #[test]
+    fn saved_cloud_key_opens_the_gate_and_refreshes_once_on_connect() {
+        use crate::cloud_route::CloudMode;
+        let kv = MemKv::default();
+        set_prefs(&kv, true, &["tech"], &[], &[]);
+        let http = FakeHttp {
+            google: Some(Ok(RSS.into())),
+            ..Default::default()
+        };
+        let mut lim = RateLimiter::new();
+        // Before the key: closed, nothing owed, nothing fetched.
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 1_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 0);
+
+        // The key is saved (save_cloud_key turns the mode to cloud_when_online).
+        connect_cloud_key(&kv, CloudMode::CloudWhenOnline);
+        assert!(gate(&kv).is_ok(), "a saved cloud key opens the gate");
+        assert!(first_refresh_due(&kv));
+        let r = refresh_on_connect(&kv, &http, &mut lim, 2_000, &QuoteFeed::Free)
+            .expect("the connect refresh is owed")
+            .expect("gate open");
+        assert_eq!(r.requests, 1);
+        assert_eq!(http.count(), 1);
+        assert_eq!(
+            kv.kv_get(FIRST_REFRESH_KEY).as_deref(),
+            Some("2000"),
+            "the connect refresh is stamped"
+        );
+
+        // A second read of the view, or a second event: no second fetch.
+        assert!(!first_refresh_due(&kv));
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 3_000_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 1, "the connect refresh runs exactly once");
+
+        // Always on this Mac closes the gate again: nothing is fetched.
+        CloudMode::save(&kv, CloudMode::AlwaysLocal).unwrap();
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        assert_eq!(
+            refresh(&kv, &http, &mut lim, 4_000_000, None),
+            Err(Closed::CloudOff)
+        );
+        assert_eq!(http.count(), 1);
+    }
+
+    #[test]
+    fn saved_cloud_key_cloud_only_opens_and_removed_key_closes() {
+        use crate::cloud_route::CloudMode;
+        let kv = MemKv::default();
+        set_prefs(&kv, true, &["tech"], &[], &[]);
+        connect_cloud_key(&kv, CloudMode::CloudOnly);
+        assert!(gate(&kv).is_ok());
+        // The key removed: save_cloud_key deletes the provider row.
+        let s = ProviderSettings {
+            providers: vec![ProviderConfig::bundled()],
+            notes_provider: String::new(),
+            polish_provider: String::new(),
+        };
+        model_providers::save(&kv, &s).expect("save providers");
+        assert_eq!(gate(&kv).err(), Some(Closed::CloudOff));
+        let http = FakeHttp::default();
+        let mut lim = RateLimiter::new();
+        assert!(refresh_on_connect(&kv, &http, &mut lim, 1_000, &QuoteFeed::Free).is_none());
+        assert_eq!(http.count(), 0, "no key, no request");
     }
 
     // ---- the three sources ----
