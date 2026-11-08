@@ -1,75 +1,345 @@
 {
-  "_README": "yap-1107-parity-news — every state the approved Yappy News page (design-2026-11-06/news.html) DRAWS for the built surfaces, measured by scripts/parity-sheet.mjs (one MEASURE function on both sides). Numbers in expect are read off the page's own CSS (news.html <style> + assets/review.css). Sizes in logical CSS px, colours exact hex. States the page describes but does not draw are listed under notDrawn, with why, instead of being guessed.",
+  "_README": "yap-1107-parity-news — every state the approved Yappy News page (design-2026-11-06/news.html) DRAWS for the built surfaces, measured by scripts/parity-sheet.mjs (one MEASURE function on both sides). Numbers in expect are read off the page's own CSS (news.html <style> + assets/review.css). Sizes in logical CSS px, colours exact hex. States the page describes but does not draw are listed under notDrawn, with why, instead of being guessed. Home states click '?[data-news-duo-skip]' (optional: only while the joint delivery plays) so the card is measured in the page's settled state, both lines in the bubble and the three stories.",
   "frameMs": 1200,
   "states": [
     {
       "id": "s01-onboarding-body",
       "note": "§01 onboarding step 'Want me to keep you posted?': step line, Yappy 72 px + heading 26 px + lede 13 px, chips, two fields, privacy line. .ob .body padding 28/36/24, gap 18.",
-      "artifact": { "page": "news.html", "selector": "#s01 .ob .body" },
-      "app": { "page": "index.html", "selector": ".news-onb-body", "width": 980, "height": 700, "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json", "clicks": [".onboard-actions button.primary", ".onboard-actions button.primary", ".onboard-actions button.primary"], "capture": "onboarding-4-980x700.png" },
-      "expect": { "w": 760, "padding": { "t": 28, "r": 36, "b": 24, "l": 36 }, "gap": { "row": 18 }, "colors": ["#1d1c1a", "#8b877f", "#56534d", "#ffffff"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s01 .ob .body"
+      },
+      "app": {
+        "page": "index.html",
+        "selector": ".news-onb-body",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json",
+        "clicks": [
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary"
+        ],
+        "capture": "onboarding-4-980x700.png"
+      },
+      "expect": {
+        "w": 760,
+        "padding": {
+          "t": 28,
+          "r": 36,
+          "b": 24,
+          "l": 36
+        },
+        "gap": {
+          "row": 18
+        },
+        "colors": [
+          "#1d1c1a",
+          "#8b877f",
+          "#56534d",
+          "#ffffff"
+        ]
+      }
     },
     {
       "id": "s01-onboarding-heading-row",
       "note": "§01 .row: grid 72px 1fr, gap 14; Yappy canvas 72x72 at a whole-number scale; h3 26px; lede 13px #56534d.",
-      "artifact": { "page": "news.html", "selector": "#s01 .ob .row" },
-      "app": { "page": "index.html", "selector": ".news-onb-row", "width": 980, "height": 700, "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json", "clicks": [".onboard-actions button.primary", ".onboard-actions button.primary", ".onboard-actions button.primary"], "capture": "onboarding-4-980x700.png" },
-      "expect": { "fontPx": [13, 26], "gap": { "col": 14 } }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s01 .ob .row"
+      },
+      "app": {
+        "page": "index.html",
+        "selector": ".news-onb-row",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json",
+        "clicks": [
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary"
+        ],
+        "capture": "onboarding-4-980x700.png"
+      },
+      "expect": {
+        "fontPx": [
+          13,
+          26
+        ],
+        "gap": {
+          "col": 14
+        }
+      }
     },
     {
       "id": "s01-onboarding-chips",
       "note": "§01 .chips: ten chips, 34 px tall, padding 0 14, radius 17, 14 px; selected #1d1c1a on #fff text; gap 8.",
-      "artifact": { "page": "news.html", "selector": "#s01 .chips" },
-      "app": { "page": "index.html", "selector": ".news-onb .news-chips", "width": 980, "height": 700, "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json", "clicks": [".onboard-actions button.primary", ".onboard-actions button.primary", ".onboard-actions button.primary"], "capture": "onboarding-4-980x700.png" },
-      "expect": { "fontPx": [14], "gap": { "row": 8, "col": 8 }, "colors": ["#1d1c1a", "#ffffff"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s01 .chips"
+      },
+      "app": {
+        "page": "index.html",
+        "selector": ".news-onb .news-chips",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json",
+        "clicks": [
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary"
+        ],
+        "capture": "onboarding-4-980x700.png"
+      },
+      "expect": {
+        "fontPx": [
+          14
+        ],
+        "gap": {
+          "row": 8,
+          "col": 8
+        },
+        "colors": [
+          "#1d1c1a",
+          "#ffffff"
+        ]
+      }
     },
     {
       "id": "s01-onboarding-ticker-field",
       "note": "§01 first .field: 38 px tall, radius 10, padding 0 12, gap 8, 14 px label #8b877f, ticker tokens 12 px mono on #efeee9.",
-      "artifact": { "page": "news.html", "selector": "#s01 .field" },
-      "app": { "page": "index.html", "selector": ".news-onb .news-field", "width": 980, "height": 700, "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json", "clicks": [".onboard-actions button.primary", ".onboard-actions button.primary", ".onboard-actions button.primary"], "capture": "onboarding-4-980x700.png" },
-      "expect": { "h": 38, "fontPx": [12, 14], "padding": { "t": 0, "r": 12, "b": 0, "l": 12 }, "gap": { "col": 8 }, "colors": ["#8b877f", "#1d1c1a", "#efeee9", "#ffffff"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s01 .field"
+      },
+      "app": {
+        "page": "index.html",
+        "selector": ".news-onb .news-field",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json",
+        "clicks": [
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary"
+        ],
+        "capture": "onboarding-4-980x700.png"
+      },
+      "expect": {
+        "h": 38,
+        "fontPx": [
+          12,
+          14
+        ],
+        "padding": {
+          "t": 0,
+          "r": 12,
+          "b": 0,
+          "l": 12
+        },
+        "gap": {
+          "col": 8
+        },
+        "colors": [
+          "#8b877f",
+          "#1d1c1a",
+          "#efeee9",
+          "#ffffff"
+        ]
+      }
     },
     {
       "id": "s01-onboarding-footer",
       "note": "§01 .obfoot: Not now left, Keep me posted right; padding 14/36; #f3f2ee; buttons 36 px, radius 10, 14 px.",
-      "artifact": { "page": "news.html", "selector": "#s01 .obfoot" },
-      "app": { "page": "index.html", "selector": ".news-onb-foot", "width": 980, "height": 700, "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json", "clicks": [".onboard-actions button.primary", ".onboard-actions button.primary", ".onboard-actions button.primary"], "capture": "onboarding-4-980x700.png" },
-      "expect": { "fontPx": [14], "padding": { "t": 14, "r": 36, "b": 14, "l": 36 }, "colors": ["#f3f2ee", "#1d1c1a", "#ffffff"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s01 .obfoot"
+      },
+      "app": {
+        "page": "index.html",
+        "selector": ".news-onb-foot",
+        "width": 980,
+        "height": 700,
+        "fixtures": "scripts/smoke-fixtures-parity-news-onboarding.json",
+        "clicks": [
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary",
+          ".onboard-actions button.primary"
+        ],
+        "capture": "onboarding-4-980x700.png"
+      },
+      "expect": {
+        "fontPx": [
+          14
+        ],
+        "padding": {
+          "t": 14,
+          "r": 36,
+          "b": 14,
+          "l": 36
+        },
+        "colors": [
+          "#f3f2ee",
+          "#1d1c1a",
+          "#ffffff"
+        ]
+      }
     },
     {
       "id": "s02-home-briefing-card",
       "note": "§02 .bcard on Home: white card, radius 12, padding 14, gap 12; header (pair | speech bubble | time), three stories in a row, topic chips + cadence line. Page window 880 px with a 208 px sidebar, so the app is measured at 880 wide.",
-      "artifact": { "page": "news.html", "selector": "#s02 .bcard" },
-      "app": { "page": "index.html", "view": "home", "selector": ".card.news-briefing", "width": 880, "height": 760, "fixtures": "scripts/smoke-fixtures-parity-news.json", "capture": "home-880x760.png" },
-      "expect": { "padding": { "t": 14, "r": 14, "b": 14, "l": 14 }, "gap": { "row": 12 } }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s02 .bcard"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".card.news-briefing",
+        "width": 880,
+        "height": 760,
+        "fixtures": "scripts/smoke-fixtures-parity-news.json",
+        "capture": "home-880x760.png",
+        "clicks": [
+          "?[data-news-duo-skip]"
+        ]
+      },
+      "expect": {
+        "padding": {
+          "t": 14,
+          "r": 14,
+          "b": 14,
+          "l": 14
+        },
+        "gap": {
+          "row": 12
+        }
+      }
     },
     {
       "id": "s02-home-briefing-header",
       "note": "§02 .bhead: grid max-content 1fr max-content, gap 14; Cinder + Yappy drawn 2x (one 104x44 art canvas shown at 208x88); bubble #fffdf7, 13 px, padding 8/11, radius 10.",
-      "artifact": { "page": "news.html", "selector": "#s02 .bhead" },
-      "app": { "page": "index.html", "view": "home", "selector": ".news-briefing-head", "width": 880, "height": 760, "fixtures": "scripts/smoke-fixtures-parity-news.json", "capture": "home-880x760.png" },
-      "expect": { "gap": { "col": 14 }, "colors": ["#fffdf7", "#1d1c1a", "#56534d", "#8b877f"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s02 .bhead"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".news-briefing-head",
+        "width": 880,
+        "height": 760,
+        "fixtures": "scripts/smoke-fixtures-parity-news.json",
+        "capture": "home-880x760.png",
+        "clicks": [
+          "?[data-news-duo-skip]"
+        ]
+      },
+      "expect": {
+        "gap": {
+          "col": 14
+        },
+        "colors": [
+          "#fffdf7",
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f"
+        ]
+      }
     },
     {
       "id": "s02-home-briefing-story",
       "note": "§02 first .story: #fdfbf6, radius 10, padding 10, gap 6; tag 10 px mono #b93a26; headline 13 px/1.35 500; line 12 px/1.4 #56534d; source 10 px mono #8b877f.",
-      "artifact": { "page": "news.html", "selector": "#s02 .story" },
-      "app": { "page": "index.html", "view": "home", "selector": ".news-briefing-story", "width": 880, "height": 760, "fixtures": "scripts/smoke-fixtures-parity-news.json", "capture": "home-880x760.png" },
-      "expect": { "fontPx": [10, 12, 13], "padding": { "t": 10, "r": 10, "b": 10, "l": 10 }, "gap": { "row": 6 }, "colors": ["#fdfbf6", "#b93a26", "#1d1c1a", "#56534d", "#8b877f"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s02 .story"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".news-briefing-story",
+        "width": 880,
+        "height": 760,
+        "fixtures": "scripts/smoke-fixtures-parity-news.json",
+        "capture": "home-880x760.png",
+        "clicks": [
+          "?[data-news-duo-skip]"
+        ]
+      },
+      "expect": {
+        "fontPx": [
+          10,
+          12,
+          13
+        ],
+        "padding": {
+          "t": 10,
+          "r": 10,
+          "b": 10,
+          "l": 10
+        },
+        "gap": {
+          "row": 6
+        },
+        "colors": [
+          "#fdfbf6",
+          "#b93a26",
+          "#1d1c1a",
+          "#56534d",
+          "#8b877f"
+        ]
+      }
     },
     {
       "id": "s02-home-briefing-topics",
       "note": "§02 .bchips: 'Your topics' 12 px mono, chips 26 px tall, 12 px, padding 0 11, radius 13, on = #1d1c1a; '+ Add' plain; cadence line + Hide for today right; gap 6.",
-      "artifact": { "page": "news.html", "selector": "#s02 .bchips" },
-      "app": { "page": "index.html", "view": "home", "selector": ".news-briefing-foot", "width": 880, "height": 760, "fixtures": "scripts/smoke-fixtures-parity-news.json", "capture": "home-880x760.png" },
-      "expect": { "fontPx": [12], "gap": { "col": 6 }, "colors": ["#1d1c1a", "#ffffff", "#8b877f"] }
+      "artifact": {
+        "page": "news.html",
+        "selector": "#s02 .bchips"
+      },
+      "app": {
+        "page": "index.html",
+        "view": "home",
+        "selector": ".news-briefing-foot",
+        "width": 880,
+        "height": 760,
+        "fixtures": "scripts/smoke-fixtures-parity-news.json",
+        "capture": "home-880x760.png",
+        "clicks": [
+          "?[data-news-duo-skip]"
+        ]
+      },
+      "expect": {
+        "fontPx": [
+          12
+        ],
+        "gap": {
+          "col": 6
+        },
+        "colors": [
+          "#1d1c1a",
+          "#ffffff",
+          "#8b877f"
+        ]
+      }
     }
   ],
   "notDrawn": [
-    { "id": "s02-briefing-isometric-crop", "why": "OPEN QUESTION FOR WILSON. The item text says the News page draws the briefing in the isometric room while Companions/Decisions chose C, the layered side view. The page as it stands (2026-11-06T17:55Z redraw) draws Home with SIDE.attach (the layered side view), not iso.js, so the only crop the page offers is the side view and that is what is built and measured (s02-*). No isometric crop exists on the page to put in the sheet." },
-    { "id": "s03-refresh-cadence-setting", "why": "§03 is a table of WHEN refreshes happen (approved), not a drawing of the Settings control, so there is no artifact box to measure. Settings → Yappy News → How often stays as built by yap-1106-news-refresh-setting; its wording is checked against §03 by refreshSetting.test.tsx." },
-    { "id": "quote-feed-key-field", "why": "The page names the quote feed (§06 'a free quote feed with a key') but draws no key field. The field stays as built by yap-1106-fb-14-news-quote-key." },
-    { "id": "s02-same-story-in-each-voice", "why": "A table of example lines per voice, not a UI state; covered by the explain tests (yap-1106-news-explain)." }
+    {
+      "id": "s02-briefing-isometric-crop",
+      "why": "OPEN QUESTION FOR WILSON. The item text says the News page draws the briefing in the isometric room while Companions/Decisions chose C, the layered side view. The page as it stands (2026-11-06T17:55Z redraw) draws Home with SIDE.attach (the layered side view), not iso.js, so the only crop the page offers is the side view and that is what is built and measured (s02-*). No isometric crop exists on the page to put in the sheet."
+    },
+    {
+      "id": "s03-refresh-cadence-setting",
+      "why": "§03 is a table of WHEN refreshes happen (approved), not a drawing of the Settings control, so there is no artifact box to measure. Settings → Yappy News → How often stays as built by yap-1106-news-refresh-setting; its wording is checked against §03 by refreshSetting.test.tsx."
+    },
+    {
+      "id": "quote-feed-key-field",
+      "why": "The page names the quote feed (§06 'a free quote feed with a key') but draws no key field. The field stays as built by yap-1106-fb-14-news-quote-key."
+    },
+    {
+      "id": "s02-same-story-in-each-voice",
+      "why": "A table of example lines per voice, not a UI state; covered by the explain tests (yap-1106-news-explain)."
+    }
   ]
 }

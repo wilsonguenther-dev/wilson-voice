@@ -1,5 +1,5 @@
 {
-  "_README": "yap-1107-parity-news \u2014 daily fixtures plus the approved News page's three sample stories (design-2026-11-06/news.html \u00a702), so Home renders the briefing card in its ready state for the parity sheet. Made-up stories, no live data.",
+  "_README": "yap-1107-parity-news — daily fixtures plus the approved News page's three sample stories (design-2026-11-06/news.html §02), so Home renders the briefing card in its ready state for the parity sheet. Made-up stories, no live data. news_refresh resolves ran=false (not due) so Home falls through to news_briefing_cached; without it the refresh rejected and the card measured its error state (the batch-4 bounce: card 60.5%, header 55.8%, topics 48.6% off).",
   "get_insights": {
     "avgAsrSeconds": 0.6,
     "avgWpm": 118,
@@ -1046,5 +1046,31 @@
         "explained": true
       }
     ]
+  },
+  "news_refresh": {
+    "ran": false,
+    "skipped": "not_due",
+    "message": null,
+    "stories": [],
+    "quotes": [],
+    "view": {
+      "enabled": true,
+      "cloudConnected": true,
+      "active": true,
+      "topics": [
+        "developer",
+        "stocks",
+        "business"
+      ],
+      "tickers": [
+        "NVDA"
+      ],
+      "custom": [],
+      "offer": "accepted",
+      "onboardingStepDue": false,
+      "homeCardDue": false,
+      "cloudConnectedAtMs": 1794000000000,
+      "lastRefreshMs": 1794010000000
+    }
   }
 }

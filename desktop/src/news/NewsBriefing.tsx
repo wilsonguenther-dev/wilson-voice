@@ -42,8 +42,14 @@ import { duoAt, duoTurns, skippedArrival, type DuoFrame, type DuoTurn } from "./
 
 export type BriefingPhase = "loading" | "ready" | "empty" | "error";
 
-/** The pair, drawn at a whole-number scale (2x on the design page). */
-const PAIR_BOX = { w: 92, h: 84 };
+/**
+ * The pair, drawn at a whole-number scale (2x on the design page).
+ * yap-1107-parity-news: the approved card draws Cinder + Yappy as ONE 104x44
+ * art canvas shown at 208x88; two 104x88 boxes side by side, no gap (App.css
+ * .news-briefing-pair), give the same 208x88 footprint, so the header row is
+ * as tall as the page's.
+ */
+export const PAIR_BOX = { w: 104, h: 88 };
 
 function PairSprite({ name, talking = false }: { name: "cinder" | "yappy"; talking?: boolean }) {
   const ref = useRef<HTMLCanvasElement | null>(null);

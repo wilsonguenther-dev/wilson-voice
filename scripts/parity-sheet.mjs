@@ -68,9 +68,9 @@
  * NO npm DEPENDENCY, no Playwright. PNGs are decoded/encoded with node:zlib.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import {
@@ -325,6 +325,34 @@ tr.bad td{color:#b3261e;font-weight:600} img{background:repeating-conic-gradient
 `;
 }
 
+/* yap-1107-parity-news — where a manifest capture name lives on disk.
+   smoke-windowed.sh prefixes every file with its fixture state ("custom-" when
+   YAP_SMOKE_FIXTURES is set) and a second fixture set is a second run dir
+   (parity-news-onb-<date> next to parity-news-<date>). Order: the exact name
+   in --captures, then "<state>-<name>" there, then the same two in each
+   sibling run "<stem>-<anything>-<date>" of --captures. Pure over the disk;
+   null when nothing matches (the state then fails missing-capture). */
+export function findCapture(dir, name) {
+  if (!dir || !name) return null;
+  const inDir = (d) => {
+    if (existsSync(join(d, name))) return join(d, name);
+    let files = [];
+    try { files = readdirSync(d).filter((f) => f.endsWith("-" + name)).sort(); } catch { return null; }
+    return files.length ? join(d, files[0]) : null;
+  };
+  const own = inDir(dir);
+  if (own) return own;
+  const m = /^(.*?)-(\d{4}-\d{2}-\d{2})$/.exec(basename(dir));
+  if (!m) return null;
+  let sibs = [];
+  try { sibs = readdirSync(dirname(dir)).filter((d) => d !== basename(dir) && d.startsWith(m[1] + "-") && d.endsWith("-" + m[2])).sort(); } catch { return null; }
+  for (const d of sibs) {
+    const hit = inDir(join(dirname(dir), d));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /* ── the app side: the SAME DOM the instruments capture ────────────────── */
 
 async function newSession(cdp, w, h, scale, source) {
@@ -384,8 +412,14 @@ export async function measureApp(cdp, base, st, tones) {
        view (a Settings tab, an onboarding primary button), so a state behind a
        click is measured in the same bundle the capture walks. A selector that
        matches nothing is reported, never skipped. */
-    for (const sel of a.clicks || []) {
+    for (const raw of a.clicks || []) {
+      /* A leading "?" marks a click that only exists in a passing state (the
+         News pair's "Skip to the stories" while the joint delivery plays):
+         clicked when present, skipped when the state already moved on. */
+      const optional = raw.startsWith("?");
+      const sel = optional ? raw.slice(1) : raw;
       const hit = await evaluate(cdp, s, `(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b || b.disabled) return false; b.click(); return true; })()`);
+      if (!hit && optional) continue;
       if (!hit) return { found: false, error: "click target " + JSON.stringify(sel) + " matched nothing or was disabled" };
       await sleep(900);
     }
@@ -468,7 +502,8 @@ async function run(A) {
       let app;
       if (!base) app = { found: false, error: "no app DOM to measure (pass --app-url or --build)" };
       else app = await measureApp(cdp, base, st, tones).catch((e) => ({ found: false, error: e.message }));
-      const cap = loadPng(st.app && st.app.capture ? join(A.captures, st.app.capture) : null);
+      const capPath = st.app && st.app.capture ? findCapture(A.captures, st.app.capture) : null;
+      const cap = loadPng(capPath);
       const artPng = art && art.png ? decodePng(art.png) : null;
       const r = judgeState(st, art, app, cap, artPng);
       rows.push({ ...r, artPng });

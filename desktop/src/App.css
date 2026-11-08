@@ -4449,6 +4449,9 @@ button.primary.big {
 .news-onb-lede {
   margin: 6px 0 0;
   font-size: 13px;
+  /* the page's .note inherits body 15px/1.55: two lines at 20.15 px make the
+     row 76.17 px tall (bounced at 5.5% off with the app's own line height) */
+  line-height: 1.55;
   color: var(--news-ink-2);
 }
 .news-interests--onboarding {
@@ -4576,6 +4579,10 @@ button.primary.big {
   grid-template-columns: max-content 1fr max-content;
   gap: 14px;
   align-items: center;
+}
+.news-briefing .news-briefing-pair {
+  gap: 0;
+  align-items: flex-end;
 }
 .news-briefing .news-briefing-says {
   background: var(--news-say-bg);

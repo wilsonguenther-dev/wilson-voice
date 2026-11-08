@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { NewsBriefingView, cachedBriefing, composeBriefing } from "./NewsBriefing";
+import { NewsBriefingView, PAIR_BOX, cachedBriefing, composeBriefing } from "./NewsBriefing";
 import { buildBriefing, quietNow, type CachedStory } from "./briefing";
 import { duoAt, duoTurns } from "./duo";
 
@@ -183,5 +183,14 @@ describe("fix-l3b3-2 briefing makes no cloud call when quiet", () => {
     expect(calls).toEqual(["news_briefing_cached", "news_explain_top"]);
     expect(b!.stories).toHaveLength(3);
     expect(render({ briefing: b, movers: [] })).toContain("worth a look.");
+  });
+});
+
+describe("yap-1107-parity-news — the pair matches the approved card's duo canvas", () => {
+  it("two pair boxes side by side, no gap, make the page's 208x88 footprint at a whole-number scale", () => {
+    // news.html §02 draws Cinder + Yappy as one 104x44 art canvas shown at 208x88.
+    expect(PAIR_BOX.w * 2).toBe(208);
+    expect(PAIR_BOX.h).toBe(88);
+    expect(Number.isInteger(PAIR_BOX.w / 52) && Number.isInteger(PAIR_BOX.h / 44)).toBe(true);
   });
 });
