@@ -962,6 +962,9 @@ export default function YappyPill(
       // so this canvas draws no second capsule and no second Yappy beside it.
       // The hitbox is the scene's box, so drag and hover still land on the pill.
       if (lay && lay.sceneCharacter) {
+        // integrate(yap-1107-parity-pill): this branch draws no scene, so keep the
+        // cached sky current here (as the side dock does) and <html data-sky> set.
+        sky.current(performance.now());
         reportPillHitbox(lay.char.x, lay.char.y, lay.char.w, lay.char.h);
       } else {
       reportPillHitbox(x0, y0, capW, capH);
