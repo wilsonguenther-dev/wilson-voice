@@ -497,6 +497,16 @@ fn reject(reason: &'static str) -> Option<String> {
     None
 }
 
+/// How many times the run in progress on this thread rejected for `reason`.
+fn run_rejected_count(reason: &str) -> usize {
+    RUN_REJECTIONS.with(|tally| {
+        tally
+            .borrow()
+            .as_ref()
+            .map_or(0, |t| t.get(reason).copied().unwrap_or(0))
+    })
+}
+
 /// Whether the run in progress on this thread rejected anything for `reason`.
 fn run_rejected(reason: &str) -> bool {
     RUN_REJECTIONS.with(|tally| {
@@ -2658,6 +2668,9 @@ fn summarize_run(
     // Arm E: every item is grounded against the segment it CITES (+-1), and
     // the Summary is written last, in one pass, from what survived.
     let mut commitments: Vec<CommitmentLine> = Vec::new();
+    // Arm E: "refused as a re-transcript" means the ONE Summary pass was, not
+    // an earlier headline paragraph nobody was going to show.
+    let v8_before = run_rejected_count("v8_verbatim");
     let narrative = if items_first {
         let failed_actions = ground_items_in_window(&mut actions, &lines);
         commitments = commitment_lines(&failed_actions, &lines);
@@ -2683,7 +2696,12 @@ fn summarize_run(
     if client.cancelled() {
         return Err(SummaryError::Cancelled);
     }
-    let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
+    let verbatim_refused = narrative.trim().is_empty()
+        && if items_first {
+            run_rejected_count("v8_verbatim") > v8_before
+        } else {
+            run_rejected("v8_verbatim")
+        };
     let markdown = if items_first {
         render_notes_items_first(
             &headline,
