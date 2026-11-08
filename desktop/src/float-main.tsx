@@ -127,6 +127,7 @@ import {
   matrixPhases,
   matrixDragBlobScene,
   matrixFriendVisitScene,
+  matrixLaunchWalkScene,
   matrixStuckEngineScenes,
   type ForcedPill,
 } from "./pill/forced";
@@ -309,6 +310,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixDragBlobScene(),
     // yap-1106-friend-visits — Tidy visiting a resting pill.
     matrixFriendVisitScene(),
+    // yap-1107-parity-companions — the launch walk's first frame (s06), Yappy at the bottom dock.
+    matrixLaunchWalkScene(),
     // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
     ...matrixStuckEngineScenes(),
   ];

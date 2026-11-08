@@ -9,7 +9,9 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- node builtin, untyped here (no @types/node); the test runs under Node.
 import { readFileSync } from "node:fs";
-import { SCENE_H, SCENE_W, YAPPY_X } from "./launchWalk";
+import { SCENE_H, SCENE_W, YAPPY_X, forcedLaunchWalk } from "./launchWalk";
+import { matrixLaunchWalkScene } from "./forced";
+import { PHASE_ID } from "./live";
 import { FRIENDS, SPRITE_NAMES } from "../sprites/art";
 import { STUDIO_H, STUDIO_W } from "../home/studio/studio";
 
@@ -62,26 +64,59 @@ describe("parity-companions: the studio (s03, option C)", () => {
 });
 
 describe("parity-companions: the manifest", () => {
-  it("lists every state the approved page shows, each with an artifact selector, an app target and a measured box", () => {
-    const m = JSON.parse(read("../../../docs/loop/evidence/parity-companions.manifest.json")) as {
-      states: { id: string; artifact: { page: string; selector: string }; app: { page: string; selector: string }; expect: { w: number; h: number } }[];
-    };
+  type State = { id: string; artifact: { page: string; selector: string }; app: { page: string; selector: string; query?: string; capture: string }; expect: { w: number; h: number } };
+  const m = JSON.parse(read("../../../docs/loop/evidence/parity-companions.manifest.json")) as {
+    designDir?: string; states: State[]; excluded: { id: string; selector: string; why: string }[];
+  };
+
+  it("lists every drawn app state of the approved page, each with an artifact selector, an app target and a measured box", () => {
+    // batch-1 bounce: designDir was a literal non-path string — the default design dir is used instead.
+    expect(m.designDir).toBeUndefined();
     const ids = m.states.map((s) => s.id);
-    for (const want of [
-      "s02-detail-art", "s03-studio-side-view", "s04-who-sits-in-pill", "s05-three-voices", "s05-reaction-words",
-      "s06-launch-walk-frame", "s06-launch-walk-2x", "s07-reactions-while-talking", "s08-cinder-sal-mochi",
-      "s09-sky-a-today", "s09-sky-c-day", "s09-hoot-in-pill", "s09-friend-visit",
-    ]) expect(ids).toContain(want);
+    expect(ids).toEqual(["s03-studio-side-view", "s06-launch-walk-frame", "s09-sky-c-day", "s09-hoot-in-pill", "s09-hoot-meeting", "s09-friend-visit"]);
     for (const s of m.states) {
       expect(s.artifact.page).toBe("companions.html");
       expect(s.artifact.selector.length).toBeGreaterThan(0);
       expect(s.app.selector.length).toBeGreaterThan(0);
+      expect(s.app.capture.length).toBeGreaterThan(0);
       expect(s.expect.w).toBeGreaterThan(0);
       expect(s.expect.h).toBeGreaterThan(0);
+      // batch-1 bounce: a selector no app source carries, and a dock the matrix never shoots.
+      expect(s.app.selector).not.toContain("yappy-capsule-box");
+      if (s.app.query) expect(new URLSearchParams(s.app.query).get("dock")).toBe("bottom");
     }
     const walk = m.states.find((s) => s.id === "s06-launch-walk-frame")!;
     expect([walk.expect.w, walk.expect.h]).toEqual([SCENE_W, SCENE_H]);
+    expect(new URLSearchParams(walk.app.query).get("walk")).toBe("0");
     const studio = m.states.find((s) => s.id === "s03-studio-side-view")!;
     expect([studio.expect.w, studio.expect.h]).toEqual([STUDIO_W * 3, STUDIO_H * 3]);
+    const visit = m.states.find((s) => s.id === "s09-friend-visit")!;
+    expect(new URLSearchParams(visit.app.query).get("friend")).toBe("tidy");
+  });
+
+  it("names every design-page exhibit it does not measure, with the reason", () => {
+    const shown = [...m.states.map((s) => s.id), ...m.excluded.map((e) => e.id)];
+    for (const want of [
+      "s02-detail-art", "s03-studio-side-view", "s04-who-sits-in-pill", "s05-three-voices", "s05-reaction-words",
+      "s06-launch-walk-frame", "s06-launch-walk-2x", "s07-reactions-while-talking", "s08-cinder-sal-mochi", "s08-cast",
+      "s09-sky-a-today", "s09-sky-c-day", "s09-hoot-in-pill", "s09-hoot-meeting", "s09-friend-visit",
+    ]) expect(shown).toContain(want);
+    for (const e of m.excluded) expect(e.why.length).toBeGreaterThan(20);
+  });
+});
+
+describe("parity-companions: the launch walk is a matrix row", () => {
+  it("matrixLaunchWalkScene forces the walk's first frame for Yappy at the bottom dock, no meeting", () => {
+    const row = matrixLaunchWalkScene();
+    expect(row.id).toBe("launch-walk");
+    expect(row.phase).toBe("model-loading");
+    expect(row.phaseId).toBe(PHASE_ID["model-loading"]);
+    expect(row.query).toBe("walk=0");
+    expect(row.characters).toEqual(["yappy"]);
+    expect(row.docks).toEqual(["bottom"]);
+    expect(row.meetings).toEqual(["none"]);
+    // the forced pill mounts the walk only when walk= is in the query
+    expect(forcedLaunchWalk("?" + row.query)).not.toBeNull();
+    expect(forcedLaunchWalk("?phase=model_loading")).toBeNull();
   });
 });

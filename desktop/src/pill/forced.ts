@@ -413,3 +413,35 @@ export function matrixFriendVisitScene(): MatrixOfferRow {
     label: v.label,
   };
 }
+
+/**
+ * yap-1107-parity-companions — the launch walk's first storyboard frame
+ * (companions.html s06, "Starting · 0%": Yappy steps out of his house) as a
+ * matrix row: `float.html?phase=model_loading&walk=0` (see `forcedLaunchWalk`
+ * in launchWalk.ts). The approved page draws the walk only for Yappy, at the
+ * bottom dock, with no meeting (a meeting suppresses the walk), so the row is
+ * photographed only there — `characters`, `docks` and `meetings` narrow the
+ * matrix loops (scripts/pill-matrix.mjs). The capture is
+ * launch-walk__yappy__bottom__none.png, the app column of the parity sheet.
+ */
+export interface MatrixNarrowRow extends MatrixOfferRow {
+  characters: readonly string[];
+  docks: readonly string[];
+  meetings: readonly string[];
+}
+
+export function matrixLaunchWalkScene(): MatrixNarrowRow {
+  const v = phaseVisual("model-loading");
+  return {
+    phase: "model-loading",
+    id: "launch-walk",
+    phaseId: PHASE_ID["model-loading"],
+    query: "walk=0",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+    characters: ["yappy"],
+    docks: ["bottom"],
+    meetings: ["none"],
+  };
+}

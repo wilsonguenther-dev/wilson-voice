@@ -314,6 +314,12 @@ function __pillDetect(want) {
       else if (!fv) bad.push("no [data-friend-visit=tidy] visitor");
       else { const cv = fv.querySelector("canvas"); if (!cv || !cv.width || !cv.height) bad.push("friend visit canvas not painted"); }
     }
+    // yap-1107-parity-companions — the launch-walk scene must paint the walk's 196 x 44 canvas.
+    if (want.id === "launch-walk") {
+      const cv = document.querySelector(".launch-walk-canvas");
+      if (!cv) bad.push("no .launch-walk-canvas (the forced walk did not mount)");
+      else if (!cv.width || !cv.height) bad.push("launch walk canvas not painted");
+    }
     // yap-1106-stuck-pill-keeps-its-scene — a stuck/restarting engine keeps the
     // FULL scene: the health applied, its plain-words label shown, the stage
     // marked full, a non-empty painted canvas, and Yappy's box inside it.
@@ -753,9 +759,11 @@ async function run() {
     console.log("pill-matrix: " + todo.length + " phase(s) x " + DOCKS.length + " docks x " + CHARACTERS.length + " characters x " + MEETINGS.length + " meeting states, legacy " + W + "x" + H + " / one-pill sized to its layout, @" + SCALE + "x -> " + outDir);
     const skies = ARGS.sky === "all" ? SKY_TIMES : [ARGS.sky];
     for (const sky of skies) for (const p of todo) {
-      for (const character of CHARACTERS) {
-        for (const dock of DOCKS) {
-          for (const meeting of MEETINGS) {
+      // yap-1107-parity-companions — a row may narrow the loops (the launch walk is
+      // drawn only for Yappy, at the bottom dock, with no meeting).
+      for (const character of p.characters || CHARACTERS) {
+        for (const dock of p.docks || DOCKS) {
+          for (const meeting of p.meetings || MEETINGS) {
             const q = "?phase=" + encodeURIComponent(p.phase) + "&pill=" + character + "&dock=" + dock + "&meeting=" + meeting + "&sky=" + sky + (p.license ? "&license=" + encodeURIComponent(p.license) : "") + (p.query ? "&" + p.query : "");
             cdp.errors.set(s, []);
             await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
