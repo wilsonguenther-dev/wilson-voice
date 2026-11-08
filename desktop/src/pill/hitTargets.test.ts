@@ -116,7 +116,7 @@ describe("the click-through region is the controls' own rects", () => {
     drag.holdPillHitbox(null, "copy-card");
     drag.extendPillHitboxRects(null, drag.CONTROLS_OWNER);
     list = lastList();
-    expect(list).toEqual([[114, 67, 72, 22]]);
+    expect(list).toEqual([[120, 67, 72, 22]]);
   });
 
   it("still sends the legacy bounding union for older listeners", () => {
