@@ -5,13 +5,6 @@
   "source": "measured with node scripts/parity-crops.mjs --page companions.html (headless Chrome, 2x, frame 1200 ms); crops in docs/smoke-shots/parity-companions-2026-11-07/artifact/ (scratch, gitignored)",
   "frameMs": 1200,
   "sheet": "docs/loop/evidence/parity-companions-<date>.html (written by the integrator step with node scripts/parity-sheet.mjs)",
-  "blockedBy": {
-    "yap-1106-main-character-switch": [
-      "s04-who-sits-in-pill",
-      "s09-hoot-in-pill",
-      "s09-hoot-meeting"
-    ]
-  },
   "states": [
     {
       "id": "s02-detail-art",
@@ -315,7 +308,7 @@
         ]
       },
       "artifactSprites": [],
-      "note": "BLOCKED: yap-1106-main-character-switch was reverted from main (73b77232); Companion.tsx PILL_STYLE_CHOICES offers Yappy only. Needs that item first."
+      "note": "Settings > Companion > Who sits in the pill: PILL_STYLE_CHOICES in desktop/src/views/settings/Companion.tsx offers Yappy (default), Hoot, Tidy, Gulp, Shelly; Ember, Sal and Mochi are room-only (not offered), exactly the approved rules text. Measured against the artifact by the integrator step."
     },
     {
       "id": "s05-three-voices",
@@ -1003,7 +996,7 @@
           ]
         }
       ],
-      "note": "BLOCKED: needs yap-1106-main-character-switch (reverted); the registry has no hoot pill character and pill-matrix CHARACTERS=[yappy]."
+      "note": "Hoot sits in the one pill stage (pill/occupant.ts). Approved page draws him BARE while listening (hootWorld({ bare: true })): occupantSpriteOpt('hoot') = { bare: true } (pill/occupant.ts), passed through drawFriendFrame(..., extra) (sprites/friends.ts); test parity_hoot_occupant_is_bare_while_listening_and_phones_on_in_a_meeting. pill-matrix CHARACTERS includes hoot."
     },
     {
       "id": "s09-hoot-meeting",
@@ -1070,7 +1063,7 @@
           "palette": []
         }
       ],
-      "note": "BLOCKED: same dependency."
+      "note": "Hoot records the meeting himself with his OWN headphones (approved hootWorld({})): MeetingWorld drawMainFriend draws his whole 40x40 sprite at 1:1 at SCENE_LAYOUT.hootMain (x 54, y 0; centred on Yappy's cx 74, inside the 112x40 buffer), no extra generic band, and the recording light is his own right ear cup SCENE_LAYOUT.hootCup (84,15,4x7). Was a fractional 40->24 squeeze plus a second headphone band. Tests parity_hoot_records_the_meeting_at_1x_whole_inside_the_scene, parity_hoot_meeting_recording_light_is_his_own_right_ear_cup."
     },
     {
       "id": "s09-friend-visit",
@@ -1136,7 +1129,11 @@
           "palette": []
         }
       ],
-      "note": "Visitor landed (pill/FriendVisit.tsx, 28 px box beside the capsule); the artifact draws the visitor inside the window next to the main character, which needs the main-character switch. Quiet rule (no visitor during a meeting) is asserted by pill-matrix."
+      "note": "Visitor landed (pill/FriendVisit.tsx, --friend-visit-box 28 px beside the capsule). The artifact draws the visitor inside the window next to the main character (Yappy at cx + 26 beside Hoot). The integrator's --check measures this row; a delta over 3 percent bounces it with the sheet row. Quiet rule (no visitor during a meeting) is asserted by pill-matrix."
     }
-  ]
+  ],
+  "updatedAt": "2026-11-08T07:52:20Z",
+  "resolved": {
+    "yap-1106-main-character-switch": "re-landed in origin/loop3/integration-2 (3faf2b8e, 5664dc31, 7c86d631); s04, s09-hoot-in-pill and s09-hoot-meeting are no longer blocked"
+  }
 }

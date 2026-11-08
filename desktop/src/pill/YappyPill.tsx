@@ -499,7 +499,8 @@ export default function YappyPill(
       // a lift budget (a smaller hop) so he stays whole at the bigger scale.
       // yap-1106-main-character-switch — a friend in the pill stands in Yappy's
       // box (pill/occupant.ts); Yappy (or no friend) is the chick as before.
-      if (!drawOccupant(octx, occupantRef.current, gateRef.current, A, performance.now(), reduce)) drawChick(cx, feet, clampChickPose(A, A.lift));
+      // yap-1107-parity-companions — Hoot listens bare and wears his headphones only while a meeting records.
+      if (!drawOccupant(octx, occupantRef.current, gateRef.current, A, performance.now(), reduce, meetingRef.current)) drawChick(cx, feet, clampChickPose(A, A.lift));
       // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
       // wood grain + edge highlight, carriage, return levers, keys that light in
       // sequence, a bouncing page, and a mug + pencils on the left.

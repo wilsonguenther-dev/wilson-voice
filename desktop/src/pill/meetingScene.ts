@@ -59,6 +59,18 @@ export const SCENE_LAYOUT = {
   main: { x: 62, y: 11, size: 24 },
   /** That friend's right ear cup — the recording light. */
   mainCup: { x: 87, y: 19, w: 4, h: 6 },
+  /**
+   * yap-1107-parity-companions — Hoot in the pill records the meeting himself
+   * (companions.html s04, "Meeting: Hoot records it himself, headphones on"):
+   * the page stamps his whole 40 x 40 sprite at 1:1 where Yappy stands
+   * (`FR.stamp(o, "hoot", cx - 20, feet - 38)`), wearing the sprite's OWN
+   * headphones. Whole-number scale (never the 24 px squeeze), centred on
+   * Yappy's cx 74, his feet row (sprite row 36) on Yappy's feetY 36, so all
+   * 40 rows sit inside the 40-row buffer.
+   */
+  hootMain: { x: 54, y: 0, size: 40 },
+  /** His own right ear cup (sprite cx + 10, cy - 8, 4 x 7) — the recording light. */
+  hootCup: { x: 84, y: 15, w: 4, h: 7 },
 } as const;
 
 /**
@@ -193,7 +205,7 @@ export function meetingScene(i: MeetingSceneInput): MeetingSceneModel {
   const handover = i.handover === true;
   const pose: YappyMeetingPose = i.dictating ? "notepad" : isGlancing(s, i) ? "glance" : "listening";
   const cast = meetingCast(i.occupant);
-  const cup = cast.main === "yappy" ? SCENE_LAYOUT.cup : SCENE_LAYOUT.mainCup;
+  const cup = cast.main === "yappy" ? SCENE_LAYOUT.cup : cast.main === "hoot" ? SCENE_LAYOUT.hootCup : SCENE_LAYOUT.mainCup;
   return {
     sky: skyPhase(s),
     sun,
