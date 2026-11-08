@@ -783,6 +783,10 @@
   margin-inline-start: auto;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+}
+.people-stepper:focus-visible {
+  outline: 2px solid var(--accent-action);
+  outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
 .people-stepper button {

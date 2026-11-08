@@ -524,8 +524,7 @@ export function MeetingPeopleSlot({ meetingId, attendees = null }: { meetingId: 
     });
   };
   return (
-    // A click here never reaches the capsule's toggle: PillShell skips clicks inside .rec-people.
-    <span className="rec-people">
+    <span className="rec-people" onClick={(e) => e.stopPropagation()}>
       <PeopleStepper compact value={people} attendees={attendees} onChange={changePeople} />
     </span>
   );

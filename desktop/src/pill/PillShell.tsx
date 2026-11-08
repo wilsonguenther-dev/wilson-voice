@@ -453,12 +453,7 @@ export default function ClassicPill(
           // Moving focus between the capsule and its own rail keeps it open.
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false);
         }}
-        onClick={(e) => {
-          // yap-1106-fb-23 — the People stepper sits inside the capsule; a press
-          // on it (buttons or label) sets the count and never toggles a take.
-          if ((e.target as Element | null)?.closest?.(".rec-people")) return;
-          onToggle();
-        }}
+        onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
