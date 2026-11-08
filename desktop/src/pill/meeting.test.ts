@@ -695,6 +695,15 @@ describe("the pill's 'Writing notes' always clears (yap-1107-pill-writing-notes-
       expect(meetingAfterView(reduceMeetingPill(p, ev("m1", "summarizing", { percent: 100 })), "idle")?.label).toBe("Writing notes");
       // Store done while stalled => rest.
       expect(toRest(reduceMeetingPill(p, reconcile([job("m1", "notes_ready")])))).toEqual(MEETING_PILL_IDLE);
+      // Under a stacked meeting's saved beat the stall reaches the road beneath it,
+      // and a stall for another meeting leaves the beat as it is.
+      const beat: MeetingPillPhase = { kind: "saved", id: "m2", until: 20_000_000, elapsedS: 5, next: writing };
+      const stalledBeat = reduceMeetingPill(beat, { type: "stall", id: "m1" });
+      expect(stalledBeat).toEqual({ ...beat, next: { ...writing, stalled: true } });
+      expect(reduceMeetingPill(beat, { type: "stall", id: "m9" })).toBe(beat);
+      // The re-checks stay armed for the road under the beat.
+      expect(notesWritingId(beat)).toBe("m1");
+      expect(notesWritingId({ ...beat, next: MEETING_PILL_IDLE })).toBeNull();
     } finally {
       vi.useRealTimers();
     }
