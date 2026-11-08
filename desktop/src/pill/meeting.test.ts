@@ -38,6 +38,9 @@ import {
   NOTES_STALL_MS,
   notesWritingId,
   STILL_WRITING_LABEL,
+  STILL_WRITING_SHORT,
+  NOTES_FAILED_SHORT,
+  MEETING_FAILED_SHORT,
   type NotesJobSnapshot,
 } from "./meeting";
 import { MEETING_PROGRESS_EVENT as DECLARED_PROGRESS_EVENT } from "../meetings/progress";
@@ -222,7 +225,7 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
       progress({ state: "summarizing", percent: 100 }),
       progress({ state: "notes_failed", percent: 0, error: "The notes model could not be downloaded." }),
     ]);
-    expect(failed[1]).toEqual({ kind: "failed", id: "m1", sentence: "The notes model could not be downloaded." });
+    expect(failed[1]).toEqual({ kind: "failed", id: "m1", sentence: "The notes model could not be downloaded.", notes: true });
     const cancelled = run([
       progress({ state: "notes_queued", percent: 0 }),
       progress({ state: "notes_cancelled", percent: 0 }),
@@ -293,7 +296,9 @@ describe("the pill after a meeting stops (yap24-NT7)", () => {
     expect(p1.kind).toBe("processing");
     expect(p2).toEqual({ kind: "failed", id: "m1", sentence: why });
     const view = meetingAfterView(p2, "idle");
-    expect(view?.label).toBe(why);
+    // yap-1107 — short words on the pill; the sentence is the tooltip + name.
+    expect(view?.label).toBe(MEETING_FAILED_SHORT);
+    expect(view?.title).toBe(why);
     expect(view?.opens).toBe(true);
     // A failure the backend did not explain is still a sentence, never blank.
     const [blank] = run([progress({ state: "failed", error: null })]);
@@ -458,7 +463,8 @@ describe("the Saved stop beat has a real slot (fix-b8-1-meeting-saved-beat-gets-
     const saved = stop();
     const failed = reduceMeetingPill(saved, progress({ state: "failed", error: "The recording could not be read." }, T0 + 100));
     expect(failed).toEqual({ kind: "failed", id: "m1", sentence: "The recording could not be read." });
-    expect(meetingAfterView(failed, "idle")?.label).toBe("The recording could not be read.");
+    expect(meetingAfterView(failed, "idle")?.label).toBe(MEETING_FAILED_SHORT);
+    expect(meetingAfterView(failed, "idle")?.title).toBe("The recording could not be read.");
     // Folded first, failed second: the failure still wins inside the hold.
     const folded = reduceMeetingPill(saved, progress({ percent: 3 }, T0 + 50));
     expect(folded.kind).toBe("saved");
@@ -652,7 +658,7 @@ describe("the pill's 'Writing notes' always clears (yap-1107-pill-writing-notes-
     expect(toRest(done)).toEqual(MEETING_PILL_IDLE);
     // Store failed: the worker's own sentence, then rest.
     const failed = reduceMeetingPill(writing, reconcile([job("m1", "notes_failed", "The notes model could not start.")]));
-    expect(failed).toEqual({ kind: "failed", id: "m1", sentence: "The notes model could not start." });
+    expect(failed).toEqual({ kind: "failed", id: "m1", sentence: "The notes model could not start.", notes: true });
     expect(toRest(failed)).toEqual(MEETING_PILL_IDLE);
     // Cancelled in the store, or no job at all (the worker restarted): rest.
     expect(toRest(reduceMeetingPill(writing, reconcile([job("m1", "notes_cancelled")])))).toEqual(MEETING_PILL_IDLE);
@@ -686,7 +692,11 @@ describe("the pill's 'Writing notes' always clears (yap-1107-pill-writing-notes-
       vi.advanceTimersByTime(1);
       clearTimeout(t);
       const view = meetingAfterView(p, "idle");
-      expect(view?.label).toBe(STILL_WRITING_LABEL);
+      // yap-1107 bounce fix — the pill shows the short words (the sentence
+      // measured 176 px, off the 300 px window); the full sentence is the
+      // tooltip and the accessible name of the button the tap lands on.
+      expect(view?.label).toBe(STILL_WRITING_SHORT);
+      expect(view?.title).toBe(STILL_WRITING_LABEL);
       expect(STILL_WRITING_LABEL).toBe("Still writing... tap to open notes");
       expect(view?.opens).toBe(true);
       expect(view?.id).toBe("m1");
@@ -788,5 +798,38 @@ describe("the pill's 'Writing notes' always clears (yap-1107-pill-writing-notes-
     expect(notesWritingId(p)).toBe("m2");
     p = reduceMeetingPill(p, reconcile([job("m1", "notes_ready"), job("m2", "notes_ready")]));
     expect(toRest(p)).toEqual(MEETING_PILL_IDLE);
+  });
+});
+
+describe("yap-1107 bounce fix — the pill's words fit the 300 px window", () => {
+  // pill-matrix --phase meeting-notes measured "Notes ready — Open" inside the
+  // window on every dock, and "Still writing... tap to open notes" (176 px) and
+  // a worker's failure sentence (543 px) off it. Every after-view label is held
+  // to the approved "Notes ready — Open" length; long sentences live in title.
+  const BUDGET = "Notes ready — Open".length;
+  const long = "the transcript changed while the notes were being written. Press Retry notes to write them again.";
+  const views = [
+    meetingAfterView({ kind: "processing", id: "m1", percent: 100, step: "summarizing", stalled: true }, "idle"),
+    meetingAfterView({ kind: "failed", id: "m1", sentence: long, notes: true }, "idle"),
+    meetingAfterView({ kind: "failed", id: "m1", sentence: long }, "idle"),
+  ];
+
+  it("short words on the pill, the full sentence as tooltip and accessible name", () => {
+    expect(views.map((v) => v?.label)).toEqual([STILL_WRITING_SHORT, NOTES_FAILED_SHORT, MEETING_FAILED_SHORT]);
+    expect(views.map((v) => v?.title)).toEqual([STILL_WRITING_LABEL, long, long]);
+    for (const v of views) {
+      expect(v?.label.length ?? 99).toBeLessThanOrEqual(BUDGET);
+      expect(v?.opens).toBe(true);
+    }
+  });
+
+  it("the 22:06Z notes failure says 'Notes failed — Open' and keeps the worker's sentence", () => {
+    const failed = reduceMeetingPill(
+      { kind: "processing", id: "fbd4eea9", percent: 100, step: "summarizing" },
+      { type: "progress", event: { id: "fbd4eea9", state: "notes_failed", percent: 0, processedThroughSeconds: 0, durationSeconds: 0, error: long } },
+    );
+    const view = meetingAfterView(failed, "idle");
+    expect(view?.label).toBe(NOTES_FAILED_SHORT);
+    expect(view?.title).toBe(long);
   });
 });

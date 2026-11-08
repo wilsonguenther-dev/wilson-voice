@@ -231,7 +231,7 @@ export type MeetingPillPhase =
    */
   | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing"; stalled?: true }
   | { kind: "notes-ready"; id: string }
-  | { kind: "failed"; id: string; sentence: string }
+  | { kind: "failed"; id: string; sentence: string; notes?: true }
   /**
    * yap24-NT2 R3 — the job ended `waiting_for_model`: no work is running, the
    * audio is kept, and a model download requeues it. Held like a result, so
@@ -287,6 +287,21 @@ export const NOTES_RECHECK_MS = 5_000;
 export const NOTES_RECHECK_SLOW_MS = 30_000;
 /** yap-1107 — the pill's words once notes have gone quiet for NOTES_STALL_MS. */
 export const STILL_WRITING_LABEL = "Still writing... tap to open notes";
+/**
+ * yap-1107 (bounce fix, batch 4) — the WORDS ON the pill for the same two
+ * moments. The pill window is 300 px (float_pill.rs PILL_W) and the clock slot
+ * holds about as much as the approved "Notes ready — Open" (pill.html: short
+ * words + Open; "Failed, Retry"): the full "Still writing... tap to open
+ * notes" measured 176 px and a worker's failure sentence 543 px, both off the
+ * window on every dock (pill-matrix --phase meeting-notes clipped-text). So the
+ * pill shows the short words and the full sentence is the tooltip and the
+ * accessible name, the same split the "waiting" badge already uses.
+ */
+export const STILL_WRITING_SHORT = "Still writing…";
+/** yap-1107 — a notes failure on the pill (the worker's sentence is the tooltip). */
+export const NOTES_FAILED_SHORT = "Notes failed — Open";
+/** yap-1107 — any other meeting failure on the pill (its sentence is the tooltip). */
+export const MEETING_FAILED_SHORT = "Failed — Open";
 /**
  * yap-1107 — the `meeting:progress` state `delete_meeting` emits (Rust
  * `summary_jobs::MEETING_DELETED_STATE`): any pill phase about that id clears.
@@ -428,7 +443,7 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
           // The transcript stands; the sentence is the notes worker's reason,
           // and the pill opens the meeting page that carries "Retry notes".
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
-          return { kind: "failed", id: e.id, sentence };
+          return { kind: "failed", id: e.id, sentence, notes: true };
         }
         case "failed": {
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
@@ -554,14 +569,18 @@ export function meetingAfterView(phase: MeetingPillPhase, dictation: LivePhase):
       if (phase.step === "summarizing" && phase.stalled) {
         // yap-1107 — notes went quiet for NOTES_STALL_MS: say so, and let the
         // tap open that meeting (its page shows where the notes are).
-        return { kind: "processing", id: phase.id, label: STILL_WRITING_LABEL, title: "Notes are taking longer than usual — open the meeting to see them", percent: 100, opens: true };
+        // Short words on the pill; the full sentence is the tooltip + name.
+        return { kind: "processing", id: phase.id, label: STILL_WRITING_SHORT, title: STILL_WRITING_LABEL, percent: 100, opens: true };
       }
       return { kind: "processing", id: phase.id, label, title: `${label} — your meeting notes are on their way`, percent: phase.step === "summarizing" ? 100 : Math.min(99, phase.percent), opens: false };
     }
     case "notes-ready":
       return { kind: "notes-ready", id: phase.id, label: "Notes ready — Open", title: "Meeting notes ready — open them in Yap", percent: null, opens: true };
     case "failed":
-      return { kind: "failed", id: phase.id, label: phase.sentence, title: phase.sentence, percent: null, opens: true };
+      // yap-1107 — short words on the pill (a sentence runs off the 300 px
+      // window); the sentence — what went wrong, what to do — is the tooltip
+      // and the accessible name, and the tap opens the page with Retry.
+      return { kind: "failed", id: phase.id, label: phase.notes ? NOTES_FAILED_SHORT : MEETING_FAILED_SHORT, title: phase.sentence, percent: null, opens: true };
     case "waiting":
       // Short words in the pill (the Meetings view's own label); the full
       // sentence — what to do next — is the tooltip and accessible name.

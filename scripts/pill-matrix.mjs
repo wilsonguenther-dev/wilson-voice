@@ -560,7 +560,11 @@ async function meetingNotesScene(cdp, base, phases, outDir) {
   const emit = (state, over) => evaluate(cdp, s, "window.__YAP_MATRIX_PROGRESS__ ? window.__YAP_MATRIX_PROGRESS__(" + ev(state, over) + ") : 0");
   const job = (phase, reason = null) => [{ id: ID, phase, percent: phase === "notes_ready" ? 100 : 0, reason }];
   const FAIL = "the transcript changed while the notes were being written. Press Retry notes to write them again.";
-  const LABELS = ["Writing notes", "Still writing... tap to open notes", "Notes ready", FAIL];
+  // The pill shows short words (the after slot is CLOCK_W.after = 184 px of a
+  // 300 px window); the full sentences are the tooltip / accessible name, and
+  // the text read below includes [title] and [aria-label], so both are checked.
+  const LABELS = ["Writing notes", "Still writing", "Notes ready", "Notes failed", FAIL];
+  const visible = (sel) => evaluate(cdp, s, "(() => { const el = document.querySelector('.meeting-after-label'); return el ? el.innerText : ''; })()").then((t) => String(t).includes(sel));
   const captures = [];
   for (const dock of DOCKS) {
     const shot = async (step, want, gone = []) => {
@@ -600,7 +604,8 @@ async function meetingNotesScene(cdp, base, phases, outDir) {
     await sleep(500);
     await shot("4-writing-notes", ["Writing notes"]);
     await sleep(1500); // the (shortened) 90 s stall timer fires
-    await shot("5-still-writing", ["Still writing... tap to open notes"]);
+    await shot("5-still-writing", ["Still writing\u2026", "Still writing... tap to open notes"]);
+    if (!(await visible("Still writing\u2026"))) captures[captures.length - 1].findings.push({ id: "notes-label-missing", detail: "5-still-writing: the visible pill label is not \"Still writing\u2026\"" });
     // The terminal event is LOST: only the store says done; a focus re-reads it.
     await store(job("notes_ready"));
     await evaluate(cdp, s, "window.dispatchEvent(new Event('focus'));true");
@@ -618,7 +623,8 @@ async function meetingNotesScene(cdp, base, phases, outDir) {
     await store(job("notes_failed", FAIL));
     await emit("notes_failed", { error: FAIL });
     await sleep(400);
-    await shot("9-failed", [FAIL], ["Writing notes"]);
+    await shot("9-failed", ["Notes failed \u2014 Open", FAIL], ["Writing notes"]);
+    if (!(await visible("Notes failed \u2014 Open"))) captures[captures.length - 1].findings.push({ id: "notes-label-missing", detail: "9-failed: the visible pill label is not \"Notes failed \u2014 Open\"" });
     await sleep(1400);
     await shot("10-rest-after-failed", [], LABELS);
   }

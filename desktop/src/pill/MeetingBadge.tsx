@@ -434,7 +434,8 @@ export default function MeetingBadge({
 
 /**
  * yap24-NT7 — after stop: "Transcribing 42%" with a bar, "Notes ready — Open",
- * or the failure's own sentence. Character-agnostic DOM, rendered by both
+ * or short failure words (yap-1107: the failure's own sentence is the tooltip
+ * and accessible name; a sentence does not fit the 300 px window). Character-agnostic DOM, rendered by both
  * capsules through the same component (Y5-K: the shell owns phases, a
  * character only owns art). The bar is a CSS custom property, not a timer.
  */
@@ -461,6 +462,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
         data-meeting-phase={view.kind}
         title={view.title}
         aria-label={view.title}
+        style={style}
         onClick={(e) => {
           e.stopPropagation();
           onOpen(view.id);
