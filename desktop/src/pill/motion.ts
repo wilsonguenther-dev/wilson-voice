@@ -147,6 +147,12 @@ export const DURATION = {
   bubbleOut: 120,
   /** Reduce motion: every change becomes one short crossfade. */
   reducedCrossfade: 100,
+  /**
+   * yap-1106-fb-02-pill-first-click — how long pill/hitTargets.ts coalesces a
+   * burst of DOM/resize changes before it re-measures the controls' hit rects:
+   * about one frame, so a control that moves is clickable where it is drawn.
+   */
+  measureCoalesce: 16,
 } as const;
 
 /**

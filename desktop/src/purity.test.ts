@@ -49,6 +49,7 @@ const ADAPTERS: Record<string, string> = {
   "pill/characters/registry.ts": "registers Yappy, whose transitional canvas stage (pill/YappyPill.tsx, lazily imported) listens to the backend",
   "pill/drag.ts": "moves the float window through invoke(); its hit-box math is tested on its own",
   "pill/usePartialTranscript.ts": "listens for transcript_partial over listen(); its rules are pure in pill/partialTranscript.ts",
+  "pill/hitTargets.ts": "publishes every pill control's drawn rect as hit area and logs pill.click through invoke(); its padding math is tested on its own",
   "updater.ts": "the check_for_update / install_update commands",
 };
 
