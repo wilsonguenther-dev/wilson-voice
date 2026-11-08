@@ -1,0 +1,12 @@
+# 2026-11-08T04:39:01Z  yap-1107-landing-page-tells-the-truth
+$ grep -rniE 'social|friend|visit|relay|presence|whisper|gguf|metal|ggml|parakeet|core ?ml|groq|openai|gpt|gemini|anthropic|claude|llama|qwen|deepgram|elevenlabs|mistral|test channel|yap test|followers|✨|new' site/dist/*.html site/dist/*.css
+site/dist/terms.html:36:  <p>When the trial ends, one thing stops: <strong>starting a new dictation</strong>. Everything else keeps working, permanently. Your history stays readable and searchable, your exports still run, your dictionary, snippets and settings are all still there, and none of it is ever held hostage to sell you a license. The words you already spoke are yours whether or not you ever pay us a cent.</p>
+site/dist/terms.html:63:  <p>We may update these terms as the app evolves. Material changes will ship with the app and be posted alongside it, with a new &ldquo;last updated&rdquo; date. Changing these terms never revokes a license you have already bought.</p>
+site/dist/index.html:342:      <p class="net"><b>When the trial ends, only new dictation stops.</b> Your history, your search, your exports, your dictionary, your snippets and your settings keep working forever. The words you already spoke stay yours whether or not you ever buy a license. <a href="terms.html">Read the terms &rarr;</a></p>
+# exit=0
+
+# Every hit above is licensing copy that must stay byte-identical to main (item rule), justified line by line:
+#   site/dist/index.html  'only new dictation stops'  - pricing section, kept verbatim from main (lic-02/lic-06)
+#   site/dist/terms.html:36  'starting a new dictation' - terms of the licence, not edited by this item
+#   site/dist/terms.html:63  'a new last updated date' - terms of the licence, not edited by this item
+# No model, engine, provider, Social or test-channel word remains.
