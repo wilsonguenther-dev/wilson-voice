@@ -400,7 +400,7 @@ function Float() {
     listen<unknown>(BACKTRACK_CAUGHT_EVENT, (e) => {
       if (!isBacktrackCaught(e.payload)) return;
       const n = backtrackFixedWords(e.payload);
-      console.info(`pill event=fixup-notice words=${n}`);
+      console.info(`pill fixup_notice words=${n}`);
       setFixedWords(n);
     })
       .then((u) => {

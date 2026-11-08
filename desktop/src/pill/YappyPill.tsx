@@ -463,7 +463,9 @@ export default function YappyPill(
       const key = r ? `${Math.round(r.x * 4)}|${Math.round(r.y * 4)}` : "off";
       if (key === vstopKey) return;
       vstopKey = key;
-      vstop.dataset.show = r ? "true" : "false";
+      const show = r ? "true" : "false";
+      if (vstop.dataset.show !== show) console.info(`pill vdock_stop show=${show}`);
+      vstop.dataset.show = show;
       if (r) { vstop.style.left = r.x + "px"; vstop.style.top = r.y + "px"; }
     };
     const ctx = cv.getContext("2d")!;
