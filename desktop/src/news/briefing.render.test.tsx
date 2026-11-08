@@ -5,7 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { DUO_ART, DUO_AT, DUO_SCALE, NewsBriefingView, PAIR_BOX, cachedBriefing, composeBriefing, paintDuo } from "./NewsBriefing";
+import appCss from "../App.css?raw";
+import tokensCss from "../tokens.css?raw";
+import { DUO_ART, DUO_AT, DUO_SCALE, NewsBriefingView, PAIR_BOX, cachedBriefing, composeBriefing, paintDuo, paperLabel } from "./NewsBriefing";
 import { buildBriefing, quietNow, type CachedStory } from "./briefing";
 import { duoAt, duoTurns } from "./duo";
 
@@ -212,5 +214,55 @@ describe("yap-1107-parity-news — the pair matches the approved card's duo canv
     expect(fake.height).toBe(176);
     expect(warn).toHaveBeenCalledWith("sprites paint-failed name=news-duo reason=no-2d-context");
     warn.mockRestore();
+  });
+});
+
+describe("yap-1107-parity-news — the header matches the approved .bhead (batch-1 bounce)", () => {
+  it("the amber tag names the paper: morning from 6 AM until 4 PM, evening otherwise, one width", () => {
+    expect(paperLabel(new Date(2026, 10, 7, 8, 2).getTime())).toBe("morning paper");
+    expect(paperLabel(new Date(2026, 10, 7, 6, 0).getTime())).toBe("morning paper");
+    expect(paperLabel(new Date(2026, 10, 7, 15, 59).getTime())).toBe("morning paper");
+    expect(paperLabel(new Date(2026, 10, 7, 16, 0).getTime())).toBe("evening paper");
+    expect(paperLabel(new Date(2026, 10, 7, 23, 30).getTime())).toBe("evening paper");
+    expect(paperLabel(new Date(2026, 10, 7, 5, 59).getTime())).toBe("evening paper");
+    // both labels are 13 characters, like the page's "sample stories" slot keeps one width
+    expect("morning paper".length).toBe("evening paper".length);
+  });
+
+  it("the time column carries the clock and the amber .q tag, as on news.html §02", () => {
+    const html = render();
+    expect(html).toContain('class="news-briefing-clock"');
+    expect(html).toMatch(/class="news-briefing-paper" data-news-paper="true">morning paper<\/span>/);
+  });
+
+  it("the settled bubble is one paragraph holding both speakers, like the page's .bsay", () => {
+    const html = render();
+    const said = html.match(/<p data-news-said="pair">([\s\S]*?)<\/p>/);
+    expect(said).not.toBeNull();
+    expect(said![1]).toContain('data-news-says="cinder"');
+    expect(said![1]).toContain('data-news-says="yappy"');
+    expect(said![1]).toContain("<b>Cinder:</b>");
+    expect(said![1]).toContain("<b>Yappy:</b>");
+  });
+
+  it("the tag, bubble and title rules use the page's sizes and the news tokens", () => {
+    const app = appCss;
+    const tokens = tokensCss;
+    expect(tokens).toContain("--news-quote-ink: #a06a00;");
+    expect(tokens).toContain("--news-quote-bg: #fff4d6;");
+    const rule = (sel: string) => {
+      const at = app.indexOf(sel + " {");
+      expect(at, sel).toBeGreaterThan(-1);
+      return app.slice(at, app.indexOf("}", at));
+    };
+    const paper = rule(".news-briefing .news-briefing-paper");
+    expect(paper).toContain("font: 500 11px var(--font-mono);");
+    expect(paper).toContain("color: var(--news-quote-ink);");
+    expect(paper).toContain("background: var(--news-quote-bg);");
+    expect(paper).toContain("border-radius: 6px;");
+    expect(paper).toContain("padding: 2px 6px;");
+    expect(rule(".news-briefing .news-briefing-says")).toContain("line-height: 1.55;");
+    expect(rule(".news-briefing .news-briefing-says h3")).toContain("font: inherit;");
+    expect(rule(".news-briefing .news-briefing-clock")).toContain("min-width: 8ch;");
   });
 });

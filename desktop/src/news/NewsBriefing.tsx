@@ -163,6 +163,21 @@ function timeLabel(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * yap-1107-parity-news — the approved card's header ends in "8:02 AM ·" plus a
+ * small amber tag (news.html §02 `.q`, #a06a00 on #fff4d6, 11 px mono). The page
+ * tags its made-up stories "sample stories"; real stories are not samples, so
+ * the app's tag names which paper Cinder brought: the refresh runs after 6 AM
+ * and after 4 PM (§03), so a briefing made from 6 AM until 4 PM is the morning
+ * paper and any other is the evening paper. Same place, size and colours, a
+ * true word, and both labels are 13 characters so the header's width (and the
+ * bubble's four lines, .bhead 98.56 px) does not move with the hour.
+ */
+export function paperLabel(ms: number): "morning paper" | "evening paper" {
+  const h = new Date(ms).getHours();
+  return h >= 6 && h < 16 ? "morning paper" : "evening paper";
+}
+
 export function NewsBriefingView({
   phase,
   briefing,
@@ -209,7 +224,7 @@ export function NewsBriefingView({
               heading stays for screen readers and the time moves to the
               header's third column, as on the page. */}
           <h3 id="news-briefing-title" className="sr-only">
-            Yappy News{briefing && stories.length > 0 ? ` · ${timeLabel(briefing.deliveredMs)}` : ""}
+            Yappy News{briefing && stories.length > 0 ? ` · ${paperLabel(briefing.deliveredMs)} · ${timeLabel(briefing.deliveredMs)}` : ""}
           </h3>
           {phase === "loading" && <p className="muted">Yappy is reading the news…</p>}
           {phase === "empty" && (
@@ -243,19 +258,30 @@ export function NewsBriefingView({
               Skip to the stories
             </button>
           )}
+          {/* One line of speech for both, as the page's .bsay draws it: the
+              bubble wraps like the artifact instead of two short paragraphs. */}
           {lines && phase === "ready" && !live && (
-            <>
-              <p data-news-says="cinder">
+            <p data-news-said="pair">
+              <span data-news-says="cinder">
                 <b>Cinder:</b> “{lines.cinder}”
-              </p>
-              <p data-news-says="yappy">
+              </span>{" "}
+              <span data-news-says="yappy">
                 <b>Yappy:</b> “{lines.yappy}”
-              </p>
-            </>
+              </span>
+            </p>
           )}
         </div>
         <span className="news-briefing-when" aria-hidden="true" data-news-briefing-when>
-          {briefing && stories.length > 0 ? timeLabel(briefing.deliveredMs) : ""}
+          {briefing && stories.length > 0 ? (
+            <>
+              <span className="news-briefing-clock">{timeLabel(briefing.deliveredMs)}</span> ·{" "}
+              <span className="news-briefing-paper" data-news-paper>
+                {paperLabel(briefing.deliveredMs)}
+              </span>
+            </>
+          ) : (
+            ""
+          )}
         </span>
       </header>
 

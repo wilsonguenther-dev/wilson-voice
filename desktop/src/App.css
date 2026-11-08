@@ -4842,8 +4842,19 @@ button.primary.big {
   border-radius: 10px;
   padding: 8px 11px;
   font-size: 13px;
+  /* the page's .bsay inherits body line-height 1.55 (20.15 px a line): the
+     bubble's four lines make .bhead 98.56 px tall (batch-1 bounce: header h
+     17% off with the app's 1.45) */
+  line-height: 1.55;
   color: var(--news-ink-2);
   gap: 0;
+}
+/* the screen-reader title is a 1 px box the parity MEASURE still reads: it
+   takes the bubble's own size and colour so it adds no stray font size (the
+   UA h3 is 1.17em = 15.2 px, which is not on the page). */
+.news-briefing .news-briefing-says h3 {
+  font: inherit;
+  color: inherit;
 }
 .news-briefing .news-briefing-says b {
   font-weight: 500;
@@ -4851,9 +4862,27 @@ button.primary.big {
 }
 .news-briefing-when {
   font: 400 12px var(--font-mono);
+  line-height: 1.55;
   color: var(--news-ink-3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* "8:02 AM" and "10:41 PM" take the same 8 monospace cells, so the time
+   column (and the bubble beside it) keeps one width all day. */
+.news-briefing .news-briefing-clock {
+  display: inline-block;
+  min-width: 8ch;
+  text-align: right;
+}
+/* §02 .q — the amber tag after the time: 500 11px mono, #a06a00 on #fff4d6,
+   radius 6, padding 2/6 (batch-1 bounce: these two colours and the 11 px
+   were missing from the header). */
+.news-briefing .news-briefing-paper {
+  font: 500 11px var(--font-mono);
+  color: var(--news-quote-ink);
+  background: var(--news-quote-bg);
+  border-radius: 6px;
+  padding: 2px 6px;
 }
 .news-briefing .news-briefing-stories {
   grid-template-columns: repeat(3, 1fr);
@@ -4870,7 +4899,7 @@ button.primary.big {
   padding: 0;
   background: none;
   border-radius: 0;
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   letter-spacing: 0.02em;
   color: var(--news-red);
 }
@@ -4886,6 +4915,13 @@ button.primary.big {
   color: var(--news-ink-2);
 }
 .news-briefing .news-briefing-source {
+  font: 400 10px var(--font-mono);
+  color: var(--news-ink-3);
+}
+/* yap-1107-news-no-off-topic-stories added a "why this story" line the page
+   does not draw; it wears the story's source style (10 px mono, ink-3) so a
+   card that carries it adds no size or colour off the approved palette. */
+.news-briefing .news-briefing-why {
   font: 400 10px var(--font-mono);
   color: var(--news-ink-3);
 }

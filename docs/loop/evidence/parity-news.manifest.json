@@ -198,9 +198,9 @@
         "view": "home",
         "selector": ".card.news-briefing",
         "width": 908,
-        "height": 760,
+        "height": 1100,
         "fixtures": "scripts/smoke-fixtures-parity-news.json",
-        "capture": "home-908x760.png",
+        "capture": "home-908x1100.png",
         "clicks": [
           "?[data-news-duo-skip]"
         ]
@@ -220,7 +220,7 @@
     },
     {
       "id": "s02-home-briefing-header",
-      "note": "§02 .bhead: grid max-content 1fr max-content, gap 14; Cinder + Yappy drawn as ONE 104x44 art canvas shown at 208x88 (NewsBriefing.tsx paintDuo, Yappy at 2,6, Cinder at 54,2, the paper at 44,30); bubble #fffdf7, 13 px, padding 8/11, radius 10. Measured on the page: 610 x 98.56, sprite 208x88.",
+      "note": "§02 .bhead: grid max-content 1fr max-content, gap 14; Cinder + Yappy drawn as ONE 104x44 art canvas shown at 208x88 (NewsBriefing.tsx paintDuo, Yappy at 2,6, Cinder at 54,2, the paper at 44,30); bubble #fffdf7, 13 px, padding 8/11, radius 10. Measured on the page: 610 x 98.56, sprite 208x88. Batch-1 bounce fixed (2026-11-08): the time column carries the page's amber .q tag (NewsBriefing.tsx paperLabel 'morning paper'/'evening paper', 500 11px mono #a06a00 on #fff4d6, both 13 characters, clock in 8 monospace cells), the bubble is ONE paragraph at line-height 1.55, and the sr-only title inherits the bubble's 13 px, so the header measures 610 x 98.56 with fonts [11, 12, 13] and the page's exact colour set (mock of the app CSS through scripts/parity-crops.mjs on this Mac: 610 x 98.56, colours identical).",
       "artifact": {
         "page": "news.html",
         "selector": "#s02 .bhead"
@@ -230,14 +230,21 @@
         "view": "home",
         "selector": ".news-briefing-head",
         "width": 908,
-        "height": 760,
+        "height": 1100,
         "fixtures": "scripts/smoke-fixtures-parity-news.json",
-        "capture": "home-908x760.png",
+        "capture": "home-908x1100.png",
         "clicks": [
           "?[data-news-duo-skip]"
         ]
       },
       "expect": {
+        "w": 610,
+        "h": 98.56,
+        "fontPx": [
+          11,
+          12,
+          13
+        ],
         "gap": {
           "col": 14
         },
@@ -245,9 +252,10 @@
           "#fffdf7",
           "#1d1c1a",
           "#56534d",
-          "#8b877f"
-        ],
-        "w": 610
+          "#8b877f",
+          "#a06a00",
+          "#fff4d6"
+        ]
       }
     },
     {
@@ -262,9 +270,9 @@
         "view": "home",
         "selector": ".news-briefing-story",
         "width": 908,
-        "height": 760,
+        "height": 1100,
         "fixtures": "scripts/smoke-fixtures-parity-news.json",
-        "capture": "home-908x760.png",
+        "capture": "home-908x1100.png",
         "clicks": [
           "?[data-news-duo-skip]"
         ]
@@ -305,9 +313,9 @@
         "view": "home",
         "selector": ".news-briefing-foot",
         "width": 908,
-        "height": 760,
+        "height": 1100,
         "fixtures": "scripts/smoke-fixtures-parity-news.json",
-        "capture": "home-908x760.png",
+        "capture": "home-908x1100.png",
         "clicks": [
           "?[data-news-duo-skip]"
         ]
