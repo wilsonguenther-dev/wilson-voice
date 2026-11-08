@@ -14,12 +14,31 @@
 //! from the first bad window onwards. That is the failure this file exists to
 //! catch.
 //!
-//! Run against the real `TranscriptionManager` with a 300 ms timeout and a stub
-//! engine that hangs on exactly one window.
+//! Run against the real `TranscriptionManager` with a stub engine that wedges
+//! on exactly one window.
+//!
+//! fix-main-red-chunk-timeout (main run 42432221845) — this file used to race
+//! the clock. The wedged window SLEPT 900 ms against a 300 ms timeout, and the
+//! healthy windows had to finish inside that same 300 ms on a decode thread the
+//! manager puts in the Darwin background band (meeting work is `PRIO_DARWIN_BG`,
+//! yap-1106-sp-04). On a loaded CI runner a background-band thread can be
+//! starved past 300 ms before it runs a line, so a HEALTHY neighbour timed out
+//! too and the run reported two dead chunks. Nothing in the production path was
+//! shared between chunks — every lease starts its own `recv_timeout` — the test
+//! simply made "healthy" and "hung" a few hundred milliseconds apart.
+//!
+//! Now neither side depends on how fast the runner is:
+//! - the wedged window blocks on a [`Gate`] the test opens only AFTER the
+//!   meeting has finished, so it cannot come back inside any deadline, however
+//!   long that deadline turns out to be;
+//! - the healthy windows get a deadline (5 s) four orders of magnitude above
+//!   the microseconds their decode costs, so scheduling noise cannot reach it.
+//!
+//! Which window is slow is decided by the stub's audio, never by a sleep.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use wilson_voice_lib::asr_engine::TimedTranscript;
@@ -33,17 +52,55 @@ use wilson_voice_lib::transcription::{Transcriber, TranscriptionManager};
 mod support;
 use support::{ramp_audio, window_bounds, word_at, RampDecoder};
 
-/// Far shorter than production's 120 s, same mechanism.
-const TIMEOUT: Duration = Duration::from_millis(300);
-/// The hung window's decode — comfortably past the timeout.
-const HANG: Duration = Duration::from_millis(900);
+/// Far shorter than production's 120 s, same mechanism. The wedged window
+/// fails because it is GATED past the meeting's end, not because it out-sleeps
+/// this number, so the number only has to be generous for the healthy windows
+/// — whose stub decode is microseconds even on a background-band thread on a
+/// saturated runner.
+const TIMEOUT: Duration = Duration::from_secs(5);
 /// Which window hangs: the second one, so it has neighbours on both sides.
 const POISONED_WINDOW: (f64, f64) = (28.0, 60.0);
 
 const MEETING_SECONDS: f64 = 120.0;
 
+/// A latch the wedged decode waits on. Closed until the test opens it; opening
+/// is idempotent. The wait has no timeout of its own: while closed, the decode
+/// is a native call that is not coming back.
+#[derive(Clone, Default)]
+struct Gate(Arc<(Mutex<bool>, Condvar)>);
+
+impl Gate {
+    fn wait(&self) {
+        let (open, cv) = &*self.0;
+        let mut open = open.lock().unwrap_or_else(|p| p.into_inner());
+        while !*open {
+            open = cv.wait(open).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+
+    fn open(&self) {
+        let (open, cv) = &*self.0;
+        *open.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        cv.notify_all();
+    }
+}
+
+/// Opens the gate when the test ends, pass or panic, so the abandoned worker
+/// thread finishes and drops its engine instead of outliving the test.
+struct OpenOnDrop(Gate);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
 struct FlakyEngine {
     decoder: RampDecoder,
+    wedge: Gate,
+    /// How many times the poisoned window reached the engine, across every
+    /// engine the loader builds.
+    poisoned_calls: Arc<AtomicUsize>,
 }
 
 impl Transcriber for FlakyEngine {
@@ -64,9 +121,11 @@ impl Transcriber for FlakyEngine {
     ) -> Result<TimedTranscript, String> {
         let (start, end) = window_bounds(samples);
         if (start - POISONED_WINDOW.0).abs() < 0.5 && (end - POISONED_WINDOW.1).abs() < 0.5 {
-            // Wedged native call: it never comes back inside the budget. The
+            // Wedged native call: it does not come back until the meeting is
+            // over, so it misses the budget whatever the budget is. The
             // manager gives up on it AND on the engine.
-            std::thread::sleep(HANG);
+            self.poisoned_calls.fetch_add(1, Ordering::AcqRel);
+            self.wedge.wait();
         }
         Ok(self.decoder.transcript_for(start, end))
     }
@@ -76,11 +135,17 @@ impl Transcriber for FlakyEngine {
 fn a_chunk_that_exceeds_the_transcribe_timeout_fails_alone() {
     let loads = Arc::new(AtomicUsize::new(0));
     let loader_loads = loads.clone();
+    let wedge = Gate::default();
+    let _release = OpenOnDrop(wedge.clone());
+    let poisoned_calls = Arc::new(AtomicUsize::new(0));
+    let (loader_wedge, loader_poisoned) = (wedge.clone(), poisoned_calls.clone());
     let manager = TranscriptionManager::with_loader(
         Arc::new(move |_p: &std::path::Path| {
             loader_loads.fetch_add(1, Ordering::AcqRel);
             Ok(Box::new(FlakyEngine {
                 decoder: RampDecoder::new(true),
+                wedge: loader_wedge.clone(),
+                poisoned_calls: loader_poisoned.clone(),
             }) as Box<dyn Transcriber>)
         }),
         Duration::from_secs(3600),
@@ -119,6 +184,14 @@ fn a_chunk_that_exceeds_the_transcribe_timeout_fails_alone() {
         },
     };
     let out = job.run("m-timeout").expect("the meeting still completes");
+    // The meeting is over; only now may the wedged decode come back. Its
+    // engine was abandoned long ago, so the worker drops it.
+    wedge.open();
+    assert_eq!(
+        poisoned_calls.load(Ordering::Acquire),
+        1,
+        "the wedged window was decoded exactly once"
+    );
 
     // The meeting did not fail wholesale.
     assert_eq!(out.chunks_failed, 1, "exactly one chunk died");
@@ -188,11 +261,17 @@ fn a_failed_chunk_is_not_retried_on_resume() {
 
     let loads = Arc::new(AtomicUsize::new(0));
     let loader_loads = loads.clone();
+    let wedge = Gate::default();
+    let _release = OpenOnDrop(wedge.clone());
+    let poisoned_calls = Arc::new(AtomicUsize::new(0));
+    let (loader_wedge, loader_poisoned) = (wedge.clone(), poisoned_calls.clone());
     let manager = TranscriptionManager::with_loader(
         Arc::new(move |_p: &std::path::Path| {
             loader_loads.fetch_add(1, Ordering::AcqRel);
             Ok(Box::new(FlakyEngine {
                 decoder: RampDecoder::new(true),
+                wedge: loader_wedge.clone(),
+                poisoned_calls: loader_poisoned.clone(),
             }) as Box<dyn Transcriber>)
         }),
         Duration::from_secs(3600),
@@ -227,8 +306,15 @@ fn a_failed_chunk_is_not_retried_on_resume() {
         };
         job.run("m-timeout").expect("first pass");
     }
+    // Let the abandoned first-pass decode finish before the relaunch, so the
+    // count below is the relaunch's alone.
+    wedge.open();
+    assert_eq!(
+        poisoned_calls.load(Ordering::Acquire),
+        1,
+        "the first pass hit the wedged window once"
+    );
 
-    let started = std::time::Instant::now();
     let mut store = JsonProgressStore::new(&dir);
     let mut job = MeetingAsr {
         audio: &audio,
@@ -246,10 +332,13 @@ fn a_failed_chunk_is_not_retried_on_resume() {
     assert_eq!(out.chunks_decoded, 0, "nothing was left to do");
     assert_eq!(out.chunks_resumed, 4);
     assert_eq!(out.chunks_failed, 1, "the hole is remembered, not re-dug");
-    assert!(
-        started.elapsed() < HANG,
-        "the relaunch re-ran the wedged chunk ({:?})",
-        started.elapsed()
+    // Counted, not timed: the relaunch never handed the wedged window to an
+    // engine at all (it used to be a `< 900 ms` wall-clock bound, which a slow
+    // runner could fail with no retry and a fast one could pass with one).
+    assert_eq!(
+        poisoned_calls.load(Ordering::Acquire),
+        1,
+        "the relaunch re-ran the wedged chunk"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
