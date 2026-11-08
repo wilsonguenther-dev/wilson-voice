@@ -461,6 +461,31 @@ export interface MatrixNarrowRow extends MatrixOfferRow {
   meetings: readonly string[];
 }
 
+/**
+ * yap-1107-parity-companions — the page's own visit (companions.html s09 line
+ * 297, "Yappy visits for your 100th take"): Hoot sits in the pill, Yappy stands
+ * beside him INSIDE the open window, the done segment reads "✓ 100th take".
+ * `float.html?phase=done&pill=hoot&friend=yappy`; the pinned Yappy visitor is
+ * the milestone (FriendVisit.tsx). Bottom dock; meetings none (the visitor in
+ * the window, capture friend-visit-window__hoot__bottom__none.png, the app
+ * column of the parity sheet) and recording (the quiet rule: no visitor).
+ */
+export function matrixFriendVisitWindowScene(): MatrixNarrowRow {
+  const v = phaseVisual("done");
+  return {
+    phase: "done",
+    id: "friend-visit-window",
+    phaseId: PHASE_ID.done,
+    query: "friend=yappy",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+    characters: ["hoot"],
+    docks: ["bottom"],
+    meetings: ["none", "recording"],
+  };
+}
+
 export function matrixLaunchWalkScene(): MatrixNarrowRow {
   const v = phaseVisual("model-loading");
   return {

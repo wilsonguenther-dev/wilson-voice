@@ -314,6 +314,15 @@ function __pillDetect(want) {
       else if (!fv) bad.push("no [data-friend-visit=tidy] visitor");
       else { const cv = fv.querySelector("canvas"); if (!cv || !cv.width || !cv.height) bad.push("friend visit canvas not painted"); }
     }
+    // yap-1107-parity-companions — Yappy visiting Hoot is painted INSIDE the window
+    // (the corner box steps aside), unless a meeting records (quiet rule).
+    if (want.id === "friend-visit-window") {
+      const fv = document.querySelector("[data-friend-visit]");
+      if (want.meeting === "recording" || want.meeting === "saved") { if (fv) bad.push("friend visit drawn during a meeting"); }
+      else if (!fv || fv.dataset.friendVisit !== "yappy") bad.push("no [data-friend-visit=yappy] visitor");
+      else if (fv.dataset.inWindow !== "true") bad.push("visitor drawn in the corner box, not inside the pill window");
+      else { const w = document.querySelector(".yappy-win"); if (!w || !w.width || !w.height) bad.push("pill window canvas not painted"); }
+    }
     // yap-1107-parity-companions — the launch-walk scene must paint the walk's 196 x 44 canvas.
     if (want.id === "launch-walk") {
       const cv = document.querySelector(".launch-walk-canvas");

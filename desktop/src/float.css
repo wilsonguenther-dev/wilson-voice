@@ -2713,6 +2713,10 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
   display: block;
   image-rendering: pixelated;
 }
+/* yap-1107-parity-companions — the pill window is painting the visitor beside
+   the occupant (companions.html s09): the corner box steps aside, so the
+   visitor is never drawn twice. */
+.friend-visit[data-in-window="true"] { display: none; }
 html[data-dock="left"] .friend-visit,
 html[data-dock="right"] .friend-visit {
   right: auto;

@@ -69,6 +69,7 @@ describe("parity-companions: the manifest", () => {
     designDir?: string; states: State[]; excluded: { id: string; selector: string; why: string }[];
     conflicts: { id: string; selector: string; companions: { w: number; h: number }; pill: { w: number; h: number }; deltaPct: number; decision: string }[];
     openDefects: { id: string; state: string; blockedOn: string }[];
+    fixedDefects: { id: string; state: string; fix: string; tests: string }[];
   };
 
   it("lists every drawn app state of the approved page, each with an artifact selector, an app target and a measured box", () => {
@@ -103,8 +104,17 @@ describe("parity-companions: the manifest", () => {
     expect(new URLSearchParams(walk.app.query).get("walk")).toBe("0");
     const studio = m.states.find((s) => s.id === "s03-studio-side-view")!;
     expect([studio.expect.w, studio.expect.h]).toEqual([STUDIO_W * 3, STUDIO_H * 3]);
+    // the page's own example (companions.html line 297): Yappy visits Hoot for the
+    // 100th take, in the open done window (segment "✓ 100th take"), shot by the
+    // narrow friend-visit-window matrix row.
     const visit = m.states.find((s) => s.id === "s09-friend-visit")!;
-    expect(new URLSearchParams(visit.app.query).get("friend")).toBe("tidy");
+    const vq = new URLSearchParams(visit.app.query);
+    expect(vq.get("friend")).toBe("yappy");
+    expect(vq.get("pill")).toBe("hoot");
+    expect(vq.get("phase")).toBe("done");
+    expect(visit.app.capture).toBe("app/friend-visit-window__hoot__bottom__none.png");
+    // pill.html's open-with-segment window (196) is within 3 percent of the page's 200
+    expect(Math.abs(visit.expect.w - 196) / 196).toBeLessThanOrEqual(0.03);
   });
 
   it("names every design-page exhibit it does not measure, with the reason", () => {
@@ -128,8 +138,9 @@ describe("parity-companions: the manifest", () => {
       expect(c.decision, c.id).toMatch(/pill\.html wins the box/);
       expect(m.states.some((s) => s.id === c.id), c.id).toBe(false);
     }
-    // the visitor-inside-the-window fix is recorded, not dropped
-    expect(m.openDefects.map((d) => d.state)).toContain("s09-friend-visit");
+    // the visitor-inside-the-window defect is fixed in code and recorded as fixed
+    expect(m.openDefects.map((d) => d.state)).not.toContain("s09-friend-visit");
+    expect(m.fixedDefects.map((d) => d.state)).toContain("s09-friend-visit");
   });
 });
 
