@@ -67,13 +67,15 @@ describe("parity-companions: the manifest", () => {
   type State = { id: string; artifact: { page: string; selector: string }; app: { page: string; selector: string; query?: string; capture: string }; expect: { w: number; h: number } };
   const m = JSON.parse(read("../../../docs/loop/evidence/parity-companions.manifest.json")) as {
     designDir?: string; states: State[]; excluded: { id: string; selector: string; why: string }[];
+    conflicts: { id: string; selector: string; companions: { w: number; h: number }; pill: { w: number; h: number }; deltaPct: number; decision: string }[];
+    openDefects: { id: string; state: string; blockedOn: string }[];
   };
 
   it("lists every drawn app state of the approved page, each with an artifact selector, an app target and a measured box", () => {
     // batch-1 bounce: designDir was a literal non-path string — the default design dir is used instead.
     expect(m.designDir).toBeUndefined();
     const ids = m.states.map((s) => s.id);
-    expect(ids).toEqual(["s03-studio-side-view", "s06-launch-walk-frame", "s09-sky-c-day", "s09-hoot-in-pill", "s09-hoot-meeting", "s09-friend-visit"]);
+    expect(ids).toEqual(["s03-studio-side-view", "s06-launch-walk-frame", "s09-sky-c-day", "s09-friend-visit"]);
     for (const s of m.states) {
       expect(s.artifact.page).toBe("companions.html");
       expect(s.artifact.selector.length).toBeGreaterThan(0);
@@ -84,7 +86,18 @@ describe("parity-companions: the manifest", () => {
       // batch-1 bounce: a selector no app source carries, and a dock the matrix never shoots.
       expect(s.app.selector).not.toContain("yappy-capsule-box");
       if (s.app.query) expect(new URLSearchParams(s.app.query).get("dock")).toBe("bottom");
+      // pill rows are shot by the item's integrator step: pill-matrix --out <captures>/app
+      if (s.app.page === "float.html") expect(s.app.capture.startsWith("app/"), s.id).toBe(true);
     }
+    // loop3 retry: .kami-canvas is the whole 300 x 140 panel, never the 196 x 44 window the page draws.
+    for (const id of ["s09-sky-c-day", "s09-friend-visit"]) {
+      const row = m.states.find((s) => s.id === id)!;
+      expect(row.app.selector, id).toBe(".yappy-win");
+    }
+    const sky = m.states.find((s) => s.id === "s09-sky-c-day")!;
+    // the 196 x 44 window with the day sky is an open state (pill.html), never the 64 x 20 resting one
+    expect(new URLSearchParams(sky.app.query).get("phase")).toBe("listening-locked");
+    expect([sky.expect.w, sky.expect.h]).toEqual([196, 44]);
     const walk = m.states.find((s) => s.id === "s06-launch-walk-frame")!;
     expect([walk.expect.w, walk.expect.h]).toEqual([SCENE_W, SCENE_H]);
     expect(new URLSearchParams(walk.app.query).get("walk")).toBe("0");
@@ -95,13 +108,28 @@ describe("parity-companions: the manifest", () => {
   });
 
   it("names every design-page exhibit it does not measure, with the reason", () => {
-    const shown = [...m.states.map((s) => s.id), ...m.excluded.map((e) => e.id)];
+    const shown = [...m.states.map((s) => s.id), ...m.excluded.map((e) => e.id), ...m.conflicts.map((c) => c.id)];
     for (const want of [
       "s02-detail-art", "s03-studio-side-view", "s04-who-sits-in-pill", "s05-three-voices", "s05-reaction-words",
       "s06-launch-walk-frame", "s06-launch-walk-2x", "s07-reactions-while-talking", "s08-cinder-sal-mochi", "s08-cast",
       "s09-sky-a-today", "s09-sky-c-day", "s09-hoot-in-pill", "s09-hoot-meeting", "s09-friend-visit",
     ]) expect(shown).toContain(want);
     for (const e of m.excluded) expect(e.why.length).toBeGreaterThan(20);
+  });
+
+  it("lists every page-against-page box conflict with both numbers and the decision, never silently", () => {
+    const ids = m.conflicts.map((c) => c.id);
+    expect(ids).toEqual(["s09-hoot-in-pill", "s09-hoot-meeting"]);
+    for (const c of m.conflicts) {
+      // a conflict is only a conflict when the two pages are more than the 3 percent apart
+      const d = Math.max(Math.abs(c.companions.w - c.pill.w) / c.pill.w, Math.abs(c.companions.h - c.pill.h) / c.pill.h) * 100;
+      expect(d, c.id).toBeGreaterThan(3);
+      expect(Math.round(d), c.id).toBe(c.deltaPct);
+      expect(c.decision, c.id).toMatch(/pill\.html wins the box/);
+      expect(m.states.some((s) => s.id === c.id), c.id).toBe(false);
+    }
+    // the visitor-inside-the-window fix is recorded, not dropped
+    expect(m.openDefects.map((d) => d.state)).toContain("s09-friend-visit");
   });
 });
 

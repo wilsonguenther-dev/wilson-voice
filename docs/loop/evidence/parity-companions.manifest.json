@@ -2,10 +2,10 @@
   "item": "yap-1107-parity-companions",
   "approved": "~/Obsidian/Wilson-Brain/Projects/Yap/design-2026-11-06/companions.html (parity-sheet's default design dir; no designDir field, so the page resolves through scripts/parity-crops.mjs DESIGN_DIR)",
   "writtenAt": "2026-11-07T22:54:19Z",
-  "updatedAt": "2026-11-08T21:45:33Z",
+  "updatedAt": "2026-11-08T21:52:14Z",
   "bounceFix": "batch 1 bounce: designDir was a literal non-path string, and 14 of 15 states named app selectors that do not exist (.yappy-capsule-box), a dock the matrix never shoots (top), a friend-visit query the pill ignores (visit= instead of friend=), a launch walk without walk= (so the forced pill suppresses it), and design-page exhibits (copy tables, art galleries, a timeline diagram) compared box-for-box against whole app panels. Every state below now pairs ONE approved element with the ONE app element that draws the same thing.",
   "frameMs": 1200,
-  "captures": "Integrator, on the integrated build: (1) node scripts/pill-matrix.mjs --out docs/smoke-shots/parity-companions-<date> (writes idle__yappy__bottom__none.png, listening__hoot__bottom__none.png, idle__hoot__bottom__recording.png, friend-visit__yappy__bottom__none.png and the new launch-walk__yappy__bottom__none.png from forced.ts matrixLaunchWalkScene); (2) YAP_SMOKE_SCALE=2 YAP_SMOKE_VIEWS=home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_W1=1188 YAP_SMOKE_H1=1600 YAP_SMOKE_RUN=parity-companions-<date> bash scripts/smoke-windowed.sh, copying custom-home-1188x1600.png into the same captures dir (the room is 3x only in a 968 px main column, exactly as parity-home measured it); then node scripts/parity-sheet.mjs --manifest docs/loop/evidence/parity-companions.manifest.json --captures docs/smoke-shots/parity-companions-<date> --out docs/loop/evidence/parity-companions-<date>.html --build --check",
+  "captures": "Integrator, on the integrated build: (1) node scripts/pill-matrix.mjs --out docs/smoke-shots/parity-companions-<date>/app, exactly as the item's integrator step writes it (the pill rows name app/<file>: listening_locked__yappy__bottom__none.png, friend-visit__yappy__bottom__none.png and the new launch-walk__yappy__bottom__none.png from forced.ts matrixLaunchWalkScene); (2) YAP_SMOKE_SCALE=2 YAP_SMOKE_VIEWS=home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_W1=1188 YAP_SMOKE_H1=1600 YAP_SMOKE_RUN=parity-companions-<date> bash scripts/smoke-windowed.sh, copying custom-home-1188x1600.png into the same captures dir (the room is 3x only in a 968 px main column, exactly as parity-home measured it); then node scripts/parity-sheet.mjs --manifest docs/loop/evidence/parity-companions.manifest.json --captures docs/smoke-shots/parity-companions-<date> --out docs/loop/evidence/parity-companions-<date>.html --build --check",
   "pin": "Home states are judged light at 12:00 local, like parity-home (the approved room is daytime and light).",
   "states": [
     {
@@ -45,7 +45,7 @@
         "page": "float.html",
         "query": "phase=model_loading&pill=yappy&dock=bottom&meeting=none&sky=day&walk=0",
         "selector": ".launch-walk-canvas",
-        "capture": "launch-walk__yappy__bottom__none.png"
+        "capture": "app/launch-walk__yappy__bottom__none.png"
       },
       "expect": {
         "w": 196,
@@ -55,7 +55,7 @@
     },
     {
       "id": "s09-sky-c-day",
-      "name": "The pill sky, option C (matches the Home room's time of day), day",
+      "name": "The pill sky, option C (matches the Home room's time of day), day, in the open window",
       "section": "#s09",
       "artifact": {
         "page": "companions.html",
@@ -63,55 +63,15 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
-        "selector": ".kami-canvas",
-        "capture": "idle__yappy__bottom__none.png"
+        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-win",
+        "capture": "app/listening_locked__yappy__bottom__none.png"
       },
       "expect": {
         "w": 196,
         "h": 44
       },
-      "note": "Option C is the shipped one (yap-1106-pill-sky: pill/sky.ts follows the room's clock). OPEN: the app pill paints its world (characterFit.ts PILL_SCENE 420 x 104 art px) on ONE canvas that fills the whole pill panel, so no app element is the 196 x 44 window the page draws; the box rows FAIL until the pill's own geometry lands (yap-1107-parity-pill, reverted from integration-2)."
-    },
-    {
-      "id": "s09-hoot-in-pill",
-      "name": "Hoot in the pill, listening (bare, no headphones)",
-      "section": "#s04",
-      "artifact": {
-        "page": "companions.html",
-        "selector": "#switch > div:nth-of-type(1) canvas.win"
-      },
-      "app": {
-        "page": "float.html",
-        "query": "phase=listening&pill=hoot&dock=bottom&meeting=none&sky=day",
-        "selector": ".kami-canvas",
-        "capture": "listening__hoot__bottom__none.png"
-      },
-      "expect": {
-        "w": 200,
-        "h": 44
-      },
-      "note": "Art half: occupant.ts occupantSpriteOpt('hoot') = { bare: true } (test parity_hoot_occupant_is_bare_while_listening_and_phones_on_in_a_meeting). Box half: same OPEN pill-geometry gap as s09-sky-c-day."
-    },
-    {
-      "id": "s09-hoot-meeting",
-      "name": "Meeting: Hoot records it himself, headphones on",
-      "section": "#s04",
-      "artifact": {
-        "page": "companions.html",
-        "selector": "#switch > div:nth-of-type(2) canvas.win"
-      },
-      "app": {
-        "page": "float.html",
-        "query": "phase=idle&pill=hoot&dock=bottom&meeting=recording&sky=day",
-        "selector": ".meeting-scene-canvas",
-        "capture": "idle__hoot__bottom__recording.png"
-      },
-      "expect": {
-        "w": 150,
-        "h": 44
-      },
-      "note": "Art half: meetingScene.ts SCENE_LAYOUT.hootMain stamps his whole 40 x 40 sprite at 1:1 with his own right ear cup as the light (tests parity_hoot_records_the_meeting_at_1x_whole_inside_the_scene, parity_hoot_meeting_recording_light_is_his_own_right_ear_cup). OPEN conflict: this page's meeting window is 150 x 44, pill.html's meeting window is 140 x 36, the app's meeting scene is 112 x 40 (meetingScene.ts SCENE_W/H). The pill page owns the pill's geometry (yap-1107-parity-pill); this row FAILs until that is settled."
+      "note": "The page draws the day sky in a 196 x 44 window with no segment beside it. pill.html draws that same 196 x 44 window for every open state that carries a segment (hands-free line 396, writing it up, polishing, pasting, pasted), and the sky is the same in all of them (pill/sky.ts follows the room clock, option C). Hands-free is the matrix capture of that window (parity-pill row hands-free). The resting pill (phase idle) is a 64 x 20 window on pill.html, so it is not this state. Needs .yappy-win from yap-1107-parity-pill."
     },
     {
       "id": "s09-friend-visit",
@@ -124,14 +84,14 @@
       "app": {
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&friend=tidy",
-        "selector": ".kami-canvas",
-        "capture": "friend-visit__yappy__bottom__none.png"
+        "selector": ".yappy-win",
+        "capture": "app/friend-visit__yappy__bottom__none.png"
       },
       "expect": {
         "w": 200,
         "h": 44
       },
-      "note": "The page draws Yappy visiting Hoot's pill for the 100th take; the app's matrix visit is Tidy visiting Yappy's pill (forced.ts matrixFriendVisitScene, query friend=tidy, phase idle). Quiet rule (no visitor during a meeting) is checked by pill-matrix. Box half: same OPEN pill-geometry gap."
+      "note": "OPEN DEFECT, expected to FAIL until fixed in code: the page draws the visitor INSIDE the open pill window, standing beside whoever sits in the pill (companions.html line 289, Y.drawChick at cx + 26 on the feet line), in an open pill whose segment reads the milestone (check + 100th take). The app paints the visitor in a separate .friend-visit box pinned to the window corner (float.css .friend-visit, position fixed, right inset + 6, bottom inset + 4) beside a RESTING pill (forced.ts matrixFriendVisitScene, phase idle), so .yappy-win here is the 64 x 20 resting window, not 200 x 44. The fix (paint the visitor into the .yappy-win world beside the occupant, during the milestone's open state) belongs on top of the window canvas yap-1107-parity-pill adds; see openDefects. Quiet rule (no visitor during a meeting) is checked by pill-matrix."
     }
   ],
   "excluded": [
@@ -179,6 +139,50 @@
       "id": "s09-sky-a-today",
       "selector": "#skies > .card:nth-child(1) canvas.win",
       "why": "Option A, the old flat sky, is shown for comparison; option C shipped (s09-sky-c-day)."
+    }
+  ],
+  "pillWindowDependency": "Every s09 row measures the pill sky window, .yappy-win (the canvas inside .yappy-capsule-box), which yap-1107-parity-pill adds (origin/loop3/yap-1107-parity-pill, desktop/src/pill/YappyPill.tsx; window sizes from desktop/src/pill/shellSegment.ts: open + segment 196 x 44, open no segment 220 x 44, desk 208 x 44, status 44 x 24). On a base without that item the s09 rows report not-found; they cannot pass before yap-1107-parity-pill is integrated, and they must not be pointed back at .kami-canvas, which is the whole 300 x 140 panel (PILL_SCENE 420 x 104 art px), not the window the page draws.",
+  "geometryRule": "pill.html owns every pill box (the page drawn for the pill alone, state by state, and the page the timer-in-pill decision points to). companions.html section 4 and 9 draw their pills with one shared helper, pill(winA, right, bubble, w) with w defaulting to 200 (companions.html line 290); what those sections approve is who sits in the pill and how he is drawn. Where the two pages give a different box for the same state, the row is listed under conflicts with both numbers, and its box is judged in parity-pill.manifest.json; its art is pinned by tests here.",
+  "conflicts": [
+    {
+      "id": "s09-hoot-in-pill",
+      "selector": "#switch > div:nth-of-type(1) canvas.win",
+      "companions": {
+        "w": 200,
+        "h": 44,
+        "where": "companions.html line 292, pill(hootWorld({bare:true}), \"\", bubble) -> helper default w 200, no segment"
+      },
+      "pill": {
+        "w": 220,
+        "h": 44,
+        "where": "pill.html line 391, Holding fn, open with no segment (parity-pill row holding-fn, app capsule OPEN_CAPSULE)"
+      },
+      "deltaPct": 9,
+      "decision": "pill.html wins the box (geometryRule); the art half, Hoot bare while listening, is pinned by test parity_hoot_occupant_is_bare_while_listening_and_phones_on_in_a_meeting (desktop/src/pill/parityCompanions.test.ts). Wilson can overturn this: say the companions width wins and the pill page and its item change instead."
+    },
+    {
+      "id": "s09-hoot-meeting",
+      "selector": "#switch > div:nth-of-type(2) canvas.win",
+      "companions": {
+        "w": 150,
+        "h": 44,
+        "where": "companions.html line 295, a 52 tall pill with a 150 x 44 window and the rec segment"
+      },
+      "pill": {
+        "w": 140,
+        "h": 36,
+        "where": "pill.html meeting rows (parity-pill rows meeting-recording 202 x 44 shell and hoot-b-tape 188 x 44 shell; meetingScene.ts SCENE_W x SCENE_H 140 x 36 on the parity-pill branch)"
+      },
+      "deltaPct": 22,
+      "decision": "pill.html wins the box (geometryRule; the meeting timer lives inside the one pill per decision timer-in-pill, drawn on pill.html). The art half, Hoot records it himself with his headphones on, whole at 1:1 with his own right ear cup as the light, is pinned by tests parity_hoot_records_the_meeting_at_1x_whole_inside_the_scene and parity_hoot_meeting_recording_light_is_his_own_right_ear_cup."
+    }
+  ],
+  "openDefects": [
+    {
+      "id": "friend-visit-inside-the-window",
+      "state": "s09-friend-visit",
+      "what": "Paint the visiting friend inside the pill window beside the occupant (as the page does), during the milestone's open state, instead of the separate .friend-visit corner box beside a resting pill.",
+      "blockedOn": "yap-1107-parity-pill (the .yappy-win window canvas the visitor must be painted into); building it on the old one-canvas panel would be rewritten by that item."
     }
   ]
 }
