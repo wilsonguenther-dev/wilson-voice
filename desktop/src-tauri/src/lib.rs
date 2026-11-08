@@ -194,6 +194,9 @@ mod paste_tx;
 pub mod perm_probe;
 pub mod perm_truth;
 pub mod permissions;
+/// yap-1107-globe-key-conflict-guard — the lone-Fn (Globe key) conflict line and
+/// its consented, reversible "Turn it off" / "Put it back".
+pub mod globe_key;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
 // the golden formatting corpus runs the real stage from an integration test.
 pub mod polish;
@@ -15192,6 +15195,10 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-1107-globe-key-conflict-guard — Permissions → Globe key line.
+            globe_key::globe_key_status,
+            globe_key::globe_key_turn_off,
+            globe_key::globe_key_put_back,
             // yap-1106-fb-22a — "Who's talking right now?" answers from the pill.
             live_transcript::meeting_live_name,
             live_transcript::meeting_live_same,
