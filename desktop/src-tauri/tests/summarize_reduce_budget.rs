@@ -71,13 +71,20 @@ fn long_meeting(lines_wanted: usize) -> Vec<MeetingSegment> {
 /// clears the V3 groundedness floor. A short stub narrative would make this test
 /// pass for the wrong reason: the whole question is what happens when 27 of these
 /// arrive at REDUCE together.
+///
+/// yap-audit-notes-guards: the words come out in REVERSE order. Every word is
+/// still the chunk's own (groundedness is per word), but no run of four is
+/// the transcript's — a narrative that copies the transcript in order is a
+/// re-transcript, which `v8_verbatim` now refuses at every stage.
 fn narrative_for(chunk_text: &str) -> String {
-    bodies_in(chunk_text)
+    let mut words: Vec<String> = bodies_in(chunk_text)
         .join(" ")
         .split_whitespace()
         .take(MAX_NARRATIVE_WORDS)
-        .collect::<Vec<_>>()
-        .join(" ")
+        .map(str::to_string)
+        .collect();
+    words.reverse();
+    words.join(" ")
 }
 
 fn scripted() -> StubModel {
