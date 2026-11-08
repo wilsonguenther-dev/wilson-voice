@@ -809,10 +809,6 @@ impl ManualLeaseClock {
     }
 }
 
-/// How often a lease on a [`ManualLeaseClock`] looks at the clock while it
-/// waits for its worker. Bounds only how soon an expiry is noticed, never
-/// whether it happens.
-const MANUAL_CLOCK_POLL: Duration = Duration::from_millis(1);
 
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
 /// many times the idle sweeper's clock has been pushed out. Process-global
@@ -1942,7 +1938,10 @@ impl TranscriptionManager {
         let timeout = self.budget_timeout(budget);
         let mut outcome = match (&manual_clock, lease_started) {
             (Some(clock), Some(started)) => loop {
-                match rx.recv_timeout(MANUAL_CLOCK_POLL) {
+                match // The handback poll: it bounds only how soon an expiry is
+                // noticed, never whether it happens, and adds no new timer to
+                // the take path's census (long_take_budget.rs).
+                rx.recv_timeout(ENGINE_HANDBACK_POLL) {
                     Err(mpsc::RecvTimeoutError::Timeout)
                         if clock.now().saturating_sub(started) < timeout => {}
                     other => break other,
