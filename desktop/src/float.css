@@ -2825,26 +2825,47 @@ html[data-dock="right"] .friend-visit {
 .rec-swap > .rec-people {
   display: none;
 }
+/* yap-1106-fb-02 x fb-23 (integrator, loop three batch 4) — pointing at the
+   badge must never MOVE Stop. The swap used to put the 46 px stepper IN the
+   row, and the centred badge then slid Stop 26 pt right under the pointer:
+   the first press on Stop landed on the stepper's minus (pill-matrix --clicks,
+   idle and sleepy with a meeting, every dock). Now the swap keeps exactly the
+   footprint it has at rest (its chip goes visibility: hidden, so the flex row
+   is byte-for-byte the resting one) and the stepper is laid OVER that spot,
+   right-aligned 6 px left of Stop, growing leftwards over the scene. */
 .meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) {
   display: inline-flex;
+  position: relative;
+  flex: none;
+  align-self: stretch;
   align-items: center;
-  justify-content: center;
-  flex: 0 1 46px;
-  min-width: 0;
-  max-width: 46px;
-  overflow: hidden;
+}
+/* No chip at rest: the swap is a zero-width flex item, so it gives back the
+   row gap it would add (the badge's gap is 6 px in the scene). */
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people):not(:has(> :not(.rec-people))) {
+  margin-left: -6px;
 }
 .meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > :not(.rec-people) {
-  display: none;
+  visibility: hidden;
 }
 .meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > .rec-people {
   display: inline-flex;
+  align-items: center;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 46px;
   min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--pill-shell-bottom);
 }
 /* The call app's name steps aside while the stepper shows (it is still on
-   the Stop button's label and returns when the pointer leaves). */
+   the Stop button's label and returns when the pointer leaves); it keeps its
+   footprint so Stop stays put. */
 .meeting-badge:is(:hover, :focus-within):has(> .rec-swap > .rec-people) > .rec-app {
-  display: none;
+  visibility: hidden;
 }
 .meeting-badge > .rec-stop {
   flex: none;

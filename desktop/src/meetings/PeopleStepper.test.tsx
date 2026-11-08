@@ -142,7 +142,7 @@ describe("PeopleStepper in the pill never crowds the clock or Stop", () => {
     expect(badgeSrc.split("<MeetingPeopleSlot").length).toBe(2);
   });
 
-  it("float.css: at rest the swap is display: contents; shown, it is capped and the only thing that shrinks", () => {
+  it("float.css: at rest the swap is display: contents; shown, the stepper is capped and laid over its spot, so Stop never moves", () => {
     expect(PILL_PEOPLE_MAX_W).toBe(46);
     // 208 = 8 + scene 112 + 7 + column + 7 + Stop 20 + 8 → column 46.
     expect(8 + 112 + 7 + PILL_PEOPLE_MAX_W + 7 + 20 + 8).toBe(208);
@@ -150,9 +150,18 @@ describe("PeopleStepper in the pill never crowds the clock or Stop", () => {
     expect(floatCss).toMatch(/\.rec-swap > \.rec-people\s*\{\s*display:\s*none;/);
     const shown = floatCss.slice(floatCss.indexOf(".meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) {"));
     const rule = shown.slice(0, shown.indexOf("}"));
-    expect(rule).toContain(`max-width: ${PILL_PEOPLE_MAX_W}px;`);
-    expect(rule).toContain("min-width: 0;");
-    expect(rule).toContain("overflow: hidden;");
+    // fb-02 x fb-23: the swap keeps its resting footprint (Stop never slides
+    // under the pointer); the stepper is drawn over it.
+    expect(rule).toContain("position: relative;");
+    expect(rule).toContain("flex: none;");
+    expect(rule).not.toContain("max-width");
+    const over = floatCss.slice(floatCss.indexOf(".meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > .rec-people {"));
+    const people = over.slice(0, over.indexOf("}"));
+    expect(people).toContain("position: absolute;");
+    expect(people).toContain(`max-width: ${PILL_PEOPLE_MAX_W}px;`);
+    expect(people).toContain("min-width: 0;");
+    expect(people).toContain("overflow: hidden;");
+    expect(floatCss).toMatch(/\.rec-swap:has\(> \.rec-people\) > :not\(\.rec-people\)\s*\{\s*visibility:\s*hidden;/);
     // The scene and Stop never shrink, so neither can be clipped.
     expect(floatCss).toMatch(/\.meeting-scene\s*\{[^}]*flex:\s*none;/);
     expect(floatCss).toMatch(/\.meeting-badge > \.rec-stop\s*\{\s*flex:\s*none;/);
