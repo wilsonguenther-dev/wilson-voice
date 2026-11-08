@@ -2810,6 +2810,27 @@ html[data-dock="right"] .friend-visit {
   background: var(--pill-shell-2);
   color: var(--pill-stop);
 }
+/* yap-1107-parity-pill — the open side shell's stop (pill.html #vstage .vshell
+   .sbtn.red, 24 px, radius 8), centred under the 56 x 180 room at the shell's
+   bottom padding (vdock.ts vStopRect; the shell is 64 x 216 like .vshell).
+   Visual only, like .yappy-seg: the click lands on .kami-canvas underneath. */
+.yappy-vstop {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--pill-shell-2);
+  color: var(--pill-stop);
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 1;
+}
+.yappy-vstop[data-show="true"] {
+  visibility: visible;
+}
 .yappy-seg-cta {
   display: inline-block;
   height: 24px;

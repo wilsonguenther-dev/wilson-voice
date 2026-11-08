@@ -67,7 +67,7 @@ import { CAPSULE_BORDER, CHICK_DESK_SHIFT, PILL_SCENE, REST_CAPSULE, clampChickP
 import { capsuleCentre, currentPillLayout, meetingClockStacked, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
 // yap-1106-pill-vertical-dock-world — on a side dock the pill is a tall room
 // (or a 30 x 40 resting tab), flush to the edge and never wider than 64 px.
-import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDock, vdockCropWarning, vdockFrame, type SideDock } from "./vdock";
+import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDock, vStopRect, vdockCropWarning, vdockFrame, type SideDock } from "./vdock";
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
@@ -230,6 +230,9 @@ export default function YappyPill(
   const segRef = useRef<HTMLDivElement | null>(null);
   const segWRef = useRef(0);
   const segInfoRef = useRef<{ cls: SegClass; items: SegItem[] }>({ cls: "none", items: [] });
+  // yap-1107-parity-pill — the side dock's stop (pill.html #vstage .vshell: the
+  // 24 px .sbtn.red under the 56 x 180 room). Placed by syncCapsuleBox.
+  const vstopRef = useRef<HTMLSpanElement | null>(null);
   const [doneWords, setDoneWords] = useState(0);
   // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
   // so the 2-line clamp's overflow never clips the bubble's tail.
@@ -429,6 +432,8 @@ export default function YappyPill(
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
     const capsuleBox = capsuleBoxRef.current;
+    const vstop = vstopRef.current;
+    let vstopKey = "";
     const win = winRef.current;
     const wctx = win ? win.getContext("2d") : null;
     let winKey = "";
@@ -441,6 +446,18 @@ export default function YappyPill(
       capsuleBox.style.left = x + "px"; capsuleBox.style.top = y + "px";
       capsuleBox.style.width = w + "px"; capsuleBox.style.height = h + "px";
       capsuleBox.dataset.shape = shape;
+    };
+    // yap-1107-parity-pill — the open side shell draws its stop under the room
+    // whenever the phase's segment has one (the horizontal pill's .seg.r stop).
+    const syncSideStop = (shell: { x: number; y: number; w: number; h: number } | null) => {
+      if (!vstop) return;
+      const want = !!shell && segInfoRef.current.items.some((it) => it.kind === "stop");
+      const r = want && shell ? vStopRect(shell) : null;
+      const key = r ? `${Math.round(r.x * 4)}|${Math.round(r.y * 4)}` : "off";
+      if (key === vstopKey) return;
+      vstopKey = key;
+      vstop.dataset.show = r ? "true" : "false";
+      if (r) { vstop.style.left = r.x + "px"; vstop.style.top = r.y + "px"; }
     };
     const ctx = cv.getContext("2d")!;
     // prefers-reduced-motion: render ONE calm static frame (resting pill, mouth
@@ -814,6 +831,7 @@ export default function YappyPill(
       const s = f.shell, acc = ACC[phase];
       reportPillHitbox(s.x, s.y, s.w, s.h);
       syncCapsuleBox(s.x, s.y, s.w, s.h, `side-${f.mode}`);
+      syncSideStop(f.mode === "room" ? s : null);
       const rad = f.mode === "room" ? VDOCK_RADIUS.open : VDOCK_RADIUS.tab;
       ctx.save();
       if (ov > .05) { ctx.shadowColor = `hsla(${acc}, ${.45 * ov})`; ctx.shadowBlur = 16 * ov; }
@@ -1026,8 +1044,10 @@ export default function YappyPill(
         sky.current(performance.now());
         reportPillHitbox(lay.char.x, lay.char.y, lay.char.w, lay.char.h);
         syncCapsuleBox(lay.char.x, lay.char.y, lay.char.w, lay.char.h, "scene");
+        syncSideStop(null);
       } else {
       reportPillHitbox(x0, y0, segCap ? shellW : capW, capH);
+      syncSideStop(null);
       syncCapsuleBox(x0, y0, segCap ? shellW : capW, capH, "capsule");
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
@@ -1388,6 +1408,7 @@ export default function YappyPill(
           second capsule beside the pill. Hidden without a meeting. */}
       <div className="meeting-shell" data-meeting-shell aria-hidden />
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
+      <span ref={vstopRef} className="yappy-vstop" data-show="false" aria-hidden><Square size={14} strokeWidth={2.4} aria-hidden /></span>
       <div ref={capsuleBoxRef} className="yappy-capsule-box" data-parity="capsule" aria-hidden>
         <canvas ref={winRef} className="yappy-win" aria-hidden />
         {/* yap-1107-parity-pill — pill.html .seg.r, inside the shell. Visual: the
