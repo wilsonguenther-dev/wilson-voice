@@ -2250,7 +2250,20 @@ html[data-one-pill="true"][data-meeting-shell="true"][data-dock="right"] .kami-s
   border-radius: 14px 0 0 14px;
 }
 html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-badge {
-  border-radius: 14px;
+  border-radius: var(--meeting-pill-radius);
+  /* yap-1107-parity-pill — pill.html mtgPill: .ypill padding 4, gap 4; the
+     140 x 36 window first, then the rec segment (state.ts CLOCK_W 202 x 44). */
+  padding: var(--pill-shell-pad);
+  gap: var(--pill-shell-gap);
+  justify-content: flex-start;
+}
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-shell {
+  /* PK.pill radius = h / 2 for the 44-tall meeting pill. */
+  border-radius: var(--meeting-pill-radius);
+}
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-scene {
+  /* mtgPill win r: 14 */
+  border-radius: var(--meeting-window-radius);
 }
 /* Dictating mid-meeting: the clock is a small stack next to stop. */
 .meeting-badge.meeting-stacked {

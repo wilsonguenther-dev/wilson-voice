@@ -200,6 +200,10 @@
      around the sky window (characterFit SHELL_PAD, the same number). */
   --pill-shell-pad: 4px;
   --pill-shell-gap: 4px;
+  /* yap-1107-parity-pill — pill.html mtgPill: the 44-tall meeting pill keeps
+     PK.pill's radius h / 2, its 140 x 36 sky window r 14. */
+  --meeting-pill-radius: 22px;
+  --meeting-window-radius: 14px;
   --pill-on-shell: #eceae4;
   --pill-on-shell-2: #a9a59c; /* the quiet ".sub" word ("words", "Click to dictate") */
   --pill-bar-fill: #f2c14e; /* warming up / writing it up fill bar */

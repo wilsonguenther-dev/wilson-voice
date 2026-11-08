@@ -145,13 +145,15 @@ export const HINT_W = 192;
 export const HINT_LINE_H = 14;
 /**
  * The clock row. yap-1106-pill-rec-headphones-hoot-tape: no red dot any more —
- * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 112 x 40: sun, time,
- * Hoot at the tape, Yappy in headphones) + call-audio mark + stop. 40 tall is
- * the scene at a whole-number scale, and still clears the bubble row above
- * (vertically centred on the 22 pt capsule: -9 vs the bubble's -10).
+ * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 140 x 36: sun, time,
+ * Hoot at the tape, Yappy in headphones) + call-audio mark + stop.
+ * yap-1107-parity-pill: pill.html mtgPill / #timer is a 202 x 44 shell (4 px
+ * padding, the 140 x 36 window, then the 50 px rec segment: 6 + 8 + 6 + 24 + 6)
+ * — was 208 x 40, 9 percent short. "after" keeps the scene plus the word
+ * "Saved" (140 + 72, as 112 + 72 before).
  */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
-export const CLOCK_H = 40;
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 202, after: 212 };
+export const CLOCK_H = 44;
 /**
  * yap-1107-one-pill-during-meeting — dictating mid-meeting, the clock leaves
  * the scene and "shrinks into a small stack next to stop" (Pill artifact,

@@ -38,20 +38,26 @@ export const SAVED_HOLD_MS = 2400;
 /** The pill's words for the stop beat. */
 export const SAVED_LABEL = "Saved";
 
-/** The scene's art buffer, in art pixels (painted at a whole-number scale). */
-export const SCENE_W = 112;
-export const SCENE_H = 40;
+/** The scene's art buffer, in art pixels (painted at a whole-number scale).
+ * yap-1107-parity-pill: pill.html mtgPill draws the meeting window 140 x 36
+ * inside a 44-tall shell (4 px padding); the old 112 x 40 buffer was 9 percent
+ * off in height. Everything below moved +14 x (the group stays centred in the
+ * wider sky) and -4 y (the grass keeps its 6 rows). */
+export const SCENE_W = 140;
+export const SCENE_H = 36;
 /** Where things stand in the buffer (Hoot left of Yappy, tape between). */
 export const SCENE_LAYOUT = {
-  groundY: 34,
-  hoot: { x: 1, y: 12, size: 24 },
-  tape: { x: 24, y: 20, w: 22, h: 14, reels: [{ x: 30, y: 26 }, { x: 40, y: 26 }] },
-  /** feetY 36, not 38: the detail-pass Yappy (yap-1106-yappy-detail-pass) has
-   * toes to feetY + 2 and a ground shadow to feetY + 3, so 36 is the lowest
-   * he stands with every pixel inside the 40-row buffer. */
-  yappy: { cx: 74, feetY: 36 },
+  groundY: 30,
+  hoot: { x: 15, y: 8, size: 24 },
+  tape: { x: 38, y: 16, w: 22, h: 14, reels: [{ x: 44, y: 22 }, { x: 54, y: 22 }] },
+  /** feetY 32: the detail-pass Yappy (yap-1106-yappy-detail-pass) has toes to
+   * feetY + 2 and a ground shadow to feetY + 3, so 32 is the lowest he stands
+   * with every pixel inside the 36-row buffer. */
+  yappy: { cx: 88, feetY: 32 },
   /** The right ear cup of Yappy's headphones — the recording light (moves with him). */
-  cup: { x: 84, y: 22, w: 4, h: 6 },
+  cup: { x: 98, y: 18, w: 4, h: 6 },
+  /** The stop beat: the tape on its way from Hoot to Yappy (top-left of the cassette). */
+  handover: { x: 64, y: 20 },
 } as const;
 
 export type SkyPhase = "day" | "dusk";

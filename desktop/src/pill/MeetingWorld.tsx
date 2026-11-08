@@ -97,10 +97,11 @@ export function paintMeetingScene(o: CanvasRenderingContext2D, m: MeetingSceneMo
   drawHoot(o, m.hoot.handingTape);
   // the stop beat: the tape itself, on its way from Hoot to Yappy
   if (m.hoot.handingTape) {
-    rct(50, 24, 9, 6, INK);
-    rct(51, 25, 7, 4, "#e8e6e1");
-    rct(52, 26, 2, 2, "#8b6a3a");
-    rct(55, 26, 2, 2, "#8b6a3a");
+    const hx = L.handover.x, hy = L.handover.y;
+    rct(hx, hy, 9, 6, INK);
+    rct(hx + 1, hy + 1, 7, 4, "#e8e6e1");
+    rct(hx + 2, hy + 2, 2, 2, "#8b6a3a");
+    rct(hx + 5, hy + 2, 2, 2, "#8b6a3a");
   }
   // Yappy
   const { cx, feetY } = L.yappy;
