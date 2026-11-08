@@ -933,16 +933,11 @@ impl TranscriptionManager {
     /// Now, in milliseconds, on the idle clock: the injected clock when a test
     /// installed one, else the wall clock (the app, always).
     fn idle_now_ms(&self) -> u64 {
-        let manual = self
-            .inner
-            .idle_clock
-            .lock()
+        // A leaf lock, held only to read the clock: never nests another lock.
+        let manual = (*self.inner.idle_clock.lock())
             .as_ref()
             .map(|clock| clock.now());
-        match manual {
-            Some(elapsed) => elapsed.as_millis() as u64,
-            None => now_ms(),
-        }
+        manual.map_or_else(now_ms, |elapsed| elapsed.as_millis() as u64)
     }
 
     /// Watcher thread: every `idle_check_interval`, unload an engine that has
