@@ -221,9 +221,11 @@ fn cancel_mid_decode_stops_at_the_next_chunk_boundary() {
 
     // Let the decode get properly under way — boundaries actually crossed, so
     // the cancel lands MID-decode rather than before it starts.
-    wait_until("the decode to cross two chunk boundaries", Duration::from_secs(30), || {
-        chunks_done.load(Ordering::SeqCst) >= 2
-    });
+    wait_until(
+        "the decode to cross two chunk boundaries",
+        Duration::from_secs(30),
+        || chunks_done.load(Ordering::SeqCst) >= 2,
+    );
     assert!(
         m.cancel_in_flight_for_user(),
         "there was an in-flight decode and the cancel did not reach it"

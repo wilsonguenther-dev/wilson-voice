@@ -119,9 +119,11 @@ fn a_307_to_a_second_port_is_never_followed() {
     drop(TcpStream::connect(("127.0.0.1", b)).unwrap());
     // The kernel completes the handshake; B's thread counts it only when it
     // runs `accept`. Wait for that, then pin the exact count.
-    wait_until("B to accept the direct connection", Duration::from_secs(30), || {
-        b_hits.load(Ordering::SeqCst) >= 1
-    });
+    wait_until(
+        "B to accept the direct connection",
+        Duration::from_secs(30),
+        || b_hits.load(Ordering::SeqCst) >= 1,
+    );
     assert_eq!(b_hits.load(Ordering::SeqCst), 1, "the counter works");
 }
 
