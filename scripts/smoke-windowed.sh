@@ -130,7 +130,9 @@ case "${1:-}" in
 esac
 
 SHOTS_ROOT="${YAP_SMOKE_SHOTS:-docs/smoke-shots}"
-RUN="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+# yap-1107-parity-home: a caller-named run (YAP_SMOKE_RUN=parity-home-<date>, as
+# the parity integrator steps pass it) is honoured; unset = a timestamped run.
+RUN="${YAP_SMOKE_RUN:-$(date -u +%Y-%m-%dT%H-%M-%SZ)}"
 export YAP_SMOKE_RUN="$RUN" YAP_SMOKE_SHOTS="$SHOTS_ROOT"
 mkdir -p "$SHOTS_ROOT/$RUN"
 

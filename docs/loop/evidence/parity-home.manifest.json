@@ -19,7 +19,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 960,
@@ -45,7 +47,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 960,
@@ -95,7 +99,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 920,
@@ -151,7 +157,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "fontPx": [
@@ -199,7 +207,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "padding": {
@@ -248,7 +258,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 920,
@@ -299,7 +311,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 920,
@@ -337,7 +351,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 920,
@@ -379,7 +395,9 @@
         "width": 1188,
         "height": 1600,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-1188x1600.png"
+        "capture": "custom-home-1188x1600.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "w": 968,
@@ -431,7 +449,9 @@
         "width": 980,
         "height": 700,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-980x700.png"
+        "capture": "custom-home-980x700.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "h": 25,
@@ -478,7 +498,9 @@
         "width": 720,
         "height": 520,
         "fixtures": "scripts/smoke-fixtures-daily.json",
-        "capture": "custom-home-720x520.png"
+        "capture": "custom-home-720x520.png",
+        "colorScheme": "light",
+        "clock": "12:00"
       },
       "expect": {
         "h": 25,
@@ -506,5 +528,6 @@
         "gap": 7
       }
     }
-  ]
+  ],
+  "pin": "Both sides are judged LIGHT and at 12:00 local (the approved page is light and daytime: no dark block in home.html, no room tint in sideview.js). Each app state carries colorScheme light + clock 12:00 for parity-sheet; a YAP_SMOKE_SCALE=2 smoke run pins the same (scripts/headless-chrome.mjs pinnedClockScript / pinColorScheme). Batch-3 bounce: colour rows had been measured in the Mac's dark appearance and the room at night (#e9cf98 floor tinted away); Needs attention rows wore the global .card-meta (9.24 px, +8 px each) = 256.84 vs 243.56."
 }
