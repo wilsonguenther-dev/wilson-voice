@@ -20,6 +20,8 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useReducer, useState } from "react";
+import PeopleStepper, { type People } from "./PeopleStepper";
+import type { LabelRow } from "./transcript";
 
 /** One card, as `meeting_voice_cards` sends it (`speaker_profiles::VoiceCard`). */
 export interface VoiceCard {
@@ -271,7 +273,16 @@ interface Props {
   toast: (message: string) => void;
   /** Calendar attendees of this meeting, when the calendar is on. */
   attendees?: string[];
+  /** yap-1106-fb-23 — distinct voices in the transcript ("4 voices"). */
+  voiceCount?: number | null;
+  /** yap-1106-fb-23 — the lines after a People change regrouped the voices. */
+  onLabelRows?: (rows: LabelRow[]) => void;
 }
+
+type RecapReply = {
+  outcome: { kind: "applied"; voices: number; merged: number } | { kind: "needsConfirm"; from: string; into: string };
+  rows: LabelRow[];
+};
 
 /** Each card's own state lives in the parent so the headline can count. */
 type Cards = Record<string, CardState>;
@@ -291,7 +302,45 @@ export default function WhoIsTalking({
   onNames,
   toast,
   attendees = [],
+  voiceCount = null,
+  onLabelRows,
 }: Props) {
+  // yap-1106-fb-23 — "4 voices · People − 4 +": changing the count after the
+  // meeting re-runs only the merge on the stored voices (no transcription, no
+  // embedding) and relabels the lines; two named people merge only after
+  // "Merge Maya into John?".
+  const [people, setPeople] = useState<People>(null);
+  const [mergeAsk, setMergeAsk] = useState<{ from: string; into: string; count: People } | null>(null);
+  const [regrouping, setRegrouping] = useState(false);
+  useEffect(() => {
+    let live = true;
+    invoke<number | null>("meeting_expected_speakers", { meetingId })
+      .then((n) => live && setPeople(n ?? null))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [meetingId]);
+  async function regroup(count: People, confirmMerge: boolean) {
+    setRegrouping(true);
+    try {
+      const reply = await invoke<RecapReply>("meeting_recap_speakers", { meetingId, count, confirmMerge });
+      if (reply.outcome.kind === "needsConfirm") {
+        setMergeAsk({ from: reply.outcome.from, into: reply.outcome.into, count });
+        logWho("people_merge_asked");
+        return;
+      }
+      setMergeAsk(null);
+      setPeople(count);
+      if (reply.rows.length) onLabelRows?.(reply.rows);
+      logWho("people_regrouped");
+    } catch {
+      toast("Couldn't regroup the voices. Try again.");
+      logWho("people_regroup_failed");
+    } finally {
+      setRegrouping(false);
+    }
+  }
   const [cards, setCards] = useState<VoiceCard[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [states, dispatch] = useReducer(cardsReducer, {});
@@ -419,6 +468,26 @@ export default function WhoIsTalking({
     <section className="who-cards" role="region" aria-label="Who was this?">
       <header className="who-cards-head">
         <strong>{headline(open)}</strong>
+        {!recording && (
+          <PeopleStepper
+            value={people}
+            voices={voiceCount}
+            attendees={attendees.length ? attendees.length : null}
+            disabled={regrouping}
+            onChange={(next) => void regroup(next, false)}
+          />
+        )}
+        {mergeAsk && (
+          <span className="people-merge-ask" role="alertdialog" aria-label={`Merge ${mergeAsk.from} into ${mergeAsk.into}?`}>
+            Merge {mergeAsk.from} into {mergeAsk.into}?
+            <button type="button" onClick={() => void regroup(mergeAsk.count, true)} disabled={regrouping}>
+              Merge
+            </button>
+            <button type="button" onClick={() => setMergeAsk(null)} disabled={regrouping}>
+              Keep both
+            </button>
+          </span>
+        )}
         {purged && (
           <span className="tiny muted">
             The audio was deleted after {retentionDays} days, so there are no clips. You can still name each voice from its
