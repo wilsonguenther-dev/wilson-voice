@@ -318,7 +318,8 @@ fn surfaced<T>(event: &str, r: Result<T, String>) -> Result<T, String> {
     if let Err(e) = &r {
         log::warn!("globe_key {event}_failed reason={e:?}");
     }
-    r
+    // Surfaced as one sentence (toastError), named for the running product.
+    r.map_err(|e| crate::permissions::named(&e))
 }
 
 /// Read-only: the row for the Permissions page. Never writes.
