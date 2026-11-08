@@ -467,6 +467,13 @@ struct FakeQuitState {
 /// The outcome never depends on real scheduling: the runner only polls the
 /// step's channel until either the step finishes or its declared cost has
 /// already passed the deadline.
+///
+/// A test seam only (yap-1108-timing-lifecycle-quit-clock): it is `pub` because
+/// the integration tests under `tests/` cannot see `#[cfg(test)]` items; the
+/// app never builds one. A step must declare its whole cost before it returns
+/// or wedges: [`run_bounded_with`] starts the next step as soon as the declared
+/// cost passes the deadline, so a charge made after that would land on the
+/// next step.
 #[derive(Default)]
 pub struct FakeQuitClock {
     state: std::sync::Mutex<FakeQuitState>,
@@ -554,8 +561,7 @@ pub fn run_bounded_with(
     let mut reports = Vec::with_capacity(steps.len());
     for step in steps {
         let step_start = clock.now();
-        let charged = clock
-            .now()
+        let charged = step_start
             .saturating_sub(start)
             .saturating_sub(exempt_spent);
         let left = budget.saturating_sub(charged);

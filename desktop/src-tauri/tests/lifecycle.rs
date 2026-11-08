@@ -11,8 +11,32 @@ use std::time::{Duration, Instant};
 use wilson_voice_lib::lifecycle::{
     self, activation_action, handoff_to_running, quit_plan, run_bounded, run_bounded_with,
     ActivationSource, BoundedStep, FakeQuitClock, HandoffVerdict, MainWindowState, QuitStep,
-    StepOutcome, WindowAction,
+    StepOutcome, TeardownReport, WindowAction,
 };
+
+/// Runs the quit on a [`FakeQuitClock`] (yap-1108-timing-lifecycle-quit-clock):
+/// whether each step met its deadline, and the reported total, are decided by
+/// the costs the steps declare, never by how loaded the runner is. The quit
+/// runs on a helper thread under a generous REAL watchdog so a regression that
+/// blocks on a wedged step (which parks forever) FAILS here instead of hanging
+/// CI. The watchdog is not a timing bound: a healthy fake quit returns in
+/// milliseconds of real time.
+fn quit_on_fake_clock(
+    steps: Vec<BoundedStep>,
+    budget: Duration,
+    clock: &std::sync::Arc<FakeQuitClock>,
+) -> TeardownReport {
+    let clock = clock.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("fake-quit".into())
+        .spawn(move || {
+            let _ = tx.send(run_bounded_with(steps, budget, &*clock));
+        })
+        .expect("spawn the fake quit");
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("the quit returned: the runner must abandon a wedged step, never wait on it")
+}
 
 fn hidden() -> MainWindowState {
     MainWindowState {
@@ -144,7 +168,7 @@ fn a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off() {
             })
         })
         .collect();
-    let report = run_bounded_with(steps, lifecycle::QUIT_BUDGET, &*clock);
+    let report = quit_on_fake_clock(steps, lifecycle::QUIT_BUDGET, &clock);
     let took = report.total;
     for s in quit_plan() {
         assert_eq!(
@@ -188,7 +212,7 @@ fn a_wedged_exempt_step_is_bounded_by_its_own_deadline_and_the_rest_still_run() 
     ];
     // A budget SMALLER than the exempt step's deadline: charged, it would
     // leave nothing for the checkpoint.
-    let report = run_bounded_with(steps, Duration::from_millis(200), &*clock);
+    let report = quit_on_fake_clock(steps, Duration::from_millis(200), &clock);
     let took = report.total;
     assert_eq!(
         report.outcome_of("meeting_stop"),
@@ -308,7 +332,7 @@ fn a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded() {
             o("ckpt"),
         ),
     ];
-    let report = run_bounded_with(steps, Duration::from_millis(3_000), &*clock);
+    let report = quit_on_fake_clock(steps, Duration::from_millis(3_000), &clock);
     assert!(
         report.total < Duration::from_millis(1_000),
         "{:?}",
@@ -342,12 +366,15 @@ fn the_whole_quit_never_exceeds_its_budget_when_every_step_hangs() {
         })
         .collect();
     let budget = Duration::from_millis(600);
-    let report = run_bounded_with(steps, budget, &*clock);
+    let report = quit_on_fake_clock(steps, budget, &clock);
     assert!(
         report.total < budget + Duration::from_millis(200),
         "{:?}",
         report.total
     );
+    // On the fake clock there is no scheduler overshoot to allow for, so the
+    // property the name states holds exactly: never past the budget.
+    assert!(report.total <= budget, "{:?}", report.total);
     assert!(report
         .steps
         .iter()
