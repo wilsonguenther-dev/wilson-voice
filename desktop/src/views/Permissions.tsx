@@ -9,6 +9,7 @@ import { viewState } from "../viewState";
 import { ErrorState, LoadingState } from "../ViewStates";
 import type { PermissionReport } from "../appTypes";
 import { DEV_HOST_LINE, isDevHostAttributed } from "../permissionRepair";
+import GlobeKeyRow from "./GlobeKeyRow";
 
 /**
  * Y5-B fix round (#192 BLOCKING) - the exact string permissions.rs emits when
@@ -230,6 +231,9 @@ export default function Permissions() {
                     </p>
                   </div>
                 </li>
+                {/* yap-1107-globe-key-conflict-guard — a lone Fn tap vs macOS's
+                    Globe action; renders nothing when there is no conflict. */}
+                <GlobeKeyRow toastError={toastError} />
                 <li data-row className={perms.asrOk ? "ok" : "bad"}>
                   <StatusDot ok={perms.asrOk} />
                   <div>
