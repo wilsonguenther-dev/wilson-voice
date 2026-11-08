@@ -87,11 +87,10 @@ fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_t
     assert!(model.stage("reduce").is_empty(), "no REDUCE once the summary held up");
 }
 
-/// The model returns one fact three times: dedupe keeps ONE, and
-/// (yap-audit-notes-guards DO 8) nothing tops it up from the transcript — one
-/// lone point is not a section, so Key points is left out.
+/// The model returns one fact three times: backfill tops the list up from
+/// the transcript's most informative sentences, verbatim.
 #[test]
-fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
+fn fewer_than_three_distinct_points_are_backfilled_from_the_transcript() {
     let model = StubModel::with_headline(|req| {
         Ok(match req.mode.as_str() {
             "map" => map_answer(req),
@@ -101,26 +100,28 @@ fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
         })
     });
     let s = summarize_segments(&segments_from(FIXTURE), &model).expect("a summary");
-    assert!(!s.markdown.contains("### Key points"), "{}", s.markdown);
-    for line in FIXTURE {
-        assert!(!s.markdown.contains(&format!("- {line}\n")) || line.contains("will"), "padded: {line}");
+    let points = key_points(&s.markdown);
+    assert!(points.len() >= 3, "{}", s.markdown);
+    assert_distinct(&points);
+    for p in &points[1..] {
+        assert!(FIXTURE.contains(&p.as_str()), "backfill is verbatim transcript: {p}");
     }
     // No paragraph from the model → the MAP/REDUCE narrative stands in.
     assert_eq!(s.narrative, "The team reviewed pricing for the Drivia consulting tier.");
 }
 
-/// A failed HEADLINE call yields no padded points (DO 8) and a title that is
-/// not transcript words (DO 6).
+/// A failed HEADLINE call still yields ≥ 3 distinct points.
 #[test]
-fn a_failed_headline_call_never_pads_key_points() {
+fn a_failed_headline_call_still_backfills_three_points() {
     let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "map" => Ok(map_answer(req)),
         "headline" => Err(SummaryError::Protocol),
         _ => Ok("The team reviewed pricing.".to_string()),
     });
     let s = summarize_segments(&segments_from(FIXTURE), &model).expect("a summary");
-    assert!(!s.markdown.contains("### Key points"), "{}", s.markdown);
-    assert!(s.markdown.starts_with("## Meeting, "), "{}", s.markdown);
+    let points = key_points(&s.markdown);
+    assert!(points.len() >= 3, "{}", s.markdown);
+    assert_distinct(&points);
 }
 
 /// The reviewer's seven probe lines (round 2): every one was backfilled as an

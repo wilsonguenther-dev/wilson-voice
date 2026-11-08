@@ -73,14 +73,8 @@ fn scripted() -> StubModel {
         if req.mode == "reduce" {
             // REDUCE sees the chunk narratives and nothing else; stitch them
             // into one paragraph, which is the merge a model would be asked for.
-            // yap-audit-notes-guards: the stitch comes back word-reversed. A real
-            // merge rewords; stitching the chunk-first-line clauses in order
-            // rebuilds the transcript, which `v8_verbatim` refuses as a
-            // re-transcript. Reversed, every word is still grounded.
             let head: Vec<&str> = req.text.lines().filter(|l| !l.trim().is_empty()).collect();
-            let mut words: Vec<&str> = head.iter().flat_map(|l| l.split_whitespace()).collect();
-            words.reverse();
-            return Ok(words.join(" "));
+            return Ok(head.join(" "));
         }
         let clause = |i: usize| -> String {
             bodies

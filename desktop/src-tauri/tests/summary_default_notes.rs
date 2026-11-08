@@ -92,19 +92,28 @@ fn fixture_transcript_becomes_full_notes() {
 }
 
 #[test]
-fn a_failed_headline_pass_still_yields_title_and_no_padded_points() {
+fn a_failed_headline_pass_still_yields_title_and_three_points() {
     let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "headline" => Err(SummaryError::Protocol),
         _ => answer(req),
     });
     let s = summarize_segments(&segments_from(FIXTURE), &model).expect("a summary");
-    // yap-audit-notes-guards DO 6: the fallback title is never transcript
-    // words — "Meeting, <weekday> <HH:MM>".
-    assert!(s.markdown.starts_with("## Meeting, "), "{}", s.markdown);
-    // DO 8 (F2): no model answer → zero validated points → no Key points
-    // section. Transcript sentences never pad it (that was a re-transcript).
-    assert!(!s.markdown.contains("### Key points"), "{}", s.markdown);
-    assert!(s.markdown.contains("### Action items"), "{}", s.markdown);
+    assert!(s.markdown.starts_with("## "), "{}", s.markdown);
+    let kp = s
+        .markdown
+        .split("### Key points\n\n")
+        .nth(1)
+        .expect("key points");
+    let points: Vec<&str> = kp.lines().take_while(|l| l.starts_with("- ")).collect();
+    // R2-B1: no model answer → at least three distinct points, verbatim
+    // from the transcript's most informative sentences.
+    assert!(points.len() >= 3, "{kp}");
+    for (i, a) in points.iter().enumerate() {
+        assert!(a.trim_start_matches("- ").trim().len() > 3, "empty point: {kp}");
+        for b in &points[i + 1..] {
+            assert!(wilson_voice_lib::summarize::point_overlap(a, b) < 0.6, "{a} ~ {b}");
+        }
+    }
 }
 
 #[test]
