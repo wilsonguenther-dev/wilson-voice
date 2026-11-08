@@ -2789,13 +2789,52 @@ html[data-dock="right"] .friend-visit {
   .who-wave-bar { animation: none; transform: scaleY(0.6); }
 }
 
-/* yap-1106-fb-23 — the pill's compact People stepper: pointer-only, never
-   takes focus from the call, hidden during a screen share. */
+/* yap-1106-fb-23 — the pill's compact People stepper "− 4 +": pointer-only,
+   never takes focus from the call, hidden during a screen share.
+   Batch 5 bounce fix: it never adds width to the clock row. The 208 px row is
+   8 + scene 112 + 7 + ONE 46 px column + 7 + Stop 20 + 8, and the badge is
+   centred with overflow hidden, so anything wider clipped the clock and Stop
+   at every dock. The stepper now shares that one column with the speaker /
+   call-audio chip (.rec-swap): at rest the swap is display: contents, so the
+   row is exactly the approved one; pointing at the clock (or focus inside it)
+   shows the stepper in the chip's place, capped at PILL_PEOPLE_MAX_W (46) and
+   the only item allowed to shrink — the scene and Stop are flex: none. */
+.rec-swap {
+  display: contents;
+}
+.rec-swap > .rec-people {
+  display: none;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 46px;
+  min-width: 0;
+  max-width: 46px;
+  overflow: hidden;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > :not(.rec-people) {
+  display: none;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > .rec-people {
+  display: inline-flex;
+  min-width: 0;
+}
+/* The call app's name steps aside while the stepper shows (it is still on
+   the Stop button's label and returns when the pointer leaves). */
+.meeting-badge:is(:hover, :focus-within):has(> .rec-swap > .rec-people) > .rec-app {
+  display: none;
+}
+.meeting-badge > .rec-stop {
+  flex: none;
+}
 .rec-people .people-stepper.is-compact {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  font-size: 11px;
+  gap: 0;
+  max-width: 46px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 .rec-people .people-stepper.is-compact .people-label,
@@ -2803,15 +2842,28 @@ html[data-dock="right"] .friend-visit {
   display: none;
 }
 .rec-people .people-stepper.is-compact button {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
+  min-width: 12px;
+  height: 16px;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-pill);
-  background: var(--surface-glass);
-  color: inherit;
-  font: inherit;
+  background: none;
+  color: var(--pill-text);
+  font: 600 10px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  cursor: pointer;
 }
-.rec-people .people-stepper.is-compact .people-auto.is-on {
+.rec-people .people-stepper.is-compact button:hover:not(:disabled) {
+  background: var(--surface-glass);
+}
+.rec-people .people-stepper.is-compact button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.rec-people .people-stepper.is-compact .people-value {
+  min-width: 18px;
+  padding: 0 1px;
+}
+.rec-people .people-stepper.is-compact .people-value.is-auto {
+  font-size: 9px;
   background: var(--accent-action-soft);
 }

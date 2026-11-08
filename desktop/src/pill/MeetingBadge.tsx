@@ -21,6 +21,7 @@ import { badgeCallLabel } from "./callOfferModel";
 import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import PeopleStepper, { type People } from "../meetings/PeopleStepper";
 import MeetingWorld from "./MeetingWorld";
+import { PILL_QUIET_EVENT, PILL_QUIET_STATE, parseQuietState } from "./friendVisits";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -350,10 +351,19 @@ export default function MeetingBadge({
       )}
       {/* fix-l3b4-1 — who is talking: one word stacked OVER the call-audio
           chip, so the clock row (CLOCK_W 208) gains no width. */}
-      {speakerSlot("row", audioChip)}
-      {/* yap-1106-fb-23 — "People: Auto · − 4 +", never during a screen share.
-          (The stacked branch returned above, so the 96 px stack never gets it.) */}
-      {!screenSharing && <MeetingPeopleSlot meetingId={status.id ?? null} attendees={attendees} />}
+      {/* yap-1106-fb-23 — "People − 4 +", never during a screen share. (The
+          stacked branch returned above, so the 96 px stack never gets it.)
+          Batch 5 bounce: inline it pushed the row past CLOCK_W and the
+          centred, overflow-hidden badge clipped the clock AND Stop. Now it
+          shares ONE column with the speaker / call-audio chip: at rest the
+          chip shows (the row is exactly the approved one), and pointing at
+          the clock swaps the column to the stepper (float.css .rec-swap), so
+          the stepper never adds width; the column is the only thing that
+          may shrink, never the scene or Stop. */}
+      <span className="rec-swap">
+        {speakerSlot("row", audioChip)}
+        {!screenSharing && <MeetingPeopleSlot meetingId={status.id ?? null} attendees={attendees} />}
+      </span>
       <button
         type="button"
         className="rec-stop"
@@ -515,14 +525,43 @@ function LiveSpeakerView({
  */
 export function MeetingPeopleSlot({ meetingId, attendees = null }: { meetingId: string | null; attendees?: number | null }) {
   const [people, setPeople] = useState<People>(null);
+  // Batch 5 rework: the badge's `screenSharing` prop is not fed by the shell,
+  // so the slot reads the quiet state itself (the who card's source,
+  // pill_quiet.rs) and steps out while the screen is shared.
+  const [sharing, setSharing] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    let unlisten: (() => void) | null = null;
+    invoke<unknown>(PILL_QUIET_STATE).then(
+      (v) => { if (!dead) setSharing(parseQuietState(v).screenSharing); },
+      () => console.warn("meeting_people quiet_state_failed"),
+    );
+    listen<unknown>(PILL_QUIET_EVENT, (e) => setSharing(parseQuietState(e.payload).screenSharing)).then(
+      (u) => { if (dead) u(); else unlisten = u; },
+      () => console.warn("meeting_people quiet_listen_failed"),
+    );
+    return () => { dead = true; unlisten?.(); };
+  }, []);
+  // A remounted pill shows the count already stored on the meeting, not Auto.
+  useEffect(() => {
+    if (!meetingId) return;
+    let dead = false;
+    invoke<number | null>("meeting_expected_speakers", { meetingId }).then(
+      (v) => { if (!dead) setPeople(typeof v === "number" ? v : null); },
+      () => console.warn("meeting_people load_failed"),
+    );
+    return () => { dead = true; };
+  }, [meetingId]);
   const changePeople = (next: People) => {
     const prev = people;
     setPeople(next);
+    console.info(`meeting_people set count=${next ?? "auto"} surface=pill`);
     invoke("meeting_set_expected_speakers", { meetingId, count: next }).catch(() => {
       setPeople(prev);
       console.warn("meeting_people set_failed");
     });
   };
+  if (sharing) return null;
   return (
     // A click here never reaches the capsule's toggle: PillShell skips clicks inside .rec-people.
     <span className="rec-people">

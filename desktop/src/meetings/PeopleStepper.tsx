@@ -74,6 +74,19 @@ export function keyToPeople(key: string, value: People, suggestion?: number | nu
   }
 }
 
+/**
+ * The pill's one-line explanation (the compact variant has no label or
+ * suggestion chip): what the count means, and the calendar's suggestion with
+ * its reason, which − or + from Auto starts at. Never applied on its own.
+ */
+export function compactTitle(value: People, suggestion: { count: number; reason: string } | null): string {
+  const base = value === null ? "People in this meeting: Auto, the voices decide" : `People in this meeting: ${value}, counting you`;
+  return suggestion ? `${base} · Suggested ${suggestion.count} (${suggestion.reason})` : base;
+}
+
+/** The pill column the compact stepper must fit (the call-audio chip's width). */
+export const PILL_PEOPLE_MAX_W = 46;
+
 interface Props {
   value: People;
   onChange: (next: People) => void;
@@ -112,6 +125,7 @@ export default function PeopleStepper({ value, onChange, attendees, voices, disa
       tabIndex={compact || disabled ? -1 : 0}
       onKeyDown={onKey}
       data-people={peopleLabel(value)}
+      title={compact ? compactTitle(value, suggestion) : undefined}
     >
       {voices !== null && voices !== undefined && (
         <span className="people-voices">
@@ -119,6 +133,11 @@ export default function PeopleStepper({ value, onChange, attendees, voices, disa
         </span>
       )}
       <span className="people-label">People</span>
+      {/* fix (batch 5 bounce): in the pill the stepper has one chip-sized
+          column (PILL_PEOPLE_MAX_W), so the compact variant is just
+          "− value +": the value itself is the Auto toggle, and the calendar
+          suggestion rides the title (− or + from Auto starts at it). */}
+      {!compact && (
       <button
         type="button"
         className={`people-auto${value === null ? " is-on" : ""}`}
@@ -129,6 +148,7 @@ export default function PeopleStepper({ value, onChange, attendees, voices, disa
       >
         Auto
       </button>
+      )}
       <button
         type="button"
         className="people-step"
@@ -139,9 +159,22 @@ export default function PeopleStepper({ value, onChange, attendees, voices, disa
       >
         −
       </button>
-      <span className="people-value" aria-hidden>
-        {value === null ? "·" : value}
-      </span>
+      {compact ? (
+        <button
+          type="button"
+          className={`people-value${value === null ? " is-auto" : ""}`}
+          aria-label={value === null ? "Auto, the voices decide" : `${value} people. Back to Auto`}
+          tabIndex={tab}
+          disabled={disabled}
+          onClick={() => value !== null && onChange(null)}
+        >
+          {peopleLabel(value)}
+        </button>
+      ) : (
+        <span className="people-value" aria-hidden>
+          {value === null ? "·" : value}
+        </span>
+      )}
       <button
         type="button"
         className="people-step"
@@ -152,7 +185,7 @@ export default function PeopleStepper({ value, onChange, attendees, voices, disa
       >
         +
       </button>
-      {suggestion && (
+      {suggestion && !compact && (
         <button
           type="button"
           className="people-suggest"

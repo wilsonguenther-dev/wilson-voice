@@ -8,11 +8,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import libRs from "../../src-tauri/src/lib.rs?raw";
 import badgeSrc from "../pill/MeetingBadge.tsx?raw";
 import whoSrc from "./WhoIsTalking.tsx?raw";
+import floatCss from "../float.css?raw";
 import PeopleStepper, {
   PEOPLE_MAX,
   PEOPLE_MIN,
+  PILL_PEOPLE_MAX_W,
   calendarSuggestion,
   clampPeople,
+  compactTitle,
   keyToPeople,
   peopleLabel,
   stepPeople,
@@ -89,5 +92,69 @@ describe("PeopleStepper model", () => {
     expect(whoSrc).toContain("meeting_recap_speakers");
     expect(libRs).toContain("live_transcript::meeting_set_expected_speakers");
     expect(libRs).toContain("live_transcript::meeting_recap_speakers");
+  });
+});
+
+/**
+ * Batch 5 bounce: inline in the 208 px clock row, the stepper pushed the
+ * centred, overflow-hidden badge past its width and clipped the clock and
+ * Stop at every dock. It now shares the chip's ONE column and never adds width.
+ */
+describe("PeopleStepper in the pill never crowds the clock or Stop", () => {
+  it("the compact variant is just − value +: no Auto chip, no suggestion chip", () => {
+    const auto = renderToStaticMarkup(<PeopleStepper value={null} attendees={4} compact onChange={() => {}} />);
+    expect(auto).not.toContain("people-auto");
+    expect(auto).not.toContain("people-suggest");
+    expect(auto).toContain('class="people-value is-auto"');
+    expect(auto).toContain(">Auto</button>");
+    // The suggestion and its reason ride the title, never applied on their own.
+    expect(auto).toContain("Suggested 4 (4 on the invite)");
+    expect(auto).toContain('data-people="Auto"');
+    const four = renderToStaticMarkup(<PeopleStepper value={4} compact onChange={() => {}} />);
+    expect(four).toContain(">4</button>");
+    expect(four).toContain("4 people. Back to Auto");
+    expect((four.match(/<button/g) ?? []).length).toBe(3);
+    expect(four).not.toMatch(/tabindex="0"/);
+  });
+
+  it("the full variant (cards header) keeps Auto and the suggestion chip", () => {
+    const html = renderToStaticMarkup(<PeopleStepper value={null} attendees={4} onChange={() => {}} />);
+    expect(html).toContain("people-auto is-on");
+    expect(html).toContain("people-suggest");
+    expect(html).toContain("4 on the invite");
+  });
+
+  it("compactTitle explains the count and the calendar suggestion", () => {
+    expect(compactTitle(null, null)).toBe("People in this meeting: Auto, the voices decide");
+    expect(compactTitle(3, { count: 4, reason: "4 on the invite" })).toBe(
+      "People in this meeting: 3, counting you · Suggested 4 (4 on the invite)",
+    );
+  });
+
+  it("the stepper shares the speaker / call-audio column instead of adding one", () => {
+    const swap = badgeSrc.indexOf('className="rec-swap"');
+    expect(swap).toBeGreaterThan(-1);
+    const close = badgeSrc.indexOf("</span>", swap);
+    const inside = badgeSrc.slice(swap, close);
+    expect(inside).toContain('speakerSlot("row", audioChip)');
+    expect(inside).toContain("<MeetingPeopleSlot");
+    // Exactly one mount in the pill, and it is the one inside the swap.
+    expect(badgeSrc.split("<MeetingPeopleSlot").length).toBe(2);
+  });
+
+  it("float.css: at rest the swap is display: contents; shown, it is capped and the only thing that shrinks", () => {
+    expect(PILL_PEOPLE_MAX_W).toBe(46);
+    // 208 = 8 + scene 112 + 7 + column + 7 + Stop 20 + 8 → column 46.
+    expect(8 + 112 + 7 + PILL_PEOPLE_MAX_W + 7 + 20 + 8).toBe(208);
+    expect(floatCss).toMatch(/\.rec-swap\s*\{\s*display:\s*contents;/);
+    expect(floatCss).toMatch(/\.rec-swap > \.rec-people\s*\{\s*display:\s*none;/);
+    const shown = floatCss.slice(floatCss.indexOf(".meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) {"));
+    const rule = shown.slice(0, shown.indexOf("}"));
+    expect(rule).toContain(`max-width: ${PILL_PEOPLE_MAX_W}px;`);
+    expect(rule).toContain("min-width: 0;");
+    expect(rule).toContain("overflow: hidden;");
+    // The scene and Stop never shrink, so neither can be clipped.
+    expect(floatCss).toMatch(/\.meeting-scene\s*\{[^}]*flex:\s*none;/);
+    expect(floatCss).toMatch(/\.meeting-badge > \.rec-stop\s*\{\s*flex:\s*none;/);
   });
 });
