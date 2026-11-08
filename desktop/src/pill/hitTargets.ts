@@ -98,6 +98,25 @@ export function logPillClick(control: string, handled: boolean): void {
 }
 
 /**
+ * The elements whose size moves a control: each control and its siblings. A
+ * pure :hover swap (yap-1106-fb-23's People stepper replacing the call-app name
+ * in the centred clock row) slides the meeting stop without resizing it and
+ * without a DOM mutation; the sibling that appears or collapses is what the
+ * ResizeObserver sees, so the panel's rect follows the stop before the press.
+ */
+export function observedForControls(controls: readonly HTMLElement[]): HTMLElement[] {
+  const out = new Set<HTMLElement>();
+  for (const el of controls) {
+    out.add(el);
+    const parent = el.parentElement;
+    if (!parent) continue;
+    // `children` holds Elements only; no HTMLElement global needed (node tests).
+    for (const sib of Array.from(parent.children)) out.add(sib as HTMLElement);
+  }
+  return Array.from(out);
+}
+
+/**
  * Start publishing every control's rect and the press/click wiring. Returns the
  * teardown. Coalesced to one measure per ~frame; re-measures on DOM changes
  * (a control mounting, swapping, relabelling), resizes, the dock flipping and
@@ -111,7 +130,7 @@ export function startPillControlTargets(doc: Document = document): () => void {
   const push = () => {
     timer = null;
     for (const el of observed) ro.unobserve(el);
-    observed = Array.from(doc.querySelectorAll<HTMLElement>(CONTROL_SELECTOR));
+    observed = observedForControls(Array.from(doc.querySelectorAll<HTMLElement>(CONTROL_SELECTOR)));
     for (const el of observed) ro.observe(el);
     extendPillHitboxRects(measureControls(doc), CONTROLS_OWNER);
   };

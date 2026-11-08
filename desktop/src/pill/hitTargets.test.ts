@@ -143,6 +143,19 @@ describe("measureControls", () => {
     } as unknown as ParentNode;
     expect(hit.measureControls(root)).toEqual([[194, 66, 24, 24]]);
   });
+
+  it("hover_swap_remeasures_the_stop — each control is observed with its siblings, once each", () => {
+    // The clock row: scene, call-app name, the .rec-swap column, the stop. A
+    // :hover swap resizes a sibling, never the stop, so the siblings are watched.
+    const scene = { name: "scene" }, app = { name: "app" }, swap = { name: "swap" };
+    const row = { children: [] as unknown[] };
+    const stop = { name: "stop", parentElement: row };
+    row.children.push(scene, app, swap, stop);
+    const lone = { name: "lone", parentElement: null };
+    const got = hit.observedForControls([stop, lone] as unknown as HTMLElement[]) as unknown[];
+    expect(got).toEqual([stop, scene, app, swap, lone]);
+    expect(new Set(got).size).toBe(got.length);
+  });
 });
 
 describe("press hold + pill.click telemetry", () => {
