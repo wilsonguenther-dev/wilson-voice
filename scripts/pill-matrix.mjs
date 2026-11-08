@@ -65,6 +65,7 @@
  *   node scripts/pill-matrix.mjs --out <dir>             every phase x 3 docks x 2 characters
  *   node scripts/pill-matrix.mjs --out <dir> --only gated  one phase x 3 x 2 (what each PILL item runs)
  *   node scripts/pill-matrix.mjs --out <dir> --phase meeting-saved  the Saved stop beat x 3 docks
+ *   node scripts/pill-matrix.mjs --out <dir> --phase meeting-notes  yap-1107: every notes transition x 3 docks
  *   node scripts/pill-matrix.mjs --self-test-must-fail   prove the detectors are not blind
  *
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
@@ -143,7 +144,7 @@ function parseArgs(argv) {
     else if (k === "--self-test-must-fail") a.selfTest = true;
     else usage("unknown argument " + k);
   }
-  if (a.phase !== null && a.phase !== "meeting-saved") usage("--phase knows one scene: meeting-saved");
+  if (a.phase !== null && a.phase !== "meeting-saved" && a.phase !== "meeting-notes") usage("--phase knows two scenes: meeting-saved, meeting-notes");
   if (a.phase !== null && a.only !== null) usage("--phase and --only are exclusive");
   if (a.sky !== "all" && !SKY_TIMES.includes(a.sky)) usage("--sky must be one of " + SKY_TIMES.join("|") + "|all");
   return a;
@@ -209,6 +210,43 @@ function meetingStopShim(eventName) {
 `;
 }
 const MEETING_STOP_SHIM = meetingStopShim(meetingEventFromConsent());
+
+/*
+ * yap-1107-pill-writing-notes-always-clears — the notes scene's shim. Answers
+ * `list_notes_jobs` from window.__YAP_MATRIX_NOTES_JOBS__ (the "store"; [] by
+ * default, exactly what an idle backend answers), remembers every
+ * `meeting:progress` listener and exposes __YAP_MATRIX_PROGRESS__(payload).
+ * With ?notesScene=1 it shortens the pill's notes timers (90 s stall, 5 s /
+ * 30 s re-check, 10 s result hold) so one capture walk sees every transition.
+ */
+const NOTES_SCENE_SHIM = String.raw`
+(() => {
+  const T = window.__TAURI_INTERNALS__;
+  if (!T) return;
+  window.__YAP_MATRIX_NOTES_JOBS__ = [];
+  const inner = T.invoke;
+  const handlers = [];
+  T.invoke = (cmd, payload) => {
+    if (cmd === "list_notes_jobs") return Promise.resolve(window.__YAP_MATRIX_NOTES_JOBS__);
+    if (cmd === "plugin:event|listen" && payload && payload.event === "meeting:progress") handlers.push(payload.handler);
+    return inner(cmd, payload);
+  };
+  window.__YAP_MATRIX_PROGRESS__ = (p) => {
+    let n = 0;
+    for (const h of handlers) {
+      const f = window["_" + h];
+      if (typeof f === "function") { f({ event: "meeting:progress", id: 0, payload: p }); n++; }
+    }
+    return n;
+  };
+  if (new URLSearchParams(location.search).get("notesScene") === "1") {
+    const SHORT = { 90000: 1200, 5000: 300, 30000: 800, 10000: 1000 };
+    const st = window.setTimeout.bind(window), si = window.setInterval.bind(window);
+    window.setTimeout = (f, ms, ...a) => st(f, SHORT[ms] ?? ms, ...a);
+    window.setInterval = (f, ms, ...a) => si(f, SHORT[ms] ?? ms, ...a);
+  }
+})();
+`;
 
 /* ── the detectors, evaluated inside the page ───────────────────────────── */
 /*
@@ -483,7 +521,7 @@ async function openPage(cdp, tones) {
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
   // A flat dark desktop behind the transparent window, so white copy reads.
   await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 46, g: 49, b: 56, a: 1 } }, s);
-  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: fixtureScript(tones) + "\n" + TAURI_SHIM + "\n" + MEETING_STOP_SHIM }, s);
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: fixtureScript(tones) + "\n" + TAURI_SHIM + "\n" + MEETING_STOP_SHIM + "\n" + NOTES_SCENE_SHIM }, s);
   return s;
 }
 
@@ -500,6 +538,101 @@ async function settle(cdp, s, wantId) {
 async function shoot(cdp, s, file) {
   const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
   writeFileSync(file, Buffer.from(shot.data, "base64"));
+}
+
+/*
+ * yap-1107-pill-writing-notes-always-clears — the notes scene: every pill
+ * transition of a meeting's notes, at every dock, @SCALE (2x): recording ->
+ * saved -> transcribing -> Writing notes -> Still writing -> notes ready (the
+ * terminal EVENT is never sent: the store answers it, on window focus) -> rest,
+ * and -> failed -> rest. Each step checks the words on the pill and runs the
+ * structural detectors; the PNGs + contact sheet are the evidence.
+ */
+async function meetingNotesScene(cdp, base, phases, outDir) {
+  const idle = phases.find((p) => p.phase === "idle" && !p.license && !p.query);
+  if (!idle) { console.error("pill-matrix: --phase meeting-notes found no plain idle row (INSTRUMENT failure)"); return 3; }
+  MEETINGS = ["notes"];
+  const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
+  const s = await openPage(cdp, tones);
+  const ID = "matrix-meeting";
+  const ev = (state, over = {}) => JSON.stringify({ id: ID, state, percent: 0, processedThroughSeconds: 0, durationSeconds: 217, error: null, ...over });
+  const store = (rows) => evaluate(cdp, s, "window.__YAP_MATRIX_NOTES_JOBS__ = " + JSON.stringify(rows) + ";true");
+  const emit = (state, over) => evaluate(cdp, s, "window.__YAP_MATRIX_PROGRESS__ ? window.__YAP_MATRIX_PROGRESS__(" + ev(state, over) + ") : 0");
+  const job = (phase, reason = null) => [{ id: ID, phase, percent: phase === "notes_ready" ? 100 : 0, reason }];
+  const FAIL = "the transcript changed while the notes were being written. Press Retry notes to write them again.";
+  // The pill shows short words (the after slot is CLOCK_W.after = 184 px of a
+  // 300 px window); the full sentences are the tooltip / accessible name, and
+  // the text read below includes [title] and [aria-label], so both are checked.
+  const LABELS = ["Writing notes", "Still writing", "Notes ready", "Notes failed", FAIL];
+  const visible = (sel) => evaluate(cdp, s, "(() => { const el = document.querySelector('.meeting-after-label'); return el ? el.innerText : ''; })()").then((t) => String(t).includes(sel));
+  const captures = [];
+  for (const dock of DOCKS) {
+    const shot = async (step, want, gone = []) => {
+      const size = await fitPanel(cdp, s);
+      await evaluate(cdp, s, DETECTORS + ";true");
+      const res = await evaluate(cdp, s, "__pillDetect(" + JSON.stringify({ id: idle.id, phaseId: idle.phaseId, pill: "yappy", dock, meeting: "notes", sky: "day", stopped: 0 }) + ")");
+      const text = String(await evaluate(cdp, s, "document.body.innerText + ' ' + Array.from(document.querySelectorAll('[title],[aria-label]')).map((e) => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('aria-label') || '')).join(' ')"));
+      const findings = res.findings.slice();
+      for (const w of want) if (!text.includes(w)) findings.push({ id: "notes-label-missing", detail: step + ": the pill does not say \"" + w + "\"" });
+      for (const g of gone) if (text.includes(g)) findings.push({ id: "notes-label-stuck", detail: step + ": the pill still says \"" + g + "\"" });
+      const file = join(outDir, "notes-" + step + "__yappy__" + dock + "__notes.png");
+      await shoot(cdp, s, file);
+      captures.push({ id: "notes-" + step, phase: "idle", tone: idle.tone, character: "yappy", dock, meeting: "notes", sky: "day", w: size.w, h: size.h, line: res.line, findings, pageErrors: (cdp.errors.get(s) || []).slice(0, 4), shot: file });
+      console.log((findings.length ? "FAIL " : "ok   ") + ("notes-" + step).padEnd(22) + dock.padEnd(7) + file);
+      for (const f of findings) console.log("       " + f.id + " — " + f.detail);
+    };
+    const load = async (meeting) => {
+      cdp.errors.set(s, []);
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+      await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + encodeURIComponent(idle.phase) + "&pill=yappy&dock=" + dock + "&meeting=" + meeting + "&sky=day&notesScene=1" }, s);
+      await settle(cdp, s, idle.phaseId || idle.id);
+    };
+    // The success road.
+    await load("recording");
+    await shot("1-recording", []);
+    await evaluate(cdp, s, "window.__YAP_MATRIX_STOP_MEETING__ ? window.__YAP_MATRIX_STOP_MEETING__() : 0");
+    await sleep(SAVED_EMIT_SETTLE_MS);
+    await shot("2-saved", []);
+    await sleep(3000); // the 2.4 s Saved beat lets go
+    await emit("transcribing", { percent: 40 });
+    await sleep(400);
+    await shot("3-transcribing", [], LABELS);
+    await store(job("summarizing"));
+    await emit("complete", { percent: 100 });
+    await emit("notes_queued");
+    await emit("summarizing", { percent: 100 });
+    await sleep(500);
+    await shot("4-writing-notes", ["Writing notes"]);
+    await sleep(1500); // the (shortened) 90 s stall timer fires
+    await shot("5-still-writing", ["Still writing\u2026", "Still writing... tap to open notes"]);
+    if (!(await visible("Still writing\u2026"))) captures[captures.length - 1].findings.push({ id: "notes-label-missing", detail: "5-still-writing: the visible pill label is not \"Still writing\u2026\"" });
+    // The terminal event is LOST: only the store says done; a focus re-reads it.
+    await store(job("notes_ready"));
+    await evaluate(cdp, s, "window.dispatchEvent(new Event('focus'));true");
+    await sleep(400);
+    await shot("6-notes-ready", ["Notes ready"], ["Writing notes", "Still writing"]);
+    await sleep(1400); // the (shortened) 10 s result hold
+    await shot("7-rest", [], LABELS);
+    // The failure road.
+    await load("none");
+    await store(job("summarizing"));
+    await emit("notes_queued");
+    await emit("summarizing", { percent: 100 });
+    await sleep(500);
+    await shot("8-writing-notes", ["Writing notes"]);
+    await store(job("notes_failed", FAIL));
+    await emit("notes_failed", { error: FAIL });
+    await sleep(400);
+    await shot("9-failed", ["Notes failed \u2014 Open", FAIL], ["Writing notes"]);
+    if (!(await visible("Notes failed \u2014 Open"))) captures[captures.length - 1].findings.push({ id: "notes-label-missing", detail: "9-failed: the visible pill label is not \"Notes failed \u2014 Open\"" });
+    await sleep(1400);
+    await shot("10-rest-after-failed", [], LABELS);
+  }
+  const sheet = await contactSheet(cdp, captures, outDir);
+  const failed = captures.filter((c) => c.findings.length);
+  writeFileSync(join(outDir, "result.json"), JSON.stringify({ window: W + "x" + H + "@" + SCALE + "x", scene: "meeting-notes", captures: captures.length, failing: failed.length, contactSheet: sheet, captures_: captures }, null, 2));
+  console.log("pill-matrix: meeting-notes " + captures.length + " captures, " + failed.length + " carrying findings -> " + outDir);
+  return failed.length ? 1 : 0;
 }
 
 /* ── contact sheet: every capture on one image ──────────────────────────── */
@@ -582,6 +715,7 @@ async function run() {
     await cdp.send("Page.close", {}, s).catch(() => {});
 
     if (ARGS.selfTest) return await selfTest(cdp, base, phases);
+    if (ARGS.phase === "meeting-notes") return await meetingNotesScene(cdp, base, phases, outDir);
 
     let todo = phases;
     if (ARGS.phase === "meeting-saved") {
