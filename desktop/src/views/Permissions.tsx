@@ -9,7 +9,7 @@ import { viewState } from "../viewState";
 import { ErrorState, LoadingState } from "../ViewStates";
 import type { PermissionReport } from "../appTypes";
 import { DEV_HOST_LINE, isDevHostAttributed } from "../permissionRepair";
-import GlobeKeyRow from "./GlobeKeyRow";
+import GlobeKeyRow from "./settings/parts/GlobeKeyRow";
 
 /**
  * Y5-B fix round (#192 BLOCKING) - the exact string permissions.rs emits when

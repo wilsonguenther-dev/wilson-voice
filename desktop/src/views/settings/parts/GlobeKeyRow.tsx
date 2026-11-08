@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import StatusDot from "../StatusDot";
+import StatusDot from "../../../StatusDot";
 
 /**
  * yap-1107-globe-key-conflict-guard — ONE plain line on the Permissions page

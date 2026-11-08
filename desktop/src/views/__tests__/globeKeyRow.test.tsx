@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => ({})) }));
 
-import { GlobeKeyRowView, type GlobeStatus } from "../GlobeKeyRow";
+import { GlobeKeyRowView, type GlobeStatus } from "../settings/parts/GlobeKeyRow";
 
 const EMOJI = "Your Mac opens the emoji picker on a lone Fn tap; Yap can turn that off";
 const base: GlobeStatus = {
