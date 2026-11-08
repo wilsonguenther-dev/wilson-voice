@@ -183,7 +183,6 @@ export function useMeetingPill(): {
   useEffect(() => {
     if (writingId === null) return;
     const id = writingId;
-    const idShort = id.slice(0, 8);
     const recheck = (why: string) => reconcileRef.current?.(why);
     const timers: number[] = [];
     let slow: number | undefined;
@@ -193,7 +192,7 @@ export function useMeetingPill(): {
     }, NOTES_RECHECK_MS));
     if (!stalled) {
       timers.push(window.setTimeout(() => {
-        console.info(`pill notes_still_writing id=${idShort} quiet_ms=${NOTES_STALL_MS}`);
+        console.info(`pill notes_still_writing id=${id.slice(0, 8)} quiet_ms=${NOTES_STALL_MS}`);
         dispatch({ type: "stall", id });
         recheck("stall");
       }, NOTES_STALL_MS));
