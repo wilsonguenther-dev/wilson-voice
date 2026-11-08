@@ -79,6 +79,8 @@ import {
   fitPillPanel,
   openChrome,
   pillFixtureScript,
+  pinColorScheme,
+  pinnedClockScript,
   servePreview,
   settlePhase,
   sleep,
@@ -371,8 +373,14 @@ export async function measureApp(cdp, base, st, tones) {
   const fxPath = resolve(ROOT, a.fixtures || "scripts/smoke-fixtures.json");
   const fixtures = JSON.parse(readFileSync(fxPath, "utf8"));
   delete fixtures._README;
-  const { s, targetId } = await newSession(cdp, a.width || 980, a.height || 700, CROP_SCALE, "window.__YAP_FIXTURES__ = " + JSON.stringify(fixtures) + ";\n" + TAURI_SHIM);
+  // yap-1107-parity-home: a state may pin the colour scheme and the time of day
+  // (app.colorScheme "light"|"dark"|"system", app.clock "HH:MM"|"off") so the
+  // app is measured as the light, daytime page it copies — not as the Mac's
+  // appearance and the real clock happen to be (scripts/headless-chrome.mjs).
+  const clockJs = a.clock && a.clock !== "off" ? pinnedClockScript(a.clock) : "";
+  const { s, targetId } = await newSession(cdp, a.width || 980, a.height || 700, CROP_SCALE, clockJs + "window.__YAP_FIXTURES__ = " + JSON.stringify(fixtures) + ";\n" + TAURI_SHIM);
   try {
+    if (a.colorScheme) await pinColorScheme(cdp, s, a.colorScheme);
     await cdp.send("Page.navigate", { url: base + "/" + page }, s);
     await sleep(1200);
     if (a.view) {

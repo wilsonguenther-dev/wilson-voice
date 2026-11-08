@@ -188,6 +188,9 @@ pub mod pill_quiet;
 // YV101 — the macOS 14.4 runtime gate for the system-audio process tap (plan
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
+/// yap-1107-globe-key-conflict-guard — the lone-Fn (Globe key) conflict line and
+/// its consented, reversible "Turn it off" / "Put it back".
+pub mod globe_key;
 pub mod os_version_gate;
 pub mod paste;
 mod paste_tx;
@@ -747,6 +750,13 @@ pub struct AppSettings {
     /// `desktop/src/pill/live.ts` `PILL_MESSAGES`. Empty = everything shows.
     #[serde(default)]
     pub muted_pill_categories: Vec<String>,
+    /// yap-1107-reveal-stays-until-read — Settings › Notifications "Keep the
+    /// reveal open until I close it". Off by default: the "Polished — Reveal"
+    /// toast then leaves on its own (8 s minimum, never under the pointer,
+    /// `desktop/src/pill/revealDwell.ts`); on, only Esc, a click outside, its
+    /// close button or an answer closes it.
+    #[serde(default)]
+    pub keep_polish_reveal_open: bool,
     /// WF-16 — "Hide Yap from screen sharing during meetings". On by default:
     /// while a meeting records, the pill (and its meeting chip) and the
     /// Scratchpad are kept out of screen shares and screenshots; they come
@@ -916,6 +926,7 @@ impl Default for AppSettings {
             structure_app_overrides: std::collections::BTreeMap::new(),
             pause_heavy_work_below_percent: resource_governor::DEFAULT_PAUSE_BELOW_PERCENT,
             muted_pill_categories: Vec::new(),
+            keep_polish_reveal_open: false,
             hide_from_capture_in_meetings: true,
             ask_whos_talking_live: false,
             yappy_talks: default_yappy_talks(),
@@ -6684,6 +6695,12 @@ fn save_settings(
                 next.hide_from_capture_in_meetings
             );
         }
+        if next.keep_polish_reveal_open != live.keep_polish_reveal_open {
+            log::info!(
+                "settings keep_polish_reveal_open_changed on={}",
+                next.keep_polish_reveal_open
+            );
+        }
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
@@ -7091,6 +7108,40 @@ fn save_settings(
 #[tauri::command]
 fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     float_pill::set_hitbox(x, y, w, h);
+}
+
+/// yap-1107-reveal-stays-until-read — the pill says the polish reveal opened
+/// (`reason` "shown") or closed (why, and `dwell_ms` it was up). Arms / disarms
+/// the backend Esc + click-outside watch (`float_pill::set_reveal_open`), which
+/// also writes the telemetry line. `reason` is an allowlisted tag there.
+#[tauri::command]
+fn pill_reveal_state(open: bool, reason: String, dwell_ms: u64) {
+    float_pill::set_reveal_open(open, &reason, dwell_ms);
+}
+
+/// yap-1106-fb-02-pill-first-click — the pill webview publishes EVERY rect the
+/// panel must take the cursor over: the capsule plus each control's own drawn
+/// rect (stop, the meeting stop, Trial ended, the cards' buttons…). The
+/// backend pads each to 24 x 24 pt and hit-tests the list, so a control outside
+/// the capsule is no longer click-through glass.
+#[tauri::command]
+fn pill_set_hitboxes(rects: Vec<float_pill::HitRect>) {
+    float_pill::set_hitboxes(&rects);
+}
+
+/// fb-02 — a pointer-down (`held = true`) / its release on a pill control.
+/// While held the hover watch keeps the panel interactive, so no cursor test
+/// can hand it back to click-through between mouse-down and mouse-up.
+#[tauri::command]
+fn pill_press_hold(held: bool) {
+    float_pill::set_press_held(held);
+}
+
+/// fb-02 telemetry — `pill click control=<name> handled=<bool>`, one line per
+/// click on a pill control (desktop/src/pill/hitTargets.ts).
+#[tauri::command]
+fn pill_click_log(control: String, handled: bool) {
+    float_pill::log_click(&control, handled);
 }
 
 /// yap-1106-one-pill — the pill webview's layout (desktop/src/pill/state.ts)
@@ -10317,6 +10368,27 @@ fn news_explain_cloud(
     system: &str,
     user: &str,
 ) -> Result<String, &'static str> {
+    news_cloud_text(
+        app,
+        db,
+        system,
+        user,
+        news::explain::MAX_TOKENS,
+        news::explain::BUDGET,
+    )
+}
+
+/// yap-1107-news-no-off-topic-stories — the shared Yappy News cloud call
+/// (explain lines, story labels): the BYOM route with its cap, breaker and
+/// daily ledger, at the caller's token cap and budget.
+fn news_cloud_text(
+    app: &AppHandle,
+    db: &Database,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    budget_for_job: cloud_route::Budget,
+) -> Result<String, &'static str> {
     let job = cloud_route::Job::Format;
     let mode = cloud_route::CloudMode::load(db);
     let provider = if mode.wants_cloud() {
@@ -10334,7 +10406,7 @@ fn news_explain_cloud(
         today: cloud_today(),
         job,
         model,
-        budget: news::explain::BUDGET,
+        budget: budget_for_job,
         constrained_notes_allowed: false,
     };
     let cancel = summary_jobs::CancelToken::new();
@@ -10352,14 +10424,7 @@ fn news_explain_cloud(
         };
         let mut sink = |_: &str| {};
         cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
-            model,
-            job,
-            system,
-            user,
-            news::explain::MAX_TOKENS,
-            budget,
-            &cancel,
-            &mut sink,
+            model, job, system, user, max_tokens, budget, &cancel, &mut sink,
         )
     };
     let accept = |text: &str| Some(Some(text.to_string()));
@@ -11248,18 +11313,43 @@ pub(crate) fn summary_model_on_disk(id: &str) -> bool {
 /// `notes_queued`, `preparing_notes`, `summarizing`, `notes_ready`,
 /// `notes_failed` (with the plain reason in `error`), `notes_cancelled`.
 fn emit_notes_status(state: &AppState, st: &summary_jobs::NotesStatus) {
-    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(&st.id)) {
-        let _ = app.emit(
-            meeting_pipeline::MEETING_PROGRESS_EVENT,
-            meeting_pipeline::MeetingProgressEvent {
-                id: st.id.clone(),
-                state: st.phase.as_str().to_string(),
-                percent: st.percent,
-                processed_through_seconds: m.processed_through_seconds,
-                duration_seconds: m.duration_seconds,
-                error: st.reason.clone(),
-            },
-        );
+    // yap-1107-pill-writing-notes-always-clears: this used to emit only when
+    // `get_meeting` found the row, so a terminal phase for a meeting a delete
+    // had just removed was silently skipped and the pill sat on "Writing
+    // notes" forever. A terminal phase is ALWAYS emitted (zero durations
+    // without a row); only an active phase about a vanished meeting is not.
+    let row = state
+        .db
+        .get_meeting(&st.id)
+        .ok()
+        .flatten()
+        .map(|m| (m.processed_through_seconds, m.duration_seconds));
+    let row_exists = row.is_some();
+    if let Some(app) = MEETING_APP.get() {
+        if let Some((through, duration)) = summary_jobs::progress_durations(st.phase, row) {
+            if !row_exists {
+                log::info!(
+                    "summary emit_terminal_without_row meeting={} phase={}",
+                    st.id,
+                    st.phase.as_str()
+                );
+            }
+            let _ = app.emit(
+                meeting_pipeline::MEETING_PROGRESS_EVENT,
+                meeting_pipeline::MeetingProgressEvent {
+                    id: st.id.clone(),
+                    state: st.phase.as_str().to_string(),
+                    percent: st.percent,
+                    processed_through_seconds: through,
+                    duration_seconds: duration,
+                    error: st.reason.clone(),
+                },
+            );
+        }
+    }
+    if !row_exists {
+        // A deleted meeting announces nothing (no tray line, no notification).
+        return;
     }
     // yap24-NT7 x #250 — a meeting's notes are settled (written, or failed with
     // the transcript standing) the moment the notes worker says so, so the
@@ -11685,8 +11775,9 @@ pub const NOTES_BUSY_RETRY_REFUSAL: &str =
     "Notes are still being written for this meeting. Cancel them or let them finish, then retry the transcript.";
 
 /// What a notes job says when the transcript is being rebuilt under it.
-pub const TRANSCRIPT_REBUILDING: &str =
-    "the transcript is being rebuilt — notes will be written when it finishes";
+/// yap-1107: one sentence, owned by the notes worker (it queues the job once
+/// more on this reason, then fails honestly — no promise nothing keeps).
+pub const TRANSCRIPT_REBUILDING: &str = summary_jobs::TRANSCRIPT_REBUILDING;
 
 /// The body of a notes job, on the notes worker. Errors are plain words the
 /// card shows (B1); a cancel stores nothing (B2).
@@ -11890,10 +11981,29 @@ fn store_meeting_summary(
 /// painting while the pages are scrubbed.
 #[tauri::command]
 fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    // yap-1107-pill-writing-notes-always-clears: a notes job about this meeting
+    // must not outlive its row. Cancel it first (a queued job reports
+    // `notes_cancelled` now; a running one when it stops), then tell the pill
+    // the meeting is gone so any phase about it clears.
+    let notes_in_flight = SUMMARY_JOBS.get().is_some_and(|j| j.cancel(&id));
     state.db.delete_meeting_with_audio(&id)?;
     // yap24-NT1 (review BLOCKING 2) — and every crash journal bound to it, so
     // the deleted meeting's audio does not outlive the row under the journal's id.
     meeting::remove_journals_bound_to(&meetings_dir(), &id);
+    if let Some(app) = MEETING_APP.get() {
+        let _ = app.emit(
+            meeting_pipeline::MEETING_PROGRESS_EVENT,
+            meeting_pipeline::MeetingProgressEvent {
+                id: id.clone(),
+                state: summary_jobs::MEETING_DELETED_STATE.to_string(),
+                percent: 0,
+                processed_through_seconds: 0.0,
+                duration_seconds: 0.0,
+                error: None,
+            },
+        );
+    }
+    log::info!("meetings delete_notes_cleared id={id} notes_in_flight={notes_in_flight}");
     Ok(())
 }
 
@@ -15099,10 +15209,18 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // yap-1107-globe-key-conflict-guard — Permissions → Globe key line.
+            globe_key::globe_key_status,
+            globe_key::globe_key_turn_off,
+            globe_key::globe_key_put_back,
             // yap-1106-fb-22a — "Who's talking right now?" answers from the pill.
             live_transcript::meeting_live_name,
             live_transcript::meeting_live_same,
             live_transcript::meeting_live_skip,
+            // yap-1106-fb-23 — "People: Auto · − 4 +" (pill + after-meeting header).
+            live_transcript::meeting_set_expected_speakers,
+            live_transcript::meeting_recap_speakers,
+            live_transcript::meeting_expected_speakers,
             // yap-byom-0 — Settings → Model providers.
             list_model_providers,
             delete_model_provider,
@@ -15163,6 +15281,10 @@ pub fn run() {
             language_offer_respond,
             set_dictation_languages,
             pill_set_hitbox,
+            pill_reveal_state,
+            pill_set_hitboxes,
+            pill_press_hold,
+            pill_click_log,
             pill_set_panel_frame,
             pill_cycle_style,
             pending_copy_card,
@@ -15332,6 +15454,25 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // yap-1107-news-no-off-topic-stories — the news classifier's one
+            // cloud call per refresh rides the same BYOM route as the explain
+            // step (mode, key, cap, breaker, ledger).
+            {
+                let handle = app.handle().clone();
+                news::sources::install_cloud(Box::new(
+                    move |db: &Database, system: &str, user: &str| {
+                        news_cloud_text(
+                            &handle,
+                            db,
+                            system,
+                            user,
+                            news::sources::CLASSIFY_MAX_TOKENS,
+                            news::sources::CLASSIFY_BUDGET,
+                        )
+                    },
+                ));
+            }
 
             // yap-1106-launch-walk — every change in the engine load percentage
             // goes to the pill as an event; the launch walk is drawn from it.
@@ -17367,6 +17508,46 @@ mod tests {
         assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
         let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
         assert_eq!(nback.native_model, "handy-computer/whisper-tiny-gguf");
+    }
+
+    // yap-1107-reveal-stays-until-read: "Keep the reveal open until I close it"
+    // is off on a fresh install and on a store written before the field
+    // existed, and when switched on it survives a restart (write -> load) on
+    // its wire key.
+    #[test]
+    fn keep_polish_reveal_open_defaults_off_and_survives_a_restart() {
+        assert!(!AppSettings::default().keep_polish_reveal_open);
+        let legacy = r#"{ "language": "en", "autoPaste": true }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(!parsed.keep_polish_reveal_open);
+
+        let dir = temp_dir("keep-reveal");
+        let path = dir.join("settings.json");
+        let on = AppSettings {
+            keep_polish_reveal_open: true,
+            ..AppSettings::default()
+        };
+        write_settings_file(&path, &on).expect("write settings");
+        let raw = std::fs::read_to_string(&path).expect("read settings");
+        assert!(
+            raw.contains("\"keepPolishRevealOpen\": true")
+                || raw.contains("\"keepPolishRevealOpen\":true")
+        );
+        assert!(
+            load_settings(&path).keep_polish_reveal_open,
+            "on survives a restart"
+        );
+
+        let off = AppSettings {
+            keep_polish_reveal_open: false,
+            ..on
+        };
+        write_settings_file(&path, &off).expect("write settings off");
+        assert!(
+            !load_settings(&path).keep_polish_reveal_open,
+            "off survives a restart"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // YV42: launch-at-login is OFF unless the user asked for it — a fresh

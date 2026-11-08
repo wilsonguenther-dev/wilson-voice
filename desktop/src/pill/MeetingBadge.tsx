@@ -18,8 +18,10 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, useRef, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import PeopleStepper, { type People } from "../meetings/PeopleStepper";
 import MeetingWorld from "./MeetingWorld";
+import { PILL_QUIET_EVENT, PILL_QUIET_STATE, parseQuietState } from "./friendVisits";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -32,9 +34,15 @@ import {
   MEETING_STOP_FAILED_DOM_EVENT,
   meetingPillHoldMs,
   meetingSavedUntil,
+  NOTES_EVENT_STATES,
+  NOTES_RECHECK_MS,
+  NOTES_RECHECK_SLOW_MS,
+  NOTES_STALL_MS,
+  notesWritingId,
   reduceMeetingPill,
   systemAudioBadge,
   type MeetingAfterView,
+  type NotesJobSnapshot,
   type MeetingPillInput,
   type MeetingPillPhase,
   type MeetingProgressEvent,
@@ -85,6 +93,9 @@ export function useMeetingPill(): {
   dismiss: (id: string) => void;
 } {
   const [state, dispatch] = useReducer(meetingPillReducer, { status: IDLE_MEETING, phase: MEETING_PILL_IDLE });
+  // yap-1107 — the store re-read, shared by the subscription effect and the
+  // "Writing notes" timers below (set while mounted).
+  const reconcileRef = useRef<((why: string) => void) | null>(null);
   useEffect(() => {
     // A synchronous cleanup can run before listen() resolves (StrictMode
     // double-mount); the `dead` flag unsubscribes a late listener so no native
@@ -95,12 +106,32 @@ export function useMeetingPill(): {
     invoke<MeetingStatus>("meeting_status")
       .then((s) => { if (!dead) dispatch({ type: "status", status: s, nowMs: Date.now() }); })
       .catch(() => {});
+    // yap-1107-pill-writing-notes-always-clears — the notes worker's store is
+    // the truth; events are hints. Re-read it on mount, on every notes event,
+    // and whenever the pill window comes back (focus / show).
+    const reconcile = (why: string) => {
+      invoke<NotesJobSnapshot[]>("list_notes_jobs")
+        .then((jobs) => {
+          if (dead) return;
+          dispatch({ type: "reconcile", jobs: Array.isArray(jobs) ? jobs : [], nowMs: Date.now() });
+        })
+        .catch((err) => console.warn(`pill notes_reconcile_failed why=${why} err=${String(err).slice(0, 80)}`));
+    };
+    reconcileRef.current = reconcile;
+    reconcile("mount");
+    const onFocus = () => reconcile("focus");
+    const onVisible = () => { if (document.visibilityState === "visible") reconcile("show"); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     // The dispatch time is read HERE, not in the reducer: a reducer must stay
     // pure (StrictMode runs it twice).
     listen<MeetingStatus>(MEETING_EVENT, (e) => dispatch({ type: "status", status: e.payload, nowMs: Date.now() })).then(push);
-    listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) =>
-      dispatch({ type: "progress", event: e.payload, nowMs: Date.now() }),
-    ).then(push);
+    listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) => {
+      dispatch({ type: "progress", event: e.payload, nowMs: Date.now() });
+      // yap-1107 — a notes event is a hint to re-read the store (transcribing
+      // percent events are not: they are frequent and say nothing about notes).
+      if (e.payload && NOTES_EVENT_STATES.has(e.payload.state)) reconcile("event");
+    }).then(push);
     // fix-b8-1 — the Stop button's rejection (window-local, see MeetingBadge).
     const onStopFailed = (e: Event) => {
       const detail = (e as CustomEvent<unknown>).detail;
@@ -111,6 +142,9 @@ export function useMeetingPill(): {
       dead = true;
       unsubs.forEach((u) => u());
       window.removeEventListener(MEETING_STOP_FAILED_DOM_EVENT, onStopFailed);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+      reconcileRef.current = null;
     };
   }, []);
   // The hold: notes-ready (and failed) let go after MEETING_RESULT_HOLD_MS.
@@ -138,6 +172,39 @@ export function useMeetingPill(): {
     const t = window.setTimeout(() => dispatch({ type: "saved_elapsed", until }), Math.max(0, until - Date.now()));
     return () => clearTimeout(t);
   }, [savedUntil, savedElapsedS]);
+  // yap-1107-pill-writing-notes-always-clears — while the pill says "Writing
+  // notes": ONE 5 s re-check of the store, then a slow 30 s re-check (never
+  // faster), and ONE 90 s stall timer that turns the label into "Still
+  // writing... tap to open notes". Keyed on the phase object: every notes
+  // event for that meeting is a new object (progress), so the stall clock
+  // restarts on progress; a reconcile that finds the job still active
+  // returns the SAME object and re-arms nothing.
+  const writingId = notesWritingId(phase);
+  const writingPhase = writingId === null ? null : phase.kind === "saved" ? phase.next : phase;
+  const stalled = writingPhase?.kind === "processing" && writingPhase.stalled === true;
+  useEffect(() => {
+    if (writingId === null) return;
+    const id = writingId;
+    const idShort = id.slice(0, 8);
+    const recheck = (why: string) => reconcileRef.current?.(why);
+    const timers: number[] = [];
+    let slow: number | undefined;
+    timers.push(window.setTimeout(() => {
+      recheck("recheck_5s");
+      slow = window.setInterval(() => recheck("recheck_30s"), NOTES_RECHECK_SLOW_MS);
+    }, NOTES_RECHECK_MS));
+    if (!stalled) {
+      timers.push(window.setTimeout(() => {
+        console.info(`pill notes_still_writing id=${idShort} quiet_ms=${NOTES_STALL_MS}`);
+        dispatch({ type: "stall", id });
+        recheck("stall");
+      }, NOTES_STALL_MS));
+    }
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      if (slow !== undefined) clearInterval(slow);
+    };
+  }, [writingId, writingPhase, stalled]);
   const dismiss = useCallback((id: string) => dispatch({ type: "dismiss", id }), []);
   return { status: state.status, phase: state.phase, dismiss };
 }
@@ -216,6 +283,9 @@ export default function MeetingBadge({
   onOpen,
   stacked = false,
   live,
+  screenSharing = false,
+  attendees = null,
+  occupant = null,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
@@ -236,6 +306,15 @@ export default function MeetingBadge({
    * badge listens to `meeting:live` itself while the meeting records.
    */
   live?: LiveSnapshot | null;
+  /** yap-1106-fb-23 — the People stepper hides during a screen share. */
+  screenSharing?: boolean;
+  /** yap-1106-fb-23 — the invite's attendee count, when the calendar is on. */
+  attendees?: number | null;
+  /**
+   * yap-1106-main-character-switch — who sits in the pill. Hoot in the pill
+   * records the meeting himself (no visit); anyone else, Hoot visits the tape.
+   */
+  occupant?: string | null;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
@@ -261,7 +340,7 @@ export default function MeetingBadge({
     if (after?.kind === "saved") {
       return (
         <div className="meeting-badge meeting-saved" data-pill-slot="clock" data-meeting-phase="saved" role="status" aria-label={after.title}>
-          <MeetingWorld elapsedS={after.elapsedS ?? 0} handover />
+          <MeetingWorld elapsedS={after.elapsedS ?? 0} handover occupant={occupant} />
           <span className="meeting-saved-label">{after.label}</span>
         </div>
       );
@@ -299,6 +378,7 @@ export default function MeetingBadge({
         <button
           type="button"
           className="rec-stop"
+          data-pill-control="meeting-stop"
           aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
           onClick={(e) => {
             e.stopPropagation();
@@ -335,7 +415,7 @@ export default function MeetingBadge({
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
           right ear cup of Yappy's headphones is the recording light, and the
           elapsed time sits under the sun inside the scene. */}
-      <MeetingWorld elapsedS={status.elapsedSeconds} />
+      <MeetingWorld elapsedS={status.elapsedSeconds} occupant={occupant} />
       {callApp && (
         <span className="rec-app" data-call-app title={`Recording ${callApp} call`}>
           {callApp}
@@ -343,10 +423,23 @@ export default function MeetingBadge({
       )}
       {/* fix-l3b4-1 — who is talking: one word stacked OVER the call-audio
           chip, so the clock row (CLOCK_W 208) gains no width. */}
-      {speakerSlot("row", audioChip)}
+      {/* yap-1106-fb-23 — "People − 4 +", never during a screen share. (The
+          stacked branch returned above, so the 96 px stack never gets it.)
+          Batch 5 bounce: inline it pushed the row past CLOCK_W and the
+          centred, overflow-hidden badge clipped the clock AND Stop. Now it
+          shares ONE column with the speaker / call-audio chip: at rest the
+          chip shows (the row is exactly the approved one), and pointing at
+          the clock swaps the column to the stepper (float.css .rec-swap), so
+          the stepper never adds width; the column is the only thing that
+          may shrink, never the scene or Stop. */}
+      <span className="rec-swap">
+        {speakerSlot("row", audioChip)}
+        {!screenSharing && <MeetingPeopleSlot meetingId={status.id ?? null} attendees={attendees} />}
+      </span>
       <button
         type="button"
         className="rec-stop"
+        data-pill-control="meeting-stop"
         aria-label={`Stop meeting — recording for ${elapsedLabel(status)}`}
         onClick={(e) => {
           e.stopPropagation();
@@ -369,7 +462,8 @@ export default function MeetingBadge({
 
 /**
  * yap24-NT7 — after stop: "Transcribing 42%" with a bar, "Notes ready — Open",
- * or the failure's own sentence. Character-agnostic DOM, rendered by both
+ * or short failure words (yap-1107: the failure's own sentence is the tooltip
+ * and accessible name; a sentence does not fit the 300 px window). Character-agnostic DOM, rendered by both
  * capsules through the same component (Y5-K: the shell owns phases, a
  * character only owns art). The bar is a CSS custom property, not a timer.
  */
@@ -393,9 +487,11 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
         type="button"
         className={`meeting-badge meeting-after ${view.kind}`}
       data-pill-slot="clock"
+        data-pill-control="meeting-open"
         data-meeting-phase={view.kind}
         title={view.title}
         aria-label={view.title}
+        style={style}
         onClick={(e) => {
           e.stopPropagation();
           onOpen(view.id);
@@ -493,6 +589,59 @@ function LiveSpeakerView({
         {speaker.word}
       </span>
       {children}
+    </span>
+  );
+}
+
+/**
+ * yap-1106-fb-23 — "How many people are in this meeting?" (Auto = null). Its
+ * own component so MeetingBadge stays hook-free beyond the call-offer view
+ * (tests call the badge as a plain function). The count applies from the next
+ * live window and is stored on the meeting row; a failed save rolls back.
+ */
+export function MeetingPeopleSlot({ meetingId, attendees = null }: { meetingId: string | null; attendees?: number | null }) {
+  const [people, setPeople] = useState<People>(null);
+  // Batch 5 rework: the badge's `screenSharing` prop is not fed by the shell,
+  // so the slot reads the quiet state itself (the who card's source,
+  // pill_quiet.rs) and steps out while the screen is shared.
+  const [sharing, setSharing] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    let unlisten: (() => void) | null = null;
+    invoke<unknown>(PILL_QUIET_STATE).then(
+      (v) => { if (!dead) setSharing(parseQuietState(v).screenSharing); },
+      () => console.warn("meeting_people quiet_state_failed"),
+    );
+    listen<unknown>(PILL_QUIET_EVENT, (e) => setSharing(parseQuietState(e.payload).screenSharing)).then(
+      (u) => { if (dead) u(); else unlisten = u; },
+      () => console.warn("meeting_people quiet_listen_failed"),
+    );
+    return () => { dead = true; unlisten?.(); };
+  }, []);
+  // A remounted pill shows the count already stored on the meeting, not Auto.
+  useEffect(() => {
+    if (!meetingId) return;
+    let dead = false;
+    invoke<number | null>("meeting_expected_speakers", { meetingId }).then(
+      (v) => { if (!dead) setPeople(typeof v === "number" ? v : null); },
+      () => console.warn("meeting_people load_failed"),
+    );
+    return () => { dead = true; };
+  }, [meetingId]);
+  const changePeople = (next: People) => {
+    const prev = people;
+    setPeople(next);
+    console.info(`meeting_people set count=${next ?? "auto"} surface=pill`);
+    invoke("meeting_set_expected_speakers", { meetingId, count: next }).catch(() => {
+      setPeople(prev);
+      console.warn("meeting_people set_failed");
+    });
+  };
+  if (sharing) return null;
+  return (
+    // A click here never reaches the capsule's toggle: PillShell skips clicks inside .rec-people.
+    <span className="rec-people">
+      <PeopleStepper compact value={people} attendees={attendees} onChange={changePeople} />
     </span>
   );
 }

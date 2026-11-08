@@ -3,6 +3,9 @@
 // and recovery messages are not switches at all — they always show — and the
 // category of every pill message lives in one table (`pill/live.ts`
 // `PILL_MESSAGES`), so this pane cannot drift from what the pill does.
+// yap-1107-reveal-stays-until-read — under the Tips switch (which mutes the
+// "Polished — Reveal" toast), "Keep the reveal open until I close it"
+// (`keepPolishRevealOpen`, default off; pill/revealDwell.ts).
 //
 // BEFORE/AFTER PNGs (integrator, headless only — never the real app): with the
 // Vite dev server up on :5273, run
@@ -13,6 +16,7 @@
 // The all-on state is the fixture default (no `mutedPillCategories`).
 import { useAppCtx } from "../../appShell";
 import { parseMutedCategories, withMuted, type MutableCategory } from "../../pill/live";
+import { KEEP_REVEAL_OPEN_BLURB, KEEP_REVEAL_OPEN_LABEL } from "../../pill/revealDwell";
 
 const SWITCHES: readonly { id: MutableCategory; label: string; blurb: string }[] = [
   { id: "tip", label: "Tips", blurb: "A short lesson after a take, like where to click before you talk." },
@@ -45,6 +49,17 @@ export default function Notifications() {
             </span>
           </label>
         ))}
+        <label className="toggle" data-quiet-switch="keep-reveal-open">
+          <input
+            type="checkbox"
+            checked={settings.keepPolishRevealOpen === true}
+            disabled={muted.has("tip")}
+            onChange={(e) => void saveSettings({ ...settings, keepPolishRevealOpen: e.target.checked })}
+          />
+          <span>
+            <strong>{KEEP_REVEAL_OPEN_LABEL}</strong> — {KEEP_REVEAL_OPEN_BLURB}
+          </span>
+        </label>
         <p className="settings-hint">
           Errors, permission problems and recovery messages always show. Each tip appears at most once every 3 days, and 3
           times in all.

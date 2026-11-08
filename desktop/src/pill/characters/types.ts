@@ -91,6 +91,12 @@ export interface CharacterStageProps {
    * rate and rebuilds the whole scene (pill/stuckScene.ts).
    */
   engineHealth?: EngineHealth;
+  /**
+   * yap-1106-main-character-switch — the id of the character who sits in the
+   * pill, passed by the shell so ONE stage can paint any of them (the one-pill
+   * rule: a friend never gets a second, legacy surface). Absent means Yappy.
+   */
+  occupant?: string | null;
 }
 
 export interface Character {

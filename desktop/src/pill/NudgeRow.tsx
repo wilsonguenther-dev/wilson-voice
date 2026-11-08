@@ -196,7 +196,7 @@ export default function NudgeRow({
     >
       {/* Y5-J: the action is the × button; a clickable <div> has no keyboard path. */}
       <span className="nudge-text">{active.copy[tone]}</span>
-      <button type="button" className="nudge-close" aria-label={`Dismiss ${noun.toLowerCase()}`} onClick={dismiss}>
+      <button type="button" className="nudge-close" data-pill-control="nudge-close" aria-label={`Dismiss ${noun.toLowerCase()}`} onClick={dismiss}>
         ×
       </button>
     </div>

@@ -453,13 +453,20 @@ export default function ClassicPill(
           // Moving focus between the capsule and its own rail keeps it open.
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false);
         }}
-        onClick={onToggle}
+        onClick={(e) => {
+          // yap-1106-fb-23 — the People stepper sits inside the capsule; a press
+          // on it (buttons or label) sets the count and never toggles a take.
+          if ((e.target as Element | null)?.closest?.(".rec-people")) return;
+          onToggle();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
-        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} />
+        {/* yap-1106-main-character-switch — the meeting cast follows who sits here:
+            Hoot in the pill records it himself; anyone else, Hoot visits. */}
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} occupant={character.id} />
         <GovernorChip />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill
@@ -487,6 +494,7 @@ export default function ClassicPill(
             <button
               type="button"
               className={`pill-upgrade lic-${license.tone}`}
+              data-pill-control="trial-ended"
               title={license.title}
               aria-label={license.title}
               tabIndex={-1}
@@ -506,7 +514,7 @@ export default function ClassicPill(
         {!blocked && !gated && !live && !progress && !busy ? <LanguageChip /> : null}
         {/* yap-1106 · the route chip (Cloud / On this Mac), at rest only. */}
         {!blocked && !gated && !live && !progress && !busy ? <RouteChip /> : null}
-        <button type="button" className="ctrl" data-slot="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
+        <button type="button" className="ctrl" data-slot="dictate" data-pill-control="dictate" data-tip-side={tipSide} tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {DICTATE.glyph({ ...slotCtx, phase: blocked || gated ? gate : live ? "listening" : isListening(slotCtx.phase) ? "idle" : slotCtx.phase })}
           <SlotTip
             text={DICTATE.tooltip({ ...slotCtx, phase: live ? "listening" : slotCtx.phase })}

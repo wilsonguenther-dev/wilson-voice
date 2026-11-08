@@ -14,14 +14,19 @@
  *   - failed and cancelled takes sit in "Needs attention", hidden when empty;
  *   - during a meeting the room label reads "Recording meeting · mm:ss".
  */
+import { RETAINED_CLIP_DAYS } from "../appTypes";
 
 /** The Home room's art grid (YappyHouse draws the studio at exactly this size;
  * equal to studio/studio.ts STUDIO_W x STUDIO_H, pinned by the test). */
 export const ROOM_W = 320;
 export const ROOM_H = 160;
 
-/** The only scales the room is ever drawn at, largest first. */
-export const ROOM_SCALES = [4, 3, 2] as const;
+/** The only scales the room is ever drawn at, largest first.
+ * yap-1107-parity-home: the approved Home page (section 5, 2026-11-06) draws the
+ * layered studio at EXACTLY 3x (960 x 480) edge to edge in the main column, so
+ * 3x is the ceiling — a wide window shows more wood beside the room, never a
+ * 4x room. A column narrower than 960 px steps down to 2x (whole numbers only). */
+export const ROOM_SCALES = [3, 2] as const;
 export type RoomScale = (typeof ROOM_SCALES)[number];
 
 /**
@@ -59,7 +64,32 @@ export function showNeedsAttention(failed: readonly unknown[] | null | undefined
 
 /** A cancelled take is parked with this kind of reason; anything else failed. */
 export function attentionTitle(error: string | null | undefined): string {
-  return /cancel/i.test(error ?? "") ? "Cancelled take" : "Could not transcribe";
+  // yap-1107-parity-home — the approved page's words for the two kinds.
+  return /cancel/i.test(error ?? "") ? "Cancelled take" : "Engine could not transcribe";
+}
+
+/** Days a parked take's audio is kept — the one number, from appTypes. */
+export const ATTENTION_KEPT_DAYS = RETAINED_CLIP_DAYS;
+
+/**
+ * yap-1107-parity-home — the one line under a parked take's title, as the
+ * approved Needs attention panel words it: a cancelled take says how long its
+ * audio is kept ("Audio kept for 7 days."), an engine failure says how much
+ * audio is kept ("6.7 s of audio kept."). PRIV-B: retained audio stays visible.
+ */
+export function attentionKept(f: { error?: string | null; speechSeconds?: number | null }): string {
+  const secs = typeof f.speechSeconds === "number" && Number.isFinite(f.speechSeconds) ? f.speechSeconds : 0;
+  if (/cancel/i.test(f.error ?? "") || secs <= 0) return `Audio kept for ${ATTENTION_KEPT_DAYS} days.`;
+  return `${secs.toFixed(1)} s of audio kept.`;
+}
+
+/**
+ * yap-1107-parity-home — "Retry all" joins the panel head only past two takes:
+ * the approved panel shows two parked takes, each with its own Retry, and no
+ * Retry all.
+ */
+export function showRetryAll(failed: readonly unknown[] | null | undefined): boolean {
+  return Array.isArray(failed) && failed.length > 2;
 }
 
 const fmt = (n: number) => Math.max(0, Math.round(n)).toLocaleString("en-US");
@@ -73,6 +103,28 @@ export function statsLine(o: { wordsToday?: number | null; streakDays?: number |
   if (typeof o.wordsToday === "number") parts.push(`${fmt(o.wordsToday)} words today`);
   if (typeof o.streakDays === "number") parts.push(`${fmt(o.streakDays)} day streak`);
   if (typeof o.totalTakes === "number") parts.push(`${fmt(o.totalTakes)} ${o.totalTakes === 1 ? "take" : "takes"}`);
+  return parts;
+}
+
+/** One figure of the stats line: the number (bold, mono 20 px on the approved
+ * page) and its label ("words today"). */
+export interface StatPart {
+  key: "words" | "streak" | "takes";
+  value: string;
+  label: string;
+}
+
+/**
+ * yap-1107-parity-home — the stats line as the approved page draws it:
+ * `<b>2,632</b>words today  <b>17</b>day streak  <b>288</b>takes`. Same rule as
+ * statsLine: a value that has not loaded is left out, never shown as 0.
+ */
+export function statsParts(o: { wordsToday?: number | null; streakDays?: number | null; totalTakes?: number | null }): StatPart[] {
+  const parts: StatPart[] = [];
+  if (typeof o.wordsToday === "number") parts.push({ key: "words", value: fmt(o.wordsToday), label: "words today" });
+  if (typeof o.streakDays === "number") parts.push({ key: "streak", value: fmt(o.streakDays), label: "day streak" });
+  if (typeof o.totalTakes === "number")
+    parts.push({ key: "takes", value: fmt(o.totalTakes), label: o.totalTakes === 1 ? "take" : "takes" });
   return parts;
 }
 
