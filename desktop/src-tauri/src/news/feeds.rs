@@ -1010,12 +1010,15 @@ pub fn refresh_with(
     let mut report = FetchReport::default();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Google News: one search per topic chip, then each custom word.
+    // Google News: one search per picked topic chip in the fetch plan
+    // (yap-1107-news-no-off-topic-stories: sports only when Sports is
+    // picked), then each custom word. The search topic is provenance only:
+    // rank classifies every story by its own source and words.
     let mut g = Tally::new(Source::GoogleNews);
-    let mut searches: Vec<(String, String)> = prefs
-        .topics
-        .iter()
-        .filter_map(|t| google_query(t).map(|q| (t.clone(), q.to_string())))
+    let mut searches: Vec<(String, String)> = super::sources::fetch_plan(&prefs.topics)
+        .into_iter()
+        .filter(|p| p.source == Source::GoogleNews)
+        .filter_map(|p| p.words.map(|w| (p.topic.to_string(), w.to_string())))
         .collect();
     searches.extend(prefs.custom.iter().map(|c| (c.clone(), c.clone())));
     // Free tier: no key, so each ticker is a headline search on a free source.

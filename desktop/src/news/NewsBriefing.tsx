@@ -270,6 +270,11 @@ export function NewsBriefingView({
             >
               <span className="news-briefing-tag">{topicTag(s, tickers)}</span>
               <h4>{s.headline}</h4>
+              {s.why ? (
+                <p className="news-briefing-why" data-news-why aria-label={`Why this story: ${s.why}`}>
+                  {s.why}
+                </p>
+              ) : null}
               {s.line ? <p className="news-briefing-line">“{s.line}”</p> : null}
               <button
                 type="button"

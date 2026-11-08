@@ -23,6 +23,10 @@ export interface CachedStory {
   points?: number | null;
   score: number;
   urlKey: string;
+  /** yap-1107-news-no-off-topic-stories — the story's own category. */
+  category?: string;
+  /** "From Ars Technica (Tech) · matches Tech": the card's Why-this-story line. */
+  why?: string;
 }
 
 /** `news::explain::ExplainedLine`. */
@@ -62,6 +66,8 @@ export interface BriefingStory {
   outlets: number;
   points: number | null;
   score: number;
+  /** Why this story is in the briefing; null for a briefing stored before it existed. */
+  why?: string | null;
 }
 
 export interface Briefing {
@@ -134,6 +140,7 @@ export function buildBriefing(stories: readonly CachedStory[], lines: readonly E
       outlets: typeof s.outlets === "number" && s.outlets > 0 ? s.outlets : 1,
       points: typeof s.points === "number" ? s.points : null,
       score: s.score,
+      why: typeof s.why === "string" && s.why.trim() ? s.why : null,
     };
   });
   return { id: `b${now}`, deliveredMs: now, day: localDay(now), stories: picked };
