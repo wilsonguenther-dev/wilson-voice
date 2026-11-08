@@ -459,19 +459,9 @@ function restCapsuleUpTo(arts: readonly Size[], maxH: number): Size | null {
  */
 export const REST_CAPSULE: Readonly<Size> = Object.freeze({ w: ARTIFACT_REST_SHELL.w, h: ARTIFACT_REST_SHELL.h });
 
-/**
- * The least width a side-tall capsule is drawn at (CSS px). The open shell is
- * 53 tall (yap-1107-parity-pill), but a side dock is the tall vdock shell, up to
- * 64 wide (vdock.ts VDOCK_MAX_W, pill.html #vdock "never wider than 64 px"), not
- * the horizontal capsule turned: stood on its end it keeps 54, the least width
- * that holds the widest pill character (46 art px) at one device px per art px
- * on 1x (clip 52, stadium 50, less the 2 px position guard each side = 46).
- */
-export const SIDE_TALL_MIN_W = 54;
-
 /** The capsule a dock draws, given the horizontal capsule size: `side-tall` turns it on its end. */
 export function capsuleForDock(size: Size, dock: FitDock): Size {
-  return dock === "side-tall" ? { w: Math.max(size.h, SIDE_TALL_MIN_W), h: size.w } : { w: size.w, h: size.h };
+  return dock === "side-tall" ? { w: size.h, h: size.w } : { w: size.w, h: size.h };
 }
 
 export interface CharacterPlacement {
