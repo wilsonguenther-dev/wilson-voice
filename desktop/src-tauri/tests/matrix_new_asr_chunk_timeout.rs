@@ -27,12 +27,15 @@
 //! shared between chunks — every lease starts its own `recv_timeout` — the test
 //! simply made "healthy" and "hung" a few hundred milliseconds apart.
 //!
-//! Now neither side depends on how fast the runner is:
-//! - the wedged window blocks on a [`Gate`] the test opens only AFTER the
-//!   meeting has finished, so it cannot come back inside any deadline, however
-//!   long that deadline turns out to be;
-//! - the healthy windows get a deadline (5 s) four orders of magnitude above
-//!   the microseconds their decode costs, so scheduling noise cannot reach it.
+//! A longer timeout does not fix that: with the CPU saturated (2x hw.ncpu busy
+//! processes) a background-band thread was starved past even a 5 s budget.
+//! So the leases now run on an injected [`ManualLeaseClock`], and neither side
+//! depends on how fast the runner is:
+//! - the wedged window advances the clock past its budget and then blocks on a
+//!   [`Gate`] the test opens only AFTER the meeting has finished, so its lease
+//!   times out every time;
+//! - the healthy windows never advance the clock, so their leases cannot time
+//!   out however late their thread is scheduled.
 //!
 //! Which window is slow is decided by the stub's audio, never by a sleep.
 
@@ -46,18 +49,15 @@ use wilson_voice_lib::meeting_asr::{
     ChunkConfig, ChunkStatus, JsonProgressStore, MeetingAsr, MeetingAsrConfig, MeetingProgress,
     NoDemand, ProgressStore, WarmEngineChunkAsr,
 };
-use wilson_voice_lib::transcription::{Transcriber, TranscriptionManager};
+use wilson_voice_lib::transcription::{ManualLeaseClock, Transcriber, TranscriptionManager};
 
 #[path = "support/meeting.rs"]
 mod support;
 use support::{ramp_audio, window_bounds, word_at, RampDecoder};
 
-/// Far shorter than production's 120 s, same mechanism. The wedged window
-/// fails because it is GATED past the meeting's end, not because it out-sleeps
-/// this number, so the number only has to be generous for the healthy windows
-/// — whose stub decode is microseconds even on a background-band thread on a
-/// saturated runner.
-const TIMEOUT: Duration = Duration::from_secs(5);
+/// Far shorter than production's 120 s, same mechanism. Measured on the
+/// manual lease clock, so it is a budget on that clock, not on the runner's.
+const TIMEOUT: Duration = Duration::from_millis(300);
 /// Which window hangs: the second one, so it has neighbours on both sides.
 const POISONED_WINDOW: (f64, f64) = (28.0, 60.0);
 
@@ -98,6 +98,8 @@ impl Drop for OpenOnDrop {
 struct FlakyEngine {
     decoder: RampDecoder,
     wedge: Gate,
+    /// The clock every lease's timeout is measured on.
+    clock: Arc<ManualLeaseClock>,
     /// How many times the poisoned window reached the engine, across every
     /// engine the loader builds.
     poisoned_calls: Arc<AtomicUsize>,
@@ -124,7 +126,10 @@ impl Transcriber for FlakyEngine {
             // Wedged native call: it does not come back until the meeting is
             // over, so it misses the budget whatever the budget is. The
             // manager gives up on it AND on the engine.
+            // Its budget runs out on the lease clock — explicitly, not by
+            // out-sleeping a wall-clock timeout.
             self.poisoned_calls.fetch_add(1, Ordering::AcqRel);
+            self.clock.advance(TIMEOUT);
             self.wedge.wait();
         }
         Ok(self.decoder.transcript_for(start, end))
@@ -138,13 +143,16 @@ fn a_chunk_that_exceeds_the_transcribe_timeout_fails_alone() {
     let wedge = Gate::default();
     let _release = OpenOnDrop(wedge.clone());
     let poisoned_calls = Arc::new(AtomicUsize::new(0));
-    let (loader_wedge, loader_poisoned) = (wedge.clone(), poisoned_calls.clone());
+    let clock = ManualLeaseClock::new();
+    let (loader_wedge, loader_poisoned, loader_clock) =
+        (wedge.clone(), poisoned_calls.clone(), clock.clone());
     let manager = TranscriptionManager::with_loader(
         Arc::new(move |_p: &std::path::Path| {
             loader_loads.fetch_add(1, Ordering::AcqRel);
             Ok(Box::new(FlakyEngine {
                 decoder: RampDecoder::new(true),
                 wedge: loader_wedge.clone(),
+                clock: loader_clock.clone(),
                 poisoned_calls: loader_poisoned.clone(),
             }) as Box<dyn Transcriber>)
         }),
@@ -152,6 +160,7 @@ fn a_chunk_that_exceeds_the_transcribe_timeout_fails_alone() {
         Duration::from_secs(3600),
         TIMEOUT,
     );
+    manager.set_lease_clock(clock);
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     manager.load("stub", &model_path).expect("stub loads");
 
@@ -264,13 +273,16 @@ fn a_failed_chunk_is_not_retried_on_resume() {
     let wedge = Gate::default();
     let _release = OpenOnDrop(wedge.clone());
     let poisoned_calls = Arc::new(AtomicUsize::new(0));
-    let (loader_wedge, loader_poisoned) = (wedge.clone(), poisoned_calls.clone());
+    let clock = ManualLeaseClock::new();
+    let (loader_wedge, loader_poisoned, loader_clock) =
+        (wedge.clone(), poisoned_calls.clone(), clock.clone());
     let manager = TranscriptionManager::with_loader(
         Arc::new(move |_p: &std::path::Path| {
             loader_loads.fetch_add(1, Ordering::AcqRel);
             Ok(Box::new(FlakyEngine {
                 decoder: RampDecoder::new(true),
                 wedge: loader_wedge.clone(),
+                clock: loader_clock.clone(),
                 poisoned_calls: loader_poisoned.clone(),
             }) as Box<dyn Transcriber>)
         }),
@@ -278,6 +290,7 @@ fn a_failed_chunk_is_not_retried_on_resume() {
         Duration::from_secs(3600),
         TIMEOUT,
     );
+    manager.set_lease_clock(clock);
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     manager.load("stub", &model_path).expect("stub loads");
     let audio = ramp_audio(MEETING_SECONDS);
