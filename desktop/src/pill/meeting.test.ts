@@ -806,7 +806,10 @@ describe("yap-1107 bounce fix — the pill's words fit the 300 px window", () =>
   // window on every dock, and "Still writing... tap to open notes" (176 px) and
   // a worker's failure sentence (543 px) off it. Every after-view label is held
   // to the approved "Notes ready — Open" length; long sentences live in title.
-  const BUDGET = "Notes ready — Open".length;
+  // Character count is only a proxy: the longest approved short label is
+  // "Notes failed — Open" (19). pill-matrix --phase meeting-notes measures the
+  // real pixel fit on every dock.
+  const BUDGET = "Notes failed — Open".length;
   const long = "the transcript changed while the notes were being written. Press Retry notes to write them again.";
   const views = [
     meetingAfterView({ kind: "processing", id: "m1", percent: 100, step: "summarizing", stalled: true }, "idle"),
