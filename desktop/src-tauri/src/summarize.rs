@@ -2401,7 +2401,7 @@ fn summarize_run(
 
 // ── yap-audit-notes-guards: items and owners (deterministic, no model) ──────
 
-/// Openers that describe or feel rather than commit to anything, such as "I'm excited", "It's
+/// Openers that describe or feel rather than commit: "I'm excited", "It's
 /// really dope", "That was great". An action needs a commitment; these are
 /// narration (reason `v9_not_action`).
 fn describes_rather_than_commits(lower: &str) -> bool {
