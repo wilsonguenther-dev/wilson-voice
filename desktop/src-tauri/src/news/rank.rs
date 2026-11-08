@@ -7,6 +7,11 @@
 //! * **Score** = topic match ([`topic_score`]) + freshness ([`freshness`]), with
 //!   a small nudge for stories many outlets carry. A story that matches none of
 //!   the user's interests scores nothing and is dropped.
+//! * yap-1107-news-no-off-topic-stories — the topic match comes from the
+//!   story's own category ([`sources::match_prefs`]: declared source, cached
+//!   cloud label, offline keywords), never from the search that found it,
+//!   and topic search words earn no title bonus ("world" in "World Wide
+//!   Technology" scores nothing). Only tickers and own words do.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -14,7 +19,8 @@ use std::collections::HashSet;
 use serde::Serialize;
 use tauri::Url; // the url crate's type, re-exported; parsing only, no network client
 
-use super::feeds::{google_query, Story};
+use super::feeds::Story;
+use super::sources::{self, Category, ClassifiedBy, Labels, Match};
 use crate::news_prefs::NewsPrefs;
 
 /// Word-set overlap (Jaccard) at or above which two titles are one story.
@@ -198,11 +204,19 @@ pub fn dedupe(items: Vec<Keyed>) -> (Vec<Keyed>, DedupeCounts) {
 /// topics or custom words, plus [`TITLE_HIT`] per interest named in the title
 /// (a custom word, a ticker, or a topic's search word). 0.0 = off topic.
 pub fn topic_score(story: &Story, prefs: &NewsPrefs) -> f64 {
-    let from_interest = prefs.topics.iter().any(|t| t == &story.topic)
-        || prefs
-            .custom
-            .iter()
-            .any(|c| c.eq_ignore_ascii_case(&story.topic));
+    topic_match(story, prefs, None).map_or(0.0, |(points, _)| points)
+}
+
+/// The topic points and the match, or `None` when the story's category is
+/// none of the user's topics and it names none of their tickers or own
+/// words. [`TOPIC_BASE`] for any match, plus [`TITLE_HIT`] per ticker or own
+/// word the title names. Topic chips' search words never add a hit.
+pub fn topic_match(
+    story: &Story,
+    prefs: &NewsPrefs,
+    cloud: Option<Category>,
+) -> Option<(f64, Match)> {
+    let m = sources::match_prefs(story, prefs, cloud)?;
     let lower = story.title.to_lowercase();
     let words: HashSet<String> = title_words(&story.title, None).into_iter().collect();
     let mut hits = 0usize;
@@ -217,20 +231,7 @@ pub fn topic_score(story: &Story, prefs: &NewsPrefs) -> f64 {
             hits += 1;
         }
     }
-    for t in &prefs.topics {
-        if let Some(q) = google_query(t) {
-            if q.split_whitespace()
-                .any(|w| w != "news" && words.contains(w))
-            {
-                hits += 1;
-            }
-        }
-    }
-    if !from_interest && hits == 0 {
-        return 0.0;
-    }
-    let base = if from_interest { TOPIC_BASE } else { 0.0 };
-    base + TITLE_HIT * hits.min(MAX_TITLE_HITS) as f64
+    Some((TOPIC_BASE + TITLE_HIT * hits.min(MAX_TITLE_HITS) as f64, m))
 }
 
 /// 1.0 for a story published now, halving every [`FRESH_HALF_LIFE_MS`];
@@ -248,12 +249,22 @@ pub fn freshness(published_ms: Option<i64>, now_ms: i64) -> f64 {
 
 /// The full score, or `None` for an off-topic story.
 pub fn score(story: &Story, prefs: &NewsPrefs, now_ms: i64) -> Option<f64> {
-    let topic = topic_score(story, prefs);
-    if topic <= 0.0 {
-        return None;
-    }
+    score_with(story, prefs, now_ms, None).map(|(s, _)| s)
+}
+
+/// [`score`] with the story's cached cloud label, returning the match too.
+pub fn score_with(
+    story: &Story,
+    prefs: &NewsPrefs,
+    now_ms: i64,
+    cloud: Option<Category>,
+) -> Option<(f64, Match)> {
+    let (topic, m) = topic_match(story, prefs, cloud)?;
     let outlets = (story.outlets.max(1) as f64).ln();
-    Some(topic + FRESH_WEIGHT * freshness(story.published_ms, now_ms) + OUTLETS_WEIGHT * outlets)
+    Some((
+        topic + FRESH_WEIGHT * freshness(story.published_ms, now_ms) + OUTLETS_WEIGHT * outlets,
+        m,
+    ))
 }
 
 /// One ranked story, as the reader gets it. `urlKey`/`titleKey` go back to
@@ -266,6 +277,12 @@ pub struct RankedStory {
     pub score: f64,
     pub url_key: String,
     pub title_key: String,
+    /// yap-1107-news-no-off-topic-stories — the story's own category; the
+    /// story's `topic` is the user's topic (or ticker / own word) it matched.
+    pub category: Category,
+    pub classified_by: ClassifiedBy,
+    /// The card's "Why this story" line ([`sources::why_line`]).
+    pub why: String,
 }
 
 /// Score, drop off-topic, sort best first (ties: newer, then URL so the
@@ -277,19 +294,42 @@ pub fn rank(
     now_ms: i64,
     limit: usize,
 ) -> (Vec<RankedStory>, usize) {
+    rank_with(items, prefs, now_ms, limit, &Labels::new())
+}
+
+/// [`rank`] with the cached cloud labels (by url key). An off-topic story is
+/// dropped and counted, never relabelled to the topic that searched for it.
+pub fn rank_with(
+    items: Vec<Keyed>,
+    prefs: &NewsPrefs,
+    now_ms: i64,
+    limit: usize,
+    labels: &Labels,
+) -> (Vec<RankedStory>, usize) {
     let mut off_topic = 0usize;
     let mut out: Vec<RankedStory> = items
         .into_iter()
-        .filter_map(|k| match score(&k.story, prefs, now_ms) {
-            Some(score) => Some(RankedStory {
-                story: k.story,
-                score,
-                url_key: k.url_key,
-                title_key: k.title_key,
-            }),
-            None => {
-                off_topic += 1;
-                None
+        .filter_map(|k| {
+            let cloud = labels.get(&k.url_key).copied();
+            match score_with(&k.story, prefs, now_ms, cloud) {
+                Some((score, m)) => {
+                    let why = sources::why_line(&k.story, &m);
+                    let mut story = k.story;
+                    story.topic = m.topic;
+                    Some(RankedStory {
+                        story,
+                        score,
+                        url_key: k.url_key,
+                        title_key: k.title_key,
+                        category: m.category,
+                        classified_by: m.by,
+                        why,
+                    })
+                }
+                None => {
+                    off_topic += 1;
+                    None
+                }
             }
         })
         .collect();
@@ -461,9 +501,37 @@ pub(crate) mod tests {
             Some(1),
         );
         assert_eq!(topic_score(&found_by_topic, &p), TOPIC_BASE);
-        assert_eq!(topic_score(&named_in_title, &p), TITLE_HIT * 3.0);
+        // Category Stocks (not picked): kept by the ticker and own word,
+        // which each add a hit; "technology" (a topic search word) adds none.
+        assert_eq!(
+            topic_score(&named_in_title, &p),
+            TOPIC_BASE + TITLE_HIT * 2.0
+        );
         assert_eq!(topic_score(&off_topic, &p), 0.0);
         assert!(score(&off_topic, &p, NOW).is_none());
+    }
+
+    #[test]
+    fn topic_search_words_add_no_title_hit() {
+        let p = prefs(&["tech", "world", "business"], &[], &[]);
+        // The event name is a deny phrase: Sports, so it scores nothing.
+        let wwt = story(
+            "tech",
+            "World Wide Technology posts record revenue",
+            "https://a.com/wwt",
+            Some("Reuters"),
+            Some(1),
+        );
+        assert_eq!(topic_score(&wwt, &p), 0.0);
+        // Matches on its category; "world" and "technology" add no hit.
+        let leaders = story(
+            "world",
+            "World leaders discuss technology at summit",
+            "https://a.com/w",
+            Some("Reuters"),
+            Some(1),
+        );
+        assert_eq!(topic_score(&leaders, &p), TOPIC_BASE);
     }
 
     #[test]
@@ -510,6 +578,7 @@ pub(crate) mod tests {
         ];
         let (ranked, off) = rank(items, &p, NOW, 3);
         assert_eq!(off, 1);
+        assert_eq!(ranked[0].why, "From the news (Tech) \u{b7} matches Tech");
         let urls: Vec<&str> = ranked.iter().map(|r| r.story.url.as_str()).collect();
         // fusion: topic 1.0 + title hit 0.5 + fresh 2*0.31; new: 1.0 + 2*1.0; old: 1.0 + 2*0.1
         assert_eq!(
