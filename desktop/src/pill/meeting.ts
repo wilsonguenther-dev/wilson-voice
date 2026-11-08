@@ -223,9 +223,15 @@ export type MeetingPillPhase =
    * lands during the 2.4 s is lost. A `failed` result replaces it at once.
    */
   | { kind: "saved"; id: string | null; until: number; elapsedS: number; next: MeetingPillPhase }
-  | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing" }
+  /**
+   * yap-1107-pill-writing-notes-always-clears — `stalled` is set (only) by a
+   * `stall` input: no notes progress for NOTES_STALL_MS while "Writing notes",
+   * so the pill says "Still writing... tap to open notes" and the tap opens
+   * that meeting. Absent on every other processing phase.
+   */
+  | { kind: "processing"; id: string; percent: number; step: "transcribing" | "summarizing"; stalled?: true }
   | { kind: "notes-ready"; id: string }
-  | { kind: "failed"; id: string; sentence: string }
+  | { kind: "failed"; id: string; sentence: string; notes?: true }
   /**
    * yap24-NT2 R3 — the job ended `waiting_for_model`: no work is running, the
    * audio is kept, and a model download requeues it. Held like a result, so
@@ -251,7 +257,88 @@ export type MeetingPillInput =
   /** fix-b8-1 — the saved beat's one timer fired. Scoped to that stop's `until`. */
   | { type: "saved_elapsed"; until: number }
   /** fix-b8-1 — `stop_meeting` returned an error; `sentence` is what to show. */
-  | { type: "stop_failed"; sentence: string; nowMs?: number };
+  | { type: "stop_failed"; sentence: string; nowMs?: number }
+  /**
+   * yap-1107-pill-writing-notes-always-clears — what `list_notes_jobs` (the
+   * notes worker's store) says right now. Events are hints, the store is the
+   * truth: "Writing notes" stays only while the store has an ACTIVE job for
+   * that meeting.
+   */
+  | { type: "reconcile"; jobs: readonly NotesJobSnapshot[]; nowMs?: number }
+  /** yap-1107 — NOTES_STALL_MS went by with no notes progress for `id`. */
+  | { type: "stall"; id: string };
+
+/**
+ * yap-1107-pill-writing-notes-always-clears — one row of `list_notes_jobs`
+ * (Rust `summary_jobs::NotesStatus`, serde camelCase).
+ */
+export interface NotesJobSnapshot {
+  id: string;
+  phase: string;
+  percent: number;
+  reason?: string | null;
+}
+
+/** yap-1107 — no notes progress for this long => "Still writing... tap to open notes". */
+export const NOTES_STALL_MS = 90_000;
+/** yap-1107 — the ONE early store re-check after the pill starts "Writing notes". */
+export const NOTES_RECHECK_MS = 5_000;
+/** yap-1107 — the slow store re-check while notes are still being written (never below 30 s). */
+export const NOTES_RECHECK_SLOW_MS = 30_000;
+/** yap-1107 — the pill's words once notes have gone quiet for NOTES_STALL_MS. */
+export const STILL_WRITING_LABEL = "Still writing... tap to open notes";
+/**
+ * yap-1107 (bounce fix, batch 4) — the WORDS ON the pill for the same two
+ * moments. The pill window is 300 px (float_pill.rs PILL_W) and the clock slot
+ * holds about as much as the approved "Notes ready — Open" (pill.html: short
+ * words + Open; "Failed, Retry"): the full "Still writing... tap to open
+ * notes" measured 176 px and a worker's failure sentence 543 px, both off the
+ * window on every dock (pill-matrix --phase meeting-notes clipped-text). So the
+ * pill shows the short words and the full sentence is the tooltip and the
+ * accessible name, the same split the "waiting" badge already uses.
+ */
+export const STILL_WRITING_SHORT = "Still writing…";
+/** yap-1107 — a notes failure on the pill (the worker's sentence is the tooltip). */
+export const NOTES_FAILED_SHORT = "Notes failed — Open";
+/** yap-1107 — any other meeting failure on the pill (its sentence is the tooltip). */
+export const MEETING_FAILED_SHORT = "Failed — Open";
+/**
+ * yap-1107 — the `meeting:progress` state `delete_meeting` emits (Rust
+ * `summary_jobs::MEETING_DELETED_STATE`): any pill phase about that id clears.
+ */
+export const MEETING_DELETED_STATE = "deleted";
+/** yap-1107 — the notes worker's active phases (mirrors `NotesPhase::is_active`). */
+const NOTES_ACTIVE_PHASES: ReadonlySet<string> = new Set(["notes_queued", "preparing_notes", "summarizing"]);
+/** yap-1107 — every notes phase a `meeting:progress` can carry (the hook re-checks the store on these). */
+export const NOTES_EVENT_STATES: ReadonlySet<string> = new Set([
+  ...NOTES_ACTIVE_PHASES,
+  "notes_ready",
+  "notes_failed",
+  "notes_cancelled",
+  MEETING_DELETED_STATE,
+]);
+
+/**
+ * yap-1107 — the meeting whose notes the pill says it is writing (also under
+ * the saved beat), or `null`. The hook arms its re-checks on this.
+ */
+export function notesWritingId(phase: MeetingPillPhase): string | null {
+  if (phase.kind === "saved") return notesWritingId(phase.next);
+  return phase.kind === "processing" && phase.step === "summarizing" ? phase.id : null;
+}
+
+/** yap-1107 — the meeting a post-stop phase is about, or `null`. */
+function phaseMeetingId(phase: MeetingPillPhase): string | null {
+  switch (phase.kind) {
+    case "processing":
+    case "notes-ready":
+    case "failed":
+    case "waiting":
+      return phase.id;
+    default:
+      return null;
+  }
+}
 
 /**
  * fix-b8-1 — the window-local DOM event the pill's Stop button raises when
@@ -341,13 +428,22 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
         case "complete":
         case "partial":
         case "notes_ready":
-        case "notes_cancelled":
           return prev.kind === "notes-ready" && prev.id === e.id ? prev : { kind: "notes-ready", id: e.id };
+        case "notes_cancelled":
+          // yap-1107 — a cancel is about ONE meeting: it ends that meeting's
+          // "Writing notes" (the transcript stands, so notes-ready), and a
+          // late cancel for a meeting the pill is not showing (a deleted one,
+          // after its "deleted" already cleared the pill) changes nothing.
+          if (phaseMeetingId(prev) !== e.id) return prev;
+          return prev.kind === "notes-ready" ? prev : { kind: "notes-ready", id: e.id };
+        case MEETING_DELETED_STATE:
+          // yap-1107 — the meeting is gone: nothing about it stays on the pill.
+          return phaseMeetingId(prev) === e.id ? MEETING_PILL_IDLE : prev;
         case "notes_failed": {
           // The transcript stands; the sentence is the notes worker's reason,
           // and the pill opens the meeting page that carries "Retry notes".
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
-          return { kind: "failed", id: e.id, sentence };
+          return { kind: "failed", id: e.id, sentence, notes: true };
         }
         case "failed": {
           const sentence = e.error && e.error.trim().length > 0 ? e.error.trim() : MEETING_FAILED_FALLBACK;
@@ -363,6 +459,44 @@ export function reduceMeetingPill(prev: MeetingPillPhase, input: MeetingPillInpu
     }
     case "saved_elapsed":
       return prev.kind === "saved" && prev.until === input.until ? prev.next : prev;
+    case "reconcile": {
+      if (prev.kind === "saved") {
+        const next = reduceMeetingPill(prev.next, input);
+        if (next.kind === "failed") return next;
+        return next === prev.next ? prev : { ...prev, next };
+      }
+      if (prev.kind !== "processing" || prev.step !== "summarizing") return prev;
+      const writingId = prev.id;
+      const jobs = Array.isArray(input.jobs) ? input.jobs : [];
+      const job = jobs.find((j) => j && j.id === writingId);
+      // No job in the store: nothing is writing these notes (the worker
+      // restarted, or it never had them) — the pill rests.
+      if (!job || typeof job.phase !== "string") return MEETING_PILL_IDLE;
+      if (NOTES_ACTIVE_PHASES.has(job.phase)) return prev;
+      // Settled in the store: fold it exactly as its (lost) event would have.
+      const settled = reduceMeetingPill(prev, {
+        type: "progress",
+        event: {
+          id: prev.id,
+          state: job.phase,
+          percent: Number.isFinite(job.percent) ? job.percent : 0,
+          processedThroughSeconds: 0,
+          durationSeconds: 0,
+          error: job.reason ?? null,
+        },
+        nowMs: input.nowMs,
+      });
+      // A phase this build does not know is still not "Writing notes".
+      return settled === prev ? MEETING_PILL_IDLE : settled;
+    }
+    case "stall": {
+      if (prev.kind === "saved") {
+        const next = reduceMeetingPill(prev.next, input);
+        return next === prev.next ? prev : { ...prev, next };
+      }
+      if (prev.kind !== "processing" || prev.step !== "summarizing" || prev.id !== input.id || prev.stalled) return prev;
+      return { ...prev, stalled: true };
+    }
     case "stop_failed": {
       const sentence = input.sentence.trim().length > 0 ? input.sentence.trim() : MEETING_STOP_FAILED_FALLBACK;
       if (prev.kind === "recording") return { ...prev, stopFailed: { sentence, atMs: input.nowMs ?? Date.now() } };
@@ -432,12 +566,21 @@ export function meetingAfterView(phase: MeetingPillPhase, dictation: LivePhase):
         phase.step === "summarizing"
           ? meetingStateLabel("summarizing", undefined, false)
           : meetingStateLabel("transcribing", { id: phase.id, state: "transcribing", percent: phase.percent, processedThroughSeconds: 0, durationSeconds: 0 }, false);
+      if (phase.step === "summarizing" && phase.stalled) {
+        // yap-1107 — notes went quiet for NOTES_STALL_MS: say so, and let the
+        // tap open that meeting (its page shows where the notes are).
+        // Short words on the pill; the full sentence is the tooltip + name.
+        return { kind: "processing", id: phase.id, label: STILL_WRITING_SHORT, title: STILL_WRITING_LABEL, percent: 100, opens: true };
+      }
       return { kind: "processing", id: phase.id, label, title: `${label} — your meeting notes are on their way`, percent: phase.step === "summarizing" ? 100 : Math.min(99, phase.percent), opens: false };
     }
     case "notes-ready":
       return { kind: "notes-ready", id: phase.id, label: "Notes ready — Open", title: "Meeting notes ready — open them in Yap", percent: null, opens: true };
     case "failed":
-      return { kind: "failed", id: phase.id, label: phase.sentence, title: phase.sentence, percent: null, opens: true };
+      // yap-1107 — short words on the pill (a sentence runs off the 300 px
+      // window); the sentence — what went wrong, what to do — is the tooltip
+      // and the accessible name, and the tap opens the page with Retry.
+      return { kind: "failed", id: phase.id, label: phase.notes ? NOTES_FAILED_SHORT : MEETING_FAILED_SHORT, title: phase.sentence, percent: null, opens: true };
     case "waiting":
       // Short words in the pill (the Meetings view's own label); the full
       // sentence — what to do next — is the tooltip and accessible name.

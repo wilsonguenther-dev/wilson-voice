@@ -11296,18 +11296,43 @@ pub(crate) fn summary_model_on_disk(id: &str) -> bool {
 /// `notes_queued`, `preparing_notes`, `summarizing`, `notes_ready`,
 /// `notes_failed` (with the plain reason in `error`), `notes_cancelled`.
 fn emit_notes_status(state: &AppState, st: &summary_jobs::NotesStatus) {
-    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(&st.id)) {
-        let _ = app.emit(
-            meeting_pipeline::MEETING_PROGRESS_EVENT,
-            meeting_pipeline::MeetingProgressEvent {
-                id: st.id.clone(),
-                state: st.phase.as_str().to_string(),
-                percent: st.percent,
-                processed_through_seconds: m.processed_through_seconds,
-                duration_seconds: m.duration_seconds,
-                error: st.reason.clone(),
-            },
-        );
+    // yap-1107-pill-writing-notes-always-clears: this used to emit only when
+    // `get_meeting` found the row, so a terminal phase for a meeting a delete
+    // had just removed was silently skipped and the pill sat on "Writing
+    // notes" forever. A terminal phase is ALWAYS emitted (zero durations
+    // without a row); only an active phase about a vanished meeting is not.
+    let row = state
+        .db
+        .get_meeting(&st.id)
+        .ok()
+        .flatten()
+        .map(|m| (m.processed_through_seconds, m.duration_seconds));
+    let row_exists = row.is_some();
+    if let Some(app) = MEETING_APP.get() {
+        if let Some((through, duration)) = summary_jobs::progress_durations(st.phase, row) {
+            if !row_exists {
+                log::info!(
+                    "summary emit_terminal_without_row meeting={} phase={}",
+                    st.id,
+                    st.phase.as_str()
+                );
+            }
+            let _ = app.emit(
+                meeting_pipeline::MEETING_PROGRESS_EVENT,
+                meeting_pipeline::MeetingProgressEvent {
+                    id: st.id.clone(),
+                    state: st.phase.as_str().to_string(),
+                    percent: st.percent,
+                    processed_through_seconds: through,
+                    duration_seconds: duration,
+                    error: st.reason.clone(),
+                },
+            );
+        }
+    }
+    if !row_exists {
+        // A deleted meeting announces nothing (no tray line, no notification).
+        return;
     }
     // yap24-NT7 x #250 — a meeting's notes are settled (written, or failed with
     // the transcript standing) the moment the notes worker says so, so the
@@ -11733,8 +11758,9 @@ pub const NOTES_BUSY_RETRY_REFUSAL: &str =
     "Notes are still being written for this meeting. Cancel them or let them finish, then retry the transcript.";
 
 /// What a notes job says when the transcript is being rebuilt under it.
-pub const TRANSCRIPT_REBUILDING: &str =
-    "the transcript is being rebuilt — notes will be written when it finishes";
+/// yap-1107: one sentence, owned by the notes worker (it queues the job once
+/// more on this reason, then fails honestly — no promise nothing keeps).
+pub const TRANSCRIPT_REBUILDING: &str = summary_jobs::TRANSCRIPT_REBUILDING;
 
 /// The body of a notes job, on the notes worker. Errors are plain words the
 /// card shows (B1); a cancel stores nothing (B2).
@@ -11938,10 +11964,29 @@ fn store_meeting_summary(
 /// painting while the pages are scrubbed.
 #[tauri::command]
 fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    // yap-1107-pill-writing-notes-always-clears: a notes job about this meeting
+    // must not outlive its row. Cancel it first (a queued job reports
+    // `notes_cancelled` now; a running one when it stops), then tell the pill
+    // the meeting is gone so any phase about it clears.
+    let notes_in_flight = SUMMARY_JOBS.get().is_some_and(|j| j.cancel(&id));
     state.db.delete_meeting_with_audio(&id)?;
     // yap24-NT1 (review BLOCKING 2) — and every crash journal bound to it, so
     // the deleted meeting's audio does not outlive the row under the journal's id.
     meeting::remove_journals_bound_to(&meetings_dir(), &id);
+    if let Some(app) = MEETING_APP.get() {
+        let _ = app.emit(
+            meeting_pipeline::MEETING_PROGRESS_EVENT,
+            meeting_pipeline::MeetingProgressEvent {
+                id: id.clone(),
+                state: summary_jobs::MEETING_DELETED_STATE.to_string(),
+                percent: 0,
+                processed_through_seconds: 0.0,
+                duration_seconds: 0.0,
+                error: None,
+            },
+        );
+    }
+    log::info!("meetings delete_notes_cleared id={id} notes_in_flight={notes_in_flight}");
     Ok(())
 }
 
@@ -15151,6 +15196,10 @@ pub fn run() {
             live_transcript::meeting_live_name,
             live_transcript::meeting_live_same,
             live_transcript::meeting_live_skip,
+            // yap-1106-fb-23 — "People: Auto · − 4 +" (pill + after-meeting header).
+            live_transcript::meeting_set_expected_speakers,
+            live_transcript::meeting_recap_speakers,
+            live_transcript::meeting_expected_speakers,
             // yap-byom-0 — Settings → Model providers.
             list_model_providers,
             delete_model_provider,
