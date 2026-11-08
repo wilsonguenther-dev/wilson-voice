@@ -2398,6 +2398,7 @@ html[data-rail-error="true"] .phase-strip { opacity: 1; color: rgba(252, 165, 16
    window's centre for a pill that publishes no layout. */
 html {
   --blob-d: 28px;
+  --blob-rim: 4px; /* pill.html .blob padding */
   --blob-cx: calc(var(--char-x, calc(50% - 14px)) + var(--char-w, 28px) / 2);
   --blob-cy: calc(var(--char-y, calc(50% - 14px)) + var(--char-h, 28px) * 0.4);
 }
@@ -2416,16 +2417,24 @@ html[data-pill-drag-motion="animate"] .kami-canvas {
 html[data-pill-drag="blob"][data-pill-drag-motion="animate"] .kami-canvas {
   clip-path: circle(calc(var(--blob-d) / 2) at var(--blob-cx) var(--blob-cy));
 }
-html[data-pill-drag="blob"] .kami-stage::before {
-  content: "";
+/* yap-1107-parity-pill — the approved page's .blob (pill.html): a 36 px disc,
+   4 px of shell around the 28 px face, a 1 px inner rim, 0 10px 22px shadow.
+   A real element (.kami-blob), so the parity sheet can measure it. */
+.kami-blob {
+  display: none;
+}
+html[data-pill-drag="blob"] .kami-blob {
+  display: block;
   position: absolute;
-  left: calc(var(--blob-cx) - var(--blob-d) / 2 - 2px);
-  top: calc(var(--blob-cy) - var(--blob-d) / 2 - 2px);
-  width: calc(var(--blob-d) + 4px);
-  height: calc(var(--blob-d) + 4px);
+  left: calc(var(--blob-cx) - var(--blob-d) / 2 - var(--blob-rim));
+  top: calc(var(--blob-cy) - var(--blob-d) / 2 - var(--blob-rim));
+  width: calc(var(--blob-d) + 2 * var(--blob-rim));
+  height: calc(var(--blob-d) + 2 * var(--blob-rim));
   border-radius: 50%;
-  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  background: var(--pill-shell-top);
+  box-shadow:
+    inset 0 0 0 1px var(--pill-shell-line),
+    var(--pill-blob-shadow);
   pointer-events: none;
 }
 

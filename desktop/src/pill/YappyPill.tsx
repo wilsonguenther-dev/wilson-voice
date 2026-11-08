@@ -1209,6 +1209,10 @@ export default function YappyPill(
       aria-label={phaseAccessibleName(gate, progress, chordLabel)}
     >
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
+      {/* yap-1107-parity-pill — the drag blob's shell disc is a REAL element
+          (was .kami-stage::before) so the parity sheet measures it against the
+          approved page's 36 px .blob; CSS shows it only under data-pill-drag. */}
+      <span className="kami-blob" aria-hidden="true" />
       <div ref={bubbleRef} className="kami-bubble"><span ref={bubbleTextRef} className="kami-bubble-text"></span></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in

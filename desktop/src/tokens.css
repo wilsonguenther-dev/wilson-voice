@@ -194,6 +194,7 @@
   --pill-shell: #1e2025;
   --pill-shell-2: #2b2e35; /* stop / tray buttons, the kbd chip */
   --pill-shell-line: rgba(255, 255, 255, 0.09); /* the 1 px inner rim */
+  --pill-blob-shadow: 0 10px 22px rgba(0, 0, 0, 0.38); /* pill.html .blob, mid-drag */
   --pill-shell-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
   --pill-on-shell: #eceae4;
   --pill-on-shell-2: #a9a59c; /* the quiet ".sub" word ("words", "Click to dictate") */
