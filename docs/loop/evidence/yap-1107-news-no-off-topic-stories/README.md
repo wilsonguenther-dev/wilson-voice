@@ -20,10 +20,10 @@ fixture before commit; NOT the Rust test):
 
     agree 60 / 60, sports/entertainment in Tech: none
 
-INTEGRATOR: paste the output of
-`cargo test --lib news::sources -- --nocapture` here
-(test `sixty_headlines_match_the_answer_key_with_no_sport_in_tech` prints
-`news classify fixture agree=N/60 misses=[...]`).
+Integrator run, 2026-11-08T06:56:13Z, integration-2 at 4f62be40 (`cargo test --features custom-protocol --lib news:: -- --nocapture`, exit 0):
+
+    news classify fixture agree=60/60 misses=[]
+    test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 1351 filtered out
 
 ## Acceptance 4 — headless capture
 
@@ -31,6 +31,10 @@ INTEGRATOR: `node scripts/news-why-shots.mjs --out docs/loop/evidence/yap-1107-n
 writes `news-why-1280x1400@2x.png` and exits 1 if any card lacks the
 "From <outlet> (<category>) · matches <topic>" line or shows a sports or
 entertainment outlet.
+
+Integrator run, 2026-11-08T06:56:13Z, integration-2 at 4f62be40: exit 0, `ok cards=3`; every card
+carries its "From <outlet> (<category>) · matches <topic>" line and no sports or
+entertainment outlet appears. Capture: `news-why-1280x1400@2x.png`.
 
 ## Which file proves which line
 
