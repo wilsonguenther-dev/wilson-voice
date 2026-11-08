@@ -144,7 +144,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", lowPower = false, longTake = false }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", lowPower = false, longTake = false, fixedWords = 0 }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -199,6 +199,8 @@ export default function YappyPill(
     /** yap-1107-parity-pill — pill.html row 5 "Long take": hold the listening
      * prop at the desk tier (dev/matrix only: float-main passes FORCED.longTake). */
     longTake?: boolean;
+    /** yap-1107-parity-pill — pill.html W7: the done pill's "Fixed N words" (float-main, from backtrack_caught). */
+    fixedWords?: number;
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1233,6 +1235,7 @@ export default function YappyPill(
     stopKey: chordLabel,
     lowPower,
     lowPowerLabel,
+    fixedWords,
   });
   segInfoRef.current = { cls: segClassFor(gate, segItems), items: segItems };
   useEffect(() => {

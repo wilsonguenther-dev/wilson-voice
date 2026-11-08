@@ -404,6 +404,12 @@ export function matrixLongTakeScene(): MatrixOfferRow {
   return { phase: "listening-locked", id: "longtake", phaseId: PHASE_ID["listening-locked"], query: "take=long", offer: "", tone: v.tone, label: v.label };
 }
 
+/** yap-1107-parity-pill — pill.html #wispr W7 "Fix-up notices": a done pill saying "Fixed 2 words" + Show. */
+export function matrixFixupScene(): MatrixOfferRow {
+  const v = phaseVisual("done");
+  return { phase: "done", id: "fixup", phaseId: PHASE_ID.done, query: "fixed=2", offer: "", tone: v.tone, label: v.label };
+}
+
 export function matrixRailScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return {

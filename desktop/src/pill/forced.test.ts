@@ -7,6 +7,7 @@ import {
   matrixPhases,
   matrixRailScene,
   matrixLongTakeScene,
+  matrixFixupScene,
   matrixStuckEngineScenes,
   forcedEngine,
   PILL_STYLES,
@@ -129,5 +130,8 @@ describe("yap-1107-parity-pill — pill.html row 5 \"Long take\"", () => {
     const row = matrixLongTakeScene();
     expect(row).toMatchObject({ phase: "listening-locked", id: "longtake", phaseId: PHASE_ID["listening-locked"], query: "take=long", offer: "" });
     expect(row.label.length).toBeGreaterThan(0);
+  });
+  it("parity_fixup_scene_is_a_done_pill_with_two_fixed_words", () => {
+    expect(matrixFixupScene()).toMatchObject({ phase: "done", id: "fixup", phaseId: PHASE_ID.done, query: "fixed=2", offer: "" });
   });
 });

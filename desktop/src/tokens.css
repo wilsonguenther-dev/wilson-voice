@@ -212,6 +212,7 @@
   --pill-cta: #efece4;
   --pill-cta-text: #1d1c1a;
   --pill-stop: #ff8a8d;
+  --pill-rec: #e5484d; /* pill.html --rec: the recording dot / Yappy's ear-cup light */
   --pill-bar-track: rgba(255, 255, 255, 0.14);
   /* WF-20 — the per-app style chip under a listening pill (StyleChipButton.tsx). */
   --pill-chip-surface: rgba(255, 255, 255, 0.12);

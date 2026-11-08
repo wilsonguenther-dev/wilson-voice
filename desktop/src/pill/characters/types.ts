@@ -95,6 +95,8 @@ export interface CharacterStageProps {
   lowPower?: boolean;
   /** yap-1107-parity-pill — the matrix's forced "Long take" (desk tier, pill.html row 5). */
   longTake?: boolean;
+  /** yap-1107-parity-pill — words the take's caught Backtrack fixed (pill.html W7 done pill). */
+  fixedWords?: number;
 }
 
 export interface Character {

@@ -610,8 +610,9 @@ body,
 }
 .meeting-cup-light {
   position: absolute;
-  background: hsl(var(--accent-meeting));
-  box-shadow: 0 0 4px hsl(var(--accent-meeting) / 0.8);
+  /* yap-1107-parity-pill — pill.html .recdot: var(--rec) #e5484d, flat (no
+     glow), the approved recording red inside the meeting pill. */
+  background: var(--pill-rec);
 }
 .meeting-cup-light.pulsing {
   animation: rec-cup-pulse var(--rec-pulse, 1.6s) steps(1, end) infinite;

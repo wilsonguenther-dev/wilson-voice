@@ -206,9 +206,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day&take=long",
         "selector": ".yappy-capsule-box",
-        "capture": "app/listening_locked__yappy__bottom__none.png"
+        "capture": "app/longtake__yappy__bottom__none.png"
       },
       "expect": {
         "w": 307.2,
@@ -243,7 +243,7 @@
           }
         ]
       },
-      "note": "essay tier (desk prop): the page draws lock + fn + stop, so the app target is the locked take; the desk window (208) appears after the essay threshold, which no forced phase reaches yet"
+      "note": "essay tier (desk prop): the page draws listen(null, \"desk\") with lock + fn + stop; the app reaches the desk tier with &take=long (forced.ts matrixLongTakeScene, YappyPill longTake -> wantProp desk, window 208 x 44, shell openCapsuleFor desk)"
     },
     {
       "id": "meeting-recording",
@@ -251,7 +251,7 @@
       "section": "#states",
       "artifact": {
         "page": "pill.html",
-        "selector": "#rows>.cmp:nth-child(6) .ypill",
+        "selector": "#clocks>.clockrow:nth-child(2) .cell:nth-child(1) .ypill",
         "sprites": []
       },
       "app": {
@@ -261,11 +261,9 @@
         "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
-        "w": 144.5,
-        "h": 32,
-        "fontPx": [
-          12
-        ],
+        "w": 202,
+        "h": 44,
+        "fontPx": [],
         "padding": {
           "t": 4,
           "r": 4,
@@ -280,16 +278,20 @@
           "#1e2025",
           "#2b2e35",
           "#e5484d",
-          "#eceae4",
           "#ff8a8d"
         ],
         "sprite": [
           {
-            "w": 44,
-            "h": 24
+            "w": 140,
+            "h": 36
+          },
+          {
+            "w": 14,
+            "h": 14
           }
         ]
-      }
+      },
+      "note": "re-pointed 2026-11-08: row 6 drew the compact headphones pill before Wilson chose clock B; the resting meeting is the approved B pill (decisions.meeting-clock, decisions.timer-in-pill)"
     },
     {
       "id": "meeting-dictating",
@@ -1014,7 +1016,7 @@
       "section": "#states",
       "artifact": {
         "page": "pill.html",
-        "selector": "#rows>.cmp:nth-child(23) .ypill",
+        "selector": "#vstage .vshell.r",
         "sprites": []
       },
       "app": {
@@ -1024,11 +1026,9 @@
         "capture": "app/listening__yappy__right__none.png"
       },
       "expect": {
-        "w": 244,
-        "h": 52,
-        "fontPx": [
-          12
-        ],
+        "w": 64,
+        "h": 216,
+        "fontPx": [],
         "padding": {
           "t": 4,
           "r": 4,
@@ -1040,19 +1040,18 @@
           "col": 4
         },
         "colors": [
-          "#1d1c1a",
           "#1e2025",
           "#2b2e35",
-          "#ff8a8d",
-          "#fffdf7"
+          "#ff8a8d"
         ],
         "sprite": [
           {
-            "w": 196,
-            "h": 44
+            "w": 56,
+            "h": 180
           }
         ]
-      }
+      },
+      "note": "re-pointed 2026-11-08: row 23 (a horizontal 244 x 52 pill at the edge) is superseded by section 12 \"Docked on a side: a tall world\" (Approved; Wilson: \"oh i love this\"); the right-dock twin of #vdock: .vshell.r 64 x 216, room 56 x 180, the 24 px stop under it (vdock.ts VDOCK_OPEN / vStopRect)"
     },
     {
       "id": "timer-sun-sky-b",
@@ -1060,7 +1059,7 @@
       "section": "#timer",
       "artifact": {
         "page": "pill.html",
-        "selector": "#clocks .ypill",
+        "selector": "#clocks>.clockrow:nth-child(2) .cell:nth-child(1) .ypill",
         "sprites": []
       },
       "app": {
@@ -1100,7 +1099,7 @@
           }
         ]
       },
-      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+      "note": "concept B (the sun) at Just started, the approved meeting clock (decisions.meeting-clock); mtgPill 202 x 44, window 140 x 36 = app .meeting-shell CLOCK_W 202 x CLOCK_H 44, scene SCENE_W 140 x SCENE_H 36"
     },
     {
       "id": "hoot-b-tape",
@@ -1339,9 +1338,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day&fixed=2",
         "selector": ".yappy-capsule-box",
-        "capture": "app/done__yappy__bottom__none.png"
+        "capture": "app/fixup__yappy__bottom__none.png"
       },
       "expect": {
         "w": 167.05,
@@ -1374,7 +1373,7 @@
           }
         ]
       },
-      "note": "the old #wrows .ypill selector measured W1 (a 167x32 status pill); W7 Fix-up notices is the done state with check + 'Fixed 2 words' + Show (shellSegment fixedWordsLine). The app still shows Backtrack as BacktrackCaughtCard until the caught count is wired into the done pill"
+      "note": "W7 Fix-up notices: the done pill with check + \"Fixed 2 words\" + Show (shellSegment fixedWordsLine). Fed by backtrack_caught in float-main (backtrackFixedWords); the matrix forces it with &fixed=2 (forced.ts matrixFixupScene)"
     }
   ],
   "buildShell": {
@@ -1392,22 +1391,10 @@
   },
   "knownConflicts": [
     {
-      "state": "hands-free, long-take, meeting-dictating, writing-it-up, polishing, pasting, pasted, docked-side",
+      "state": "hands-free, long-take, meeting-dictating, writing-it-up, polishing, pasting, pasted",
       "artifact": ".ypill measures the whole shell including the right segment (lock, fn key, stop, word count)",
       "build": ".yappy-capsule-box measures the drawn capsule only; the segments are DOM slots beside it",
       "why": "the rows' width compares different boxes until the slot row has its own measured twin; the integrator's sheet shows the delta per row"
-    },
-    {
-      "state": "meeting-recording, meeting-dictating",
-      "artifact": "#states rows 6-7 draw the compact headphones pill (h 32 / h 52) with a red dot and a plain clock",
-      "build": "the app draws the resting meeting as the scene (decisions.meeting-clock: 'Meeting clock = B, the SUN crossing the sky'; #timer 202x44, window 140x36) inside one .meeting-shell",
-      "why": "Wilson chose clock B after these rows were drawn; the rows measure against the approved #timer/#hoot pills, whose window is 140x36 while the app scene is 112x40 in a 208x40 shell (state.ts CLOCK_W/CLOCK_H, SCENE_W/H): height 9 percent off, NOT within 3 percent yet"
-    },
-    {
-      "state": "docked-side",
-      "artifact": "row 23 draws a horizontal 244x52 pill at a side",
-      "build": "side docks draw the tall #vdock shell (never wider than 64 px)",
-      "why": "#vdock is the later, more specific section; the row stays in the sheet and is expected to fail on width until Wilson picks one"
     }
   ],
   "resolvedConflicts": [
@@ -1416,6 +1403,30 @@
       "artifact": "72 x 28 nub (pill.html PK.pill h 28, win 64 x 20; 'Shell grows from 72 x 28 to 228 x 52')",
       "build": "REST_CAPSULE = ARTIFACT_REST_SHELL 72 x 28 (characterFit.ts); on 2x every pill character sits whole in it at one device px per art px; below 2x Yappy's camera uses 'head' framing (sprout, eyes, beak in view, feet leave the nub)",
       "why": "batch-7 bounce: the item text said 56 tall, the senior standard says build the artifact when they conflict. Cost, for Wilson: at rest on Retina Yappy draws at 0.5 CSS px per art px (whole, crisp, but half his open scale), because no larger whole cell fits a 26 px clip; the artifact itself shows a face close-up there, which fb-10 removed after 'the heads cropped'."
+    },
+    {
+      "state": "meeting-recording, timer-sun-sky-b, hoot-b-tape",
+      "artifact": "mtgPill: PK.pill h 44, win 140 x 36 r 14, right recdot + stop (202 x 44)",
+      "build": "state.ts CLOCK_W.recording 202, CLOCK_H 44; meetingScene.ts SCENE_W 140 x SCENE_H 36 at 4 px padding (float.css scene-character .meeting-badge padding var(--pill-shell-pad)); radius 22 / window 14 tokens; ear-cup light var(--pill-rec) #e5484d",
+      "why": "was 208 x 40 with a 112 x 40 scene: height 9 percent off"
+    },
+    {
+      "state": "docked-side, vdock",
+      "artifact": "#vstage .vshell.l/.r 64 x 216: room 56 x 180, gap 4, 24 px .sbtn.red",
+      "build": "vdock.ts VDOCK_OPEN 64 x 216 (VDOCK_STOP_ROW 28), vStopRect; YappyPill .yappy-vstop",
+      "why": "was 64 x 188 with no stop (13 percent short); row 23 is superseded by section 12 (Approved)"
+    },
+    {
+      "state": "long-take",
+      "artifact": "row 5 listen(null, \"desk\") 307 x 52, window 208 x 44",
+      "build": "&take=long forces the desk tier",
+      "why": "no forced phase reached the essay tier"
+    },
+    {
+      "state": "wispr",
+      "artifact": "W7 Fix-up notices in the done pill",
+      "build": "float-main listens to backtrack_caught -> fixedWords -> segmentFor",
+      "why": "the segment was a model with no data"
     }
   ],
   "nonVisual": [
@@ -1431,5 +1442,5 @@
     }
   ],
   "captures": "pill-matrix.mjs --out <captures>/app writes <matrix id>__yappy__<bottom|left|right>__<none|recording|saved>.png; every app.capture is that name under app/",
-  "rewrittenAt": "2026-11-08T06:42:15.539Z"
+  "rewrittenAt": "2026-11-08T06:52:04Z"
 }

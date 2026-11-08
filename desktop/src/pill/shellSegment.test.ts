@@ -11,6 +11,7 @@ import {
   segCapsule, segClassFor, segEvent, segmentFor, shellBounds, type SegItem,
 } from "./shellSegment";
 import { forcedPill, matrixBatteryScene } from "./forced";
+import { SAMPLE_BACKTRACK_CAUGHT, backtrackFixedWords, forcedFixedWords } from "./backtrackCaught";
 
 interface ManifestState { id: string; expect: { w: number; h: number; sprite?: { w: number; h: number }[] } }
 const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[] };
@@ -132,5 +133,25 @@ describe("yap-1107-parity-pill: saving battery and fix-up notices (pill.html row
     expect(forcedPill("?phase=idle&battery=low")?.battery).toBe(true);
     expect(forcedPill("?phase=idle")?.battery).toBe(false);
     expect(matrixBatteryScene()).toMatchObject({ phase: "idle", id: "battery", query: "battery=low" });
+  });
+});
+
+// yap-1107-parity-pill — W7 "Fix-up notices" is fed by the real Backtrack data:
+// float-main turns each backtrack_caught payload into the done pill's count.
+describe("parity: the fix-up segment reads the Backtrack payload", () => {
+  it("parity_fixup_count_comes_from_backtrack_caught", () => {
+    expect(backtrackFixedWords(SAMPLE_BACKTRACK_CAUGHT)).toBe(1); // kept "3"
+    expect(backtrackFixedWords({ ...SAMPLE_BACKTRACK_CAUGHT, kept: "  Thursday at noon " })).toBe(3);
+    expect(backtrackFixedWords({ ...SAMPLE_BACKTRACK_CAUGHT, kept: "x" })).toBe(1);
+    expect(forcedFixedWords("?phase=done&fixed=2")).toBe(2);
+    expect(forcedFixedWords("?phase=done")).toBeNull();
+    expect(forcedFixedWords("?phase=done&fixed=-1")).toBeNull();
+    expect(forcedFixedWords("?phase=done&fixed=abc")).toBeNull();
+  });
+  it("parity_done_pill_passes_fixed_words_into_the_segment", () => {
+    // YappyPill hands its fixedWords prop to segmentFor; float-main feeds it.
+    expect(YAPPY_PILL_SRC).toMatch(/segmentFor\(\{[\s\S]*?fixedWords,[\s\S]*?\}\)/);
+    const wispr = (JSON.parse(MANIFEST_SRC) as { states: Array<{ id: string; app: { query: string } }> }).states.find((x) => x.id === "wispr")!;
+    expect(wispr.app.query).toMatch(/&fixed=2$/);
   });
 });

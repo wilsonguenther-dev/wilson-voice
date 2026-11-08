@@ -14,7 +14,7 @@ import TOKENS_CSS from "../tokens.css?raw";
 import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
 import MANIFEST_SRC from "../../../docs/loop/evidence/parity-pill.manifest.json?raw";
 import { ARTIFACT_OPEN_SHELL, ARTIFACT_REST_SHELL, SHELL_PAD, shellWindow } from "./characterFit";
-import { matrixBacktrackCaughtScene, matrixBatteryScene, matrixDragBlobScene, matrixPhases, matrixRailScene } from "./forced";
+import { matrixBacktrackCaughtScene, matrixBatteryScene, matrixLongTakeScene, matrixFixupScene, matrixDragBlobScene, matrixPhases, matrixRailScene } from "./forced";
 
 interface ManifestState {
   id: string;
@@ -117,7 +117,7 @@ describe("yap-1107-parity-pill — the manifest lists every approved state", () 
   // batch-4 bounce: section selectors (#clocks, #heavy...) measured 1176 px page
   // sections against a pill. Every measured row now names ONE drawn pill.
   it("every_artifact_selector_is_one_pill_not_a_page_section", () => {
-    for (const s of ids) expect(s.artifact.selector, s.id).toMatch(/\.(ypill|blob|vshell\.l)$/);
+    for (const s of ids) expect(s.artifact.selector, s.id).toMatch(/\.(ypill|blob|vshell\.[lr])$/);
   });
 
   // batch-1 bounce: #vdock measured the horizontal pill above the tall shell, and
@@ -128,7 +128,22 @@ describe("yap-1107-parity-pill — the manifest lists every approved state", () 
     expect(v.expect.w).toBeLessThanOrEqual(64);
     expect(ids.find((s) => s.id === "wispr")!.artifact.selector).toBe("#wrows>.cmp:nth-child(7) .ypill");
     expect(ids.find((s) => s.id === "saving-battery")!.app.query).toMatch(/&battery=low$/);
-    expect(ids.find((s) => s.id === "long-take")!.app.query).toMatch(/^phase=listening-locked&/);
+    expect(ids.find((s) => s.id === "long-take")!.app.query).toMatch(/^phase=listening-locked&.*&take=long$/);
+  });
+
+  // yap-1107-parity-pill (resume): the side row measures the approved tall room
+  // (section 12 supersedes row 23), and the resting meeting measures clock B.
+  it("parity_docked_side_and_meeting_rows_measure_the_approved_pills", () => {
+    const ds = ids.find((s) => s.id === "docked-side")!;
+    expect(ds.artifact.selector).toBe("#vstage .vshell.r");
+    expect([ds.expect.w, ds.expect.h]).toEqual([64, 216]);
+    expect(ds.app.query).toMatch(/&dock=right&/);
+    const B = "#clocks>.clockrow:nth-child(2) .cell:nth-child(1) .ypill";
+    for (const id of ["meeting-recording", "timer-sun-sky-b"]) {
+      const r = ids.find((s) => s.id === id)!;
+      expect(r.artifact.selector, id).toBe(B);
+      expect([r.expect.w, r.expect.h], id).toEqual([202, 44]);
+    }
   });
 
   // #heavy is a behaviour table and #chatshots are pre-redesign defect
@@ -143,7 +158,7 @@ describe("yap-1107-parity-pill — the manifest lists every approved state", () 
   // bottom|left|right and meetings none|recording|saved, navigating with
   // ?phase=<row phase>; the manifest must name exactly those files.
   it("every_capture_is_a_file_pill_matrix_writes", () => {
-    const rows = [...matrixPhases(), matrixRailScene(), matrixDragBlobScene(), matrixBacktrackCaughtScene(), matrixBatteryScene()];
+    const rows = [...matrixPhases(), matrixRailScene(), matrixDragBlobScene(), matrixBacktrackCaughtScene(), matrixBatteryScene(), matrixLongTakeScene(), matrixFixupScene()];
     const byId = new Map<string, { phase: string; query?: string }>(
       rows.map((r): [string, { phase: string; query?: string }] => [r.id, r]),
     );
