@@ -38,18 +38,63 @@ use wilson_voice_lib::transcription::{
 use wilson_voice_lib::ClipWav;
 use wilson_voice_lib::{keep_cancelled_take, CANCELLED_TAKE_REASON};
 
-/// yap-1107-timing-tests-deterministic — wait for an EVENT, not for a sleep.
-/// "Several boundaries in" is a count the engine publishes; sleeping N chunk
-/// lengths and hoping the decoder thread was scheduled is a bet on load.
-/// `deadline` is a hang guard only, never a measurement.
-fn wait_until(what: &str, deadline: Duration, mut cond: impl FnMut() -> bool) {
-    let start = std::time::Instant::now();
-    while !cond() {
-        assert!(
-            start.elapsed() < deadline,
-            "timed out after {deadline:?} waiting for {what}"
-        );
-        std::thread::sleep(Duration::from_millis(1));
+/// yap-1107-timing-tests-deterministic / yap-1108-timing-src-ordering-resume —
+/// a ONE-SHOT GATE inside a stub engine, so a cancel lands mid-decode by
+/// construction instead of by pacing.
+///
+/// The first version of these tests slept N chunk lengths; the second waited
+/// for a counter and then cancelled. Both still bet that the decoder thread
+/// stays slower than the test thread: on a loaded runner the decoder could run
+/// every remaining chunk before the test thread was scheduled to cancel, and a
+/// correct build failed with "ran to completion". Here the engine PARKS at a
+/// fixed boundary and announces it; the test raises the cancel while it is
+/// parked and only then releases it. The decode cannot finish first, however
+/// the threads are scheduled. Later calls (the "engine survives" decode after
+/// the cancel) pass straight through.
+#[derive(Default)]
+struct ParkOnce {
+    /// (parked, released)
+    state: std::sync::Mutex<(bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+/// How long a parked engine, or a test waiting for it to park, waits before it
+/// fails. A hang guard for a broken build, never a healthy-path deadline.
+const PARK_HANG_GUARD: Duration = Duration::from_secs(60);
+
+impl ParkOnce {
+    /// Engine side. The FIRST call parks until [`ParkOnce::release`]; every
+    /// later call returns at once.
+    fn park(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.0 {
+            return;
+        }
+        state.0 = true;
+        self.changed.notify_all();
+        let until = std::time::Instant::now() + PARK_HANG_GUARD;
+        while !state.1 {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "the test never released the parked decode");
+            state = self.changed.wait_timeout(state, left).unwrap().0;
+        }
+    }
+
+    /// Test side: block until the engine has parked.
+    fn wait_parked(&self, what: &str) {
+        let mut state = self.state.lock().unwrap();
+        let until = std::time::Instant::now() + PARK_HANG_GUARD;
+        while !state.0 {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for {what}");
+            state = self.changed.wait_timeout(state, left).unwrap().0;
+        }
+    }
+
+    /// Test side: let the parked engine go on.
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
     }
 }
 
@@ -59,6 +104,9 @@ const CHUNKS: usize = 20;
 /// that a cancel fired from another thread lands mid-decode rather than racing
 /// the decode's own start.
 const CHUNK_DECODE: Duration = Duration::from_millis(40);
+/// The chunk boundary the stub decode parks after (once), so the test's cancel
+/// lands mid-decode by construction. See [`ParkOnce`].
+const PARK_AFTER_CHUNKS: usize = 2;
 
 /// A chunked decode: it crosses [`CHUNKS`] boundaries and CHECKS FOR
 /// CANCELLATION AT EACH ONE, which is the cooperative half of this item.
@@ -72,6 +120,8 @@ struct ChunkedEngine {
     /// Chunk boundaries actually crossed, so "it stopped early" is a number
     /// rather than a timing claim.
     chunks_done: Arc<AtomicUsize>,
+    /// Parks the first decode after [`PARK_AFTER_CHUNKS`] boundaries.
+    park: Arc<ParkOnce>,
 }
 
 impl Transcriber for ChunkedEngine {
@@ -81,7 +131,7 @@ impl Transcriber for ChunkedEngine {
         _language: Option<&str>,
         _bias: Option<&str>,
     ) -> Result<String, String> {
-        for _ in 0..CHUNKS {
+        for i in 0..CHUNKS {
             if self.cancelled.load(Ordering::SeqCst) {
                 // What a real cancelled native decode does: return whatever it
                 // has. The manager throws it away and reports the reason.
@@ -89,6 +139,9 @@ impl Transcriber for ChunkedEngine {
             }
             std::thread::sleep(CHUNK_DECODE);
             self.chunks_done.fetch_add(1, Ordering::SeqCst);
+            if i + 1 == PARK_AFTER_CHUNKS {
+                self.park.park();
+            }
         }
         Ok("the whole fifteen minutes".to_string())
     }
@@ -105,12 +158,17 @@ impl Transcriber for ChunkedEngine {
     }
 }
 
-fn manager(cancelled: Arc<AtomicBool>, chunks_done: Arc<AtomicUsize>) -> TranscriptionManager {
+fn manager(
+    cancelled: Arc<AtomicBool>,
+    chunks_done: Arc<AtomicUsize>,
+    park: Arc<ParkOnce>,
+) -> TranscriptionManager {
     TranscriptionManager::with_loader(
         Arc::new(move |_p: &Path| {
             Ok(Box::new(ChunkedEngine {
                 cancelled: cancelled.clone(),
                 chunks_done: chunks_done.clone(),
+                park: park.clone(),
             }) as Box<dyn Transcriber>)
         }),
         Duration::from_secs(3600),
@@ -205,7 +263,12 @@ fn cancel_mid_recording_writes_no_row_and_pastes_nothing() {
 fn cancel_mid_decode_stops_at_the_next_chunk_boundary() {
     let cancelled = Arc::new(AtomicBool::new(false));
     let chunks_done = Arc::new(AtomicUsize::new(0));
-    let m = Arc::new(manager(cancelled.clone(), chunks_done.clone()));
+    let park = Arc::new(ParkOnce::default());
+    let m = Arc::new(manager(
+        cancelled.clone(),
+        chunks_done.clone(),
+        park.clone(),
+    ));
     // The manager refuses to load a model file that is not there, so the stub
     // gets a real (empty) one — the loader above never reads it.
     let model_dir = std::env::temp_dir().join(format!("y3d-model-{}", std::process::id()));
@@ -219,17 +282,16 @@ fn cancel_mid_decode_stops_at_the_next_chunk_boundary() {
         std::thread::spawn(move || m.transcribe(vec![0.1; 16_000], None, None))
     };
 
-    // Let the decode get properly under way — boundaries actually crossed, so
-    // the cancel lands MID-decode rather than before it starts.
-    wait_until(
-        "the decode to cross two chunk boundaries",
-        Duration::from_secs(30),
-        || chunks_done.load(Ordering::SeqCst) >= 2,
-    );
+    // Let the decode get properly under way — it parks after
+    // PARK_AFTER_CHUNKS boundaries and stays parked until the cancel is in, so
+    // the cancel lands MID-decode by construction (not before it starts, and
+    // not after it has already finished on a loaded runner).
+    park.wait_parked("the decode to park after its first chunk boundaries");
     assert!(
         m.cancel_in_flight_for_user(),
         "there was an in-flight decode and the cancel did not reach it"
     );
+    park.release();
 
     let out = decoder.join().unwrap();
     assert_eq!(
@@ -241,6 +303,13 @@ fn cancel_mid_decode_stops_at_the_next_chunk_boundary() {
     assert!(
         crossed < CHUNKS,
         "the decode ran to completion anyway: {crossed}/{CHUNKS} chunk boundaries crossed"
+    );
+    // Stronger than the bound above, and only possible now that the cancel's
+    // position is fixed: it landed after boundary PARK_AFTER_CHUNKS, so the
+    // decode stops at the very NEXT boundary check — the test's name.
+    assert_eq!(
+        crossed, PARK_AFTER_CHUNKS,
+        "the cancel landed after boundary {PARK_AFTER_CHUNKS}; the decode must stop at the next one"
     );
 
     // The engine is still usable — nothing was killed or unloaded.
@@ -363,6 +432,9 @@ fn escape_is_not_a_global_shortcut_while_idle() {
 
 /// How many windows the plan below splits a 60 s take into.
 const PLANNED_WINDOWS: usize = 12;
+/// The window the stub parks after (once), so the test's cancel lands
+/// mid-take by construction. See [`ParkOnce`].
+const PARK_AFTER_WINDOWS: usize = 2;
 
 /// A stub that counts WINDOWS, not inner boundaries, and has no cancel hook at
 /// all.
@@ -375,6 +447,8 @@ const PLANNED_WINDOWS: usize = 12;
 /// `cancel_mid_decode_stops_at_the_next_chunk_boundary` already covers.
 struct WindowCountingEngine {
     windows_decoded: Arc<AtomicUsize>,
+    /// Parks the first take after [`PARK_AFTER_WINDOWS`] windows.
+    park: Arc<ParkOnce>,
 }
 
 impl Transcriber for WindowCountingEngine {
@@ -386,6 +460,9 @@ impl Transcriber for WindowCountingEngine {
     ) -> Result<String, String> {
         std::thread::sleep(Duration::from_millis(30));
         let n = self.windows_decoded.fetch_add(1, Ordering::SeqCst);
+        if n + 1 == PARK_AFTER_WINDOWS {
+            self.park.park();
+        }
         Ok(format!("window {n}"))
     }
 }
@@ -418,12 +495,15 @@ fn twelve_window_plan() -> DictationChunking {
 #[test]
 fn cancel_stops_the_real_windowed_loop_not_just_one_window() {
     let windows_decoded = Arc::new(AtomicUsize::new(0));
+    let park = Arc::new(ParkOnce::default());
     let m = Arc::new({
         let windows_decoded = windows_decoded.clone();
+        let park = park.clone();
         TranscriptionManager::with_loader(
             Arc::new(move |_p: &Path| {
                 Ok(Box::new(WindowCountingEngine {
                     windows_decoded: windows_decoded.clone(),
+                    park: park.clone(),
                 }) as Box<dyn Transcriber>)
             }),
             Duration::from_secs(3600),
@@ -447,11 +527,10 @@ fn cancel_stops_the_real_windowed_loop_not_just_one_window() {
         })
     };
 
-    // Let a couple of windows go by, so this is a cancel MID-take — counted,
-    // not slept for.
-    wait_until("two windows to decode", Duration::from_secs(30), || {
-        windows_decoded.load(Ordering::SeqCst) >= 2
-    });
+    // Let a couple of windows go by, so this is a cancel MID-take: the stub
+    // parks inside window PARK_AFTER_WINDOWS and stays parked until the cancel
+    // is in, so the remaining windows cannot all decode before the cancel lands.
+    park.wait_parked("the take to park after its first windows");
     m.cancel_in_flight_for_user();
     // The latch is raised whether or not there was a hook to fire — this engine
     // has none, and the boundary check is the only thing that can stop it.
@@ -459,6 +538,7 @@ fn cancel_stops_the_real_windowed_loop_not_just_one_window() {
         m.user_cancel_requested(),
         "the cancel did not raise the latch the chunk boundary reads"
     );
+    park.release();
 
     let out = decoder.join().unwrap();
     assert_eq!(
