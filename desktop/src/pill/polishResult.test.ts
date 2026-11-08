@@ -17,9 +17,11 @@ const cloud: PolishResult = {
 };
 
 describe("polish result (yap-1106 → reveal-edit card)", () => {
-  it("mirrors the Rust event name and the ~4 s pill line", () => {
+  it("mirrors the Rust event name and the 8 s minimum pill line", () => {
     expect(POLISH_RESULT_EVENT).toBe("polish_result");
-    expect(REVEAL_EDIT_TTL_MS).toBe(4_000);
+    // yap-1107-reveal-stays-until-read: at least 8 s (was 4 s, faster than Wispr).
+    expect(REVEAL_EDIT_TTL_MS).toBeGreaterThanOrEqual(8_000);
+    expect(REVEAL_EDIT_TTL_MS).toBe(8_000);
   });
 
   it("accepts the {raw, polished, route, reason} payload and rejects anything else", () => {

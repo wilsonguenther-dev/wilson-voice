@@ -1912,6 +1912,31 @@ html[data-fn-hint="true"] .nudge-row { visibility: hidden; }
   background: rgba(255, 255, 255, 0.12);
 }
 .polish-reveal .diff-actions:empty { display: none; }
+/* yap-1107-reveal-stays-until-read — the close button (both faces) and the
+   pointer-inside state (the timer is paused while the pointer is here). */
+.polish-reveal-card { position: relative; }
+.polish-reveal-card .polish-reveal-title { padding-right: 22px; }
+.polish-reveal-actions .polish-reveal-close,
+.polish-reveal-card > .polish-reveal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--overlay-text);
+  opacity: 0.6;
+  cursor: pointer;
+}
+.polish-reveal-card > .polish-reveal-close { position: absolute; top: 5px; right: 5px; }
+.polish-reveal-close:hover:not(:disabled) { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+.polish-reveal-close:disabled { opacity: 0.3; cursor: default; }
+.polish-reveal-wrap[data-pointer="inside"] .polish-reveal {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
 /* yap-1107-polish-diff-readable — phrase runs, Before/After blocks and the
    "Show as before/after" toggle. Same colour tokens as the runs above and the
    card's own button surface; nothing new invented. */

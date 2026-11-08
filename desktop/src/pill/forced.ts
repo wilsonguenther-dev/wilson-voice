@@ -278,7 +278,9 @@ export function matrixBacktrackCaughtScene(): MatrixOfferRow {
  */
 export function matrixPolishRevealScenes(): MatrixOfferRow[] {
   const v = phaseVisual("idle");
-  return (["toast", "card"] as const).map((view) => ({
+  // yap-1107-reveal-stays-until-read — plus the pointer-inside (held open)
+  // state of each face, for the hover capture.
+  return (["toast", "card", "toast-hover", "card-hover"] as const).map((view) => ({
     phase: "idle",
     id: `polish-reveal-${view}`,
     phaseId: PHASE_ID.idle,
