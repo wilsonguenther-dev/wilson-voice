@@ -10,8 +10,8 @@ The old test slept each chunk's mock latency for real and asserted the whole run
 
 ## Stress proof: INTEGRATOR
 
-From desktop/src-tauri:
+From the repo root:
 
-    scripts/stress-tests.sh --runs 20 lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency
+    bash scripts/stress-tests.sh --runs 20 --log-dir docs/loop/evidence/stress lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency
 
-(8 yes loaders, --test-threads=8; log saved under docs/loop/evidence/), plus one normal unloaded run of the whole lib target (`cargo test --features custom-protocol --lib`).
+(8 yes loaders, --test-threads=8; log saved under docs/loop/evidence/), plus one normal unloaded run of the whole lib target (from desktop/src-tauri: `cargo test --features custom-protocol --lib`).
