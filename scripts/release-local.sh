@@ -576,6 +576,9 @@ release() {
   bash "$ROOT/scripts/qa/release-smoke.sh" "${smoke[@]}" || die "release smoke failed on the stapled DMG — not a release"
 
   cp "$SITE"/*.html "$SITE"/*.css "$SITE"/*.woff2 "$SITE/DepartureMono-LICENSE.txt" "$SITE/vercel.json" "$out/"
+  # The landing page's section captures live in site/dist/img/; without this the
+  # staged site ships every <img> broken (the globs above skip folders).
+  if [[ -d "$SITE/img" ]]; then mkdir -p "$out/img" && cp "$SITE"/img/* "$out/img/"; fi
   cp "$dmg" "$out/downloads/$PRODUCT-$ver-arm64.dmg"
   cp "$tarball" "$tarball.sig" "$out/updates/"
   py write "$out/updates/latest.json" "$ver" "$notes" "$tarball.sig" "$BASE/updates/$PRODUCT.app.tar.gz"

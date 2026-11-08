@@ -101,6 +101,7 @@ OUT="$STAGE/site/dist"
 scripts/release-local.sh "$TAG" --stage "$STAGE"   # add --deploy to also run the Deploy step + live verify
 # what it staged — the same four files, copied from desktop's bundle dir (B):
 #   cp site/dist/{*.html,*.css,*.woff2,DepartureMono-LICENSE.txt,vercel.json} "$OUT/"
+#   mkdir -p "$OUT/img" && cp site/dist/img/* "$OUT/img/"   # the landing page's captures
 #   cp "$B/dmg/Yap_${VER}_aarch64.dmg"   "$OUT/downloads/Yap-$VER-arm64.dmg"
 #   cp "$B/macos/Yap.app.tar.gz"          "$OUT/updates/Yap.app.tar.gz"
 #   cp "$B/macos/Yap.app.tar.gz.sig"      "$OUT/updates/Yap.app.tar.gz.sig"
@@ -117,6 +118,7 @@ OUT="$STAGE/site/dist"
 mkdir -p "$OUT/downloads"
 cp site/dist/*.html site/dist/*.css site/dist/*.woff2 \
    site/dist/DepartureMono-LICENSE.txt site/dist/vercel.json "$OUT/"
+mkdir -p "$OUT/img" && cp site/dist/img/* "$OUT/img/"   # the landing page's captures
 gh release download "$TAG" --repo wilsonguenther-dev/wilson-voice \
   --pattern "Yap-$VER-arm64.dmg" --dir "$OUT/downloads"          # 1. the DMG
 scripts/stage-updater-manifest.sh "$TAG" "$OUT"   # 2-4. updates/latest.json + Yap.app.tar.gz + Yap.app.tar.gz.sig
@@ -247,7 +249,9 @@ version label in `site/dist/index.html`, and `TAG` in the staging block above.
 U=https://yapvoice.app        # then repeat with https://yap-lemon.vercel.app
 # Content identity, not reachability: every page must come back byte-for-byte
 # equal to the file in the tree you deployed. Empty diff = pass.
-for p in index.html terms.html privacy.html style.css; do
+# img/ holds the landing page's section captures; a missing one is a broken
+# picture on the live page, so every file in it is diffed too.
+for p in index.html terms.html privacy.html style.css $(cd site/dist && ls img/*); do
   for i in 1 2; do
     curl -s --compressed "$U/$p" | diff - site/dist/$p > /dev/null \
       && echo "$p load$i OK" || echo "$p load$i MISMATCH"
