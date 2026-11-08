@@ -6,13 +6,27 @@ import {
 } from "../../pill/chatter";
 
 /**
- * The pill styles a user can pick. yap-1106-retire-classic-pill: Classic is
- * retired, so it is not offered; a saved "classic" (or nothing saved) is
- * migrated to "yappy" at launch and reads as Yappy here.
+ * Who sits in the pill (yap-1106-main-character-switch, companions.html
+ * section 04): Yappy (default), Hoot, Tidy, Gulp, Shelly. Ember, Sal and Mochi
+ * are room-only and never offered. Each id is a registered character
+ * (pill/characters/registry.ts `PILL_CHARACTER_IDS`), so all 17 pill states
+ * are covered by the character contract. yap-1106-retire-classic-pill:
+ * Classic is retired, so it is not offered; a saved "classic" (or nothing
+ * saved) is migrated to "yappy" at launch and reads as Yappy here.
  */
 export const PILL_STYLE_CHOICES = [
-  ["yappy", "Yappy", "A pixel pet in a little world"],
+  ["yappy", "Yappy", "Scribe. Types everything you say"],
+  ["hoot", "Hoot", "Meeting engineer. Dry, nods more than he talks"],
+  ["tidy", "Tidy", "Copy editor. Precise, sweeps the ums"],
+  ["gulp", "Gulp", "Word keeper. Loves a new word"],
+  ["shelly", "Shelly", "Power manager. Slow, steady, smug"],
 ] as const;
+
+/** One structured log line when the main character changes (ids only). */
+export function pillStyleLogLine(from: string | null | undefined, to: string): string {
+  const clean = (v: string | null | undefined) => String(v ?? "none").replace(/[^a-z0-9-]/gi, "").slice(0, 24) || "none";
+  return `settings main_character_set from=${clean(from)} to=${clean(to)}`;
+}
 
 /** The choice to highlight: the saved style when it is still offered, else Yappy. */
 export function activePillStyle(saved?: string | null): string {
@@ -58,27 +72,39 @@ export default function Companion() {
   return (
                 <section className="settings-panel" data-settings-pane="companion">
                   <div className="panel" data-row>
-                    <h3>Pill style</h3>
-                    <div className="profile-row">
-                      {PILL_STYLE_CHOICES.map(([id, label, blurb]) => (
-                        <button
-                          key={id}
-                          type="button"
-                          className={
-                            activePillStyle(settings.pillStyle) === id
-                              ? "profile active"
-                              : "profile"
-                          }
-                          onClick={() =>
-                            saveSettings({ ...settings, pillStyle: id })
-                          }
-                        >
-                          <strong>{label}</strong>
-                          <span>{blurb}</span>
-                        </button>
-                      ))}
+                    <h3 id="pill-main-heading">Who sits in the pill</h3>
+                    {/* yap-1106-main-character-switch — jobs never move: meetings
+                        stay Hoot's, and Yappy, when someone else sits here, stays
+                        at the studio typewriter and visits only for milestones. */}
+                    <div className="profile-row" role="group" aria-labelledby="pill-main-heading">
+                      {PILL_STYLE_CHOICES.map(([id, label, blurb]) => {
+                        const selected = activePillStyle(settings.pillStyle) === id;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            aria-pressed={selected}
+                            data-main-character={id}
+                            className={selected ? "profile active" : "profile"}
+                            onClick={() => {
+                              if (selected) return;
+                              console.info(pillStyleLogLine(settings.pillStyle, id));
+                              saveSettings({ ...settings, pillStyle: id });
+                            }}
+                          >
+                            <strong>{label}</strong>
+                            <span>{blurb}</span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <p className="settings-hint">It appears while you dictate.</p>
+                    <p className="settings-hint">
+                      {activePillStyle(settings.pillStyle) === "yappy"
+                        ? "Yappy appears while you dictate. Hoot still comes over to record meetings."
+                        : activePillStyle(settings.pillStyle) === "hoot"
+                          ? "Hoot records your meetings himself, headphones on. Yappy stays in the studio and visits for your milestones."
+                          : "Hoot still comes over to record meetings. Yappy stays in the studio and visits for your milestones."}
+                    </p>
                   </div>
                   <div className="panel" data-row>
                     <h3>Screen position</h3>
@@ -135,7 +161,7 @@ export default function Companion() {
                         );
                       })}
                     </div>
-                    <p className="settings-hint">What Yappy says while you talk and when you finish. It applies to whichever companion sits in the pill.</p>
+                    <p className="settings-hint">What Yappy says while you talk and when you finish. It applies to whichever companion sits in the pill, and each friend adds a few lines of their own.</p>
                     {/* yap-1106-curse-setting — the curse toggle exists only under
                         Badass and is off by default. Switching to another voice
                         hides it; the saved choice waits for Badass again. */}

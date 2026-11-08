@@ -40,8 +40,10 @@ describe("character registry", () => {
     expect(() => registerCharacter({ id: " ", label: "x", render: () => null })).toThrow(/needs an id/);
   });
 
-  it("only Yappy declares a whole-window stage; the shell body paints in the shell's body slot", () => {
+  it("Yappy's one-pill stage is the only stage (friends share it); the shell body paints in the shell's body slot", () => {
     expect(typeof yappy.stage).toBe("object");
     expect(classic.stage).toBeUndefined();
+    // yap-1106-main-character-switch — one pill surface: no character brings a second stage.
+    for (const c of characters()) expect(c.stage, c.id).toBe(yappy.stage);
   });
 });

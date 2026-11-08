@@ -285,6 +285,7 @@ export default function MeetingBadge({
   live,
   screenSharing = false,
   attendees = null,
+  occupant = null,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
@@ -309,6 +310,11 @@ export default function MeetingBadge({
   screenSharing?: boolean;
   /** yap-1106-fb-23 — the invite's attendee count, when the calendar is on. */
   attendees?: number | null;
+  /**
+   * yap-1106-main-character-switch — who sits in the pill. Hoot in the pill
+   * records the meeting himself (no visit); anyone else, Hoot visits the tape.
+   */
+  occupant?: string | null;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
@@ -334,7 +340,7 @@ export default function MeetingBadge({
     if (after?.kind === "saved") {
       return (
         <div className="meeting-badge meeting-saved" data-pill-slot="clock" data-meeting-phase="saved" role="status" aria-label={after.title}>
-          <MeetingWorld elapsedS={after.elapsedS ?? 0} handover />
+          <MeetingWorld elapsedS={after.elapsedS ?? 0} handover occupant={occupant} />
           <span className="meeting-saved-label">{after.label}</span>
         </div>
       );
@@ -409,7 +415,7 @@ export default function MeetingBadge({
       {/* yap-1106-pill-rec-headphones-hoot-tape — no separate red dot: the
           right ear cup of Yappy's headphones is the recording light, and the
           elapsed time sits under the sun inside the scene. */}
-      <MeetingWorld elapsedS={status.elapsedSeconds} />
+      <MeetingWorld elapsedS={status.elapsedSeconds} occupant={occupant} />
       {callApp && (
         <span className="rec-app" data-call-app title={`Recording ${callApp} call`}>
           {callApp}
