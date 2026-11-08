@@ -64,6 +64,30 @@ export interface SegInput {
   stopKey?: string;
   /** The desk prop is out (Long take): the page's wider 208 window. */
   desk?: boolean;
+  /**
+   * pill.html row 20 "Saving battery": below 20 percent or Low Power Mode.
+   * A resting pill says it with the battery icon; `lowPowerLabel` false =
+   * the label already showed its 3 seconds ("then only the leaf stays").
+   */
+  lowPower?: boolean;
+  lowPowerLabel?: boolean;
+  /**
+   * pill.html #wispr "Fix-up notices": the done state carries Backtrack
+   * ("Fixed 2 words" + Show), never a separate toast. Words the take fixed.
+   */
+  fixedWords?: number;
+}
+
+/** pill.html row 20 copy, and how long the label holds before only the icon stays. */
+export const LOW_POWER_LABEL = "Saving battery";
+export const LOW_POWER_LABEL_MS = 3000;
+/** pill.html #wispr Fix-up notices button. */
+export const FIXED_SHOW_CTA = "Show";
+
+/** "Fixed 2 words" / "Fixed 1 word" — the page's own wording. */
+export function fixedWordsLine(n: number): string {
+  const k = Math.max(0, Math.round(n));
+  return `Fixed ${k} ${k === 1 ? "word" : "words"}`;
 }
 
 /** Which capsule class a phase draws at once it carries a segment. */
@@ -92,7 +116,13 @@ export function segmentFor(i: SegInput): SegItem[] {
       return [{ kind: "text", text: "Polishing" }];
     case "pasting":
       return [{ kind: "icon", icon: "paste" }, { kind: "text", text: "Pasting" }];
+    case "idle":
+    case "sleepy":
+      if (!i.lowPower) return [];
+      return i.lowPowerLabel === false ? [{ kind: "icon", icon: "batt" }] : [{ kind: "icon", icon: "batt" }, { kind: "text", text: LOW_POWER_LABEL }];
     case "done": {
+      const fixed = Math.max(0, Math.round(i.fixedWords ?? 0));
+      if (fixed > 0) return [{ kind: "icon", icon: "check" }, { kind: "text", text: fixedWordsLine(fixed) }, { kind: "cta", text: FIXED_SHOW_CTA }];
       const n = Math.max(0, Math.round(i.words ?? 0));
       return n > 0 ? [{ kind: "icon", icon: "check" }, { kind: "text", text: String(n), sub: n === 1 ? "word" : "words" }] : [];
     }

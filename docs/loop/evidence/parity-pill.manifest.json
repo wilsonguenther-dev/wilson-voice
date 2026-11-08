@@ -206,9 +206,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "app/listening__yappy__bottom__none.png"
+        "capture": "app/listening_locked__yappy__bottom__none.png"
       },
       "expect": {
         "w": 307.2,
@@ -243,7 +243,7 @@
           }
         ]
       },
-      "note": "essay tier (desk prop)"
+      "note": "essay tier (desk prop): the page draws lock + fn + stop, so the app target is the locked take; the desk window (208) appears after the essay threshold, which no forced phase reaches yet"
     },
     {
       "id": "meeting-recording",
@@ -257,7 +257,7 @@
       "app": {
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
-        "selector": ".yappy-capsule-box",
+        "selector": ".meeting-shell",
         "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
@@ -303,7 +303,7 @@
       "app": {
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=bottom&meeting=recording&sky=day",
-        "selector": ".yappy-capsule-box",
+        "selector": ".meeting-shell",
         "capture": "app/listening__yappy__bottom__recording.png"
       },
       "expect": {
@@ -887,9 +887,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&battery=low",
         "selector": ".yappy-capsule-box",
-        "capture": "app/idle__yappy__bottom__none.png"
+        "capture": "app/battery__yappy__bottom__none.png"
       },
       "expect": {
         "w": 167.05,
@@ -918,7 +918,7 @@
           }
         ]
       },
-      "note": "proposed state (low power); app target = idle until the battery mode is forced"
+      "note": "forced with &battery=low (forced.ts matrixBatteryScene); shellSegment segmentFor idle+lowPower = batt icon + 'Saving battery'"
     },
     {
       "id": "hover-tray",
@@ -1066,7 +1066,7 @@
       "app": {
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
-        "selector": ".yappy-capsule-box",
+        "selector": ".meeting-shell",
         "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
@@ -1114,7 +1114,7 @@
       "app": {
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
-        "selector": ".yappy-capsule-box",
+        "selector": ".meeting-shell",
         "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
@@ -1245,7 +1245,7 @@
       "section": "#vdock",
       "artifact": {
         "page": "pill.html",
-        "selector": "#vstage .ypill",
+        "selector": "#vstage .vshell.l",
         "sprites": []
       },
       "app": {
@@ -1255,8 +1255,8 @@
         "capture": "app/listening__yappy__left__none.png"
       },
       "expect": {
-        "w": 244,
-        "h": 52,
+        "w": 64,
+        "h": 216,
         "fontPx": [],
         "padding": {
           "t": 4,
@@ -1275,16 +1275,12 @@
         ],
         "sprite": [
           {
-            "w": 196,
-            "h": 44
-          },
-          {
-            "w": 14,
-            "h": 14
+            "w": 56,
+            "h": 180
           }
         ]
       },
-      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+      "note": "measured 2026-11-08 with parity-crops: .vshell.l 64x216, canvas 56x180 at 2x (the old #vstage .ypill selector measured the 244x52 'Horizontal pill, same take')"
     },
     {
       "id": "trial",
@@ -1338,14 +1334,14 @@
       "section": "#wispr",
       "artifact": {
         "page": "pill.html",
-        "selector": "#wrows .ypill",
+        "selector": "#wrows>.cmp:nth-child(7) .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&backtrack=1",
+        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "app/backtrack-caught__yappy__bottom__none.png"
+        "capture": "app/done__yappy__bottom__none.png"
       },
       "expect": {
         "w": 167.05,
@@ -1378,7 +1374,7 @@
           }
         ]
       },
-      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+      "note": "the old #wrows .ypill selector measured W1 (a 167x32 status pill); W7 Fix-up notices is the done state with check + 'Fixed 2 words' + Show (shellSegment fixedWordsLine). The app still shows Backtrack as BacktrackCaughtCard until the caught count is wired into the done pill"
     }
   ],
   "buildShell": {
@@ -1400,6 +1396,18 @@
       "artifact": ".ypill measures the whole shell including the right segment (lock, fn key, stop, word count)",
       "build": ".yappy-capsule-box measures the drawn capsule only; the segments are DOM slots beside it",
       "why": "the rows' width compares different boxes until the slot row has its own measured twin; the integrator's sheet shows the delta per row"
+    },
+    {
+      "state": "meeting-recording, meeting-dictating",
+      "artifact": "#states rows 6-7 draw the compact headphones pill (h 32 / h 52) with a red dot and a plain clock",
+      "build": "the app draws the resting meeting as the scene (decisions.meeting-clock: 'Meeting clock = B, the SUN crossing the sky'; #timer 202x44, window 140x36) inside one .meeting-shell",
+      "why": "Wilson chose clock B after these rows were drawn; the rows measure against the approved #timer/#hoot pills, whose window is 140x36 while the app scene is 112x40 in a 208x40 shell (state.ts CLOCK_W/CLOCK_H, SCENE_W/H): height 9 percent off, NOT within 3 percent yet"
+    },
+    {
+      "state": "docked-side",
+      "artifact": "row 23 draws a horizontal 244x52 pill at a side",
+      "build": "side docks draw the tall #vdock shell (never wider than 64 px)",
+      "why": "#vdock is the later, more specific section; the row stays in the sheet and is expected to fail on width until Wilson picks one"
     }
   ],
   "resolvedConflicts": [
@@ -1423,5 +1431,5 @@
     }
   ],
   "captures": "pill-matrix.mjs --out <captures>/app writes <matrix id>__yappy__<bottom|left|right>__<none|recording|saved>.png; every app.capture is that name under app/",
-  "rewrittenAt": "2026-11-08T00:48:30Z"
+  "rewrittenAt": "2026-11-08T06:42:15.539Z"
 }

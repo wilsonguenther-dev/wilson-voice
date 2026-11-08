@@ -78,6 +78,11 @@ export interface ForcedPill {
    * dock. Null when absent or unknown.
    */
   engine: EngineHealth | null;
+  /**
+   * yap-1107-parity-pill — `&battery=low` forces pill.html row 20 "Saving
+   * battery" (Low Power Mode) so the matrix photographs it without a battery.
+   */
+  battery: boolean;
 }
 
 /**
@@ -143,6 +148,7 @@ export function forcedPill(search: string): ForcedPill | null {
     license: sceneLicense(q.get("license")),
     rail: q.get("rail") === "open",
     engine: forcedEngine(q.get("engine")),
+    battery: q.get("battery") === "low",
   };
 }
 
@@ -379,6 +385,12 @@ export function matrixSilentMicScene(): MatrixOfferRow {
  * exactly the rail's two sets (Scratchpad · Dictate · Meeting, and
  * Scratchpad · Dictate · Note · Stop meeting) rotated at every dock.
  */
+/** yap-1107-parity-pill — pill.html row 20 "Saving battery": a resting pill in Low Power Mode. */
+export function matrixBatteryScene(): MatrixOfferRow {
+  const v = phaseVisual("idle");
+  return { phase: "idle", id: "battery", phaseId: PHASE_ID.idle, query: "battery=low", offer: "", tone: v.tone, label: v.label };
+}
+
 export function matrixRailScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return {

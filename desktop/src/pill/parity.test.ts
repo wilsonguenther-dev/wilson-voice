@@ -14,13 +14,14 @@ import TOKENS_CSS from "../tokens.css?raw";
 import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
 import MANIFEST_SRC from "../../../docs/loop/evidence/parity-pill.manifest.json?raw";
 import { ARTIFACT_OPEN_SHELL, ARTIFACT_REST_SHELL, SHELL_PAD, shellWindow } from "./characterFit";
-import { matrixBacktrackCaughtScene, matrixDragBlobScene, matrixPhases, matrixRailScene } from "./forced";
+import { matrixBacktrackCaughtScene, matrixBatteryScene, matrixDragBlobScene, matrixPhases, matrixRailScene } from "./forced";
 
 interface ManifestState {
   id: string;
   section: string;
   artifact: { selector: string };
   app: { selector: string; query: string; capture: string };
+  expect: { w: number; h: number };
 }
 interface NonVisual { id: string; section: string; reason: string }
 const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[]; nonVisual?: NonVisual[] };
@@ -107,14 +108,27 @@ describe("yap-1107-parity-pill — the manifest lists every approved state", () 
       const listed = ids.some((s) => s.section === sec) || nonVisual.some((n) => n.section === sec);
       expect(listed, sec).toBe(true);
     }
-    for (const s of ids) expect(s.app.selector, s.id).toBe(s.id === "dragging" ? ".kami-blob" : ".yappy-capsule-box");
+    // A meeting's ONE surface is .meeting-shell (state.ts meetingShellBox), the twin of the page's whole .ypill.
+    const MEETING_ROWS = new Set(["meeting-recording", "meeting-dictating", "timer-sun-sky-b", "hoot-b-tape"]);
+    for (const s of ids) expect(s.app.selector, s.id).toBe(s.id === "dragging" ? ".kami-blob" : MEETING_ROWS.has(s.id) ? ".meeting-shell" : ".yappy-capsule-box");
     expect(new Set(ids.map((s) => s.id)).size).toBe(ids.length);
   });
 
   // batch-4 bounce: section selectors (#clocks, #heavy...) measured 1176 px page
   // sections against a pill. Every measured row now names ONE drawn pill.
   it("every_artifact_selector_is_one_pill_not_a_page_section", () => {
-    for (const s of ids) expect(s.artifact.selector, s.id).toMatch(/\.(ypill|blob)$/);
+    for (const s of ids) expect(s.artifact.selector, s.id).toMatch(/\.(ypill|blob|vshell\.l)$/);
+  });
+
+  // batch-1 bounce: #vdock measured the horizontal pill above the tall shell, and
+  // #wispr measured W1 instead of the Fix-up notices pill (W7).
+  it("vdock_and_wispr_rows_measure_the_pill_their_section_is_about", () => {
+    const v = ids.find((s) => s.id === "vdock")!;
+    expect(v.artifact.selector).toBe("#vstage .vshell.l");
+    expect(v.expect.w).toBeLessThanOrEqual(64);
+    expect(ids.find((s) => s.id === "wispr")!.artifact.selector).toBe("#wrows>.cmp:nth-child(7) .ypill");
+    expect(ids.find((s) => s.id === "saving-battery")!.app.query).toMatch(/&battery=low$/);
+    expect(ids.find((s) => s.id === "long-take")!.app.query).toMatch(/^phase=listening-locked&/);
   });
 
   // #heavy is a behaviour table and #chatshots are pre-redesign defect
@@ -129,7 +143,7 @@ describe("yap-1107-parity-pill — the manifest lists every approved state", () 
   // bottom|left|right and meetings none|recording|saved, navigating with
   // ?phase=<row phase>; the manifest must name exactly those files.
   it("every_capture_is_a_file_pill_matrix_writes", () => {
-    const rows = [...matrixPhases(), matrixRailScene(), matrixDragBlobScene(), matrixBacktrackCaughtScene()];
+    const rows = [...matrixPhases(), matrixRailScene(), matrixDragBlobScene(), matrixBacktrackCaughtScene(), matrixBatteryScene()];
     const byId = new Map<string, { phase: string; query?: string }>(
       rows.map((r): [string, { phase: string; query?: string }] => [r.id, r]),
     );

@@ -91,6 +91,8 @@ export interface CharacterStageProps {
    * rate and rebuilds the whole scene (pill/stuckScene.ts).
    */
   engineHealth?: EngineHealth;
+  /** yap-1107-parity-pill — Low Power Mode / battery under 20 percent (pill.html row 20). */
+  lowPower?: boolean;
 }
 
 export interface Character {

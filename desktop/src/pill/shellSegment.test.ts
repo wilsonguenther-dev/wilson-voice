@@ -7,9 +7,10 @@ import FLOAT_CSS from "../float.css?raw";
 import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
 import MANIFEST_SRC from "../../../docs/loop/evidence/parity-pill.manifest.json?raw";
 import {
-  OPEN_DESK_SEG_CAPSULE, OPEN_SEG_CAPSULE, SEG_GAP, SEG_PAD_X, SEG_SHELL_GAP, STATUS_CAPSULE,
+  LOW_POWER_LABEL_MS, OPEN_DESK_SEG_CAPSULE, OPEN_SEG_CAPSULE, SEG_GAP, SEG_PAD_X, SEG_SHELL_GAP, STATUS_CAPSULE, fixedWordsLine,
   segCapsule, segClassFor, segEvent, segmentFor, shellBounds, type SegItem,
 } from "./shellSegment";
+import { forcedPill, matrixBatteryScene } from "./forced";
 
 interface ManifestState { id: string; expect: { w: number; h: number; sprite?: { w: number; h: number }[] } }
 const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[] };
@@ -102,5 +103,34 @@ describe("yap-1107-parity-pill — the segment is rendered inside the painted sh
     expect(FLOAT_CSS).toMatch(/\.yappy-seg-stop\s*\{[^}]*var\(--pill-shell-2\)/);
     expect(FLOAT_CSS).toMatch(/\.yappy-seg-cta\s*\{[^}]*var\(--pill-cta\)/);
     expect(FLOAT_CSS).toMatch(/html\[data-pill-seg="1"\] \.phase-strip/);
+  });
+});
+
+describe("yap-1107-parity-pill: saving battery and fix-up notices (pill.html row 20, #wispr W7)", () => {
+  it("saving_battery_is_the_batt_icon_and_the_page_words_on_a_resting_pill", () => {
+    const items = segmentFor({ phase: "idle", lowPower: true });
+    expect(items).toEqual([{ kind: "icon", icon: "batt" }, { kind: "text", text: "Saving battery" }]);
+    expect(segClassFor("idle", items)).toBe("status");
+    expect(segCapsule(segClassFor("idle", items))).toEqual({ w: 52, h: 32 });
+  });
+  it("after_the_3_second_label_only_the_icon_stays", () => {
+    expect(LOW_POWER_LABEL_MS).toBe(3000);
+    expect(segmentFor({ phase: "idle", lowPower: true, lowPowerLabel: false })).toEqual([{ kind: "icon", icon: "batt" }]);
+  });
+  it("no_low_power_means_the_resting_pill_says_nothing", () => {
+    expect(segmentFor({ phase: "idle" })).toEqual([]);
+    expect(segmentFor({ phase: "sleepy", lowPower: false })).toEqual([]);
+  });
+  it("a_done_take_that_fixed_words_says_so_with_show_never_a_separate_toast", () => {
+    const items = segmentFor({ phase: "done", words: 212, fixedWords: 2 });
+    expect(items).toEqual([{ kind: "icon", icon: "check" }, { kind: "text", text: "Fixed 2 words" }, { kind: "cta", text: "Show" }]);
+    expect(segClassFor("done", items)).toBe("open");
+    expect(fixedWordsLine(1)).toBe("Fixed 1 word");
+    expect(segmentFor({ phase: "done", words: 212, fixedWords: 0 })[1]).toEqual({ kind: "text", text: "212", sub: "words" });
+  });
+  it("the_battery_scene_is_forced_by_query_and_listed_for_the_matrix", () => {
+    expect(forcedPill("?phase=idle&battery=low")?.battery).toBe(true);
+    expect(forcedPill("?phase=idle")?.battery).toBe(false);
+    expect(matrixBatteryScene()).toMatchObject({ phase: "idle", id: "battery", query: "battery=low" });
   });
 });

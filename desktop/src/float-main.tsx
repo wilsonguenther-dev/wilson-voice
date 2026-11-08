@@ -128,6 +128,7 @@ import {
   matrixDragBlobScene,
   matrixFriendVisitScene,
   matrixStuckEngineScenes,
+  matrixBatteryScene,
   type ForcedPill,
 } from "./pill/forced";
 import { FriendVisit } from "./pill/FriendVisit";
@@ -311,6 +312,8 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixFriendVisitScene(),
     // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
     ...matrixStuckEngineScenes(),
+    // yap-1107-parity-pill — pill.html row 20 "Saving battery".
+    matrixBatteryScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -810,7 +813,7 @@ function Float() {
   }, [partialUp]);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} lowPower={FORCED?.battery === true} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />

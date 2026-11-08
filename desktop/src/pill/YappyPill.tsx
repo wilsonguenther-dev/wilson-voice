@@ -72,7 +72,7 @@ import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDoc
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
 // yap-1107-parity-pill — the approved right segment (words, keycap, stop, CTA) INSIDE the shell.
-import { segCapsule, segClassFor, segEvent, segmentFor, shellBounds, type SegClass, type SegItem } from "./shellSegment";
+import { LOW_POWER_LABEL_MS, segCapsule, segClassFor, segEvent, segmentFor, shellBounds, type SegClass, type SegItem } from "./shellSegment";
 // yap-1106-stuck-pill-keeps-its-scene — a stuck engine never strips the scene.
 import { SCENE_IDLE, reduceStuckScene, sceneFramePlan, watchCanvasLoss, type RepaintReason, type SceneEvent, type SceneState } from "./stuckScene";
 import type { EngineHealth } from "./engineHealth";
@@ -144,7 +144,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle" }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", lowPower = false }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -194,6 +194,8 @@ export default function YappyPill(
      * sky cache + canvas rebuilt from scratch (pill/stuckScene.ts).
      */
     engineHealth?: EngineHealth;
+    /** yap-1107-parity-pill — pill.html row 20 "Saving battery" (shellSegment LOW_POWER_LABEL). */
+    lowPower?: boolean;
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1187,11 +1189,25 @@ export default function YappyPill(
 
   // yap-1107-parity-pill — the approved right segment for this phase, published
   // to the draw loop (class + items) and measured once per layout change.
+  // pill.html row 20: "The label shows once for 3 seconds, then only the leaf stays."
+  const [lowPowerLabel, setLowPowerLabel] = useState(true);
+  useEffect(() => {
+    if (!lowPower) return undefined;
+    // The matrix photographs the labelled moment (pill.html row 20), so a
+    // matrix build holds the label; a real pill drops it after 3 s.
+    if (__YAP_PILL_MATRIX__) return undefined;
+    console.info(`pill event=low-power on=true label_ms=${LOW_POWER_LABEL_MS}`);
+    const t = window.setTimeout(() => setLowPowerLabel(false), LOW_POWER_LABEL_MS);
+    // Leaving Low Power Mode re-arms the label for the next time it starts.
+    return () => { window.clearTimeout(t); setLowPowerLabel(true); };
+  }, [lowPower]);
   const segItems = segmentFor({
     phase: gate,
     words: doneWords,
     progress: progress ? { chunk: progress.chunk, of: progress.of } : null,
     stopKey: chordLabel,
+    lowPower,
+    lowPowerLabel,
   });
   segInfoRef.current = { cls: segClassFor(gate, segItems), items: segItems };
   useEffect(() => {
