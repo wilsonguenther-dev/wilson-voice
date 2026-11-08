@@ -1207,6 +1207,9 @@ pub fn start(binding: PttBinding, command_binding: CommandBinding, callback: Cal
             *s.binding.lock() = binding;
             *s.command_binding.lock() = command_binding;
         }
+        // A permission edge re-enters here: an Accessibility grant made since
+        // launch arms exclusivity now (idempotent while the tap is live).
+        ensure_key_swallow_tap();
         return;
     }
     let _ = origin();
@@ -1562,6 +1565,9 @@ fn run_tap(state: Arc<TapState>) {
         FIRST_EDGE_REPORTED.store(false, Ordering::SeqCst);
         set_fn_tap_status(FnTapStatus::ArmedNoDelivery);
         log::info!("FN PTT hybrid tap running (fn⌃ hold / double-tap hands-free)");
+        // yap-1107-hotkey-exclusive-to-yap: the fn tap is up, so a chord can
+        // now be acted on — arm the active swallow tap beside it.
+        ensure_key_swallow_tap();
         ffi::CFRunLoopRun();
     }
 }
@@ -1690,6 +1696,324 @@ fn command_wanted(binding: CommandBinding, command: bool, option: bool) -> bool 
         CommandBinding::Command => command,
         CommandBinding::Option => option,
         CommandBinding::Off => false,
+    }
+}
+
+// ── yap-1107-hotkey-exclusive-to-yap: a chord Yap acts on stays Yap's ─────────
+//
+// The main tap above is LISTEN-ONLY (Input Monitoring) and must stay that way:
+// it is the one that feeds the machine, and a listen-only tap can never eat a
+// key. Exclusivity rides a SECOND tap, the WF-19 mouse pattern: an ACTIVE tap
+// (kCGEventTapOptionDefault, Accessibility) at the session location whose only
+// job is to return NULL for the key events of a chord Yap is acting on.
+//
+// What it can and cannot eat, by construction:
+//   * Its mask is key-down | key-up ONLY. A flags-changed event — the event
+//     that carries fn / ⌃ / ⌘ / ⌥ up and down, and the one that leaves Control
+//     or Fn stuck when it goes missing — is never even delivered to it.
+//   * The only non-modifier key a tap chord contains is the Globe key's own
+//     key event (keycode 179, SP-02): it is posted alongside the fn flag edge
+//     of the very press Yap is acting on. Every other key passes: an ordinary
+//     key during a hold is the user's (it interrupts the take, SP-02), and the
+//     Carbon chords (⌃⌥⌘Space, ⌃⌘V …) are consumed by `RegisterEventHotKey`
+//     itself, down AND up, before any app sees them — this tap swallowing their
+//     key-down would only stop Carbon from firing.
+//   * A key-up is swallowed exactly when its key-down was. No app ever sees a
+//     key-down without its key-up (a stuck, repeating key); the worst case of a
+//     tap macOS switched off mid-press is an orphan key-up, which apps ignore.
+//   * A tap macOS disabled (timeout / user input) eats nothing — macOS passes
+//     every event while it is off. It is re-armed and logged, never left dead.
+//   * The Fn release is NOT swallowed: yap-1107-globe-key-conflict-guard did
+//     not prove it safe (its evidence, "Not proven, NOT shipped"), and the mask
+//     above makes it impossible anyway.
+// Refused (no Accessibility) → today's listen-only behaviour plus a degraded
+// status line (`hotkeys::ExclusiveStatus::ListenOnly`).
+
+const KCG_EVENT_KEY_UP: u32 = 11;
+
+/// What the swallow tap asks macOS for: key-down and key-up, nothing else.
+pub const KEY_SWALLOW_MASK: u64 = (1u64 << KCG_EVENT_KEY_DOWN) | (1u64 << KCG_EVENT_KEY_UP);
+/// Session level: the swallow does not need the HID location (nothing in this
+/// item proved it does), and the session tap is what the mouse swallow uses.
+pub const KEY_SWALLOW_LOCATION: u32 = KCG_SESSION_EVENT_TAP;
+/// ACTIVE — the only option under which returning NULL drops an event.
+pub const KEY_SWALLOW_OPTIONS: u32 = KCG_EVENT_TAP_OPTION_DEFAULT;
+
+/// Which half of a key press an event is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPhase {
+    Down,
+    Up,
+}
+
+impl KeyPhase {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Down => "down",
+            Self::Up => "up",
+        }
+    }
+}
+
+/// The take-side facts `swallow_decision` needs, read by the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SwallowTakeState {
+    /// The machine says the binding's combo is held right now.
+    pub combo_down: bool,
+    /// This key's key-down was swallowed and its key-up has not arrived yet.
+    pub down_swallowed: bool,
+}
+
+/// Why an event goes on to the front app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassReason {
+    /// flags-changed or a modifier keycode: never swallowed (stuck keys).
+    ModifierEdge,
+    /// Not a key event at all.
+    NotAKey,
+    /// A key that is not part of a chord this tap acts on — the user's typing,
+    /// another app's shortcut, or a Carbon chord (Carbon consumes those).
+    NotTapChord,
+    /// The Globe key, but the binding's combo is not held: a lone fn under fn⌃
+    /// is not Yap's press.
+    ChordNotHeld,
+    /// A key-up whose key-down reached the app: the app gets the pair.
+    DownReachedApp,
+}
+
+/// The verdict for one key event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwallowDecision {
+    /// Return NULL: the event never reaches the front app or the system.
+    Swallow {
+        chord: &'static str,
+        phase: KeyPhase,
+    },
+    Pass(PassReason),
+}
+
+/// The chord label the `hotkey swallowed` line names for a tap swallow: the
+/// fn press the Globe key's key event belongs to, no key text beyond it.
+pub fn swallow_chord_label(binding: PttBinding) -> &'static str {
+    match binding {
+        PttBinding::Fn | PttBinding::FnOrFnControl => "fn",
+        PttBinding::FnControl => "fn⌃",
+    }
+}
+
+/// Does the swallow tap drop this event? Pure, so the policy is unit-tested
+/// without a CGEvent tap. `flags` are the event's own CGEventFlags.
+pub fn swallow_decision(
+    binding: PttBinding,
+    flags: u64,
+    keycode: i64,
+    event_type: u32,
+    take: SwallowTakeState,
+) -> SwallowDecision {
+    let phase = match event_type {
+        KCG_EVENT_KEY_DOWN => KeyPhase::Down,
+        KCG_EVENT_KEY_UP => KeyPhase::Up,
+        KCG_EVENT_FLAGS_CHANGED => return SwallowDecision::Pass(PassReason::ModifierEdge),
+        _ => return SwallowDecision::Pass(PassReason::NotAKey),
+    };
+    if keycode != GLOBE_KEYCODE {
+        if is_modifier_keycode(keycode) {
+            return SwallowDecision::Pass(PassReason::ModifierEdge);
+        }
+        return SwallowDecision::Pass(PassReason::NotTapChord);
+    }
+    let chord = swallow_chord_label(binding);
+    match phase {
+        KeyPhase::Down => {
+            let (efn, ectl, _, _) = decode_flags(flags);
+            if take.combo_down || combo_wanted(binding, efn, ectl) {
+                SwallowDecision::Swallow { chord, phase }
+            } else {
+                SwallowDecision::Pass(PassReason::ChordNotHeld)
+            }
+        }
+        KeyPhase::Up => {
+            if take.down_swallowed {
+                SwallowDecision::Swallow { chord, phase }
+            } else {
+                SwallowDecision::Pass(PassReason::DownReachedApp)
+            }
+        }
+    }
+}
+
+static KEY_SWALLOW_STARTING: AtomicBool = AtomicBool::new(false);
+static KEY_SWALLOW_LIVE: AtomicBool = AtomicBool::new(false);
+static KEY_SWALLOW_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+/// The Globe key-down was swallowed; its key-up must be too.
+static GLOBE_DOWN_SWALLOWED: AtomicBool = AtomicBool::new(false);
+static KEY_EVENTS_SWALLOWED: AtomicU64 = AtomicU64::new(0);
+static KEY_SWALLOW_DISABLES: AtomicU64 = AtomicU64::new(0);
+
+/// Start the active keyboard swallow tap once, on its own thread and run loop.
+/// Idempotent; a refusal clears the guard so the next permission edge retries.
+fn ensure_key_swallow_tap() {
+    if !crate::smoke::global_hotkeys_allowed() {
+        return;
+    }
+    if KEY_SWALLOW_STARTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // Asked WITHOUT a prompt: an active tap needs Accessibility, and creating
+    // one without it must not raise a system dialog at launch.
+    if !crate::permissions::is_accessibility_trusted() {
+        log::warn!(
+            "ptt key_swallow_unavailable reason=accessibility_off (hotkeys still work listen-only; their keys also reach the front app)"
+        );
+        crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::ListenOnly);
+        KEY_SWALLOW_STARTING.store(false, Ordering::SeqCst);
+        return;
+    }
+    let spawned = thread::Builder::new()
+        .name("wv-key-swallow".into())
+        .spawn(|| unsafe {
+            let tap = ffi::CGEventTapCreate(
+                KEY_SWALLOW_LOCATION,
+                KCG_HEAD_INSERT,
+                KEY_SWALLOW_OPTIONS,
+                KEY_SWALLOW_MASK,
+                Some(key_swallow_callback),
+                std::ptr::null_mut(),
+            );
+            if tap.is_null() {
+                log::warn!(
+                    "ptt key_swallow_unavailable reason=tap_refused (hotkeys still work listen-only; their keys also reach the front app)"
+                );
+                crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::ListenOnly);
+                KEY_SWALLOW_STARTING.store(false, Ordering::SeqCst);
+                return;
+            }
+            KEY_SWALLOW_PORT.store(tap, Ordering::SeqCst);
+            ffi::CGEventTapEnable(tap, true);
+            let source = ffi::CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0);
+            if source.is_null() {
+                log::warn!("ptt key_swallow_unavailable reason=run_loop_source");
+                KEY_SWALLOW_PORT.store(std::ptr::null_mut(), Ordering::SeqCst);
+                ffi::CFMachPortInvalidate(tap);
+                ffi::CFRelease(tap);
+                crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::ListenOnly);
+                KEY_SWALLOW_STARTING.store(false, Ordering::SeqCst);
+                return;
+            }
+            ffi::CFRunLoopAddSource(
+                ffi::CFRunLoopGetCurrent(),
+                source,
+                ffi::kCFRunLoopCommonModes,
+            );
+            KEY_SWALLOW_LIVE.store(true, Ordering::SeqCst);
+            crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::Exclusive);
+            log::info!("ptt key_swallow_tap running location=session option=active");
+            ffi::CFRunLoopRun();
+            KEY_SWALLOW_LIVE.store(false, Ordering::SeqCst);
+            GLOBE_DOWN_SWALLOWED.store(false, Ordering::SeqCst);
+            crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::ListenOnly);
+            KEY_SWALLOW_STARTING.store(false, Ordering::SeqCst);
+            log::warn!("ptt key_swallow_tap stopped");
+        });
+    if let Err(e) = spawned {
+        log::warn!("ptt key_swallow_unavailable reason=thread_spawn err={e}");
+        crate::hotkeys::set_exclusive_status(crate::hotkeys::ExclusiveStatus::ListenOnly);
+        KEY_SWALLOW_STARTING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Y1-A for the swallow tap: macOS switched it off. While it is off it passes
+/// every event (it can eat nothing), so the pairing flag is dropped — the worst
+/// case is an orphan Globe key-up reaching the app — then it is re-armed.
+fn on_key_swallow_disabled(kind: TapDisable) {
+    KEY_SWALLOW_DISABLES.fetch_add(1, Ordering::Relaxed);
+    GLOBE_DOWN_SWALLOWED.store(false, Ordering::SeqCst);
+    let port = KEY_SWALLOW_PORT.load(Ordering::SeqCst);
+    let re_armed = if port.is_null() {
+        false
+    } else {
+        unsafe {
+            ffi::CGEventTapEnable(port, true);
+            ffi::CGEventTapIsEnabled(port)
+        }
+    };
+    log::warn!(
+        "ptt key_swallow_tap disabled kind={} re_armed={re_armed} disables={} swallowed_total={}",
+        kind.name(),
+        KEY_SWALLOW_DISABLES.load(Ordering::Relaxed),
+        KEY_EVENTS_SWALLOWED.load(Ordering::Relaxed)
+    );
+}
+
+/// The binding and combo state for a Globe event, without ever blocking the
+/// tap: a contended lock falls back to fn⌃ (the strictest binding — it only
+/// swallows when fn AND ⌃ are in the event's own flags). `None` = no fn tap
+/// state at all, so nothing would act on the key.
+fn swallow_inputs() -> Option<(PttBinding, bool)> {
+    let Some(guard) = GLOBAL_STATE.try_lock() else {
+        return Some((PttBinding::FnControl, false));
+    };
+    let st = guard.as_ref()?;
+    let binding = st
+        .binding
+        .try_lock()
+        .map(|b| *b)
+        .unwrap_or(PttBinding::FnControl);
+    let combo_down = st.machine.try_lock().map(|m| m.combo_down()).unwrap_or(false);
+    Some((binding, combo_down))
+}
+
+/// The diagnostics line, off the tap thread: the front-app lookup must never
+/// add latency to a callback macOS times out.
+fn spawn_swallow_log(chord: &'static str, phase: KeyPhase) {
+    let _ = thread::Builder::new()
+        .name("wv-key-swallow-log".into())
+        .spawn(move || {
+            let front = crate::focus::frontmost_bundle_id();
+            crate::diagnostics::record_hotkey_swallowed(chord, phase.name(), front.as_deref(), "tap");
+        });
+}
+
+unsafe extern "C" fn key_swallow_callback(
+    _proxy: ffi::CGEventTapProxy,
+    event_type: u32,
+    event: ffi::CGEventRef,
+    _user_info: *mut std::ffi::c_void,
+) -> ffi::CGEventRef {
+    if let Some(kind) = classify_tap_disable(event_type) {
+        on_key_swallow_disabled(kind);
+        return event;
+    }
+    if event.is_null() || !KEY_SWALLOW_LIVE.load(Ordering::SeqCst) || !RUNNING.load(Ordering::SeqCst) {
+        return event;
+    }
+    let keycode = ffi::CGEventGetIntegerValueField(event, ffi::KEYBOARD_EVENT_KEYCODE);
+    // Fast path: only the Globe key can ever be swallowed.
+    if keycode != GLOBE_KEYCODE {
+        return event;
+    }
+    let Some((binding, combo_down)) = swallow_inputs() else {
+        return event;
+    };
+    let take = SwallowTakeState {
+        combo_down,
+        down_swallowed: GLOBE_DOWN_SWALLOWED.load(Ordering::SeqCst),
+    };
+    let flags = ffi::CGEventGetFlags(event);
+    let decision = swallow_decision(binding, flags, keycode, event_type, take);
+    if event_type == KCG_EVENT_KEY_UP {
+        GLOBE_DOWN_SWALLOWED.store(false, Ordering::SeqCst);
+    }
+    match decision {
+        SwallowDecision::Swallow { chord, phase } => {
+            if phase == KeyPhase::Down {
+                GLOBE_DOWN_SWALLOWED.store(true, Ordering::SeqCst);
+            }
+            KEY_EVENTS_SWALLOWED.fetch_add(1, Ordering::Relaxed);
+            spawn_swallow_log(chord, phase);
+            std::ptr::null_mut()
+        }
+        SwallowDecision::Pass(_) => event,
     }
 }
 

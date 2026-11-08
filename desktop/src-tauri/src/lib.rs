@@ -1728,7 +1728,10 @@ fn build_status(state: &AppState) -> AppStatus {
         &hotkeys_now.fn_tap,
         hotkeys::PermissionProbe::tap_plausible(&probe),
         &dictate_toggle_label,
-    );
+    )
+    // yap-1107-hotkey-exclusive-to-yap: no Accessibility → the hotkeys work
+    // listen-only and their keys also reach the front app; say so.
+    .or_else(hotkeys::exclusive_degraded_line);
     // Idle and otherwise "Ready": the main window's header status chip names
     // the degraded mode instead of advertising a fn hold that cannot fire (the
     // floating pill does not render `message`).
@@ -15202,6 +15205,9 @@ pub fn run() {
                         || hotkeys::active_dictate().0,
                     );
                     move |app, shortcut, event| {
+                        // yap-1107-hotkey-exclusive-to-yap: Carbon consumed this
+                        // phase; one `hotkey swallowed` diagnostics line for it.
+                        hotkeys::note_carbon_swallowed(shortcut, event.state == ShortcutState::Pressed);
                         on_shortcut(app.clone(), shortcut, event.state == ShortcutState::Pressed)
                     }
                 })

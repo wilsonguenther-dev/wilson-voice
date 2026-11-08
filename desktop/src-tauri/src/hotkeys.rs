@@ -273,6 +273,96 @@ pub fn set_fn_tap_status(s: FnTapStatus) {
     }
 }
 
+// ── yap-1107-hotkey-exclusive-to-yap: do Yap's chord keys stay Yap's? ────────
+
+/// Whether the key events of a chord the fn tap acts on are kept from the
+/// front app (`ptt_macos::ensure_key_swallow_tap`). Carbon chords are always
+/// Yap's alone — `RegisterEventHotKey` consumes them — so this only describes
+/// the tap side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExclusiveStatus {
+    /// Not tried yet (pre-launch, `--smoke`, or the fn tap never came up).
+    NotAttempted,
+    /// The active swallow tap is live.
+    Exclusive,
+    /// macOS refused the active tap (Accessibility is off for Yap): the hotkeys
+    /// still work through the listen-only tap, and their keys also reach the
+    /// app in front.
+    ListenOnly,
+}
+
+/// The degraded line for [`ExclusiveStatus::ListenOnly`]: one sentence, one
+/// action. "Yap" is renamed per build by `permissions::named`.
+pub const LISTEN_ONLY_LINE: &str =
+    "Your hotkeys work, but their keys also reach the app in front. Turn on Accessibility for Yap to keep them to Yap.";
+
+static EXCLUSIVE: Mutex<ExclusiveStatus> = Mutex::new(ExclusiveStatus::NotAttempted);
+
+/// Record the swallow tap's state; a change is logged and re-emits status.
+pub fn set_exclusive_status(s: ExclusiveStatus) {
+    let changed = {
+        let mut g = EXCLUSIVE.lock();
+        let changed = *g != s;
+        *g = s;
+        changed
+    };
+    if changed {
+        log::info!("hotkeys exclusive_status status={s:?}");
+        notify();
+    }
+}
+
+pub fn exclusive_status() -> ExclusiveStatus {
+    *EXCLUSIVE.lock()
+}
+
+/// The status-chip line for an exclusivity state, or `None` when nothing is
+/// degraded. Pure, so the refused-Accessibility path is unit-tested.
+pub fn exclusive_line(status: ExclusiveStatus) -> Option<String> {
+    match status {
+        ExclusiveStatus::ListenOnly => Some(crate::permissions::named(LISTEN_ONLY_LINE)),
+        ExclusiveStatus::Exclusive | ExclusiveStatus::NotAttempted => None,
+    }
+}
+
+/// [`exclusive_line`] for the live process state — what `app_status` falls
+/// back to when [`degraded_line`] has nothing worse to say.
+pub fn exclusive_degraded_line() -> Option<String> {
+    exclusive_line(exclusive_status())
+}
+
+/// The glyph label of a Carbon chord, e.g. `⌃⌥⌘Space` — the only key text a
+/// `hotkey swallowed` line may carry.
+pub fn carbon_chord_label(shortcut: &Shortcut) -> String {
+    let m = shortcut.mods;
+    chord_label(
+        m.contains(Modifiers::CONTROL),
+        m.contains(Modifiers::ALT),
+        m.contains(Modifiers::SHIFT),
+        m.contains(Modifiers::SUPER),
+        shortcut.key,
+    )
+}
+
+/// A Carbon chord reached Yap: `RegisterEventHotKey` consumed it, so neither
+/// this phase nor its twin reached the front app. One diagnostics line per
+/// phase (`hotkey swallowed chord=<label> phase=down|up front=<bundle id>`).
+///
+/// Called from the plugin handler, which runs with the shortcut table locked
+/// and must only route (yap-p0-chord-deadlock): the front-app lookup and the
+/// log line run on a short-lived thread, never inline.
+pub fn note_carbon_swallowed(shortcut: &Shortcut, pressed: bool) {
+    let label = carbon_chord_label(shortcut);
+    let phase = if pressed { "down" } else { "up" };
+    let _ = std::thread::Builder::new()
+        .name("wv-hotkey-swallow-log".into())
+        .spawn(move || {
+            let front = crate::focus::frontmost_bundle_id();
+            crate::diagnostics::record_hotkey_swallowed(&label, phase, front.as_deref(), "carbon");
+        });
+}
+
 /// Snapshot of the process-wide status.
 pub fn status() -> HotkeysStatus {
     STATUS.lock().clone()
@@ -609,6 +699,32 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exclusive_refused_accessibility_falls_back_with_a_degraded_line() {
+        // yap-1107-hotkey-exclusive-to-yap (5): a refused active tap leaves the
+        // listen-only hotkeys working and says so in one sentence + one action.
+        let line = super::exclusive_line(super::ExclusiveStatus::ListenOnly)
+            .expect("listen-only must carry a degraded line");
+        assert!(line.contains("hotkeys work"), "{line}");
+        assert!(line.contains("Accessibility"), "{line}");
+        assert_eq!(super::exclusive_line(super::ExclusiveStatus::Exclusive), None);
+        assert_eq!(super::exclusive_line(super::ExclusiveStatus::NotAttempted), None);
+    }
+
+    #[test]
+    fn carbon_chord_label_names_only_the_chord() {
+        use crate::shortcuts;
+        assert_eq!(
+            super::carbon_chord_label(&shortcuts::DICTATE_TOGGLE.shortcut()),
+            super::chord_label(true, true, false, true, shortcuts::DICTATE_TOGGLE.code)
+        );
+        for b in shortcuts::ALL {
+            let label = super::carbon_chord_label(&b.shortcut());
+            assert!(!label.is_empty(), "{}", b.id);
+            assert!(!label.contains(' '), "{} label {label:?} must be one token", b.id);
+        }
+    }
 
     #[test]
     fn rebind_accepts_code_plus_modifiers_only() {
