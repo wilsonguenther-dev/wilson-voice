@@ -1,0 +1,16 @@
+stress-tests: target=meeting_dictation_fanout filter='a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap' runs=10 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --test meeting_dictation_fanout a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /Users/wilsonguenther/code/wilson-voice-loop/loop3/INT/docs/loop/evidence/stress-harness/dictation_fanout
+stress-tests: started 8 busy loops: 81553 81554 81555 81556 81557 81558 81559 81560
+run 1/10: pass (1 passed)
+run 2/10: pass (1 passed)
+run 3/10: pass (1 passed)
+run 4/10: pass (1 passed)
+run 5/10: pass (1 passed)
+run 6/10: pass (1 passed)
+run 7/10: pass (1 passed)
+run 8/10: pass (1 passed)
+run 9/10: pass (1 passed)
+run 10/10: pass (1 passed)
+10/10

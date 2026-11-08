@@ -1,0 +1,16 @@
+stress-tests: target=lib filter='transcription::tests::state_transitions_unloaded_to_loaded_to_idle_unloaded' runs=10 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --lib transcription::tests::state_transitions_unloaded_to_loaded_to_idle_unloaded -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /Users/wilsonguenther/code/wilson-voice-loop/loop3/INT/docs/loop/evidence/stress-harness/state_transitions
+stress-tests: started 8 busy loops: 81314 81315 81316 81317 81318 81319 81320 81321
+run 1/10: pass (1 passed)
+run 2/10: pass (1 passed)
+run 3/10: pass (1 passed)
+run 4/10: pass (1 passed)
+run 5/10: pass (1 passed)
+run 6/10: pass (1 passed)
+run 7/10: pass (1 passed)
+run 8/10: pass (1 passed)
+run 9/10: pass (1 passed)
+run 10/10: pass (1 passed)
+10/10
