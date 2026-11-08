@@ -494,22 +494,23 @@ impl ChunkAsr for StraddleAfter {
 /// until it is cancelled, which is what a Metal decode does.
 #[test]
 fn the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure() {
-    let (manager, model_path) = blocking_manager();
+    let (manager, model_path, entered) = blocking_manager();
     manager.load("stub", &model_path).expect("stub loads");
 
-    let decoding = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = decoding.clone();
     let chunk_manager = manager.clone();
     let chunk = std::thread::spawn(move || {
-        flag.store(true, Ordering::Release);
         chunk_manager.transcribe_timed(vec![0.1f32; 16_000], None, None)
     });
-    while !decoding.load(Ordering::Acquire) {
-        std::thread::yield_now();
-    }
-    // The decode is on its way into the engine; give it the moment it needs to
-    // be genuinely in flight before the quit lands on it.
-    std::thread::sleep(Duration::from_millis(50));
+    // yap-1107-timing-tests-deterministic: wait for the ENGINE to report it is
+    // inside the decode, not for a 50 ms sleep after the thread started. A
+    // loaded runner can park the chunk thread between "spawned" and "inside
+    // the engine" for longer than any sleep, and a drain that lands first is a
+    // different test (nothing in flight to abandon).
+    support::wait_until(
+        "the chunk decode to enter the engine",
+        Duration::from_secs(30),
+        || entered.load(Ordering::Acquire),
+    );
 
     manager.drain_and_unload(Duration::from_secs(5));
     let outcome = chunk.join().expect("the chunk thread returns");
@@ -623,6 +624,9 @@ impl ChunkAsr for AbandonAt {
 /// Metal decode the drain has to interrupt rather than wait out.
 struct BlockingEngine {
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// Raised the moment a decode is inside [`Transcriber::transcribe`] — the
+    /// explicit ordering the drain test waits on instead of a sleep.
+    entered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Transcriber for BlockingEngine {
@@ -632,6 +636,7 @@ impl Transcriber for BlockingEngine {
         _language: Option<&str>,
         _bias: Option<&str>,
     ) -> Result<String, String> {
+        self.entered.store(true, Ordering::Release);
         while !self.cancelled.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -648,21 +653,28 @@ impl Transcriber for BlockingEngine {
     }
 }
 
-fn blocking_manager() -> (TranscriptionManager, PathBuf) {
+fn blocking_manager() -> (
+    TranscriptionManager,
+    PathBuf,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
     // `load` insists the model file exists; any file will do — the loader below
     // never opens it.
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let engine_entered = Arc::clone(&entered);
     let m = TranscriptionManager::with_loader(
-        Arc::new(|_p: &std::path::Path| {
+        Arc::new(move |_p: &std::path::Path| {
             Ok(Box::new(BlockingEngine {
                 cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                entered: Arc::clone(&engine_entered),
             }) as Box<dyn Transcriber>)
         }),
         Duration::from_secs(3600),
         Duration::from_secs(3600),
         Duration::from_secs(30),
     );
-    (m, model_path)
+    (m, model_path, entered)
 }
 
 /// A corrupt ledger costs a re-decode and never a meeting: the audio is still

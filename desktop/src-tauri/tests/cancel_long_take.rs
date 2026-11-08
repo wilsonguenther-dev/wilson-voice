@@ -38,6 +38,21 @@ use wilson_voice_lib::transcription::{
 use wilson_voice_lib::ClipWav;
 use wilson_voice_lib::{keep_cancelled_take, CANCELLED_TAKE_REASON};
 
+/// yap-1107-timing-tests-deterministic — wait for an EVENT, not for a sleep.
+/// "Several boundaries in" is a count the engine publishes; sleeping N chunk
+/// lengths and hoping the decoder thread was scheduled is a bet on load.
+/// `deadline` is a hang guard only, never a measurement.
+fn wait_until(what: &str, deadline: Duration, mut cond: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !cond() {
+        assert!(
+            start.elapsed() < deadline,
+            "timed out after {deadline:?} waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// How many chunk boundaries the stub decode crosses if nobody stops it.
 const CHUNKS: usize = 20;
 /// Wall time per chunk. Small enough that the whole file is fast, large enough
@@ -204,9 +219,13 @@ fn cancel_mid_decode_stops_at_the_next_chunk_boundary() {
         std::thread::spawn(move || m.transcribe(vec![0.1; 16_000], None, None))
     };
 
-    // Let the decode get properly under way — several boundaries in, so the
-    // cancel lands MID-decode rather than before it starts.
-    std::thread::sleep(CHUNK_DECODE * 4);
+    // Let the decode get properly under way — boundaries actually crossed, so
+    // the cancel lands MID-decode rather than before it starts.
+    wait_until(
+        "the decode to cross two chunk boundaries",
+        Duration::from_secs(30),
+        || chunks_done.load(Ordering::SeqCst) >= 2,
+    );
     assert!(
         m.cancel_in_flight_for_user(),
         "there was an in-flight decode and the cancel did not reach it"
@@ -428,8 +447,11 @@ fn cancel_stops_the_real_windowed_loop_not_just_one_window() {
         })
     };
 
-    // Let a couple of windows go by, so this is a cancel MID-take.
-    std::thread::sleep(Duration::from_millis(90));
+    // Let a couple of windows go by, so this is a cancel MID-take — counted,
+    // not slept for.
+    wait_until("two windows to decode", Duration::from_secs(30), || {
+        windows_decoded.load(Ordering::SeqCst) >= 2
+    });
     m.cancel_in_flight_for_user();
     // The latch is raised whether or not there was a hook to fire — this engine
     // has none, and the boundary check is the only thing that can stop it.
