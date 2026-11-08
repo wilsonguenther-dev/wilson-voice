@@ -492,9 +492,12 @@ mod tests {
         assert_eq!(back.line.as_deref(), Some(EMOJI_LINE));
         assert!(!back.can_put_back);
         assert!(!prior.exists(), "record forgotten once restored");
+        // The first read is the status line above; turn_off reads again to
+        // record the prior value before it writes.
         assert_eq!(
             fake.lines(),
             vec![
+                format!("defaults read {TEST_DOMAIN} {KEY}"),
                 format!("defaults read {TEST_DOMAIN} {KEY}"),
                 format!("defaults write {TEST_DOMAIN} {KEY} -int 0"),
                 format!("defaults read {TEST_DOMAIN} {KEY}"),
