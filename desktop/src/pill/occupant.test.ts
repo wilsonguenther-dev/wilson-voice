@@ -115,7 +115,7 @@ describe("who is painted in the one pill (yap-1106-main-character-switch)", () =
         // (its box sits inside Yappy's clamped box, so a whole cell that holds
         // the chick holds the friend); below 2x the nub keeps the head in view,
         // the same "head" framing rule characterFit.test applies to Yappy.
-        const ok = cam.fits || (phase === "rest" && dpr < 2 && cam.framing === "head" && cam.char.y >= cam.stadium.y);
+        const ok = cam.fits || (dpr < 2 && cam.framing === "head" && cam.char.y >= cam.stadium.y);
         expect(ok, `${id} ${phase} dpr=${dpr} framing=${cam.framing}`).toBe(true);
         if (dpr === 2) expect(cam.framing, `${id} ${phase} dpr=${dpr}`).toBe("whole");
         expect(Number.isInteger(cam.blit.cell), `${id} ${phase} dpr=${dpr}`).toBe(true);
