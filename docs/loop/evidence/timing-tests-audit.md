@@ -91,6 +91,9 @@ meeting.rs:3814 `sleep_unless_stopped` (one tick), meeting.rs:3735 and record.rs
 summary_jobs.rs:482 `wait_for` / :505 `wait_idle` (one caller's wait), polish.rs:2643 and
 summarize.rs:3716 (one request's own `deadline_ms`), transcription.rs:1095 (per lease: the shared
 chunk deadline behind matrix_new_asr_chunk_timeout was already fixed on base).
+desktop/yap-* crates: `rg "thread::sleep|recv_timeout|park_timeout|wait_timeout|elapsed\(\) *[<>]"` over
+yap-asr, yap-diarize, yap-engine-ane, yap-polish finds one hit, yap-polish/src/main.rs:686, the
+production per-request decode deadline (one request, not shared); no test in those crates waits on time.
 The one production change in this item is a seam, not a flaw: `lifecycle::run_bounded` now takes an
 injected `QuitClock` through `run_bounded_with` (behaviour unchanged on `SystemQuitClock`).
 
