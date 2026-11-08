@@ -121,7 +121,7 @@ const H = 140; // float_pill.rs PILL_H
 const SCALE = 2;
 const DOCKS = ["bottom", "left", "right"];
 /* yap-1106-retire-classic-pill — Classic is retired; Yappy is the only pill. */
-const CHARACTERS = ["yappy"];
+const CHARACTERS = ["yappy", "hoot", "tidy", "gulp", "shelly"]; // yap-1106-main-character-switch: every character that can sit in the pill
 /* yap-1106-one-pill — every capture also runs with and without a meeting. */
 /* fix-b8-1-meeting-saved-beat-gets-a-slot — and in the 2.4 s "Saved" stop beat. */
 let MEETINGS = ["none", "recording", "saved"];
@@ -288,7 +288,9 @@ function __pillDetect(want) {
   const WINDOW = new Set([de, document.body, document.getElementById("root")]);
 
   if (want) {
-    const capsule = document.querySelector(want.pill === "yappy" ? ".kami-stage" : ".pill");
+    // yap-1106-main-character-switch — ONE pill surface: every character sits in
+    // the one-pill stage (.kami-stage); the friend is painted inside it.
+    const capsule = document.querySelector(want.pill === "classic" ? ".pill" : ".kami-stage");
     const bad = [];
     const wantPhase = want.phaseId || want.id;
     if (de.dataset.phase !== wantPhase) bad.push("html[data-phase]=" + de.dataset.phase + " (asked " + wantPhase + ")");
@@ -336,6 +338,9 @@ function __pillDetect(want) {
     }
     if (!capsule) bad.push("no " + want.pill + " capsule rendered");
     else if (capsule.dataset.phase !== wantPhase) bad.push("capsule data-phase=" + capsule.dataset.phase);
+    // yap-1106-main-character-switch — the stage must paint the character asked for.
+    if (capsule && want.pill !== "classic" && capsule.dataset.occupant !== want.pill) bad.push("stage data-occupant=" + capsule.dataset.occupant + " (asked " + want.pill + ")");
+    if (want.pill !== "classic" && document.querySelector(".pill")) bad.push("a second (legacy .pill) surface is on screen");
     // yap-1106-pill-notes-and-meeting / WF-03 — the rail scene must draw an OPEN
     // rail on the classic capsule (Yappy's legacy stage owns its whole window),
     // rotated with the dock: a row at the bottom, a column at a side dock while

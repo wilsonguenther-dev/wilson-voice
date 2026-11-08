@@ -473,6 +473,9 @@ mod tests {
                 snippet: snippet.map(str::to_string),
             },
             score: 1.0,
+            category: crate::news::sources::Category::Stocks,
+            classified_by: crate::news::sources::ClassifiedBy::Source,
+            why: String::new(),
             url_key: url.to_string(),
             title_key: title.to_lowercase(),
         }
