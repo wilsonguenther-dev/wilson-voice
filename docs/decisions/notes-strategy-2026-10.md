@@ -57,6 +57,23 @@ YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 \
 | C | pending (needs YAP_EVAL_ARM_C_MODEL) | | | | | | | | |
 | E | pending integrator run | | | | | | | | |
 
+The same arms on `call-bleed-2voice` through the shipped input path (the second table the eval
+prints, `NOTES-ARMS-TABLE call-bleed-2voice (AEC-cleaned ASR)`, from the ignored test
+`call_bleed_arms_over_the_aec_cleaned_transcript`): the AEC pre-pass (yap24-NT11) cleans the far
+side out of the microphone, the shipped decoder transcribes both tracks on the shipped windows,
+`chunk_segments` makes the rows the app would store, and every arm writes notes from those rows,
+scored against the commitments and decisions planted in the corpus `meta.json` (keyword match;
+ASR rows never share a planted start). The ASR runs in a child process that has exited before any
+notes pass starts, so peak RSS is the notes pass with the ASR engine unloaded. The NT4 gates bind
+the shipped arm on this table too.
+
+| Arm (call-bleed-2voice) | Action recall | Action precision | Decision recall | Owner accuracy | Summary 4-gram verbatim | Cross-section dups | Max items per segment | Wall s | Peak RSS MB |
+|---|---|---|---|---|---|---|---|---|---|
+| A (call-bleed) | pending integrator run | | | | | | | | |
+| B (call-bleed) | pending integrator run | | | | | | | | |
+| C (call-bleed) | pending (needs YAP_EVAL_ARM_C_MODEL) | | | | | | | | |
+| E (call-bleed) | pending integrator run | | | | | | | | |
+
 For reference, the last measured run before the guards and before this item (2026-10-27, the
 pipeline A started from, in docs/BUDGETS.md): action recall 0.20, precision 0.50, decision recall
 1.00, verbatim 0.35, duplicates 16, max items per segment 3, owner accuracy 0.50, 47.9 s wall.
@@ -67,10 +84,29 @@ polish_model setting; the integrator's measured rows above confirm it or overtur
 
 ## Follow-up items
 
-- yap-audit-notes-strategy-call-bleed: run the same arms on call-bleed-2voice through the AEC
-  (yap24-NT11) transcript, not only the planted transcript fixture.
 - yap-audit-notes-strategy-arm-c: provision the Qwen2.5-3B q4 file to a COPY location and record
   arm C's row and peak RSS with the ASR engine unloaded.
-- yap-audit-notes-strategy-human-31min: the human half, numbers only: verbatim ratio, duplicate
-  count, max items per segment and owner counts from scripts/eval/compare-reference.py --notes on a
-  COPY of the 31-minute meeting, pasted in the PR body.
+- yap-audit-notes-strategy-human-31min: only if the batch PR lands without the human-half numbers
+  below; the test and the commands exist, the run needs the integrator on this Mac.
+
+## Human half (numbers only, never text)
+
+The ignored test `human_half_real_meeting_copy_numbers_only` runs the shipped arm on a COPY of the
+31-minute meeting (stored rows, echo-suppressed rows excluded), prints one `HUMAN-HALF` line of
+numbers (verbatim ratio, duplicates, max items per segment, owner counts Me / Them / Someone here /
+blank / other) and stores the notes in the copy, so `scripts/eval/compare-reference.py --notes`
+reads the same notes. Wilson's data dir is read only through the copy; the copy is deleted after.
+
+```
+T="$(mktemp -d)"; cp "$HOME/Library/Application Support/WilsonVoice/wilson_voice.db"* "$T/"
+ID="$(sqlite3 "$T/wilson_voice.db" "SELECT id FROM meetings WHERE duration_seconds BETWEEN 1800 AND 1920 ORDER BY started_at DESC LIMIT 1")"
+cd desktop/src-tauri
+YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
+  YAP_EVAL_MEETING_DB="$T/wilson_voice.db" YAP_EVAL_MEETING_ID="$ID" \
+  cargo test --features custom-protocol --test meeting_notes_recall_eval -- --ignored --nocapture \
+  --test-threads=1 human_half_real_meeting_copy_numbers_only
+python3 ../../scripts/eval/compare-reference.py --notes "$T/wilson_voice.db" "$ID"
+rm -rf "$T"
+```
+
+The numbers go in the batch PR body.
