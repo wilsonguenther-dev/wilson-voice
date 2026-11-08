@@ -3274,6 +3274,33 @@ mod swallow_tests {
         }
     }
 
+    #[test]
+    fn a_disabled_swallow_tap_drops_its_pairing_and_eats_nothing_after() {
+        // (4) Y1-A for the swallow tap: macOS switched it off between a
+        // swallowed Globe down and its up. The pairing flag is dropped, so the
+        // tap can never eat a later key on stale state; with no port (never
+        // created) the re-arm reports false instead of touching CoreGraphics.
+        use super::{
+            on_key_swallow_disabled, TapDisable, GLOBE_DOWN_SWALLOWED, KEY_SWALLOW_DISABLES,
+        };
+        use std::sync::atomic::Ordering;
+        let before = KEY_SWALLOW_DISABLES.load(Ordering::Relaxed);
+        GLOBE_DOWN_SWALLOWED.store(true, Ordering::SeqCst);
+        on_key_swallow_disabled(TapDisable::Timeout);
+        assert!(!GLOBE_DOWN_SWALLOWED.load(Ordering::SeqCst));
+        on_key_swallow_disabled(TapDisable::UserInput);
+        assert_eq!(KEY_SWALLOW_DISABLES.load(Ordering::Relaxed), before + 2);
+        // After the disable the up is decided on the cleared flag: it passes.
+        let take = SwallowTakeState {
+            combo_down: false,
+            down_swallowed: GLOBE_DOWN_SWALLOWED.load(Ordering::SeqCst),
+        };
+        assert_eq!(
+            swallow_decision(PttBinding::Fn, FN, GLOBE_KEYCODE, KCG_EVENT_KEY_UP, take),
+            SwallowDecision::Pass(PassReason::DownReachedApp)
+        );
+    }
+
     /// Drive the callback's pairing rule over a press sequence and count what
     /// reached the app.
     fn run(binding: PttBinding, presses: &[(u64, bool)]) -> (usize, usize, usize) {
